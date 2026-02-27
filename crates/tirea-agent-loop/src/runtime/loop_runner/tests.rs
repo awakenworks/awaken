@@ -2069,7 +2069,7 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
             .with_source("test:phase_block");
             PhaseOutput::default()
                 .system_context("from_before_inference")
-                .with_pending_patch(patch)
+                .with_state_action(AnyStateAction::Patch(patch))
                 .request_termination(TerminationReason::BehaviorRequested)
         }
         async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
@@ -2146,7 +2146,7 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
                 json!(true),
             )))
             .with_source("test:cleanup");
-            PhaseOutput::default().with_pending_patch(patch)
+            PhaseOutput::default().with_state_action(AnyStateAction::Patch(patch))
         }
     }
 
@@ -4547,7 +4547,7 @@ async fn test_legacy_resume_replay_nonstream_queue_is_ignored() {
                 ]),
             )))
             .with_source("test:legacy_resume_replay_queue");
-            PhaseOutput::default().with_pending_patch(patch)
+            PhaseOutput::default().with_state_action(AnyStateAction::Patch(patch))
         }
 
         async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
@@ -4626,7 +4626,7 @@ async fn test_run_loop_terminate_behavior_requested_with_suspended_state_returns
             )
             .expect("failed to set suspended interaction");
             PhaseOutput::default()
-                .with_pending_patch(patch)
+                .with_state_action(AnyStateAction::Patch(patch))
                 .request_termination(TerminationReason::BehaviorRequested)
         }
 
@@ -6148,7 +6148,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
             )
             .expect("failed to set suspended interaction");
             PhaseOutput::default()
-                .with_pending_patch(patch)
+                .with_state_action(AnyStateAction::Patch(patch))
                 .request_termination(TerminationReason::Suspended)
         }
     }
@@ -8983,7 +8983,7 @@ async fn test_run_step_terminate_behavior_requested_with_suspended_state_returns
             )
             .expect("failed to set suspended interaction");
             PhaseOutput::default()
-                .with_pending_patch(patch)
+                .with_state_action(AnyStateAction::Patch(patch))
                 .request_termination(TerminationReason::BehaviorRequested)
         }
     }
@@ -9117,13 +9117,13 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::StepEnd);
-            PhaseOutput::default().with_pending_patch(
+            PhaseOutput::default().with_state_action(AnyStateAction::Patch(
                 TrackedPatch::new(Patch::new().with_op(Op::set(
                     tirea_state::path!("debug", "cleanup_ran"),
                     json!(true),
                 )))
                 .with_source("test:cleanup_on_start_error"),
-            )
+            ))
         }
         async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
             self.phases
@@ -10856,7 +10856,7 @@ async fn test_nonstream_run_start_added_pending_pauses_before_inference() {
                 None,
             )
             .expect("failed to set suspended interaction");
-            PhaseOutput::default().with_pending_patch(patch)
+            PhaseOutput::default().with_state_action(AnyStateAction::Patch(patch))
         }
     }
 
@@ -10901,7 +10901,7 @@ async fn test_stream_run_start_added_pending_emits_and_pauses_before_inference()
                 None,
             )
             .expect("failed to set suspended interaction");
-            PhaseOutput::default().with_pending_patch(patch)
+            PhaseOutput::default().with_state_action(AnyStateAction::Patch(patch))
         }
     }
 
@@ -11223,7 +11223,7 @@ async fn test_run_loop_applies_plugin_state_effect_patch_before_inference() {
             )))
             .with_source("test:state_effect_before_inference");
             PhaseOutput::default()
-                .with_pending_patch(patch)
+                .with_state_action(AnyStateAction::Patch(patch))
                 .request_termination(TerminationReason::BehaviorRequested)
         }
     }
@@ -11257,7 +11257,7 @@ async fn test_run_loop_applies_plugin_state_effect_patch_after_tool_execute() {
                     json!(true),
                 )))
                 .with_source("test:state_effect_after_tool_execute");
-                PhaseOutput::default().with_pending_patch(patch)
+                PhaseOutput::default().with_state_action(AnyStateAction::Patch(patch))
             } else {
                 PhaseOutput::default()
             }

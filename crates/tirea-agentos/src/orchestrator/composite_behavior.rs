@@ -140,6 +140,7 @@ impl AgentBehavior for CompositeBehavior {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::runtime::plugin::phase::AnyStateAction;
     use crate::contracts::runtime::plugin::phase::effect::PhaseEffect;
     use crate::contracts::runtime::plugin::phase::Phase;
     use crate::contracts::RunConfig;
@@ -208,7 +209,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn composite_merges_pending_patches() {
+    async fn composite_merges_patch_state_actions() {
         struct PendingPatchBehavior {
             id: &'static str,
             key: &'static str,
@@ -225,7 +226,7 @@ mod tests {
                     Patch::new().with_op(Op::set(path!("debug", self.key), json!(true))),
                 )
                 .with_source(self.id);
-                PhaseOutput::default().with_pending_patch(patch)
+                PhaseOutput::default().with_state_action(AnyStateAction::Patch(patch))
             }
         }
 
@@ -245,9 +246,15 @@ mod tests {
         let ctx = make_ctx(&doc, Phase::BeforeInference);
         let output = composite.before_inference(&ctx).await;
 
-        assert_eq!(output.pending_patches.len(), 2);
-        assert_eq!(output.pending_patches[0].source.as_deref(), Some("a"));
-        assert_eq!(output.pending_patches[1].source.as_deref(), Some("b"));
+        assert_eq!(output.state_actions.len(), 2);
+        match &output.state_actions[0] {
+            AnyStateAction::Patch(patch) => assert_eq!(patch.source.as_deref(), Some("a")),
+            other => panic!("expected patch state action, got {other:?}"),
+        }
+        match &output.state_actions[1] {
+            AnyStateAction::Patch(patch) => assert_eq!(patch.source.as_deref(), Some("b")),
+            other => panic!("expected patch state action, got {other:?}"),
+        }
     }
 
     #[tokio::test]
