@@ -1,10 +1,11 @@
 //! Tool execution utilities.
 
+use crate::contracts::reduce_state_actions;
+use crate::contracts::runtime::plugin::phase::AnyStateAction;
+use crate::contracts::runtime::tool_call::ToolCallContext;
+use crate::contracts::runtime::tool_call::{Tool, ToolExecutionEffect, ToolResult};
 pub use crate::contracts::runtime::ToolExecution;
 use crate::contracts::thread::ToolCall;
-use crate::contracts::runtime::tool_call::ToolCallContext;
-use crate::contracts::reduce_state_actions;
-use crate::contracts::runtime::tool_call::{Tool, ToolExecutionEffect, ToolResult};
 use futures::future::join_all;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -79,28 +80,21 @@ pub async fn execute_single_tool_with_scope(
     };
     let result = effect.result;
 
-    // Extract state changes from ToolCallContext + returned state actions.
-    let mut rolling_snapshot = state.clone();
-    let mut merged_patch = Patch::new();
+    // Extract state changes through the unified action/reducer pipeline.
+    let mut state_actions = effect.state_actions;
 
     let context_patch = ctx.take_patch();
     if !context_patch.patch().is_empty() {
-        rolling_snapshot = match apply_patch(&rolling_snapshot, context_patch.patch()) {
-            Ok(next) => next,
-            Err(err) => {
-                return ToolExecution {
-                    call: call.clone(),
-                    result: ToolResult::error(&call.name, format!("tool patch apply failed: {err}")),
-                    patch: None,
-                };
-            }
-        };
-        merged_patch.extend(context_patch.patch().clone());
+        tracing::warn!(
+            tool_name = %call.name,
+            tool_call_id = %call.id,
+            "tool emitted direct state patch via ToolCallContext; promote to ToolExecutionEffect state_actions for unified reducer path"
+        );
+        state_actions.insert(0, AnyStateAction::Patch(context_patch));
     }
 
     let action_patches =
-        match reduce_state_actions(effect.state_actions, &rolling_snapshot, &format!("tool:{}", call.name))
-        {
+        match reduce_state_actions(state_actions, state, &format!("tool:{}", call.name)) {
             Ok(patches) => patches,
             Err(err) => {
                 return ToolExecution {
@@ -114,6 +108,7 @@ pub async fn execute_single_tool_with_scope(
             }
         };
 
+    let mut merged_patch = Patch::new();
     for tracked in action_patches {
         merged_patch.extend(tracked.patch().clone());
     }
@@ -257,10 +252,13 @@ mod tests {
             _args: Value,
             _ctx: &ToolCallContext<'_>,
         ) -> Result<crate::contracts::runtime::ToolExecutionEffect, ToolError> {
-            Ok(crate::contracts::runtime::ToolExecutionEffect::new(
-                ToolResult::success("effect", json!({})),
+            Ok(
+                crate::contracts::runtime::ToolExecutionEffect::new(ToolResult::success(
+                    "effect",
+                    json!({}),
+                ))
+                .with_state_action(AnyStateAction::new::<EffectCounterState>(2)),
             )
-            .with_state_action(AnyStateAction::new::<EffectCounterState>(2)))
         }
     }
 

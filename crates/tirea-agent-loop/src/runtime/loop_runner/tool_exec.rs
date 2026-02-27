@@ -29,7 +29,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_state::{apply_patch, Patch, PatchExt, TrackedPatch};
+use tirea_state::{Patch, PatchExt, TrackedPatch};
 
 /// Outcome of the public `execute_tools*` family of functions.
 ///
@@ -908,7 +908,7 @@ pub(super) async fn execute_single_tool_with_phases(
     .await?;
 
     // Check if blocked or pending
-    let (execution, outcome, suspended_call, tool_state_actions) = if step.tool_blocked() {
+    let (mut execution, outcome, suspended_call, mut tool_state_actions) = if step.tool_blocked() {
         let reason = step
             .tool
             .as_ref()
@@ -1067,12 +1067,28 @@ pub(super) async fn execute_single_tool_with_phases(
         step.emit_patch(plugin_patch);
     }
 
-    let mut pending_patches = reduce_tool_state_actions(
-        state,
-        execution.patch.as_ref(),
-        tool_state_actions,
-        &format!("tool:{}", call.name),
-    )?;
+    let had_promoted_tool_patch = execution.patch.is_some();
+    if let Some(tool_patch) = execution.patch.take() {
+        tracing::warn!(
+            tool_name = %execution.call.name,
+            tool_call_id = %execution.call.id,
+            "tool emitted direct state patch via ToolCallContext; promote to ToolExecutionEffect state_actions for unified reducer path"
+        );
+        tool_state_actions.insert(0, AnyStateAction::Patch(tool_patch));
+    }
+
+    let mut pending_patches =
+        reduce_tool_state_actions(state, tool_state_actions, &format!("tool:{}", call.name))?;
+    if had_promoted_tool_patch {
+        let Some(tool_patch) = pending_patches.first().cloned() else {
+            return Err(AgentLoopError::StateError(format!(
+                "tool '{}' emitted a direct patch but reducer output was empty",
+                call.name
+            )));
+        };
+        execution.patch = Some(tool_patch);
+        let _ = pending_patches.remove(0);
+    }
     pending_patches.extend(std::mem::take(&mut step.pending_patches));
 
     Ok(ToolExecutionResult {
@@ -1086,17 +1102,10 @@ pub(super) async fn execute_single_tool_with_phases(
 
 fn reduce_tool_state_actions(
     base_state: &Value,
-    tool_patch: Option<&TrackedPatch>,
     actions: Vec<AnyStateAction>,
     source: &str,
 ) -> Result<Vec<TrackedPatch>, AgentLoopError> {
-    let mut rolling_snapshot = base_state.clone();
-    if let Some(patch) = tool_patch {
-        rolling_snapshot = apply_patch(&rolling_snapshot, patch.patch()).map_err(|e| {
-            AgentLoopError::StateError(format!("failed to apply tool patch before actions: {e}"))
-        })?;
-    }
-    reduce_state_actions(actions, &rolling_snapshot, source).map_err(|e| {
+    reduce_state_actions(actions, base_state, source).map_err(|e| {
         AgentLoopError::StateError(format!("failed to reduce tool state actions: {e}"))
     })
 }
