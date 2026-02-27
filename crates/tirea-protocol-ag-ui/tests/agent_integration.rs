@@ -4671,12 +4671,12 @@ fn suspend_ticket_from_invocation(
 }
 
 #[async_trait::async_trait]
-trait AgentPluginTestDispatch {
+trait AgentBehaviorTestDispatch {
     async fn run_phase(&self, phase: Phase, step: &mut StepContext<'_>);
 }
 
 #[async_trait::async_trait]
-impl<T> AgentPluginTestDispatch for T
+impl<T> AgentBehaviorTestDispatch for T
 where
     T: AgentBehavior + ?Sized,
 {
@@ -12436,7 +12436,7 @@ fn test_interaction_to_ag_ui_events() {
 // ============================================================================
 
 mod llmmetry_tracing {
-    use crate::AgentPluginTestDispatch;
+    use crate::AgentBehaviorTestDispatch;
     use serde_json::json;
     use std::sync::{Arc, Mutex};
     use tirea_agentos::contracts::runtime::plugin::phase::{Phase, StepContext, ToolContext};

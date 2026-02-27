@@ -83,7 +83,7 @@ async fn main() {
         )
         .into(),
         max_rounds: 10,
-        plugin_ids: vec!["permission".into(), "llmmetry".into()],
+        behavior_ids: vec!["permission".into(), "llmmetry".into()],
         ..Default::default()
     };
 

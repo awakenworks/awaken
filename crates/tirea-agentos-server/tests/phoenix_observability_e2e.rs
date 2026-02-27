@@ -35,7 +35,7 @@ fn make_os(
     let def = AgentDefinition {
         id: "test".to_string(),
         model: configured_model.to_string(),
-        plugin_ids: vec!["llmmetry".into()],
+        behavior_ids: vec!["llmmetry".into()],
         max_rounds: 1,
         ..Default::default()
     };

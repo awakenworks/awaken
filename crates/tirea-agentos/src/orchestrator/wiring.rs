@@ -76,7 +76,7 @@ impl AgentOs {
         ]
     }
 
-    fn reserved_skills_plugin_ids() -> &'static [&'static str] {
+    fn reserved_skills_behavior_ids() -> &'static [&'static str] {
         &[
             SKILLS_PLUGIN_ID,
             SKILLS_DISCOVERY_PLUGIN_ID,
@@ -86,11 +86,11 @@ impl AgentOs {
 
     fn resolve_behavior_id_list(
         &self,
-        plugin_ids: &[String],
+        behavior_ids: &[String],
     ) -> Result<Vec<Arc<dyn AgentBehavior>>, AgentOsWiringError> {
         let reserved = Self::reserved_behavior_ids();
         let mut out: Vec<Arc<dyn AgentBehavior>> = Vec::new();
-        for id in plugin_ids {
+        for id in behavior_ids {
             let id = id.trim();
             if reserved.contains(&id) {
                 return Err(AgentOsWiringError::ReservedBehaviorId(id.to_string()));
@@ -137,7 +137,7 @@ impl AgentOs {
     fn ensure_skills_plugin_not_installed(
         plugins: &[Arc<dyn AgentBehavior>],
     ) -> Result<(), AgentOsWiringError> {
-        let reserved = Self::reserved_skills_plugin_ids();
+        let reserved = Self::reserved_skills_behavior_ids();
         if let Some(existing) = plugins
             .iter()
             .map(|p| p.id())
@@ -413,15 +413,15 @@ impl AgentOs {
     }
 
     #[cfg(test)]
-    pub(crate) fn wire_plugins_into(
+    pub(crate) fn wire_behaviors_into(
         &self,
         definition: AgentDefinition,
     ) -> Result<Vec<Arc<dyn AgentBehavior>>, AgentOsWiringError> {
-        if definition.plugin_ids.is_empty() {
+        if definition.behavior_ids.is_empty() {
             return Ok(Vec::new());
         }
 
-        let resolved_plugins = self.resolve_behavior_id_list(&definition.plugin_ids)?;
+        let resolved_plugins = self.resolve_behavior_id_list(&definition.behavior_ids)?;
         ResolvedBehaviors::default()
             .with_agent_default(resolved_plugins)
             .into_plugins()
@@ -432,8 +432,8 @@ impl AgentOs {
         definition: AgentDefinition,
         tools: &mut HashMap<String, Arc<dyn Tool>>,
     ) -> Result<BaseAgent, AgentOsWiringError> {
-        // Resolve plugins: system bundles (skills, agent_tools, agent_recovery) -> plugin_ids
-        let resolved_plugins = self.resolve_behavior_id_list(&definition.plugin_ids)?;
+        // Resolve plugins: system bundles (skills, agent_tools, agent_recovery) -> behavior_ids
+        let resolved_plugins = self.resolve_behavior_id_list(&definition.behavior_ids)?;
         let frozen_agents = self.freeze_agent_registry();
         let frozen_skills = self.freeze_skill_registry();
 
@@ -494,7 +494,7 @@ impl AgentOs {
         definition: AgentDefinition,
         tools: &mut HashMap<String, Arc<dyn Tool>>,
     ) -> Result<BaseAgent, AgentOsWiringError> {
-        let resolved_plugins = self.resolve_behavior_id_list(&definition.plugin_ids)?;
+        let resolved_plugins = self.resolve_behavior_id_list(&definition.behavior_ids)?;
         let skills_bundles =
             self.build_skills_wiring_bundles(&resolved_plugins, self.freeze_skill_registry())?;
         let skills_plugins = self.merge_wiring_bundles(&skills_bundles, tools)?;

@@ -32,7 +32,7 @@ impl AgentBehavior for TerminatePlugin {
     }
 
     async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-        PhaseOutput::default().terminate_plugin_requested()
+        PhaseOutput::default().terminate_behavior_requested()
     }
 }
 
@@ -59,7 +59,7 @@ impl AgentBehavior for SlowTerminatePlugin {
 
     async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
         tokio::time::sleep(self.delay).await;
-        PhaseOutput::default().terminate_plugin_requested()
+        PhaseOutput::default().terminate_behavior_requested()
     }
 }
 

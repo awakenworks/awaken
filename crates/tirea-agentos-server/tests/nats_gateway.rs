@@ -27,14 +27,14 @@ use common::TerminatePlugin;
 fn make_os(storage: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
-        plugin_ids: vec!["terminate_plugin_requested_test".into()],
+        behavior_ids: vec!["terminate_behavior_requested_test".into()],
         ..Default::default()
     };
 
     AgentOsBuilder::new()
         .with_registered_behavior(
-            "terminate_plugin_requested_test",
-            Arc::new(TerminatePlugin::new("terminate_plugin_requested_test")),
+            "terminate_behavior_requested_test",
+            Arc::new(TerminatePlugin::new("terminate_behavior_requested_test")),
         )
         .with_agent("test", def)
         .with_agent_state_store(storage)

@@ -313,7 +313,7 @@ impl AgentOsBuilder {
             let reserved = AgentOs::reserved_behavior_ids();
             for (agent_id, def) in &agents_defs {
                 let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-                for id in &def.plugin_ids {
+                for id in &def.behavior_ids {
                     let id = id.trim();
                     if id.is_empty() {
                         return Err(AgentOsBuildError::AgentEmptyBehaviorRef {

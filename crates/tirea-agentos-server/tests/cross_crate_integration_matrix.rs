@@ -14,15 +14,15 @@ use common::TerminatePlugin;
 fn make_os(store: Arc<MemoryStore>) -> AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
-        plugin_ids: vec!["terminate_plugin_requested_cross_crate_matrix".into()],
+        behavior_ids: vec!["terminate_behavior_requested_cross_crate_matrix".into()],
         ..Default::default()
     };
 
     AgentOsBuilder::new()
         .with_registered_behavior(
-            "terminate_plugin_requested_cross_crate_matrix",
+            "terminate_behavior_requested_cross_crate_matrix",
             Arc::new(TerminatePlugin::new(
-                "terminate_plugin_requested_cross_crate_matrix",
+                "terminate_behavior_requested_cross_crate_matrix",
             )),
         )
         .with_agent("test", def)

@@ -306,7 +306,7 @@ impl AiSdkEncoder {
     fn map_termination(reason: &TerminationReason) -> &'static str {
         match reason {
             TerminationReason::NaturalEnd
-            | TerminationReason::PluginRequested
+            | TerminationReason::BehaviorRequested
             | TerminationReason::Suspended => "stop",
             TerminationReason::Cancelled => "other",
             TerminationReason::Error => "error",

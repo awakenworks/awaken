@@ -34,8 +34,9 @@ impl StoppedReason {
 pub enum TerminationReason {
     /// LLM returned a response with no tool calls.
     NaturalEnd,
-    /// A plugin requested inference skip.
-    PluginRequested,
+    /// A behavior requested inference skip.
+    #[serde(alias = "plugin_requested")]
+    BehaviorRequested,
     /// A configured stop condition fired.
     Stopped(StoppedReason),
     /// External run cancellation signal was received.
@@ -62,7 +63,7 @@ impl TerminationReason {
         match self {
             Self::Suspended => (RunStatus::Waiting, None),
             Self::NaturalEnd => (RunStatus::Done, Some("natural".to_string())),
-            Self::PluginRequested => (RunStatus::Done, Some("plugin_requested".to_string())),
+            Self::BehaviorRequested => (RunStatus::Done, Some("behavior_requested".to_string())),
             Self::Cancelled => (RunStatus::Done, Some("cancelled".to_string())),
             Self::Error => (RunStatus::Done, Some("error".to_string())),
             Self::Stopped(stopped) => {
@@ -187,9 +188,9 @@ mod tests {
                 Some("natural"),
             ),
             (
-                TerminationReason::PluginRequested,
+                TerminationReason::BehaviorRequested,
                 RunStatus::Done,
-                Some("plugin_requested"),
+                Some("behavior_requested"),
             ),
             (
                 TerminationReason::Cancelled,

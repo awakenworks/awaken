@@ -37,14 +37,14 @@ fn make_os_with_storage_and_tools(
 ) -> AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
-        plugin_ids: vec!["terminate_plugin_requested_test".into()],
+        behavior_ids: vec!["terminate_behavior_requested_test".into()],
         ..Default::default()
     };
 
     AgentOsBuilder::new()
         .with_registered_behavior(
-            "terminate_plugin_requested_test",
-            Arc::new(TerminatePlugin::new("terminate_plugin_requested_test")),
+            "terminate_behavior_requested_test",
+            Arc::new(TerminatePlugin::new("terminate_behavior_requested_test")),
         )
         .with_tools(tools)
         .with_agent("test", def)
@@ -53,20 +53,20 @@ fn make_os_with_storage_and_tools(
         .unwrap()
 }
 
-fn make_os_with_slow_terminate_plugin_requested_plugin(
+fn make_os_with_slow_terminate_behavior_requested_plugin(
     write_store: Arc<dyn ThreadStore>,
 ) -> AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
-        plugin_ids: vec!["slow_terminate_plugin_requested_test".into()],
+        behavior_ids: vec!["slow_terminate_behavior_requested_test".into()],
         ..Default::default()
     };
 
     AgentOsBuilder::new()
         .with_registered_behavior(
-            "slow_terminate_plugin_requested_test",
+            "slow_terminate_behavior_requested_test",
             Arc::new(SlowTerminatePlugin::new(
-                "slow_terminate_plugin_requested_test",
+                "slow_terminate_behavior_requested_test",
                 std::time::Duration::from_millis(250),
             )),
         )
@@ -2872,7 +2872,7 @@ async fn test_ai_sdk_storage_error_returns_http_500() {
 #[tokio::test]
 async fn test_ai_sdk_resume_stream_routes_match_expected_behavior() {
     let storage = Arc::new(MemoryStore::new());
-    let os = Arc::new(make_os_with_slow_terminate_plugin_requested_plugin(
+    let os = Arc::new(make_os_with_slow_terminate_behavior_requested_plugin(
         storage.clone(),
     ));
     let app = make_app(os, storage);
@@ -2950,7 +2950,7 @@ async fn test_ai_sdk_resume_stream_routes_match_expected_behavior() {
 #[tokio::test]
 async fn test_ai_sdk_decision_only_request_forwards_to_active_run() {
     let storage = Arc::new(MemoryStore::new());
-    let os = Arc::new(make_os_with_slow_terminate_plugin_requested_plugin(
+    let os = Arc::new(make_os_with_slow_terminate_behavior_requested_plugin(
         storage.clone(),
     ));
     let app = make_app(os, storage);
@@ -3001,7 +3001,7 @@ async fn test_ai_sdk_decision_only_request_forwards_to_active_run() {
 #[tokio::test]
 async fn test_ai_sdk_decision_only_batch_request_forwards_to_active_run() {
     let storage = Arc::new(MemoryStore::new());
-    let os = Arc::new(make_os_with_slow_terminate_plugin_requested_plugin(
+    let os = Arc::new(make_os_with_slow_terminate_behavior_requested_plugin(
         storage.clone(),
     ));
     let app = make_app(os, storage);
@@ -3059,7 +3059,7 @@ async fn test_ai_sdk_decision_only_batch_request_forwards_to_active_run() {
 #[tokio::test]
 async fn test_ai_sdk_active_run_with_user_input_and_decision_starts_new_run() {
     let storage = Arc::new(MemoryStore::new());
-    let os = Arc::new(make_os_with_slow_terminate_plugin_requested_plugin(
+    let os = Arc::new(make_os_with_slow_terminate_behavior_requested_plugin(
         storage.clone(),
     ));
     let app = make_app(os, storage);
@@ -3148,7 +3148,7 @@ async fn test_ai_sdk_decision_only_without_active_run_starts_new_run() {
 #[tokio::test]
 async fn test_ag_ui_decision_only_request_forwards_to_active_run() {
     let storage = Arc::new(MemoryStore::new());
-    let os = Arc::new(make_os_with_slow_terminate_plugin_requested_plugin(
+    let os = Arc::new(make_os_with_slow_terminate_behavior_requested_plugin(
         storage.clone(),
     ));
     let app = make_app(os, storage);
@@ -3200,7 +3200,7 @@ async fn test_ag_ui_decision_only_request_forwards_to_active_run() {
 #[tokio::test]
 async fn test_ag_ui_decision_only_batch_request_forwards_to_active_run() {
     let storage = Arc::new(MemoryStore::new());
-    let os = Arc::new(make_os_with_slow_terminate_plugin_requested_plugin(
+    let os = Arc::new(make_os_with_slow_terminate_behavior_requested_plugin(
         storage.clone(),
     ));
     let app = make_app(os, storage);
@@ -3259,7 +3259,7 @@ async fn test_ag_ui_decision_only_batch_request_forwards_to_active_run() {
 #[tokio::test]
 async fn test_ag_ui_active_run_with_user_input_and_decision_starts_new_run() {
     let storage = Arc::new(MemoryStore::new());
-    let os = Arc::new(make_os_with_slow_terminate_plugin_requested_plugin(
+    let os = Arc::new(make_os_with_slow_terminate_behavior_requested_plugin(
         storage.clone(),
     ));
     let app = make_app(os, storage);

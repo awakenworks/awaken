@@ -177,12 +177,12 @@ mod tests {
         let mut step = fix.step(vec![]);
         let doc = DocCell::new(json!({}));
 
-        let output = PhaseOutput::new().terminate_plugin_requested();
+        let output = PhaseOutput::new().terminate_behavior_requested();
         apply_phase_output(Phase::BeforeInference, &mut step, output, &doc).unwrap();
 
         assert!(matches!(
             step.run_action(),
-            RunAction::Terminate(TerminationReason::PluginRequested)
+            RunAction::Terminate(TerminationReason::BehaviorRequested)
         ));
     }
 

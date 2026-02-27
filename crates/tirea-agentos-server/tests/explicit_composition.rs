@@ -16,14 +16,14 @@ use common::TerminatePlugin;
 fn make_os(write_store: Arc<dyn ThreadStore>) -> AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
-        plugin_ids: vec!["terminate_plugin_requested_explicit".into()],
+        behavior_ids: vec!["terminate_behavior_requested_explicit".into()],
         ..Default::default()
     };
 
     AgentOsBuilder::new()
         .with_registered_behavior(
-            "terminate_plugin_requested_explicit",
-            Arc::new(TerminatePlugin::new("terminate_plugin_requested_explicit")),
+            "terminate_behavior_requested_explicit",
+            Arc::new(TerminatePlugin::new("terminate_behavior_requested_explicit")),
         )
         .with_agent("test", def)
         .with_agent_state_store(write_store)

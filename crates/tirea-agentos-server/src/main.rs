@@ -52,7 +52,7 @@ struct AgentConfigFile {
     #[serde(default)]
     tool_execution_mode: ToolExecutionModeConfig,
     #[serde(default)]
-    plugin_ids: Vec<String>,
+    behavior_ids: Vec<String>,
     #[serde(default)]
     stop_condition_specs: Vec<StopConditionSpec>,
 }
@@ -225,7 +225,7 @@ fn build_os(
             system_prompt: String::new(),
             max_rounds: None,
             tool_execution_mode: ToolExecutionModeConfig::ParallelStreaming,
-            plugin_ids: Vec::new(),
+            behavior_ids: Vec::new(),
             stop_condition_specs: Vec::new(),
         }],
     };
@@ -262,7 +262,7 @@ fn build_os(
             def.max_rounds = max_rounds;
         }
         def.tool_execution_mode = a.tool_execution_mode.into();
-        def.plugin_ids = a.plugin_ids;
+        def.behavior_ids = a.behavior_ids;
         def.stop_condition_specs = a.stop_condition_specs;
 
         // Map each agent's model through TensorZero when configured.

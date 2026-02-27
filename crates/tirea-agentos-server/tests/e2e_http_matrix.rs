@@ -15,15 +15,15 @@ use common::{compose_http_app, TerminatePlugin};
 fn make_os(store: Arc<MemoryStore>) -> tirea_agentos::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
-        plugin_ids: vec!["terminate_plugin_requested_e2e_http_matrix".into()],
+        behavior_ids: vec!["terminate_behavior_requested_e2e_http_matrix".into()],
         ..Default::default()
     };
 
     AgentOsBuilder::new()
         .with_registered_behavior(
-            "terminate_plugin_requested_e2e_http_matrix",
+            "terminate_behavior_requested_e2e_http_matrix",
             Arc::new(TerminatePlugin::new(
-                "terminate_plugin_requested_e2e_http_matrix",
+                "terminate_behavior_requested_e2e_http_matrix",
             )),
         )
         .with_agent("test", def)

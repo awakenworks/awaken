@@ -221,7 +221,7 @@ impl AgentBehavior for TerminateWithRunEndPatchPlugin {
     }
 
     async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-        PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+        PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
     }
 
     async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
@@ -381,7 +381,7 @@ fn wire_skills_disabled_is_noop() {
 }
 
 #[test]
-fn wire_plugins_into_orders_plugin_ids() {
+fn wire_behaviors_into_orders_behavior_ids() {
     #[derive(Debug)]
     struct LocalPlugin(&'static str);
 
@@ -399,16 +399,16 @@ fn wire_plugins_into_orders_plugin_ids() {
         .unwrap();
 
     let cfg = AgentDefinition::new("gpt-4o-mini")
-        .with_plugin_id("policy1")
-        .with_plugin_id("p1");
+        .with_behavior_id("policy1")
+        .with_behavior_id("p1");
 
-    let wired = os.wire_plugins_into(cfg).unwrap();
+    let wired = os.wire_behaviors_into(cfg).unwrap();
     let ids: Vec<&str> = wired.iter().map(|p| p.id()).collect();
     assert_eq!(ids, vec!["policy1", "p1"]);
 }
 
 #[test]
-fn wire_plugins_into_rejects_duplicate_plugin_ids_after_assembly() {
+fn wire_behaviors_into_rejects_duplicate_behavior_ids_after_assembly() {
     #[derive(Debug)]
     struct LocalPlugin(&'static str);
 
@@ -420,19 +420,19 @@ fn wire_plugins_into_rejects_duplicate_plugin_ids_after_assembly() {
     }
 
     // Register two different plugins with the same id — this is normally prevented
-    // by the registry, but we can test the wire_plugins_into dedup via an agent
+    // by the registry, but we can test the wire_behaviors_into dedup via an agent
     // that references the same id twice.
     let os = AgentOs::builder()
         .with_registered_behavior("p1", Arc::new(LocalPlugin("p1")))
         .build()
         .unwrap();
 
-    // Referencing same plugin_id twice should fail at wire time
+    // Referencing same behavior_id twice should fail at wire time
     let cfg = AgentDefinition::new("gpt-4o-mini")
-        .with_plugin_id("p1")
-        .with_plugin_id("p1");
+        .with_behavior_id("p1")
+        .with_behavior_id("p1");
 
-    let err = os.wire_plugins_into(cfg).err().expect("expected error");
+    let err = os.wire_behaviors_into(cfg).err().expect("expected error");
     assert!(matches!(err, AgentOsWiringError::BehaviorAlreadyInstalled(id) if id == "p1"));
 }
 
@@ -460,7 +460,7 @@ fn build_errors_if_agent_references_reserved_skills_plugin_id() {
         .with_registered_behavior("skills", Arc::new(FakeSkillsPlugin))
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skills"),
+            AgentDefinition::new("gpt-4o-mini").with_behavior_id("skills"),
         )
         .build()
         .unwrap_err();
@@ -488,7 +488,7 @@ fn build_errors_if_agent_references_reserved_agent_tools_plugin_id() {
         .with_registered_behavior("agent_tools", Arc::new(FakeAgentToolsPlugin))
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("agent_tools"),
+            AgentDefinition::new("gpt-4o-mini").with_behavior_id("agent_tools"),
         )
         .build()
         .unwrap_err();
@@ -516,7 +516,7 @@ fn build_errors_if_agent_references_reserved_agent_recovery_plugin_id() {
         .with_registered_behavior("agent_recovery", Arc::new(FakeAgentRecoveryPlugin))
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("agent_recovery"),
+            AgentDefinition::new("gpt-4o-mini").with_behavior_id("agent_recovery"),
         )
         .build()
         .unwrap_err();
@@ -988,29 +988,29 @@ fn build_skill_registry_refresh_interval_starts_periodic_refresh() {
 }
 
 #[tokio::test]
-async fn run_and_run_stream_work_without_llm_when_terminate_plugin_requested() {
+async fn run_and_run_stream_work_without_llm_when_terminate_behavior_requested() {
     #[derive(Debug)]
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait::async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested"
+            "terminate_behavior_requested"
         }
 
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
     let os = AgentOs::builder()
         .with_registered_behavior(
-            "terminate_plugin_requested",
-            Arc::new(TerminatePluginRequestedPlugin),
+            "terminate_behavior_requested",
+            Arc::new(TerminateBehaviorRequestedPlugin),
         )
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("terminate_plugin_requested"),
+            AgentDefinition::new("gpt-4o-mini").with_behavior_id("terminate_behavior_requested"),
         )
         .with_agent_state_store(Arc::new(tirea_store_adapters::MemoryStore::new()))
         .build()
@@ -1364,7 +1364,7 @@ async fn resolve_wires_plugins_from_registry() {
         .with_registered_behavior("p1", Arc::new(TestPlugin("p1")))
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("p1"),
+            AgentDefinition::new("gpt-4o-mini").with_behavior_id("p1"),
         )
         .build()
         .unwrap();
@@ -1404,8 +1404,8 @@ async fn resolve_wires_plugins_in_order() {
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("policy1")
-                .with_plugin_id("p1"),
+                .with_behavior_id("policy1")
+                .with_behavior_id("p1"),
         )
         .build()
         .unwrap();
@@ -1434,8 +1434,8 @@ async fn resolve_wires_skills_before_plugins() {
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("policy1")
-                .with_plugin_id("p1"),
+                .with_behavior_id("policy1")
+                .with_behavior_id("p1"),
         )
         .build()
         .unwrap();
@@ -1460,7 +1460,7 @@ fn build_errors_if_builder_agent_references_missing_plugin() {
     let err = AgentOs::builder()
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("p1"),
+            AgentDefinition::new("gpt-4o-mini").with_behavior_id("p1"),
         )
         .build()
         .unwrap_err();
@@ -1478,8 +1478,8 @@ fn build_errors_on_duplicate_plugin_id_in_agent() {
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("p1")
-                .with_plugin_id("p1"),
+                .with_behavior_id("p1")
+                .with_behavior_id("p1"),
         )
         .build()
         .unwrap_err();
@@ -1498,8 +1498,8 @@ fn build_errors_on_duplicate_plugin_ref_in_builder_agent() {
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("p1")
-                .with_plugin_id("p1"),
+                .with_behavior_id("p1")
+                .with_behavior_id("p1"),
         )
         .build()
         .unwrap_err();
@@ -1515,7 +1515,7 @@ fn build_errors_on_reserved_plugin_id_in_builder_agent() {
     let err = AgentOs::builder()
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("skills"),
+            AgentDefinition::new("gpt-4o-mini").with_behavior_id("skills"),
         )
         .build()
         .unwrap_err();
@@ -1533,7 +1533,7 @@ fn resolve_errors_on_reserved_plugin_id() {
             let mut reg = InMemoryAgentRegistry::new();
             reg.upsert(
                 "a1",
-                AgentDefinition::new("gpt-4o-mini").with_plugin_id("skills"),
+                AgentDefinition::new("gpt-4o-mini").with_behavior_id("skills"),
             );
             reg
         }))
@@ -1552,7 +1552,7 @@ fn build_errors_on_reserved_plugin_id_agent_tools_in_builder_agent() {
     let err = AgentOs::builder()
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("agent_tools"),
+            AgentDefinition::new("gpt-4o-mini").with_behavior_id("agent_tools"),
         )
         .build()
         .unwrap_err();
@@ -1569,15 +1569,15 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
     use tirea_store_adapters::MemoryStore;
 
     #[derive(Debug)]
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested"
+            "terminate_behavior_requested"
         }
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -1585,12 +1585,12 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
     let os = AgentOs::builder()
         .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_registered_behavior(
-            "terminate_plugin_requested",
-            Arc::new(TerminatePluginRequestedPlugin),
+            "terminate_behavior_requested",
+            Arc::new(TerminateBehaviorRequestedPlugin),
         )
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("terminate_plugin_requested"),
+            AgentDefinition::new("gpt-4o-mini").with_behavior_id("terminate_behavior_requested"),
         )
         .build()
         .unwrap();
@@ -1624,7 +1624,7 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
     let state = head.thread.rebuild_state().unwrap();
     assert_eq!(state["counter"], json!(42));
     assert_eq!(state["new_field"], json!(true));
-    assert_run_lifecycle_state(&state, "run-1", "done", Some("plugin_requested"));
+    assert_run_lifecycle_state(&state, "run-1", "done", Some("behavior_requested"));
 }
 
 #[tokio::test]
@@ -1633,15 +1633,15 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
     use tirea_store_adapters::MemoryStore;
 
     #[derive(Debug)]
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested"
+            "terminate_behavior_requested"
         }
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -1649,12 +1649,12 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
     let os = AgentOs::builder()
         .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_registered_behavior(
-            "terminate_plugin_requested",
-            Arc::new(TerminatePluginRequestedPlugin),
+            "terminate_behavior_requested",
+            Arc::new(TerminateBehaviorRequestedPlugin),
         )
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("terminate_plugin_requested"),
+            AgentDefinition::new("gpt-4o-mini").with_behavior_id("terminate_behavior_requested"),
         )
         .build()
         .unwrap();
@@ -1678,7 +1678,7 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
     let head = storage.load("t-new").await.unwrap().unwrap();
     let state = head.thread.rebuild_state().unwrap();
     assert_eq!(state["initial"], json!(true));
-    assert_run_lifecycle_state(&state, "run-1", "done", Some("plugin_requested"));
+    assert_run_lifecycle_state(&state, "run-1", "done", Some("behavior_requested"));
 }
 
 #[tokio::test]
@@ -1687,15 +1687,15 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
     use tirea_store_adapters::MemoryStore;
 
     #[derive(Debug)]
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested"
+            "terminate_behavior_requested"
         }
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -1703,12 +1703,12 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
     let os = AgentOs::builder()
         .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_registered_behavior(
-            "terminate_plugin_requested",
-            Arc::new(TerminatePluginRequestedPlugin),
+            "terminate_behavior_requested",
+            Arc::new(TerminateBehaviorRequestedPlugin),
         )
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("terminate_plugin_requested"),
+            AgentDefinition::new("gpt-4o-mini").with_behavior_id("terminate_behavior_requested"),
         )
         .build()
         .unwrap();
@@ -1736,7 +1736,7 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
     let head = storage.load("t1").await.unwrap().unwrap();
     let state = head.thread.rebuild_state().unwrap();
     assert_eq!(state["counter"], json!(5));
-    assert_run_lifecycle_state(&state, "run-1", "done", Some("plugin_requested"));
+    assert_run_lifecycle_state(&state, "run-1", "done", Some("behavior_requested"));
 }
 
 #[tokio::test]
@@ -1744,15 +1744,15 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
     use tirea_store_adapters::MemoryStore;
 
     #[derive(Debug)]
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested"
+            "terminate_behavior_requested"
         }
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -1760,12 +1760,12 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
     let os = AgentOs::builder()
         .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_registered_behavior(
-            "terminate_plugin_requested",
-            Arc::new(TerminatePluginRequestedPlugin),
+            "terminate_behavior_requested",
+            Arc::new(TerminateBehaviorRequestedPlugin),
         )
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("terminate_plugin_requested"),
+            AgentDefinition::new("gpt-4o-mini").with_behavior_id("terminate_behavior_requested"),
         )
         .build()
         .unwrap();
@@ -1817,15 +1817,15 @@ async fn execute_prepared_runs_stream() {
     use tirea_store_adapters::MemoryStore;
 
     #[derive(Debug)]
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested"
+            "terminate_behavior_requested"
         }
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -1833,12 +1833,12 @@ async fn execute_prepared_runs_stream() {
     let os = AgentOs::builder()
         .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_registered_behavior(
-            "terminate_plugin_requested",
-            Arc::new(TerminatePluginRequestedPlugin),
+            "terminate_behavior_requested",
+            Arc::new(TerminateBehaviorRequestedPlugin),
         )
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("terminate_plugin_requested"),
+            AgentDefinition::new("gpt-4o-mini").with_behavior_id("terminate_behavior_requested"),
         )
         .build()
         .unwrap();
@@ -1883,11 +1883,11 @@ struct DecisionTerminatePlugin;
 #[async_trait]
 impl AgentBehavior for DecisionTerminatePlugin {
     fn id(&self) -> &str {
-        "decision_terminate_plugin_requested"
+        "decision_terminate_behavior_requested"
     }
 
     async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-        PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+        PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
     }
 }
 
@@ -1923,7 +1923,7 @@ fn make_decision_test_os_with_mode(
         Arc::new(DecisionEchoTool) as Arc<dyn Tool>,
     );
     let mut def =
-        AgentDefinition::new("gpt-4o-mini").with_plugin_id("decision_terminate_plugin_requested");
+        AgentDefinition::new("gpt-4o-mini").with_behavior_id("decision_terminate_behavior_requested");
     if let Some(mode) = tool_execution_mode {
         def = def.with_tool_execution_mode(mode);
     }
@@ -1931,7 +1931,7 @@ fn make_decision_test_os_with_mode(
         .with_agent_state_store(storage as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_tools(tools)
         .with_registered_behavior(
-            "decision_terminate_plugin_requested",
+            "decision_terminate_behavior_requested",
             Arc::new(DecisionTerminatePlugin),
         )
         .with_agent("a1", def)
@@ -2123,7 +2123,7 @@ async fn run_stream_persists_run_lifecycle_done_status() {
     let rebuilt = saved.thread.rebuild_state().unwrap();
     assert_eq!(rebuilt["__run"]["id"], json!("run-lifecycle-done"));
     assert_eq!(rebuilt["__run"]["status"], json!("done"));
-    assert_eq!(rebuilt["__run"]["done_reason"], json!("plugin_requested"));
+    assert_eq!(rebuilt["__run"]["done_reason"], json!("behavior_requested"));
 }
 
 #[tokio::test]
@@ -2616,7 +2616,7 @@ async fn run_stream_batch_approval_mode_waits_for_all_suspended_decisions_before
         &state_after_second,
         "run-initial-batch-2",
         "done",
-        Some("plugin_requested"),
+        Some("behavior_requested"),
     );
     assert!(
         state_after_second
@@ -2809,7 +2809,7 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
         )
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("terminate_with_run_end_patch"),
+            AgentDefinition::new("gpt-4o-mini").with_behavior_id("terminate_with_run_end_patch"),
         )
         .build()
         .unwrap();
@@ -2896,7 +2896,7 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_pre_checkpoint_s
         )
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("terminate_with_run_end_patch"),
+            AgentDefinition::new("gpt-4o-mini").with_behavior_id("terminate_with_run_end_patch"),
         )
         .build()
         .unwrap();
@@ -2952,7 +2952,7 @@ fn build_errors_on_reserved_plugin_id_agent_recovery_in_builder_agent() {
     let err = AgentOs::builder()
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini").with_plugin_id("agent_recovery"),
+            AgentDefinition::new("gpt-4o-mini").with_behavior_id("agent_recovery"),
         )
         .build()
         .unwrap_err();

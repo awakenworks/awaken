@@ -1850,7 +1850,7 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
             PhaseOutput::default()
                 .system_context("from_before_inference")
                 .with_pending_patch(patch)
-                .request_termination(TerminationReason::PluginRequested)
+                .request_termination(TerminationReason::BehaviorRequested)
         }
         async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
             self.phases.lock().unwrap().push(Phase::AfterInference);
@@ -1885,7 +1885,7 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
-    assert_eq!(outcome.termination, TerminationReason::PluginRequested);
+    assert_eq!(outcome.termination, TerminationReason::BehaviorRequested);
     let recorded = phases.lock().unwrap().clone();
     assert!(recorded.contains(&Phase::StepStart));
     assert!(recorded.contains(&Phase::BeforeInference));
@@ -1941,7 +1941,7 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
         .add_behavior(Arc::new(CleanupBehavior {
             phases: phases.clone(),
         }) as Arc<dyn AgentBehavior>);
-    unified_emit_cleanup_phases_and_apply(
+    emit_cleanup_phases(
         &mut run_ctx,
         &tool_descriptors,
         &agent,
@@ -2989,7 +2989,7 @@ impl RecordAndTerminatePlugin {
 #[async_trait]
 impl AgentBehavior for RecordAndTerminatePlugin {
     fn id(&self) -> &str {
-        "record_and_terminate_plugin_requested"
+        "record_and_terminate_behavior_requested"
     }
     async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
         self.phases.lock().unwrap().push(Phase::RunStart);
@@ -3001,7 +3001,7 @@ impl AgentBehavior for RecordAndTerminatePlugin {
     }
     async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
         self.phases.lock().unwrap().push(Phase::BeforeInference);
-        PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+        PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
     }
     async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
         self.phases.lock().unwrap().push(Phase::AfterInference);
@@ -3039,7 +3039,7 @@ async fn collect_stream_events(
 }
 
 #[tokio::test]
-async fn test_stream_terminate_plugin_requested_emits_run_end_phase() {
+async fn test_stream_terminate_behavior_requested_emits_run_end_phase() {
     let (recorder, phases) = RecordAndTerminatePlugin::new();
     let config =
         BaseAgent::new("gpt-4o-mini").add_behavior(Arc::new(recorder) as Arc<dyn AgentBehavior>);
@@ -3083,8 +3083,8 @@ async fn test_stream_terminate_plugin_requested_emits_run_end_phase() {
 }
 
 #[tokio::test]
-async fn test_stream_terminate_plugin_requested_emits_run_start_and_finish() {
-    // Verify the complete event sequence on terminate_plugin_requested path
+async fn test_stream_terminate_behavior_requested_emits_run_start_and_finish() {
+    // Verify the complete event sequence on terminate_behavior_requested path
     let (recorder, _phases) = RecordAndTerminatePlugin::new();
     let config =
         BaseAgent::new("gpt-4o-mini").add_behavior(Arc::new(recorder) as Arc<dyn AgentBehavior>);
@@ -3176,13 +3176,13 @@ async fn test_stream_run_start_resume_replay_emits_after_run_start() {
 }
 
 #[tokio::test]
-async fn test_stream_terminate_plugin_requested_with_pending_state_emits_pending_and_pauses() {
+async fn test_stream_terminate_behavior_requested_with_pending_state_emits_pending_and_pauses() {
     struct PendingTerminatePlugin;
 
     #[async_trait]
     impl AgentBehavior for PendingTerminatePlugin {
         fn id(&self) -> &str {
-            "pending_terminate_plugin_requested"
+            "pending_terminate_behavior_requested"
         }
 
         async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
@@ -3301,15 +3301,15 @@ async fn test_stream_run_action_with_suspended_only_state_emits_pending_events()
 
 #[tokio::test]
 async fn test_stream_emits_interaction_resolved_on_denied_response() {
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested"
+            "terminate_behavior_requested"
         }
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -3317,7 +3317,7 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
         TestInteractionPlugin::with_responses(Vec::new(), vec!["call_write".to_string()]);
     let config = BaseAgent::new("gpt-4o-mini")
         .add_behavior(Arc::new(interaction))
-        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>);
+        .add_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>);
     let thread = Thread::with_initial_state(
         "test",
         serde_json::json!({
@@ -3368,22 +3368,22 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
 
 #[tokio::test]
 async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() {
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested_for_permission_approval"
+            "terminate_behavior_requested_for_permission_approval"
         }
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
     let interaction = TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
     let config = BaseAgent::new("mock")
         .add_behavior(Arc::new(interaction))
-        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>);
+        .add_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>);
     let thread = Thread::with_initial_state(
         "test",
         json!({
@@ -3492,22 +3492,22 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
 
 #[tokio::test]
 async fn test_run_loop_permission_approval_replays_tool_and_updates_lifecycle_state() {
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested_for_permission_approval_nonstream"
+            "terminate_behavior_requested_for_permission_approval_nonstream"
         }
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
     let interaction = TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
     let config = BaseAgent::new("mock")
         .add_behavior(Arc::new(interaction))
-        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>)
+        .add_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>)
         .with_llm_executor(Arc::new(MockChatProvider::new(vec![Ok(text_chat_response(
             "unused",
         ))])) as Arc<dyn LlmExecutor>);
@@ -3564,7 +3564,7 @@ async fn test_run_loop_permission_approval_replays_tool_and_updates_lifecycle_st
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
-    assert_eq!(outcome.termination, TerminationReason::PluginRequested);
+    assert_eq!(outcome.termination, TerminationReason::BehaviorRequested);
 
     let tool_msgs: Vec<&Arc<Message>> = outcome
         .run_ctx
@@ -3605,15 +3605,15 @@ async fn test_run_loop_permission_approval_replays_tool_and_updates_lifecycle_st
 
 #[tokio::test]
 async fn test_stream_permission_approval_replay_commits_before_and_after_replay() {
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested_for_permission_approval_checkpoint"
+            "terminate_behavior_requested_for_permission_approval_checkpoint"
         }
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -3621,7 +3621,7 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
     let interaction = TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
     let config = BaseAgent::new("mock")
         .add_behavior(Arc::new(interaction))
-        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>)
+        .add_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>)
         .with_llm_executor(
             Arc::new(MockStreamProvider::new(vec![MockResponse::text("unused")]))
                 as Arc<dyn LlmExecutor>,
@@ -3706,20 +3706,20 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
 
 #[tokio::test]
 async fn test_run_loop_run_start_replay_uses_tool_call_resume_state_without_mailbox() {
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested_for_tool_state_replay_nonstream"
+            "terminate_behavior_requested_for_tool_state_replay_nonstream"
         }
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
     let config = BaseAgent::new("mock")
-        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>)
+        .add_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>)
         .with_llm_executor(Arc::new(MockChatProvider::new(vec![Ok(text_chat_response(
             "unused",
         ))])) as Arc<dyn LlmExecutor>);
@@ -3786,7 +3786,7 @@ async fn test_run_loop_run_start_replay_uses_tool_call_resume_state_without_mail
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
-    assert_eq!(outcome.termination, TerminationReason::PluginRequested);
+    assert_eq!(outcome.termination, TerminationReason::BehaviorRequested);
     assert!(
         outcome.run_ctx.messages().iter().any(|message| {
             message.role == Role::Tool
@@ -3813,20 +3813,20 @@ async fn test_run_loop_run_start_replay_uses_tool_call_resume_state_without_mail
 
 #[tokio::test]
 async fn test_run_loop_run_start_settles_orphan_resuming_state_without_suspended_call() {
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested_settle_orphan_resuming_nonstream"
+            "terminate_behavior_requested_settle_orphan_resuming_nonstream"
         }
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
     let config = BaseAgent::new("mock")
-        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>);
+        .add_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>);
 
     let thread = Thread::with_initial_state(
         "test",
@@ -3856,7 +3856,7 @@ async fn test_run_loop_run_start_settles_orphan_resuming_state_without_suspended
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
-    assert_eq!(outcome.termination, TerminationReason::PluginRequested);
+    assert_eq!(outcome.termination, TerminationReason::BehaviorRequested);
     assert_eq!(outcome.stats.llm_calls, 0, "inference should not run");
     let final_state = outcome.run_ctx.snapshot().expect("snapshot");
     assert_eq!(
@@ -3875,22 +3875,22 @@ async fn test_run_loop_run_start_settles_orphan_resuming_state_without_suspended
 
 #[tokio::test]
 async fn test_stream_permission_denied_does_not_replay_tool_call() {
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested_for_permission_denial"
+            "terminate_behavior_requested_for_permission_denial"
         }
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
     let interaction = TestInteractionPlugin::with_responses(Vec::new(), vec!["call_1".to_string()]);
     let config = BaseAgent::new("mock")
         .add_behavior(Arc::new(interaction))
-        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>);
+        .add_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>);
     let thread = Thread::with_initial_state(
         "test",
         json!({
@@ -3996,22 +3996,22 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
 
 #[tokio::test]
 async fn test_run_loop_permission_denied_appends_tool_result_for_model_context() {
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested_for_permission_denial_nonstream"
+            "terminate_behavior_requested_for_permission_denial_nonstream"
         }
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
     let interaction = TestInteractionPlugin::with_responses(Vec::new(), vec!["call_1".to_string()]);
     let config = BaseAgent::new("mock")
         .add_behavior(Arc::new(interaction))
-        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>);
+        .add_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>);
 
     let thread = Thread::with_initial_state(
         "test",
@@ -4057,7 +4057,7 @@ async fn test_run_loop_permission_denied_appends_tool_result_for_model_context()
 
     assert!(matches!(
         outcome.termination,
-        TerminationReason::PluginRequested
+        TerminationReason::BehaviorRequested
     ));
     let denied_count = outcome
         .run_ctx
@@ -4077,15 +4077,15 @@ async fn test_run_loop_permission_denied_appends_tool_result_for_model_context()
 
 #[tokio::test]
 async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_context() {
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested_for_permission_cancel_nonstream"
+            "terminate_behavior_requested_for_permission_cancel_nonstream"
         }
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -4097,7 +4097,7 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
     ]);
     let config = BaseAgent::new("mock")
         .add_behavior(Arc::new(interaction))
-        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>);
+        .add_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>);
 
     let thread = Thread::with_initial_state(
         "test",
@@ -4143,7 +4143,7 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
 
     assert!(matches!(
         outcome.termination,
-        TerminationReason::PluginRequested
+        TerminationReason::BehaviorRequested
     ));
 
     let resolved_tool_messages: Vec<_> = outcome
@@ -4179,7 +4179,7 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
 }
 
 #[tokio::test]
-async fn test_run_loop_terminate_plugin_requested_emits_run_end_phase() {
+async fn test_run_loop_terminate_behavior_requested_emits_run_end_phase() {
     let (recorder, phases) = RecordAndTerminatePlugin::new();
     let config =
         BaseAgent::new("gpt-4o-mini").add_behavior(Arc::new(recorder) as Arc<dyn AgentBehavior>);
@@ -4189,10 +4189,10 @@ async fn test_run_loop_terminate_plugin_requested_emits_run_end_phase() {
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
-    // terminate_plugin_requested in run_loop terminates with PluginRequested (not NaturalEnd)
+    // terminate_behavior_requested in run_loop terminates with BehaviorRequested (not NaturalEnd)
     assert!(matches!(
         outcome.termination,
-        TerminationReason::PluginRequested
+        TerminationReason::BehaviorRequested
     ));
 
     let recorded = phases.lock().unwrap().clone();
@@ -4221,7 +4221,7 @@ async fn test_legacy_resume_replay_nonstream_resolution_state_is_ignored() {
             "legacy_resume_replay_nonstream_resolution_state"
         }
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -4248,7 +4248,7 @@ async fn test_legacy_resume_replay_nonstream_resolution_state_is_ignored() {
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert!(matches!(
         outcome.termination,
-        TerminationReason::PluginRequested
+        TerminationReason::BehaviorRequested
     ));
 
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
@@ -4306,7 +4306,7 @@ async fn test_legacy_resume_replay_nonstream_queue_is_ignored() {
         }
 
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -4316,7 +4316,7 @@ async fn test_legacy_resume_replay_nonstream_queue_is_ignored() {
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
     let outcome = run_loop(&config, tool_map([EchoTool]), run_ctx, None, None, None).await;
-    assert_eq!(outcome.termination, TerminationReason::PluginRequested);
+    assert_eq!(outcome.termination, TerminationReason::BehaviorRequested);
 
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     let legacy_replay_calls = state
@@ -4338,7 +4338,7 @@ async fn test_legacy_resume_replay_nonstream_queue_is_ignored() {
 }
 
 #[tokio::test]
-async fn test_run_loop_terminate_plugin_requested_with_suspended_state_returns_suspended_interaction(
+async fn test_run_loop_terminate_behavior_requested_with_suspended_state_returns_suspended_interaction(
 ) {
     struct PendingTerminatePlugin {
         phases: Arc<Mutex<Vec<Phase>>>,
@@ -4347,7 +4347,7 @@ async fn test_run_loop_terminate_plugin_requested_with_suspended_state_returns_s
     #[async_trait]
     impl AgentBehavior for PendingTerminatePlugin {
         fn id(&self) -> &str {
-            "pending_terminate_plugin_requested_non_stream"
+            "pending_terminate_behavior_requested_non_stream"
         }
 
         async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
@@ -4372,7 +4372,7 @@ async fn test_run_loop_terminate_plugin_requested_with_suspended_state_returns_s
             .expect("failed to set suspended interaction");
             PhaseOutput::default()
                 .with_pending_patch(patch)
-                .request_termination(TerminationReason::PluginRequested)
+                .request_termination(TerminationReason::BehaviorRequested)
         }
 
         async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
@@ -4438,22 +4438,22 @@ async fn test_run_loop_terminate_plugin_requested_with_suspended_state_returns_s
 }
 
 #[tokio::test]
-async fn test_run_loop_terminate_plugin_requested_with_suspended_only_state_returns_suspended_interaction(
+async fn test_run_loop_terminate_behavior_requested_with_suspended_only_state_returns_suspended_interaction(
 ) {
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested_non_stream_suspended_only"
+            "terminate_behavior_requested_non_stream_suspended_only"
         }
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
     let config = BaseAgent::new("gpt-4o-mini")
-        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>);
+        .add_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>);
     let thread = Thread::with_initial_state(
         "test",
         json!({
@@ -4499,10 +4499,10 @@ async fn test_run_loop_auto_generated_run_id_is_rfc4122_uuid_v7() {
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
-    // terminate_plugin_requested in run_loop terminates with PluginRequested
+    // terminate_behavior_requested in run_loop terminates with BehaviorRequested
     assert!(matches!(
         outcome.termination,
-        TerminationReason::PluginRequested
+        TerminationReason::BehaviorRequested
     ));
     let run_id = outcome
         .run_ctx
@@ -4526,7 +4526,7 @@ async fn test_run_loop_auto_generated_run_id_is_rfc4122_uuid_v7() {
 }
 
 #[tokio::test]
-async fn test_run_loop_phase_sequence_on_terminate_plugin_requested() {
+async fn test_run_loop_phase_sequence_on_terminate_behavior_requested() {
     // Verify the full phase sequence: RunStart → StepStart → BeforeInference → RunEnd
     let (recorder, phases) = RecordAndTerminatePlugin::new();
     let config =
@@ -4537,10 +4537,10 @@ async fn test_run_loop_phase_sequence_on_terminate_plugin_requested() {
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
-    // terminate_plugin_requested in run_loop terminates with PluginRequested
+    // terminate_behavior_requested in run_loop terminates with BehaviorRequested
     assert!(matches!(
         outcome.termination,
-        TerminationReason::PluginRequested
+        TerminationReason::BehaviorRequested
     ));
 
     let recorded = phases.lock().unwrap().clone();
@@ -4567,7 +4567,7 @@ async fn test_run_loop_rejects_run_action_mutation_outside_inference_phases() {
             "invalid_step_start_run_action"
         }
         async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -4602,7 +4602,7 @@ async fn test_stream_rejects_run_action_mutation_outside_inference_phases() {
             "invalid_step_start_run_action"
         }
         async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -4673,7 +4673,7 @@ async fn test_run_loop_multiple_prompt_context_behaviors_are_additive() {
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
             PhaseOutput::default()
                 .system_context("base")
-                .request_termination(TerminationReason::PluginRequested)
+                .request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -4701,8 +4701,8 @@ async fn test_run_loop_multiple_prompt_context_behaviors_are_additive() {
     // so the loop terminates before inference without hitting the LLM.
     assert_eq!(
         outcome.termination,
-        TerminationReason::PluginRequested,
-        "expected PluginRequested termination, got: {:?} / {:?}",
+        TerminationReason::BehaviorRequested,
+        "expected BehaviorRequested termination, got: {:?} / {:?}",
         outcome.termination,
         outcome.failure
     );
@@ -5993,15 +5993,15 @@ async fn test_golden_run_loop_and_stream_no_plugins_pending_state_alignment() {
 
 #[tokio::test]
 async fn test_stream_replay_is_idempotent_across_reruns() {
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested_replay_idempotent"
+            "terminate_behavior_requested_replay_idempotent"
         }
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -6010,7 +6010,7 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
             TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
         BaseAgent::new("mock")
             .add_behavior(Arc::new(interaction))
-            .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>)
+            .add_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>)
     }
 
     let calls = Arc::new(AtomicUsize::new(0));
@@ -6118,15 +6118,15 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
 
 #[tokio::test]
 async fn test_nonstream_replay_is_idempotent_across_reruns() {
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested_replay_idempotent_nonstream"
+            "terminate_behavior_requested_replay_idempotent_nonstream"
         }
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -6135,7 +6135,7 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
             TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
         BaseAgent::new("mock")
             .add_behavior(Arc::new(interaction))
-            .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>)
+            .add_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>)
             .with_llm_executor(provider)
     }
 
@@ -6770,9 +6770,9 @@ fn test_sync_run_lifecycle_for_termination_persists_status_and_reason() {
         (TerminationReason::Suspended, "waiting", None),
         (TerminationReason::NaturalEnd, "done", Some("natural")),
         (
-            TerminationReason::PluginRequested,
+            TerminationReason::BehaviorRequested,
             "done",
-            Some("plugin_requested"),
+            Some("behavior_requested"),
         ),
         (TerminationReason::Cancelled, "done", Some("cancelled")),
         (TerminationReason::Error, "done", Some("error")),
@@ -7130,7 +7130,7 @@ async fn test_stream_frontend_use_as_tool_result_emits_single_tool_call_start() 
 }
 
 #[tokio::test]
-async fn test_stream_terminate_plugin_requested_force_commits_run_finished_delta() {
+async fn test_stream_terminate_behavior_requested_force_commits_run_finished_delta() {
     let (recorder, _phases) = RecordAndTerminatePlugin::new();
     let committer = Arc::new(RecordingStateCommitter::new(None));
     let thread = Thread::new("test").with_message(Message::user("go"));
@@ -7150,7 +7150,7 @@ async fn test_stream_terminate_plugin_requested_force_commits_run_finished_delta
 
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::PluginRequested)
+        Some(TerminationReason::BehaviorRequested)
     );
     assert_eq!(committer.reasons(), vec![CheckpointReason::RunFinished]);
 }
@@ -7232,7 +7232,7 @@ async fn test_legacy_resume_replay_stream_queue_is_ignored() {
         }
 
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -7249,7 +7249,7 @@ async fn test_legacy_resume_replay_stream_queue_is_ignored() {
 
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::PluginRequested)
+        Some(TerminationReason::BehaviorRequested)
     );
     assert!(
         !events
@@ -7466,8 +7466,8 @@ fn test_apply_tool_results_accepts_disjoint_parallel_state_patches() {
 }
 
 #[tokio::test]
-async fn test_stop_plugin_requested() {
-    // TerminatePluginRequestedPlugin → PluginRequested.
+async fn test_stop_behavior_requested() {
+    // TerminateBehaviorRequestedPlugin → BehaviorRequested.
     let (recorder, _) = RecordAndTerminatePlugin::new();
     let config = BaseAgent::new("mock").add_behavior(Arc::new(recorder) as Arc<dyn AgentBehavior>);
     let thread = Thread::new("test").with_message(Message::user("hi"));
@@ -7477,7 +7477,7 @@ async fn test_stop_plugin_requested() {
     let events = run_mock_stream(provider, config, thread, tools).await;
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::PluginRequested)
+        Some(TerminationReason::BehaviorRequested)
     );
 }
 
@@ -8570,7 +8570,7 @@ async fn test_message_id_end_to_end_multi_step() {
 }
 
 #[tokio::test]
-async fn test_run_step_terminate_plugin_requested_returns_empty_result_without_assistant_message() {
+async fn test_run_step_terminate_behavior_requested_returns_empty_result_without_assistant_message() {
     let (recorder, phases) = RecordAndTerminatePlugin::new();
     let config = BaseAgent::new("gpt-4o-mini")
         .add_behavior(Arc::new(recorder) as Arc<dyn AgentBehavior>)
@@ -8581,10 +8581,10 @@ async fn test_run_step_terminate_plugin_requested_returns_empty_result_without_a
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
-    // terminate_plugin_requested in run_loop terminates with PluginRequested
+    // terminate_behavior_requested in run_loop terminates with BehaviorRequested
     assert!(matches!(
         outcome.termination,
-        TerminationReason::PluginRequested
+        TerminationReason::BehaviorRequested
     ));
     assert!(outcome.response.as_ref().is_none_or(|s| s.is_empty()));
     assert_eq!(outcome.run_ctx.messages().len(), 1);
@@ -8602,14 +8602,14 @@ async fn test_run_step_terminate_plugin_requested_returns_empty_result_without_a
 }
 
 #[tokio::test]
-async fn test_run_step_terminate_plugin_requested_with_suspended_state_returns_suspended_interaction(
+async fn test_run_step_terminate_behavior_requested_with_suspended_state_returns_suspended_interaction(
 ) {
     struct PendingTerminateStepPlugin;
 
     #[async_trait]
     impl AgentBehavior for PendingTerminateStepPlugin {
         fn id(&self) -> &str {
-            "pending_terminate_plugin_requested_step"
+            "pending_terminate_behavior_requested_step"
         }
 
         async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
@@ -8623,7 +8623,7 @@ async fn test_run_step_terminate_plugin_requested_with_suspended_state_returns_s
             .expect("failed to set suspended interaction");
             PhaseOutput::default()
                 .with_pending_patch(patch)
-                .request_termination(TerminationReason::PluginRequested)
+                .request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -10660,7 +10660,7 @@ async fn test_stream_completed_tool_round_does_not_clear_existing_suspended_call
     );
 }
 
-/// A plugin that sets `request_termination(PluginRequested)` in BeforeInference
+/// A plugin that sets `request_termination(BehaviorRequested)` in BeforeInference
 /// should cause the run to terminate immediately without running inference.
 #[tokio::test]
 async fn test_plugin_run_action_stops_loop() {
@@ -10673,7 +10673,7 @@ async fn test_plugin_run_action_stops_loop() {
         }
 
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -10686,11 +10686,11 @@ async fn test_plugin_run_action_stops_loop() {
     let responses = vec![MockResponse::text("should not appear")];
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
 
-    // Run should terminate with PluginRequested.
+    // Run should terminate with BehaviorRequested.
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::PluginRequested),
-        "run should terminate with PluginRequested: {events:?}"
+        Some(TerminationReason::BehaviorRequested),
+        "run should terminate with BehaviorRequested: {events:?}"
     );
 
     // No inference should have run.
@@ -10717,7 +10717,7 @@ async fn test_run_loop_rejects_run_action_mutation_outside_inference_phases_v2()
         }
 
         async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -10756,7 +10756,7 @@ async fn test_stream_rejects_run_action_mutation_outside_inference_phases_v2() {
         }
 
         async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -10794,7 +10794,7 @@ async fn test_run_loop_plugin_run_action_stops_loop() {
         }
 
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -10808,8 +10808,8 @@ async fn test_run_loop_plugin_run_action_stops_loop() {
 
     assert_eq!(
         outcome.termination,
-        TerminationReason::PluginRequested,
-        "non-stream run should terminate with PluginRequested"
+        TerminationReason::BehaviorRequested,
+        "non-stream run should terminate with BehaviorRequested"
     );
     assert!(
         outcome.failure.is_none(),
@@ -10837,7 +10837,7 @@ async fn test_run_loop_applies_plugin_state_effect_patch_before_inference() {
             .with_source("test:state_effect_before_inference");
             PhaseOutput::default()
                 .with_pending_patch(patch)
-                .request_termination(TerminationReason::PluginRequested)
+                .request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -10847,7 +10847,7 @@ async fn test_run_loop_applies_plugin_state_effect_patch_before_inference() {
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
-    assert_eq!(outcome.termination, TerminationReason::PluginRequested);
+    assert_eq!(outcome.termination, TerminationReason::BehaviorRequested);
     assert_eq!(outcome.stats.llm_calls, 0, "inference should not run");
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     assert_eq!(state["debug"]["before_inference_effect"], json!(true));
@@ -10908,7 +10908,7 @@ async fn test_run_loop_after_inference_run_action_stops_before_tool_execution() 
         }
 
         async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -10923,7 +10923,7 @@ async fn test_run_loop_after_inference_run_action_stops_before_tool_execution() 
 
     let outcome = run_loop(&config, tool_map([EchoTool]), run_ctx, None, None, None).await;
 
-    assert_eq!(outcome.termination, TerminationReason::PluginRequested);
+    assert_eq!(outcome.termination, TerminationReason::BehaviorRequested);
     assert_eq!(
         outcome.stats.llm_calls, 1,
         "inference should run exactly once"
@@ -10956,7 +10956,7 @@ async fn test_stream_after_inference_run_action_stops_before_tool_events() {
         }
 
         async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -10977,7 +10977,7 @@ async fn test_stream_after_inference_run_action_stops_before_tool_events() {
 
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::PluginRequested)
+        Some(TerminationReason::BehaviorRequested)
     );
     assert!(
         events
@@ -11007,7 +11007,7 @@ async fn test_request_termination_method_stops_stream() {
         }
 
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -11021,8 +11021,8 @@ async fn test_request_termination_method_stops_stream() {
 
     assert_eq!(
         extract_termination(&events),
-        Some(TerminationReason::PluginRequested),
-        "request_termination() method should produce PluginRequested: {events:?}"
+        Some(TerminationReason::BehaviorRequested),
+        "request_termination() method should produce BehaviorRequested: {events:?}"
     );
     let inference_count = events
         .iter()
@@ -11036,16 +11036,16 @@ async fn test_request_termination_method_stops_stream() {
 
 #[tokio::test]
 async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested_unknown_decision_nonstream"
+            "terminate_behavior_requested_unknown_decision_nonstream"
         }
 
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -11080,7 +11080,7 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
     run_config.set("run_id", "run-unknown-decision").unwrap();
     let run_ctx = RunContext::from_thread(&thread, run_config).expect("run ctx");
     let config = BaseAgent::new("mock")
-        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>);
+        .add_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>);
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
     decision_tx
         .send(test_decision(
@@ -11126,16 +11126,16 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
 
 #[tokio::test]
 async fn test_run_loop_decision_channel_rejects_illegal_terminal_to_resuming_transition() {
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested_illegal_transition_nonstream"
+            "terminate_behavior_requested_illegal_transition_nonstream"
         }
 
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -11189,7 +11189,7 @@ async fn test_run_loop_decision_channel_rejects_illegal_terminal_to_resuming_tra
     let run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).expect("run ctx");
     let config = BaseAgent::new("mock")
-        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>);
+        .add_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>);
     let tools = tool_map([EchoTool]);
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
     decision_tx
@@ -11234,16 +11234,16 @@ async fn test_run_loop_decision_channel_rejects_illegal_terminal_to_resuming_tra
 
 #[tokio::test]
 async fn test_stream_decision_channel_ignores_unknown_target_id() {
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested_unknown_decision_stream"
+            "terminate_behavior_requested_unknown_decision_stream"
         }
 
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -11277,7 +11277,7 @@ async fn test_stream_decision_channel_ignores_unknown_target_id() {
     let run_ctx = RunContext::from_thread(&final_thread, tirea_contract::RunConfig::default())
         .expect("run ctx");
     let config = BaseAgent::new("mock")
-        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>);
+        .add_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>);
     let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
     let state_committer: Arc<dyn StateCommitter> =
         Arc::new(ChannelStateCommitter::new(checkpoint_tx));
@@ -11328,16 +11328,16 @@ async fn test_stream_decision_channel_ignores_unknown_target_id() {
 
 #[tokio::test]
 async fn test_stream_decision_channel_rejects_illegal_terminal_to_resuming_transition() {
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested_illegal_transition_stream"
+            "terminate_behavior_requested_illegal_transition_stream"
         }
 
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
@@ -11391,7 +11391,7 @@ async fn test_stream_decision_channel_rejects_illegal_terminal_to_resuming_trans
     let run_ctx = RunContext::from_thread(&final_thread, tirea_contract::RunConfig::default())
         .expect("run ctx");
     let config = BaseAgent::new("mock")
-        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>);
+        .add_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>);
     let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
     let state_committer: Arc<dyn StateCommitter> =
         Arc::new(ChannelStateCommitter::new(checkpoint_tx));
@@ -11613,21 +11613,21 @@ async fn test_run_loop_decision_channel_resolves_suspended_call() {
 
 #[tokio::test]
 async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message() {
-    struct TerminatePluginRequestedPlugin;
+    struct TerminateBehaviorRequestedPlugin;
 
     #[async_trait]
-    impl AgentBehavior for TerminatePluginRequestedPlugin {
+    impl AgentBehavior for TerminateBehaviorRequestedPlugin {
         fn id(&self) -> &str {
-            "terminate_plugin_requested_for_decision_cancel"
+            "terminate_behavior_requested_for_decision_cancel"
         }
 
         async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().request_termination(TerminationReason::PluginRequested)
+            PhaseOutput::default().request_termination(TerminationReason::BehaviorRequested)
         }
     }
 
     let config = BaseAgent::new("mock")
-        .add_behavior(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentBehavior>);
+        .add_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>);
 
     let thread = Thread::with_initial_state(
         "test",
@@ -11683,7 +11683,7 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
 
     assert!(matches!(
         outcome.termination,
-        TerminationReason::PluginRequested
+        TerminationReason::BehaviorRequested
     ));
 
     let resolved_tool_messages: Vec<_> = outcome

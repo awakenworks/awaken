@@ -16,7 +16,7 @@ mod tests;
 
 pub use contexts::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
-    BeforeToolExecuteContext, PluginPhaseContext, RunEndContext, RunStartContext, StepEndContext,
+    BeforeToolExecuteContext, PhaseContext, RunEndContext, RunStartContext, StepEndContext,
     StepStartContext,
 };
 pub use effect::{validate_effect, PhaseEffect, PhaseOutput};

@@ -125,8 +125,8 @@ impl PhaseOutput {
     }
 
     #[must_use]
-    pub fn terminate_plugin_requested(self) -> Self {
-        self.request_termination(TerminationReason::PluginRequested)
+    pub fn terminate_behavior_requested(self) -> Self {
+        self.request_termination(TerminationReason::BehaviorRequested)
     }
 }
 
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn validate_effect_termination() {
-        let effect = PhaseEffect::RequestTermination(TerminationReason::PluginRequested);
+        let effect = PhaseEffect::RequestTermination(TerminationReason::BehaviorRequested);
         assert!(validate_effect(Phase::BeforeInference, &effect).is_ok());
         assert!(validate_effect(Phase::AfterInference, &effect).is_ok());
         assert!(validate_effect(Phase::StepStart, &effect).is_err());

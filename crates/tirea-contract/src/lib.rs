@@ -69,14 +69,6 @@ macro_rules! impl_shared_agent_builder_methods {
     };
 }
 
-/// Builder methods for runtime instance fields.
-///
-/// Only used by BaseAgent (loop layer) which directly holds runtime
-/// instances. AgentDefinition uses id-based references instead.
-#[macro_export]
-macro_rules! impl_loop_config_builder_methods {
-    () => {};
-}
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
@@ -107,7 +99,7 @@ pub use runtime::{
     ActivityContext, ActivityManager, AfterInferenceContext, AfterToolExecuteContext, AgentBehavior,
     AnyStateAction, BeforeInferenceContext, BeforeToolExecuteContext,
     CompositeBehavior, DecisionReplayPolicy, NoOpBehavior, Phase, PhaseEffect, PhaseOutput,
-    PhasePolicy, PluginPhaseContext, ReadOnlyContext, RunAction, RunContext, RunDelta,
+    PhasePolicy, PhaseContext, ReadOnlyContext, RunAction, RunContext, RunDelta,
     RunEndContext, RunStartContext, StateEffect, StateSpec, StepContext, StepEndContext,
     StepOutcome, StepStartContext, StoppedReason, StreamResult, SuspendTicket, Suspension,
     SuspensionResponse, TerminationReason, TokenUsage, ToolCallAction, ToolCallContext,

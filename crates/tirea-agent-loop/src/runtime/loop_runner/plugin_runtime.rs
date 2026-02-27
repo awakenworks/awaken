@@ -106,7 +106,7 @@ fn take_step_pending_patches(step: &mut StepContext<'_>) -> Vec<TrackedPatch> {
 // =========================================================================
 
 /// Dispatch a single phase through the agent's behavior.
-pub(super) async fn unified_emit_phase(
+pub(super) async fn emit_phase(
     phase: Phase,
     step: &mut StepContext<'_>,
     agent: &dyn super::Agent,
@@ -115,8 +115,8 @@ pub(super) async fn unified_emit_phase(
     emit_agent_phase(phase, step, agent.behavior(), doc).await
 }
 
-/// Unified multi-phase block dispatch.
-pub(super) async fn unified_run_phase_block<R, Setup, Extract>(
+/// Multi-phase block dispatch.
+pub(super) async fn run_phase_block<R, Setup, Extract>(
     run_ctx: &RunContext,
     tool_descriptors: &[ToolDescriptor],
     agent: &dyn super::Agent,
@@ -151,7 +151,7 @@ where
     );
     setup(&mut step);
     for phase in phases {
-        unified_emit_phase(*phase, &mut step, agent, &doc).await?;
+        emit_phase(*phase, &mut step, agent, &doc).await?;
     }
     let ctx_patch = step.ctx().take_patch();
     if !ctx_patch.patch().is_empty() {
@@ -162,8 +162,8 @@ where
     Ok((output, pending))
 }
 
-/// Unified single-phase block dispatch (no extract value).
-pub(super) async fn unified_emit_phase_block<Setup>(
+/// Single-phase block dispatch (no extract value).
+pub(super) async fn emit_phase_block<Setup>(
     phase: Phase,
     run_ctx: &RunContext,
     tool_descriptors: &[ToolDescriptor],
@@ -174,12 +174,12 @@ where
     Setup: FnOnce(&mut StepContext<'_>),
 {
     let (_, pending) =
-        unified_run_phase_block(run_ctx, tool_descriptors, agent, &[phase], setup, |_| ()).await?;
+        run_phase_block(run_ctx, tool_descriptors, agent, &[phase], setup, |_| ()).await?;
     Ok(pending)
 }
 
-/// Unified cleanup dispatch (after LLM error).
-pub(super) async fn unified_emit_cleanup_phases_and_apply(
+/// Cleanup dispatch (after LLM error).
+pub(super) async fn emit_cleanup_phases(
     run_ctx: &mut RunContext,
     tool_descriptors: &[ToolDescriptor],
     agent: &dyn super::Agent,
@@ -198,7 +198,7 @@ pub(super) async fn unified_emit_cleanup_phases_and_apply(
     )?;
     run_ctx.add_thread_patch(set_error_patch);
 
-    let pending = unified_emit_phase_block(
+    let pending = emit_phase_block(
         Phase::AfterInference,
         run_ctx,
         tool_descriptors,
@@ -215,13 +215,13 @@ pub(super) async fn unified_emit_cleanup_phases_and_apply(
     run_ctx.add_thread_patch(clear_error_patch);
 
     let pending =
-        unified_emit_phase_block(Phase::StepEnd, run_ctx, tool_descriptors, agent, |_| {}).await?;
+        emit_phase_block(Phase::StepEnd, run_ctx, tool_descriptors, agent, |_| {}).await?;
     run_ctx.add_thread_patches(pending);
     Ok(())
 }
 
-/// Unified run-end phase dispatch.
-pub(super) async fn unified_emit_run_end_phase(
+/// Run-end phase dispatch.
+pub(super) async fn emit_run_end_phase(
     run_ctx: &mut RunContext,
     tool_descriptors: &[ToolDescriptor],
     agent: &dyn super::Agent,
@@ -230,7 +230,7 @@ pub(super) async fn unified_emit_run_end_phase(
         let current_state = match run_ctx.snapshot() {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!(error = %e, "UnifiedRunEnd: failed to rebuild state");
+                tracing::warn!(error = %e, "RunEnd: failed to rebuild state");
                 return;
             }
         };
@@ -252,8 +252,8 @@ pub(super) async fn unified_emit_run_end_phase(
             run_ctx.messages(),
             tool_descriptors.to_vec(),
         );
-        if let Err(e) = unified_emit_phase(Phase::RunEnd, &mut step, agent, &doc).await {
-            tracing::warn!(error = %e, "UnifiedRunEnd phase validation failed");
+        if let Err(e) = emit_phase(Phase::RunEnd, &mut step, agent, &doc).await {
+            tracing::warn!(error = %e, "RunEnd phase validation failed");
         }
         let ctx_patch = step.ctx().take_patch();
         if !ctx_patch.patch().is_empty() {
@@ -264,8 +264,8 @@ pub(super) async fn unified_emit_run_end_phase(
     run_ctx.add_thread_patches(pending);
 }
 
-/// Unified tool-level phase dispatch (for use in ToolPhaseContext).
-pub(super) async fn unified_emit_tool_phase(
+/// Tool-level phase dispatch.
+pub(super) async fn emit_tool_phase(
     phase: Phase,
     step: &mut StepContext<'_>,
     agent: Option<&dyn AgentBehavior>,

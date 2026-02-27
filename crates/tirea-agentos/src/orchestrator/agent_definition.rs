@@ -19,7 +19,7 @@ pub enum ToolExecutionMode {
 /// Agent composition definition owned by AgentOS orchestration.
 ///
 /// This is the orchestration-facing model and uses only registry references
-/// (`plugin_ids`, `stop_condition_ids`) and declarative specs (`stop_condition_specs`).
+/// (`behavior_ids`, `stop_condition_ids`) and declarative specs.
 /// Before execution, AgentOS resolves it into loop-facing [`BaseAgent`].
 #[derive(Clone)]
 pub struct AgentDefinition {
@@ -41,8 +41,8 @@ pub struct AgentDefinition {
     pub fallback_models: Vec<String>,
     /// Retry policy for LLM inference failures.
     pub llm_retry_policy: LlmRetryPolicy,
-    /// Plugin references resolved from AgentOS plugin registry.
-    pub plugin_ids: Vec<String>,
+    /// Behavior references resolved from AgentOS behavior registry.
+    pub behavior_ids: Vec<String>,
     /// Tool whitelist (None = all tools available).
     pub allowed_tools: Option<Vec<String>>,
     /// Tool blacklist.
@@ -77,7 +77,7 @@ impl Default for AgentDefinition {
             ),
             fallback_models: Vec::new(),
             llm_retry_policy: LlmRetryPolicy::default(),
-            plugin_ids: Vec::new(),
+            behavior_ids: Vec::new(),
             allowed_tools: None,
             excluded_tools: None,
             allowed_skills: None,
@@ -104,7 +104,7 @@ impl std::fmt::Debug for AgentDefinition {
             .field("chat_options", &self.chat_options)
             .field("fallback_models", &self.fallback_models)
             .field("llm_retry_policy", &self.llm_retry_policy)
-            .field("plugin_ids", &self.plugin_ids)
+            .field("behavior_ids", &self.behavior_ids)
             .field("allowed_tools", &self.allowed_tools)
             .field("excluded_tools", &self.excluded_tools)
             .field("allowed_skills", &self.allowed_skills)
@@ -139,14 +139,14 @@ impl AgentDefinition {
     }
 
     #[must_use]
-    pub fn with_plugin_ids(mut self, plugin_ids: Vec<String>) -> Self {
-        self.plugin_ids = plugin_ids;
+    pub fn with_behavior_ids(mut self, behavior_ids: Vec<String>) -> Self {
+        self.behavior_ids = behavior_ids;
         self
     }
 
     #[must_use]
-    pub fn with_plugin_id(mut self, plugin_id: impl Into<String>) -> Self {
-        self.plugin_ids.push(plugin_id.into());
+    pub fn with_behavior_id(mut self, behavior_id: impl Into<String>) -> Self {
+        self.behavior_ids.push(behavior_id.into());
         self
     }
 

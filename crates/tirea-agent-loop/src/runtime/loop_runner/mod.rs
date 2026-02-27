@@ -99,7 +99,7 @@ pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
 #[cfg(test)]
 use plugin_runtime::emit_agent_phase;
 #[cfg(test)]
-use plugin_runtime::unified_emit_cleanup_phases_and_apply;
+use plugin_runtime::emit_cleanup_phases;
 use run_state::RunState;
 pub use state_commit::ChannelStateCommitter;
 use state_commit::PendingDeltaCommitContext;
@@ -445,7 +445,7 @@ pub(super) async fn run_step_prepare_phases(
     AgentLoopError,
 > {
     let system_prompt = agent.system_prompt().to_string();
-    let ((messages, filtered_tools, run_action), pending) = plugin_runtime::unified_run_phase_block(
+    let ((messages, filtered_tools, run_action), pending) = plugin_runtime::run_phase_block(
         run_ctx,
         tool_descriptors,
         agent,
@@ -486,7 +486,7 @@ pub(super) async fn apply_llm_error_cleanup(
     error_type: &'static str,
     message: String,
 ) -> Result<(), AgentLoopError> {
-    plugin_runtime::unified_emit_cleanup_phases_and_apply(
+    plugin_runtime::emit_cleanup_phases(
         run_ctx,
         tool_descriptors,
         agent,
@@ -504,7 +504,7 @@ pub(super) async fn complete_step_after_inference(
     tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
     agent: &dyn Agent,
 ) -> Result<Option<TerminationReason>, AgentLoopError> {
-    let (run_action, pending) = plugin_runtime::unified_run_phase_block(
+    let (run_action, pending) = plugin_runtime::run_phase_block(
         run_ctx,
         tool_descriptors,
         agent,
@@ -520,7 +520,7 @@ pub(super) async fn complete_step_after_inference(
     let assistant = assistant_turn_message(result, step_meta, assistant_message_id);
     run_ctx.add_message(Arc::new(assistant));
 
-    let pending = plugin_runtime::unified_emit_phase_block(
+    let pending = plugin_runtime::emit_phase_block(
         Phase::StepEnd,
         run_ctx,
         tool_descriptors,
@@ -615,7 +615,7 @@ pub(super) async fn finalize_run_end(
     tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
     agent: &dyn Agent,
 ) {
-    plugin_runtime::unified_emit_run_end_phase(run_ctx, tool_descriptors, agent).await
+    plugin_runtime::emit_run_end_phase(run_ctx, tool_descriptors, agent).await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1474,7 +1474,7 @@ pub async fn run_loop(
     }
 
     // Phase: RunStart
-    let pending = match plugin_runtime::unified_emit_phase_block(
+    let pending = match plugin_runtime::emit_phase_block(
         Phase::RunStart,
         &run_ctx,
         &active_tool_descriptors,
@@ -1563,7 +1563,7 @@ pub async fn run_loop(
         match prepared.run_action {
             RunAction::Continue => {}
             RunAction::Terminate(reason) => {
-                let response = if matches!(reason, TerminationReason::PluginRequested) {
+                let response = if matches!(reason, TerminationReason::BehaviorRequested) {
                     Some(last_text.clone())
                 } else {
                     None

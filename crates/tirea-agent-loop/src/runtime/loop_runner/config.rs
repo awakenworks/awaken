@@ -383,7 +383,6 @@ impl Agent for BaseAgent {
 
 impl BaseAgent {
     tirea_contract::impl_shared_agent_builder_methods!();
-    tirea_contract::impl_loop_config_builder_methods!();
 
     /// Set tool executor strategy.
     #[must_use]

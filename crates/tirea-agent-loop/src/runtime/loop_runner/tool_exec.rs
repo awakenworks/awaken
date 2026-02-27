@@ -2,7 +2,7 @@ use super::core::{
     drain_agent_append_user_messages, set_agent_suspended_calls, transition_tool_call_state,
     ToolCallStateSeed, ToolCallStateTransition,
 };
-use super::plugin_runtime::unified_emit_tool_phase;
+use super::plugin_runtime::emit_tool_phase;
 use super::{
     Agent, BaseAgent, AgentLoopError, RunCancellationToken, TOOL_SCOPE_CALLER_MESSAGES_KEY,
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
@@ -897,7 +897,7 @@ pub(super) async fn execute_single_tool_with_phases(
     );
     step.tool = Some(ToolContext::new(call));
     // Phase: BeforeToolExecute
-    unified_emit_tool_phase(Phase::BeforeToolExecute, &mut step, phase_ctx.agent_behavior, &doc).await?;
+    emit_tool_phase(Phase::BeforeToolExecute, &mut step, phase_ctx.agent_behavior, &doc).await?;
 
     // Check if blocked or pending
     let (execution, outcome, suspended_call) = if step.tool_blocked() {
@@ -1021,7 +1021,7 @@ pub(super) async fn execute_single_tool_with_phases(
     step.set_tool_result(execution.result.clone());
 
     // Phase: AfterToolExecute
-    unified_emit_tool_phase(Phase::AfterToolExecute, &mut step, phase_ctx.agent_behavior, &doc).await?;
+    emit_tool_phase(Phase::AfterToolExecute, &mut step, phase_ctx.agent_behavior, &doc).await?;
 
     match outcome {
         ToolCallOutcome::Suspended => {

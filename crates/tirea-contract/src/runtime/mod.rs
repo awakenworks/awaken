@@ -12,7 +12,7 @@ pub use llm::{StreamResult, TokenUsage};
 pub use plugin::{
     AfterInferenceContext, AfterToolExecuteContext, AgentBehavior, AnyStateAction,
     BeforeInferenceContext, BeforeToolExecuteContext, CompositeBehavior, NoOpBehavior, Phase,
-    PhaseEffect, PhaseOutput, PhasePolicy, PluginPhaseContext, ReadOnlyContext, RunAction,
+    PhaseEffect, PhaseOutput, PhasePolicy, PhaseContext, ReadOnlyContext, RunAction,
     RunEndContext, RunStartContext, StateEffect, StateSpec, StepContext, StepEndContext,
     StepOutcome, StepStartContext, SuspendTicket, ToolCallAction, ToolContext, validate_effect,
 };

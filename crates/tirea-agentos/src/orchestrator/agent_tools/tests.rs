@@ -320,12 +320,12 @@ struct SlowTerminatePlugin;
 #[async_trait]
 impl AgentBehavior for SlowTerminatePlugin {
     fn id(&self) -> &str {
-        "slow_terminate_plugin_requested"
+        "slow_terminate_behavior_requested"
     }
 
     async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
         tokio::time::sleep(Duration::from_millis(120)).await;
-        PhaseOutput::default().terminate_plugin_requested()
+        PhaseOutput::default().terminate_behavior_requested()
     }
 }
 
@@ -367,13 +367,13 @@ fn caller_scope() -> tirea_contract::RunConfig {
 async fn agent_run_tool_fork_context_passes_non_system_messages_and_filters_unpaired_tool_calls() {
     let os = AgentOs::builder()
         .with_registered_behavior(
-            "slow_terminate_plugin_requested",
+            "slow_terminate_behavior_requested",
             Arc::new(SlowTerminatePlugin),
         )
         .with_agent(
             "worker",
             crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("slow_terminate_plugin_requested"),
+                .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
         .unwrap();
@@ -505,13 +505,13 @@ async fn agent_run_tool_fork_context_passes_non_system_messages_and_filters_unpa
 async fn background_stop_then_resume_completes() {
     let os = AgentOs::builder()
         .with_registered_behavior(
-            "slow_terminate_plugin_requested",
+            "slow_terminate_behavior_requested",
             Arc::new(SlowTerminatePlugin),
         )
         .with_agent(
             "worker",
             crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("slow_terminate_plugin_requested"),
+                .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
         .unwrap();
@@ -648,13 +648,13 @@ async fn manager_stop_tree_stops_descendants() {
 async fn agent_run_tool_persists_run_state_patch() {
     let os = AgentOs::builder()
         .with_registered_behavior(
-            "slow_terminate_plugin_requested",
+            "slow_terminate_behavior_requested",
             Arc::new(SlowTerminatePlugin),
         )
         .with_agent(
             "worker",
             crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("slow_terminate_plugin_requested"),
+                .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
         .unwrap();
@@ -696,13 +696,13 @@ async fn agent_run_tool_persists_run_state_patch() {
 async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
     let os = AgentOs::builder()
         .with_registered_behavior(
-            "slow_terminate_plugin_requested",
+            "slow_terminate_behavior_requested",
             Arc::new(SlowTerminatePlugin),
         )
         .with_agent(
             "worker",
             crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("slow_terminate_plugin_requested"),
+                .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
         .unwrap();
@@ -750,13 +750,13 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
 async fn agent_run_tool_injects_prompt_into_child_thread() {
     let os = AgentOs::builder()
         .with_registered_behavior(
-            "slow_terminate_plugin_requested",
+            "slow_terminate_behavior_requested",
             Arc::new(SlowTerminatePlugin),
         )
         .with_agent(
             "worker",
             crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("slow_terminate_plugin_requested"),
+                .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
         .unwrap();
@@ -798,13 +798,13 @@ async fn agent_run_tool_injects_prompt_into_child_thread() {
 async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
     let os = AgentOs::builder()
         .with_registered_behavior(
-            "slow_terminate_plugin_requested",
+            "slow_terminate_behavior_requested",
             Arc::new(SlowTerminatePlugin),
         )
         .with_agent(
             "worker",
             crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("slow_terminate_plugin_requested"),
+                .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
         .unwrap();
@@ -845,13 +845,13 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
 async fn agent_run_tool_resume_injects_prompt_into_child_thread() {
     let os = AgentOs::builder()
         .with_registered_behavior(
-            "slow_terminate_plugin_requested",
+            "slow_terminate_behavior_requested",
             Arc::new(SlowTerminatePlugin),
         )
         .with_agent(
             "worker",
             crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("slow_terminate_plugin_requested"),
+                .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
         .unwrap();
@@ -904,13 +904,13 @@ async fn agent_run_tool_resume_injects_prompt_into_child_thread() {
 async fn agent_run_tool_resume_updates_parent_run_lineage() {
     let os = AgentOs::builder()
         .with_registered_behavior(
-            "slow_terminate_plugin_requested",
+            "slow_terminate_behavior_requested",
             Arc::new(SlowTerminatePlugin),
         )
         .with_agent(
             "worker",
             crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("slow_terminate_plugin_requested"),
+                .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
         .unwrap();
@@ -968,13 +968,13 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
 async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
     let os = AgentOs::builder()
         .with_registered_behavior(
-            "slow_terminate_plugin_requested",
+            "slow_terminate_behavior_requested",
             Arc::new(SlowTerminatePlugin),
         )
         .with_agent(
             "worker",
             crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
-                .with_plugin_id("slow_terminate_plugin_requested"),
+                .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
         .unwrap();

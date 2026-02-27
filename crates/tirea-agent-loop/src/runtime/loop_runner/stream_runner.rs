@@ -252,7 +252,7 @@ pub(super) fn run_stream(
         }
 
         // Phase: RunStart (use scoped block to manage borrow)
-        match plugin_runtime::unified_emit_phase_block(
+        match plugin_runtime::emit_phase_block(
             Phase::RunStart,
             &run_ctx,
             &active_tool_descriptors,
@@ -367,7 +367,7 @@ pub(super) fn run_stream(
                             yield emitter.emit_existing(event);
                         }
                     }
-                    let response = if matches!(reason, TerminationReason::PluginRequested) {
+                    let response = if matches!(reason, TerminationReason::BehaviorRequested) {
                         Some(last_text.clone())
                     } else {
                         None

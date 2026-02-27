@@ -85,7 +85,7 @@ fn test_step_context_reset() {
     ctx.thread("test");
     ctx.reminder("test");
     ctx.set_run_action(RunAction::Terminate(
-        TerminationReason::PluginRequested,
+        TerminationReason::BehaviorRequested,
     ));
 
     ctx.reset();
@@ -103,12 +103,12 @@ fn test_after_inference_request_termination_sets_run_action() {
     let mut step = fix.step(vec![]);
     {
         let mut ctx = AfterInferenceContext::new(&mut step);
-        ctx.request_termination(TerminationReason::PluginRequested);
+        ctx.request_termination(TerminationReason::BehaviorRequested);
     }
     assert_eq!(
         step.run_action,
         Some(RunAction::Terminate(
-            TerminationReason::PluginRequested
+            TerminationReason::BehaviorRequested
         ))
     );
 }

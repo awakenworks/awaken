@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tirea_state::State;
 
 /// Shared read access available to all phase contexts.
-pub trait PluginPhaseContext {
+pub trait PhaseContext {
     fn phase(&self) -> Phase;
     fn thread_id(&self) -> &str;
     fn messages(&self) -> &[Arc<Message>];
@@ -22,7 +22,7 @@ pub trait PluginPhaseContext {
     fn snapshot(&self) -> Value;
 }
 
-macro_rules! impl_plugin_phase_context {
+macro_rules! impl_phase_context {
     ($name:ident, $phase:expr) => {
         impl<'s, 'a> $name<'s, 'a> {
             pub fn new(step: &'s mut StepContext<'a>) -> Self {
@@ -35,7 +35,7 @@ macro_rules! impl_plugin_phase_context {
             }
         }
 
-        impl<'s, 'a> PluginPhaseContext for $name<'s, 'a> {
+        impl<'s, 'a> PhaseContext for $name<'s, 'a> {
             fn phase(&self) -> Phase {
                 $phase
             }
@@ -66,17 +66,17 @@ macro_rules! impl_plugin_phase_context {
 pub struct RunStartContext<'s, 'a> {
     step: &'s mut StepContext<'a>,
 }
-impl_plugin_phase_context!(RunStartContext, Phase::RunStart);
+impl_phase_context!(RunStartContext, Phase::RunStart);
 
 pub struct StepStartContext<'s, 'a> {
     step: &'s mut StepContext<'a>,
 }
-impl_plugin_phase_context!(StepStartContext, Phase::StepStart);
+impl_phase_context!(StepStartContext, Phase::StepStart);
 
 pub struct BeforeInferenceContext<'s, 'a> {
     step: &'s mut StepContext<'a>,
 }
-impl_plugin_phase_context!(BeforeInferenceContext, Phase::BeforeInference);
+impl_phase_context!(BeforeInferenceContext, Phase::BeforeInference);
 
 impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
     /// Append a system context line.
@@ -99,10 +99,10 @@ impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
         self.step.include_only(tool_ids);
     }
 
-    /// Terminate current run as plugin-requested before inference.
-    pub fn terminate_plugin_requested(&mut self) {
+    /// Terminate current run as behavior-requested before inference.
+    pub fn terminate_behavior_requested(&mut self) {
         self.step.set_run_action(RunAction::Terminate(
-            TerminationReason::PluginRequested,
+            TerminationReason::BehaviorRequested,
         ));
     }
 
@@ -116,7 +116,7 @@ impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
 pub struct AfterInferenceContext<'s, 'a> {
     step: &'s mut StepContext<'a>,
 }
-impl_plugin_phase_context!(AfterInferenceContext, Phase::AfterInference);
+impl_phase_context!(AfterInferenceContext, Phase::AfterInference);
 
 impl<'s, 'a> AfterInferenceContext<'s, 'a> {
     pub fn response_opt(&self) -> Option<&StreamResult> {
@@ -140,7 +140,7 @@ impl<'s, 'a> AfterInferenceContext<'s, 'a> {
 pub struct BeforeToolExecuteContext<'s, 'a> {
     step: &'s mut StepContext<'a>,
 }
-impl_plugin_phase_context!(BeforeToolExecuteContext, Phase::BeforeToolExecute);
+impl_phase_context!(BeforeToolExecuteContext, Phase::BeforeToolExecute);
 
 impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
     pub fn tool_name(&self) -> Option<&str> {
@@ -200,7 +200,7 @@ impl<'s, 'a> BeforeToolExecuteContext<'s, 'a> {
 pub struct AfterToolExecuteContext<'s, 'a> {
     step: &'s mut StepContext<'a>,
 }
-impl_plugin_phase_context!(AfterToolExecuteContext, Phase::AfterToolExecute);
+impl_phase_context!(AfterToolExecuteContext, Phase::AfterToolExecute);
 
 impl<'s, 'a> AfterToolExecuteContext<'s, 'a> {
     pub fn tool_name(&self) -> Option<&str> {
@@ -225,9 +225,9 @@ impl<'s, 'a> AfterToolExecuteContext<'s, 'a> {
 pub struct StepEndContext<'s, 'a> {
     step: &'s mut StepContext<'a>,
 }
-impl_plugin_phase_context!(StepEndContext, Phase::StepEnd);
+impl_phase_context!(StepEndContext, Phase::StepEnd);
 
 pub struct RunEndContext<'s, 'a> {
     step: &'s mut StepContext<'a>,
 }
-impl_plugin_phase_context!(RunEndContext, Phase::RunEnd);
+impl_phase_context!(RunEndContext, Phase::RunEnd);

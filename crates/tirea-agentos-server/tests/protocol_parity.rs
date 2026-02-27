@@ -15,14 +15,14 @@ use common::TerminatePlugin;
 fn make_os() -> AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
-        plugin_ids: vec!["terminate_plugin_requested_parity".into()],
+        behavior_ids: vec!["terminate_behavior_requested_parity".into()],
         ..Default::default()
     };
 
     AgentOsBuilder::new()
         .with_registered_behavior(
-            "terminate_plugin_requested_parity",
-            Arc::new(TerminatePlugin::new("terminate_plugin_requested_parity")),
+            "terminate_behavior_requested_parity",
+            Arc::new(TerminatePlugin::new("terminate_behavior_requested_parity")),
         )
         .with_agent("test", def)
         .with_agent_state_store(Arc::new(MemoryStore::new()))
