@@ -70,11 +70,51 @@ function ApprovalCard({
   );
 }
 
+function ReleaseChecklistCard({
+  status,
+  items,
+  cardTestId = "generative-ui-card",
+  checklistTestId = "generative-ui-checklist",
+  itemTestId = "generative-ui-checklist-item",
+}: {
+  status: string;
+  items: string[];
+  cardTestId?: string;
+  checklistTestId?: string;
+  itemTestId?: string;
+}) {
+  return (
+    <div
+      data-testid={cardTestId}
+      className="mt-3 rounded-xl border border-slate-300 bg-white/90 p-3 text-slate-900 shadow-[0_10px_24px_rgba(15,23,42,0.08)]"
+    >
+      <strong>Generative UI: Release Checklist ({status})</strong>
+      <div data-testid={checklistTestId} className="mt-3 grid gap-2">
+        {items.map((item, index) => (
+          <div
+            key={`${item}-${index}`}
+            data-testid={itemTestId}
+            className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5"
+          >
+            <span aria-hidden className="font-bold text-green-600">
+              [ ]
+            </span>
+            <span className="text-sm text-slate-800">{item}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function BaseStarterDemo() {
   const [themeColor, setThemeColor] = useState("#3b82f6");
   const [lastFrontendAction, setLastFrontendAction] = useState("none");
   const [hitlStatus, setHitlStatus] = useState("pending");
   const [showLocalHitl, setShowLocalHitl] = useState(false);
+  const [localChecklistPreview, setLocalChecklistPreview] = useState<string[] | null>(
+    null,
+  );
 
   const { state, setState } = useCoAgent<DemoState>({
     name: "default",
@@ -166,28 +206,7 @@ function BaseStarterDemo() {
       }
 
       const items = parsed.data.items;
-      return (
-        <div
-          data-testid="generative-ui-card"
-          className="mt-3 rounded-xl border border-slate-300 bg-white/90 p-3 text-slate-900 shadow-[0_10px_24px_rgba(15,23,42,0.08)]"
-        >
-          <strong>Generative UI: Release Checklist ({status})</strong>
-          <div data-testid="generative-ui-checklist" className="mt-3 grid gap-2">
-            {items.map((item, index) => (
-              <div
-                key={`${item}-${index}`}
-                data-testid="generative-ui-checklist-item"
-                className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5"
-              >
-                <span aria-hidden className="font-bold text-green-600">
-                  [ ]
-                </span>
-                <span className="text-sm text-slate-800">{item}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      );
+      return <ReleaseChecklistCard status={status} items={items} />;
     },
   });
 
@@ -305,6 +324,32 @@ function BaseStarterDemo() {
           >
             Expected result: a checklist card is rendered inside Copilot chat.
           </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              data-testid="generative-ui-local-preview-trigger"
+              className={buttonClass}
+              onClick={() => setLocalChecklistPreview(["run tests", "tag release"])}
+            >
+              Render Local Preview
+            </button>
+            <button
+              data-testid="generative-ui-local-preview-clear"
+              className={buttonClass}
+              onClick={() => setLocalChecklistPreview(null)}
+              disabled={!localChecklistPreview}
+            >
+              Clear Preview
+            </button>
+          </div>
+          {localChecklistPreview ? (
+            <ReleaseChecklistCard
+              status="preview"
+              items={localChecklistPreview}
+              cardTestId="generative-ui-local-card"
+              checklistTestId="generative-ui-local-checklist"
+              itemTestId="generative-ui-local-checklist-item"
+            />
+          ) : null}
           <p data-testid="backend-tool-prompt" className={subtleHintClass}>
             Optional backend-tool prompt: "What's the weather in San Francisco?" or "Show AAPL latest
             price."
