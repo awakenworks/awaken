@@ -134,7 +134,7 @@ Deprecated forwarding methods are provided. Update call sites to suppress warnin
 ### Stop Conditions
 
 Stop conditions moved from core config to `StopPolicyPlugin`. If you were passing stop conditions
-to `AgentConfig`, register them as a plugin instead:
+to `BaseAgent`, register them as a plugin instead:
 
 ```rust
 use tirea_agentos::orchestrator::StopPolicyPlugin;

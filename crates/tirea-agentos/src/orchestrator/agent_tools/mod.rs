@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use types::{DelegationRecord, DelegationState, DelegationStatus};
+use types::{DelegationAction, DelegationRecord, DelegationState, DelegationStatus};
 
 const SCOPE_CALLER_SESSION_ID_KEY: &str = TOOL_SCOPE_CALLER_THREAD_ID_KEY;
 const SCOPE_CALLER_STATE_KEY: &str = TOOL_SCOPE_CALLER_STATE_KEY;

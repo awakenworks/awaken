@@ -12,7 +12,7 @@ use tirea_protocol_ai_sdk_v6::AiSdkV6RunRequest;
 pub fn apply_ai_sdk_extensions(resolved: &mut ResolvedRun, _request: &AiSdkV6RunRequest) {
     // AI SDK transport supports batched approvals; replay only after the full
     // suspended set receives decisions to avoid partial duplicate replays.
-    resolved.config.tool_executor = Arc::new(ParallelToolExecutor::batch_approval());
+    resolved.agent.tool_executor = Arc::new(ParallelToolExecutor::batch_approval());
 }
 
 #[cfg(test)]
@@ -20,12 +20,12 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::HashMap;
-    use tirea_agentos::runtime::loop_runner::AgentConfig;
+    use tirea_agentos::runtime::loop_runner::BaseAgent;
     use tirea_contract::RunConfig;
 
     fn empty_resolved() -> ResolvedRun {
         ResolvedRun {
-            config: AgentConfig::default(),
+            agent: BaseAgent::default(),
             tools: HashMap::new(),
             run_config: RunConfig::new(),
         }
@@ -40,9 +40,9 @@ mod tests {
         .expect("request should deserialize");
         let mut resolved = empty_resolved();
         apply_ai_sdk_extensions(&mut resolved, &req);
-        assert!(resolved.config.plugins.is_empty());
+        assert!(resolved.agent.plugins.is_empty());
         assert_eq!(
-            resolved.config.tool_executor.name(),
+            resolved.agent.tool_executor.name(),
             "parallel_batch_approval"
         );
     }
@@ -63,9 +63,9 @@ mod tests {
         .expect("request should deserialize");
         let mut resolved = empty_resolved();
         apply_ai_sdk_extensions(&mut resolved, &req);
-        assert!(resolved.config.plugins.is_empty());
+        assert!(resolved.agent.plugins.is_empty());
         assert_eq!(
-            resolved.config.tool_executor.name(),
+            resolved.agent.tool_executor.name(),
             "parallel_batch_approval"
         );
     }

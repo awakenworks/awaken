@@ -14,7 +14,7 @@ use tirea_agent_loop::contracts::runtime::tool_call::{Tool, ToolDescriptor, Tool
 use tirea_agent_loop::contracts::{runtime::StreamResult, AgentEvent};
 use tirea_agent_loop::contracts::{RunContext, ToolCallContext};
 use tirea_agent_loop::runtime::loop_runner::{
-    execute_tools_with_plugins, run_loop, run_loop_stream, AgentConfig, GenaiLlmExecutor,
+    execute_tools_with_plugins, run_loop, run_loop_stream, Agent, BaseAgent, GenaiLlmExecutor,
 };
 use tirea_extension_observability::{InMemorySink, LLMMetryPlugin};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -236,7 +236,7 @@ async fn test_run_step_non_streaming_propagates_usage_and_exports_tokens_to_otel
         })
         .build();
 
-    let config = AgentConfig::new("gpt-4")
+    let config = BaseAgent::new("gpt-4")
         .with_plugin(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
@@ -290,7 +290,7 @@ async fn test_run_step_llm_error_closes_inference_span_and_sets_error_type() {
         })
         .build();
 
-    let config = AgentConfig::new("gpt-4")
+    let config = BaseAgent::new("gpt-4")
         .with_plugin(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
@@ -357,13 +357,13 @@ async fn test_run_loop_stream_http_error_closes_inference_span() {
         })
         .build();
 
-    let config = AgentConfig::new("gpt-4")
+    let config = BaseAgent::new("gpt-4")
         .with_plugin(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
-    let events: Vec<_> = run_loop_stream(config, HashMap::new(), run_ctx, None, None, None)
+    let events: Vec<_> = run_loop_stream(Arc::new(config) as Arc<dyn Agent>, HashMap::new(), run_ctx, None, None, None)
         .collect()
         .await;
     assert!(events.iter().any(|e| matches!(e, AgentEvent::Error { .. })));
@@ -423,13 +423,13 @@ async fn test_run_loop_stream_success_exports_tokens_to_otel() {
         })
         .build();
 
-    let config = AgentConfig::new("gpt-4")
+    let config = BaseAgent::new("gpt-4")
         .with_plugin(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
-    let events: Vec<_> = run_loop_stream(config, HashMap::new(), run_ctx, None, None, None)
+    let events: Vec<_> = run_loop_stream(Arc::new(config) as Arc<dyn Agent>, HashMap::new(), run_ctx, None, None, None)
         .collect()
         .await;
 
@@ -508,13 +508,13 @@ async fn test_run_loop_stream_connection_refused_closes_inference_span() {
         })
         .build();
 
-    let config = AgentConfig::new("gpt-4")
+    let config = BaseAgent::new("gpt-4")
         .with_plugin(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
-    let events: Vec<_> = run_loop_stream(config, HashMap::new(), run_ctx, None, None, None)
+    let events: Vec<_> = run_loop_stream(Arc::new(config) as Arc<dyn Agent>, HashMap::new(), run_ctx, None, None, None)
         .collect()
         .await;
     assert!(events.iter().any(|e| matches!(e, AgentEvent::Error { .. })));
@@ -620,13 +620,13 @@ async fn test_run_loop_stream_parse_error_closes_inference_span() {
         })
         .build();
 
-    let config = AgentConfig::new("gpt-4")
+    let config = BaseAgent::new("gpt-4")
         .with_plugin(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
-    let events: Vec<_> = run_loop_stream(config, HashMap::new(), run_ctx, None, None, None)
+    let events: Vec<_> = run_loop_stream(Arc::new(config) as Arc<dyn Agent>, HashMap::new(), run_ctx, None, None, None)
         .collect()
         .await;
     assert!(events.iter().any(|e| matches!(e, AgentEvent::Error { .. })));

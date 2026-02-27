@@ -1,7 +1,8 @@
 use super::stop_policy_plugin::StopConditionSpec;
+use crate::contracts::runtime::plugin::agent::NoOpBehavior;
 use crate::contracts::runtime::ToolExecutor;
 use crate::runtime::loop_runner::{
-    AgentConfig, LlmRetryPolicy, ParallelToolExecutor, SequentialToolExecutor,
+    BaseAgent, LlmRetryPolicy, ParallelToolExecutor, SequentialToolExecutor,
 };
 use genai::chat::ChatOptions;
 use std::sync::Arc;
@@ -18,7 +19,7 @@ pub enum ToolExecutionMode {
 ///
 /// This is the orchestration-facing model and uses only registry references
 /// (`plugin_ids`, `stop_condition_ids`) and declarative specs (`stop_condition_specs`).
-/// Before execution, AgentOS resolves it into loop-facing [`AgentConfig`].
+/// Before execution, AgentOS resolves it into loop-facing [`BaseAgent`].
 #[derive(Clone)]
 pub struct AgentDefinition {
     /// Unique identifier for this agent.
@@ -200,7 +201,7 @@ impl AgentDefinition {
     pub(crate) fn into_loop_config(
         self,
         plugins: Vec<Arc<dyn crate::contracts::runtime::plugin::AgentPlugin>>,
-    ) -> AgentConfig {
+    ) -> BaseAgent {
         let tool_executor: Arc<dyn ToolExecutor> = match self.tool_execution_mode {
             ToolExecutionMode::Sequential => Arc::new(SequentialToolExecutor),
             ToolExecutionMode::ParallelBatchApproval => {
@@ -208,7 +209,7 @@ impl AgentDefinition {
             }
             ToolExecutionMode::ParallelStreaming => Arc::new(ParallelToolExecutor::streaming()),
         };
-        AgentConfig {
+        BaseAgent {
             id: self.id,
             model: self.model,
             system_prompt: self.system_prompt,
@@ -217,6 +218,7 @@ impl AgentDefinition {
             chat_options: self.chat_options,
             fallback_models: self.fallback_models,
             llm_retry_policy: self.llm_retry_policy,
+            behavior: Arc::new(NoOpBehavior),
             plugins,
             step_tool_provider: None,
             llm_executor: None,

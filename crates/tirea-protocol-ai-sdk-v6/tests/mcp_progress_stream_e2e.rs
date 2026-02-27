@@ -13,7 +13,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tirea_agent_loop::contracts::thread::{Message, Thread};
 use tirea_agent_loop::contracts::{AgentEvent, RunConfig, RunContext};
-use tirea_agent_loop::runtime::loop_runner::{run_loop_stream, AgentConfig, LlmExecutor};
+use tirea_agent_loop::runtime::loop_runner::{run_loop_stream, Agent, BaseAgent, LlmExecutor};
 use tirea_contract::Transcoder;
 use tirea_extension_mcp::McpToolRegistryManager;
 use tirea_protocol_ai_sdk_v6::{AiSdkEncoder, UIStreamEvent};
@@ -397,12 +397,12 @@ for raw in sys.stdin:
         MockResponse::tool_call("call_progress", &tool_id, json!({ "message": "hello" })),
         MockResponse::text("done"),
     ]);
-    let config = AgentConfig::new("mock").with_llm_executor(Arc::new(llm) as Arc<dyn LlmExecutor>);
+    let config = BaseAgent::new("mock").with_llm_executor(Arc::new(llm) as Arc<dyn LlmExecutor>);
 
     let thread = Thread::new("thread-mcp-progress").with_message(Message::user("run"));
     let run_ctx = RunContext::from_thread(&thread, RunConfig::default()).expect("run context");
     let agent_events = collect_agent_events(run_loop_stream(
-        config,
+        Arc::new(config) as Arc<dyn Agent>,
         registry.snapshot(),
         run_ctx,
         None,
@@ -504,12 +504,12 @@ async fn real_http_mcp_progress_notifications_flow_to_ui_data_events() {
         ),
         MockResponse::text("done"),
     ]);
-    let config = AgentConfig::new("mock").with_llm_executor(Arc::new(llm) as Arc<dyn LlmExecutor>);
+    let config = BaseAgent::new("mock").with_llm_executor(Arc::new(llm) as Arc<dyn LlmExecutor>);
 
     let thread = Thread::new("thread-mcp-http-progress").with_message(Message::user("run"));
     let run_ctx = RunContext::from_thread(&thread, RunConfig::default()).expect("run context");
     let agent_events = collect_agent_events(run_loop_stream(
-        config,
+        Arc::new(config) as Arc<dyn Agent>,
         registry.snapshot(),
         run_ctx,
         None,

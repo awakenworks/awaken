@@ -100,6 +100,11 @@ impl<'a> ToolCallContext<'a> {
     // Identity
     // =========================================================================
 
+    /// Borrow the underlying document cell.
+    pub fn doc(&self) -> &DocCell {
+        self.doc
+    }
+
     /// Current call id (typically the `tool_call_id`).
     pub fn call_id(&self) -> &str {
         &self.call_id

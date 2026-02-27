@@ -10,10 +10,11 @@ pub mod tool_call;
 pub use activity::{ActivityManager, NoOpActivityManager};
 pub use llm::{StreamResult, TokenUsage};
 pub use plugin::{
-    AfterInferenceContext, AfterToolExecuteContext, AgentPlugin, BeforeInferenceContext,
-    BeforeToolExecuteContext, Phase, PhasePolicy, PluginPhaseContext, RunAction, RunEndContext,
-    RunStartContext, StateEffect, StepContext, StepEndContext, StepOutcome, StepStartContext,
-    SuspendTicket, ToolCallAction, ToolContext,
+    AfterInferenceContext, AfterToolExecuteContext, AgentBehavior, AgentPlugin, AnyStateAction,
+    BeforeInferenceContext, BeforeToolExecuteContext, CompositeBehavior, NoOpBehavior, Phase,
+    PhaseEffect, PhaseOutput, PhasePolicy, PluginPhaseContext, ReadOnlyContext, RunAction,
+    RunEndContext, RunStartContext, StateEffect, StateSpec, StepContext, StepEndContext,
+    StepOutcome, StepStartContext, SuspendTicket, ToolCallAction, ToolContext, validate_effect,
 };
 pub use run::{
     run_lifecycle_from_state, InferenceError, InferenceErrorState, RunContext, RunDelta, RunState,
@@ -21,9 +22,9 @@ pub use run::{
 };
 pub use tool_call::{
     suspended_calls_from_state, tool_call_states_from_state, ActivityContext, DecisionReplayPolicy,
-    PendingToolCall, SuspendedCall, SuspendedToolCallsState, Suspension, SuspensionResponse,
-    ToolCallContext, ToolCallOutcome, ToolCallResume, ToolCallResumeMode,
-    ToolCallState, ToolCallStatesMap, ToolCallStatus, ToolExecution, ToolExecutionRequest,
-    ToolExecutionResult, ToolExecutor, ToolExecutorError, ToolProgressState,
-    TOOL_PROGRESS_ACTIVITY_TYPE,
+    PendingToolCall, SuspendedCall, SuspendedToolCallsAction, SuspendedToolCallsState, Suspension,
+    SuspensionResponse, ToolCallContext, ToolCallOutcome, ToolCallResume, ToolCallResumeMode,
+    ToolCallState, ToolCallStatesAction, ToolCallStatesMap, ToolCallStatus, ToolExecution,
+    ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
+    ToolProgressState, TOOL_PROGRESS_ACTIVITY_TYPE,
 };

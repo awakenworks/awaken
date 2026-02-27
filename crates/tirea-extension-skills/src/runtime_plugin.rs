@@ -1,5 +1,7 @@
 use crate::SKILLS_RUNTIME_PLUGIN_ID;
 use async_trait::async_trait;
+use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
+use tirea_contract::runtime::plugin::phase::effect::PhaseOutput;
 use tirea_contract::runtime::plugin::phase::BeforeInferenceContext;
 use tirea_contract::runtime::plugin::AgentPlugin;
 
@@ -29,6 +31,18 @@ impl AgentPlugin for SkillRuntimePlugin {
     }
 }
 
+#[async_trait]
+impl AgentBehavior for SkillRuntimePlugin {
+    fn id(&self) -> &str {
+        SKILLS_RUNTIME_PLUGIN_ID
+    }
+
+    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+        // No-op: skill content is delivered via append_user_messages and tool results.
+        PhaseOutput::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -49,7 +63,7 @@ mod tests {
         let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
         let p = SkillRuntimePlugin::new();
         let mut before = BeforeInferenceContext::new(&mut step);
-        p.before_inference(&mut before).await;
+        AgentPlugin::before_inference(&p, &mut before).await;
         assert!(
             step.system_context.is_empty(),
             "runtime plugin should not inject system context"

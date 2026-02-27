@@ -1,3 +1,4 @@
+use crate::runtime::plugin::phase::state_spec::StateSpec;
 use crate::runtime::plugin::phase::SuspendTicket;
 use crate::runtime::state_paths::{SUSPENDED_TOOL_CALLS_STATE_PATH, TOOL_CALL_STATES_STATE_PATH};
 use crate::thread::ToolCall;
@@ -86,6 +87,30 @@ pub struct SuspendedToolCallsState {
     #[serde(default)]
     #[tirea(default = "HashMap::new()")]
     pub calls: HashMap<String, SuspendedCall>,
+}
+
+/// Action type for `SuspendedToolCallsState` reducer.
+pub enum SuspendedToolCallsAction {
+    /// Insert or replace a suspended call entry.
+    InsertCall { call: SuspendedCall },
+}
+
+impl StateSpec for SuspendedToolCallsState {
+    type Action = SuspendedToolCallsAction;
+
+    fn reduce(&mut self, action: SuspendedToolCallsAction) {
+        match action {
+            SuspendedToolCallsAction::InsertCall { call } => {
+                self.calls.insert(call.call_id.clone(), call);
+            }
+        }
+    }
+}
+
+/// Action type for `ToolCallStatesMap` reducer.
+pub enum ToolCallStatesAction {
+    /// Insert or replace a tool call state entry.
+    InsertState { state: ToolCallState },
 }
 
 /// Tool call lifecycle status for suspend/resume capable execution.
@@ -217,6 +242,18 @@ pub struct ToolCallStatesMap {
     #[serde(default)]
     #[tirea(default = "HashMap::new()")]
     pub calls: HashMap<String, ToolCallState>,
+}
+
+impl StateSpec for ToolCallStatesMap {
+    type Action = ToolCallStatesAction;
+
+    fn reduce(&mut self, action: ToolCallStatesAction) {
+        match action {
+            ToolCallStatesAction::InsertState { state } => {
+                self.calls.insert(state.call_id.clone(), state);
+            }
+        }
+    }
 }
 
 /// Parse suspended tool calls from a rebuilt state snapshot.

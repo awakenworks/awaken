@@ -14,7 +14,7 @@ use tirea_agent_loop::contracts::runtime::tool_call::{Tool, ToolDescriptor, Tool
 use tirea_agent_loop::contracts::{runtime::StreamResult, AgentEvent};
 use tirea_agent_loop::contracts::{RunContext, ToolCallContext};
 use tirea_agent_loop::runtime::loop_runner::{
-    execute_tools_with_plugins, run_loop, run_loop_stream, AgentConfig, GenaiLlmExecutor,
+    execute_tools_with_plugins, run_loop, run_loop_stream, Agent, BaseAgent, GenaiLlmExecutor,
 };
 use tirea_extension_observability::{InMemorySink, LLMMetryPlugin};
 
@@ -102,7 +102,7 @@ async fn test_llmmetry_exports_to_phoenix_via_otlp() {
         })
         .build();
 
-    let config = AgentConfig::new(model_name.clone())
+    let config = BaseAgent::new(model_name.clone())
         .with_plugin(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("phoenix-e2e-state", json!({}))
@@ -163,7 +163,7 @@ async fn test_llmmetry_exports_error_span_to_phoenix_via_otlp() {
         })
         .build();
 
-    let config = AgentConfig::new(model_name.clone())
+    let config = BaseAgent::new(model_name.clone())
         .with_plugin(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("phoenix-e2e-state-err", json!({}))
@@ -282,14 +282,14 @@ async fn test_llmmetry_exports_streaming_success_span_to_phoenix_via_otlp() {
         })
         .build();
 
-    let config = AgentConfig::new(model_name.clone())
+    let config = BaseAgent::new(model_name.clone())
         .with_plugin(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("phoenix-stream-ok-state", json!({}))
         .with_message(Message::user("hi"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
-    let events: Vec<_> = run_loop_stream(config, HashMap::new(), run_ctx, None, None, None)
+    let events: Vec<_> = run_loop_stream(Arc::new(config) as Arc<dyn Agent>, HashMap::new(), run_ctx, None, None, None)
         .collect()
         .await;
     assert!(

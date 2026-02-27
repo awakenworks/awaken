@@ -29,6 +29,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use tirea_contract::io::ResumeDecisionAction;
+use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
+use tirea_contract::runtime::plugin::phase::effect::PhaseOutput;
 use tirea_contract::runtime::plugin::phase::{
     BeforeInferenceContext, BeforeToolExecuteContext, PluginPhaseContext, SuspendTicket,
     ToolCallAction,
@@ -200,6 +202,68 @@ impl AgentPlugin for PermissionPlugin {
     }
 }
 
+#[async_trait]
+impl AgentBehavior for PermissionPlugin {
+    fn id(&self) -> &str {
+        "permission"
+    }
+
+    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+        let Some(tool_id) = ctx.tool_name() else {
+            return PhaseOutput::default();
+        };
+
+        let call_id = ctx.tool_call_id().unwrap_or_default().to_string();
+        if !call_id.is_empty() {
+            let has_resume_grant = ctx
+                .resume_input()
+                .is_some_and(|resume| matches!(resume.action, ResumeDecisionAction::Resume));
+            if has_resume_grant {
+                return PhaseOutput::default();
+            }
+        }
+
+        let permission = ctx
+            .snapshot_of::<PermissionState>()
+            .ok()
+            .map(|state| {
+                state
+                    .tools
+                    .get(tool_id)
+                    .copied()
+                    .unwrap_or(state.default_behavior)
+            })
+            .unwrap_or_default();
+
+        match permission {
+            ToolPermissionBehavior::Allow => PhaseOutput::default(),
+            ToolPermissionBehavior::Deny => {
+                PhaseOutput::new().block_tool(format!("Tool '{}' is denied", tool_id))
+            }
+            ToolPermissionBehavior::Ask => {
+                if call_id.is_empty() {
+                    return PhaseOutput::new()
+                        .block_tool("Permission check requires non-empty tool call id");
+                }
+                let tool_args = ctx.tool_args().cloned().unwrap_or_default();
+                let arguments = json!({
+                    "tool_name": tool_id,
+                    "tool_args": tool_args.clone(),
+                });
+                let pending_call_id = format!("fc_{call_id}");
+                let suspension =
+                    tirea_contract::Suspension::new(&pending_call_id, "tool:PermissionConfirm")
+                        .with_parameters(arguments.clone());
+                PhaseOutput::new().suspend_tool(SuspendTicket::new(
+                    suspension,
+                    PendingToolCall::new(pending_call_id, PERMISSION_CONFIRM_TOOL_NAME, arguments),
+                    ToolCallResumeMode::ReplayToolCall,
+                ))
+            }
+        }
+    }
+}
+
 /// Tool scope policy plugin.
 ///
 /// Enforces allow/deny list filtering for tools via `RunConfig` scope keys.
@@ -253,6 +317,51 @@ impl AgentPlugin for ToolPolicyPlugin {
     }
 }
 
+#[async_trait]
+impl AgentBehavior for ToolPolicyPlugin {
+    fn id(&self) -> &str {
+        "tool_policy"
+    }
+
+    async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+        let run_config = ctx.run_config();
+        let allowed = scope::parse_scope_filter(run_config.value(SCOPE_ALLOWED_TOOLS_KEY));
+        let excluded = scope::parse_scope_filter(run_config.value(SCOPE_EXCLUDED_TOOLS_KEY));
+
+        let mut output = PhaseOutput::new();
+        if let Some(ref allowed) = allowed {
+            output = output.include_only_tools(allowed.clone());
+        }
+        if let Some(ref excluded) = excluded {
+            for id in excluded {
+                output = output.exclude_tool(id);
+            }
+        }
+        output
+    }
+
+    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+        let Some(tool_id) = ctx.tool_name() else {
+            return PhaseOutput::default();
+        };
+
+        let run_config = ctx.run_config();
+        if !scope::is_scope_allowed(
+            Some(run_config),
+            tool_id,
+            SCOPE_ALLOWED_TOOLS_KEY,
+            SCOPE_EXCLUDED_TOOLS_KEY,
+        ) {
+            PhaseOutput::new().block_tool(format!(
+                "Tool '{}' is not allowed by current policy",
+                tool_id
+            ))
+        } else {
+            PhaseOutput::default()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,7 +379,7 @@ mod tests {
         step: &mut tirea_contract::runtime::plugin::phase::StepContext<'_>,
     ) {
         let mut ctx = BeforeToolExecuteContext::new(step);
-        plugin.before_tool_execute(&mut ctx).await;
+        AgentPlugin::before_tool_execute(plugin, &mut ctx).await;
     }
 
     #[test]
@@ -442,7 +551,7 @@ mod tests {
     #[test]
     fn test_permission_plugin_id() {
         let plugin = PermissionPlugin;
-        assert_eq!(plugin.id(), "permission");
+        assert_eq!(AgentPlugin::id(&plugin), "permission");
     }
 
     #[tokio::test]
@@ -827,12 +936,12 @@ mod tests {
         step: &mut tirea_contract::runtime::plugin::phase::StepContext<'_>,
     ) {
         let mut ctx = BeforeToolExecuteContext::new(step);
-        plugin.before_tool_execute(&mut ctx).await;
+        AgentPlugin::before_tool_execute(plugin, &mut ctx).await;
     }
 
     #[test]
     fn test_tool_policy_plugin_id() {
-        assert_eq!(ToolPolicyPlugin.id(), "tool_policy");
+        assert_eq!(AgentPlugin::id(&ToolPolicyPlugin), "tool_policy");
     }
 
     #[tokio::test]

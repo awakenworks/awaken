@@ -136,7 +136,7 @@ impl AgentOs {
         }
 
         // 6. Validate plugin uniqueness (caller may have added plugins to resolved).
-        Self::ensure_unique_plugin_ids(&resolved.config.plugins)
+        Self::ensure_unique_plugin_ids(&resolved.agent.plugins)
             .map_err(AgentOsResolveError::from)
             .map_err(AgentOsRunError::from)?;
 
@@ -152,7 +152,7 @@ impl AgentOs {
         Ok(PreparedRun {
             thread_id,
             run_id,
-            config: resolved.config,
+            agent: Arc::new(resolved.agent),
             tools: resolved.tools,
             run_ctx,
             cancellation_token: None,
@@ -167,7 +167,7 @@ impl AgentOs {
     /// Execute a previously prepared run.
     pub fn execute_prepared(prepared: PreparedRun) -> Result<RunStream, AgentOsRunError> {
         let events = run_loop_stream(
-            prepared.config,
+            prepared.agent,
             prepared.tools,
             prepared.run_ctx,
             prepared.cancellation_token,
@@ -243,7 +243,7 @@ impl AgentOs {
         let run_ctx = RunContext::from_thread(&thread, resolved.run_config)
             .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
         Ok(run_loop_stream(
-            resolved.config,
+            Arc::new(resolved.agent),
             resolved.tools,
             run_ctx,
             cancellation_token,

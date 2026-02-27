@@ -42,7 +42,7 @@ pub enum SkillSubsystemError {
 /// skills.extend_tools(&mut tools).unwrap();
 ///
 /// // 4) Register the combined plugin: discovery catalog + runtime injection.
-/// let config = AgentConfig::new("gpt-4o-mini").with_plugin(skills.plugin());
+/// let config = BaseAgent::new("gpt-4o-mini").with_plugin(skills.plugin());
 /// # let _ = config;
 /// # let _ = tools;
 /// ```

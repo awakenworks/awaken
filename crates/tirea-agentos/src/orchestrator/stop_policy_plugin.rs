@@ -3,12 +3,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
+use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
+use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
+use crate::contracts::runtime::plugin::phase::state_spec::{AnyStateAction, StateSpec};
 use crate::contracts::runtime::plugin::phase::{AfterInferenceContext, PluginPhaseContext};
 use crate::contracts::runtime::plugin::AgentPlugin;
 use crate::contracts::runtime::StreamResult;
 use crate::contracts::runtime::tool_call::ToolResult;
 use crate::contracts::thread::{Message, Role, ToolCall};
-use crate::contracts::{RunContext, StoppedReason};
+use crate::contracts::{RunContext, StoppedReason, TerminationReason};
 use tirea_state::State;
 
 pub const STOP_POLICY_PLUGIN_ID: &str = "stop_policy";
@@ -42,6 +45,39 @@ struct StopPolicyRuntimeState {
     pub total_input_tokens: usize,
     #[serde(default)]
     pub total_output_tokens: usize,
+}
+
+/// Action type for `StopPolicyRuntimeState` reducer.
+pub(crate) enum StopPolicyRuntimeAction {
+    /// Record token usage from a single inference call.
+    RecordTokens {
+        started_at_ms: Option<u64>,
+        prompt_tokens: usize,
+        completion_tokens: usize,
+    },
+}
+
+impl StateSpec for StopPolicyRuntimeState {
+    type Action = StopPolicyRuntimeAction;
+
+    fn reduce(&mut self, action: StopPolicyRuntimeAction) {
+        match action {
+            StopPolicyRuntimeAction::RecordTokens {
+                started_at_ms,
+                prompt_tokens,
+                completion_tokens,
+            } => {
+                if let Some(ms) = started_at_ms {
+                    if self.started_at_ms.is_none() {
+                        self.started_at_ms = Some(ms);
+                    }
+                }
+                self.total_input_tokens = self.total_input_tokens.saturating_add(prompt_tokens);
+                self.total_output_tokens =
+                    self.total_output_tokens.saturating_add(completion_tokens);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -350,6 +386,87 @@ impl AgentPlugin for StopPolicyPlugin {
                 break;
             }
         }
+    }
+}
+
+#[async_trait]
+impl AgentBehavior for StopPolicyPlugin {
+    fn id(&self) -> &str {
+        STOP_POLICY_PLUGIN_ID
+    }
+
+    async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+        if self.conditions.is_empty() {
+            return PhaseOutput::default();
+        }
+
+        let Some(response) = ctx.response() else {
+            return PhaseOutput::default();
+        };
+        let now_ms = now_millis();
+        let prompt_tokens = response
+            .usage
+            .as_ref()
+            .and_then(|usage| usage.prompt_tokens)
+            .unwrap_or(0) as usize;
+        let completion_tokens = response
+            .usage
+            .as_ref()
+            .and_then(|usage| usage.completion_tokens)
+            .unwrap_or(0) as usize;
+
+        let runtime = ctx
+            .snapshot_of::<StopPolicyRuntimeState>()
+            .unwrap_or_default();
+        let started_at_ms = runtime.started_at_ms.unwrap_or(now_ms);
+        let total_input_tokens = runtime.total_input_tokens.saturating_add(prompt_tokens);
+        let total_output_tokens = runtime.total_output_tokens.saturating_add(completion_tokens);
+
+        let mut output = PhaseOutput::new().with_state_action(
+            AnyStateAction::new::<StopPolicyRuntimeState>(
+                StopPolicyRuntimeAction::RecordTokens {
+                    started_at_ms: if runtime.started_at_ms.is_none() {
+                        Some(now_ms)
+                    } else {
+                        None
+                    },
+                    prompt_tokens,
+                    completion_tokens,
+                },
+            ),
+        );
+
+        let message_stats = derive_stats_from_messages_with_response(ctx.messages(), response);
+        let elapsed = std::time::Duration::from_millis(now_ms.saturating_sub(started_at_ms));
+
+        let run_ctx = RunContext::new(
+            ctx.thread_id().to_string(),
+            ctx.snapshot(),
+            ctx.messages().to_vec(),
+            ctx.run_config().clone(),
+        );
+        let input = StopPolicyInput {
+            run_ctx: &run_ctx,
+            stats: StopPolicyStats {
+                step: message_stats.step,
+                step_tool_call_count: message_stats.step_tool_call_count,
+                total_tool_call_count: message_stats.total_tool_call_count,
+                total_input_tokens,
+                total_output_tokens,
+                consecutive_errors: message_stats.consecutive_errors,
+                elapsed,
+                last_tool_calls: &message_stats.last_tool_calls,
+                last_text: &message_stats.last_text,
+                tool_call_history: &message_stats.tool_call_history,
+            },
+        };
+        for condition in &self.conditions {
+            if let Some(stopped) = condition.evaluate(&input) {
+                output = output.request_termination(TerminationReason::Stopped(stopped));
+                break;
+            }
+        }
+        output
     }
 }
 

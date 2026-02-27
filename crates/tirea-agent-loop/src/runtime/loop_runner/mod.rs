@@ -40,6 +40,7 @@
 
 mod config;
 mod core;
+mod effect_applicator;
 mod event_envelope_meta;
 mod outcome;
 mod plugin_runtime;
@@ -76,7 +77,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[cfg(test)]
 use crate::contracts::runtime::plugin::AgentPlugin;
 pub use crate::contracts::runtime::ToolExecutor;
 pub use crate::runtime::run_context::{
@@ -85,7 +85,7 @@ pub use crate::runtime::run_context::{
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use config::StaticStepToolProvider;
-pub use config::{AgentConfig, GenaiLlmExecutor, LlmRetryPolicy};
+pub use config::{Agent, BaseAgent, GenaiLlmExecutor, LlmRetryPolicy};
 pub use config::{LlmEventStream, LlmExecutor};
 pub use config::{StepToolInput, StepToolProvider, StepToolSnapshot};
 #[cfg(test)]
@@ -99,9 +99,9 @@ pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
 pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
 #[cfg(test)]
 use plugin_runtime::emit_phase_checked;
-use plugin_runtime::{
-    emit_cleanup_phases_and_apply, emit_phase_block, emit_run_end_phase, run_phase_block,
-};
+#[cfg(test)]
+use plugin_runtime::{emit_cleanup_phases_and_apply, emit_phase_block, emit_run_end_phase};
+use plugin_runtime::run_phase_block;
 use run_state::RunState;
 pub use state_commit::ChannelStateCommitter;
 use state_commit::PendingDeltaCommitContext;
@@ -124,12 +124,16 @@ pub use tool_exec::{
 
 /// Fully resolved agent wiring ready for execution.
 ///
-/// Contains everything needed to run an agent loop: the loop configuration,
+/// Contains everything needed to run an agent loop: the agent,
 /// the resolved tool map, and the runtime config. This is a pure data struct
 /// that can be inspected, mutated, and tested independently.
 pub struct ResolvedRun {
-    /// Loop configuration (model, plugins, ...).
-    pub config: AgentConfig,
+    /// The agent (model, behavior, execution strategies, ...).
+    ///
+    /// Exposed as a concrete [`BaseAgent`] so callers can mutate fields
+    /// (model, plugins, tool_executor, ...) between resolution and execution.
+    /// Converted to `Arc<dyn Agent>` at the execution boundary.
+    pub agent: BaseAgent,
     /// Resolved tool map after filtering and wiring.
     pub tools: HashMap<String, Arc<dyn Tool>>,
     /// Runtime configuration (user_id, run_id, ...).
@@ -144,18 +148,18 @@ impl ResolvedRun {
         self
     }
 
-    /// Add a plugin to the resolved config.
-    #[must_use]
-    pub fn with_plugin(mut self, plugin: Arc<dyn crate::contracts::runtime::plugin::AgentPlugin>) -> Self {
-        self.config.plugins.push(plugin);
-        self
-    }
-
     /// Overlay tools from a map (insert-if-absent semantics).
     pub fn overlay_tools(&mut self, tools: HashMap<String, Arc<dyn Tool>>) {
         for (id, tool) in tools {
             self.tools.entry(id).or_insert(tool);
         }
+    }
+
+    /// Add a single legacy plugin to the agent.
+    #[must_use]
+    pub fn with_plugin(mut self, plugin: Arc<dyn AgentPlugin>) -> Self {
+        self.agent.plugins.push(plugin);
+        self
     }
 }
 
@@ -219,10 +223,10 @@ pub(super) fn append_cancellation_user_message(run_ctx: &mut RunContext, stage: 
     run_ctx.add_message(Arc::new(Message::user(content)));
 }
 
-pub(super) fn effective_llm_models(config: &AgentConfig) -> Vec<String> {
-    let mut models = Vec::with_capacity(1 + config.fallback_models.len());
-    models.push(config.model.clone());
-    for model in &config.fallback_models {
+pub(super) fn effective_llm_models(agent: &dyn Agent) -> Vec<String> {
+    let mut models = Vec::with_capacity(1 + agent.fallback_models().len());
+    models.push(agent.model().to_string());
+    for model in agent.fallback_models() {
         if model.trim().is_empty() {
             continue;
         }
@@ -233,8 +237,8 @@ pub(super) fn effective_llm_models(config: &AgentConfig) -> Vec<String> {
     models
 }
 
-pub(super) fn llm_retry_attempts(config: &AgentConfig) -> usize {
-    config.llm_retry_policy.max_attempts_per_model.max(1)
+pub(super) fn llm_retry_attempts(agent: &dyn Agent) -> usize {
+    agent.llm_retry_policy().max_attempts_per_model.max(1)
 }
 
 pub(super) fn is_retryable_llm_error(message: &str) -> bool {
@@ -274,12 +278,10 @@ pub(super) fn is_retryable_llm_error(message: &str) -> bool {
     retryable.iter().any(|p| lower.contains(p))
 }
 
-pub(super) fn retry_backoff_ms(config: &AgentConfig, retry_index: usize) -> u64 {
-    let initial = config.llm_retry_policy.initial_backoff_ms;
-    let cap = config
-        .llm_retry_policy
-        .max_backoff_ms
-        .max(config.llm_retry_policy.initial_backoff_ms);
+pub(super) fn retry_backoff_ms(agent: &dyn Agent, retry_index: usize) -> u64 {
+    let policy = agent.llm_retry_policy();
+    let initial = policy.initial_backoff_ms;
+    let cap = policy.max_backoff_ms.max(policy.initial_backoff_ms);
     if retry_index == 0 {
         return initial.min(cap);
     }
@@ -289,11 +291,11 @@ pub(super) fn retry_backoff_ms(config: &AgentConfig, retry_index: usize) -> u64 
 }
 
 pub(super) async fn wait_retry_backoff(
-    config: &AgentConfig,
+    agent: &dyn Agent,
     retry_index: usize,
     run_cancellation_token: Option<&RunCancellationToken>,
 ) -> bool {
-    let wait_ms = retry_backoff_ms(config, retry_index);
+    let wait_ms = retry_backoff_ms(agent, retry_index);
     match await_or_cancel(
         run_cancellation_token,
         tokio::time::sleep(std::time::Duration::from_millis(wait_ms)),
@@ -323,18 +325,17 @@ fn is_run_cancelled(token: Option<&RunCancellationToken>) -> bool {
 }
 
 pub(super) fn step_tool_provider_for_run(
-    config: &AgentConfig,
+    agent: &dyn Agent,
     tools: HashMap<String, Arc<dyn Tool>>,
 ) -> Arc<dyn StepToolProvider> {
-    config.step_tool_provider.clone().unwrap_or_else(|| {
+    agent.step_tool_provider().unwrap_or_else(|| {
         Arc::new(StaticStepToolProvider::new(tools)) as Arc<dyn StepToolProvider>
     })
 }
 
-pub(super) fn llm_executor_for_run(config: &AgentConfig) -> Arc<dyn LlmExecutor> {
-    config
-        .llm_executor
-        .clone()
+pub(super) fn llm_executor_for_run(agent: &dyn Agent) -> Arc<dyn LlmExecutor> {
+    agent
+        .llm_executor()
         .unwrap_or_else(|| Arc::new(GenaiLlmExecutor::new(Client::default())))
 }
 
@@ -369,7 +370,7 @@ fn build_loop_outcome(
 }
 
 pub(super) async fn run_llm_with_retry_and_fallback<T, Invoke, Fut>(
-    config: &AgentConfig,
+    agent: &dyn Agent,
     run_cancellation_token: Option<&RunCancellationToken>,
     retry_current_model: bool,
     unknown_error: &str,
@@ -380,8 +381,8 @@ where
     Fut: std::future::Future<Output = genai::Result<T>>,
 {
     let mut last_llm_error = unknown_error.to_string();
-    let model_candidates = effective_llm_models(config);
-    let max_attempts = llm_retry_attempts(config);
+    let model_candidates = effective_llm_models(agent);
+    let max_attempts = llm_retry_attempts(agent);
     let mut total_attempts = 0usize;
 
     for model in model_candidates {
@@ -410,7 +411,7 @@ where
                         && is_retryable_llm_error(&message);
                     if can_retry_same_model {
                         let cancelled =
-                            wait_retry_backoff(config, attempt, run_cancellation_token).await;
+                            wait_retry_backoff(agent, attempt, run_cancellation_token).await;
                         if cancelled {
                             return LlmAttemptOutcome::Cancelled;
                         }
@@ -431,7 +432,7 @@ where
 pub(super) async fn run_step_prepare_phases(
     run_ctx: &RunContext,
     tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
-    config: &AgentConfig,
+    agent: &dyn Agent,
 ) -> Result<
     (
         Vec<Message>,
@@ -441,13 +442,14 @@ pub(super) async fn run_step_prepare_phases(
     ),
     AgentLoopError,
 > {
-    let ((messages, filtered_tools, run_action), pending) = run_phase_block(
+    let system_prompt = agent.system_prompt().to_string();
+    let ((messages, filtered_tools, run_action), pending) = plugin_runtime::unified_run_phase_block(
         run_ctx,
         tool_descriptors,
-        &config.plugins,
+        agent,
         &[Phase::StepStart, Phase::BeforeInference],
         |_| {},
-        |step| inference_inputs_from_step(step, &config.system_prompt),
+        |step| inference_inputs_from_step(step, &system_prompt),
     )
     .await?;
     Ok((messages, filtered_tools, run_action, pending))
@@ -463,10 +465,10 @@ pub(super) struct PreparedStep {
 pub(super) async fn prepare_step_execution(
     run_ctx: &RunContext,
     tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
-    config: &AgentConfig,
+    agent: &dyn Agent,
 ) -> Result<PreparedStep, AgentLoopError> {
     let (messages, filtered_tools, run_action, pending) =
-        run_step_prepare_phases(run_ctx, tool_descriptors, config).await?;
+        run_step_prepare_phases(run_ctx, tool_descriptors, agent).await?;
     Ok(PreparedStep {
         messages,
         filtered_tools,
@@ -478,11 +480,18 @@ pub(super) async fn prepare_step_execution(
 pub(super) async fn apply_llm_error_cleanup(
     run_ctx: &mut RunContext,
     tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
-    plugins: &[Arc<dyn crate::contracts::runtime::plugin::AgentPlugin>],
+    agent: &dyn Agent,
     error_type: &'static str,
     message: String,
 ) -> Result<(), AgentLoopError> {
-    emit_cleanup_phases_and_apply(run_ctx, tool_descriptors, plugins, error_type, message).await
+    plugin_runtime::unified_emit_cleanup_phases_and_apply(
+        run_ctx,
+        tool_descriptors,
+        agent,
+        error_type,
+        message,
+    )
+    .await
 }
 
 pub(super) async fn complete_step_after_inference(
@@ -491,12 +500,12 @@ pub(super) async fn complete_step_after_inference(
     step_meta: MessageMetadata,
     assistant_message_id: Option<String>,
     tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
-    plugins: &[Arc<dyn crate::contracts::runtime::plugin::AgentPlugin>],
+    agent: &dyn Agent,
 ) -> Result<Option<TerminationReason>, AgentLoopError> {
-    let (run_action, pending) = run_phase_block(
+    let (run_action, pending) = plugin_runtime::unified_run_phase_block(
         run_ctx,
         tool_descriptors,
-        plugins,
+        agent,
         &[Phase::AfterInference],
         |step| {
             step.response = Some(result.clone());
@@ -509,8 +518,14 @@ pub(super) async fn complete_step_after_inference(
     let assistant = assistant_turn_message(result, step_meta, assistant_message_id);
     run_ctx.add_message(Arc::new(assistant));
 
-    let pending =
-        emit_phase_block(Phase::StepEnd, run_ctx, tool_descriptors, plugins, |_| {}).await?;
+    let pending = plugin_runtime::unified_emit_phase_block(
+        Phase::StepEnd,
+        run_ctx,
+        tool_descriptors,
+        agent,
+        |_| {},
+    )
+    .await?;
     run_ctx.add_thread_patches(pending);
     Ok(match run_action {
         RunAction::Terminate(reason) => Some(reason),
@@ -585,21 +600,20 @@ pub(super) struct ToolExecutionContext {
 
 pub(super) fn prepare_tool_execution_context(
     run_ctx: &RunContext,
-    config: Option<&AgentConfig>,
 ) -> Result<ToolExecutionContext, AgentLoopError> {
     let state = run_ctx
         .snapshot()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let run_config = scope_with_tool_caller_context(run_ctx, &state, config)?;
+    let run_config = scope_with_tool_caller_context(run_ctx, &state)?;
     Ok(ToolExecutionContext { state, run_config })
 }
 
 pub(super) async fn finalize_run_end(
     run_ctx: &mut RunContext,
     tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
-    plugins: &[Arc<dyn crate::contracts::runtime::plugin::AgentPlugin>],
+    agent: &dyn Agent,
 ) {
-    emit_run_end_phase(run_ctx, tool_descriptors, plugins).await
+    plugin_runtime::unified_emit_run_end_phase(run_ctx, tool_descriptors, agent).await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -634,12 +648,12 @@ async fn persist_run_termination(
     run_ctx: &mut RunContext,
     termination: &TerminationReason,
     tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
-    plugins: &[Arc<dyn crate::contracts::runtime::plugin::AgentPlugin>],
+    agent: &dyn Agent,
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
     run_finished_commit_policy: RunFinishedCommitPolicy,
 ) -> Result<(), AgentLoopError> {
     sync_run_lifecycle_for_termination(run_ctx, termination)?;
-    finalize_run_end(run_ctx, tool_descriptors, plugins).await;
+    finalize_run_end(run_ctx, tool_descriptors, agent).await;
     if let Err(error) = pending_delta_commit
         .commit(run_ctx, CheckpointReason::RunFinished, true)
         .await
@@ -792,7 +806,7 @@ fn all_suspended_calls_have_resume(
 async fn drain_resuming_tool_calls_and_replay(
     run_ctx: &mut RunContext,
     tools: &HashMap<String, Arc<dyn Tool>>,
-    config: &AgentConfig,
+    agent: &dyn Agent,
     tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
 ) -> Result<RunStartDrainOutcome, AgentLoopError> {
     let decisions = runtime_resume_inputs(run_ctx);
@@ -825,7 +839,7 @@ async fn drain_resuming_tool_calls_and_replay(
     }
 
     if matches!(
-        config.tool_executor.decision_replay_policy(),
+        agent.tool_executor().decision_replay_policy(),
         DecisionReplayPolicy::BatchAllSuspended
     ) && !all_suspended_calls_have_resume(&suspended, &decisions)
     {
@@ -911,10 +925,11 @@ async fn drain_resuming_tool_calls_and_replay(
                     .snapshot()
                     .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
                 let tool = tools.get(&tool_call.name).cloned();
-                let rt_for_replay = scope_with_tool_caller_context(run_ctx, &state, Some(config))?;
+                let rt_for_replay = scope_with_tool_caller_context(run_ctx, &state)?;
                 let replay_phase_ctx = ToolPhaseContext {
                     tool_descriptors,
-                    plugins: &config.plugins,
+                    agent_behavior: Some(agent.behavior()),
+                    plugins: agent.plugins(),
                     activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
                     run_config: &rt_for_replay,
                     thread_id: run_ctx.thread_id(),
@@ -1023,16 +1038,16 @@ async fn drain_resuming_tool_calls_and_replay(
 async fn drain_run_start_resume_replay(
     run_ctx: &mut RunContext,
     tools: &HashMap<String, Arc<dyn Tool>>,
-    config: &AgentConfig,
+    agent: &dyn Agent,
     tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
 ) -> Result<RunStartDrainOutcome, AgentLoopError> {
-    drain_resuming_tool_calls_and_replay(run_ctx, tools, config, tool_descriptors).await
+    drain_resuming_tool_calls_and_replay(run_ctx, tools, agent, tool_descriptors).await
 }
 
 async fn commit_run_start_and_drain_replay(
     run_ctx: &mut RunContext,
     tools: &HashMap<String, Arc<dyn Tool>>,
-    config: &AgentConfig,
+    agent: &dyn Agent,
     active_tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
 ) -> Result<RunStartDrainOutcome, AgentLoopError> {
@@ -1041,7 +1056,7 @@ async fn commit_run_start_and_drain_replay(
         .await?;
 
     let run_start_drain =
-        drain_run_start_resume_replay(run_ctx, tools, config, active_tool_descriptors).await?;
+        drain_run_start_resume_replay(run_ctx, tools, agent, active_tool_descriptors).await?;
 
     if run_start_drain.replayed {
         pending_delta_commit
@@ -1264,7 +1279,7 @@ async fn replay_after_decisions(
     run_ctx: &mut RunContext,
     decisions_applied: bool,
     step_tool_provider: &Arc<dyn StepToolProvider>,
-    config: &AgentConfig,
+    agent: &dyn Agent,
     active_tool_descriptors: &mut Vec<crate::contracts::runtime::tool_call::ToolDescriptor>,
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
 ) -> Result<Vec<AgentEvent>, AgentLoopError> {
@@ -1278,7 +1293,7 @@ async fn replay_after_decisions(
     let decision_drain = drain_run_start_resume_replay(
         run_ctx,
         &decision_tools.tools,
-        config,
+        agent,
         active_tool_descriptors,
     )
     .await?;
@@ -1295,7 +1310,7 @@ async fn apply_decisions_and_replay(
     decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
     pending_decisions: &mut VecDeque<ToolCallDecision>,
     step_tool_provider: &Arc<dyn StepToolProvider>,
-    config: &AgentConfig,
+    agent: &dyn Agent,
     active_tool_descriptors: &mut Vec<crate::contracts::runtime::tool_call::ToolDescriptor>,
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
 ) -> Result<Vec<AgentEvent>, AgentLoopError> {
@@ -1305,7 +1320,7 @@ async fn apply_decisions_and_replay(
         pending_decisions,
         None,
         step_tool_provider,
-        config,
+        agent,
         active_tool_descriptors,
         pending_delta_commit,
     )
@@ -1324,7 +1339,7 @@ async fn drain_and_replay_decisions(
     pending_decisions: &mut VecDeque<ToolCallDecision>,
     decision: Option<ToolCallDecision>,
     step_tool_provider: &Arc<dyn StepToolProvider>,
-    config: &AgentConfig,
+    agent: &dyn Agent,
     active_tool_descriptors: &mut Vec<crate::contracts::runtime::tool_call::ToolDescriptor>,
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
 ) -> Result<DecisionReplayOutcome, AgentLoopError> {
@@ -1337,7 +1352,7 @@ async fn drain_and_replay_decisions(
         run_ctx,
         !decision_drain.resolved_call_ids.is_empty(),
         step_tool_provider,
-        config,
+        agent,
         active_tool_descriptors,
         pending_delta_commit,
     )
@@ -1356,7 +1371,7 @@ async fn apply_decision_and_replay(
     decision_rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
     pending_decisions: &mut VecDeque<ToolCallDecision>,
     step_tool_provider: &Arc<dyn StepToolProvider>,
-    config: &AgentConfig,
+    agent: &dyn Agent,
     active_tool_descriptors: &mut Vec<crate::contracts::runtime::tool_call::ToolDescriptor>,
     pending_delta_commit: &PendingDeltaCommitContext<'_>,
 ) -> Result<DecisionReplayOutcome, AgentLoopError> {
@@ -1366,7 +1381,7 @@ async fn apply_decision_and_replay(
         pending_decisions,
         Some(response),
         step_tool_provider,
-        config,
+        agent,
         active_tool_descriptors,
         pending_delta_commit,
     )
@@ -1383,22 +1398,23 @@ async fn recv_decision(
 /// Run the full agent loop until completion, suspension, cancellation, or error.
 ///
 /// This is the primary non-streaming entry point. Tools are passed directly
-/// and used as the default tool set unless `config.step_tool_provider` is set
+/// and used as the default tool set unless the agent's step_tool_provider is set
 /// (for dynamic per-step tool resolution).
 pub async fn run_loop(
-    config: &AgentConfig,
+    agent: &dyn Agent,
     tools: HashMap<String, Arc<dyn Tool>>,
     mut run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
     mut decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
 ) -> LoopOutcome {
-    let executor = llm_executor_for_run(config);
+    let executor = llm_executor_for_run(agent);
+    let tool_executor = agent.tool_executor();
     let mut run_state = RunState::new();
     let mut pending_decisions = VecDeque::new();
     let run_cancellation_token = cancellation_token;
     let mut last_text = String::new();
-    let step_tool_provider = step_tool_provider_for_run(config, tools);
+    let step_tool_provider = step_tool_provider_for_run(agent, tools);
     let run_identity = stream_core::resolve_stream_run_identity(&mut run_ctx);
     let run_id = run_identity.run_id;
     let parent_run_id = run_identity.parent_run_id;
@@ -1432,7 +1448,7 @@ pub async fn run_loop(
                 &mut run_ctx,
                 &final_termination,
                 &active_tool_descriptors,
-                &config.plugins,
+                agent,
                 &pending_delta_commit,
                 RunFinishedCommitPolicy::Required,
             )
@@ -1457,11 +1473,11 @@ pub async fn run_loop(
     }
 
     // Phase: RunStart
-    let pending = match emit_phase_block(
+    let pending = match plugin_runtime::unified_emit_phase_block(
         Phase::RunStart,
         &run_ctx,
         &active_tool_descriptors,
-        &config.plugins,
+        agent,
         |_| {},
     )
     .await
@@ -1479,7 +1495,7 @@ pub async fn run_loop(
     if let Err(error) = commit_run_start_and_drain_replay(
         &mut run_ctx,
         &initial_tools,
-        config,
+        agent,
         &active_tool_descriptors,
         &pending_delta_commit,
     )
@@ -1501,7 +1517,7 @@ pub async fn run_loop(
             &mut decision_rx,
             &mut pending_decisions,
             &step_tool_provider,
-            config,
+            agent,
             &mut active_tool_descriptors,
             &pending_delta_commit,
         )
@@ -1531,7 +1547,7 @@ pub async fn run_loop(
         active_tool_descriptors = step_tools.descriptors.clone();
 
         let prepared =
-            match prepare_step_execution(&run_ctx, &active_tool_descriptors, config).await {
+            match prepare_step_execution(&run_ctx, &active_tool_descriptors, agent).await {
                 Ok(v) => v,
                 Err(e) => {
                     terminate_run!(
@@ -1558,8 +1574,9 @@ pub async fn run_loop(
         // Call LLM with unified retry + fallback model strategy.
         let messages = prepared.messages;
         let filtered_tools = prepared.filtered_tools;
+        let chat_options = agent.chat_options().cloned();
         let attempt_outcome = run_llm_with_retry_and_fallback(
-            config,
+            agent,
             run_cancellation_token.as_ref(),
             true,
             "unknown llm error",
@@ -1567,9 +1584,10 @@ pub async fn run_loop(
                 let request =
                     build_request_for_filtered_tools(&messages, &step_tools.tools, &filtered_tools);
                 let executor = executor.clone();
+                let chat_options = chat_options.clone();
                 async move {
                     executor
-                        .exec_chat_response(&model, request, config.chat_options.as_ref())
+                        .exec_chat_response(&model, request, chat_options.as_ref())
                         .await
                 }
             },
@@ -1595,7 +1613,7 @@ pub async fn run_loop(
                 if let Err(phase_error) = apply_llm_error_cleanup(
                     &mut run_ctx,
                     &active_tool_descriptors,
-                    &config.plugins,
+                    agent,
                     "llm_exec_error",
                     last_error.clone(),
                 )
@@ -1628,7 +1646,7 @@ pub async fn run_loop(
             step_meta.clone(),
             Some(assistant_msg_id.clone()),
             &active_tool_descriptors,
-            &config.plugins,
+            agent,
         )
         .await
         {
@@ -1674,7 +1692,7 @@ pub async fn run_loop(
         }
 
         // Execute tools with phase hooks using configured execution strategy.
-        let tool_context = match prepare_tool_execution_context(&run_ctx, Some(config)) {
+        let tool_context = match prepare_tool_execution_context(&run_ctx) {
             Ok(ctx) => ctx,
             Err(e) => {
                 terminate_run!(
@@ -1687,12 +1705,13 @@ pub async fn run_loop(
         let thread_messages_for_tools = run_ctx.messages().to_vec();
         let thread_version_for_tools = run_ctx.version();
 
-        let tool_exec_future = config.tool_executor.execute(ToolExecutionRequest {
+        let tool_exec_future = tool_executor.execute(ToolExecutionRequest {
             tools: &step_tools.tools,
             calls: &result.tool_calls,
             state: &tool_context.state,
             tool_descriptors: &active_tool_descriptors,
-            plugins: &config.plugins,
+            agent_behavior: Some(agent.behavior()),
+            plugins: agent.plugins(),
             activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
             run_config: &tool_context.run_config,
             thread_id: run_ctx.thread_id(),
@@ -1721,9 +1740,7 @@ pub async fn run_loop(
             &mut run_ctx,
             &results,
             Some(step_meta),
-            config
-                .tool_executor
-                .requires_parallel_patch_conflict_check(),
+            tool_executor.requires_parallel_patch_conflict_check(),
         ) {
             // On error, we can't easily rollback RunContext, so just terminate
             terminate_run!(
@@ -1748,7 +1765,7 @@ pub async fn run_loop(
             &mut decision_rx,
             &mut pending_decisions,
             &step_tool_provider,
-            config,
+            agent,
             &mut active_tool_descriptors,
             &pending_delta_commit,
         )
@@ -1789,10 +1806,10 @@ pub async fn run_loop(
 /// Run the agent loop with streaming output.
 ///
 /// Returns a stream of AgentEvent for real-time updates. Tools are passed
-/// directly and used as the default tool set unless `config.step_tool_provider`
+/// directly and used as the default tool set unless the agent's step_tool_provider
 /// is set (for dynamic per-step tool resolution).
 pub fn run_loop_stream(
-    config: AgentConfig,
+    agent: Arc<dyn Agent>,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
@@ -1800,7 +1817,7 @@ pub fn run_loop_stream(
     decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     stream_runner::run_stream(
-        config,
+        agent,
         tools,
         run_ctx,
         cancellation_token,

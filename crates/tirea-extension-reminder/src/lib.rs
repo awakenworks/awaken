@@ -21,6 +21,9 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
+use tirea_contract::runtime::plugin::phase::effect::PhaseOutput;
+use tirea_contract::runtime::plugin::phase::state_spec::{AnyStateAction, StateSpec};
 use tirea_contract::runtime::plugin::phase::{BeforeInferenceContext, PluginPhaseContext};
 use tirea_contract::runtime::plugin::AgentPlugin;
 use tirea_contract::runtime::tool_call::ToolCallContext;
@@ -36,6 +39,22 @@ pub struct ReminderState {
     /// List of reminder texts.
     #[serde(default)]
     pub items: Vec<String>,
+}
+
+/// Action type for `ReminderState` reducer.
+pub enum ReminderAction {
+    /// Clear all reminder items.
+    Clear,
+}
+
+impl StateSpec for ReminderState {
+    type Action = ReminderAction;
+
+    fn reduce(&mut self, action: ReminderAction) {
+        match action {
+            ReminderAction::Clear => self.items.clear(),
+        }
+    }
 }
 
 /// Extension trait for reminder management on Context.
@@ -146,6 +165,35 @@ impl AgentPlugin for ReminderPlugin {
     }
 }
 
+#[async_trait]
+impl AgentBehavior for ReminderPlugin {
+    fn id(&self) -> &str {
+        "reminder"
+    }
+
+    async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+        let reminders = ctx
+            .snapshot_of::<ReminderState>()
+            .ok()
+            .map(|s| s.items)
+            .unwrap_or_default();
+        if reminders.is_empty() {
+            return PhaseOutput::default();
+        }
+
+        let mut output = PhaseOutput::new();
+        for text in &reminders {
+            output = output.session_context(format!("Reminder: {}", text));
+        }
+
+        if self.clear_after_llm_request {
+            output = output
+                .with_state_action(AnyStateAction::new::<ReminderState>(ReminderAction::Clear));
+        }
+        output
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,7 +206,7 @@ mod tests {
         step: &mut tirea_contract::runtime::plugin::phase::StepContext<'_>,
     ) {
         let mut ctx = BeforeInferenceContext::new(step);
-        plugin.before_inference(&mut ctx).await;
+        AgentPlugin::before_inference(plugin, &mut ctx).await;
     }
 
     #[test]
@@ -263,7 +311,7 @@ mod tests {
     #[test]
     fn test_reminder_plugin_id() {
         let plugin = ReminderPlugin::new();
-        assert_eq!(plugin.id(), "reminder");
+        assert_eq!(AgentPlugin::id(&plugin), "reminder");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Shared agent contracts for conversation state, runtime protocol, extension SPI, and storage.
 #![allow(missing_docs)]
 
-/// Builder methods for pure-data fields shared by both AgentConfig and AgentDefinition.
+/// Builder methods for pure-data fields shared by both BaseAgent and AgentDefinition.
 ///
 /// Covers: id, model, system_prompt, max_rounds, chat_options, fallback_models,
 /// llm_retry_policy.
@@ -71,19 +71,19 @@ macro_rules! impl_shared_agent_builder_methods {
 
 /// Builder methods for runtime instance fields (plugins).
 ///
-/// Only used by AgentConfig (loop layer) which directly holds plugin and
+/// Only used by BaseAgent (loop layer) which directly holds plugin and
 /// runtime instances. AgentDefinition uses id-based references instead.
 #[macro_export]
 macro_rules! impl_loop_config_builder_methods {
     () => {
-        /// Set plugins.
+        /// Set legacy plugins.
         #[must_use]
         pub fn with_plugins(mut self, plugins: Vec<Arc<dyn AgentPlugin>>) -> Self {
             self.plugins = plugins;
             self
         }
 
-        /// Add a single plugin.
+        /// Add a single legacy plugin.
         #[must_use]
         pub fn with_plugin(mut self, plugin: Arc<dyn AgentPlugin>) -> Self {
             self.plugins.push(plugin);
@@ -118,14 +118,16 @@ pub use io::{AgentEvent, ResumeDecisionAction, RunRequest, RuntimeInput, Runtime
 
 // runtime plugin/tool-call/lifecycle
 pub use runtime::{
-    ActivityContext, ActivityManager, AfterInferenceContext, AfterToolExecuteContext, AgentPlugin,
-    BeforeInferenceContext, BeforeToolExecuteContext, DecisionReplayPolicy, Phase, PhasePolicy,
-    PluginPhaseContext, RunAction, RunContext, RunDelta, RunEndContext, RunStartContext,
-    StateEffect, StepContext, StepEndContext, StepOutcome, StepStartContext, StoppedReason,
-    StreamResult, SuspendTicket, Suspension, SuspensionResponse, TerminationReason, TokenUsage,
-    ToolCallAction, ToolCallContext, ToolCallOutcome, ToolContext,
-    ToolExecution, ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
-    ToolProgressState, TOOL_PROGRESS_ACTIVITY_TYPE,
+    ActivityContext, ActivityManager, AfterInferenceContext, AfterToolExecuteContext, AgentBehavior,
+    AgentPlugin, AnyStateAction, BeforeInferenceContext, BeforeToolExecuteContext,
+    CompositeBehavior, DecisionReplayPolicy, NoOpBehavior, Phase, PhaseEffect, PhaseOutput,
+    PhasePolicy, PluginPhaseContext, ReadOnlyContext, RunAction, RunContext, RunDelta,
+    RunEndContext, RunStartContext, StateEffect, StateSpec, StepContext, StepEndContext,
+    StepOutcome, StepStartContext, StoppedReason, StreamResult, SuspendTicket, Suspension,
+    SuspensionResponse, TerminationReason, TokenUsage, ToolCallAction, ToolCallContext,
+    ToolCallOutcome, ToolContext, ToolExecution, ToolExecutionRequest, ToolExecutionResult,
+    ToolExecutor, ToolExecutorError, ToolProgressState, validate_effect,
+    TOOL_PROGRESS_ACTIVITY_TYPE,
 };
 
 // storage

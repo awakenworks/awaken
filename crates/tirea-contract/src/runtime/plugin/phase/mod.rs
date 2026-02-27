@@ -6,6 +6,8 @@
 //! - `ToolContext`: Tool-call state carried by `StepContext`
 
 mod contexts;
+pub mod effect;
+pub mod state_spec;
 mod step;
 mod types;
 
@@ -17,6 +19,8 @@ pub use contexts::{
     BeforeToolExecuteContext, PluginPhaseContext, RunEndContext, RunStartContext, StepEndContext,
     StepStartContext,
 };
+pub use effect::{validate_effect, PhaseEffect, PhaseOutput};
+pub use state_spec::{AnyStateAction, StateSpec};
 pub use step::{StepContext, ToolContext};
 pub use types::{
     Phase, PhasePolicy, RunAction, StateEffect, StepOutcome, SuspendTicket, ToolCallAction,

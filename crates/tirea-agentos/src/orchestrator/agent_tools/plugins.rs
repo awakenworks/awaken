@@ -1,4 +1,7 @@
+use super::state::current_unix_millis;
 use super::*;
+use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
+use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
 use crate::contracts::runtime::plugin::phase::{
     AfterToolExecuteContext, BeforeInferenceContext, PluginPhaseContext, RunStartContext,
 };
@@ -72,6 +75,130 @@ impl AgentPlugin for AgentRecoveryPlugin {
 
     async fn run_start(&self, ctx: &mut RunStartContext<'_, '_>) {
         self.on_run_start(ctx).await;
+    }
+}
+
+#[async_trait]
+impl AgentBehavior for AgentRecoveryPlugin {
+    fn id(&self) -> &str {
+        AGENT_RECOVERY_PLUGIN_ID
+    }
+
+    async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+        use crate::contracts::runtime::plugin::phase::state_spec::AnyStateAction;
+        use crate::contracts::runtime::{
+            PendingToolCall, SuspendedCall, SuspendedToolCallsAction, SuspendedToolCallsState,
+            ToolCallResumeMode, ToolCallState, ToolCallStatesAction, ToolCallStatesMap,
+        };
+
+        let state = ctx.snapshot();
+        let mut runs = parse_persisted_runs_from_doc(&state);
+        if runs.is_empty() {
+            return PhaseOutput::default();
+        }
+
+        let has_suspended_recovery = has_suspended_recovery_interaction(&state);
+
+        let outcome =
+            reconcile_persisted_runs(self.manager.as_ref(), ctx.thread_id(), &mut runs).await;
+
+        let mut output = PhaseOutput::default();
+
+        if outcome.changed {
+            output = output.with_state_action(AnyStateAction::new::<DelegationState>(
+                DelegationAction::SetRuns(runs.clone()),
+            ));
+        }
+
+        if has_suspended_recovery || outcome.orphaned_run_ids.is_empty() {
+            return output;
+        }
+
+        let run_id = outcome.orphaned_run_ids[0].clone();
+        let Some(run) = runs.get(&run_id) else {
+            return output;
+        };
+
+        let behavior = ctx
+            .snapshot_of::<PermissionState>()
+            .ok()
+            .map(|ps| {
+                ps.tools
+                    .get(AGENT_RECOVERY_INTERACTION_ACTION)
+                    .copied()
+                    .unwrap_or(ps.default_behavior)
+            })
+            .unwrap_or_default();
+
+        let make_suspended_call = |interaction: &Suspension| -> SuspendedCall {
+            let call_id = interaction.id.clone();
+            let call_arguments = interaction.parameters.clone();
+            let pending = PendingToolCall::new(
+                call_id.clone(),
+                AGENT_RECOVERY_INTERACTION_ACTION,
+                call_arguments.clone(),
+            );
+            SuspendedCall {
+                call_id,
+                tool_name: AGENT_RUN_TOOL_ID.to_string(),
+                arguments: call_arguments,
+                ticket: crate::contracts::runtime::plugin::phase::SuspendTicket::new(
+                    interaction.clone(),
+                    pending,
+                    ToolCallResumeMode::ReplayToolCall,
+                ),
+            }
+        };
+
+        match behavior {
+            ToolPermissionBehavior::Allow => {
+                let interaction = build_recovery_interaction(&run_id, run);
+                let suspended_call = make_suspended_call(&interaction);
+                let call_id = suspended_call.call_id.clone();
+                let resume_token = suspended_call.ticket.pending.id.clone();
+                let arguments = suspended_call.arguments.clone();
+
+                output = output
+                    .with_state_action(AnyStateAction::new::<SuspendedToolCallsState>(
+                        SuspendedToolCallsAction::InsertCall {
+                            call: suspended_call,
+                        },
+                    ))
+                    .with_state_action(AnyStateAction::new::<ToolCallStatesMap>(
+                        ToolCallStatesAction::InsertState {
+                            state: ToolCallState {
+                                call_id,
+                                tool_name: AGENT_RUN_TOOL_ID.to_string(),
+                                arguments,
+                                status: crate::contracts::runtime::ToolCallStatus::Resuming,
+                                resume_token: Some(resume_token),
+                                resume: Some(crate::contracts::runtime::ToolCallResume {
+                                    decision_id: recovery_target_id(&run_id),
+                                    action: crate::contracts::io::ResumeDecisionAction::Resume,
+                                    result: serde_json::Value::Bool(true),
+                                    reason: None,
+                                    updated_at: current_unix_millis(),
+                                }),
+                                scratch: serde_json::Value::Null,
+                                updated_at: current_unix_millis(),
+                            },
+                        },
+                    ));
+            }
+            ToolPermissionBehavior::Deny => {}
+            ToolPermissionBehavior::Ask => {
+                let interaction = build_recovery_interaction(&run_id, run);
+                let suspended_call = make_suspended_call(&interaction);
+                output = output.with_state_action(AnyStateAction::new::<
+                    SuspendedToolCallsState,
+                >(
+                    SuspendedToolCallsAction::InsertCall {
+                        call: suspended_call,
+                    },
+                ));
+            }
+        }
+        output
     }
 }
 
@@ -160,14 +287,13 @@ impl AgentToolsPlugin {
         out.trim_end().to_string()
     }
 
-    async fn maybe_reminder(&self, step: &mut AfterToolExecuteContext<'_, '_>) {
-        let owner_thread_id = step.thread_id();
+    async fn render_reminder(&self, thread_id: &str) -> Option<String> {
         let runs = self
             .manager
-            .running_or_stopped_for_owner(owner_thread_id)
+            .running_or_stopped_for_owner(thread_id)
             .await;
         if runs.is_empty() {
-            return;
+            return None;
         }
 
         let mut s = String::new();
@@ -193,11 +319,19 @@ impl AgentToolsPlugin {
                 total, shown
             ));
         }
-        s.push_str("Use tool \"agent_run\" with run_id to resume/check, and \"agent_stop\" to stop running runs.");
+        s.push_str(
+            "Use tool \"agent_run\" with run_id to resume/check, and \"agent_stop\" to stop running runs.",
+        );
         if s.len() > self.max_chars {
             s.truncate(self.max_chars);
         }
-        step.add_system_reminder(s);
+        Some(s)
+    }
+
+    async fn maybe_reminder(&self, step: &mut AfterToolExecuteContext<'_, '_>) {
+        if let Some(s) = self.render_reminder(step.thread_id()).await {
+            step.add_system_reminder(s);
+        }
     }
 }
 
@@ -222,5 +356,32 @@ impl AgentPlugin for AgentToolsPlugin {
         // Inject system reminders after tool execution so the reminder is persisted
         // as internal-system history for subsequent turns.
         self.maybe_reminder(step).await;
+    }
+}
+
+#[async_trait]
+impl AgentBehavior for AgentToolsPlugin {
+    fn id(&self) -> &str {
+        AGENT_TOOLS_PLUGIN_ID
+    }
+
+    async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+        let caller_agent = ctx
+            .run_config()
+            .value(SCOPE_CALLER_AGENT_ID_KEY)
+            .and_then(|v| v.as_str());
+        let rendered = self.render_available_agents(caller_agent, Some(ctx.run_config()));
+        if rendered.is_empty() {
+            PhaseOutput::default()
+        } else {
+            PhaseOutput::new().system_context(rendered)
+        }
+    }
+
+    async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+        match self.render_reminder(ctx.thread_id()).await {
+            Some(s) => PhaseOutput::new().system_reminder(s),
+            None => PhaseOutput::default(),
+        }
     }
 }

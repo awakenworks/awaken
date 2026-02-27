@@ -898,7 +898,7 @@ fn skill_activation_result(
 
 #[test]
 fn test_agent_config_default() {
-    let config = AgentConfig::default();
+    let config = BaseAgent::default();
     assert_eq!(config.max_rounds, 10);
     assert_eq!(config.tool_executor.name(), "parallel_streaming");
     assert!(config.system_prompt.is_empty());
@@ -906,7 +906,7 @@ fn test_agent_config_default() {
 
 #[test]
 fn test_agent_config_builder() {
-    let config = AgentConfig::new("gpt-4")
+    let config = BaseAgent::new("gpt-4")
         .with_max_rounds(5)
         .with_tool_executor(Arc::new(SequentialToolExecutor))
         .with_system_prompt("You are helpful.");
@@ -925,7 +925,7 @@ fn test_agent_config_with_fallback_models_and_retry_policy() {
         max_backoff_ms: 500,
         retry_stream_start: true,
     };
-    let config = AgentConfig::new("primary")
+    let config = BaseAgent::new("primary")
         .with_fallback_models(vec!["fallback-a".to_string()])
         .with_fallback_model("fallback-b")
         .with_llm_retry_policy(policy.clone());
@@ -1124,6 +1124,7 @@ async fn test_activity_event_emitted_before_tool_completion() {
     let run_config = tirea_contract::RunConfig::default();
     let phase_ctx = super::tool_exec::ToolPhaseContext {
         tool_descriptors: &descriptors,
+        agent_behavior: None,
         plugins: &plugins,
         activity_manager: activity_manager,
         run_config: &run_config,
@@ -1209,6 +1210,7 @@ async fn test_parallel_tools_emit_activity_before_completion() {
     let handle = tokio::spawn(async move {
         let phase_ctx = super::tool_exec::ToolPhaseContext {
             tool_descriptors: &tool_descriptors_for_task,
+            agent_behavior: None,
             plugins: &plugins_for_task,
             activity_manager: activity_manager,
             run_config: &run_config,
@@ -1285,6 +1287,7 @@ async fn test_parallel_tool_executor_honors_cancellation_token() {
     let handle = tokio::spawn(async move {
         let phase_ctx = super::tool_exec::ToolPhaseContext {
             tool_descriptors: &tool_descriptors,
+            agent_behavior: None,
             plugins: &[],
             activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
             run_config: &run_config,
@@ -1467,7 +1470,7 @@ impl AgentPlugin for TestPhasePlugin {
 #[test]
 fn test_agent_config_with_phase_plugin() {
     let plugin: Arc<dyn AgentPlugin> = Arc::new(TestPhasePlugin::new("test"));
-    let config = AgentConfig::new("gpt-4").with_plugin(plugin);
+    let config = BaseAgent::new("gpt-4").with_plugin(plugin);
 
     assert!(config.has_plugins());
     assert_eq!(config.plugins.len(), 1);
@@ -1827,6 +1830,7 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
     let run_config = tirea_contract::RunConfig::default();
     let phase_ctx = super::tool_exec::ToolPhaseContext {
         tool_descriptors: &tool_descriptors,
+        agent_behavior: None,
         plugins: &plugins,
         activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
         run_config: &run_config,
@@ -1903,6 +1907,7 @@ async fn test_execute_single_tool_context_waits_for_run_cancellation() {
     });
     let phase_ctx = super::tool_exec::ToolPhaseContext {
         tool_descriptors: &tool_descriptors,
+        agent_behavior: None,
         plugins: &plugins,
         activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
         run_config: &run_config,
@@ -1961,6 +1966,7 @@ async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
     rt.set("user_id", "u-abc").unwrap();
     let phase_ctx = super::tool_exec::ToolPhaseContext {
         tool_descriptors: &tool_descriptors,
+        agent_behavior: None,
         plugins: &plugins,
         activity_manager: tirea_contract::runtime::activity::NoOpActivityManager::arc(),
         run_config: &rt,
@@ -2022,7 +2028,7 @@ async fn test_plugin_state_patch_visible_in_next_step_before_inference() {
         MockResponse::text("run tools").with_tool_call("call_1", "echo", json!({"message": "a"})),
         MockResponse::text("done"),
     ];
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(StateChannelPlugin) as Arc<dyn AgentPlugin>)
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let thread = Thread::new("test").with_message(Message::user("go"));
@@ -2251,7 +2257,7 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
         });
     }
 
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(RunScopedStatePlugin) as Arc<dyn AgentPlugin>);
     let tools = HashMap::new();
     let thread = Thread::with_initial_state("test", json!({}));
@@ -2290,10 +2296,10 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
 
 #[test]
 fn test_agent_config_debug() {
-    let config = AgentConfig::new("gpt-4").with_system_prompt("You are helpful.");
+    let config = BaseAgent::new("gpt-4").with_system_prompt("You are helpful.");
 
     let debug_str = format!("{:?}", config);
-    assert!(debug_str.contains("AgentConfig"));
+    assert!(debug_str.contains("BaseAgent"));
     assert!(debug_str.contains("gpt-4"));
     // Check that system_prompt is shown as length indicator
     assert!(debug_str.contains("chars]"));
@@ -2302,7 +2308,7 @@ fn test_agent_config_debug() {
 #[test]
 fn test_agent_config_with_chat_options() {
     let chat_options = ChatOptions::default();
-    let config = AgentConfig::new("gpt-4").with_chat_options(chat_options);
+    let config = BaseAgent::new("gpt-4").with_chat_options(chat_options);
     assert!(config.chat_options.is_some());
 }
 
@@ -2318,7 +2324,7 @@ fn test_agent_config_with_plugins() {
     }
 
     let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(DummyPlugin), Arc::new(DummyPlugin)];
-    let config = AgentConfig::new("gpt-4").with_plugins(plugins);
+    let config = BaseAgent::new("gpt-4").with_plugins(plugins);
     assert_eq!(config.plugins.len(), 2);
 }
 
@@ -2714,7 +2720,7 @@ fn test_execute_tools_with_config_empty_calls() {
             usage: None,
         };
         let tools = tool_map([EchoTool]);
-        let config = AgentConfig::new("gpt-4");
+        let config = BaseAgent::new("gpt-4");
 
         let thread = execute_tools_with_config(thread, &result, &tools, &config)
             .await
@@ -2741,7 +2747,7 @@ fn test_execute_tools_with_config_basic() {
             usage: None,
         };
         let tools = tool_map([EchoTool]);
-        let config = AgentConfig::new("gpt-4");
+        let config = BaseAgent::new("gpt-4");
 
         let thread = execute_tools_with_config(thread, &result, &tools, &config)
             .await
@@ -2790,7 +2796,7 @@ fn test_execute_tools_with_config_attaches_scope_run_metadata() {
             usage: None,
         };
         let tools = tool_map([EchoTool]);
-        let config = AgentConfig::new("gpt-4");
+        let config = BaseAgent::new("gpt-4");
 
         let thread = execute_tools_with_config(thread, &result, &tools, &config)
             .await
@@ -2824,7 +2830,7 @@ fn test_execute_tools_with_config_with_blocking_plugin() {
             usage: None,
         };
         let tools = tool_map([EchoTool]);
-        let config = AgentConfig::new("gpt-4")
+        let config = BaseAgent::new("gpt-4")
             .with_plugin(Arc::new(BlockingPhasePlugin) as Arc<dyn AgentPlugin>);
 
         let thread = execute_tools_with_config(thread, &result, &tools, &config)
@@ -2884,7 +2890,7 @@ fn test_execute_tools_with_config_denied_response_is_applied_via_tool_call_state
         let interaction =
             TestInteractionPlugin::with_responses(Vec::new(), vec!["call_1".to_string()]);
         let config =
-            AgentConfig::new("gpt-4").with_plugin(Arc::new(interaction) as Arc<dyn AgentPlugin>);
+            BaseAgent::new("gpt-4").with_plugin(Arc::new(interaction) as Arc<dyn AgentPlugin>);
 
         let thread = execute_tools_with_config(thread, &result, &tools, &config)
             .await
@@ -2948,7 +2954,7 @@ fn test_execute_tools_with_config_rejects_illegal_terminal_to_running_transition
             usage: None,
         };
         let tools = tool_map([EchoTool]);
-        let config = AgentConfig::new("gpt-4");
+        let config = BaseAgent::new("gpt-4");
 
         let err = execute_tools_with_config(thread, &result, &tools, &config)
             .await
@@ -2982,7 +2988,7 @@ fn test_execute_tools_with_config_with_pending_plugin() {
             usage: None,
         };
         let tools = tool_map([EchoTool]);
-        let config = AgentConfig::new("gpt-4")
+        let config = BaseAgent::new("gpt-4")
             .with_plugin(Arc::new(PendingPhasePlugin) as Arc<dyn AgentPlugin>);
 
         let outcome = execute_tools_with_config(thread, &result, &tools, &config)
@@ -3030,7 +3036,7 @@ fn test_execute_tools_with_config_with_reminder_plugin() {
             usage: None,
         };
         let tools = tool_map([EchoTool]);
-        let config = AgentConfig::new("gpt-4")
+        let config = BaseAgent::new("gpt-4")
             .with_plugin(Arc::new(ReminderPhasePlugin) as Arc<dyn AgentPlugin>);
 
         let thread = execute_tools_with_config(thread, &result, &tools, &config)
@@ -3068,7 +3074,7 @@ fn test_execute_tools_with_config_preserves_unresolved_suspended_calls_on_succes
             usage: None,
         };
         let tools = tool_map([EchoTool]);
-        let config = AgentConfig::new("gpt-4");
+        let config = BaseAgent::new("gpt-4");
 
         let thread = execute_tools_with_config(thread, &result, &tools, &config)
             .await
@@ -3235,13 +3241,13 @@ async fn collect_stream_events(
 async fn test_stream_terminate_plugin_requested_emits_run_end_phase() {
     let (recorder, phases) = RecordAndTerminatePlugin::new();
     let config =
-        AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
+        BaseAgent::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, tools, run_ctx, None, None, None);
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
     // Verify events include RunStart and RunFinish
@@ -3280,13 +3286,13 @@ async fn test_stream_terminate_plugin_requested_emits_run_start_and_finish() {
     // Verify the complete event sequence on terminate_plugin_requested path
     let (recorder, _phases) = RecordAndTerminatePlugin::new();
     let config =
-        AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
+        BaseAgent::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, tools, run_ctx, None, None, None);
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
     let event_names: Vec<&str> = events
@@ -3305,7 +3311,7 @@ async fn test_stream_terminate_plugin_requested_emits_run_start_and_finish() {
 async fn test_stream_run_start_resume_replay_emits_after_run_start() {
     let (recorder, _phases) = RecordAndTerminatePlugin::new();
     let config =
-        AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
+        BaseAgent::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
     let thread = Thread::with_initial_state(
         "test",
@@ -3355,7 +3361,7 @@ async fn test_stream_run_start_resume_replay_emits_after_run_start() {
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let events =
-        collect_stream_events(run_loop_stream(config, tools, run_ctx, None, None, None)).await;
+        collect_stream_events(run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None)).await;
 
     assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
     assert!(matches!(
@@ -3397,14 +3403,14 @@ async fn test_stream_terminate_plugin_requested_with_pending_state_emits_pending
         });
     }
 
-    let config = AgentConfig::new("gpt-4o-mini")
+    let config = BaseAgent::new("gpt-4o-mini")
         .with_plugin(Arc::new(PendingTerminatePlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let events =
-        collect_stream_events(run_loop_stream(config, tools, run_ctx, None, None, None)).await;
+        collect_stream_events(run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None)).await;
 
     assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
     assert!(matches!(
@@ -3446,7 +3452,7 @@ async fn test_stream_run_action_with_suspended_only_state_emits_pending_events()
         });
     }
 
-    let config = AgentConfig::new("gpt-4o-mini")
+    let config = BaseAgent::new("gpt-4o-mini")
         .with_plugin(Arc::new(PendingTerminatePlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::with_initial_state(
         "test",
@@ -3479,7 +3485,7 @@ async fn test_stream_run_action_with_suspended_only_state_emits_pending_events()
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let events =
-        collect_stream_events(run_loop_stream(config, tools, run_ctx, None, None, None)).await;
+        collect_stream_events(run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None)).await;
 
     assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
     assert!(matches!(
@@ -3522,7 +3528,7 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
 
     let interaction =
         TestInteractionPlugin::with_responses(Vec::new(), vec!["call_write".to_string()]);
-    let config = AgentConfig::new("gpt-4o-mini")
+    let config = BaseAgent::new("gpt-4o-mini")
         .with_plugin(Arc::new(interaction))
         .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::with_initial_state(
@@ -3558,7 +3564,7 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let events =
-        collect_stream_events(run_loop_stream(config, tools, run_ctx, None, None, None)).await;
+        collect_stream_events(run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None)).await;
 
     assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
     assert!(
@@ -3593,7 +3599,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
     }
 
     let interaction = TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(interaction))
         .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::with_initial_state(
@@ -3722,7 +3728,7 @@ async fn test_run_loop_permission_approval_replays_tool_and_updates_lifecycle_st
     }
 
     let interaction = TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(interaction))
         .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>)
         .with_llm_executor(Arc::new(MockChatProvider::new(vec![Ok(text_chat_response(
@@ -3841,7 +3847,7 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
 
     let committer = Arc::new(RecordingStateCommitter::new(None));
     let interaction = TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(interaction))
         .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>)
         .with_llm_executor(
@@ -3891,7 +3897,7 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let events = collect_stream_events(run_loop_stream(
-        config,
+        Arc::new(config),
         tool_map([EchoTool]),
         run_ctx,
         None,
@@ -3945,7 +3951,7 @@ async fn test_run_loop_run_start_replay_uses_tool_call_resume_state_without_mail
         });
     }
 
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>)
         .with_llm_executor(Arc::new(MockChatProvider::new(vec![Ok(text_chat_response(
             "unused",
@@ -4057,7 +4063,7 @@ async fn test_run_loop_run_start_settles_orphan_resuming_state_without_suspended
         });
     }
 
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
 
     let thread = Thread::with_initial_state(
@@ -4125,7 +4131,7 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
     }
 
     let interaction = TestInteractionPlugin::with_responses(Vec::new(), vec!["call_1".to_string()]);
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(interaction))
         .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::with_initial_state(
@@ -4251,7 +4257,7 @@ async fn test_run_loop_permission_denied_appends_tool_result_for_model_context()
     }
 
     let interaction = TestInteractionPlugin::with_responses(Vec::new(), vec!["call_1".to_string()]);
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(interaction))
         .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
 
@@ -4342,7 +4348,7 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
             json!({"status": "cancelled", "reason": "User canceled in UI"}),
         ),
     ]);
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(interaction))
         .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
 
@@ -4429,7 +4435,7 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
 async fn test_run_loop_terminate_plugin_requested_emits_run_end_phase() {
     let (recorder, phases) = RecordAndTerminatePlugin::new();
     let config =
-        AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
+        BaseAgent::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
@@ -4477,7 +4483,7 @@ async fn test_legacy_resume_replay_nonstream_resolution_state_is_ignored() {
         });
     }
 
-    let config = AgentConfig::new("gpt-4o-mini")
+    let config = BaseAgent::new("gpt-4o-mini")
         .with_plugin(Arc::new(LegacyResumeReplayTerminatePlugin) as Arc<dyn AgentPlugin>);
 
     let thread = Thread::with_initial_state(
@@ -4565,7 +4571,7 @@ async fn test_legacy_resume_replay_nonstream_queue_is_ignored() {
         });
     }
 
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(LegacyResumeReplayRequeuePlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(Message::user("resume"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
@@ -4626,7 +4632,7 @@ async fn test_run_loop_terminate_plugin_requested_with_suspended_state_returns_s
     }
 
     let phases = Arc::new(Mutex::new(Vec::new()));
-    let config = AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(PendingTerminatePlugin {
+    let config = BaseAgent::new("gpt-4o-mini").with_plugin(Arc::new(PendingTerminatePlugin {
         phases: phases.clone(),
     }) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
@@ -4681,7 +4687,7 @@ async fn test_run_loop_terminate_plugin_requested_with_suspended_only_state_retu
         });
     }
 
-    let config = AgentConfig::new("gpt-4o-mini")
+    let config = BaseAgent::new("gpt-4o-mini")
         .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::with_initial_state(
         "test",
@@ -4721,7 +4727,7 @@ async fn test_run_loop_terminate_plugin_requested_with_suspended_only_state_retu
 async fn test_run_loop_auto_generated_run_id_is_rfc4122_uuid_v7() {
     let (recorder, _phases) = RecordAndTerminatePlugin::new();
     let config =
-        AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
+        BaseAgent::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
@@ -4759,7 +4765,7 @@ async fn test_run_loop_phase_sequence_on_terminate_plugin_requested() {
     // Verify the full phase sequence: RunStart → StepStart → BeforeInference → RunEnd
     let (recorder, phases) = RecordAndTerminatePlugin::new();
     let config =
-        AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
+        BaseAgent::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
@@ -4805,7 +4811,7 @@ async fn test_run_loop_rejects_run_action_mutation_outside_inference_phases() {
         });
     }
 
-    let config = AgentConfig::new("gpt-4o-mini")
+    let config = BaseAgent::new("gpt-4o-mini")
         .with_plugin(Arc::new(InvalidStepStartRunActionPlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
@@ -4845,7 +4851,7 @@ async fn test_stream_rejects_run_action_mutation_outside_inference_phases() {
         });
     }
 
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(InvalidStepStartRunActionPlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(Message::user("hi"));
     let tools = HashMap::new();
@@ -4883,7 +4889,7 @@ async fn test_run_loop_rejects_prompt_context_mutation_outside_before_inference(
         });
     }
 
-    let config = AgentConfig::new("gpt-4o-mini")
+    let config = BaseAgent::new("gpt-4o-mini")
         .with_plugin(Arc::new(InvalidStepStartPromptPlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
@@ -4933,7 +4939,7 @@ async fn test_run_loop_rejects_non_append_prompt_context_mutation_in_before_infe
         });
     }
 
-    let config = AgentConfig::new("gpt-4o-mini")
+    let config = BaseAgent::new("gpt-4o-mini")
         .with_plugin(Arc::new(PromptAppendPlugin) as Arc<dyn AgentPlugin>)
         .with_plugin(Arc::new(PromptReplacePlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
@@ -4969,7 +4975,7 @@ async fn test_stream_rejects_prompt_context_mutation_outside_before_inference() 
         });
     }
 
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(InvalidStepStartPromptPlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(Message::user("hi"));
     let tools = HashMap::new();
@@ -5107,14 +5113,14 @@ fn test_execute_tools_rejects_non_append_reminder_mutation_in_after_tool_execute
 async fn test_stream_run_finish_has_matching_thread_id() {
     let (recorder, _phases) = RecordAndTerminatePlugin::new();
     let config =
-        AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
+        BaseAgent::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
     let thread =
         Thread::new("my-thread").with_message(crate::contracts::thread::Message::user("hello"));
     let tools = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, tools, run_ctx, None, None, None);
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
     // Extract thread_id from RunStart and RunFinish
@@ -5300,7 +5306,7 @@ async fn test_nonstream_uses_fallback_model_after_primary_failures() {
         Err(genai::Error::Internal("429 rate limit".to_string())),
         Ok(text_chat_response("ok")),
     ]));
-    let config = AgentConfig::new("primary")
+    let config = BaseAgent::new("primary")
         .with_fallback_model("fallback")
         .with_llm_retry_policy(LlmRetryPolicy {
             max_attempts_per_model: 2,
@@ -5359,7 +5365,7 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
     }
 
     let phases = Arc::new(Mutex::new(Vec::new()));
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(CleanupOnLlmErrorPlugin {
             phases: phases.clone(),
         }) as Arc<dyn AgentPlugin>)
@@ -5404,7 +5410,7 @@ async fn test_nonstream_natural_end_wins_without_stop_policy() {
     let provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response(
         "done now",
     ))]));
-    let config = AgentConfig::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let config = BaseAgent::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
     let mut run_config = tirea_contract::RunConfig::default();
     run_config.set("run_id", "run-natural-end").unwrap();
@@ -5439,7 +5445,7 @@ async fn test_nonstream_cancellation_token_during_inference() {
     let token = CancellationToken::new();
     let token_for_run = token.clone();
 
-    let config = AgentConfig::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let config = BaseAgent::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
@@ -5550,7 +5556,7 @@ async fn test_nonstream_loop_outcome_collects_usage_and_stats() {
     let provider = Arc::new(MockChatProvider::new(vec![Ok(
         text_chat_response_with_usage("done", 7, 3),
     )]));
-    let config = AgentConfig::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let config = BaseAgent::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("usage-stats").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
@@ -5579,7 +5585,7 @@ async fn test_nonstream_loop_outcome_llm_error_tracks_attempts_and_failure_kind(
         Err(genai::Error::Internal("429 rate limit".to_string())),
         Err(genai::Error::Internal("still failing".to_string())),
     ]));
-    let config = AgentConfig::new("primary")
+    let config = BaseAgent::new("primary")
         .with_llm_retry_policy(LlmRetryPolicy {
             max_attempts_per_model: 2,
             initial_backoff_ms: 1,
@@ -5623,7 +5629,7 @@ async fn test_nonstream_cancellation_token_during_tool_execution() {
     let token = CancellationToken::new();
     let token_for_run = token.clone();
 
-    let config = AgentConfig::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let config = BaseAgent::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let tools = tool_map([tool]);
     let thread = Thread::new("test").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
@@ -5712,7 +5718,7 @@ async fn test_nonstream_parallel_tool_cancellation_appends_single_user_note() {
     ]));
     let token = CancellationToken::new();
     let token_for_run = token.clone();
-    let config = AgentConfig::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let config = BaseAgent::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let tools = tool_map([tool_a, tool_b]);
     let thread = Thread::new("test").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
@@ -5787,7 +5793,7 @@ async fn test_nonstream_inference_abort_message_persisted_and_visible_next_run()
     let state_committer: Arc<dyn StateCommitter> =
         Arc::new(ChannelStateCommitter::new(checkpoint_tx));
 
-    let config = AgentConfig::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let config = BaseAgent::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let initial_thread = Thread::new("cancel-inference").with_message(Message::user("go"));
     let run_ctx =
         RunContext::from_thread(&initial_thread, tirea_contract::RunConfig::default()).unwrap();
@@ -5830,7 +5836,7 @@ async fn test_nonstream_inference_abort_message_persisted_and_visible_next_run()
 
     let seen = Arc::new(AtomicBool::new(false));
     let resume_provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("done"))]));
-    let resume_config = AgentConfig::new("mock")
+    let resume_config = BaseAgent::new("mock")
         .with_plugin(Arc::new(ObserveMessagePlugin {
             expected: CANCELLATION_INFERENCE_USER_MESSAGE,
             seen: seen.clone(),
@@ -5906,7 +5912,7 @@ async fn test_nonstream_tool_abort_message_persisted_and_visible_next_run() {
     let state_committer: Arc<dyn StateCommitter> =
         Arc::new(ChannelStateCommitter::new(checkpoint_tx));
 
-    let config = AgentConfig::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let config = BaseAgent::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let tools = tool_map([tool]);
     let initial_thread = Thread::new("cancel-tool").with_message(Message::user("go"));
     let run_ctx =
@@ -5949,7 +5955,7 @@ async fn test_nonstream_tool_abort_message_persisted_and_visible_next_run() {
 
     let seen = Arc::new(AtomicBool::new(false));
     let resume_provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("done"))]));
-    let resume_config = AgentConfig::new("mock")
+    let resume_config = BaseAgent::new("mock")
         .with_plugin(Arc::new(ObserveMessagePlugin {
             expected: CANCELLATION_TOOL_USER_MESSAGE,
             seen: seen.clone(),
@@ -5987,7 +5993,7 @@ async fn test_golden_run_loop_and_stream_natural_end_alignment() {
         Ok(text_chat_response("done")),
     ]));
     let nonstream_config =
-        AgentConfig::new("mock").with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
+        BaseAgent::new("mock").with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
     let nonstream_outcome =
@@ -6000,7 +6006,7 @@ async fn test_golden_run_loop_and_stream_natural_end_alignment() {
             MockResponse::text("").with_tool_call("call_1", "echo", json!({"message": "aligned"})),
             MockResponse::text("done"),
         ]),
-        AgentConfig::new("mock"),
+        BaseAgent::new("mock"),
         thread,
         tools.clone(),
     )
@@ -6032,7 +6038,7 @@ async fn test_golden_run_loop_and_stream_cancelled_alignment() {
     nonstream_token.cancel();
 
     let nonstream_config =
-        AgentConfig::new("mock").with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
+        BaseAgent::new("mock").with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
     let nonstream_outcome = run_loop(
@@ -6050,7 +6056,7 @@ async fn test_golden_run_loop_and_stream_cancelled_alignment() {
     stream_token.cancel();
     let (events, stream_thread) = run_mock_stream_with_final_thread_with_context(
         MockStreamProvider::new(vec![MockResponse::text("unused")]),
-        AgentConfig::new("mock"),
+        BaseAgent::new("mock"),
         thread,
         tools,
         Some(stream_token),
@@ -6100,7 +6106,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
 
     let thread = Thread::new("golden-resume").with_message(Message::user("continue"));
     let config =
-        AgentConfig::new("mock").with_plugin(Arc::new(GoldenPendingPlugin) as Arc<dyn AgentPlugin>);
+        BaseAgent::new("mock").with_plugin(Arc::new(GoldenPendingPlugin) as Arc<dyn AgentPlugin>);
     let tools = HashMap::new();
     let nonstream_provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response(
         "unused",
@@ -6179,7 +6185,7 @@ async fn test_golden_run_loop_and_stream_no_plugins_pending_state_alignment() {
 
     let nonstream_provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("done"))]));
     let nonstream_config =
-        AgentConfig::new("mock").with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
+        BaseAgent::new("mock").with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
     let nonstream_run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let nonstream_outcome = run_loop(
@@ -6196,7 +6202,7 @@ async fn test_golden_run_loop_and_stream_no_plugins_pending_state_alignment() {
 
     let (stream_events, stream_thread) = run_mock_stream_with_final_thread(
         MockStreamProvider::new(vec![MockResponse::text("done")]),
-        AgentConfig::new("mock"),
+        BaseAgent::new("mock"),
         thread,
         tools,
     )
@@ -6237,10 +6243,10 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
         });
     }
 
-    fn replay_config() -> AgentConfig {
+    fn replay_config() -> BaseAgent {
         let interaction =
             TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
-        AgentConfig::new("mock")
+        BaseAgent::new("mock")
             .with_plugin(Arc::new(interaction))
             .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>)
     }
@@ -6367,10 +6373,10 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
         });
     }
 
-    fn replay_config(provider: Arc<dyn LlmExecutor>) -> AgentConfig {
+    fn replay_config(provider: Arc<dyn LlmExecutor>) -> BaseAgent {
         let interaction =
             TestInteractionPlugin::with_responses(vec!["call_1".to_string()], Vec::new());
-        AgentConfig::new("mock")
+        BaseAgent::new("mock")
             .with_plugin(Arc::new(interaction))
             .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>)
             .with_llm_executor(provider)
@@ -6682,13 +6688,13 @@ impl LlmExecutor for MockStreamProvider {
 /// Helper: run a mock stream and collect events.
 async fn run_mock_stream(
     provider: MockStreamProvider,
-    config: AgentConfig,
+    config: BaseAgent,
     thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
 ) -> Vec<AgentEvent> {
     let config = config.with_llm_executor(Arc::new(provider));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, tools, run_ctx, None, None, None);
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
     collect_stream_events(stream).await
 }
 
@@ -6696,7 +6702,7 @@ async fn run_mock_stream(
 async fn test_stream_serialization_emits_seq_timestamp_and_step_id() {
     let events = run_mock_stream(
         MockStreamProvider::new(vec![MockResponse::text("hello")]),
-        AgentConfig::new("mock"),
+        BaseAgent::new("mock"),
         Thread::new("test").with_message(Message::user("go")),
         HashMap::new(),
     )
@@ -6747,7 +6753,7 @@ async fn test_stream_serialization_emits_seq_timestamp_and_step_id() {
 #[tokio::test]
 async fn test_stream_retries_startup_error_then_succeeds() {
     let provider = Arc::new(FailingStartProvider::new(1));
-    let config = AgentConfig::new("mock").with_llm_retry_policy(LlmRetryPolicy {
+    let config = BaseAgent::new("mock").with_llm_retry_policy(LlmRetryPolicy {
         max_attempts_per_model: 2,
         initial_backoff_ms: 1,
         max_backoff_ms: 10,
@@ -6758,7 +6764,7 @@ async fn test_stream_retries_startup_error_then_succeeds() {
 
     let config = config.with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, tools, run_ctx, None, None, None);
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
     assert_eq!(
@@ -6772,7 +6778,7 @@ async fn test_stream_retries_startup_error_then_succeeds() {
 #[tokio::test]
 async fn test_stream_uses_fallback_model_after_primary_failures() {
     let provider = Arc::new(FailingStartProvider::new(2));
-    let config = AgentConfig::new("primary")
+    let config = BaseAgent::new("primary")
         .with_fallback_model("fallback")
         .with_llm_retry_policy(LlmRetryPolicy {
             max_attempts_per_model: 2,
@@ -6785,7 +6791,7 @@ async fn test_stream_uses_fallback_model_after_primary_failures() {
 
     let config = config.with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, tools, run_ctx, None, None, None);
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
     assert_eq!(
@@ -6810,7 +6816,7 @@ async fn test_stream_uses_fallback_model_after_primary_failures() {
 /// Helper: run a mock stream and collect events plus final session.
 async fn run_mock_stream_with_final_thread(
     provider: MockStreamProvider,
-    config: AgentConfig,
+    config: BaseAgent,
     thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
 ) -> (Vec<AgentEvent>, Thread) {
@@ -6821,7 +6827,7 @@ async fn run_mock_stream_with_final_thread(
 /// Helper: run a mock stream and collect events plus final session with explicit run context.
 async fn run_mock_stream_with_final_thread_with_context(
     provider: MockStreamProvider,
-    config: AgentConfig,
+    config: BaseAgent,
     thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     cancellation_token: Option<RunCancellationToken>,
@@ -6833,7 +6839,7 @@ async fn run_mock_stream_with_final_thread_with_context(
     let config = config.with_llm_executor(Arc::new(provider));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream(
-        config,
+        Arc::new(config),
         tools,
         run_ctx,
         cancellation_token,
@@ -7122,12 +7128,12 @@ async fn test_stream_state_commit_failure_on_assistant_turn_emits_error_and_run_
         CheckpointReason::AssistantTurnCommitted,
     )));
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let config = AgentConfig::new("mock").with_llm_executor(Arc::new(MockStreamProvider::new(vec![
+    let config = BaseAgent::new("mock").with_llm_executor(Arc::new(MockStreamProvider::new(vec![
         MockResponse::text("done"),
     ])) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream(
-        config,
+        Arc::new(config),
         HashMap::new(),
         run_ctx,
         None,
@@ -7156,7 +7162,7 @@ async fn test_stream_state_commit_failure_on_assistant_turn_emits_error_and_run_
 async fn test_nonstream_checkpoints_include_run_start_side_effects() {
     let committer = Arc::new(RecordingStateCommitter::new(None));
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_llm_executor(
             Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("done"))]))
                 as Arc<dyn LlmExecutor>,
@@ -7191,7 +7197,7 @@ async fn test_nonstream_state_commit_failure_on_assistant_turn_returns_error() {
     )));
     let thread = Thread::new("test").with_message(Message::user("go"));
     let config =
-        AgentConfig::new("mock").with_llm_executor(Arc::new(MockChatProvider::new(vec![Ok(
+        BaseAgent::new("mock").with_llm_executor(Arc::new(MockChatProvider::new(vec![Ok(
             text_chat_response("done"),
         )])) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
@@ -7225,13 +7231,13 @@ async fn test_stream_state_commit_failure_on_tool_results_emits_error_before_too
         CheckpointReason::ToolResultsCommitted,
     )));
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let config = AgentConfig::new("mock").with_llm_executor(Arc::new(MockStreamProvider::new(vec![
+    let config = BaseAgent::new("mock").with_llm_executor(Arc::new(MockStreamProvider::new(vec![
         MockResponse::text("tool").with_tool_call("call_1", "echo", json!({"message":"hi"})),
     ])) as Arc<dyn LlmExecutor>);
     let tools = tool_map([EchoTool]);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream(
-        config,
+        Arc::new(config),
         tools,
         run_ctx,
         None,
@@ -7269,12 +7275,12 @@ async fn test_stream_run_finished_commit_failure_emits_error_without_run_finish_
         CheckpointReason::RunFinished,
     )));
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let config = AgentConfig::new("mock").with_llm_executor(Arc::new(MockStreamProvider::new(vec![
+    let config = BaseAgent::new("mock").with_llm_executor(Arc::new(MockStreamProvider::new(vec![
         MockResponse::text("done"),
     ])) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream(
-        config,
+        Arc::new(config),
         HashMap::new(),
         run_ctx,
         None,
@@ -7329,7 +7335,7 @@ async fn test_stream_frontend_use_as_tool_result_emits_single_tool_call_start() 
     }
 
     let thread = Thread::new("frontend-pending").with_message(Message::user("add task"));
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(FrontendPendingPlugin) as Arc<dyn AgentPlugin>);
     let tools = tool_map([AddTaskTool]);
     let responses = vec![MockResponse::text("planning").with_tool_call(
@@ -7372,12 +7378,12 @@ async fn test_stream_terminate_plugin_requested_force_commits_run_finished_delta
     let (recorder, _phases) = RecordAndTerminatePlugin::new();
     let committer = Arc::new(RecordingStateCommitter::new(None));
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>)
         .with_llm_executor(Arc::new(MockStreamProvider::new(vec![])) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream(
-        config,
+        Arc::new(config),
         HashMap::new(),
         run_ctx,
         None,
@@ -7410,12 +7416,12 @@ async fn test_stream_replay_state_failure_emits_error() {
     );
     run_ctx.add_thread_patch(broken_patch);
 
-    let config = AgentConfig::new("mock");
+    let config = BaseAgent::new("mock");
     let tools = tool_map([EchoTool]);
 
     let provider = MockStreamProvider::new(vec![MockResponse::text("should not run")]);
     let config = config.with_llm_executor(Arc::new(provider));
-    let stream = run_loop_stream(config, tools, run_ctx, None, None, None);
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
     assert!(
@@ -7480,7 +7486,7 @@ async fn test_legacy_resume_replay_stream_queue_is_ignored() {
         });
     }
 
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(LegacyResumeReplayRequeuePlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(Message::user("resume"));
     let (events, final_thread) = run_mock_stream_with_final_thread(
@@ -7565,7 +7571,7 @@ async fn test_stream_parallel_multiple_pending_emits_all_suspended() {
 
     SESSION_END_RAN.store(false, Ordering::SeqCst);
 
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(PendingAndRunEndPlugin) as Arc<dyn AgentPlugin>)
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let thread = Thread::new("test").with_message(Message::user("run tools"));
@@ -7623,7 +7629,7 @@ async fn test_stop_condition_config_is_ignored_in_stream_loop() {
         })
         .collect();
 
-    let config = AgentConfig::new("mock");
+    let config = BaseAgent::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = tool_map([EchoTool]);
 
@@ -7638,7 +7644,7 @@ async fn test_stop_condition_config_is_ignored_in_stream_loop() {
 async fn test_stop_natural_end_no_tools() {
     // LLM returns text only → NaturalEnd.
     let provider = MockStreamProvider::new(vec![MockResponse::text("Hello!")]);
-    let config = AgentConfig::new("mock");
+    let config = BaseAgent::new("mock");
     let thread = Thread::new("test").with_message(Message::user("hi"));
     let tools = HashMap::new();
 
@@ -7715,7 +7721,7 @@ fn test_apply_tool_results_accepts_disjoint_parallel_state_patches() {
 async fn test_stop_plugin_requested() {
     // TerminatePluginRequestedPlugin → PluginRequested.
     let (recorder, _) = RecordAndTerminatePlugin::new();
-    let config = AgentConfig::new("mock").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
+    let config = BaseAgent::new("mock").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(Message::user("hi"));
     let tools = HashMap::new();
 
@@ -7750,7 +7756,7 @@ async fn test_stop_on_tool_condition() {
         }
     }
 
-    let config = AgentConfig::new("mock");
+    let config = BaseAgent::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
 
     let mut tools = tool_map([EchoTool]);
@@ -7776,7 +7782,7 @@ async fn test_stop_content_match_condition() {
         ),
     ];
 
-    let config = AgentConfig::new("mock");
+    let config = BaseAgent::new("mock");
     let thread = Thread::new("test").with_message(Message::user("solve"));
     let tools = tool_map([EchoTool]);
 
@@ -7799,7 +7805,7 @@ async fn test_stop_token_budget_condition() {
             .with_usage(200, 100),
     ];
 
-    let config = AgentConfig::new("mock");
+    let config = BaseAgent::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = tool_map([EchoTool]);
 
@@ -7823,7 +7829,7 @@ async fn test_stop_consecutive_errors_condition() {
         })
         .collect();
 
-    let config = AgentConfig::new("mock");
+    let config = BaseAgent::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = tool_map([FailingTool]);
 
@@ -7847,7 +7853,7 @@ async fn test_stop_loop_detection_condition() {
         })
         .collect();
 
-    let config = AgentConfig::new("mock");
+    let config = BaseAgent::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = tool_map([EchoTool]);
 
@@ -7865,13 +7871,13 @@ async fn test_stop_cancellation_token() {
     token.cancel();
 
     let provider = MockStreamProvider::new(vec![MockResponse::text("never")]);
-    let config = AgentConfig::new("mock");
+    let config = BaseAgent::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = HashMap::new();
 
     let config = config.with_llm_executor(Arc::new(provider) as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, tools, run_ctx, Some(token), None, None);
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, Some(token), None, None);
     let events = collect_stream_events(stream).await;
     assert_eq!(
         extract_termination(&events),
@@ -7922,12 +7928,12 @@ async fn test_stop_cancellation_token_during_inference_stream() {
     let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
     let state_committer: Arc<dyn StateCommitter> =
         Arc::new(ChannelStateCommitter::new(checkpoint_tx));
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_llm_executor(Arc::new(HangingStreamProvider) as Arc<dyn LlmExecutor>);
     let run_ctx =
         RunContext::from_thread(&initial_thread, tirea_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream(
-        config,
+        Arc::new(config),
         HashMap::new(),
         run_ctx,
         Some(token.clone()),
@@ -7964,7 +7970,7 @@ async fn test_stop_cancellation_token_during_inference_stream() {
 #[tokio::test]
 async fn test_stop_condition_applies_on_natural_end_without_tools() {
     let responses = vec![MockResponse::text("done now")];
-    let config = AgentConfig::new("mock");
+    let config = BaseAgent::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = HashMap::new();
 
@@ -7979,7 +7985,7 @@ async fn test_stop_condition_applies_on_natural_end_without_tools() {
 async fn test_run_loop_with_context_cancellation_token() {
     let (recorder, _phases) = RecordAndTerminatePlugin::new();
     let config =
-        AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
+        BaseAgent::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
     let token = CancellationToken::new();
@@ -8002,7 +8008,7 @@ async fn test_stop_first_condition_wins() {
         .with_tool_call("c1", "echo", json!({"message": "a"}))
         .with_usage(100, 100)];
 
-    let config = AgentConfig::new("mock");
+    let config = BaseAgent::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = tool_map([EchoTool]);
 
@@ -8026,7 +8032,7 @@ async fn test_stop_default_max_rounds_from_config() {
         })
         .collect();
 
-    let config = AgentConfig::new("mock").with_max_rounds(2);
+    let config = BaseAgent::new("mock").with_max_rounds(2);
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = tool_map([EchoTool]);
 
@@ -8041,7 +8047,7 @@ async fn test_stop_default_max_rounds_from_config() {
 async fn test_stop_max_rounds_counts_no_tool_step() {
     // Single no-tool step should naturally end regardless of MaxRounds config.
     let responses = vec![MockResponse::text("done")];
-    let config = AgentConfig::new("mock");
+    let config = BaseAgent::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = tool_map([EchoTool]);
 
@@ -8058,7 +8064,7 @@ async fn test_termination_in_run_finish_event() {
     let responses =
         vec![MockResponse::text("r1").with_tool_call("c1", "echo", json!({"message": "a"}))];
 
-    let config = AgentConfig::new("mock");
+    let config = BaseAgent::new("mock");
     let thread = Thread::new("test-thread").with_message(Message::user("go"));
     let tools = tool_map([EchoTool]);
 
@@ -8095,7 +8101,7 @@ async fn test_consecutive_errors_resets_on_success() {
     let ft: Arc<dyn Tool> = Arc::new(FailingTool);
     tools.insert("failing".to_string(), ft);
 
-    let config = AgentConfig::new("mock");
+    let config = BaseAgent::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
 
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
@@ -8600,7 +8606,7 @@ fn test_plugin_order_affects_outcome() {
 #[tokio::test]
 async fn test_message_id_stepstart_matches_stored_assistant_message() {
     let responses = vec![MockResponse::text("Hello world")];
-    let config = AgentConfig::new("mock");
+    let config = BaseAgent::new("mock");
     let thread = Thread::new("test").with_message(Message::user("hi"));
 
     let (events, final_thread) = run_mock_stream_with_final_thread(
@@ -8650,7 +8656,7 @@ async fn test_message_id_toolcalldone_matches_stored_tool_message() {
         ),
         MockResponse::text("found it"),
     ];
-    let config = AgentConfig::new("mock");
+    let config = BaseAgent::new("mock");
     let thread = Thread::new("test").with_message(Message::user("search"));
     let tools = tool_map([EchoTool]);
 
@@ -8700,7 +8706,7 @@ async fn test_message_id_end_to_end_multi_step() {
         MockResponse::text("searching").with_tool_call("c1", "echo", json!({"message": "query"})),
         MockResponse::text("final answer"),
     ];
-    let config = AgentConfig::new("mock");
+    let config = BaseAgent::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = tool_map([EchoTool]);
 
@@ -8773,7 +8779,7 @@ async fn test_message_id_end_to_end_multi_step() {
 #[tokio::test]
 async fn test_run_step_terminate_plugin_requested_returns_empty_result_without_assistant_message() {
     let (recorder, phases) = RecordAndTerminatePlugin::new();
-    let config = AgentConfig::new("gpt-4o-mini")
+    let config = BaseAgent::new("gpt-4o-mini")
         .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>)
         .with_max_rounds(1);
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
@@ -8832,7 +8838,7 @@ async fn test_run_step_terminate_plugin_requested_with_suspended_state_returns_s
         });
     }
 
-    let config = AgentConfig::new("gpt-4o-mini")
+    let config = BaseAgent::new("gpt-4o-mini")
         .with_plugin(Arc::new(PendingTerminateStepPlugin) as Arc<dyn AgentPlugin>)
         .with_max_rounds(1);
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
@@ -8863,7 +8869,7 @@ async fn test_stream_tool_execution_injects_scope_context_for_tools() {
         MockResponse::text("call scope").with_tool_call("call_1", "scope_snapshot", json!({})),
         MockResponse::text("done"),
     ];
-    let config = AgentConfig::new("mock");
+    let config = BaseAgent::new("mock");
     let thread = Thread::with_initial_state("stream-caller", json!({"k":"v"}))
         .with_message(Message::user("hello"));
     let tools = tool_map([ScopeSnapshotTool]);
@@ -8930,7 +8936,7 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
     }
 
     let phases = Arc::new(Mutex::new(Vec::new()));
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(CleanupOnStartErrorPlugin {
             phases: phases.clone(),
         }) as Arc<dyn AgentPlugin>)
@@ -8953,7 +8959,7 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
     let run_ctx =
         RunContext::from_thread(&initial_thread, tirea_contract::RunConfig::default()).unwrap();
     let events = collect_stream_events(run_loop_stream(
-        config,
+        Arc::new(config),
         HashMap::new(),
         run_ctx,
         None,
@@ -8995,7 +9001,7 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
 #[tokio::test]
 async fn test_stream_stop_condition_is_ignored_and_natural_end_wins() {
     let responses = vec![MockResponse::text("done now")];
-    let config = AgentConfig::new("mock");
+    let config = BaseAgent::new("mock");
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools = HashMap::new();
 
@@ -9028,13 +9034,13 @@ async fn test_stop_cancellation_token_during_tool_execution_stream() {
     let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
     let state_committer: Arc<dyn StateCommitter> =
         Arc::new(ChannelStateCommitter::new(checkpoint_tx));
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_llm_executor(Arc::new(MockStreamProvider::new(responses)) as Arc<dyn LlmExecutor>);
     let tools = tool_map([tool]);
     let run_ctx =
         RunContext::from_thread(&initial_thread, tirea_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream(
-        config,
+        Arc::new(config),
         tools,
         run_ctx,
         Some(token.clone()),
@@ -9453,7 +9459,7 @@ async fn test_run_loop_patches_accumulate_across_steps() {
         Thread::with_initial_state("test", json!({"counter": 0})).with_message(Message::user("go"));
     let tools = tool_map([CounterTool]);
 
-    let config = AgentConfig::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let config = BaseAgent::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
@@ -10163,7 +10169,7 @@ async fn test_stream_permission_intercept_emits_tool_call_start_for_frontend() {
     }
 
     let thread = Thread::new("permission-intercept").with_message(Message::user("get server info"));
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(PermissionInterceptPlugin) as Arc<dyn AgentPlugin>);
     let tools = tool_map([EchoTool]);
     let responses = vec![MockResponse::text("checking").with_tool_call(
@@ -10269,7 +10275,7 @@ async fn test_nonstream_mixed_pending_and_completed_tools_continues_loop() {
             "I got results for a and c, delete needs approval",
         )),
     ]));
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(PendingOnlyCall2Plugin) as Arc<dyn AgentPlugin>)
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()))
         .with_llm_executor(provider as Arc<dyn LlmExecutor>);
@@ -10336,7 +10342,7 @@ async fn test_nonstream_single_pending_tool_enters_waiting() {
         )),
         Ok(text_chat_response("unused")),
     ]));
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(PendingAllToolsPlugin) as Arc<dyn AgentPlugin>)
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()))
         .with_llm_executor(provider as Arc<dyn LlmExecutor>);
@@ -10391,7 +10397,7 @@ async fn test_stream_mixed_pending_and_completed_tools_continues_loop() {
         });
     }
 
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(PendingOnlyCall2Plugin) as Arc<dyn AgentPlugin>)
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let thread = Thread::new("test").with_message(Message::user("run tools"));
@@ -10485,7 +10491,7 @@ async fn test_stream_all_tools_pending_pauses_run() {
         });
     }
 
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(PendingAllToolsPlugin) as Arc<dyn AgentPlugin>)
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let thread = Thread::new("test").with_message(Message::user("run tools"));
@@ -10540,7 +10546,7 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
         });
     }
 
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(PendingOnlyCall2Plugin) as Arc<dyn AgentPlugin>)
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let thread = Thread::new("test").with_message(Message::user("run tools"));
@@ -10556,7 +10562,7 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
     let provider = MockStreamProvider::new(responses);
     let config = config.with_llm_executor(Arc::new(provider));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let stream = run_loop_stream(config, tools, run_ctx, None, None, None);
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
     // Run should terminate with Suspended.
@@ -10609,7 +10615,7 @@ async fn test_no_plugins_loop_ignores_pending() {
 
     // No plugins — the core should run inference normally and terminate with
     // NaturalEnd (text-only response, no tool calls).
-    let config = AgentConfig::new("mock");
+    let config = BaseAgent::new("mock");
     let responses = vec![MockResponse::text("done")];
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
@@ -10664,7 +10670,7 @@ async fn test_nonstream_run_start_added_pending_pauses_before_inference() {
     }
 
     let provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("done"))]));
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(RunStartPendingPlugin) as Arc<dyn AgentPlugin>)
         .with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
@@ -10710,7 +10716,7 @@ async fn test_stream_run_start_added_pending_emits_and_pauses_before_inference()
         });
     }
 
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(RunStartPendingPlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(Message::user("go"));
     let events = run_mock_stream(
@@ -10781,7 +10787,7 @@ async fn test_nonstream_completed_tool_round_does_not_clear_existing_suspended_c
         )),
         Ok(text_chat_response("done")),
     ]));
-    let config = AgentConfig::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
+    let config = BaseAgent::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
     let outcome = run_loop(&config, tool_map([EchoTool]), run_ctx, None, None, None).await;
@@ -10831,7 +10837,7 @@ async fn test_stream_completed_tool_round_does_not_clear_existing_suspended_call
             MockResponse::text("").with_tool_call("call_1", "echo", json!({"message": "ok"})),
             MockResponse::text("done"),
         ]),
-        AgentConfig::new("mock"),
+        BaseAgent::new("mock"),
         thread,
         tool_map([EchoTool]),
     )
@@ -10874,7 +10880,7 @@ async fn test_plugin_run_action_stops_loop() {
     }
 
     let config =
-        AgentConfig::new("mock").with_plugin(Arc::new(TerminatePlugin) as Arc<dyn AgentPlugin>);
+        BaseAgent::new("mock").with_plugin(Arc::new(TerminatePlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
@@ -10921,7 +10927,7 @@ async fn test_run_loop_rejects_run_action_mutation_outside_inference_phases_v2()
         });
     }
 
-    let config = AgentConfig::new("gpt-4o-mini")
+    let config = BaseAgent::new("gpt-4o-mini")
         .with_plugin(Arc::new(InvalidStepStartTermPlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
@@ -10964,7 +10970,7 @@ async fn test_stream_rejects_run_action_mutation_outside_inference_phases_v2() {
         });
     }
 
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(InvalidStepStartTermPlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(Message::user("hi"));
     let tools = HashMap::new();
@@ -11006,7 +11012,7 @@ async fn test_run_loop_plugin_run_action_stops_loop() {
         });
     }
 
-    let config = AgentConfig::new("gpt-4o-mini")
+    let config = BaseAgent::new("gpt-4o-mini")
         .with_plugin(Arc::new(TerminatePlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("go"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
@@ -11054,7 +11060,7 @@ async fn test_run_loop_applies_plugin_state_effect_patch_before_inference() {
     }
 
     let config =
-        AgentConfig::new("mock").with_plugin(Arc::new(StateEffectPlugin) as Arc<dyn AgentPlugin>);
+        BaseAgent::new("mock").with_plugin(Arc::new(StateEffectPlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(Message::user("go"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
@@ -11095,7 +11101,7 @@ async fn test_run_loop_applies_plugin_state_effect_patch_after_tool_execute() {
         )),
         Ok(text_chat_response("done")),
     ]));
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_llm_executor(provider as Arc<dyn LlmExecutor>)
         .with_plugin(Arc::new(StateEffectToolPlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(Message::user("go"));
@@ -11129,7 +11135,7 @@ async fn test_run_loop_after_inference_run_action_stops_before_tool_execution() 
     let provider = Arc::new(MockChatProvider::new(vec![Ok(
         tool_call_chat_response_object_args("call_1", "echo", json!({"message": "hi"})),
     )]));
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(AfterInferenceTerminatePlugin) as Arc<dyn AgentPlugin>)
         .with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
@@ -11178,7 +11184,7 @@ async fn test_stream_after_inference_run_action_stops_before_tool_events() {
         });
     }
 
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(AfterInferenceTerminatePlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(Message::user("go"));
     let events = run_mock_stream(
@@ -11241,7 +11247,7 @@ async fn test_request_termination_method_stops_stream() {
         }
     }
 
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(MethodTerminatePlugin) as Arc<dyn AgentPlugin>);
     let thread = Thread::new("test").with_message(Message::user("go"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
@@ -11313,7 +11319,7 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
     let mut run_config = tirea_contract::RunConfig::default();
     run_config.set("run_id", "run-unknown-decision").unwrap();
     let run_ctx = RunContext::from_thread(&thread, run_config).expect("run ctx");
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
     decision_tx
@@ -11426,7 +11432,7 @@ async fn test_run_loop_decision_channel_rejects_illegal_terminal_to_resuming_tra
     ));
     let run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).expect("run ctx");
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
     let tools = tool_map([EchoTool]);
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -11518,7 +11524,7 @@ async fn test_stream_decision_channel_ignores_unknown_target_id() {
     .with_message(Message::user("continue"));
     let run_ctx = RunContext::from_thread(&final_thread, tirea_contract::RunConfig::default())
         .expect("run ctx");
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
     let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
     let state_committer: Arc<dyn StateCommitter> =
@@ -11535,7 +11541,7 @@ async fn test_stream_decision_channel_ignores_unknown_target_id() {
     drop(decision_tx);
 
     let stream = run_loop_stream(
-        config,
+        Arc::new(config),
         HashMap::new(),
         run_ctx,
         None,
@@ -11636,7 +11642,7 @@ async fn test_stream_decision_channel_rejects_illegal_terminal_to_resuming_trans
     ));
     let run_ctx = RunContext::from_thread(&final_thread, tirea_contract::RunConfig::default())
         .expect("run ctx");
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
     let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
     let state_committer: Arc<dyn StateCommitter> =
@@ -11653,7 +11659,7 @@ async fn test_stream_decision_channel_rejects_illegal_terminal_to_resuming_trans
     drop(decision_tx);
 
     let stream = run_loop_stream(
-        config,
+        Arc::new(config),
         tool_map([EchoTool]),
         run_ctx,
         None,
@@ -11798,7 +11804,7 @@ async fn test_run_loop_decision_channel_resolves_suspended_call() {
 
     let ready = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(PendingFrontendToolPlugin {
             ready: ready.clone(),
             release: release.clone(),
@@ -11874,7 +11880,7 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
         });
     }
 
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(TerminatePluginRequestedPlugin) as Arc<dyn AgentPlugin>);
 
     let thread = Thread::with_initial_state(
@@ -12059,7 +12065,7 @@ async fn test_run_loop_stream_decision_channel_emits_resolution_and_replay() {
     let provider = MockStreamProvider::new(responses);
     let ready = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(PendingFrontendToolPlugin {
             ready: ready.clone(),
             release: release.clone(),
@@ -12077,7 +12083,7 @@ async fn test_run_loop_stream_decision_channel_emits_resolution_and_replay() {
     );
 
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
-    let stream = run_loop_stream(config, tools, run_ctx, None, None, Some(decision_rx));
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, Some(decision_rx));
     let collect_task = tokio::spawn(async move { collect_stream_events(stream).await });
 
     ready.notified().await;
@@ -12197,7 +12203,7 @@ async fn test_run_loop_decision_channel_buffers_early_response_for_all_suspended
     ]));
     let entered = Arc::new(Notify::new());
     let allow_pending = Arc::new(Notify::new());
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(EarlyPendingPlugin {
             entered: entered.clone(),
             allow_pending: allow_pending.clone(),
@@ -12327,7 +12333,7 @@ async fn test_stream_decision_channel_buffers_early_response_for_all_suspended_t
     let provider = MockStreamProvider::new(responses);
     let entered = Arc::new(Notify::new());
     let allow_pending = Arc::new(Notify::new());
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(EarlyPendingPlugin {
             entered: entered.clone(),
             allow_pending: allow_pending.clone(),
@@ -12344,7 +12350,7 @@ async fn test_stream_decision_channel_buffers_early_response_for_all_suspended_t
     );
 
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
-    let stream = run_loop_stream(config, tools, run_ctx, None, None, Some(decision_rx));
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, Some(decision_rx));
     let collect_task = tokio::spawn(async move { collect_stream_events(stream).await });
 
     entered.notified().await;
@@ -12441,14 +12447,14 @@ async fn test_stream_decision_channel_drains_while_inference_stream_is_running()
     let thread = Thread::with_initial_state("test", state).with_message(Message::user("resume"));
     let run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).expect("run ctx");
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_llm_executor(Arc::new(HangingStreamProvider) as Arc<dyn LlmExecutor>);
     let tools = tool_map([EchoTool]);
     let token = CancellationToken::new();
 
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
     let stream = run_loop_stream(
-        config,
+        Arc::new(config),
         tools,
         run_ctx,
         Some(token.clone()),
@@ -12555,7 +12561,7 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_tool_call_resu
         RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).expect("run ctx");
 
     let provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("done"))]));
-    let config = AgentConfig::new("mock")
+    let config = BaseAgent::new("mock")
         .with_plugin(Arc::new(OneShotPermissionPlugin) as Arc<dyn AgentPlugin>)
         .with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let tools = tool_map([EchoTool]);

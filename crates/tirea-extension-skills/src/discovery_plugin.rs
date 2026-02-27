@@ -3,6 +3,8 @@ use crate::{SkillMeta, SkillRegistry, SkillState, SKILLS_DISCOVERY_PLUGIN_ID};
 use async_trait::async_trait;
 use std::collections::HashSet;
 use std::sync::Arc;
+use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
+use tirea_contract::runtime::plugin::phase::effect::PhaseOutput;
 use tirea_contract::runtime::plugin::phase::{BeforeInferenceContext, PluginPhaseContext};
 use tirea_contract::runtime::plugin::AgentPlugin;
 
@@ -153,6 +155,28 @@ impl AgentPlugin for SkillDiscoveryPlugin {
     }
 }
 
+#[async_trait]
+impl AgentBehavior for SkillDiscoveryPlugin {
+    fn id(&self) -> &str {
+        SKILLS_DISCOVERY_PLUGIN_ID
+    }
+
+    async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+        let active: HashSet<String> = ctx
+            .snapshot_of::<SkillState>()
+            .ok()
+            .map(|s| s.active.into_iter().collect())
+            .unwrap_or_default();
+
+        let rendered = self.render_catalog(&active, Some(ctx.run_config()));
+        if rendered.is_empty() {
+            return PhaseOutput::default();
+        }
+
+        PhaseOutput::new().system_context(rendered)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,7 +215,7 @@ mod tests {
 
     async fn run_before_inference(plugin: &SkillDiscoveryPlugin, step: &mut StepContext<'_>) {
         let mut ctx = BeforeInferenceContext::new(step);
-        plugin.before_inference(&mut ctx).await;
+        AgentPlugin::before_inference(plugin, &mut ctx).await;
     }
 
     #[tokio::test]

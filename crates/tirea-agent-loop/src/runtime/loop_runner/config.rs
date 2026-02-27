@@ -1,5 +1,7 @@
 use super::tool_exec::ParallelToolExecutor;
 use super::AgentLoopError;
+use crate::contracts::runtime::plugin::agent::NoOpBehavior;
+use crate::contracts::runtime::plugin::AgentBehavior;
 use crate::contracts::runtime::plugin::AgentPlugin;
 use crate::contracts::runtime::ToolExecutor;
 use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor};
@@ -165,9 +167,105 @@ impl StepToolProvider for StaticStepToolProvider {
     }
 }
 
-/// Runtime configuration for the agent loop.
+// =========================================================================
+// Agent — the sole interface the loop sees
+// =========================================================================
+
+/// The sole interface the agent loop sees.
+///
+/// `Agent` encapsulates all runtime configuration, execution strategies,
+/// and agent behavior into a single trait. The loop calls methods on this trait
+/// to obtain LLM settings, tool execution strategies, and phase-hook behavior.
+///
+/// # Three-Layer Architecture
+///
+/// - **Loop**: pure engine — calls `Agent` methods, manages lifecycle
+/// - **Agent**: complete agent unit — provides config + behavior
+/// - **AgentOS**: assembly — resolves definitions into `Agent` instances
+///
+/// The default implementation is [`BaseAgent`].
+pub trait Agent: Send + Sync {
+    // --- Identity ---
+
+    /// Unique identifier for this agent.
+    fn id(&self) -> &str;
+
+    // --- LLM Configuration ---
+
+    /// Model identifier (e.g., "gpt-4", "claude-3-opus").
+    fn model(&self) -> &str;
+
+    /// System prompt for the LLM.
+    fn system_prompt(&self) -> &str;
+
+    /// Loop-budget hint (core loop does not enforce this directly).
+    fn max_rounds(&self) -> usize;
+
+    /// Chat options for the LLM.
+    fn chat_options(&self) -> Option<&ChatOptions>;
+
+    /// Fallback model ids used when the primary model fails.
+    fn fallback_models(&self) -> &[String];
+
+    /// Retry policy for LLM inference failures.
+    fn llm_retry_policy(&self) -> &LlmRetryPolicy;
+
+    // --- Execution Strategies ---
+
+    /// Tool execution strategy (parallel, sequential, or custom).
+    fn tool_executor(&self) -> Arc<dyn ToolExecutor>;
+
+    /// Optional per-step tool provider.
+    ///
+    /// When `None`, the loop uses a static provider derived from the tool map.
+    fn step_tool_provider(&self) -> Option<Arc<dyn StepToolProvider>> {
+        None
+    }
+
+    /// Optional LLM executor override.
+    ///
+    /// When `None`, the loop uses [`GenaiLlmExecutor`] with `Client::default()`.
+    fn llm_executor(&self) -> Option<Arc<dyn LlmExecutor>> {
+        None
+    }
+
+    // --- Behavior ---
+
+    /// The agent behavior (phase hooks) dispatched by the loop.
+    fn behavior(&self) -> &dyn AgentBehavior;
+
+    // --- Legacy backward compat ---
+
+    /// Legacy plugins for backward compatibility.
+    ///
+    /// When `behavior()` returns a [`NoOpBehavior`] and this is non-empty,
+    /// the loop falls back to mutable plugin dispatch.
+    fn plugins(&self) -> &[Arc<dyn AgentPlugin>] {
+        &[]
+    }
+}
+
+impl std::fmt::Debug for dyn Agent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Agent")
+            .field("id", &self.id())
+            .field("model", &self.model())
+            .field("max_rounds", &self.max_rounds())
+            .field("behavior", &self.behavior().id())
+            .finish()
+    }
+}
+
+// =========================================================================
+// BaseAgent — the standard Agent implementation
+// =========================================================================
+
+/// Standard [`Agent`] implementation.
+///
+/// Bundles all configuration and behavior for running an agent loop.
+/// Constructed by `AgentOS` from an `AgentDefinition`, or directly for tests.
 #[derive(Clone)]
-pub struct AgentConfig {
+pub struct BaseAgent {
     /// Unique identifier for this agent.
     pub id: String,
     /// Model identifier (e.g., "gpt-4", "claude-3-opus").
@@ -181,25 +279,20 @@ pub struct AgentConfig {
     /// Chat options for the LLM.
     pub chat_options: Option<ChatOptions>,
     /// Fallback model ids used when the primary model fails.
-    ///
-    /// Evaluated in order after `model`.
     pub fallback_models: Vec<String>,
     /// Retry policy for LLM inference failures.
     pub llm_retry_policy: LlmRetryPolicy,
-    /// Plugins to run during the agent loop.
+    /// Agent behavior (declarative model).
+    pub behavior: Arc<dyn AgentBehavior>,
+    /// Legacy plugins (deprecated — use `behavior` for new code).
     pub plugins: Vec<Arc<dyn AgentPlugin>>,
     /// Optional per-step tool provider.
-    ///
-    /// When not set, the loop uses a static provider derived from the `tools`
-    /// map passed to `run_step` / `run_loop` / `run_loop_stream`.
     pub step_tool_provider: Option<Arc<dyn StepToolProvider>>,
     /// Optional LLM executor override.
-    ///
-    /// When not set, the loop uses [`GenaiLlmExecutor`] with `Client::default()`.
     pub llm_executor: Option<Arc<dyn LlmExecutor>>,
 }
 
-impl Default for AgentConfig {
+impl Default for BaseAgent {
     fn default() -> Self {
         Self {
             id: "default".to_string(),
@@ -215,6 +308,7 @@ impl Default for AgentConfig {
             ),
             fallback_models: Vec::new(),
             llm_retry_policy: LlmRetryPolicy::default(),
+            behavior: Arc::new(NoOpBehavior),
             plugins: Vec::new(),
             step_tool_provider: None,
             llm_executor: None,
@@ -222,9 +316,9 @@ impl Default for AgentConfig {
     }
 }
 
-impl std::fmt::Debug for AgentConfig {
+impl std::fmt::Debug for BaseAgent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AgentConfig")
+        f.debug_struct("BaseAgent")
             .field("id", &self.id)
             .field("model", &self.model)
             .field(
@@ -236,6 +330,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("chat_options", &self.chat_options)
             .field("fallback_models", &self.fallback_models)
             .field("llm_retry_policy", &self.llm_retry_policy)
+            .field("behavior", &self.behavior.id())
             .field("plugins", &format!("[{} plugins]", self.plugins.len()))
             .field(
                 "step_tool_provider",
@@ -253,7 +348,57 @@ impl std::fmt::Debug for AgentConfig {
     }
 }
 
-impl AgentConfig {
+impl Agent for BaseAgent {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
+
+    fn system_prompt(&self) -> &str {
+        &self.system_prompt
+    }
+
+    fn max_rounds(&self) -> usize {
+        self.max_rounds
+    }
+
+    fn chat_options(&self) -> Option<&ChatOptions> {
+        self.chat_options.as_ref()
+    }
+
+    fn fallback_models(&self) -> &[String] {
+        &self.fallback_models
+    }
+
+    fn llm_retry_policy(&self) -> &LlmRetryPolicy {
+        &self.llm_retry_policy
+    }
+
+    fn tool_executor(&self) -> Arc<dyn ToolExecutor> {
+        self.tool_executor.clone()
+    }
+
+    fn step_tool_provider(&self) -> Option<Arc<dyn StepToolProvider>> {
+        self.step_tool_provider.clone()
+    }
+
+    fn llm_executor(&self) -> Option<Arc<dyn LlmExecutor>> {
+        self.llm_executor.clone()
+    }
+
+    fn behavior(&self) -> &dyn AgentBehavior {
+        self.behavior.as_ref()
+    }
+
+    fn plugins(&self) -> &[Arc<dyn AgentPlugin>] {
+        &self.plugins
+    }
+}
+
+impl BaseAgent {
     tirea_contract::impl_shared_agent_builder_methods!();
     tirea_contract::impl_loop_config_builder_methods!();
 
@@ -287,8 +432,17 @@ impl AgentConfig {
         self
     }
 
-    /// Check if any plugins are configured.
+    /// Set the agent behavior (declarative model).
+    ///
+    /// The loop dispatches all phase hooks exclusively through this behavior.
+    #[must_use]
+    pub fn with_behavior(mut self, behavior: Arc<dyn AgentBehavior>) -> Self {
+        self.behavior = behavior;
+        self
+    }
+
+    /// Check if any behavior is configured (behavior or legacy plugins).
     pub fn has_plugins(&self) -> bool {
-        !self.plugins.is_empty()
+        self.behavior.id() != "noop" || !self.plugins.is_empty()
     }
 }

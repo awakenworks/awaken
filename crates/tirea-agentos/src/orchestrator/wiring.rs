@@ -431,7 +431,7 @@ impl AgentOs {
         &self,
         definition: AgentDefinition,
         tools: &mut HashMap<String, Arc<dyn Tool>>,
-    ) -> Result<AgentConfig, AgentOsWiringError> {
+    ) -> Result<BaseAgent, AgentOsWiringError> {
         // Resolve plugins: system bundles (skills, agent_tools, agent_recovery) -> plugin_ids
         let resolved_plugins = self.resolve_plugin_id_list(&definition.plugin_ids)?;
         let frozen_agents = self.freeze_agent_registry();
@@ -463,7 +463,7 @@ impl AgentOs {
         Ok(definition.into_loop_config(all_plugins))
     }
 
-    fn resolve_model(&self, cfg: &mut AgentConfig) -> Result<(), AgentOsResolveError> {
+    fn resolve_model(&self, cfg: &mut BaseAgent) -> Result<(), AgentOsResolveError> {
         if self.models.is_empty() {
             cfg.llm_executor = Some(Arc::new(GenaiLlmExecutor::new(self.default_client.clone())));
             return Ok(());
@@ -493,7 +493,7 @@ impl AgentOs {
         &self,
         definition: AgentDefinition,
         tools: &mut HashMap<String, Arc<dyn Tool>>,
-    ) -> Result<AgentConfig, AgentOsWiringError> {
+    ) -> Result<BaseAgent, AgentOsWiringError> {
         let resolved_plugins = self.resolve_plugin_id_list(&definition.plugin_ids)?;
         let skills_bundles =
             self.build_skills_wiring_bundles(&resolved_plugins, self.freeze_skill_registry())?;
@@ -550,7 +550,7 @@ impl AgentOs {
         );
         self.resolve_model(&mut cfg)?;
         Ok(ResolvedRun {
-            config: cfg,
+            agent: cfg,
             tools,
             run_config,
         })

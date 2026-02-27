@@ -52,7 +52,7 @@ When using `scripts/build-docs.sh`, the API docs are available at `target/book/d
 
 - [`run_loop`](../doc/tirea_agent_loop/runtime/loop_runner/fn.run_loop.html) — Non-stream loop execution
 - [`run_loop_stream`](../doc/tirea_agent_loop/runtime/loop_runner/fn.run_loop_stream.html) — Streamed loop execution
-- [`AgentConfig`](../doc/tirea_agent_loop/runtime/loop_runner/struct.AgentConfig.html) — Loop configuration
+- [`BaseAgent`](../doc/tirea_agent_loop/runtime/loop_runner/struct.BaseAgent.html) — Standard `Agent` implementation
 
 ### tirea_agentos
 

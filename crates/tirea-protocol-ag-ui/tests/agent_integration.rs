@@ -550,7 +550,7 @@ use tirea_agentos::contracts::runtime::StreamResult;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadWriter};
 use tirea_agentos::contracts::thread::Message;
 use tirea_agentos::runtime::loop_runner::{
-    execute_tools_with_plugins, tool_map, AgentConfig, SequentialToolExecutor,
+    execute_tools_with_plugins, tool_map, BaseAgent, SequentialToolExecutor,
 };
 use tirea_state::{path, Op, Patch, TrackedPatch};
 use tirea_store_adapters::{FileStore, MemoryStore};
@@ -726,12 +726,12 @@ async fn test_session_snapshot_and_continue() {
 
 #[tokio::test]
 async fn test_agent_config_variations() {
-    let config1 = AgentConfig::new("gpt-4o-mini");
+    let config1 = BaseAgent::new("gpt-4o-mini");
     assert_eq!(config1.model, "gpt-4o-mini");
     assert_eq!(config1.max_rounds, 10);
     assert_eq!(config1.tool_executor.name(), "parallel_streaming");
 
-    let config2 = AgentConfig::new("claude-3-opus")
+    let config2 = BaseAgent::new("claude-3-opus")
         .with_max_rounds(5)
         .with_tool_executor(Arc::new(SequentialToolExecutor));
 

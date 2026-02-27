@@ -132,7 +132,7 @@ fn pending_event_key(event: &AgentEvent) -> Option<PendingEventKey> {
 }
 
 pub(super) fn run_stream(
-    config: AgentConfig,
+    agent: Arc<dyn Agent>,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
@@ -143,11 +143,11 @@ pub(super) fn run_stream(
     let mut run_ctx = run_ctx;
     let mut decision_rx = decision_rx;
     let mut pending_decisions = std::collections::VecDeque::new();
-    let executor = llm_executor_for_run(&config);
+    let executor = llm_executor_for_run(agent.as_ref());
     let mut run_state = RunState::new();
     let mut last_text = String::new();
     let run_cancellation_token = cancellation_token;
-    let step_tool_provider = step_tool_provider_for_run(&config, tools);
+    let step_tool_provider = step_tool_provider_for_run(agent.as_ref(), tools);
         let (activity_tx, mut activity_rx) = tokio::sync::mpsc::unbounded_channel();
         let activity_manager: Arc<dyn ActivityManager> = Arc::new(ActivityHub::new(activity_tx));
 
@@ -190,7 +190,7 @@ pub(super) fn run_stream(
                     &mut run_ctx,
                     &TerminationReason::Error,
                     &active_tool_descriptors,
-                    &config.plugins,
+                    agent.as_ref(),
                     &pending_delta_commit,
                     RunFinishedCommitPolicy::BestEffort,
                 )
@@ -228,7 +228,7 @@ pub(super) fn run_stream(
                     &mut run_ctx,
                     &final_termination,
                     &active_tool_descriptors,
-                    &config.plugins,
+                    agent.as_ref(),
                     &pending_delta_commit,
                     RunFinishedCommitPolicy::Required,
                 )
@@ -252,11 +252,11 @@ pub(super) fn run_stream(
         }
 
         // Phase: RunStart (use scoped block to manage borrow)
-        match emit_phase_block(
+        match plugin_runtime::unified_emit_phase_block(
             Phase::RunStart,
             &run_ctx,
             &active_tool_descriptors,
-            &config.plugins,
+            agent.as_ref(),
             |_| {},
         )
             .await
@@ -275,7 +275,7 @@ pub(super) fn run_stream(
         let run_start_drain = match commit_run_start_and_drain_replay(
             &mut run_ctx,
             &active_tool_snapshot.tools,
-            &config,
+            agent.as_ref(),
             &active_tool_descriptors,
             &pending_delta_commit,
         )
@@ -316,7 +316,7 @@ pub(super) fn run_stream(
                 &mut decision_rx,
                 &mut pending_decisions,
                 &step_tool_provider,
-                &config,
+                agent.as_ref(),
                 &mut active_tool_descriptors,
                 &pending_delta_commit,
             )
@@ -348,7 +348,7 @@ pub(super) fn run_stream(
             };
             active_tool_descriptors = active_tool_snapshot.descriptors.clone();
 
-            let prepared = match prepare_step_execution(&run_ctx, &active_tool_descriptors, &config).await {
+            let prepared = match prepare_step_execution(&run_ctx, &active_tool_descriptors, agent.as_ref()).await {
                 Ok(v) => v,
                 Err(e) => {
                     let message = e.to_string();
@@ -381,11 +381,11 @@ pub(super) fn run_stream(
             yield emitter.step_start(assistant_msg_id.clone());
 
             // Stream LLM response with unified retry + fallback model strategy.
-            let chat_options = config.chat_options.clone();
+            let chat_options = agent.chat_options().cloned();
             let attempt_outcome = run_llm_with_retry_and_fallback(
-                &config,
+                agent.as_ref(),
                 run_cancellation_token.as_ref(),
-                config.llm_retry_policy.retry_stream_start,
+                agent.llm_retry_policy().retry_stream_start,
                 "unknown llm stream start error",
                 |model| {
                     let request =
@@ -422,7 +422,7 @@ pub(super) fn run_stream(
                         match apply_llm_error_cleanup(
                             &mut run_ctx,
                             &active_tool_descriptors,
-                            &config.plugins,
+                            agent.as_ref(),
                             "llm_stream_start_error",
                             last_error.clone(),
                     )
@@ -462,7 +462,7 @@ pub(super) fn run_stream(
                                 &mut decision_rx,
                                 &mut pending_decisions,
                                 &step_tool_provider,
-                                &config,
+                                agent.as_ref(),
                                 &mut active_tool_descriptors,
                                 &pending_delta_commit,
                             )
@@ -494,7 +494,7 @@ pub(super) fn run_stream(
                                 &mut decision_rx,
                                 &mut pending_decisions,
                                 &step_tool_provider,
-                                &config,
+                                agent.as_ref(),
                                 &mut active_tool_descriptors,
                                 &pending_delta_commit,
                             )
@@ -547,7 +547,7 @@ pub(super) fn run_stream(
                         match apply_llm_error_cleanup(
                             &mut run_ctx,
                             &active_tool_descriptors,
-                            &config.plugins,
+                            agent.as_ref(),
                             "llm_stream_event_error",
                             e.to_string(),
                         )
@@ -583,7 +583,7 @@ pub(super) fn run_stream(
                 step_meta.clone(),
                 Some(assistant_msg_id.clone()),
                 &active_tool_descriptors,
-                &config.plugins,
+                agent.as_ref(),
             )
             .await
             {
@@ -641,7 +641,7 @@ pub(super) fn run_stream(
             }
 
             // Execute tools with phase hooks
-            let tool_context = match prepare_tool_execution_context(&run_ctx, Some(&config)) {
+            let tool_context = match prepare_tool_execution_context(&run_ctx) {
                 Ok(ctx) => ctx,
                 Err(e) => {
                     let message = e.to_string();
@@ -655,14 +655,15 @@ pub(super) fn run_stream(
             let mut tool_future: Pin<
                 Box<dyn Future<Output = Result<Vec<ToolExecutionResult>, AgentLoopError>> + Send>,
             > = Box::pin(async {
-                config
-                    .tool_executor
+                agent
+                    .tool_executor()
                     .execute(ToolExecutionRequest {
                         tools: &active_tool_snapshot.tools,
                         calls: &result.tool_calls,
                         state: &tool_context.state,
                         tool_descriptors: &tool_descriptors_for_exec,
-                        plugins: &config.plugins,
+                        agent_behavior: Some(agent.behavior()),
+                        plugins: agent.plugins(),
                         activity_manager: activity_manager.clone(),
                         run_config: &tool_context.run_config,
                         thread_id: &sid_for_tools,
@@ -698,7 +699,7 @@ pub(super) fn run_stream(
                             &mut decision_rx,
                             &mut pending_decisions,
                             &step_tool_provider,
-                            &config,
+                            agent.as_ref(),
                             &mut active_tool_descriptors,
                             &pending_delta_commit,
                         )
@@ -769,7 +770,7 @@ pub(super) fn run_stream(
                 &mut run_ctx,
                 &results,
                 Some(step_meta),
-                config.tool_executor.requires_parallel_patch_conflict_check(),
+                agent.tool_executor().requires_parallel_patch_conflict_check(),
                 Some(&tool_msg_ids),
             ) {
                 Ok(a) => a,
@@ -792,7 +793,7 @@ pub(super) fn run_stream(
                 &mut decision_rx,
                 &mut pending_decisions,
                 &step_tool_provider,
-                &config,
+                agent.as_ref(),
                 &mut active_tool_descriptors,
                 &pending_delta_commit,
             )

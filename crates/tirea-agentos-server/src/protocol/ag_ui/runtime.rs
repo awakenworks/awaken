@@ -32,14 +32,14 @@ pub const AGUI_FORWARDED_PROPS_KEY: &str = "agui_forwarded_props";
 /// injection, and request model/config overrides.
 pub fn apply_agui_extensions(resolved: &mut ResolvedRun, request: &RunAgentInput) {
     if let Some(model) = request.model.as_ref().filter(|m| !m.trim().is_empty()) {
-        resolved.config.model = model.clone();
+        resolved.agent.model = model.clone();
     }
     if let Some(system_prompt) = request
         .system_prompt
         .as_ref()
         .filter(|prompt| !prompt.trim().is_empty())
     {
-        resolved.config.system_prompt = system_prompt.clone();
+        resolved.agent.system_prompt = system_prompt.clone();
     }
     if let Some(config) = request.config.clone() {
         apply_agui_tool_execution_mode_override(resolved, &config);
@@ -69,7 +69,7 @@ pub fn apply_agui_extensions(resolved: &mut ResolvedRun, request: &RunAgentInput
 
     // Run-scoped plugins
     if !frontend_tool_names.is_empty() {
-        resolved.config.plugins.insert(
+        resolved.agent.plugins.insert(
             0,
             Arc::new(FrontendToolPendingPlugin::new(frontend_tool_names)),
         );
@@ -78,7 +78,7 @@ pub fn apply_agui_extensions(resolved: &mut ResolvedRun, request: &RunAgentInput
     // Context injection: forward useCopilotReadable context to the agent's system prompt.
     if let Some(addendum) = build_context_addendum(request) {
         resolved
-            .config
+            .agent
             .plugins
             .push(Arc::new(ContextInjectionPlugin::new(addendum)));
     }
@@ -93,20 +93,20 @@ fn apply_agui_tool_execution_mode_override(resolved: &mut ResolvedRun, config: &
 
     match mode.as_deref() {
         Some("sequential") => {
-            resolved.config.tool_executor = Arc::new(SequentialToolExecutor);
+            resolved.agent.tool_executor = Arc::new(SequentialToolExecutor);
         }
         Some("parallel_batch_approval") => {
-            resolved.config.tool_executor = Arc::new(ParallelToolExecutor::batch_approval());
+            resolved.agent.tool_executor = Arc::new(ParallelToolExecutor::batch_approval());
         }
         Some("parallel_streaming") => {
-            resolved.config.tool_executor = Arc::new(ParallelToolExecutor::streaming());
+            resolved.agent.tool_executor = Arc::new(ParallelToolExecutor::streaming());
         }
         _ => {}
     }
 }
 
 fn apply_agui_chat_options_overrides(resolved: &mut ResolvedRun, config: &Value) {
-    let mut chat_options = resolved.config.chat_options.clone().unwrap_or_default();
+    let mut chat_options = resolved.agent.chat_options.clone().unwrap_or_default();
     let mut changed = false;
 
     if let Some(map) = config.as_object() {
@@ -144,7 +144,7 @@ fn apply_agui_chat_options_overrides(resolved: &mut ResolvedRun, config: &Value)
     }
 
     if changed {
-        resolved.config.chat_options = Some(chat_options);
+        resolved.agent.chat_options = Some(chat_options);
     }
 }
 
@@ -281,7 +281,7 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tirea_agentos::runtime::loop_runner::AgentConfig;
+    use tirea_agentos::runtime::loop_runner::BaseAgent;
     use tirea_contract::io::ResumeDecisionAction;
     use tirea_contract::runtime::plugin::phase::{StepContext, ToolContext};
     use tirea_contract::runtime::plugin::AgentPlugin;
@@ -301,7 +301,7 @@ mod tests {
 
     fn empty_resolved() -> ResolvedRun {
         ResolvedRun {
-            config: AgentConfig::default(),
+            agent: BaseAgent::default(),
             tools: HashMap::new(),
             run_config: tirea_contract::RunConfig::new(),
         }
@@ -348,13 +348,13 @@ mod tests {
 
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
-        assert_eq!(resolved.config.tool_executor.name(), "parallel_streaming");
+        assert_eq!(resolved.agent.tool_executor.name(), "parallel_streaming");
         assert!(resolved.tools.contains_key("copyToClipboard"));
         // Only 1 frontend tool (backend tools are not stubs)
         assert_eq!(resolved.tools.len(), 1);
         // FrontendToolPendingPlugin
         assert!(resolved
-            .config
+            .agent
             .plugins
             .iter()
             .any(|p| p.id() == "agui_frontend_tools"));
@@ -382,7 +382,7 @@ mod tests {
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
         assert!(resolved.tools.is_empty());
-        assert!(resolved.config.plugins.is_empty());
+        assert!(resolved.agent.plugins.is_empty());
     }
 
     #[test]
@@ -427,7 +427,7 @@ mod tests {
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
         assert!(resolved.tools.is_empty());
-        assert!(resolved.config.plugins.is_empty());
+        assert!(resolved.agent.plugins.is_empty());
     }
 
     #[test]
@@ -455,8 +455,8 @@ mod tests {
         apply_agui_extensions(&mut resolved, &request);
         assert!(resolved.tools.contains_key("copyToClipboard"));
         // FrontendToolPendingPlugin only
-        assert_eq!(resolved.config.plugins.len(), 1);
-        assert_eq!(resolved.config.plugins[0].id(), "agui_frontend_tools");
+        assert_eq!(resolved.agent.plugins.len(), 1);
+        assert_eq!(resolved.agent.plugins[0].id(), "agui_frontend_tools");
     }
 
     #[test]
@@ -481,16 +481,16 @@ mod tests {
         };
 
         let mut resolved = empty_resolved();
-        resolved.config.plugins.push(Arc::new(MarkerPlugin));
+        resolved.agent.plugins.push(Arc::new(MarkerPlugin));
 
         apply_agui_extensions(&mut resolved, &request);
 
         assert_eq!(
-            resolved.config.plugins.first().map(|p| p.id()),
+            resolved.agent.plugins.first().map(|p| p.id()),
             Some("agui_frontend_tools")
         );
         assert_eq!(
-            resolved.config.plugins.get(1).map(|p| p.id()),
+            resolved.agent.plugins.get(1).map(|p| p.id()),
             Some("marker_plugin")
         );
     }
@@ -500,9 +500,9 @@ mod tests {
         let request = RunAgentInput::new("t1", "r1").with_message(Message::user("hello"));
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
-        assert_eq!(resolved.config.tool_executor.name(), "parallel_streaming");
+        assert_eq!(resolved.agent.tool_executor.name(), "parallel_streaming");
         assert!(resolved.tools.is_empty());
-        assert!(resolved.config.plugins.is_empty());
+        assert!(resolved.agent.plugins.is_empty());
     }
 
     #[tokio::test]
@@ -644,7 +644,7 @@ mod tests {
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
         assert!(resolved
-            .config
+            .agent
             .plugins
             .iter()
             .any(|p| p.id() == "agui_context_injection"));
@@ -672,7 +672,7 @@ mod tests {
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
         let plugin = resolved
-            .config
+            .agent
             .plugins
             .iter()
             .find(|p| p.id() == "agui_context_injection")
@@ -701,7 +701,7 @@ mod tests {
         let mut resolved = empty_resolved();
         apply_agui_extensions(&mut resolved, &request);
         assert!(!resolved
-            .config
+            .agent
             .plugins
             .iter()
             .any(|p| p.id() == "agui_context_injection"));
@@ -715,13 +715,13 @@ mod tests {
             .with_system_prompt("You are precise.");
 
         let mut resolved = empty_resolved();
-        resolved.config.model = "base-model".to_string();
-        resolved.config.system_prompt = "base-prompt".to_string();
+        resolved.agent.model = "base-model".to_string();
+        resolved.agent.system_prompt = "base-prompt".to_string();
 
         apply_agui_extensions(&mut resolved, &request);
 
-        assert_eq!(resolved.config.model, "gpt-4.1");
-        assert_eq!(resolved.config.system_prompt, "You are precise.");
+        assert_eq!(resolved.agent.model, "gpt-4.1");
+        assert_eq!(resolved.agent.system_prompt, "You are precise.");
     }
 
     #[test]
@@ -759,7 +759,7 @@ mod tests {
         apply_agui_extensions(&mut resolved, &request);
 
         let options = resolved
-            .config
+            .agent
             .chat_options
             .expect("chat options should exist");
         assert_eq!(options.capture_reasoning_content, Some(true));
@@ -785,7 +785,7 @@ mod tests {
         apply_agui_extensions(&mut resolved, &request);
 
         assert_eq!(
-            resolved.config.tool_executor.name(),
+            resolved.agent.tool_executor.name(),
             "parallel_batch_approval"
         );
     }
@@ -804,7 +804,7 @@ mod tests {
         apply_agui_extensions(&mut resolved, &request);
 
         let options = resolved
-            .config
+            .agent
             .chat_options
             .expect("chat options should exist");
         assert_eq!(options.capture_reasoning_content, Some(false));

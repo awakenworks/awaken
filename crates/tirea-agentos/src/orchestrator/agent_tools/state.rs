@@ -199,7 +199,7 @@ pub(super) fn schedule_recovery_replay(
     }
 }
 
-fn current_unix_millis() -> u64 {
+pub(super) fn current_unix_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)

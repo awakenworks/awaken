@@ -1,6 +1,8 @@
 use crate::{SkillDiscoveryPlugin, SkillRuntimePlugin, SKILLS_PLUGIN_ID};
 use async_trait::async_trait;
 use std::sync::Arc;
+use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
+use tirea_contract::runtime::plugin::phase::effect::PhaseOutput;
 use tirea_contract::runtime::plugin::phase::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
     BeforeToolExecuteContext, RunEndContext, RunStartContext, StepEndContext, StepStartContext,
@@ -34,6 +36,10 @@ impl SkillPlugin {
     pub fn boxed(self) -> Arc<dyn AgentPlugin> {
         Arc::new(self)
     }
+
+    pub fn into_agent(self) -> Arc<dyn AgentBehavior> {
+        Arc::new(self)
+    }
 }
 
 #[async_trait]
@@ -43,44 +49,62 @@ impl AgentPlugin for SkillPlugin {
     }
 
     async fn run_start(&self, ctx: &mut RunStartContext<'_, '_>) {
-        self.discovery.run_start(ctx).await;
-        self.runtime.run_start(ctx).await;
+        AgentPlugin::run_start(&self.discovery, ctx).await;
+        AgentPlugin::run_start(&self.runtime, ctx).await;
     }
 
     async fn step_start(&self, ctx: &mut StepStartContext<'_, '_>) {
-        self.discovery.step_start(ctx).await;
-        self.runtime.step_start(ctx).await;
+        AgentPlugin::step_start(&self.discovery, ctx).await;
+        AgentPlugin::step_start(&self.runtime, ctx).await;
     }
 
     async fn before_inference(&self, ctx: &mut BeforeInferenceContext<'_, '_>) {
-        // Keep ordering stable: catalog first (enables selection), then active skill content.
-        self.discovery.before_inference(ctx).await;
-        self.runtime.before_inference(ctx).await;
+        AgentPlugin::before_inference(&self.discovery, ctx).await;
+        AgentPlugin::before_inference(&self.runtime, ctx).await;
     }
 
     async fn after_inference(&self, ctx: &mut AfterInferenceContext<'_, '_>) {
-        self.discovery.after_inference(ctx).await;
-        self.runtime.after_inference(ctx).await;
+        AgentPlugin::after_inference(&self.discovery, ctx).await;
+        AgentPlugin::after_inference(&self.runtime, ctx).await;
     }
 
     async fn before_tool_execute(&self, ctx: &mut BeforeToolExecuteContext<'_, '_>) {
-        self.discovery.before_tool_execute(ctx).await;
-        self.runtime.before_tool_execute(ctx).await;
+        AgentPlugin::before_tool_execute(&self.discovery, ctx).await;
+        AgentPlugin::before_tool_execute(&self.runtime, ctx).await;
     }
 
     async fn after_tool_execute(&self, ctx: &mut AfterToolExecuteContext<'_, '_>) {
-        self.discovery.after_tool_execute(ctx).await;
-        self.runtime.after_tool_execute(ctx).await;
+        AgentPlugin::after_tool_execute(&self.discovery, ctx).await;
+        AgentPlugin::after_tool_execute(&self.runtime, ctx).await;
     }
 
     async fn step_end(&self, ctx: &mut StepEndContext<'_, '_>) {
-        self.discovery.step_end(ctx).await;
-        self.runtime.step_end(ctx).await;
+        AgentPlugin::step_end(&self.discovery, ctx).await;
+        AgentPlugin::step_end(&self.runtime, ctx).await;
     }
 
     async fn run_end(&self, ctx: &mut RunEndContext<'_, '_>) {
-        self.discovery.run_end(ctx).await;
-        self.runtime.run_end(ctx).await;
+        AgentPlugin::run_end(&self.discovery, ctx).await;
+        AgentPlugin::run_end(&self.runtime, ctx).await;
+    }
+}
+
+fn merge_output(target: &mut PhaseOutput, source: PhaseOutput) {
+    target.effects.extend(source.effects);
+    target.state_actions.extend(source.state_actions);
+}
+
+#[async_trait]
+impl AgentBehavior for SkillPlugin {
+    fn id(&self) -> &str {
+        SKILLS_PLUGIN_ID
+    }
+
+    async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+        let mut merged = PhaseOutput::default();
+        merge_output(&mut merged, AgentBehavior::before_inference(&self.discovery, ctx).await);
+        merge_output(&mut merged, AgentBehavior::before_inference(&self.runtime, ctx).await);
+        merged
     }
 }
 
@@ -130,7 +154,7 @@ mod tests {
         }));
         let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
         let mut before = tirea_contract::runtime::plugin::phase::BeforeInferenceContext::new(&mut step);
-        plugin.before_inference(&mut before).await;
+        AgentPlugin::before_inference(&plugin, &mut before).await;
 
         // Only discovery catalog is injected; runtime plugin no longer injects system context.
         assert_eq!(step.system_context.len(), 1);

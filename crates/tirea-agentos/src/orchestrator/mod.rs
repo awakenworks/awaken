@@ -20,7 +20,7 @@ use crate::extensions::skills::{
     SkillSubsystem, SkillSubsystemError,
 };
 use crate::runtime::loop_runner::{
-    AgentConfig, AgentLoopError, RunCancellationToken, StateCommitError, StateCommitter,
+    Agent, BaseAgent, AgentLoopError, RunCancellationToken, StateCommitError, StateCommitter,
 };
 
 mod agent_definition;
@@ -315,7 +315,7 @@ pub struct PreparedRun {
     pub thread_id: String,
     /// Resolved run ID (may have been auto-generated).
     pub run_id: String,
-    config: AgentConfig,
+    agent: Arc<dyn Agent>,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,

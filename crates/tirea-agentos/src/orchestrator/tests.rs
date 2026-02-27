@@ -506,18 +506,18 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
 
     let resolved = os.resolve("a1").unwrap();
 
-    assert_eq!(resolved.config.id, "a1");
+    assert_eq!(resolved.agent.id, "a1");
     assert!(resolved.tools.contains_key("base_tool"));
     assert!(resolved.tools.contains_key("skill"));
     assert!(resolved.tools.contains_key("load_skill_resource"));
     assert!(resolved.tools.contains_key("skill_script"));
     assert!(resolved.tools.contains_key("agent_run"));
     assert!(resolved.tools.contains_key("agent_stop"));
-    assert_eq!(resolved.config.plugins.len(), 4);
-    assert_eq!(resolved.config.plugins[0].id(), "skills");
-    assert_eq!(resolved.config.plugins[1].id(), "agent_tools");
-    assert_eq!(resolved.config.plugins[2].id(), "agent_recovery");
-    assert_eq!(resolved.config.plugins[3].id(), "stop_policy");
+    assert_eq!(resolved.agent.plugins.len(), 4);
+    assert_eq!(resolved.agent.plugins[0].id(), "skills");
+    assert_eq!(resolved.agent.plugins[1].id(), "agent_tools");
+    assert_eq!(resolved.agent.plugins[2].id(), "agent_recovery");
+    assert_eq!(resolved.agent.plugins[3].id(), "stop_policy");
 }
 
 #[test]
@@ -1003,11 +1003,11 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
     let resolved = os.resolve("a1").expect("resolve a1");
     assert!(
         resolved
-            .config
+            .agent
             .plugins
             .iter()
             .any(|plugin| plugin.id() == "stop_policy"),
-        "resolved loop config should carry stop policy via plugin"
+        "resolved agent should carry stop policy via plugin"
     );
 
     #[derive(Debug)]
@@ -1047,7 +1047,7 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
         }
     }
 
-    let config = resolved.config.with_llm_executor(
+    let config = resolved.agent.with_llm_executor(
         Arc::new(OneShotLlm) as Arc<dyn crate::runtime::loop_runner::LlmExecutor>
     );
     let thread = crate::contracts::thread::Thread::new("stop-plugin-thread")
@@ -1165,8 +1165,8 @@ async fn resolve_wires_agent_tools_by_default() {
     let resolved = os.resolve("a1").unwrap();
     assert!(resolved.tools.contains_key("agent_run"));
     assert!(resolved.tools.contains_key("agent_stop"));
-    assert_eq!(resolved.config.plugins[0].id(), "agent_tools");
-    assert_eq!(resolved.config.plugins[1].id(), "agent_recovery");
+    assert_eq!(resolved.agent.plugins[0].id(), "agent_tools");
+    assert_eq!(resolved.agent.plugins[1].id(), "agent_recovery");
 }
 
 #[tokio::test]
@@ -1270,7 +1270,7 @@ async fn resolve_rewrites_model_when_registry_present() {
         .unwrap();
 
     let resolved = os.resolve("a1").unwrap();
-    assert_eq!(resolved.config.model, "gpt-4o-mini");
+    assert_eq!(resolved.agent.model, "gpt-4o-mini");
 }
 
 #[derive(Debug)]
@@ -1299,11 +1299,11 @@ async fn resolve_wires_plugins_from_registry() {
         .unwrap();
 
     let resolved = os.resolve("a1").unwrap();
-    assert!(resolved.config.plugins.iter().any(|p| p.id() == "p1"));
+    assert!(resolved.agent.plugins.iter().any(|p| p.id() == "p1"));
 
     let fixture = TestFixture::new();
     let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
-    for p in &resolved.config.plugins {
+    for p in &resolved.agent.plugins {
         let mut before = BeforeInferenceContext::new(&mut step);
         p.before_inference(&mut before).await;
     }
@@ -1325,10 +1325,10 @@ async fn resolve_wires_plugins_in_order() {
         .unwrap();
 
     let resolved = os.resolve("a1").unwrap();
-    assert_eq!(resolved.config.plugins[0].id(), "agent_tools");
-    assert_eq!(resolved.config.plugins[1].id(), "agent_recovery");
-    assert_eq!(resolved.config.plugins[2].id(), "policy1");
-    assert_eq!(resolved.config.plugins[3].id(), "p1");
+    assert_eq!(resolved.agent.plugins[0].id(), "agent_tools");
+    assert_eq!(resolved.agent.plugins[1].id(), "agent_recovery");
+    assert_eq!(resolved.agent.plugins[2].id(), "policy1");
+    assert_eq!(resolved.agent.plugins[3].id(), "p1");
 }
 
 #[tokio::test]
@@ -1360,11 +1360,11 @@ async fn resolve_wires_skills_before_plugins() {
     assert!(resolved.tools.contains_key("agent_run"));
     assert!(resolved.tools.contains_key("agent_stop"));
 
-    assert_eq!(resolved.config.plugins[0].id(), "skills");
-    assert_eq!(resolved.config.plugins[1].id(), "agent_tools");
-    assert_eq!(resolved.config.plugins[2].id(), "agent_recovery");
-    assert_eq!(resolved.config.plugins[3].id(), "policy1");
-    assert_eq!(resolved.config.plugins[4].id(), "p1");
+    assert_eq!(resolved.agent.plugins[0].id(), "skills");
+    assert_eq!(resolved.agent.plugins[1].id(), "agent_tools");
+    assert_eq!(resolved.agent.plugins[2].id(), "agent_recovery");
+    assert_eq!(resolved.agent.plugins[3].id(), "policy1");
+    assert_eq!(resolved.agent.plugins[4].id(), "p1");
 }
 
 #[test]
@@ -3040,14 +3040,14 @@ async fn prepare_run_scope_appends_plugins() {
         .unwrap();
 
     assert!(prepared
-        .config
-        .plugins
+        .agent
+        .plugins()
         .iter()
         .any(|p| p.id() == "run_scoped"));
     // System plugins should still be present
     assert!(prepared
-        .config
-        .plugins
+        .agent
+        .plugins()
         .iter()
         .any(|p| p.id() == "agent_tools"));
 }
@@ -3250,7 +3250,7 @@ async fn resolve_wires_stop_conditions_from_registry() {
     let resolved = os.resolve("a1").unwrap();
     assert!(
         resolved
-            .config
+            .agent
             .plugins
             .iter()
             .any(|plugin| plugin.id() == "stop_policy"),

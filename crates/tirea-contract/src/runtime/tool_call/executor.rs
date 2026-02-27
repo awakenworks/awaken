@@ -1,4 +1,5 @@
 use crate::runtime::activity::ActivityManager;
+use crate::runtime::plugin::agent::AgentBehavior;
 use crate::runtime::plugin::agent_plugin::AgentPlugin;
 use crate::runtime::tool_call::lifecycle::SuspendedCall;
 use crate::thread::{Message, ToolCall};
@@ -50,6 +51,9 @@ pub struct ToolExecutionRequest<'a> {
     pub calls: &'a [ToolCall],
     pub state: &'a Value,
     pub tool_descriptors: &'a [ToolDescriptor],
+    /// Agent behavior for declarative phase dispatch (preferred over plugins).
+    pub agent_behavior: Option<&'a dyn AgentBehavior>,
+    /// Legacy plugins for phase dispatch.
     pub plugins: &'a [Arc<dyn AgentPlugin>],
     pub activity_manager: Arc<dyn ActivityManager>,
     pub run_config: &'a RunConfig,
