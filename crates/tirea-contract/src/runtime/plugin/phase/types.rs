@@ -2,7 +2,6 @@ use crate::runtime::run::TerminationReason;
 use crate::runtime::tool_call::Suspension;
 use crate::runtime::{PendingToolCall, ToolCallResumeMode};
 use serde::{Deserialize, Serialize};
-use tirea_state::TrackedPatch;
 
 /// Execution phase in the agent loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -164,10 +163,4 @@ impl ToolCallAction {
     pub fn suspend(ticket: SuspendTicket) -> Self {
         Self::Suspend(Box::new(ticket))
     }
-}
-
-/// State side effect emitted by plugins.
-#[derive(Debug, Clone)]
-pub enum StateEffect {
-    Patch(TrackedPatch),
 }

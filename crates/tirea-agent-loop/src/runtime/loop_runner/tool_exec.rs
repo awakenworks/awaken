@@ -4,22 +4,23 @@ use super::core::{
 };
 use super::plugin_runtime::emit_tool_phase;
 use super::{
-    Agent, BaseAgent, AgentLoopError, RunCancellationToken, TOOL_SCOPE_CALLER_MESSAGES_KEY,
+    Agent, AgentLoopError, BaseAgent, RunCancellationToken, TOOL_SCOPE_CALLER_MESSAGES_KEY,
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use crate::contracts::runtime::plugin::agent::AgentBehavior;
 use crate::contracts::runtime::plugin::phase::{reduce_state_actions, AnyStateAction};
-use crate::contracts::runtime::plugin::phase::{Phase, StateEffect, StepContext, ToolContext};
+use crate::contracts::runtime::plugin::phase::{Phase, StepContext, ToolContext};
+use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::runtime::{
     ActivityManager, PendingToolCall, SuspendTicket, SuspendedCall, ToolCallResumeMode,
 };
 use crate::contracts::runtime::{
     DecisionReplayPolicy, StreamResult, ToolCallOutcome, ToolCallStatus, ToolExecution,
-    ToolExecutionEffect, ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
+    ToolExecutionEffect, ToolExecutionRequest, ToolExecutionResult, ToolExecutor,
+    ToolExecutorError,
 };
 use crate::contracts::thread::Thread;
 use crate::contracts::thread::{Message, MessageMetadata, ToolCall};
-use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::{RunContext, Suspension};
 use crate::engine::convert::tool_response;
 use crate::engine::tool_execution::collect_patches;
@@ -566,7 +567,8 @@ pub async fn execute_tools_with_config(
         tools,
         agent.tool_executor().as_ref(),
         Some(agent.behavior()),
-    ).await
+    )
+    .await
 }
 
 pub(super) fn scope_with_tool_caller_context(
@@ -652,8 +654,7 @@ async fn execute_tools_with_agent_and_executor(
         DecisionReplayPolicy::BatchAllSuspended => Arc::new(ParallelToolExecutor::batch_approval()),
         DecisionReplayPolicy::Immediate => Arc::new(ParallelToolExecutor::streaming()),
     };
-    let replay_config = BaseAgent::default()
-        .with_tool_executor(replay_executor);
+    let replay_config = BaseAgent::default().with_tool_executor(replay_executor);
     let replay = super::drain_resuming_tool_calls_and_replay(
         &mut run_ctx,
         tools,
@@ -898,7 +899,13 @@ pub(super) async fn execute_single_tool_with_phases(
     );
     step.tool = Some(ToolContext::new(call));
     // Phase: BeforeToolExecute
-    emit_tool_phase(Phase::BeforeToolExecute, &mut step, phase_ctx.agent_behavior, &doc).await?;
+    emit_tool_phase(
+        Phase::BeforeToolExecute,
+        &mut step,
+        phase_ctx.agent_behavior,
+        &doc,
+    )
+    .await?;
 
     // Check if blocked or pending
     let (execution, outcome, suspended_call, tool_state_actions) = if step.tool_blocked() {
@@ -1029,7 +1036,13 @@ pub(super) async fn execute_single_tool_with_phases(
     step.set_tool_result(execution.result.clone());
 
     // Phase: AfterToolExecute
-    emit_tool_phase(Phase::AfterToolExecute, &mut step, phase_ctx.agent_behavior, &doc).await?;
+    emit_tool_phase(
+        Phase::AfterToolExecute,
+        &mut step,
+        phase_ctx.agent_behavior,
+        &doc,
+    )
+    .await?;
 
     match outcome {
         ToolCallOutcome::Suspended => {
@@ -1061,11 +1074,6 @@ pub(super) async fn execute_single_tool_with_phases(
         &format!("tool:{}", call.name),
     )?;
     pending_patches.extend(std::mem::take(&mut step.pending_patches));
-    for effect in std::mem::take(&mut step.state_effects) {
-        match effect {
-            StateEffect::Patch(patch) => pending_patches.push(patch),
-        }
-    }
 
     Ok(ToolExecutionResult {
         execution,
@@ -1088,8 +1096,9 @@ fn reduce_tool_state_actions(
             AgentLoopError::StateError(format!("failed to apply tool patch before actions: {e}"))
         })?;
     }
-    reduce_state_actions(actions, &rolling_snapshot, source)
-        .map_err(|e| AgentLoopError::StateError(format!("failed to reduce tool state actions: {e}")))
+    reduce_state_actions(actions, &rolling_snapshot, source).map_err(|e| {
+        AgentLoopError::StateError(format!("failed to reduce tool state actions: {e}"))
+    })
 }
 
 fn cancelled_error(_thread_id: &str) -> AgentLoopError {

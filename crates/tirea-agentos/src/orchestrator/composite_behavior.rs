@@ -49,7 +49,6 @@ impl CompositeBehavior {
 fn merge_output(target: &mut PhaseOutput, source: PhaseOutput) {
     target.effects.extend(source.effects);
     target.state_actions.extend(source.state_actions);
-    target.pending_patches.extend(source.pending_patches);
 }
 
 #[async_trait]
@@ -140,8 +139,8 @@ impl AgentBehavior for CompositeBehavior {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::runtime::plugin::phase::AnyStateAction;
     use crate::contracts::runtime::plugin::phase::effect::PhaseEffect;
+    use crate::contracts::runtime::plugin::phase::AnyStateAction;
     use crate::contracts::runtime::plugin::phase::Phase;
     use crate::contracts::RunConfig;
     use serde_json::json;

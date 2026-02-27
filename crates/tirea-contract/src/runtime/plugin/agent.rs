@@ -27,7 +27,7 @@ pub struct ReadOnlyContext<'a> {
     tool_call_id: Option<&'a str>,
     tool_args: Option<&'a Value>,
     tool_result: Option<&'a ToolResult>,
-    resume_input: Option<&'a ToolCallResume>,
+    resume_input: Option<ToolCallResume>,
 }
 
 impl<'a> ReadOnlyContext<'a> {
@@ -82,7 +82,7 @@ impl<'a> ReadOnlyContext<'a> {
     }
 
     #[must_use]
-    pub fn with_resume_input(mut self, resume: &'a ToolCallResume) -> Self {
+    pub fn with_resume_input(mut self, resume: ToolCallResume) -> Self {
         self.resume_input = Some(resume);
         self
     }
@@ -134,7 +134,7 @@ impl<'a> ReadOnlyContext<'a> {
     }
 
     pub fn resume_input(&self) -> Option<&ToolCallResume> {
-        self.resume_input
+        self.resume_input.as_ref()
     }
 
     // -- state access --

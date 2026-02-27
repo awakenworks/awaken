@@ -1,7 +1,7 @@
 use super::AgentLoopError;
 use crate::contracts::runtime::plugin::phase::effect::{validate_effect, PhaseEffect, PhaseOutput};
 use crate::contracts::runtime::plugin::phase::{
-    reduce_state_actions, AnyStateAction, Phase, RunAction, StateEffect, StepContext,
+    reduce_state_actions, Phase, RunAction, StepContext,
 };
 use tirea_state::DocCell;
 
@@ -24,13 +24,10 @@ pub fn apply_phase_output(
         apply_effect(step, effect);
     }
 
-    // Apply state actions and compatibility pending patches through one reducer path.
-    let mut actions = output.state_actions;
-    actions.extend(output.pending_patches.into_iter().map(AnyStateAction::Patch));
-    let tracked_actions = reduce_state_actions(actions, &doc.snapshot(), "agent")
+    let tracked_actions = reduce_state_actions(output.state_actions, &doc.snapshot(), "agent")
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     for tracked in tracked_actions {
-        step.emit_state_effect(StateEffect::Patch(tracked));
+        step.emit_patch(tracked);
     }
 
     Ok(())
@@ -285,11 +282,9 @@ mod tests {
         apply_phase_output(Phase::BeforeInference, &mut step, output, &doc).unwrap();
 
         let patches: Vec<&Patch> = step
-            .state_effects
+            .pending_patches
             .iter()
-            .filter_map(|effect| match effect {
-                StateEffect::Patch(tracked) => Some(tracked.patch()),
-            })
+            .map(|patch| patch.patch())
             .collect();
         assert_eq!(patches.len(), 2);
 
@@ -309,11 +304,11 @@ mod tests {
 
         apply_phase_output(Phase::BeforeInference, &mut step, output, &doc).unwrap();
 
-        match step.state_effects.first() {
-            Some(StateEffect::Patch(patch)) => {
+        match step.pending_patches.first() {
+            Some(patch) => {
                 assert_eq!(patch.source.as_deref(), Some("plugin:test"));
             }
-            other => panic!("expected patch state effect, got: {other:?}"),
+            other => panic!("expected pending patch, got: {other:?}"),
         }
     }
 }

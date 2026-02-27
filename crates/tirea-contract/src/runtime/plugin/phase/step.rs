@@ -1,8 +1,8 @@
-use super::{RunAction, StateEffect, StepOutcome, SuspendTicket, ToolCallAction};
+use super::{RunAction, StepOutcome, SuspendTicket, ToolCallAction};
 use crate::runtime::llm::StreamResult;
-use crate::thread::{Message, ToolCall};
 use crate::runtime::tool_call::ToolCallContext;
 use crate::runtime::tool_call::{ToolDescriptor, ToolResult};
+use crate::thread::{Message, ToolCall};
 use crate::RunConfig;
 use serde_json::Value;
 use std::sync::Arc;
@@ -105,8 +105,6 @@ pub struct StepContext<'a> {
     // === Pending State Changes ===
     /// Patches to apply to session state after this phase completes.
     pub pending_patches: Vec<TrackedPatch>,
-    /// State effects emitted by plugins.
-    pub state_effects: Vec<StateEffect>,
 }
 
 impl<'a> StepContext<'a> {
@@ -129,7 +127,6 @@ impl<'a> StepContext<'a> {
             response: None,
             run_action: None,
             pending_patches: Vec::new(),
-            state_effects: Vec::new(),
         }
     }
 
@@ -196,7 +193,6 @@ impl<'a> StepContext<'a> {
         self.response = None;
         self.run_action = None;
         self.pending_patches.clear();
-        self.state_effects.clear();
     }
 
     // =========================================================================
@@ -321,21 +317,14 @@ impl<'a> StepContext<'a> {
         self.run_action = Some(action);
     }
 
-    /// Emit a state side effect.
-    pub fn emit_state_effect(&mut self, effect: StateEffect) {
-        self.state_effects.push(effect);
-    }
-
     /// Emit a state patch side effect.
     pub fn emit_patch(&mut self, patch: TrackedPatch) {
-        self.emit_state_effect(StateEffect::Patch(patch));
+        self.pending_patches.push(patch);
     }
 
     /// Effective run-level action for current step.
     pub fn run_action(&self) -> RunAction {
-        self.run_action
-            .clone()
-            .unwrap_or(RunAction::Continue)
+        self.run_action.clone().unwrap_or(RunAction::Continue)
     }
 
     /// Current tool action derived from tool gate state.

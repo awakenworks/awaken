@@ -6,9 +6,9 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tirea_agentos::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::thread::Role as ThreadRole;
 use tirea_agentos::contracts::thread::Thread as ConversationAgentState;
-use tirea_agentos::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::SuspensionResponse;
 use tirea_agentos::contracts::ToolCallContext;
 use tirea_agentos::extensions::reminder::SystemReminder;
@@ -4576,17 +4576,16 @@ fn test_scenario_various_interaction_types() {
 // InteractionPlugin Scenario Tests
 // ============================================================================
 
+use std::any::TypeId;
 use std::collections::{HashMap, HashSet};
-use tirea_agentos::contracts::runtime::plugin::phase::{
-    Phase, StepContext, ToolContext,
-};
+use tirea_agentos::contracts::io::ResumeDecisionAction;
 use tirea_agentos::contracts::runtime::plugin::agent::ReadOnlyContext;
 use tirea_agentos::contracts::runtime::plugin::phase::effect::PhaseOutput;
+use tirea_agentos::contracts::runtime::plugin::phase::{Phase, StepContext, ToolContext};
 use tirea_agentos::contracts::runtime::plugin::AgentBehavior;
-use tirea_agentos::contracts::io::ResumeDecisionAction;
 use tirea_agentos::contracts::runtime::{
-    AnyStateAction, SuspendedCall, SuspendedToolCallsState,
-    ToolCallResume, ToolCallState, ToolCallStatesAction, ToolCallStatesMap, ToolCallStatus,
+    AnyStateAction, SuspendedCall, SuspendedToolCallsState, ToolCallResume, ToolCallState,
+    ToolCallStatesAction, ToolCallStatesMap, ToolCallStatus,
 };
 use tirea_agentos::contracts::thread::ToolCall;
 use tirea_protocol_ag_ui::RunAgentInput;
@@ -4716,7 +4715,6 @@ fn build_read_only_ctx_for_dispatch<'a>(
     if phase == Phase::BeforeToolExecute {
         if let Some(call_id) = step.tool_call_id() {
             if let Ok(Some(resume)) = step.ctx().resume_input_for(call_id) {
-                let resume = Box::leak(Box::new(resume));
                 ctx = ctx.with_resume_input(resume);
             }
         }
@@ -4727,14 +4725,10 @@ fn build_read_only_ctx_for_dispatch<'a>(
     ctx
 }
 
-fn apply_phase_output_for_test(
-    phase: Phase,
-    step: &mut StepContext<'_>,
-    output: PhaseOutput,
-) {
+fn apply_phase_output_for_test(phase: Phase, step: &mut StepContext<'_>, output: PhaseOutput) {
+    use tirea_agentos::contracts::reduce_state_actions;
     use tirea_agentos::contracts::runtime::plugin::phase::effect::{validate_effect, PhaseEffect};
-    use tirea_agentos::contracts::runtime::plugin::phase::{RunAction, StateEffect};
-    use tirea_state::TrackedPatch;
+    use tirea_agentos::contracts::runtime::plugin::phase::RunAction;
 
     for effect in &output.effects {
         validate_effect(phase, effect).expect("phase effect should be valid");
@@ -4758,20 +4752,16 @@ fn apply_phase_output_for_test(
             }
         }
     }
-    for action in output.state_actions {
-        let snapshot = step.ctx().doc().snapshot();
-        let patch = action.apply(&snapshot).expect("state action should apply");
-        if !patch.is_empty() {
-            let doc = step.ctx().doc();
-            for op in patch.ops() {
-                let _ = doc.apply(op);
-            }
-            let tracked = TrackedPatch::new(patch).with_source("agent");
-            step.emit_state_effect(StateEffect::Patch(tracked));
+    let tracked = reduce_state_actions(output.state_actions, &step.ctx().doc().snapshot(), "agent")
+        .expect("state actions should reduce");
+    for patch in tracked {
+        let doc = step.ctx().doc();
+        for op in patch.patch().ops() {
+            let _ = doc.apply(op);
         }
+        step.emit_patch(patch);
     }
 }
-
 
 #[derive(Debug, Default)]
 struct InteractionPlugin {
@@ -4858,20 +4848,26 @@ impl AgentBehavior for InteractionPlugin {
         "test_interaction"
     }
 
+    fn owned_states(&self) -> HashSet<TypeId> {
+        let mut owned = HashSet::new();
+        owned.insert(TypeId::of::<ToolCallStatesMap>());
+        owned
+    }
+
     async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
         if self.responses.is_empty() {
             return PhaseOutput::default();
         }
 
-        let suspended_state = ctx.snapshot_of::<SuspendedToolCallsState>()
+        let suspended_state = ctx
+            .snapshot_of::<SuspendedToolCallsState>()
             .unwrap_or_default();
         let suspended_calls = suspended_state.calls;
         if suspended_calls.is_empty() {
             return PhaseOutput::default();
         }
 
-        let existing_states = ctx.snapshot_of::<ToolCallStatesMap>()
-            .unwrap_or_default();
+        let existing_states = ctx.snapshot_of::<ToolCallStatesMap>().unwrap_or_default();
         let mut states = existing_states.calls;
         let mut output = PhaseOutput::default();
         for (call_id, suspended_call) in suspended_calls {
@@ -4886,18 +4882,16 @@ impl AgentBehavior for InteractionPlugin {
             };
             let resume = Self::to_tool_call_resume(&call_id, result);
             let updated_at = resume.updated_at;
-            let mut state = states
-                .remove(&call_id)
-                .unwrap_or_else(|| ToolCallState {
-                    call_id: call_id.clone(),
-                    tool_name: suspended_call.tool_name.clone(),
-                    arguments: suspended_call.arguments.clone(),
-                    status: ToolCallStatus::Suspended,
-                    resume_token: Some(suspended_call.ticket.pending.id.clone()),
-                    resume: None,
-                    scratch: Value::Null,
-                    updated_at,
-                });
+            let mut state = states.remove(&call_id).unwrap_or_else(|| ToolCallState {
+                call_id: call_id.clone(),
+                tool_name: suspended_call.tool_name.clone(),
+                arguments: suspended_call.arguments.clone(),
+                status: ToolCallStatus::Suspended,
+                resume_token: Some(suspended_call.ticket.pending.id.clone()),
+                resume: None,
+                scratch: Value::Null,
+                updated_at,
+            });
             state.call_id = call_id.clone();
             state.tool_name = suspended_call.tool_name.clone();
             state.arguments = suspended_call.arguments.clone();
@@ -4905,11 +4899,9 @@ impl AgentBehavior for InteractionPlugin {
             state.resume_token = Some(suspended_call.ticket.pending.id.clone());
             state.resume = Some(resume);
             state.updated_at = updated_at;
-            output = output.with_state_action(
-                AnyStateAction::new::<ToolCallStatesMap>(ToolCallStatesAction::InsertState {
-                    state,
-                }),
-            );
+            output = output.with_state_action(AnyStateAction::new::<ToolCallStatesMap>(
+                ToolCallStatesAction::InsertState { state },
+            ));
         }
         output
     }
@@ -12440,10 +12432,10 @@ mod llmmetry_tracing {
     use serde_json::json;
     use std::sync::{Arc, Mutex};
     use tirea_agentos::contracts::runtime::plugin::phase::{Phase, StepContext, ToolContext};
+    use tirea_agentos::contracts::runtime::tool_call::ToolResult;
     use tirea_agentos::contracts::runtime::StreamResult;
     use tirea_agentos::contracts::thread::Thread as ConversationAgentState;
     use tirea_agentos::contracts::thread::ToolCall;
-    use tirea_agentos::contracts::runtime::tool_call::ToolResult;
     use tirea_agentos::extensions::observability::{InMemorySink, LLMMetryPlugin};
     use tirea_contract::testing::TestFixture;
     use tracing_subscriber::layer::SubscriberExt;

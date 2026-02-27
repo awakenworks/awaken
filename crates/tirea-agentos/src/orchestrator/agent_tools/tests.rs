@@ -1,11 +1,12 @@
 use super::*;
-use crate::contracts::runtime::plugin::phase::{Phase, StateEffect, StepContext};
+use crate::contracts::reduce_state_actions;
 use crate::contracts::runtime::plugin::agent::ReadOnlyContext;
 use crate::contracts::runtime::plugin::phase::effect::{PhaseEffect, PhaseOutput};
-use crate::contracts::AgentBehavior;
-use crate::contracts::thread::Thread;
-use crate::contracts::runtime::tool_call::ToolStatus;
 use crate::contracts::runtime::plugin::phase::RunAction;
+use crate::contracts::runtime::plugin::phase::{Phase, StepContext};
+use crate::contracts::runtime::tool_call::ToolStatus;
+use crate::contracts::thread::Thread;
+use crate::contracts::AgentBehavior;
 use crate::orchestrator::InMemoryAgentRegistry;
 use crate::runtime::loop_runner::{
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
@@ -15,7 +16,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::time::Duration;
 use tirea_contract::testing::TestFixture;
-use tirea_state::{apply_patches, TrackedPatch};
+use tirea_state::apply_patches;
 
 /// Apply a [`PhaseOutput`] to the mutable [`StepContext`] for testing.
 ///
@@ -41,26 +42,16 @@ fn apply_phase_output_for_test(step: &mut StepContext<'_>, output: PhaseOutput) 
             }
         }
     }
-    for action in output.state_actions {
-        let snapshot = step.snapshot();
-        if let Ok(patch) = action.apply(&snapshot) {
-            if !patch.is_empty() {
-                // Apply ops to the doc so TestFixture::updated_state() reflects changes.
-                let doc = step.ctx().doc();
-                for op in patch.ops() {
-                    let _ = doc.apply(op);
-                }
-                let tracked = TrackedPatch::new(patch).with_source("agent");
-                step.emit_state_effect(StateEffect::Patch(tracked));
+    let tracked = reduce_state_actions(output.state_actions, &step.snapshot(), "agent")
+        .expect("state action reduce should succeed");
+    for patch in tracked {
+        {
+            let doc = step.ctx().doc();
+            for op in patch.patch().ops() {
+                let _ = doc.apply(op);
             }
         }
-    }
-    for patch in output.pending_patches {
-        let doc = step.ctx().doc();
-        for op in patch.patch().ops() {
-            let _ = doc.apply(op);
-        }
-        step.pending_patches.push(patch);
+        step.emit_patch(patch);
     }
 }
 
@@ -1178,10 +1169,7 @@ async fn recovery_plugin_reconciles_orphan_running_and_records_confirmation() {
     let mut before = fixture2.step(vec![]);
     plugin.run_phase(Phase::BeforeInference, &mut before).await;
     assert!(
-        matches!(
-            before.run_action(),
-            crate::contracts::RunAction::Continue
-        ),
+        matches!(before.run_action(), crate::contracts::RunAction::Continue),
         "recovery plugin should not control inference flow in BeforeInference"
     );
 }
@@ -1231,10 +1219,7 @@ async fn recovery_plugin_does_not_override_existing_suspended_interaction() {
     let mut step = fixture.step(vec![]);
     plugin.run_phase(Phase::RunStart, &mut step).await;
     assert!(
-        matches!(
-            step.run_action(),
-            crate::contracts::RunAction::Continue
-        ),
+        matches!(step.run_action(), crate::contracts::RunAction::Continue),
         "existing suspended interaction should not be replaced"
     );
 

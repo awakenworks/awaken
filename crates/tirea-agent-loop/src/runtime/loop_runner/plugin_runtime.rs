@@ -3,16 +3,13 @@ use super::effect_applicator::apply_phase_output;
 use super::AgentLoopError;
 use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
-use crate::contracts::runtime::plugin::phase::{Phase, StateEffect, StateScope, StepContext};
+use crate::contracts::runtime::plugin::phase::{Phase, StateScope, StepContext};
 use crate::contracts::runtime::tool_call::ToolDescriptor;
 use crate::contracts::RunContext;
 use crate::contracts::ToolCallContext;
 use crate::runtime::control::InferenceError;
 use std::sync::Mutex;
 use tirea_state::{DocCell, TrackedPatch};
-
-
-
 
 // =========================================================================
 // Agent-based dispatch (declarative model: ReadOnlyContext → PhaseOutput)
@@ -44,10 +41,6 @@ fn build_read_only_context<'a>(
     if phase == Phase::BeforeToolExecute {
         if let Some(call_id) = step.tool_call_id() {
             if let Ok(Some(resume)) = step.ctx().resume_input_for(call_id) {
-                // Safety: leak to 'a. The resume data lives in the DocCell which
-                // outlives this phase dispatch. We box-leak here because the
-                // ToolCallResume is deserialized on-the-fly (not borrowed from doc).
-                let resume = Box::leak(Box::new(resume));
                 ctx = ctx.with_resume_input(resume);
             }
         }
@@ -136,13 +129,7 @@ pub(super) async fn emit_agent_phase(
 // =========================================================================
 
 fn take_step_pending_patches(step: &mut StepContext<'_>) -> Vec<TrackedPatch> {
-    let mut pending = std::mem::take(&mut step.pending_patches);
-    for effect in std::mem::take(&mut step.state_effects) {
-        match effect {
-            StateEffect::Patch(patch) => pending.push(patch),
-        }
-    }
-    pending
+    std::mem::take(&mut step.pending_patches)
 }
 
 // =========================================================================
@@ -500,15 +487,13 @@ mod tests {
         }
 
         async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().with_state_action(AnyStateAction::new::<ToolScopedFlagState>(
-                true,
-            ))
+            PhaseOutput::default()
+                .with_state_action(AnyStateAction::new::<ToolScopedFlagState>(true))
         }
 
         async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-            PhaseOutput::default().with_state_action(AnyStateAction::new::<ToolScopedFlagState>(
-                true,
-            ))
+            PhaseOutput::default()
+                .with_state_action(AnyStateAction::new::<ToolScopedFlagState>(true))
         }
     }
 
@@ -541,7 +526,7 @@ mod tests {
             .await
             .expect("owned action should pass validation");
 
-        assert!(!step.state_effects.is_empty());
+        assert!(!step.pending_patches.is_empty());
     }
 
     #[tokio::test]
@@ -581,6 +566,6 @@ mod tests {
         .await
         .expect("tool-scoped action should pass with active tool context");
 
-        assert!(!step.state_effects.is_empty());
+        assert!(!step.pending_patches.is_empty());
     }
 }

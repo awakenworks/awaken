@@ -73,7 +73,7 @@ fn test_step_context_new() {
     assert!(ctx.tool.is_none());
     assert!(ctx.response.is_none());
     assert!(ctx.run_action.is_none());
-    assert!(ctx.state_effects.is_empty());
+    assert!(ctx.pending_patches.is_empty());
 }
 
 #[test]
@@ -84,9 +84,7 @@ fn test_step_context_reset() {
     ctx.system("test");
     ctx.thread("test");
     ctx.reminder("test");
-    ctx.set_run_action(RunAction::Terminate(
-        TerminationReason::BehaviorRequested,
-    ));
+    ctx.set_run_action(RunAction::Terminate(TerminationReason::BehaviorRequested));
 
     ctx.reset();
 
@@ -94,7 +92,7 @@ fn test_step_context_reset() {
     assert!(ctx.session_context.is_empty());
     assert!(ctx.system_reminders.is_empty());
     assert!(ctx.run_action.is_none());
-    assert!(ctx.state_effects.is_empty());
+    assert!(ctx.pending_patches.is_empty());
 }
 
 #[test]
@@ -107,9 +105,7 @@ fn test_after_inference_request_termination_sets_run_action() {
     }
     assert_eq!(
         step.run_action,
-        Some(RunAction::Terminate(
-            TerminationReason::BehaviorRequested
-        ))
+        Some(RunAction::Terminate(TerminationReason::BehaviorRequested))
     );
 }
 
@@ -735,7 +731,13 @@ fn test_suspend_with_pending_direct() {
         .unwrap()
         .suspend_ticket
         .as_ref()
-        .map(|ticket| (&ticket.pending, ticket.resume_mode, ticket.suspension.clone()))
+        .map(|ticket| {
+            (
+                &ticket.pending,
+                ticket.resume_mode,
+                ticket.suspension.clone(),
+            )
+        })
         .expect("pending ticket should exist");
     assert_eq!(pending.0.id, "call_copy");
     assert_eq!(pending.0.name, "copyToClipboard");

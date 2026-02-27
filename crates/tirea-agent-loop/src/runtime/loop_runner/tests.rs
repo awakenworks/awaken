@@ -4,7 +4,9 @@ use super::*;
 use crate::contracts::runtime::plugin::agent::ReadOnlyContext;
 use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
 use crate::contracts::runtime::plugin::phase::{Phase, SuspendTicket};
-use crate::contracts::runtime::tool_call::{ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult};
+use crate::contracts::runtime::tool_call::{
+    ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult,
+};
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{PendingToolCall, ToolCallResumeMode};
 use crate::contracts::storage::VersionPrecondition;
@@ -37,6 +39,11 @@ fn compose_test_behaviors(behaviors: Vec<Arc<dyn AgentBehavior>>) -> Arc<dyn Age
         behaviors: Vec<Arc<dyn AgentBehavior>>,
     }
 
+    fn merge_output(target: &mut PhaseOutput, source: PhaseOutput) {
+        target.effects.extend(source.effects);
+        target.state_actions.extend(source.state_actions);
+    }
+
     #[async_trait]
     impl AgentBehavior for TestCompositeBehavior {
         fn id(&self) -> &str {
@@ -57,80 +64,56 @@ fn compose_test_behaviors(behaviors: Vec<Arc<dyn AgentBehavior>>) -> Arc<dyn Age
         async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
             let mut m = PhaseOutput::default();
             for b in &self.behaviors {
-                let o = b.run_start(ctx).await;
-                m.effects.extend(o.effects);
-                m.state_actions.extend(o.state_actions);
-                m.pending_patches.extend(o.pending_patches);
+                merge_output(&mut m, b.run_start(ctx).await);
             }
             m
         }
         async fn step_start(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
             let mut m = PhaseOutput::default();
             for b in &self.behaviors {
-                let o = b.step_start(ctx).await;
-                m.effects.extend(o.effects);
-                m.state_actions.extend(o.state_actions);
-                m.pending_patches.extend(o.pending_patches);
+                merge_output(&mut m, b.step_start(ctx).await);
             }
             m
         }
         async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
             let mut m = PhaseOutput::default();
             for b in &self.behaviors {
-                let o = b.before_inference(ctx).await;
-                m.effects.extend(o.effects);
-                m.state_actions.extend(o.state_actions);
-                m.pending_patches.extend(o.pending_patches);
+                merge_output(&mut m, b.before_inference(ctx).await);
             }
             m
         }
         async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
             let mut m = PhaseOutput::default();
             for b in &self.behaviors {
-                let o = b.after_inference(ctx).await;
-                m.effects.extend(o.effects);
-                m.state_actions.extend(o.state_actions);
-                m.pending_patches.extend(o.pending_patches);
+                merge_output(&mut m, b.after_inference(ctx).await);
             }
             m
         }
         async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
             let mut m = PhaseOutput::default();
             for b in &self.behaviors {
-                let o = b.before_tool_execute(ctx).await;
-                m.effects.extend(o.effects);
-                m.state_actions.extend(o.state_actions);
-                m.pending_patches.extend(o.pending_patches);
+                merge_output(&mut m, b.before_tool_execute(ctx).await);
             }
             m
         }
         async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
             let mut m = PhaseOutput::default();
             for b in &self.behaviors {
-                let o = b.after_tool_execute(ctx).await;
-                m.effects.extend(o.effects);
-                m.state_actions.extend(o.state_actions);
-                m.pending_patches.extend(o.pending_patches);
+                merge_output(&mut m, b.after_tool_execute(ctx).await);
             }
             m
         }
         async fn step_end(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
             let mut m = PhaseOutput::default();
             for b in &self.behaviors {
-                let o = b.step_end(ctx).await;
-                m.effects.extend(o.effects);
-                m.state_actions.extend(o.state_actions);
-                m.pending_patches.extend(o.pending_patches);
+                merge_output(&mut m, b.step_end(ctx).await);
             }
             m
         }
         async fn run_end(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
             let mut m = PhaseOutput::default();
             for b in &self.behaviors {
-                let o = b.run_end(ctx).await;
-                m.effects.extend(o.effects);
-                m.state_actions.extend(o.state_actions);
-                m.pending_patches.extend(o.pending_patches);
+                merge_output(&mut m, b.run_end(ctx).await);
             }
             m
         }
@@ -772,11 +755,10 @@ impl Tool for ActionStateTool {
         _args: Value,
         _ctx: &ToolCallContext<'_>,
     ) -> Result<ToolExecutionEffect, ToolError> {
-        Ok(ToolExecutionEffect::new(ToolResult::success(
-            self.id,
-            json!({"ok": true}),
-        ))
-        .with_state_action(AnyStateAction::new::<DebugFlags>(self.action)))
+        Ok(
+            ToolExecutionEffect::new(ToolResult::success(self.id, json!({"ok": true})))
+                .with_state_action(AnyStateAction::new::<DebugFlags>(self.action)),
+        )
     }
 }
 
@@ -1792,7 +1774,11 @@ async fn test_tool_execute_effect_state_actions_become_pending_patches() {
     #[async_trait]
     impl Tool for ActionEffectTool {
         fn descriptor(&self) -> ToolDescriptor {
-            ToolDescriptor::new("action_effect_tool", "ActionEffect", "returns state actions")
+            ToolDescriptor::new(
+                "action_effect_tool",
+                "ActionEffect",
+                "returns state actions",
+            )
         }
 
         async fn execute(
@@ -1800,7 +1786,10 @@ async fn test_tool_execute_effect_state_actions_become_pending_patches() {
             _args: Value,
             _ctx: &ToolCallContext<'_>,
         ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success("action_effect_tool", json!({"ok": true})))
+            Ok(ToolResult::success(
+                "action_effect_tool",
+                json!({"ok": true}),
+            ))
         }
 
         async fn execute_effect(
