@@ -7,11 +7,11 @@ use futures::Stream;
 use genai::Client;
 
 use crate::contracts::runtime::plugin::AgentBehavior;
+use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::storage::{ThreadHead, ThreadStore, ThreadStoreError, VersionPrecondition};
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::Message;
 use crate::contracts::thread::Thread;
-use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::RunContext;
 use crate::contracts::{AgentEvent, RunRequest, ToolCallDecision};
 use crate::extensions::skills::{
@@ -20,12 +20,13 @@ use crate::extensions::skills::{
     SkillSubsystem, SkillSubsystemError,
 };
 use crate::runtime::loop_runner::{
-    Agent, BaseAgent, AgentLoopError, RunCancellationToken, StateCommitError, StateCommitter,
+    Agent, AgentLoopError, BaseAgent, RunCancellationToken, StateCommitError, StateCommitter,
 };
 
 mod agent_definition;
 pub(crate) mod agent_tools;
 mod builder;
+mod composite_behavior;
 mod composition;
 mod policy;
 mod run;
@@ -39,15 +40,17 @@ pub use agent_definition::{AgentDefinition, ToolExecutionMode};
 use agent_tools::{
     AgentRecoveryPlugin, AgentRunManager, AgentRunTool, AgentStopTool, AgentToolsPlugin,
 };
+pub use composite_behavior::compose_behaviors;
 pub use composition::{
-    AgentRegistry, AgentRegistryError, BundleComposeError, BundleComposer,
-    BundleRegistryAccumulator, BundleRegistryKind, CompositeAgentRegistry, CompositeModelRegistry,
-    CompositeBehaviorRegistry, CompositeProviderRegistry, CompositeStopPolicyRegistry,
-    CompositeToolRegistry, InMemoryAgentRegistry, InMemoryBehaviorRegistry, InMemoryModelRegistry,
-    InMemoryProviderRegistry, InMemoryStopPolicyRegistry, InMemoryToolRegistry, ModelDefinition,
-    ModelRegistry, ModelRegistryError, BehaviorRegistry, BehaviorRegistryError, ProviderRegistry,
-    ProviderRegistryError, RegistryBundle, RegistrySet, StopPolicyRegistry,
-    StopPolicyRegistryError, ToolBehaviorBundle, ToolRegistry, ToolRegistryError,
+    AgentRegistry, AgentRegistryError, BehaviorRegistry, BehaviorRegistryError, BundleComposeError,
+    BundleComposer, BundleRegistryAccumulator, BundleRegistryKind, CompositeAgentRegistry,
+    CompositeBehaviorRegistry, CompositeModelRegistry, CompositeProviderRegistry,
+    CompositeStopPolicyRegistry, CompositeToolRegistry, InMemoryAgentRegistry,
+    InMemoryBehaviorRegistry, InMemoryModelRegistry, InMemoryProviderRegistry,
+    InMemoryStopPolicyRegistry, InMemoryToolRegistry, ModelDefinition, ModelRegistry,
+    ModelRegistryError, ProviderRegistry, ProviderRegistryError, RegistryBundle, RegistrySet,
+    StopPolicyRegistry, StopPolicyRegistryError, ToolBehaviorBundle, ToolRegistry,
+    ToolRegistryError,
 };
 pub use stop_policy_plugin::{
     ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds, StopConditionSpec, StopOnTool,
@@ -206,13 +209,22 @@ pub enum AgentOsBuildError {
     AgentEmptyBehaviorRef { agent_id: String },
 
     #[error("agent {agent_id} references reserved behavior id: {behavior_id}")]
-    AgentReservedBehaviorId { agent_id: String, behavior_id: String },
+    AgentReservedBehaviorId {
+        agent_id: String,
+        behavior_id: String,
+    },
 
     #[error("agent {agent_id} references unknown behavior id: {behavior_id}")]
-    AgentBehaviorNotFound { agent_id: String, behavior_id: String },
+    AgentBehaviorNotFound {
+        agent_id: String,
+        behavior_id: String,
+    },
 
     #[error("agent {agent_id} has duplicate behavior reference: {behavior_id}")]
-    AgentDuplicateBehaviorRef { agent_id: String, behavior_id: String },
+    AgentDuplicateBehaviorRef {
+        agent_id: String,
+        behavior_id: String,
+    },
 
     #[error("agent {agent_id} references an empty stop condition id")]
     AgentEmptyStopConditionRef { agent_id: String },

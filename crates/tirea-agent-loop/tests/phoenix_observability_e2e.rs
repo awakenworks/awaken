@@ -8,9 +8,11 @@ use phoenix_test_helpers::{
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_agent_loop::contracts::AgentBehavior;
+use tirea_agent_loop::contracts::runtime::tool_call::{
+    Tool, ToolDescriptor, ToolError, ToolResult,
+};
 use tirea_agent_loop::contracts::thread::{Message, Thread, ToolCall};
-use tirea_agent_loop::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_agent_loop::contracts::AgentBehavior;
 use tirea_agent_loop::contracts::{runtime::StreamResult, AgentEvent};
 use tirea_agent_loop::contracts::{RunContext, ToolCallContext};
 use tirea_agent_loop::runtime::loop_runner::{
@@ -103,7 +105,7 @@ async fn test_llmmetry_exports_to_phoenix_via_otlp() {
         .build();
 
     let config = BaseAgent::new(model_name.clone())
-        .add_behavior(plugin)
+        .with_behavior(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("phoenix-e2e-state", json!({}))
         .with_message(Message::user("hi"));
@@ -164,7 +166,7 @@ async fn test_llmmetry_exports_error_span_to_phoenix_via_otlp() {
         .build();
 
     let config = BaseAgent::new(model_name.clone())
-        .add_behavior(plugin)
+        .with_behavior(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("phoenix-e2e-state-err", json!({}))
         .with_message(Message::user("hi"));
@@ -283,15 +285,22 @@ async fn test_llmmetry_exports_streaming_success_span_to_phoenix_via_otlp() {
         .build();
 
     let config = BaseAgent::new(model_name.clone())
-        .add_behavior(plugin)
+        .with_behavior(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("phoenix-stream-ok-state", json!({}))
         .with_message(Message::user("hi"));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
-    let events: Vec<_> = run_loop_stream(Arc::new(config) as Arc<dyn Agent>, HashMap::new(), run_ctx, None, None, None)
-        .collect()
-        .await;
+    let events: Vec<_> = run_loop_stream(
+        Arc::new(config) as Arc<dyn Agent>,
+        HashMap::new(),
+        run_ctx,
+        None,
+        None,
+        None,
+    )
+    .collect()
+    .await;
     assert!(
         events
             .iter()

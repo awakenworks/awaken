@@ -136,18 +136,16 @@ impl AgentOs {
         }
 
         // 6. Behavior uniqueness: wiring ensures base uniqueness, but callers
-        //    may add behaviors via `resolved.add_behavior()` after resolve.
+        //    may mutate `resolved.agent.behavior` after resolve.
         //    Validate the final composed behavior_ids for duplicates.
         {
             let ids = resolved.agent.behavior.behavior_ids();
             let mut seen = std::collections::HashSet::with_capacity(ids.len());
             for id in &ids {
                 if !seen.insert(*id) {
-                    return Err(AgentOsRunError::Resolve(
-                        AgentOsResolveError::Wiring(
-                            AgentOsWiringError::BehaviorAlreadyInstalled(id.to_string()),
-                        ),
-                    ));
+                    return Err(AgentOsRunError::Resolve(AgentOsResolveError::Wiring(
+                        AgentOsWiringError::BehaviorAlreadyInstalled(id.to_string()),
+                    )));
                 }
             }
         }

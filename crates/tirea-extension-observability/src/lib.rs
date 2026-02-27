@@ -307,7 +307,7 @@ impl MetricsSink for InMemorySink {
 ///     .with_model("gpt-4o-mini")
 ///     .with_provider("openai");
 /// let config = AgentDefinition::new("gpt-4o-mini")
-///     .add_behavior(Arc::new(plugin));
+///     .with_behavior(Arc::new(plugin));
 /// // ... run agent ...
 /// let metrics = sink.metrics();
 /// let _total = metrics.total_tokens();
@@ -560,12 +560,11 @@ impl AgentBehavior for LLMMetryPlugin {
         let Some(result) = ctx.tool_result() else {
             return PhaseOutput::default();
         };
-        let error_type =
-            if result.status == tirea_contract::runtime::tool_call::ToolStatus::Error {
-                Some("tool_error".to_string())
-            } else {
-                None
-            };
+        let error_type = if result.status == tirea_contract::runtime::tool_call::ToolStatus::Error {
+            Some("tool_error".to_string())
+        } else {
+            None
+        };
         let error_message = result.message.clone().filter(|_| error_type.is_some());
         let span = ToolSpan {
             name: result.tool_name.clone(),
@@ -649,10 +648,10 @@ mod tests {
     use tirea_contract::runtime::plugin::phase::{
         Phase, StepContext, ToolContext as PhaseToolContext,
     };
+    use tirea_contract::runtime::tool_call::ToolResult;
     use tirea_contract::runtime::StreamResult;
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::ToolCall;
-    use tirea_contract::runtime::tool_call::ToolResult;
 
     /// Dispatch helper that builds a ReadOnlyContext from StepContext + fixture
     /// and calls the appropriate AgentBehavior hook.
@@ -674,25 +673,37 @@ mod tests {
         }
 
         if let Some(ref tool) = step.tool {
-            ctx = ctx.with_tool_info(
-                tool.name.as_str(),
-                tool.id.as_str(),
-                Some(&tool.args),
-            );
+            ctx = ctx.with_tool_info(tool.name.as_str(), tool.id.as_str(), Some(&tool.args));
             if let Some(ref result) = tool.result {
                 ctx = ctx.with_tool_result(result);
             }
         }
 
         match phase {
-            Phase::RunStart => { AgentBehavior::run_start(plugin, &ctx).await; }
-            Phase::StepStart => { AgentBehavior::step_start(plugin, &ctx).await; }
-            Phase::BeforeInference => { AgentBehavior::before_inference(plugin, &ctx).await; }
-            Phase::AfterInference => { AgentBehavior::after_inference(plugin, &ctx).await; }
-            Phase::BeforeToolExecute => { AgentBehavior::before_tool_execute(plugin, &ctx).await; }
-            Phase::AfterToolExecute => { AgentBehavior::after_tool_execute(plugin, &ctx).await; }
-            Phase::StepEnd => { AgentBehavior::step_end(plugin, &ctx).await; }
-            Phase::RunEnd => { AgentBehavior::run_end(plugin, &ctx).await; }
+            Phase::RunStart => {
+                AgentBehavior::run_start(plugin, &ctx).await;
+            }
+            Phase::StepStart => {
+                AgentBehavior::step_start(plugin, &ctx).await;
+            }
+            Phase::BeforeInference => {
+                AgentBehavior::before_inference(plugin, &ctx).await;
+            }
+            Phase::AfterInference => {
+                AgentBehavior::after_inference(plugin, &ctx).await;
+            }
+            Phase::BeforeToolExecute => {
+                AgentBehavior::before_tool_execute(plugin, &ctx).await;
+            }
+            Phase::AfterToolExecute => {
+                AgentBehavior::after_tool_execute(plugin, &ctx).await;
+            }
+            Phase::StepEnd => {
+                AgentBehavior::step_end(plugin, &ctx).await;
+            }
+            Phase::RunEnd => {
+                AgentBehavior::run_end(plugin, &ctx).await;
+            }
         }
     }
 

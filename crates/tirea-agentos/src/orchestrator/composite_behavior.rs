@@ -1,9 +1,28 @@
-use super::agent::{AgentBehavior, ReadOnlyContext};
-use crate::runtime::plugin::phase::effect::PhaseOutput;
+use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
+use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
 use async_trait::async_trait;
 use std::any::TypeId;
 use std::collections::HashSet;
 use std::sync::Arc;
+
+/// Compose multiple behaviors into a single [`AgentBehavior`].
+///
+/// If the list contains a single behavior, returns it directly.
+/// If it contains multiple, wraps them in a composite that merges
+/// their [`PhaseOutput`]s in order.
+///
+/// This is the public API for behavior composition — callers never need
+/// to know about the concrete composite type.
+pub fn compose_behaviors(
+    id: impl Into<String>,
+    behaviors: Vec<Arc<dyn AgentBehavior>>,
+) -> Arc<dyn AgentBehavior> {
+    match behaviors.len() {
+        0 => Arc::new(crate::contracts::runtime::plugin::agent::NoOpBehavior),
+        1 => behaviors.into_iter().next().unwrap(),
+        _ => Arc::new(CompositeBehavior::new(id, behaviors)),
+    }
+}
 
 /// An [`AgentBehavior`] that composes multiple sub-behaviors.
 ///
@@ -12,22 +31,17 @@ use std::sync::Arc;
 /// the same [`ReadOnlyContext`] snapshot — they do not see each other's
 /// effects within the same phase. The loop applies all collected effects
 /// sequentially after the composite hook returns.
-pub struct CompositeBehavior {
+pub(crate) struct CompositeBehavior {
     id: String,
     behaviors: Vec<Arc<dyn AgentBehavior>>,
 }
 
 impl CompositeBehavior {
-    pub fn new(id: impl Into<String>, behaviors: Vec<Arc<dyn AgentBehavior>>) -> Self {
+    pub(crate) fn new(id: impl Into<String>, behaviors: Vec<Arc<dyn AgentBehavior>>) -> Self {
         Self {
             id: id.into(),
             behaviors,
         }
-    }
-
-    /// Return a reference to the ordered list of child behaviors.
-    pub fn children(&self) -> &[Arc<dyn AgentBehavior>] {
-        &self.behaviors
     }
 }
 
@@ -125,9 +139,9 @@ impl AgentBehavior for CompositeBehavior {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::plugin::phase::effect::PhaseEffect;
-    use crate::runtime::plugin::phase::Phase;
-    use crate::RunConfig;
+    use crate::contracts::runtime::plugin::phase::effect::PhaseEffect;
+    use crate::contracts::runtime::plugin::phase::Phase;
+    use crate::contracts::RunConfig;
     use serde_json::json;
     use tirea_state::DocCell;
 
@@ -260,5 +274,46 @@ mod tests {
         assert_eq!(output.effects.len(), 2);
         assert!(matches!(&output.effects[0], PhaseEffect::SystemContext(s) if s == "1"));
         assert!(matches!(&output.effects[1], PhaseEffect::SystemContext(s) if s == "2"));
+    }
+
+    #[test]
+    fn compose_behaviors_empty_returns_noop() {
+        let behavior = compose_behaviors("test", Vec::new());
+
+        assert_eq!(behavior.id(), "noop");
+        assert_eq!(behavior.behavior_ids(), vec!["noop"]);
+    }
+
+    #[test]
+    fn compose_behaviors_single_passthrough() {
+        let input = Arc::new(ContextBehavior {
+            id: "single".into(),
+            text: "ctx".into(),
+        }) as Arc<dyn AgentBehavior>;
+        let behavior = compose_behaviors("ignored", vec![input.clone()]);
+
+        assert!(Arc::ptr_eq(&behavior, &input));
+        assert_eq!(behavior.id(), "single");
+        assert_eq!(behavior.behavior_ids(), vec!["single"]);
+    }
+
+    #[test]
+    fn compose_behaviors_multiple_keeps_leaf_behavior_ids_order() {
+        let behavior = compose_behaviors(
+            "composed",
+            vec![
+                Arc::new(ContextBehavior {
+                    id: "a".into(),
+                    text: "ctx_a".into(),
+                }),
+                Arc::new(ContextBehavior {
+                    id: "b".into(),
+                    text: "ctx_b".into(),
+                }),
+            ],
+        );
+
+        assert_eq!(behavior.id(), "composed");
+        assert_eq!(behavior.behavior_ids(), vec!["a", "b"]);
     }
 }

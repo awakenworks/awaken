@@ -69,7 +69,6 @@ macro_rules! impl_shared_agent_builder_methods {
     };
 }
 
-
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
@@ -92,20 +91,21 @@ pub use thread::{
 };
 
 // io
-pub use io::{AgentEvent, ResumeDecisionAction, RunRequest, RuntimeInput, RuntimeOutput, ToolCallDecision};
+pub use io::{
+    AgentEvent, ResumeDecisionAction, RunRequest, RuntimeInput, RuntimeOutput, ToolCallDecision,
+};
 
 // runtime plugin/tool-call/lifecycle
 pub use runtime::{
-    ActivityContext, ActivityManager, AfterInferenceContext, AfterToolExecuteContext, AgentBehavior,
-    AnyStateAction, BeforeInferenceContext, BeforeToolExecuteContext,
-    CompositeBehavior, DecisionReplayPolicy, NoOpBehavior, Phase, PhaseEffect, PhaseOutput,
-    PhasePolicy, PhaseContext, ReadOnlyContext, RunAction, RunContext, RunDelta,
-    RunEndContext, RunStartContext, StateEffect, StateSpec, StepContext, StepEndContext,
-    StepOutcome, StepStartContext, StoppedReason, StreamResult, SuspendTicket, Suspension,
-    SuspensionResponse, TerminationReason, TokenUsage, ToolCallAction, ToolCallContext,
-    ToolCallOutcome, ToolContext, ToolExecution, ToolExecutionRequest, ToolExecutionResult,
-    ToolExecutor, ToolExecutorError, ToolProgressState, validate_effect,
-    TOOL_PROGRESS_ACTIVITY_TYPE,
+    validate_effect, ActivityContext, ActivityManager, AfterInferenceContext,
+    AfterToolExecuteContext, AgentBehavior, AnyStateAction, BeforeInferenceContext,
+    BeforeToolExecuteContext, DecisionReplayPolicy, NoOpBehavior, Phase, PhaseContext, PhaseEffect,
+    PhaseOutput, PhasePolicy, ReadOnlyContext, RunAction, RunContext, RunDelta, RunEndContext,
+    RunStartContext, StateEffect, StateSpec, StepContext, StepEndContext, StepOutcome,
+    StepStartContext, StoppedReason, StreamResult, SuspendTicket, Suspension, SuspensionResponse,
+    TerminationReason, TokenUsage, ToolCallAction, ToolCallContext, ToolCallOutcome, ToolContext,
+    ToolExecution, ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
+    ToolProgressState, TOOL_PROGRESS_ACTIVITY_TYPE,
 };
 
 // storage

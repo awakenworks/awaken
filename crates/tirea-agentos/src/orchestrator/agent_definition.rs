@@ -1,6 +1,6 @@
+use super::composite_behavior::CompositeBehavior;
 use super::stop_policy_plugin::StopConditionSpec;
 use crate::contracts::runtime::plugin::agent::{AgentBehavior, NoOpBehavior};
-use crate::contracts::runtime::plugin::CompositeBehavior;
 use crate::contracts::runtime::ToolExecutor;
 use crate::runtime::loop_runner::{
     BaseAgent, LlmRetryPolicy, ParallelToolExecutor, SequentialToolExecutor,
@@ -200,12 +200,9 @@ impl AgentDefinition {
 
     /// Convert into loop-facing config with the given resolved behaviors.
     ///
-    /// Behaviors are composed into a single `CompositeBehavior` and set on
-    /// `BaseAgent::behavior`. The legacy `plugins` field is left empty.
-    pub(crate) fn into_loop_config(
-        self,
-        behaviors: Vec<Arc<dyn AgentBehavior>>,
-    ) -> BaseAgent {
+    /// Behaviors are composed into a single behavior and set on
+    /// `BaseAgent::behavior`.
+    pub(crate) fn into_loop_config(self, behaviors: Vec<Arc<dyn AgentBehavior>>) -> BaseAgent {
         let tool_executor: Arc<dyn ToolExecutor> = match self.tool_execution_mode {
             ToolExecutionMode::Sequential => Arc::new(SequentialToolExecutor),
             ToolExecutionMode::ParallelBatchApproval => {
@@ -237,6 +234,24 @@ impl AgentDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
+    struct TestBehavior {
+        id: &'static str,
+    }
+
+    #[async_trait]
+    impl AgentBehavior for TestBehavior {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        fn owned_states(&self) -> HashSet<std::any::TypeId> {
+            HashSet::new()
+        }
+    }
 
     #[test]
     fn default_mode_maps_to_parallel_streaming_executor() {
@@ -266,5 +281,24 @@ mod tests {
             .with_tool_execution_mode(ToolExecutionMode::Sequential)
             .into_loop_config(Vec::new());
         assert_eq!(config.tool_executor.name(), "sequential");
+    }
+
+    #[test]
+    fn into_loop_config_uses_noop_when_no_behaviors_resolved() {
+        let config = AgentDefinition::default().into_loop_config(Vec::new());
+
+        assert_eq!(config.behavior.id(), "noop");
+        assert_eq!(config.behavior.behavior_ids(), vec!["noop"]);
+    }
+
+    #[test]
+    fn into_loop_config_preserves_behavior_order_for_duplicate_checks() {
+        let config = AgentDefinition::default().into_loop_config(vec![
+            Arc::new(TestBehavior { id: "a" }) as Arc<dyn AgentBehavior>,
+            Arc::new(TestBehavior { id: "b" }) as Arc<dyn AgentBehavior>,
+            Arc::new(TestBehavior { id: "c" }) as Arc<dyn AgentBehavior>,
+        ]);
+
+        assert_eq!(config.behavior.behavior_ids(), vec!["a", "b", "c"]);
     }
 }

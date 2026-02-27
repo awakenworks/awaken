@@ -50,17 +50,16 @@ mod stream_core;
 mod stream_runner;
 mod tool_exec;
 
-use crate::contracts::runtime::plugin::phase::Phase;
-use crate::contracts::runtime::ActivityManager;
 use crate::contracts::io::ResumeDecisionAction;
+use crate::contracts::runtime::plugin::phase::Phase;
+use crate::contracts::runtime::tool_call::{Tool, ToolResult};
+use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
-    state_paths::RUN_LIFECYCLE_STATE_PATH, DecisionReplayPolicy, StreamResult,
-    SuspendedCall, ToolCallResume, ToolCallResumeMode, ToolCallStatus, ToolExecutionRequest,
-    ToolExecutionResult,
+    state_paths::RUN_LIFECYCLE_STATE_PATH, DecisionReplayPolicy, StreamResult, SuspendedCall,
+    ToolCallResume, ToolCallResumeMode, ToolCallStatus, ToolExecutionRequest, ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
-use crate::contracts::runtime::tool_call::{Tool, ToolResult};
 use crate::contracts::RunContext;
 use crate::contracts::{AgentEvent, RunAction, TerminationReason, ToolCallDecision};
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
@@ -150,18 +149,6 @@ impl ResolvedRun {
         for (id, tool) in tools {
             self.tools.entry(id).or_insert(tool);
         }
-    }
-
-    /// Add a behavior to the agent, composing with any existing behavior.
-    ///
-    /// Delegates to [`BaseAgent::add_behavior`].
-    #[must_use]
-    pub fn add_behavior(
-        mut self,
-        behavior: Arc<dyn crate::contracts::runtime::plugin::AgentBehavior>,
-    ) -> Self {
-        self.agent = self.agent.add_behavior(behavior);
-        self
     }
 }
 
@@ -435,15 +422,7 @@ pub(super) async fn run_step_prepare_phases(
     run_ctx: &RunContext,
     tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
     agent: &dyn Agent,
-) -> Result<
-    (
-        Vec<Message>,
-        Vec<String>,
-        RunAction,
-        Vec<TrackedPatch>,
-    ),
-    AgentLoopError,
-> {
+) -> Result<(Vec<Message>, Vec<String>, RunAction, Vec<TrackedPatch>), AgentLoopError> {
     let system_prompt = agent.system_prompt().to_string();
     let ((messages, filtered_tools, run_action), pending) = plugin_runtime::run_phase_block(
         run_ctx,
@@ -486,14 +465,7 @@ pub(super) async fn apply_llm_error_cleanup(
     error_type: &'static str,
     message: String,
 ) -> Result<(), AgentLoopError> {
-    plugin_runtime::emit_cleanup_phases(
-        run_ctx,
-        tool_descriptors,
-        agent,
-        error_type,
-        message,
-    )
-    .await
+    plugin_runtime::emit_cleanup_phases(run_ctx, tool_descriptors, agent, error_type, message).await
 }
 
 pub(super) async fn complete_step_after_inference(
@@ -520,14 +492,9 @@ pub(super) async fn complete_step_after_inference(
     let assistant = assistant_turn_message(result, step_meta, assistant_message_id);
     run_ctx.add_message(Arc::new(assistant));
 
-    let pending = plugin_runtime::emit_phase_block(
-        Phase::StepEnd,
-        run_ctx,
-        tool_descriptors,
-        agent,
-        |_| {},
-    )
-    .await?;
+    let pending =
+        plugin_runtime::emit_phase_block(Phase::StepEnd, run_ctx, tool_descriptors, agent, |_| {})
+            .await?;
     run_ctx.add_thread_patches(pending);
     Ok(match run_action {
         RunAction::Terminate(reason) => Some(reason),
@@ -1547,17 +1514,17 @@ pub async fn run_loop(
         };
         active_tool_descriptors = step_tools.descriptors.clone();
 
-        let prepared =
-            match prepare_step_execution(&run_ctx, &active_tool_descriptors, agent).await {
-                Ok(v) => v,
-                Err(e) => {
-                    terminate_run!(
-                        TerminationReason::Error,
-                        None,
-                        Some(outcome::LoopFailure::State(e.to_string()))
-                    );
-                }
-            };
+        let prepared = match prepare_step_execution(&run_ctx, &active_tool_descriptors, agent).await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                terminate_run!(
+                    TerminationReason::Error,
+                    None,
+                    Some(outcome::LoopFailure::State(e.to_string()))
+                );
+            }
+        };
         run_ctx.add_thread_patches(prepared.pending_patches);
 
         match prepared.run_action {

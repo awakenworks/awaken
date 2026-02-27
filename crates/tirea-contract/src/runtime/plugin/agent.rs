@@ -162,16 +162,16 @@ impl<'a> ReadOnlyContext<'a> {
 ///
 /// # Composition
 ///
-/// [`CompositeBehavior`](super::CompositeBehavior) wraps multiple
-/// `AgentBehavior` implementations, merging their [`PhaseOutput`]s.
-/// All sub-behaviors see the same [`ReadOnlyContext`] snapshot — effects
-/// are applied after all hooks return.
+/// Multiple `AgentBehavior` implementations can be composed, merging
+/// their [`PhaseOutput`]s. All sub-behaviors see the same
+/// [`ReadOnlyContext`] snapshot — effects are applied after all hooks
+/// return.
 #[async_trait]
 pub trait AgentBehavior: Send + Sync {
     /// Unique identifier for this agent.
     fn id(&self) -> &str;
 
-    /// State types owned by this agent (used by CompositeBehavior for union).
+    /// State types owned by this agent (used by composite behaviors for union).
     fn owned_states(&self) -> HashSet<TypeId> {
         HashSet::new()
     }
@@ -179,8 +179,8 @@ pub trait AgentBehavior: Send + Sync {
     /// Return the ordered list of leaf behavior IDs.
     ///
     /// For simple behaviors this returns a single-element vec of `self.id()`.
-    /// [`CompositeBehavior`](super::CompositeBehavior) overrides this to
-    /// return the IDs of all child behaviors.
+    /// Composite implementations override this to return the IDs of all
+    /// child behaviors.
     fn behavior_ids(&self) -> Vec<&str> {
         vec![self.id()]
     }

@@ -1,10 +1,9 @@
 use super::tool_exec::ParallelToolExecutor;
 use super::AgentLoopError;
 use crate::contracts::runtime::plugin::agent::NoOpBehavior;
-use crate::contracts::runtime::plugin::composite_agent::CompositeBehavior;
 use crate::contracts::runtime::plugin::AgentBehavior;
-use crate::contracts::runtime::ToolExecutor;
 use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor};
+use crate::contracts::runtime::ToolExecutor;
 use crate::contracts::RunContext;
 use async_trait::async_trait;
 use genai::chat::ChatOptions;
@@ -233,7 +232,6 @@ pub trait Agent: Send + Sync {
 
     /// The agent behavior (phase hooks) dispatched by the loop.
     fn behavior(&self) -> &dyn AgentBehavior;
-
 }
 
 impl std::fmt::Debug for dyn Agent {
@@ -420,21 +418,6 @@ impl BaseAgent {
     #[must_use]
     pub fn with_behavior(mut self, behavior: Arc<dyn AgentBehavior>) -> Self {
         self.behavior = behavior;
-        self
-    }
-
-    /// Add a behavior, composing with any existing behavior via [`CompositeBehavior`].
-    ///
-    /// If the current behavior is [`NoOpBehavior`], it is replaced.
-    /// Otherwise the current and new behaviors are wrapped in a [`CompositeBehavior`].
-    #[must_use]
-    pub fn add_behavior(mut self, behavior: Arc<dyn AgentBehavior>) -> Self {
-        if self.behavior.id() == "noop" {
-            self.behavior = behavior;
-        } else {
-            let id = format!("{}+{}", self.behavior.id(), behavior.id());
-            self.behavior = Arc::new(CompositeBehavior::new(id, vec![self.behavior, behavior]));
-        }
         self
     }
 

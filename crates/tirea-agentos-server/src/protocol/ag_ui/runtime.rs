@@ -8,15 +8,16 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
+use tirea_agentos::orchestrator::compose_behaviors;
 use tirea_agentos::runtime::loop_runner::{
     BaseAgent, ParallelToolExecutor, ResolvedRun, SequentialToolExecutor,
 };
 use tirea_contract::runtime::plugin::agent::ReadOnlyContext;
 use tirea_contract::runtime::plugin::phase::effect::PhaseOutput;
 use tirea_contract::runtime::plugin::phase::SuspendTicket;
-use tirea_contract::runtime::plugin::{AgentBehavior, CompositeBehavior};
-use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
+use tirea_contract::runtime::plugin::AgentBehavior;
 use tirea_contract::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
 use tirea_contract::ToolCallContext;
 
 use tirea_protocol_ag_ui::{build_context_addendum, RunAgentInput};
@@ -90,10 +91,7 @@ fn add_behavior_mut(agent: &mut BaseAgent, behavior: Arc<dyn AgentBehavior>) {
         agent.behavior = behavior;
     } else {
         let id = format!("{}+{}", agent.behavior.id(), behavior.id());
-        agent.behavior = Arc::new(CompositeBehavior::new(
-            id,
-            vec![agent.behavior.clone(), behavior],
-        ));
+        agent.behavior = compose_behaviors(id, vec![agent.behavior.clone(), behavior]);
     }
 }
 
@@ -265,7 +263,9 @@ impl AgentBehavior for FrontendToolPendingPlugin {
                         .unwrap_or_else(|| "User denied the action".to_string()),
                 ),
             };
-            return PhaseOutput::default().override_tool_result(result).allow_tool();
+            return PhaseOutput::default()
+                .override_tool_result(result)
+                .allow_tool();
         }
         let Some(call_id) = ctx.tool_call_id().map(str::to_string) else {
             return PhaseOutput::default();
@@ -290,8 +290,8 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use tirea_agentos::runtime::loop_runner::BaseAgent;
-    use tirea_contract::runtime::plugin::phase::{Phase, StepContext, ToolContext};
     use tirea_contract::runtime::plugin::phase::effect::PhaseEffect;
+    use tirea_contract::runtime::plugin::phase::{Phase, StepContext, ToolContext};
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::ToolCall;
     use tirea_protocol_ag_ui::{Context, Message, ToolExecutionLocation};
@@ -304,10 +304,7 @@ mod tests {
         }
     }
 
-    fn build_read_only_ctx<'a>(
-        phase: Phase,
-        step: &'a StepContext<'a>,
-    ) -> ReadOnlyContext<'a> {
+    fn build_read_only_ctx<'a>(phase: Phase, step: &'a StepContext<'a>) -> ReadOnlyContext<'a> {
         let mut ctx = ReadOnlyContext::new(
             phase,
             step.thread_id(),
@@ -376,11 +373,7 @@ mod tests {
         // Only 1 frontend tool (backend tools are not stubs)
         assert_eq!(resolved.tools.len(), 1);
         // FrontendToolPendingPlugin behavior
-        assert!(resolved
-            .agent
-            .behavior
-            .id()
-            .contains("agui_frontend_tools"));
+        assert!(resolved.agent.behavior.id().contains("agui_frontend_tools"));
     }
 
     #[test]
@@ -541,7 +534,10 @@ mod tests {
         let output = plugin.before_tool_execute(&ctx).await;
 
         // Should contain a SuspendTool effect
-        let suspend_effect = output.effects.iter().find(|e| matches!(e, PhaseEffect::SuspendTool(_)));
+        let suspend_effect = output
+            .effects
+            .iter()
+            .find(|e| matches!(e, PhaseEffect::SuspendTool(_)));
         assert!(suspend_effect.is_some(), "should have SuspendTool effect");
 
         if let Some(PhaseEffect::SuspendTool(ticket)) = suspend_effect {
@@ -590,14 +586,27 @@ mod tests {
 
         // Should have OverrideToolResult + AllowTool
         let override_effect = output.effects.iter().find_map(|e| {
-            if let PhaseEffect::OverrideToolResult(result) = e { Some(result) } else { None }
+            if let PhaseEffect::OverrideToolResult(result) = e {
+                Some(result)
+            } else {
+                None
+            }
         });
-        assert!(override_effect.is_some(), "resume should produce OverrideToolResult");
+        assert!(
+            override_effect.is_some(),
+            "resume should produce OverrideToolResult"
+        );
         let result = override_effect.unwrap();
         assert_eq!(result.tool_name, "copyToClipboard");
-        assert_eq!(result.status, tirea_contract::runtime::tool_call::ToolStatus::Success);
+        assert_eq!(
+            result.status,
+            tirea_contract::runtime::tool_call::ToolStatus::Success
+        );
         assert_eq!(result.data, json!({"accepted": true}));
-        assert!(output.effects.iter().any(|e| matches!(e, PhaseEffect::AllowTool)));
+        assert!(output
+            .effects
+            .iter()
+            .any(|e| matches!(e, PhaseEffect::AllowTool)));
     }
 
     #[tokio::test]
@@ -634,13 +643,26 @@ mod tests {
         let output = plugin.before_tool_execute(&ctx).await;
 
         let override_effect = output.effects.iter().find_map(|e| {
-            if let PhaseEffect::OverrideToolResult(result) = e { Some(result) } else { None }
+            if let PhaseEffect::OverrideToolResult(result) = e {
+                Some(result)
+            } else {
+                None
+            }
         });
-        assert!(override_effect.is_some(), "cancel should produce OverrideToolResult");
+        assert!(
+            override_effect.is_some(),
+            "cancel should produce OverrideToolResult"
+        );
         let result = override_effect.unwrap();
-        assert_eq!(result.status, tirea_contract::runtime::tool_call::ToolStatus::Error);
+        assert_eq!(
+            result.status,
+            tirea_contract::runtime::tool_call::ToolStatus::Error
+        );
         assert_eq!(result.message.as_deref(), Some("user denied"));
-        assert!(output.effects.iter().any(|e| matches!(e, PhaseEffect::AllowTool)));
+        assert!(output
+            .effects
+            .iter()
+            .any(|e| matches!(e, PhaseEffect::AllowTool)));
     }
 
     #[test]
@@ -700,9 +722,17 @@ mod tests {
 
         let output = behavior.before_inference(&ctx).await;
 
-        let system_contexts: Vec<&str> = output.effects.iter().filter_map(|e| {
-            if let PhaseEffect::SystemContext(s) = e { Some(s.as_str()) } else { None }
-        }).collect();
+        let system_contexts: Vec<&str> = output
+            .effects
+            .iter()
+            .filter_map(|e| {
+                if let PhaseEffect::SystemContext(s) = e {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
         assert!(!system_contexts.is_empty());
         let merged = system_contexts.join("\n");
         assert!(

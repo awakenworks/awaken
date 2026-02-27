@@ -1,10 +1,10 @@
 use super::*;
 use crate::contracts::runtime::plugin::agent::ReadOnlyContext;
 use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
-use crate::contracts::storage::{ThreadReader, ThreadWriter};
-use crate::contracts::thread::Thread;
 use crate::contracts::runtime::tool_call::ToolDescriptor;
 use crate::contracts::runtime::tool_call::{ToolError, ToolResult};
+use crate::contracts::storage::{ThreadReader, ThreadWriter};
+use crate::contracts::thread::Thread;
 use crate::contracts::AgentBehavior;
 use crate::contracts::ToolCallContext;
 use crate::extensions::skills::{
@@ -280,7 +280,9 @@ async fn wire_skills_inserts_tools_and_plugin() {
         .effects
         .iter()
         .filter_map(|e| {
-            if let crate::contracts::runtime::plugin::phase::effect::PhaseEffect::SystemContext(s) = e {
+            if let crate::contracts::runtime::plugin::phase::effect::PhaseEffect::SystemContext(s) =
+                e
+            {
                 Some(s.as_str())
             } else {
                 None
@@ -340,7 +342,9 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
         .effects
         .iter()
         .filter_map(|e| {
-            if let crate::contracts::runtime::plugin::phase::effect::PhaseEffect::SystemContext(s) = e {
+            if let crate::contracts::runtime::plugin::phase::effect::PhaseEffect::SystemContext(s) =
+                e
+            {
                 Some(s.as_str())
             } else {
                 None
@@ -1370,7 +1374,12 @@ async fn resolve_wires_plugins_from_registry() {
         .unwrap();
 
     let resolved = os.resolve("a1").unwrap();
-    assert!(resolved.agent.behavior.behavior_ids().iter().any(|id| *id == "p1"));
+    assert!(resolved
+        .agent
+        .behavior
+        .behavior_ids()
+        .iter()
+        .any(|id| *id == "p1"));
 
     let doc = tirea_state::DocCell::new(json!({}));
     let run_config = crate::contracts::RunConfig::new();
@@ -1386,7 +1395,9 @@ async fn resolve_wires_plugins_from_registry() {
         .effects
         .iter()
         .filter_map(|e| {
-            if let crate::contracts::runtime::plugin::phase::effect::PhaseEffect::SystemContext(s) = e {
+            if let crate::contracts::runtime::plugin::phase::effect::PhaseEffect::SystemContext(s) =
+                e
+            {
                 Some(s.as_str())
             } else {
                 None
@@ -1922,8 +1933,8 @@ fn make_decision_test_os_with_mode(
         "echo".to_string(),
         Arc::new(DecisionEchoTool) as Arc<dyn Tool>,
     );
-    let mut def =
-        AgentDefinition::new("gpt-4o-mini").with_behavior_id("decision_terminate_behavior_requested");
+    let mut def = AgentDefinition::new("gpt-4o-mini")
+        .with_behavior_id("decision_terminate_behavior_requested");
     if let Some(mode) = tool_execution_mode {
         def = def.with_tool_execution_mode(mode);
     }
@@ -3105,10 +3116,11 @@ async fn prepare_run_scope_appends_plugins() {
         .build()
         .unwrap();
 
-    let resolved = os
-        .resolve("a1")
-        .unwrap()
-        .add_behavior(Arc::new(RunScopedPlugin));
+    let mut resolved = os.resolve("a1").unwrap();
+    let new_b = Arc::new(RunScopedPlugin) as Arc<dyn AgentBehavior>;
+    let id = format!("{}+{}", resolved.agent.behavior.id(), new_b.id());
+    resolved.agent.behavior =
+        super::compose_behaviors(id, vec![resolved.agent.behavior.clone(), new_b]);
 
     let prepared = os
         .prepare_run(
@@ -3152,7 +3164,11 @@ async fn prepare_run_scope_rejects_duplicate_plugin_id() {
         .build()
         .unwrap();
 
-    let resolved = os.resolve("a1").unwrap().add_behavior(Arc::new(DupPlugin));
+    let mut resolved = os.resolve("a1").unwrap();
+    let new_b = Arc::new(DupPlugin) as Arc<dyn AgentBehavior>;
+    let id = format!("{}+{}", resolved.agent.behavior.id(), new_b.id());
+    resolved.agent.behavior =
+        super::compose_behaviors(id, vec![resolved.agent.behavior.clone(), new_b]);
 
     let result = os
         .prepare_run(
