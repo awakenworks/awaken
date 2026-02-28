@@ -5,8 +5,11 @@
 //! - `StepContext`: Mutable context passed through all phases
 //! - `ToolContext`: Tool-call state carried by `StepContext`
 
+pub mod action;
+pub mod core;
 mod contexts;
 pub mod effect;
+mod extensions;
 mod plugin_action;
 pub mod state_spec;
 mod step;
@@ -15,12 +18,14 @@ mod types;
 #[cfg(test)]
 mod tests;
 
+pub use action::Action;
 pub use contexts::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
     BeforeToolExecuteContext, PhaseContext, RunEndContext, RunStartContext, StepEndContext,
     StepStartContext,
 };
 pub use effect::{validate_effect, PhaseEffect, PhaseOutput};
+pub use extensions::Extensions;
 pub use plugin_action::AnyPluginAction;
 pub use state_spec::{
     reduce_state_actions, AnyStateAction, CommutativeAction, StateScope, StateSpec,

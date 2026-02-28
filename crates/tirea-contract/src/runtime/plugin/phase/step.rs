@@ -1,4 +1,5 @@
-use super::state_spec::CommutativeAction;
+use super::extensions::Extensions;
+use super::state_spec::{AnyStateAction, CommutativeAction};
 use super::{RunAction, StepOutcome, SuspendTicket, ToolCallAction};
 use crate::runtime::llm::StreamResult;
 use crate::runtime::tool_call::ToolCallContext;
@@ -110,6 +111,12 @@ pub struct StepContext<'a> {
     pub pending_patches: Vec<TrackedPatch>,
     /// Commutative actions to merge/apply at a later stage.
     pub pending_commutative_actions: Vec<CommutativeAction>,
+    /// State actions emitted via `EmitStatePatch` core action.
+    pub pending_state_actions: Vec<AnyStateAction>,
+
+    // === Extensions ===
+    /// Type-keyed extension map for phase-specific data.
+    pub extensions: Extensions,
 }
 
 impl<'a> StepContext<'a> {
@@ -134,6 +141,8 @@ impl<'a> StepContext<'a> {
             run_action: None,
             pending_patches: Vec::new(),
             pending_commutative_actions: Vec::new(),
+            pending_state_actions: Vec::new(),
+            extensions: Extensions::new(),
         }
     }
 
@@ -202,6 +211,8 @@ impl<'a> StepContext<'a> {
         self.run_action = None;
         self.pending_patches.clear();
         self.pending_commutative_actions.clear();
+        self.pending_state_actions.clear();
+        self.extensions.clear();
     }
 
     // =========================================================================
@@ -339,6 +350,11 @@ impl<'a> StepContext<'a> {
     /// Emit a commutative state action side effect.
     pub fn emit_commutative_action(&mut self, action: CommutativeAction) {
         self.pending_commutative_actions.push(action);
+    }
+
+    /// Emit a state action to be reduced into a patch after the phase completes.
+    pub fn emit_state_action(&mut self, action: AnyStateAction) {
+        self.pending_state_actions.push(action);
     }
 
     /// Effective run-level action for current step.
