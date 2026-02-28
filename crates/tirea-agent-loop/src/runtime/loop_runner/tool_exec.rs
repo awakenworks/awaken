@@ -1006,9 +1006,7 @@ pub(super) async fn execute_single_tool_with_phases(
         };
 
         let context_patch = tool_ctx.take_patch();
-        if let Err(result) =
-            merge_context_patch_into_effect(call, plugin_scope, &mut effect, context_patch)
-        {
+        if let Err(result) = merge_context_patch_into_effect(call, &mut effect, context_patch) {
             effect = ToolExecutionEffect::from(result);
         }
         let result = effect.result;

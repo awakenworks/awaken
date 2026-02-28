@@ -5,7 +5,6 @@
 use super::ToolCallContext;
 use crate::runtime::plugin::phase::AnyStateAction;
 use crate::runtime::plugin::phase::SuspendTicket;
-use crate::RunConfig;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -224,55 +223,6 @@ impl From<ToolResult> for ToolExecutionEffect {
     }
 }
 
-/// Run-scope key controlling how direct ToolCallContext writes are handled
-/// after `execute_effect` returns.
-pub const TOOL_CONTEXT_WRITE_POLICY_KEY: &str = "__tool_context_write_policy";
-
-/// Direct ToolCallContext write policy for tool execution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolContextWritePolicy {
-    /// Legacy compatibility mode: promote direct context patch to `state_actions`.
-    Promote,
-    /// Strict mode: reject direct context patch after `execute_effect`.
-    Deny,
-}
-
-impl Default for ToolContextWritePolicy {
-    fn default() -> Self {
-        Self::Deny
-    }
-}
-
-impl ToolContextWritePolicy {
-    /// Resolve policy from run scope.
-    ///
-    /// Accepted values:
-    /// - `"promote"` / `"compat"` => [`ToolContextWritePolicy::Promote`]
-    /// - `"deny"` / `"strict"` => [`ToolContextWritePolicy::Deny`]
-    ///
-    /// Missing/unknown values default to [`ToolContextWritePolicy::Deny`].
-    pub fn from_run_config(scope: &RunConfig) -> Self {
-        match scope
-            .value(TOOL_CONTEXT_WRITE_POLICY_KEY)
-            .and_then(Value::as_str)
-            .map(str::trim)
-        {
-            Some(value)
-                if value.eq_ignore_ascii_case("promote")
-                    || value.eq_ignore_ascii_case("compat") =>
-            {
-                Self::Promote
-            }
-            Some(value)
-                if value.eq_ignore_ascii_case("deny") || value.eq_ignore_ascii_case("strict") =>
-            {
-                Self::Deny
-            }
-            _ => Self::default(),
-        }
-    }
-}
-
 /// Tool execution errors.
 #[derive(Debug, Error)]
 pub enum ToolError {
@@ -414,8 +364,8 @@ pub trait Tool: Send + Sync {
 
     /// Execute tool and return structured effects.
     ///
-    /// The default implementation preserves backward compatibility by
-    /// delegating to [`Tool::execute`] and wrapping the result.
+    /// The default implementation delegates to [`Tool::execute`], wraps the
+    /// result, and converts any direct context patch into `state_actions`.
     async fn execute_effect(
         &self,
         args: Value,
@@ -1272,31 +1222,6 @@ mod tests {
             Some(AnyStateAction::Patch(_))
         ));
         assert!(ctx.take_patch().patch().is_empty());
-    }
-
-    #[test]
-    fn test_tool_context_write_policy_defaults_to_deny() {
-        let scope = crate::RunConfig::default();
-        assert_eq!(
-            ToolContextWritePolicy::from_run_config(&scope),
-            ToolContextWritePolicy::Deny
-        );
-    }
-
-    #[test]
-    fn test_tool_context_write_policy_accepts_promote_aliases() {
-        let mut scope = crate::RunConfig::default();
-        scope.set(TOOL_CONTEXT_WRITE_POLICY_KEY, "promote").unwrap();
-        assert_eq!(
-            ToolContextWritePolicy::from_run_config(&scope),
-            ToolContextWritePolicy::Promote
-        );
-        let mut scope = crate::RunConfig::default();
-        scope.set(TOOL_CONTEXT_WRITE_POLICY_KEY, "compat").unwrap();
-        assert_eq!(
-            ToolContextWritePolicy::from_run_config(&scope),
-            ToolContextWritePolicy::Promote
-        );
     }
 
     #[derive(Debug, Clone, Default, Serialize, Deserialize)]

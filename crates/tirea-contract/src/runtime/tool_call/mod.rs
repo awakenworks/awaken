@@ -18,6 +18,6 @@ pub use lifecycle::{
 };
 pub use suspension::{Suspension, SuspensionResponse};
 pub use tool::{
-    validate_against_schema, Tool, ToolContextWritePolicy, ToolDescriptor, ToolError,
-    ToolExecutionEffect, ToolResult, ToolStatus, TypedTool, TOOL_CONTEXT_WRITE_POLICY_KEY,
+    validate_against_schema, Tool, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult,
+    ToolStatus, TypedTool,
 };
