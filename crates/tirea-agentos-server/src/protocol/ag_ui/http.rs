@@ -4,7 +4,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::json;
 use tirea_agentos::orchestrator::AgentOsRunError;
-use tirea_protocol_ag_ui::{AgUiHistoryEncoder, AgUiProtocolEncoder, RunAgentInput};
+use bytes::Bytes;
+use tirea_protocol_ag_ui::{AgUiHistoryEncoder, AgUiProtocolEncoder, Event, RunAgentInput};
 
 use super::runtime::apply_agui_extensions;
 
@@ -78,6 +79,14 @@ async fn run(
         "ag-ui",
         move |_sse_tx| async move {
             remove_active_run(&active_key).await;
+        },
+        |msg| {
+            let json = serde_json::to_string(&Event::run_error(
+                &msg,
+                Some("RELAY_ERROR".to_string()),
+            ))
+            .unwrap_or_default();
+            Bytes::from(format!("data: {json}\n\n"))
         },
     );
 

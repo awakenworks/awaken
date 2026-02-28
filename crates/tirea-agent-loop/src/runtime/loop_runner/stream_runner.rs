@@ -168,10 +168,11 @@ pub(super) fn run_stream(
                 let message = e.to_string();
                 yield emitter.emit_existing(AgentEvent::Error {
                     message: message.clone(),
+                    code: Some("STATE_ERROR".to_string()),
                 });
                 let outcome = build_loop_outcome(
                     run_ctx,
-                    TerminationReason::Error,
+                    TerminationReason::Error(message.clone()),
                     None,
                     &run_state,
                     Some(outcome::LoopFailure::State(message)),
@@ -186,9 +187,13 @@ pub(super) fn run_stream(
             ($failure:expr, $message:expr) => {{
                 let failure = $failure;
                 let message = $message;
+                let code = match &failure {
+                    outcome::LoopFailure::Llm(_) => Some("LLM_ERROR".to_string()),
+                    outcome::LoopFailure::State(_) => Some("STATE_ERROR".to_string()),
+                };
                 if let Err(e) = persist_run_termination(
                     &mut run_ctx,
-                    &TerminationReason::Error,
+                    &TerminationReason::Error(message.clone()),
                     &active_tool_descriptors,
                     agent.as_ref(),
                     &pending_delta_commit,
@@ -198,18 +203,20 @@ pub(super) fn run_stream(
                 {
                     yield emitter.emit_existing(AgentEvent::Error {
                         message: e.to_string(),
+                        code: Some("STATE_ERROR".to_string()),
                     });
                     return;
                 }
                 let outcome = build_loop_outcome(
                     run_ctx,
-                    TerminationReason::Error,
+                    TerminationReason::Error(message.clone()),
                     Some(last_text.clone()),
                     &run_state,
                     Some(failure),
                 );
                 yield emitter.emit_existing(AgentEvent::Error {
                     message: message.clone(),
+                    code,
                 });
                 yield emitter.run_finish(outcome);
                 return;
@@ -236,6 +243,7 @@ pub(super) fn run_stream(
                 {
                     yield emitter.emit_existing(AgentEvent::Error {
                         message: e.to_string(),
+                        code: Some("STATE_ERROR".to_string()),
                     });
                     return;
                 }

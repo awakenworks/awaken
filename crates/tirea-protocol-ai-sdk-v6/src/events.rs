@@ -146,6 +146,9 @@ pub enum UIStreamEvent {
     },
 
     /// Indicates tool input validation failed before execution.
+    ///
+    /// NOTE: Not currently emitted. Reserved for future client-side tool
+    /// input validation. Backend tool input errors surface via `tool-output-error`.
     ToolInputError {
         /// Identifier matching the tool-input-start event.
         #[serde(rename = "toolCallId")]

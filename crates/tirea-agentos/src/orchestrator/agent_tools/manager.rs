@@ -298,7 +298,7 @@ pub(super) async fn execute_target_agent(
 
     while let Some(ev) = events.next().await {
         match ev {
-            AgentEvent::Error { message } => {
+            AgentEvent::Error { message, .. } => {
                 if saw_error.is_none() {
                     saw_error = Some(message);
                 }

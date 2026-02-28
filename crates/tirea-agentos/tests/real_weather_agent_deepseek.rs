@@ -241,7 +241,7 @@ Rules:\n\
                 }
                 AgentEvent::TextDelta { delta } => text.push_str(&delta),
                 AgentEvent::RunFinish { .. } => break,
-                AgentEvent::Error { ref message } => {
+                AgentEvent::Error { ref message, .. } => {
                     last_error = message.clone();
                     break;
                 }

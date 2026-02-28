@@ -424,7 +424,11 @@ define_agent_events! {
         ToolCallResumed { target_id: String, result: Value },
 
         /// Error occurred.
-        Error { message: String },
+        Error {
+            message: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            code: Option<String>,
+        },
     }
 
     wire_only {

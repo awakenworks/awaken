@@ -9,7 +9,8 @@ use std::convert::Infallible;
 use std::sync::OnceLock;
 use tirea_agentos::orchestrator::AgentOsRunError;
 use tirea_protocol_ai_sdk_v6::{
-    AiSdkEncoder, AiSdkTrigger, AiSdkV6HistoryEncoder, AiSdkV6RunRequest, AI_SDK_VERSION,
+    AiSdkEncoder, AiSdkTrigger, AiSdkV6HistoryEncoder, AiSdkV6RunRequest, UIStreamEvent,
+    AI_SDK_VERSION,
 };
 
 use super::runtime::apply_ai_sdk_extensions;
@@ -138,6 +139,10 @@ async fn run(
             }
             stream_registry().remove(&stream_key).await;
             remove_active_run(&active_key).await;
+        },
+        |msg| {
+            let json = serde_json::to_string(&UIStreamEvent::error(&msg)).unwrap_or_default();
+            Bytes::from(format!("data: {json}\n\n"))
         },
     );
 

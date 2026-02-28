@@ -24,7 +24,7 @@ use super::{
 ///
 /// `on_relay_done` is called after the relay finishes, receiving
 /// the SSE sender (for trailer support).
-pub fn wire_http_sse_relay<E, F, Fut>(
+pub fn wire_http_sse_relay<E, F, Fut, ErrFmt>(
     run_starter: RunStarter,
     encoder: E,
     ingress_rx: mpsc::UnboundedReceiver<RuntimeInput>,
@@ -33,12 +33,14 @@ pub fn wire_http_sse_relay<E, F, Fut>(
     resumable_downstream: bool,
     protocol_label: &'static str,
     on_relay_done: F,
+    error_formatter: ErrFmt,
 ) -> mpsc::Receiver<Bytes>
 where
     E: Transcoder<Input = AgentEvent> + 'static,
     E::Output: Serialize + Send + 'static,
     F: FnOnce(mpsc::Sender<Bytes>) -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send,
+    ErrFmt: Fn(String) -> Bytes + Send + 'static,
 {
     let (sse_tx, sse_rx) = mpsc::channel::<Bytes>(64);
 
@@ -69,6 +71,7 @@ where
     tokio::spawn(async move {
         if let Err(err) = relay_binding(binding, relay_cancel.clone()).await {
             warn!(error = %err, "{protocol_label} transport relay failed");
+            let _ = sse_tx.send(error_formatter(err.to_string())).await;
         }
         on_relay_done(sse_tx).await;
     });
@@ -201,6 +204,7 @@ mod tests {
             false,
             "test",
             |_sse_tx| async {},
+            |msg| Bytes::from(format!("data: {{\"error\":\"{msg}\"}}\n\n")),
         );
 
         let mut chunks = Vec::new();
@@ -239,6 +243,7 @@ mod tests {
             move |_sse_tx| async move {
                 called_clone.store(true, Ordering::SeqCst);
             },
+            |msg| Bytes::from(format!("data: {{\"error\":\"{msg}\"}}\n\n")),
         );
 
         // Drain to completion
@@ -272,6 +277,7 @@ mod tests {
             |sse_tx| async move {
                 let _ = sse_tx.send(Bytes::from("data: [DONE]\n\n")).await;
             },
+            |msg| Bytes::from(format!("data: {{\"error\":\"{msg}\"}}\n\n")),
         );
 
         let mut chunks = Vec::new();
@@ -307,6 +313,7 @@ mod tests {
             true,
             "test",
             |_sse_tx| async {},
+            |msg| Bytes::from(format!("data: {{\"error\":\"{msg}\"}}\n\n")),
         );
 
         // Collect from SSE
@@ -349,6 +356,7 @@ mod tests {
             false,
             "test",
             |_sse_tx| async {},
+            |msg| Bytes::from(format!("data: {{\"error\":\"{msg}\"}}\n\n")),
         );
 
         // Send a decision through the ingress channel

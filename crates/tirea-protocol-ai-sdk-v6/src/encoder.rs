@@ -184,16 +184,23 @@ impl AiSdkEncoder {
                     events.push(self.close_text());
                 }
                 events.extend(self.close_all_reasoning());
-                if matches!(termination, TerminationReason::Cancelled) {
-                    events.push(UIStreamEvent::abort("cancelled"));
-                } else {
-                    let finish_reason = Self::map_termination(termination);
-                    events.push(UIStreamEvent::finish_with_reason(finish_reason));
+                match termination {
+                    TerminationReason::Cancelled => {
+                        events.push(UIStreamEvent::abort("cancelled"));
+                    }
+                    TerminationReason::Error(ref msg) => {
+                        events.push(UIStreamEvent::error(msg));
+                        events.push(UIStreamEvent::finish_with_reason("error"));
+                    }
+                    _ => {
+                        let finish_reason = Self::map_termination(termination);
+                        events.push(UIStreamEvent::finish_with_reason(finish_reason));
+                    }
                 }
                 events
             }
 
-            AgentEvent::Error { message } => {
+            AgentEvent::Error { message, .. } => {
                 self.finished = true;
                 self.text_open = false;
                 let mut events = self.close_all_reasoning();
@@ -309,7 +316,7 @@ impl AiSdkEncoder {
             | TerminationReason::BehaviorRequested
             | TerminationReason::Suspended => "stop",
             TerminationReason::Cancelled => "other",
-            TerminationReason::Error => "error",
+            TerminationReason::Error(_) => "error",
             TerminationReason::Stopped(stopped) => match stopped.code.as_str() {
                 "max_rounds_reached" | "timeout_reached" | "token_budget_exceeded" => "length",
                 "tool_called" => "tool-calls",

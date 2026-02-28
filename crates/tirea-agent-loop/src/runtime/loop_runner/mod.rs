@@ -601,7 +601,7 @@ fn normalize_termination_for_suspended_calls(
 ) -> (TerminationReason, Option<String>) {
     let final_termination = if !matches!(
         termination,
-        TerminationReason::Error | TerminationReason::Cancelled
+        TerminationReason::Error(_) | TerminationReason::Cancelled
     ) && has_suspended_calls(run_ctx)
     {
         TerminationReason::Suspended
@@ -1401,12 +1401,13 @@ pub async fn run_loop(
     let initial_step_tools = match resolve_step_tool_snapshot(&step_tool_provider, &run_ctx).await {
         Ok(snapshot) => snapshot,
         Err(error) => {
+            let msg = error.to_string();
             return build_loop_outcome(
                 run_ctx,
-                TerminationReason::Error,
+                TerminationReason::Error(msg.clone()),
                 None,
                 &run_state,
-                Some(outcome::LoopFailure::State(error.to_string())),
+                Some(outcome::LoopFailure::State(msg)),
             );
         }
     };
@@ -1431,12 +1432,13 @@ pub async fn run_loop(
             )
             .await
             {
+                let msg = error.to_string();
                 return build_loop_outcome(
                     run_ctx,
-                    TerminationReason::Error,
+                    TerminationReason::Error(msg.clone()),
                     None,
                     &run_state,
-                    Some(outcome::LoopFailure::State(error.to_string())),
+                    Some(outcome::LoopFailure::State(msg)),
                 );
             }
             return build_loop_outcome(
@@ -1461,10 +1463,11 @@ pub async fn run_loop(
     {
         Ok(pending) => pending,
         Err(error) => {
+            let msg = error.to_string();
             terminate_run!(
-                TerminationReason::Error,
+                TerminationReason::Error(msg.clone()),
                 None,
-                Some(outcome::LoopFailure::State(error.to_string()))
+                Some(outcome::LoopFailure::State(msg))
             );
         }
     };
@@ -1478,10 +1481,11 @@ pub async fn run_loop(
     )
     .await
     {
+        let msg = error.to_string();
         terminate_run!(
-            TerminationReason::Error,
+            TerminationReason::Error(msg.clone()),
             None,
-            Some(outcome::LoopFailure::State(error.to_string()))
+            Some(outcome::LoopFailure::State(msg))
         );
     }
     let run_start_new_suspended = newly_suspended_call_ids(&run_ctx, &baseline_suspended_call_ids);
@@ -1500,10 +1504,11 @@ pub async fn run_loop(
         )
         .await
         {
+            let msg = error.to_string();
             terminate_run!(
-                TerminationReason::Error,
+                TerminationReason::Error(msg.clone()),
                 None,
-                Some(outcome::LoopFailure::State(error.to_string()))
+                Some(outcome::LoopFailure::State(msg))
             );
         }
 
@@ -1514,10 +1519,11 @@ pub async fn run_loop(
         let step_tools = match resolve_step_tool_snapshot(&step_tool_provider, &run_ctx).await {
             Ok(snapshot) => snapshot,
             Err(e) => {
+                let msg = e.to_string();
                 terminate_run!(
-                    TerminationReason::Error,
+                    TerminationReason::Error(msg.clone()),
                     None,
-                    Some(outcome::LoopFailure::State(e.to_string()))
+                    Some(outcome::LoopFailure::State(msg))
                 );
             }
         };
@@ -1527,10 +1533,11 @@ pub async fn run_loop(
         {
             Ok(v) => v,
             Err(e) => {
+                let msg = e.to_string();
                 terminate_run!(
-                    TerminationReason::Error,
+                    TerminationReason::Error(msg.clone()),
                     None,
-                    Some(outcome::LoopFailure::State(e.to_string()))
+                    Some(outcome::LoopFailure::State(msg))
                 );
             }
         };
@@ -1596,14 +1603,15 @@ pub async fn run_loop(
                 )
                 .await
                 {
+                    let msg = phase_error.to_string();
                     terminate_run!(
-                        TerminationReason::Error,
+                        TerminationReason::Error(msg.clone()),
                         None,
-                        Some(outcome::LoopFailure::State(phase_error.to_string()))
+                        Some(outcome::LoopFailure::State(msg))
                     );
                 }
                 terminate_run!(
-                    TerminationReason::Error,
+                    TerminationReason::Error(last_error.clone()),
                     None,
                     Some(outcome::LoopFailure::Llm(last_error))
                 );
@@ -1629,10 +1637,11 @@ pub async fn run_loop(
         {
             Ok(reason) => reason,
             Err(e) => {
+                let msg = e.to_string();
                 terminate_run!(
-                    TerminationReason::Error,
+                    TerminationReason::Error(msg.clone()),
                     None,
-                    Some(outcome::LoopFailure::State(e.to_string()))
+                    Some(outcome::LoopFailure::State(msg))
                 );
             }
         };
@@ -1644,10 +1653,11 @@ pub async fn run_loop(
             )
             .await
         {
+            let msg = error.to_string();
             terminate_run!(
-                TerminationReason::Error,
+                TerminationReason::Error(msg.clone()),
                 None,
-                Some(outcome::LoopFailure::State(error.to_string()))
+                Some(outcome::LoopFailure::State(msg))
             );
         }
 
@@ -1672,10 +1682,11 @@ pub async fn run_loop(
         let tool_context = match prepare_tool_execution_context(&run_ctx) {
             Ok(ctx) => ctx,
             Err(e) => {
+                let msg = e.to_string();
                 terminate_run!(
-                    TerminationReason::Error,
+                    TerminationReason::Error(msg.clone()),
                     None,
-                    Some(outcome::LoopFailure::State(e.to_string()))
+                    Some(outcome::LoopFailure::State(msg))
                 );
             }
         };
@@ -1704,10 +1715,11 @@ pub async fn run_loop(
                 terminate_run!(TerminationReason::Cancelled, None, None);
             }
             Err(e) => {
+                let msg = e.to_string();
                 terminate_run!(
-                    TerminationReason::Error,
+                    TerminationReason::Error(msg.clone()),
                     None,
-                    Some(outcome::LoopFailure::State(e.to_string()))
+                    Some(outcome::LoopFailure::State(msg))
                 );
             }
         };
@@ -1719,20 +1731,22 @@ pub async fn run_loop(
             tool_executor.requires_parallel_patch_conflict_check(),
         ) {
             // On error, we can't easily rollback RunContext, so just terminate
+            let msg = _e.to_string();
             terminate_run!(
-                TerminationReason::Error,
+                TerminationReason::Error(msg.clone()),
                 None,
-                Some(outcome::LoopFailure::State(_e.to_string()))
+                Some(outcome::LoopFailure::State(msg))
             );
         }
         if let Err(error) = pending_delta_commit
             .commit(&mut run_ctx, CheckpointReason::ToolResultsCommitted, false)
             .await
         {
+            let msg = error.to_string();
             terminate_run!(
-                TerminationReason::Error,
+                TerminationReason::Error(msg.clone()),
                 None,
-                Some(outcome::LoopFailure::State(error.to_string()))
+                Some(outcome::LoopFailure::State(msg))
             );
         }
 
@@ -1747,10 +1761,11 @@ pub async fn run_loop(
         )
         .await
         {
+            let msg = error.to_string();
             terminate_run!(
-                TerminationReason::Error,
+                TerminationReason::Error(msg.clone()),
                 None,
-                Some(outcome::LoopFailure::State(error.to_string()))
+                Some(outcome::LoopFailure::State(msg))
             );
         }
 

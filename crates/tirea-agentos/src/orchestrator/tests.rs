@@ -2846,7 +2846,7 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
     let err_msg = events
         .iter()
         .find_map(|ev| match ev {
-            AgentEvent::Error { message } => Some(message.clone()),
+            AgentEvent::Error { message, .. } => Some(message.clone()),
             _ => None,
         })
         .expect("expected checkpoint append failure to emit AgentEvent::Error");
@@ -2933,7 +2933,7 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_pre_checkpoint_s
     assert!(
         events
             .iter()
-            .any(|ev| matches!(ev, AgentEvent::Error { message } if message.contains("checkpoint append failed"))),
+            .any(|ev| matches!(ev, AgentEvent::Error { message, .. } if message.contains("checkpoint append failed"))),
         "checkpoint failure must emit AgentEvent::Error: {events:?}"
     );
     assert!(

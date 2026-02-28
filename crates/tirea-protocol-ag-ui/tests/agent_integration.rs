@@ -2124,9 +2124,10 @@ fn test_agent_event_all_variants() {
     // Error
     let error = AgentEvent::Error {
         message: "Network timeout".to_string(),
+        code: None,
     };
     match error {
-        AgentEvent::Error { message } => assert!(message.contains("timeout")),
+        AgentEvent::Error { message, .. } => assert!(message.contains("timeout")),
         _ => panic!("Wrong variant"),
     }
 
@@ -6188,6 +6189,7 @@ fn test_agui_stream_error_no_run_finished() {
     // Error occurs
     let error = AgentEvent::Error {
         message: "LLM API error: rate limited".into(),
+        code: Some("LLM_ERROR".into()),
     };
     let error_events = ctx.on_agent_event(&error);
 
@@ -9324,6 +9326,7 @@ fn test_error_interrupts_text_stream() {
     // Error occurs
     let error = AgentEvent::Error {
         message: "API rate limit exceeded".into(),
+        code: Some("LLM_ERROR".into()),
     };
     events.extend(ctx.on_agent_event(&error));
 
@@ -10506,6 +10509,7 @@ fn test_run_finished_or_error_mutually_exclusive() {
         },
         AgentEvent::Error {
             message: "API error".into(),
+            code: None,
         },
     ]
     .iter()
@@ -12163,7 +12167,7 @@ fn test_agent_event_run_finish_cancelled_produces_run_error() {
 }
 
 /// Test: AgentEvent::Error produces RUN_ERROR
-/// Protocol: Error maps to RUN_ERROR without code
+/// Protocol: Error maps to RUN_ERROR with code pass-through
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_agent_event_error_produces_run_error() {
@@ -12171,13 +12175,14 @@ fn test_agent_event_error_produces_run_error() {
 
     let error = AgentEvent::Error {
         message: "API rate limit".into(),
+        code: Some("LLM_ERROR".into()),
     };
     let events = ctx.on_agent_event(&error);
 
     assert_eq!(events.len(), 1);
     if let Event::RunError { message, code, .. } = &events[0] {
         assert_eq!(message, "API rate limit");
-        assert!(code.is_none());
+        assert_eq!(code.as_deref(), Some("LLM_ERROR"));
     } else {
         panic!("Expected RunError");
     }

@@ -105,7 +105,7 @@ Do not skip tool calls.",
                 AgentEvent::TextDelta { delta } => {
                     text.push_str(&delta);
                 }
-                AgentEvent::Error { message } => {
+                AgentEvent::Error { message, .. } => {
                     last_error = message;
                     break;
                 }

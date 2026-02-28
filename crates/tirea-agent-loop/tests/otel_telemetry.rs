@@ -301,7 +301,7 @@ async fn test_run_step_llm_error_closes_inference_span_and_sets_error_type() {
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
     assert!(matches!(
         outcome.termination,
-        tirea_agent_loop::contracts::TerminationReason::Error
+        tirea_agent_loop::contracts::TerminationReason::Error(_)
     ));
 
     // Metrics should record the failed inference.

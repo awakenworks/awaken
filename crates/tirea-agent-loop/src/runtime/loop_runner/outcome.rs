@@ -34,6 +34,7 @@ pub struct LoopOutcome {
     pub response: Option<String>,
     pub usage: LoopUsage,
     pub stats: LoopStats,
+    /// Error details when `termination` is `Error`. Read in tests.
     #[allow(dead_code)]
     pub(super) failure: Option<LoopFailure>,
 }

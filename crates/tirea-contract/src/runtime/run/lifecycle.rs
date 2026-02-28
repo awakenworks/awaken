@@ -46,7 +46,7 @@ pub enum TerminationReason {
     /// Run paused waiting for external suspended tool-call resolution.
     Suspended,
     /// Run ended due to an error path.
-    Error,
+    Error(String),
 }
 
 impl TerminationReason {
@@ -67,7 +67,7 @@ impl TerminationReason {
             Self::NaturalEnd => (RunStatus::Done, Some("natural".to_string())),
             Self::BehaviorRequested => (RunStatus::Done, Some("behavior_requested".to_string())),
             Self::Cancelled => (RunStatus::Done, Some("cancelled".to_string())),
-            Self::Error => (RunStatus::Done, Some("error".to_string())),
+            Self::Error(_) => (RunStatus::Done, Some("error".to_string())),
             Self::Stopped(stopped) => (RunStatus::Done, Some(format!("stopped:{}", stopped.code))),
         }
     }
@@ -235,7 +235,11 @@ mod tests {
                 RunStatus::Done,
                 Some("cancelled"),
             ),
-            (TerminationReason::Error, RunStatus::Done, Some("error")),
+            (
+                TerminationReason::Error("test error".to_string()),
+                RunStatus::Done,
+                Some("error"),
+            ),
             (
                 TerminationReason::stopped("max_turns"),
                 RunStatus::Done,

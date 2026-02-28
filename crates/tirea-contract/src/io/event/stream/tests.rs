@@ -215,6 +215,7 @@ fn all_event_types_roundtrip() {
         },
         AgentEvent::Error {
             message: "oops".into(),
+            code: Some("LLM_ERROR".into()),
         },
     ];
 

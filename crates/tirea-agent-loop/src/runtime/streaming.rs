@@ -451,8 +451,9 @@ mod tests {
         // Test Error
         let event = AgentEvent::Error {
             message: "Something went wrong".to_string(),
+            code: None,
         };
-        if let AgentEvent::Error { message } = event {
+        if let AgentEvent::Error { message, .. } = event {
             assert!(message.contains("wrong"));
         }
     }
@@ -551,6 +552,7 @@ mod tests {
     fn test_agent_event_debug() {
         let event = AgentEvent::Error {
             message: "error message".to_string(),
+            code: None,
         };
         let debug_str = format!("{:?}", event);
         assert!(debug_str.contains("Error"));

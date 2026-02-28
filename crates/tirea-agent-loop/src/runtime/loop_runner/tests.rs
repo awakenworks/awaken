@@ -4899,7 +4899,7 @@ async fn test_run_loop_rejects_run_action_mutation_outside_inference_phases() {
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert!(
-        matches!(outcome.termination, TerminationReason::Error),
+        matches!(outcome.termination, TerminationReason::Error(_)),
         "expected phase mutation state error, got: {:?}",
         outcome.termination
     );
@@ -4936,7 +4936,7 @@ async fn test_stream_rejects_run_action_mutation_outside_inference_phases() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AgentEvent::Error { message }
+            AgentEvent::Error { message, .. }
             if message.contains("termination effects are only allowed in BeforeInference/AfterInference")
         )),
         "expected mutation error event, got: {events:?}"
@@ -4969,7 +4969,7 @@ async fn test_run_loop_rejects_prompt_context_mutation_outside_before_inference(
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert!(
-        matches!(outcome.termination, TerminationReason::Error),
+        matches!(outcome.termination, TerminationReason::Error(_)),
         "expected phase mutation state error, got: {:?}",
         outcome.termination
     );
@@ -5053,7 +5053,7 @@ async fn test_stream_rejects_prompt_context_mutation_outside_before_inference() 
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AgentEvent::Error { message }
+            AgentEvent::Error { message, .. }
             if message.contains("context injection effects are only allowed in BeforeInference")
         )),
         "expected mutation error event, got: {events:?}"
@@ -5504,7 +5504,7 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
-    assert_eq!(outcome.termination, TerminationReason::Error);
+    assert!(matches!(outcome.termination, TerminationReason::Error(_)));
     assert!(
         matches!(outcome.failure, Some(outcome::LoopFailure::Llm(ref message)) if message.contains("429")),
         "expected llm error with source message, got: {:?}",
@@ -5719,7 +5719,7 @@ async fn test_nonstream_loop_outcome_llm_error_tracks_attempts_and_failure_kind(
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
-    assert_eq!(outcome.termination, TerminationReason::Error);
+    assert!(matches!(outcome.termination, TerminationReason::Error(_)));
     assert_eq!(outcome.stats.llm_calls, 2);
     assert_eq!(outcome.stats.llm_retries, 1);
     assert_eq!(outcome.stats.steps, 0);
@@ -7129,7 +7129,11 @@ fn test_sync_run_lifecycle_for_termination_persists_status_and_reason() {
             Some("behavior_requested"),
         ),
         (TerminationReason::Cancelled, "done", Some("cancelled")),
-        (TerminationReason::Error, "done", Some("error")),
+        (
+            TerminationReason::Error("test error".to_string()),
+            "done",
+            Some("error"),
+        ),
         (
             TerminationReason::stopped("limit"),
             "done",
@@ -7248,11 +7252,11 @@ async fn test_stream_state_commit_failure_on_assistant_turn_emits_error_and_run_
     );
     let events = collect_stream_events(stream).await;
 
-    assert_eq!(extract_termination(&events), Some(TerminationReason::Error));
+    assert!(matches!(extract_termination(&events), Some(TerminationReason::Error(_))));
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, AgentEvent::Error { message } if message.contains("state commit failed"))),
+            .any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("state commit failed"))),
         "expected state commit error event, got: {events:?}"
     );
     assert_eq!(
@@ -7316,7 +7320,7 @@ async fn test_nonstream_state_commit_failure_on_assistant_turn_returns_error() {
     )
     .await;
 
-    assert_eq!(outcome.termination, TerminationReason::Error);
+    assert!(matches!(outcome.termination, TerminationReason::Error(_)));
     assert!(matches!(
         outcome.failure,
         Some(LoopFailure::State(message)) if message.contains("state commit failed")
@@ -7351,7 +7355,7 @@ async fn test_stream_state_commit_failure_on_tool_results_emits_error_before_too
     );
     let events = collect_stream_events(stream).await;
 
-    assert_eq!(extract_termination(&events), Some(TerminationReason::Error));
+    assert!(matches!(extract_termination(&events), Some(TerminationReason::Error(_))));
     assert!(
         events
             .iter()
@@ -7397,7 +7401,7 @@ async fn test_stream_run_finished_commit_failure_emits_error_without_run_finish_
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, AgentEvent::Error { message } if message.contains("state commit failed"))),
+            .any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("state commit failed"))),
         "expected run-finished commit error event, got: {events:?}"
     );
     assert!(
@@ -7536,7 +7540,7 @@ async fn test_stream_replay_state_failure_emits_error() {
     assert!(
             events
                 .iter()
-                .any(|e| matches!(e, AgentEvent::Error { message } if message.contains("State error") || message.contains("replay"))),
+                .any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("State error") || message.contains("replay"))),
             "expected state rebuild error, got events: {events:?}"
         );
     assert!(
@@ -9235,11 +9239,11 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
         changeset.apply_to(&mut final_thread);
     }
 
-    assert_eq!(extract_termination(&events), Some(TerminationReason::Error));
+    assert!(matches!(extract_termination(&events), Some(TerminationReason::Error(_))));
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, AgentEvent::Error { message } if message.contains("429"))),
+            .any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("429"))),
         "expected stream error event from startup failure, got: {events:?}"
     );
 
@@ -11180,7 +11184,7 @@ async fn test_run_loop_rejects_run_action_mutation_outside_inference_phases_v2()
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert!(
-        matches!(outcome.termination, TerminationReason::Error),
+        matches!(outcome.termination, TerminationReason::Error(_)),
         "expected phase mutation state error, got: {:?}",
         outcome.termination
     );
@@ -11221,7 +11225,7 @@ async fn test_stream_rejects_run_action_mutation_outside_inference_phases_v2() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AgentEvent::Error { message }
+            AgentEvent::Error { message, .. }
             if message.contains("termination effects are only allowed in BeforeInference/AfterInference")
         )),
         "expected mutation error event, got: {events:?}"

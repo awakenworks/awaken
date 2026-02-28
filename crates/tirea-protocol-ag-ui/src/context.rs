@@ -206,9 +206,9 @@ impl AgUiEventContext {
                             Some("CANCELLED".to_string()),
                         ));
                     }
-                    TerminationReason::Error => {
+                    TerminationReason::Error(ref msg) => {
                         events.push(Event::run_error(
-                            "Run terminated with error",
+                            msg,
                             Some("ERROR".to_string()),
                         ));
                     }
@@ -354,9 +354,9 @@ impl AgUiEventContext {
                 )]
             }
 
-            AgentEvent::Error { message } => {
+            AgentEvent::Error { message, code } => {
                 let mut events = self.close_reasoning_stream();
-                events.push(Event::run_error(message, None));
+                events.push(Event::run_error(message, code.clone()));
                 events
             }
             AgentEvent::InferenceComplete {
