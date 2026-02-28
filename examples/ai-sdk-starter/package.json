@@ -8,7 +8,8 @@
     "dev:ui": "vite --port 3001",
     "dev:agent": "cargo run -p ai-sdk-starter-agent",
     "build": "vite build",
-    "preview": "vite preview --port 3001"
+    "preview": "vite preview --port 3001",
+    "test": "vitest run"
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.81",
@@ -18,15 +19,19 @@
     "react-router": "^7"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^4",
     "autoprefixer": "^10.4",
     "concurrently": "^9.2",
+    "jsdom": "^28.1.0",
     "postcss": "^8.5",
     "tailwindcss": "^3.4",
     "typescript": "^5",
-    "vite": "^6"
+    "vite": "^6",
+    "vitest": "^4.0.18"
   }
 }

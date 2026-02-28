@@ -21,6 +21,7 @@ import {
 import { useMainThreadId } from "@/lib/starter-thread";
 import { StarterSplitScreen } from "@/components/starter-split-screen";
 import { SharedStatePanel } from "@/components/shared-state-panel";
+import { McpAppFrame } from "@/components/mcp-app-frame";
 
 type DemoState = {
   todos: string[];
@@ -115,6 +116,7 @@ function BaseStarterDemo() {
   const [localChecklistPreview, setLocalChecklistPreview] = useState<string[] | null>(
     null,
   );
+  const [showMcpAppPreview, setShowMcpAppPreview] = useState(false);
 
   const { state, setState } = useCoAgent<DemoState>({
     name: "default",
@@ -385,6 +387,37 @@ function BaseStarterDemo() {
                 }}
               />
             </div>
+          )}
+        </section>
+        <section className={panelCardClass}>
+          <div className={sectionLabelClass}>MCP Apps</div>
+          <h3 className="text-lg font-semibold text-slate-900">5) MCP App UI (iframe rendering)</h3>
+          <p data-testid="mcp-app-prompt" className={subtleHintClass}>
+            MCP tools with UI metadata render interactive HTML in a sandboxed iframe.
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              data-testid="mcp-app-local-preview-trigger"
+              className={buttonClass}
+              onClick={() => setShowMcpAppPreview(true)}
+            >
+              Render MCP App Preview
+            </button>
+            <button
+              data-testid="mcp-app-local-preview-clear"
+              className={buttonClass}
+              onClick={() => setShowMcpAppPreview(false)}
+              disabled={!showMcpAppPreview}
+            >
+              Clear Preview
+            </button>
+          </div>
+          {showMcpAppPreview && (
+            <McpAppFrame
+              content='<html><body style="font-family:system-ui;padding:16px"><h2>MCP App Preview</h2><p>This is a sandboxed MCP application rendered via <code>mcp.ui.content</code> metadata.</p><ul><li>Interactive HTML</li><li>Sandboxed iframe</li><li>Auto-resize</li></ul></body></html>'
+              mimeType="text/html"
+              resourceUri="ui://demo/preview"
+            />
           )}
         </section>
       </div>

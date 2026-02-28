@@ -21,6 +21,7 @@ import {
 import { useMainThreadId } from "@/lib/starter-thread";
 import { StarterSplitScreen } from "@/components/starter-split-screen";
 import { SharedStatePanel } from "@/components/shared-state-panel";
+import { getMcpUiContent, McpAppFrame } from "@/components/mcp-app-frame";
 
 type TodoStatus = "pending" | "completed";
 
@@ -489,9 +490,22 @@ function CanvasV2Demo() {
 
   useDefaultRenderTool(
     {
-      render: ({ name, args, status }) => (
-        <ToolReasoning name={name} args={args} status={status} />
-      ),
+      render: ({ name, args, status, result }) => {
+        const mcpUi = getMcpUiContent(result);
+        if (mcpUi) {
+          return (
+            <div>
+              <ToolReasoning name={name} args={args} status={status} />
+              <McpAppFrame
+                content={mcpUi.content}
+                mimeType={mcpUi.mimeType}
+                resourceUri={mcpUi.resourceUri}
+              />
+            </div>
+          );
+        }
+        return <ToolReasoning name={name} args={args} status={status} />;
+      },
     },
     [],
   );

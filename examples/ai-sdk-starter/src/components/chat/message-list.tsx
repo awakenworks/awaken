@@ -10,6 +10,7 @@ import { ToolCard } from "@/components/tools/tool-card";
 import { PermissionDialog } from "@/components/tools/permission-dialog";
 import { AskUserDialog } from "@/components/tools/ask-user-dialog";
 import { WeatherCard } from "@/components/tools/weather-card";
+import { getMcpUiContent, McpAppFrame } from "@/components/tools/mcp-app-frame";
 
 type MessageListProps = {
   messages: UIMessage[];
@@ -126,6 +127,27 @@ function ToolPartRenderer({
   if (name === "get_weather" && tool.output != null) {
     const output = tool.output as { location?: string };
     return <WeatherCard location={output.location ?? ""} />;
+  }
+
+  // MCP App iframe for tools with mcp.ui.content metadata
+  const mcpUi = getMcpUiContent(tool.output);
+  if (mcpUi) {
+    return (
+      <div>
+        <ToolCard
+          name={name}
+          state={tool.state}
+          input={tool.input}
+          output={tool.output}
+          errorText={tool.errorText}
+        />
+        <McpAppFrame
+          content={mcpUi.content}
+          mimeType={mcpUi.mimeType}
+          resourceUri={mcpUi.resourceUri}
+        />
+      </div>
+    );
   }
 
   const requestedToolName =

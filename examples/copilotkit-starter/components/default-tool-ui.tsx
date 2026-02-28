@@ -1,5 +1,6 @@
 import { CatchAllActionRenderProps } from "@copilotkit/react-core";
 import { useState } from "react";
+import { getMcpUiContent, McpAppFrame } from "./mcp-app-frame";
 
 type DefaultToolProps = CatchAllActionRenderProps & {
   themeColor: string;
@@ -14,6 +15,7 @@ export function DefaultToolComponent({
 }: DefaultToolProps) {
   const [showArgs, setShowArgs] = useState(false);
   const [showResult, setShowResult] = useState(false);
+  const mcpUi = getMcpUiContent(result);
 
   return (
     <div
@@ -57,6 +59,14 @@ export function DefaultToolComponent({
           </pre>
         )}
       </div>
+
+      {mcpUi && (
+        <McpAppFrame
+          content={mcpUi.content}
+          mimeType={mcpUi.mimeType}
+          resourceUri={mcpUi.resourceUri}
+        />
+      )}
     </div>
   );
 }
