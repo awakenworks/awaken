@@ -4,7 +4,8 @@ use super::AgentLoopError;
 use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
 use crate::contracts::runtime::plugin::phase::{
-    reduce_state_actions, AnyStateAction, CommutativeAction, Phase, StateScope, StepContext,
+    reduce_state_actions, AnyPluginAction, AnyStateAction, CommutativeAction, Phase, StateScope,
+    StepContext,
 };
 use crate::contracts::runtime::tool_call::ToolDescriptor;
 use crate::contracts::RunContext;
@@ -133,12 +134,18 @@ async fn emit_agent_phase_with_options(
 ) -> Result<(), AgentLoopError> {
     let ctx = build_read_only_context(phase, step, doc);
     let output = dispatch_agent_phase(agent, phase, &ctx).await;
+    let plugin_actions = agent.phase_actions(phase, &ctx).await;
     validate_owned_state_actions(agent, phase, step, &output)?;
     if defer_commutative_state_actions {
-        apply_phase_output_with_options(phase, step, output, doc, true)
+        apply_phase_output_with_options(phase, step, output, doc, true)?
     } else {
-        apply_phase_output(phase, step, output, doc)
+        apply_phase_output(phase, step, output, doc)?
     }
+    let plugin_patches = reduce_behavior_plugin_actions(agent, &doc.snapshot(), plugin_actions)?;
+    for patch in plugin_patches {
+        step.emit_patch(patch);
+    }
+    Ok(())
 }
 
 // =========================================================================
@@ -186,6 +193,20 @@ fn reduce_commutative_actions_to_patch(
         AgentLoopError::StateError(format!("failed to reduce commutative state actions: {e}"))
     })?;
     Ok(merge_tracked_patches(&tracked, source))
+}
+
+pub(super) fn reduce_behavior_plugin_actions(
+    behavior: &dyn AgentBehavior,
+    base_snapshot: &Value,
+    actions: Vec<AnyPluginAction>,
+) -> Result<Vec<TrackedPatch>, AgentLoopError> {
+    if actions.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    behavior
+        .reduce_plugin_actions(actions, base_snapshot)
+        .map_err(AgentLoopError::StateError)
 }
 
 fn finalize_step_pending_outputs(

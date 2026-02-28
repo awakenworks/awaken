@@ -63,14 +63,11 @@ pub use crate::contracts::{Suspension, SuspensionResponse};
 
 #[cfg(feature = "core")]
 pub use crate::extensions::permission::{
-    PermissionContextExt, PermissionPlugin, PermissionState, ToolPermissionBehavior,
-    ToolPolicyPlugin,
+    PermissionAction, PermissionPlugin, ToolPermissionBehavior, ToolPolicyPlugin,
 };
 
 #[cfg(feature = "core")]
-pub use crate::extensions::reminder::{
-    ReminderContextExt, ReminderPlugin, ReminderState, SystemReminder,
-};
+pub use crate::extensions::reminder::{ReminderAction, ReminderPlugin, SystemReminder};
 
 // ── Skills extension (require "skills" feature) ──────────────────────────
 

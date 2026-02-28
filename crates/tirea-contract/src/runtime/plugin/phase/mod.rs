@@ -7,6 +7,7 @@
 
 mod contexts;
 pub mod effect;
+mod plugin_action;
 pub mod state_spec;
 mod step;
 mod types;
@@ -20,6 +21,7 @@ pub use contexts::{
     StepStartContext,
 };
 pub use effect::{validate_effect, PhaseEffect, PhaseOutput};
+pub use plugin_action::AnyPluginAction;
 pub use state_spec::{
     reduce_state_actions, AnyStateAction, CommutativeAction, StateScope, StateSpec,
 };

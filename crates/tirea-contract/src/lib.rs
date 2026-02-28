@@ -98,14 +98,14 @@ pub use io::{
 // runtime plugin/tool-call/lifecycle
 pub use runtime::{
     reduce_state_actions, validate_effect, ActivityContext, ActivityManager, AfterInferenceContext,
-    AfterToolExecuteContext, AgentBehavior, AnyStateAction, BeforeInferenceContext,
-    BeforeToolExecuteContext, CommutativeAction, DecisionReplayPolicy, NoOpBehavior, Phase,
-    PhaseContext, PhaseEffect, PhaseOutput, PhasePolicy, ReadOnlyContext, RunAction, RunContext,
-    RunDelta, RunEndContext, RunStartContext, StateScope, StateSpec, StepContext, StepEndContext,
-    StepOutcome, StepStartContext, StoppedReason, StreamResult, SuspendTicket, Suspension,
-    SuspensionResponse, TerminationReason, TokenUsage, ToolCallAction, ToolCallContext,
-    ToolCallOutcome, ToolContext, ToolExecution, ToolExecutionEffect, ToolExecutionRequest,
-    ToolExecutionResult, ToolExecutor, ToolExecutorError, ToolProgressState,
+    AfterToolExecuteContext, AgentBehavior, AnyPluginAction, AnyStateAction,
+    BeforeInferenceContext, BeforeToolExecuteContext, CommutativeAction, DecisionReplayPolicy,
+    NoOpBehavior, Phase, PhaseContext, PhaseEffect, PhaseOutput, PhasePolicy, ReadOnlyContext,
+    RunAction, RunContext, RunDelta, RunEndContext, RunStartContext, StateScope, StateSpec,
+    StepContext, StepEndContext, StepOutcome, StepStartContext, StoppedReason, StreamResult,
+    SuspendTicket, Suspension, SuspensionResponse, TerminationReason, TokenUsage, ToolCallAction,
+    ToolCallContext, ToolCallOutcome, ToolContext, ToolExecution, ToolExecutionEffect,
+    ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError, ToolProgressState,
     TOOL_PROGRESS_ACTIVITY_TYPE,
 };
 

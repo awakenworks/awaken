@@ -11,10 +11,11 @@ pub use activity::{ActivityManager, NoOpActivityManager};
 pub use llm::{StreamResult, TokenUsage};
 pub use plugin::{
     reduce_state_actions, validate_effect, AfterInferenceContext, AfterToolExecuteContext,
-    AgentBehavior, AnyStateAction, BeforeInferenceContext, BeforeToolExecuteContext,
-    CommutativeAction, NoOpBehavior, Phase, PhaseContext, PhaseEffect, PhaseOutput, PhasePolicy,
-    ReadOnlyContext, RunAction, RunEndContext, RunStartContext, StateScope, StateSpec, StepContext,
-    StepEndContext, StepOutcome, StepStartContext, SuspendTicket, ToolCallAction, ToolContext,
+    AgentBehavior, AnyPluginAction, AnyStateAction, BeforeInferenceContext,
+    BeforeToolExecuteContext, CommutativeAction, NoOpBehavior, Phase, PhaseContext, PhaseEffect,
+    PhaseOutput, PhasePolicy, ReadOnlyContext, RunAction, RunEndContext, RunStartContext,
+    StateScope, StateSpec, StepContext, StepEndContext, StepOutcome, StepStartContext,
+    SuspendTicket, ToolCallAction, ToolContext,
 };
 pub use run::{
     run_lifecycle_from_state, InferenceError, InferenceErrorState, RunContext, RunDelta,

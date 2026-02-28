@@ -1,9 +1,13 @@
 use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
+use crate::contracts::runtime::plugin::phase::{AnyPluginAction, Phase};
 use async_trait::async_trait;
+use serde_json::Value;
 use std::any::TypeId;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
+use tirea_state::TrackedPatch;
 
 /// Compose multiple behaviors into a single [`AgentBehavior`].
 ///
@@ -133,6 +137,59 @@ impl AgentBehavior for CompositeBehavior {
             merge_output(&mut merged, b.run_end(ctx).await);
         }
         merged
+    }
+
+    async fn phase_actions(&self, phase: Phase, ctx: &ReadOnlyContext<'_>) -> Vec<AnyPluginAction> {
+        let mut merged = Vec::new();
+        for b in &self.behaviors {
+            merged.extend(b.phase_actions(phase, ctx).await);
+        }
+        merged
+    }
+
+    fn reduce_plugin_actions(
+        &self,
+        actions: Vec<AnyPluginAction>,
+        base_snapshot: &Value,
+    ) -> Result<Vec<TrackedPatch>, String> {
+        if actions.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut grouped: HashMap<String, Vec<AnyPluginAction>> = HashMap::new();
+        for action in actions {
+            grouped
+                .entry(action.plugin_id().to_string())
+                .or_default()
+                .push(action);
+        }
+
+        let mut merged_patches = Vec::new();
+        for behavior in &self.behaviors {
+            let mut behavior_actions = Vec::new();
+            for id in behavior.behavior_ids() {
+                if let Some(mut actions) = grouped.remove(id) {
+                    behavior_actions.append(&mut actions);
+                }
+            }
+            if behavior_actions.is_empty() {
+                continue;
+            }
+
+            let mut patches = behavior.reduce_plugin_actions(behavior_actions, base_snapshot)?;
+            merged_patches.append(&mut patches);
+        }
+
+        if !grouped.is_empty() {
+            let mut ids: Vec<String> = grouped.into_keys().collect();
+            ids.sort();
+            return Err(format!(
+                "composite behavior '{}' cannot route plugin actions for ids: {:?}",
+                self.id, ids
+            ));
+        }
+
+        Ok(merged_patches)
     }
 }
 

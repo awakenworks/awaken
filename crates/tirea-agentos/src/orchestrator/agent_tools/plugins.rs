@@ -2,9 +2,31 @@ use super::state::current_unix_millis;
 use super::*;
 use crate::contracts::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
+use crate::contracts::runtime::plugin::phase::state_spec::{reduce_state_actions, AnyStateAction};
+use crate::contracts::runtime::plugin::phase::{AnyPluginAction, Phase};
 use std::any::TypeId;
 use std::collections::HashSet;
-use tirea_extension_permission::PermissionState;
+use tirea_extension_permission::resolve_permission_behavior;
+use tirea_state::TrackedPatch;
+
+enum AgentRecoveryAction {
+    SetRuns {
+        runs: std::collections::HashMap<String, DelegationRecord>,
+    },
+    InsertSuspendedCall {
+        call: crate::contracts::runtime::SuspendedCall,
+    },
+    InsertToolCallState {
+        state: crate::contracts::runtime::ToolCallState,
+    },
+}
+
+impl From<AgentRecoveryAction> for AnyPluginAction {
+    fn from(action: AgentRecoveryAction) -> Self {
+        AnyPluginAction::new(AGENT_RECOVERY_PLUGIN_ID, action)
+    }
+}
+
 pub struct AgentRecoveryPlugin {
     manager: Arc<AgentRunManager>,
 }
@@ -30,17 +52,23 @@ impl AgentBehavior for AgentRecoveryPlugin {
         ])
     }
 
-    async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
-        use crate::contracts::runtime::plugin::phase::state_spec::AnyStateAction;
+    async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+        PhaseOutput::default()
+    }
+
+    async fn phase_actions(&self, phase: Phase, ctx: &ReadOnlyContext<'_>) -> Vec<AnyPluginAction> {
+        if phase != Phase::RunStart {
+            return Vec::new();
+        }
+
         use crate::contracts::runtime::{
-            PendingToolCall, SuspendedCall, SuspendedToolCallsAction, SuspendedToolCallsState,
-            ToolCallResumeMode, ToolCallState, ToolCallStatesAction, ToolCallStatesMap,
+            PendingToolCall, SuspendedCall, ToolCallResumeMode, ToolCallState,
         };
 
         let state = ctx.snapshot();
         let mut runs = parse_persisted_runs_from_doc(&state);
         if runs.is_empty() {
-            return PhaseOutput::default();
+            return Vec::new();
         }
 
         let has_suspended_recovery = has_suspended_recovery_interaction(&state);
@@ -48,33 +76,22 @@ impl AgentBehavior for AgentRecoveryPlugin {
         let outcome =
             reconcile_persisted_runs(self.manager.as_ref(), ctx.thread_id(), &mut runs).await;
 
-        let mut output = PhaseOutput::default();
+        let mut actions = Vec::new();
 
         if outcome.changed {
-            output = output.with_state_action(AnyStateAction::new::<DelegationState>(
-                DelegationAction::SetRuns(runs.clone()),
-            ));
+            actions.push(AgentRecoveryAction::SetRuns { runs: runs.clone() }.into());
         }
 
         if has_suspended_recovery || outcome.orphaned_run_ids.is_empty() {
-            return output;
+            return actions;
         }
 
         let run_id = outcome.orphaned_run_ids[0].clone();
         let Some(run) = runs.get(&run_id) else {
-            return output;
+            return actions;
         };
 
-        let behavior = ctx
-            .snapshot_of::<PermissionState>()
-            .ok()
-            .map(|ps| {
-                ps.tools
-                    .get(AGENT_RECOVERY_INTERACTION_ACTION)
-                    .copied()
-                    .unwrap_or(ps.default_behavior)
-            })
-            .unwrap_or_default();
+        let behavior = resolve_permission_behavior(&state, AGENT_RECOVERY_INTERACTION_ACTION);
 
         let make_suspended_call = |interaction: &Suspension| -> SuspendedCall {
             let call_id = interaction.id.clone();
@@ -104,45 +121,99 @@ impl AgentBehavior for AgentRecoveryPlugin {
                 let resume_token = suspended_call.ticket.pending.id.clone();
                 let arguments = suspended_call.arguments.clone();
 
-                output = output
-                    .with_state_action(AnyStateAction::new::<SuspendedToolCallsState>(
-                        SuspendedToolCallsAction::InsertCall {
-                            call: suspended_call,
+                actions.push(
+                    AgentRecoveryAction::InsertSuspendedCall {
+                        call: SuspendedCall {
+                            call_id: suspended_call.call_id.clone(),
+                            tool_name: suspended_call.tool_name.clone(),
+                            arguments: suspended_call.arguments.clone(),
+                            ticket: suspended_call.ticket.clone(),
                         },
-                    ))
-                    .with_state_action(AnyStateAction::new::<ToolCallStatesMap>(
-                        ToolCallStatesAction::InsertState {
-                            state: ToolCallState {
-                                call_id,
-                                tool_name: AGENT_RUN_TOOL_ID.to_string(),
-                                arguments,
-                                status: crate::contracts::runtime::ToolCallStatus::Resuming,
-                                resume_token: Some(resume_token),
-                                resume: Some(crate::contracts::runtime::ToolCallResume {
-                                    decision_id: recovery_target_id(&run_id),
-                                    action: crate::contracts::io::ResumeDecisionAction::Resume,
-                                    result: serde_json::Value::Bool(true),
-                                    reason: None,
-                                    updated_at: current_unix_millis(),
-                                }),
-                                scratch: serde_json::Value::Null,
+                    }
+                    .into(),
+                );
+                actions.push(
+                    AgentRecoveryAction::InsertToolCallState {
+                        state: ToolCallState {
+                            call_id,
+                            tool_name: AGENT_RUN_TOOL_ID.to_string(),
+                            arguments,
+                            status: crate::contracts::runtime::ToolCallStatus::Resuming,
+                            resume_token: Some(resume_token),
+                            resume: Some(crate::contracts::runtime::ToolCallResume {
+                                decision_id: recovery_target_id(&run_id),
+                                action: crate::contracts::io::ResumeDecisionAction::Resume,
+                                result: serde_json::Value::Bool(true),
+                                reason: None,
                                 updated_at: current_unix_millis(),
-                            },
+                            }),
+                            scratch: serde_json::Value::Null,
+                            updated_at: current_unix_millis(),
                         },
-                    ));
+                    }
+                    .into(),
+                );
             }
             ToolPermissionBehavior::Deny => {}
             ToolPermissionBehavior::Ask => {
                 let interaction = build_recovery_interaction(&run_id, run);
                 let suspended_call = make_suspended_call(&interaction);
-                output = output.with_state_action(AnyStateAction::new::<SuspendedToolCallsState>(
-                    SuspendedToolCallsAction::InsertCall {
+                actions.push(
+                    AgentRecoveryAction::InsertSuspendedCall {
                         call: suspended_call,
-                    },
-                ));
+                    }
+                    .into(),
+                );
             }
         }
-        output
+        actions
+    }
+
+    fn reduce_plugin_actions(
+        &self,
+        actions: Vec<AnyPluginAction>,
+        base_snapshot: &serde_json::Value,
+    ) -> Result<Vec<TrackedPatch>, String> {
+        use crate::contracts::runtime::{
+            SuspendedToolCallsAction, SuspendedToolCallsState, ToolCallStatesAction,
+            ToolCallStatesMap,
+        };
+
+        let mut state_actions = Vec::new();
+        for action in actions {
+            if action.plugin_id() != AGENT_RECOVERY_PLUGIN_ID {
+                return Err(format!(
+                    "agent recovery plugin received action for unexpected plugin '{}'",
+                    action.plugin_id()
+                ));
+            }
+            let action = action.downcast::<AgentRecoveryAction>().map_err(|other| {
+                format!(
+                    "agent recovery plugin failed to downcast action '{}'",
+                    other.action_type_name()
+                )
+            })?;
+            match action {
+                AgentRecoveryAction::SetRuns { runs } => {
+                    state_actions.push(AnyStateAction::new::<DelegationState>(
+                        DelegationAction::SetRuns(runs),
+                    ));
+                }
+                AgentRecoveryAction::InsertSuspendedCall { call } => {
+                    state_actions.push(AnyStateAction::new::<SuspendedToolCallsState>(
+                        SuspendedToolCallsAction::InsertCall { call },
+                    ));
+                }
+                AgentRecoveryAction::InsertToolCallState { state } => {
+                    state_actions.push(AnyStateAction::new::<ToolCallStatesMap>(
+                        ToolCallStatesAction::InsertState { state },
+                    ));
+                }
+            }
+        }
+
+        reduce_state_actions(state_actions, base_snapshot, "plugin:agent_recovery")
+            .map_err(|e| e.to_string())
     }
 }
 

@@ -1,8 +1,11 @@
 use crate::{SkillDiscoveryPlugin, SkillRuntimePlugin, SKILLS_PLUGIN_ID};
 use async_trait::async_trait;
+use serde_json::Value;
 use std::sync::Arc;
 use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::plugin::phase::effect::PhaseOutput;
+use tirea_contract::runtime::plugin::phase::{AnyPluginAction, Phase};
+use tirea_state::TrackedPatch;
 
 /// Single plugin wrapper that injects both:
 /// - the skills catalog (discovery)
@@ -59,6 +62,51 @@ impl AgentBehavior for SkillPlugin {
             AgentBehavior::before_inference(&self.runtime, ctx).await,
         );
         merged
+    }
+
+    async fn phase_actions(&self, phase: Phase, ctx: &ReadOnlyContext<'_>) -> Vec<AnyPluginAction> {
+        let mut merged = AgentBehavior::phase_actions(&self.discovery, phase, ctx).await;
+        merged.extend(AgentBehavior::phase_actions(&self.runtime, phase, ctx).await);
+        merged
+    }
+
+    fn reduce_plugin_actions(
+        &self,
+        actions: Vec<AnyPluginAction>,
+        base_snapshot: &Value,
+    ) -> Result<Vec<TrackedPatch>, String> {
+        let mut discovery_actions = Vec::new();
+        let mut runtime_actions = Vec::new();
+        let discovery_ids = self.discovery.behavior_ids();
+        let runtime_ids = self.runtime.behavior_ids();
+
+        for action in actions {
+            let plugin_id = action.plugin_id();
+            if discovery_ids.iter().any(|id| *id == plugin_id) {
+                discovery_actions.push(action);
+            } else if runtime_ids.iter().any(|id| *id == plugin_id) {
+                runtime_actions.push(action);
+            } else {
+                return Err(format!(
+                    "skill plugin cannot route action '{}' for plugin '{}'",
+                    action.action_type_name(),
+                    plugin_id
+                ));
+            }
+        }
+
+        let mut merged = Vec::new();
+        merged.extend(AgentBehavior::reduce_plugin_actions(
+            &self.discovery,
+            discovery_actions,
+            base_snapshot,
+        )?);
+        merged.extend(AgentBehavior::reduce_plugin_actions(
+            &self.runtime,
+            runtime_actions,
+            base_snapshot,
+        )?);
+        Ok(merged)
     }
 }
 

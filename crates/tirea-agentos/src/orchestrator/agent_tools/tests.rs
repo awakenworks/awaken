@@ -44,6 +44,7 @@ where
             step.run_config(),
             step.ctx().doc(),
         );
+        let actions = self.phase_actions(phase, &ctx).await;
         let output = match phase {
             Phase::RunStart => self.run_start(&ctx).await,
             Phase::StepStart => self.step_start(&ctx).await,
@@ -55,6 +56,21 @@ where
             Phase::RunEnd => self.run_end(&ctx).await,
         };
         apply_phase_output_for_test(phase, step, output);
+
+        if !actions.is_empty() {
+            let patches = self
+                .reduce_plugin_actions(actions, &step.snapshot())
+                .expect("plugin actions should reduce");
+            for patch in patches {
+                {
+                    let doc = step.ctx().doc();
+                    for op in patch.patch().ops() {
+                        doc.apply(op).expect("plugin action patch op should apply");
+                    }
+                }
+                step.emit_patch(patch);
+            }
+        }
     }
 }
 

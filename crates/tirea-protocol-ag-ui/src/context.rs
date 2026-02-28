@@ -207,10 +207,7 @@ impl AgUiEventContext {
                         ));
                     }
                     TerminationReason::Error(ref msg) => {
-                        events.push(Event::run_error(
-                            msg,
-                            Some("ERROR".to_string()),
-                        ));
+                        events.push(Event::run_error(msg, Some("ERROR".to_string())));
                     }
                     _ => {
                         events.push(Event::run_finished(thread_id, run_id, result.clone()));

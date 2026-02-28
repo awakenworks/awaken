@@ -3,7 +3,7 @@ use super::core::{
     ToolCallStateSeed, ToolCallStateTransition,
 };
 use super::parallel_state_merge::merge_parallel_state_patches;
-use super::plugin_runtime::emit_tool_phase;
+use super::plugin_runtime::{emit_tool_phase, reduce_behavior_plugin_actions};
 use super::{
     Agent, AgentLoopError, BaseAgent, RunCancellationToken, TOOL_SCOPE_CALLER_MESSAGES_KEY,
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
@@ -894,7 +894,9 @@ async fn execute_single_tool_with_phases_impl(
     .await?;
 
     // Check if blocked or pending
-    let (mut execution, outcome, suspended_call, tool_state_actions) = if step.tool_blocked() {
+    let (mut execution, outcome, suspended_call, tool_state_actions, tool_plugin_actions) = if step
+        .tool_blocked()
+    {
         let reason = step
             .tool
             .as_ref()
@@ -909,6 +911,7 @@ async fn execute_single_tool_with_phases_impl(
             ToolCallOutcome::Failed,
             None,
             Vec::new(),
+            Vec::new(),
         )
     } else if let Some(plugin_result) = step.tool_result().cloned() {
         let outcome = ToolCallOutcome::from_tool_result(&plugin_result);
@@ -921,6 +924,7 @@ async fn execute_single_tool_with_phases_impl(
             outcome,
             None,
             Vec::new(),
+            Vec::new(),
         )
     } else if tool.is_none() {
         (
@@ -931,6 +935,7 @@ async fn execute_single_tool_with_phases_impl(
             },
             ToolCallOutcome::Failed,
             None,
+            Vec::new(),
             Vec::new(),
         )
     } else if let Err(e) = tool.unwrap().validate_args(&call.arguments) {
@@ -943,6 +948,7 @@ async fn execute_single_tool_with_phases_impl(
             },
             ToolCallOutcome::Failed,
             None,
+            Vec::new(),
             Vec::new(),
         )
     } else if step.tool_pending() {
@@ -962,6 +968,7 @@ async fn execute_single_tool_with_phases_impl(
             },
             ToolCallOutcome::Suspended,
             Some(SuspendedCall::new(call, suspend_ticket)),
+            Vec::new(),
             Vec::new(),
         )
     } else {
@@ -1013,6 +1020,7 @@ async fn execute_single_tool_with_phases_impl(
             outcome,
             suspended_call,
             effect.state_actions,
+            effect.plugin_actions,
         )
     };
 
@@ -1060,12 +1068,34 @@ async fn execute_single_tool_with_phases_impl(
     let (tool_commutative_actions, reducible_state_actions) =
         partition_tool_state_actions(tool_state_actions, defer_commutative_state_actions);
     commutative_state_actions.extend(tool_commutative_actions);
-    let tool_patches = reduce_tool_state_actions(
+    let mut execution_patch_parts = reduce_tool_state_actions(
         state,
         reducible_state_actions,
         &format!("tool:{}", call.name),
     )?;
-    execution.patch = merge_tracked_patches(&tool_patches, &format!("tool:{}", call.name));
+    if !tool_plugin_actions.is_empty() {
+        let Some(behavior) = phase_ctx.agent_behavior else {
+            return Err(AgentLoopError::StateError(
+                "tool returned plugin actions but no agent behavior is configured".to_string(),
+            ));
+        };
+        let plugin_action_base = if let Some(tool_patch) =
+            merge_tracked_patches(&execution_patch_parts, &format!("tool:{}", call.name))
+        {
+            tirea_state::apply_patch(state, tool_patch.patch()).map_err(|e| {
+                AgentLoopError::StateError(format!(
+                    "failed to apply tool patch before plugin action reduce for call '{}': {}",
+                    call.id, e
+                ))
+            })?
+        } else {
+            state.clone()
+        };
+        let plugin_patches =
+            reduce_behavior_plugin_actions(behavior, &plugin_action_base, tool_plugin_actions)?;
+        execution_patch_parts.extend(plugin_patches);
+    }
+    execution.patch = merge_tracked_patches(&execution_patch_parts, &format!("tool:{}", call.name));
 
     let phase_base_state = if let Some(tool_patch) = execution.patch.as_ref() {
         tirea_state::apply_patch(state, tool_patch.patch()).map_err(|e| {

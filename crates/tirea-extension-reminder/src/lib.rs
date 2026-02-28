@@ -1,23 +1,7 @@
-//! Reminder management extension for Context.
+//! Reminder policy extension.
 //!
-//! Provides methods for managing system reminders that can be injected
-//! into LLM context:
-//! - `add_reminder(text)` - Add a reminder
-//! - `reminders()` - Get all reminders
-//!
-//! The `ReminderPlugin` can inject reminders into the LLM request.
-//!
-//! # Example
-//!
-//! ```ignore
-//! use tirea::prelude::*;
-//!
-//! async fn after_tool_execute(&self, ctx: &ContextAgentState, tool_id: &str, result: &ToolResult) {
-//!     if tool_id == "file_read" {
-//!         ctx.add_reminder("Remember to close the file when done");
-//!     }
-//! }
-//! ```
+//! External callers only depend on [`ReminderAction`]. Internal reminder
+//! state/reducer details are handled by [`ReminderPlugin`].
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -25,9 +9,11 @@ use std::any::TypeId;
 use std::collections::HashSet;
 use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::plugin::phase::effect::PhaseOutput;
-use tirea_contract::runtime::plugin::phase::state_spec::{AnyStateAction, StateSpec};
-use tirea_contract::runtime::tool_call::ToolCallContext;
-use tirea_state::State;
+use tirea_contract::runtime::plugin::phase::state_spec::{
+    reduce_state_actions, AnyStateAction, StateSpec,
+};
+use tirea_contract::runtime::plugin::phase::{AnyPluginAction, Phase};
+use tirea_state::{State, TrackedPatch};
 
 mod system_reminder;
 pub use system_reminder::SystemReminder;
@@ -35,16 +21,31 @@ pub use system_reminder::SystemReminder;
 /// Reminder state stored in session state.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[tirea(path = "reminders")]
-pub struct ReminderState {
+struct ReminderState {
     /// List of reminder texts.
     #[serde(default)]
     pub items: Vec<String>,
 }
 
 /// Action type for `ReminderState` reducer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReminderAction {
+    /// Add one reminder item.
+    Add { text: String },
+    /// Remove one reminder item.
+    Remove { text: String },
     /// Clear all reminder items.
     Clear,
+}
+
+/// Stable plugin id for reminder actions.
+pub const REMINDER_PLUGIN_ID: &str = "reminder";
+
+impl From<ReminderAction> for AnyPluginAction {
+    fn from(action: ReminderAction) -> Self {
+        AnyPluginAction::new(REMINDER_PLUGIN_ID, action)
+    }
 }
 
 impl StateSpec for ReminderState {
@@ -52,54 +53,10 @@ impl StateSpec for ReminderState {
 
     fn reduce(&mut self, action: ReminderAction) {
         match action {
+            ReminderAction::Add { text } => self.items.push(text),
+            ReminderAction::Remove { text } => self.items.retain(|item| item != &text),
             ReminderAction::Clear => self.items.clear(),
         }
-    }
-}
-
-/// Extension trait for reminder management on Context.
-pub trait ReminderContextExt {
-    /// Add a reminder.
-    fn add_reminder(&self, text: impl Into<String>);
-
-    /// Get all reminders.
-    fn reminders(&self) -> Vec<String>;
-
-    /// Get the number of reminders.
-    fn reminder_count(&self) -> usize;
-
-    /// Clear all reminders.
-    fn clear_reminders(&self);
-
-    /// Remove a specific reminder by text.
-    fn remove_reminder(&self, text: &str);
-}
-
-impl ReminderContextExt for ToolCallContext<'_> {
-    fn add_reminder(&self, text: impl Into<String>) {
-        let state = self.state_of::<ReminderState>();
-        let _ = state.items_push(text.into());
-    }
-
-    fn reminders(&self) -> Vec<String> {
-        let state = self.state_of::<ReminderState>();
-        state.items().ok().unwrap_or_default()
-    }
-
-    fn reminder_count(&self) -> usize {
-        self.reminders().len()
-    }
-
-    fn clear_reminders(&self) {
-        let state = self.state_of::<ReminderState>();
-        let _ = state.set_items(Vec::new());
-    }
-
-    fn remove_reminder(&self, text: &str) {
-        let reminders = self.reminders();
-        let filtered: Vec<String> = reminders.into_iter().filter(|r| r != text).collect();
-        let state = self.state_of::<ReminderState>();
-        let _ = state.set_items(filtered);
     }
 }
 
@@ -141,7 +98,7 @@ impl ReminderPlugin {
 #[async_trait]
 impl AgentBehavior for ReminderPlugin {
     fn id(&self) -> &str {
-        "reminder"
+        REMINDER_PLUGIN_ID
     }
 
     fn owned_states(&self) -> HashSet<TypeId> {
@@ -163,11 +120,50 @@ impl AgentBehavior for ReminderPlugin {
             output = output.session_context(format!("Reminder: {}", text));
         }
 
-        if self.clear_after_llm_request {
-            output = output
-                .with_state_action(AnyStateAction::new::<ReminderState>(ReminderAction::Clear));
-        }
         output
+    }
+
+    async fn phase_actions(&self, phase: Phase, ctx: &ReadOnlyContext<'_>) -> Vec<AnyPluginAction> {
+        if phase != Phase::BeforeInference || !self.clear_after_llm_request {
+            return Vec::new();
+        }
+
+        let has_reminders = ctx
+            .snapshot_of::<ReminderState>()
+            .ok()
+            .map(|state| !state.items.is_empty())
+            .unwrap_or(false);
+        if !has_reminders {
+            return Vec::new();
+        }
+
+        vec![ReminderAction::Clear.into()]
+    }
+
+    fn reduce_plugin_actions(
+        &self,
+        actions: Vec<AnyPluginAction>,
+        base_snapshot: &serde_json::Value,
+    ) -> Result<Vec<TrackedPatch>, String> {
+        let mut state_actions = Vec::new();
+        for action in actions {
+            if action.plugin_id() != REMINDER_PLUGIN_ID {
+                return Err(format!(
+                    "reminder plugin received action for unexpected plugin '{}'",
+                    action.plugin_id()
+                ));
+            }
+            let action = action.downcast::<ReminderAction>().map_err(|other| {
+                format!(
+                    "reminder plugin failed to downcast action '{}'",
+                    other.action_type_name()
+                )
+            })?;
+            state_actions.push(AnyStateAction::new::<ReminderState>(action));
+        }
+
+        reduce_state_actions(state_actions, base_snapshot, "plugin:reminder")
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -177,7 +173,6 @@ mod tests {
     use serde_json::json;
     use tirea_contract::runtime::plugin::phase::effect::PhaseEffect;
     use tirea_contract::runtime::plugin::phase::Phase;
-    use tirea_contract::testing::TestFixture;
     use tirea_contract::RunConfig;
     use tirea_state::DocCell;
 
@@ -211,90 +206,36 @@ mod tests {
     }
 
     #[test]
-    fn test_add_reminder() {
-        let fixture = TestFixture::new_with_state(json!({
-            "reminders": { "items": [] }
-        }));
-        let ctx = fixture.ctx();
-
-        ctx.state_of::<ReminderState>()
-            .items_push("Test reminder".to_string())
-            .expect("failed to append reminders.items");
-        assert!(fixture.has_changes());
-    }
-
-    #[test]
-    fn test_reminders_empty() {
-        let fixture = TestFixture::new_with_state(json!({
-            "reminders": { "items": [] }
-        }));
-        let ctx = fixture.ctx();
-
-        let items = ctx
-            .state_of::<ReminderState>()
-            .items()
-            .ok()
-            .unwrap_or_default();
-        assert!(items.is_empty());
-    }
-
-    #[test]
-    fn test_reminders_with_existing() {
-        let fixture = TestFixture::new_with_state(json!({
-            "reminders": { "items": ["Reminder 1", "Reminder 2"] }
-        }));
-        let ctx = fixture.ctx();
-
-        let items = ctx
-            .state_of::<ReminderState>()
-            .items()
-            .ok()
-            .unwrap_or_default();
-        assert_eq!(items.len(), 2);
-    }
-
-    #[test]
-    fn test_clear_reminders() {
-        let fixture = TestFixture::new_with_state(json!({
-            "reminders": { "items": ["Reminder 1", "Reminder 2"] }
-        }));
-        let ctx = fixture.ctx();
-
-        let items = ctx
-            .state_of::<ReminderState>()
-            .items()
-            .ok()
-            .unwrap_or_default();
-        assert_eq!(items.len(), 2);
-        ctx.state_of::<ReminderState>()
-            .set_items(Vec::new())
-            .expect("failed to clear reminders.items");
-        assert!(fixture.has_changes());
-    }
-
-    #[test]
-    fn test_remove_reminder() {
-        let fixture = TestFixture::new_with_state(json!({
-            "reminders": { "items": ["Keep", "Remove", "Keep2"] }
-        }));
-        let ctx = fixture.ctx();
-
-        let reminders: Vec<String> = ctx
-            .state_of::<ReminderState>()
-            .items()
-            .ok()
-            .unwrap_or_default();
-        let filtered: Vec<String> = reminders.into_iter().filter(|r| r != "Remove").collect();
-        ctx.state_of::<ReminderState>()
-            .set_items(filtered)
-            .expect("failed to update reminders.items");
-        assert!(fixture.has_changes());
+    fn test_reminder_plugin_reduces_actions() {
+        let base = json!({
+            "reminders": { "items": ["Keep", "Remove"] }
+        });
+        let actions = vec![
+            ReminderAction::Add {
+                text: "Added".to_string(),
+            }
+            .into(),
+            ReminderAction::Remove {
+                text: "Remove".to_string(),
+            }
+            .into(),
+        ];
+        let patches = ReminderPlugin::new()
+            .reduce_plugin_actions(actions, &base)
+            .expect("reminder action reduce should succeed");
+        let next = tirea_state::apply_patches(&base, patches.iter().map(|p| p.patch()))
+            .expect("patches should apply");
+        assert_eq!(
+            next["reminders"]["items"],
+            json!(["Keep", "Added"]),
+            "plugin actions should be reduced by reminder plugin"
+        );
     }
 
     #[test]
     fn test_reminder_plugin_id() {
         let plugin = ReminderPlugin::new();
-        assert_eq!(AgentBehavior::id(&plugin), "reminder");
+        assert_eq!(AgentBehavior::id(&plugin), REMINDER_PLUGIN_ID);
     }
 
     #[test]
@@ -322,12 +263,12 @@ mod tests {
         let doc = DocCell::new(json!({ "reminders": { "items": ["Reminder A", "Reminder B"] } }));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let output = AgentBehavior::before_inference(&plugin, &ctx).await;
+        let actions = AgentBehavior::phase_actions(&plugin, Phase::BeforeInference, &ctx).await;
         let contexts = extract_session_contexts(&output);
         assert_eq!(contexts.len(), 2);
         assert!(contexts[0].contains("Reminder A"));
         assert!(contexts[1].contains("Reminder B"));
-        // Should have a state action for clearing
-        assert!(!output.state_actions.is_empty());
+        assert_eq!(actions.len(), 1);
     }
 
     #[tokio::test]
@@ -337,10 +278,10 @@ mod tests {
         let doc = DocCell::new(json!({ "reminders": { "items": ["Reminder"] } }));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let output = AgentBehavior::before_inference(&plugin, &ctx).await;
+        let actions = AgentBehavior::phase_actions(&plugin, Phase::BeforeInference, &ctx).await;
         let contexts = extract_session_contexts(&output);
         assert!(!contexts.is_empty());
-        // No state actions when clearing is disabled
-        assert!(output.state_actions.is_empty());
+        assert!(actions.is_empty());
     }
 
     #[tokio::test]

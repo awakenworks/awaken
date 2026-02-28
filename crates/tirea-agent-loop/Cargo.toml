@@ -26,6 +26,7 @@ json-patch = "3"
 tirea-contract = { version = "0.2.0", path = "../tirea-contract", features = ["test-support"] }
 tirea-state = { version = "0.2.0", path = "../tirea-state", features = ["derive"] }
 tirea-extension-observability = { version = "0.2.0", path = "../tirea-extension-observability" }
+tirea-extension-permission = { version = "0.2.0", path = "../tirea-extension-permission" }
 tirea-extension-skills = { version = "0.2.0", path = "../tirea-extension-skills" }
 tirea-store-adapters = { version = "0.2.0", path = "../tirea-store-adapters" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }

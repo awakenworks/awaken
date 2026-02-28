@@ -8,9 +8,8 @@ use tempfile::TempDir;
 use tirea_agent_loop::contracts::runtime::tool_call::{Tool, ToolResult};
 use tirea_agent_loop::contracts::thread::Thread;
 use tirea_agent_loop::contracts::thread::{Message, ToolCall};
-use tirea_agent_loop::engine::tool_execution::{
-    execute_single_tool, execute_single_tool_with_scope,
-};
+use tirea_agent_loop::engine::tool_execution::execute_single_tool_with_scope_and_behavior;
+use tirea_extension_permission::PermissionPlugin;
 use tirea_extension_skills::{
     FsSkill, InMemorySkillRegistry, LoadSkillResourceTool, Skill, SkillActivateTool, SkillRegistry,
     SkillScriptTool,
@@ -58,7 +57,15 @@ echo "hello"
 
 async fn apply_tool(thread: Thread, tool: &dyn Tool, call: ToolCall) -> (Thread, ToolResult) {
     let state = thread.rebuild_state().unwrap();
-    let exec = execute_single_tool(Some(tool), &call, &state).await;
+    let permission_plugin = PermissionPlugin;
+    let exec = execute_single_tool_with_scope_and_behavior(
+        Some(tool),
+        &call,
+        &state,
+        None,
+        Some(&permission_plugin),
+    )
+    .await;
     let thread = if let Some(patch) = exec.patch.clone() {
         thread.with_patch(patch)
     } else {
@@ -74,7 +81,15 @@ async fn apply_tool_with_scope(
     scope: &tirea_contract::RunConfig,
 ) -> (Thread, ToolResult) {
     let state = thread.rebuild_state().unwrap();
-    let exec = execute_single_tool_with_scope(Some(tool), &call, &state, Some(scope)).await;
+    let permission_plugin = PermissionPlugin;
+    let exec = execute_single_tool_with_scope_and_behavior(
+        Some(tool),
+        &call,
+        &state,
+        Some(scope),
+        Some(&permission_plugin),
+    )
+    .await;
     let thread = if let Some(patch) = exec.patch.clone() {
         thread.with_patch(patch)
     } else {
@@ -118,7 +133,7 @@ async fn test_skill_activation_delivers_instructions_via_append_user_messages() 
         ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
     )
     .await;
-    assert!(result.is_success());
+    assert!(result.is_success(), "result={result:?}");
     assert_eq!(result.message.as_deref(), Some("Launching skill: docx"));
 
     // Instructions should be delivered via append_user_messages, not system context.
@@ -193,7 +208,7 @@ async fn test_load_reference_returns_content_in_tool_result() {
         ),
     )
     .await;
-    assert!(result.is_success());
+    assert!(result.is_success(), "result={result:?}");
     assert_eq!(result.data["loaded"], true);
     assert_eq!(result.data["kind"], "reference");
     assert_eq!(result.data["path"], "references/DOCX-JS.md");
@@ -224,7 +239,7 @@ async fn test_script_result_is_persisted_in_state() {
         ),
     )
     .await;
-    assert!(result.is_success());
+    assert!(result.is_success(), "result={result:?}");
     assert_eq!(result.data["ok"], true);
     assert_eq!(result.data["script"], "scripts/hello.sh");
 }
@@ -246,7 +261,7 @@ async fn test_load_asset_returns_metadata_in_tool_result() {
         ),
     )
     .await;
-    assert!(result.is_success());
+    assert!(result.is_success(), "result={result:?}");
     assert_eq!(result.data["encoding"], "base64");
     assert_eq!(result.data["kind"], "asset");
     assert_eq!(result.data["path"], "assets/logo.txt");

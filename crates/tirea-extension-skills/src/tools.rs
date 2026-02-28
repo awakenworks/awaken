@@ -9,9 +9,12 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use std::sync::Arc;
+use tirea_contract::runtime::plugin::phase::AnyStateAction;
 use tirea_contract::runtime::tool_call::ToolCallContext;
-use tirea_contract::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
-use tirea_extension_permission::PermissionContextExt;
+use tirea_contract::runtime::tool_call::{
+    Tool, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult, ToolStatus,
+};
+use tirea_extension_permission::{PermissionAction, ToolPermissionBehavior};
 use tracing::{debug, warn};
 
 #[derive(Debug)]
@@ -54,34 +57,19 @@ impl SkillActivateTool {
     fn resolve(&self, key: &str) -> Option<Arc<dyn Skill>> {
         self.registry.get(key.trim())
     }
-}
 
-#[async_trait::async_trait]
-impl Tool for SkillActivateTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new(
-            SKILL_ACTIVATE_TOOL_ID,
-            "Skill",
-            "Activate a skill and persist its instructions",
-        )
-        .with_parameters(json!({
-            "type": "object",
-            "properties": {
-                "skill": { "type": "string", "description": "Skill id or name" },
-                "args": { "type": "string", "description": "Optional arguments for the skill" }
-            },
-            "required": ["skill"]
-        }))
-    }
-
-    async fn execute(
+    async fn execute_effect_impl(
         &self,
         args: Value,
         ctx: &ToolCallContext<'_>,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolExecutionEffect, ToolError> {
         let key = match required_string_arg(&args, "skill") {
             Ok(v) => v,
-            Err(err) => return Ok(err.into_tool_result(SKILL_ACTIVATE_TOOL_ID)),
+            Err(err) => {
+                return Ok(ToolExecutionEffect::from(
+                    err.into_tool_result(SKILL_ACTIVATE_TOOL_ID),
+                ));
+            }
         };
 
         let skill = self.resolve(&key).ok_or_else(|| {
@@ -93,7 +81,7 @@ impl Tool for SkillActivateTool {
         });
         let skill = match skill {
             Ok(s) => s,
-            Err(r) => return Ok(r),
+            Err(r) => return Ok(ToolExecutionEffect::from(r)),
         };
         let meta = skill.meta();
         if !is_scope_allowed(
@@ -102,11 +90,11 @@ impl Tool for SkillActivateTool {
             SCOPE_ALLOWED_SKILLS_KEY,
             SCOPE_EXCLUDED_SKILLS_KEY,
         ) {
-            return Ok(tool_error(
+            return Ok(ToolExecutionEffect::from(tool_error(
                 SKILL_ACTIVATE_TOOL_ID,
                 "forbidden_skill",
                 format!("Skill '{}' is not allowed by current policy", meta.id),
-            ));
+            )));
         }
 
         let raw = skill
@@ -115,7 +103,7 @@ impl Tool for SkillActivateTool {
             .map_err(|e| map_skill_error(SKILL_ACTIVATE_TOOL_ID, e));
         let raw = match raw {
             Ok(v) => v,
-            Err(r) => return Ok(r),
+            Err(r) => return Ok(ToolExecutionEffect::from(r)),
         };
 
         let doc = parse_skill_md(&raw).map_err(|e| {
@@ -127,7 +115,7 @@ impl Tool for SkillActivateTool {
         });
         let doc = match doc {
             Ok(v) => v,
-            Err(r) => return Ok(r),
+            Err(r) => return Ok(ToolExecutionEffect::from(r)),
         };
         let instructions = doc.body;
         let instruction_for_message = instructions.clone();
@@ -136,29 +124,33 @@ impl Tool for SkillActivateTool {
         let active = state.active().ok().unwrap_or_default();
         if !active.iter().any(|s| s == &meta.id) {
             if let Err(err) = state.active_push(meta.id.clone()) {
-                return Ok(state_write_error(
+                return Ok(ToolExecutionEffect::from(state_write_error(
                     SKILL_ACTIVATE_TOOL_ID,
                     "append skills.active",
                     err,
-                ));
+                )));
             }
         }
         if let Err(err) = state.instructions_insert(meta.id.clone(), instructions) {
-            return Ok(state_write_error(
+            return Ok(ToolExecutionEffect::from(state_write_error(
                 SKILL_ACTIVATE_TOOL_ID,
                 "persist skill instructions",
                 err,
-            ));
+            )));
         }
 
         let mut applied_tool_ids: Vec<String> = Vec::new();
         let mut skipped_tokens: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
+        let mut permission_actions = Vec::new();
         for token in meta.allowed_tools.iter() {
             match parse_allowed_tool_token(token.clone()) {
                 Ok(parsed) if parsed.scope.is_none() => {
                     if seen.insert(parsed.tool_id.clone()) {
-                        ctx.allow_tool(parsed.tool_id.clone());
+                        permission_actions.push(PermissionAction::SetTool {
+                            tool_id: parsed.tool_id.clone(),
+                            behavior: ToolPermissionBehavior::Allow,
+                        });
                         applied_tool_ids.push(parsed.tool_id);
                     }
                 }
@@ -194,11 +186,11 @@ impl Tool for SkillActivateTool {
                 ctx.call_id().to_string(),
                 vec![instruction_for_message.clone()],
             ) {
-                return Ok(state_write_error(
+                return Ok(ToolExecutionEffect::from(state_write_error(
                     SKILL_ACTIVATE_TOOL_ID,
                     "persist append_user_messages",
                     err,
-                ));
+                )));
             }
         }
 
@@ -214,7 +206,51 @@ impl Tool for SkillActivateTool {
             suspension: None,
         };
 
-        Ok(result)
+        let mut effect = ToolExecutionEffect::from(result);
+        for action in permission_actions {
+            effect = effect.with_plugin_action(action);
+        }
+        Ok(effect)
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for SkillActivateTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(
+            SKILL_ACTIVATE_TOOL_ID,
+            "Skill",
+            "Activate a skill and persist its instructions",
+        )
+        .with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "skill": { "type": "string", "description": "Skill id or name" },
+                "args": { "type": "string", "description": "Optional arguments for the skill" }
+            },
+            "required": ["skill"]
+        }))
+    }
+
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
+        Ok(self.execute_effect_impl(args, ctx).await?.result)
+    }
+
+    async fn execute_effect(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
+        let mut effect = self.execute_effect_impl(args, ctx).await?;
+        let direct_patch = ctx.take_patch();
+        if !direct_patch.patch().is_empty() {
+            effect = effect.with_state_action(AnyStateAction::Patch(direct_patch));
+        }
+        Ok(effect)
     }
 }
 

@@ -3,8 +3,8 @@
 //! Tools execute actions and can modify state through `Thread`.
 
 use super::ToolCallContext;
-use crate::runtime::plugin::phase::AnyStateAction;
 use crate::runtime::plugin::phase::SuspendTicket;
+use crate::runtime::plugin::phase::{AnyPluginAction, AnyStateAction};
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -199,6 +199,7 @@ impl ToolResult {
 pub struct ToolExecutionEffect {
     pub result: ToolResult,
     pub state_actions: Vec<AnyStateAction>,
+    pub plugin_actions: Vec<AnyPluginAction>,
 }
 
 impl ToolExecutionEffect {
@@ -207,12 +208,22 @@ impl ToolExecutionEffect {
         Self {
             result,
             state_actions: Vec::new(),
+            plugin_actions: Vec::new(),
         }
     }
 
     #[must_use]
     pub fn with_state_action(mut self, action: AnyStateAction) -> Self {
         self.state_actions.push(action);
+        self
+    }
+
+    #[must_use]
+    pub fn with_plugin_action<A>(mut self, action: A) -> Self
+    where
+        A: Into<AnyPluginAction>,
+    {
+        self.plugin_actions.push(action.into());
         self
     }
 }

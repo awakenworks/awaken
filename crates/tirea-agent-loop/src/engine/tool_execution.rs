@@ -1,6 +1,7 @@
 //! Tool execution utilities.
 
 use crate::contracts::reduce_state_actions;
+use crate::contracts::runtime::plugin::agent::AgentBehavior;
 use crate::contracts::runtime::tool_call::ToolCallContext;
 use crate::contracts::runtime::tool_call::{Tool, ToolExecutionEffect, ToolResult};
 pub use crate::contracts::runtime::ToolExecution;
@@ -13,6 +14,7 @@ use tirea_contract::RunConfig;
 use tirea_state::{apply_patch, DocCell, Patch, TrackedPatch};
 
 const DIRECT_STATE_WRITE_DENIED_ERROR_CODE: &str = "tool_context_state_write_not_allowed";
+const PLUGIN_ACTIONS_UNSUPPORTED_ERROR_CODE: &str = "tool_plugin_actions_not_supported";
 
 pub(crate) fn merge_context_patch_into_effect(
     call: &ToolCall,
@@ -48,7 +50,7 @@ pub async fn execute_single_tool(
     call: &ToolCall,
     state: &Value,
 ) -> ToolExecution {
-    execute_single_tool_with_scope(tool, call, state, None).await
+    execute_single_tool_with_scope_and_behavior(tool, call, state, None, None).await
 }
 
 /// Execute a single tool call with an optional scope context.
@@ -57,6 +59,17 @@ pub async fn execute_single_tool_with_scope(
     call: &ToolCall,
     state: &Value,
     scope: Option<&RunConfig>,
+) -> ToolExecution {
+    execute_single_tool_with_scope_and_behavior(tool, call, state, scope, None).await
+}
+
+/// Execute a single tool call with optional scope and behavior router.
+pub async fn execute_single_tool_with_scope_and_behavior(
+    tool: Option<&dyn Tool>,
+    call: &ToolCall,
+    state: &Value,
+    scope: Option<&RunConfig>,
+    behavior: Option<&dyn AgentBehavior>,
 ) -> ToolExecution {
     let Some(tool) = tool else {
         return ToolExecution {
@@ -105,6 +118,7 @@ pub async fn execute_single_tool_with_scope(
             patch: None,
         };
     }
+    let plugin_actions = effect.plugin_actions;
     let result = effect.result;
 
     // Extract state changes through the unified action/reducer pipeline.
@@ -128,6 +142,37 @@ pub async fn execute_single_tool_with_scope(
     let mut merged_patch = Patch::new();
     for tracked in action_patches {
         merged_patch.extend(tracked.patch().clone());
+    }
+
+    if !plugin_actions.is_empty() {
+        let Some(behavior) = behavior else {
+            return ToolExecution {
+                call: call.clone(),
+                result: ToolResult::error_with_code(
+                    &call.name,
+                    PLUGIN_ACTIONS_UNSUPPORTED_ERROR_CODE,
+                    "tool returned plugin actions but this execution path has no plugin behavior router",
+                ),
+                patch: None,
+            };
+        };
+
+        let plugin_patches = match behavior.reduce_plugin_actions(plugin_actions, state) {
+            Ok(patches) => patches,
+            Err(err) => {
+                return ToolExecution {
+                    call: call.clone(),
+                    result: ToolResult::error(
+                        &call.name,
+                        format!("tool plugin action reduce failed: {err}"),
+                    ),
+                    patch: None,
+                };
+            }
+        };
+        for tracked in plugin_patches {
+            merged_patch.extend(tracked.patch().clone());
+        }
     }
 
     let patch = if merged_patch.is_empty() {

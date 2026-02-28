@@ -1,25 +1,7 @@
-//! Permission management extension for Context.
+//! Permission policy extension.
 //!
-//! Provides methods for managing tool permissions:
-//! - `allow_tool(id)` - Allow tool without confirmation
-//! - `deny_tool(id)` - Deny tool execution
-//! - `ask_tool(id)` - Require confirmation for tool
-//! - `get_permission(id)` - Get current permission for tool
-//!
-//! Also provides `PermissionPlugin` that enforces permissions before tool execution.
-//!
-//! # Example
-//!
-//! ```ignore
-//! use tirea::prelude::*;
-//!
-//! // In a tool implementation
-//! async fn execute(&self, args: Value, ctx: &ContextAgentState) -> Result<ToolResult, ToolError> {
-//!     // Allow follow-up tool after this one
-//!     ctx.allow_tool("follow_up_tool");
-//!     Ok(ToolResult::success("my_tool", json!({})))
-//! }
-//! ```
+//! External callers only depend on [`PermissionAction`]. Internal permission
+//! state/reducer details are handled by [`PermissionPlugin`].
 
 pub mod scope;
 pub use scope::*;
@@ -27,14 +9,17 @@ pub use scope::*;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use tirea_contract::io::ResumeDecisionAction;
 use tirea_contract::runtime::plugin::agent::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::plugin::phase::effect::PhaseOutput;
-use tirea_contract::runtime::plugin::phase::SuspendTicket;
-use tirea_contract::runtime::tool_call::ToolCallContext;
+use tirea_contract::runtime::plugin::phase::state_spec::{
+    reduce_state_actions, AnyStateAction, StateSpec,
+};
+use tirea_contract::runtime::plugin::phase::{AnyPluginAction, SuspendTicket};
 use tirea_contract::runtime::{PendingToolCall, ToolCallResumeMode};
-use tirea_state::State;
+use tirea_state::{State, TrackedPatch};
 
 /// Tool permission behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -49,75 +34,87 @@ pub enum ToolPermissionBehavior {
     Deny,
 }
 
-/// Persisted permission state.
+/// Public permission-domain action exposed to tools/plugins.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PermissionAction {
+    /// Set default behavior for tools with no override.
+    SetDefault { behavior: ToolPermissionBehavior },
+    /// Set behavior override for a specific tool.
+    SetTool {
+        tool_id: String,
+        behavior: ToolPermissionBehavior,
+    },
+    /// Remove a specific tool override.
+    RemoveTool { tool_id: String },
+    /// Remove all per-tool overrides.
+    ClearTools,
+}
+
+/// Stable plugin id for permission actions.
+pub const PERMISSION_PLUGIN_ID: &str = "permission";
+
+impl From<PermissionAction> for AnyPluginAction {
+    fn from(action: PermissionAction) -> Self {
+        AnyPluginAction::new(PERMISSION_PLUGIN_ID, action)
+    }
+}
+
+/// Persisted permission state (internal).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[tirea(path = "permissions")]
-pub struct PermissionState {
+struct PermissionState {
     /// Default behavior for tools not explicitly configured.
     pub default_behavior: ToolPermissionBehavior,
     /// Per-tool permission overrides.
     pub tools: HashMap<String, ToolPermissionBehavior>,
 }
 
+impl StateSpec for PermissionState {
+    type Action = PermissionAction;
+
+    fn reduce(&mut self, action: Self::Action) {
+        match action {
+            PermissionAction::SetDefault { behavior } => {
+                self.default_behavior = behavior;
+            }
+            PermissionAction::SetTool { tool_id, behavior } => {
+                self.tools.insert(tool_id, behavior);
+            }
+            PermissionAction::RemoveTool { tool_id } => {
+                self.tools.remove(&tool_id);
+            }
+            PermissionAction::ClearTools => {
+                self.tools.clear();
+            }
+        }
+    }
+}
+
 /// Frontend tool name for permission confirmation prompts.
 pub const PERMISSION_CONFIRM_TOOL_NAME: &str = "PermissionConfirm";
 
-/// Extension trait for permission management on Context.
-pub trait PermissionContextExt {
-    /// Allow a tool to execute without confirmation.
-    fn allow_tool(&self, tool_id: impl Into<String>);
+/// Resolve effective permission behavior from a state snapshot.
+#[must_use]
+pub fn resolve_permission_behavior(
+    snapshot: &serde_json::Value,
+    tool_id: &str,
+) -> ToolPermissionBehavior {
+    let perms = snapshot
+        .get("permissions")
+        .unwrap_or(&serde_json::Value::Null);
 
-    /// Deny a tool from executing.
-    fn deny_tool(&self, tool_id: impl Into<String>);
+    let tool_permission = perms
+        .get("tools")
+        .and_then(|tools| tools.get(tool_id))
+        .and_then(|v| serde_json::from_value::<ToolPermissionBehavior>(v.clone()).ok());
 
-    /// Require confirmation before tool execution.
-    fn ask_tool(&self, tool_id: impl Into<String>);
-
-    /// Get the permission behavior for a tool.
-    fn get_permission(&self, tool_id: &str) -> ToolPermissionBehavior;
-
-    /// Set the default permission behavior.
-    fn set_default_permission(&self, behavior: ToolPermissionBehavior);
-
-    /// Get the default permission behavior.
-    fn get_default_permission(&self) -> ToolPermissionBehavior;
-}
-
-impl PermissionContextExt for ToolCallContext<'_> {
-    fn allow_tool(&self, tool_id: impl Into<String>) {
-        let state = self.state_of::<PermissionState>();
-        let _ = state.tools_insert(tool_id.into(), ToolPermissionBehavior::Allow);
-    }
-
-    fn deny_tool(&self, tool_id: impl Into<String>) {
-        let state = self.state_of::<PermissionState>();
-        let _ = state.tools_insert(tool_id.into(), ToolPermissionBehavior::Deny);
-    }
-
-    fn ask_tool(&self, tool_id: impl Into<String>) {
-        let state = self.state_of::<PermissionState>();
-        let _ = state.tools_insert(tool_id.into(), ToolPermissionBehavior::Ask);
-    }
-
-    fn get_permission(&self, tool_id: &str) -> ToolPermissionBehavior {
-        let state = self.state_of::<PermissionState>();
-        if let Ok(tools) = state.tools() {
-            if let Some(permission) = tools.get(tool_id) {
-                return *permission;
-            }
-        }
-        state.default_behavior().ok().unwrap_or_default()
-    }
-
-    fn set_default_permission(&self, behavior: ToolPermissionBehavior) {
-        let state = self.state_of::<PermissionState>();
-        let _ = state.set_default_behavior(behavior);
-    }
-
-    fn get_default_permission(&self) -> ToolPermissionBehavior {
-        let state = self.state_of::<PermissionState>();
-        state.default_behavior().ok().unwrap_or_default()
-    }
+    tool_permission.unwrap_or_else(|| {
+        perms
+            .get("default_behavior")
+            .and_then(|v| serde_json::from_value::<ToolPermissionBehavior>(v.clone()).ok())
+            .unwrap_or_default()
+    })
 }
 
 /// Permission strategy plugin.
@@ -131,7 +128,7 @@ pub struct PermissionPlugin;
 #[async_trait]
 impl AgentBehavior for PermissionPlugin {
     fn id(&self) -> &str {
-        "permission"
+        PERMISSION_PLUGIN_ID
     }
 
     async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
@@ -149,26 +146,8 @@ impl AgentBehavior for PermissionPlugin {
             }
         }
 
-        // Read permission fields individually to tolerate partial corruption.
-        // If a specific tool entry has an invalid value, fall back to the
-        // default_behavior field. If default_behavior is also invalid, fall
-        // back to Ask (the Default).
         let snapshot = ctx.snapshot();
-        let perms = snapshot
-            .get("permissions")
-            .unwrap_or(&serde_json::Value::Null);
-
-        let tool_permission = perms
-            .get("tools")
-            .and_then(|tools| tools.get(tool_id))
-            .and_then(|v| serde_json::from_value::<ToolPermissionBehavior>(v.clone()).ok());
-
-        let permission = tool_permission.unwrap_or_else(|| {
-            perms
-                .get("default_behavior")
-                .and_then(|v| serde_json::from_value::<ToolPermissionBehavior>(v.clone()).ok())
-                .unwrap_or_default()
-        });
+        let permission = resolve_permission_behavior(&snapshot, tool_id);
 
         match permission {
             ToolPermissionBehavior::Allow => PhaseOutput::default(),
@@ -196,6 +175,52 @@ impl AgentBehavior for PermissionPlugin {
                 ))
             }
         }
+    }
+
+    fn reduce_plugin_actions(
+        &self,
+        actions: Vec<AnyPluginAction>,
+        base_snapshot: &serde_json::Value,
+    ) -> Result<Vec<TrackedPatch>, String> {
+        let mut state_actions = Vec::new();
+        for action in actions {
+            if action.plugin_id() != PERMISSION_PLUGIN_ID {
+                return Err(format!(
+                    "permission plugin received action for unexpected plugin '{}'",
+                    action.plugin_id()
+                ));
+            }
+            let action = action.downcast::<PermissionAction>().map_err(|other| {
+                format!(
+                    "permission plugin failed to downcast action '{}'",
+                    other.action_type_name()
+                )
+            })?;
+            state_actions.push(AnyStateAction::new::<PermissionState>(action));
+        }
+
+        let snapshot_for_reduce = match base_snapshot.get("permissions") {
+            Some(value) if !value.is_null() => Cow::Borrowed(base_snapshot),
+            _ => {
+                let mut snapshot = base_snapshot.clone();
+                let Some(root) = snapshot.as_object_mut() else {
+                    return Err(
+                        "permission plugin reducer requires object root state snapshot".to_string(),
+                    );
+                };
+                let default_state = serde_json::to_value(PermissionState::default())
+                    .map_err(|err| format!("serialize default permission state failed: {err}"))?;
+                root.insert("permissions".to_string(), default_state);
+                Cow::Owned(snapshot)
+            }
+        };
+
+        reduce_state_actions(
+            state_actions,
+            snapshot_for_reduce.as_ref(),
+            "plugin:permission",
+        )
+        .map_err(|e| e.to_string())
     }
 }
 
@@ -259,7 +284,6 @@ mod tests {
     use tirea_contract::runtime::plugin::phase::effect::PhaseEffect;
     use tirea_contract::runtime::plugin::phase::Phase;
     use tirea_contract::runtime::tool_call::ToolCallResume;
-    use tirea_contract::testing::TestFixture;
     use tirea_contract::RunConfig;
     use tirea_state::DocCell;
 
@@ -308,143 +332,82 @@ mod tests {
     }
 
     #[test]
-    fn test_get_permission_prefers_tool_override() {
-        let fix = TestFixture::new_with_state(json!({
+    fn test_resolve_permission_prefers_tool_override() {
+        let snapshot = json!({
             "permissions": {
                 "default_behavior": "deny",
                 "tools": {
                     "recover_agent_run": "allow"
                 }
             }
-        }));
-        let ctx = fix.ctx();
+        });
         assert_eq!(
-            ctx.get_permission("recover_agent_run"),
+            resolve_permission_behavior(&snapshot, "recover_agent_run"),
             ToolPermissionBehavior::Allow
         );
     }
 
     #[test]
-    fn test_get_permission_falls_back_to_default() {
-        let fix = TestFixture::new_with_state(json!({
+    fn test_resolve_permission_falls_back_to_default() {
+        let snapshot = json!({
             "permissions": {
                 "default_behavior": "deny",
                 "tools": {}
             }
-        }));
-        let ctx = fix.ctx();
+        });
         assert_eq!(
-            ctx.get_permission("unknown_tool"),
+            resolve_permission_behavior(&snapshot, "unknown_tool"),
             ToolPermissionBehavior::Deny
         );
     }
 
     #[test]
-    fn test_get_permission_missing_state_falls_back_to_ask() {
-        let fix = TestFixture::new();
-        let ctx = fix.ctx();
+    fn test_resolve_permission_missing_state_falls_back_to_ask() {
         assert_eq!(
-            ctx.get_permission("recover_agent_run"),
+            resolve_permission_behavior(&json!({}), "recover_agent_run"),
             ToolPermissionBehavior::Ask
         );
     }
 
     #[test]
-    fn test_allow_tool() {
-        let fix = TestFixture::new_with_state(json!({
+    fn test_permission_plugin_reduces_permission_actions() {
+        let base = json!({
             "permissions": {
                 "default_behavior": "ask",
                 "tools": {}
             }
-        }));
-        let ctx = fix.ctx();
-
-        ctx.allow_tool("read_file");
-        assert!(fix.has_changes());
-    }
-
-    #[test]
-    fn test_deny_tool() {
-        let fix = TestFixture::new_with_state(json!({
-            "permissions": {
-                "default_behavior": "ask",
-                "tools": {}
+        });
+        let actions = vec![
+            PermissionAction::SetTool {
+                tool_id: "read_file".to_string(),
+                behavior: ToolPermissionBehavior::Allow,
             }
-        }));
-        let ctx = fix.ctx();
-
-        ctx.deny_tool("delete_file");
-        assert!(fix.has_changes());
-    }
-
-    #[test]
-    fn test_ask_tool() {
-        let fix = TestFixture::new_with_state(json!({
-            "permissions": {
-                "default_behavior": "allow",
-                "tools": {}
+            .into(),
+            PermissionAction::SetDefault {
+                behavior: ToolPermissionBehavior::Deny,
             }
-        }));
-        let ctx = fix.ctx();
+            .into(),
+        ];
 
-        ctx.ask_tool("write_file");
-        assert!(fix.has_changes());
-    }
-
-    #[test]
-    fn test_get_permission_default() {
-        let fix = TestFixture::new_with_state(json!({
-            "permissions": {
-                "default_behavior": "deny",
-                "tools": {}
-            }
-        }));
-        let ctx = fix.ctx();
-
+        let patches = PermissionPlugin
+            .reduce_plugin_actions(actions, &base)
+            .expect("permission action reduce should succeed");
+        let next = tirea_state::apply_patches(&base, patches.iter().map(|p| p.patch()))
+            .expect("patches should apply");
         assert_eq!(
-            ctx.get_permission("unknown_tool"),
-            ToolPermissionBehavior::Deny
-        );
-    }
-
-    #[test]
-    fn test_get_permission_override() {
-        let fix = TestFixture::new_with_state(json!({
-            "permissions": {
-                "default_behavior": "deny",
-                "tools": { "special_tool": "allow" }
-            }
-        }));
-        let ctx = fix.ctx();
-
-        assert_eq!(
-            ctx.get_permission("special_tool"),
+            resolve_permission_behavior(&next, "read_file"),
             ToolPermissionBehavior::Allow
         );
         assert_eq!(
-            ctx.get_permission("other_tool"),
+            resolve_permission_behavior(&next, "unknown_tool"),
             ToolPermissionBehavior::Deny
         );
-    }
-
-    #[test]
-    fn test_set_default_permission() {
-        let fix = TestFixture::new_with_state(json!({
-            "permissions": {
-                "default_behavior": "ask",
-                "tools": {}
-            }
-        }));
-        let ctx = fix.ctx();
-
-        ctx.set_default_permission(ToolPermissionBehavior::Allow);
-        assert!(fix.has_changes());
     }
 
     #[test]
     fn test_permission_plugin_id() {
         let plugin = PermissionPlugin;
-        assert_eq!(AgentBehavior::id(&plugin), "permission");
+        assert_eq!(AgentBehavior::id(&plugin), PERMISSION_PLUGIN_ID);
     }
 
     #[tokio::test]
@@ -513,40 +476,31 @@ mod tests {
     }
 
     #[test]
-    fn test_get_default_permission() {
-        let fix = TestFixture::new_with_state(json!({
+    fn test_resolve_default_permission() {
+        let snapshot = json!({
             "permissions": {
                 "default_behavior": "allow",
                 "tools": {}
             }
-        }));
-        let ctx = fix.ctx();
-
-        let default = ctx.get_default_permission();
-        assert_eq!(default, ToolPermissionBehavior::Allow);
+        });
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "unknown_tool"),
+            ToolPermissionBehavior::Allow
+        );
     }
 
     #[test]
-    fn test_get_default_permission_deny() {
-        let fix = TestFixture::new_with_state(json!({
+    fn test_resolve_default_permission_deny() {
+        let snapshot = json!({
             "permissions": {
                 "default_behavior": "deny",
                 "tools": {}
             }
-        }));
-        let ctx = fix.ctx();
-
-        let default = ctx.get_default_permission();
-        assert_eq!(default, ToolPermissionBehavior::Deny);
-    }
-
-    #[test]
-    fn test_get_default_permission_fallback() {
-        let fix = TestFixture::new();
-        let ctx = fix.ctx();
-
-        let default = ctx.get_default_permission();
-        assert_eq!(default, ToolPermissionBehavior::Ask);
+        });
+        assert_eq!(
+            resolve_permission_behavior(&snapshot, "unknown_tool"),
+            ToolPermissionBehavior::Deny
+        );
     }
 
     #[tokio::test]

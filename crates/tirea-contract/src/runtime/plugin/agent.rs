@@ -1,6 +1,6 @@
 use crate::runtime::llm::StreamResult;
 use crate::runtime::plugin::phase::effect::PhaseOutput;
-use crate::runtime::plugin::phase::Phase;
+use crate::runtime::plugin::phase::{AnyPluginAction, Phase};
 use crate::runtime::tool_call::{ToolCallResume, ToolResult};
 use crate::thread::Message;
 use crate::RunConfig;
@@ -9,7 +9,7 @@ use serde_json::Value;
 use std::any::TypeId;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tirea_state::{get_at_path, parse_path, DocCell, State, TireaResult};
+use tirea_state::{get_at_path, parse_path, DocCell, State, TireaResult, TrackedPatch};
 
 /// Immutable snapshot of step context passed to [`Agent`] phase hooks.
 ///
@@ -215,6 +215,60 @@ pub trait AgentBehavior: Send + Sync {
 
     async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
         PhaseOutput::default()
+    }
+
+    /// Emit plugin-domain actions for the current phase.
+    ///
+    /// These actions are routed back to plugin-owned reducers via
+    /// [`AgentBehavior::reduce_plugin_actions`], keeping state internals private.
+    async fn phase_actions(
+        &self,
+        _phase: Phase,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> Vec<AnyPluginAction> {
+        Vec::new()
+    }
+
+    /// Reduce plugin-domain actions into tracked patches.
+    ///
+    /// Implementations must only consume actions targeted to themselves.
+    /// Unknown actions should return an error.
+    fn reduce_plugin_actions(
+        &self,
+        actions: Vec<AnyPluginAction>,
+        _base_snapshot: &Value,
+    ) -> Result<Vec<TrackedPatch>, String> {
+        if actions.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let owned: Vec<&AnyPluginAction> = actions
+            .iter()
+            .filter(|action| action.plugin_id() == self.id())
+            .collect();
+        if !owned.is_empty() {
+            let action_types: Vec<&str> = owned
+                .iter()
+                .map(|action| action.action_type_name())
+                .collect();
+            return Err(format!(
+                "behavior '{}' received plugin actions but does not implement reduce_plugin_actions: {:?}",
+                self.id(),
+                action_types
+            ));
+        }
+
+        let mut ids: Vec<String> = actions
+            .into_iter()
+            .map(|action| action.plugin_id().to_string())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        Err(format!(
+            "behavior '{}' cannot route plugin actions for plugin ids: {:?}",
+            self.id(),
+            ids
+        ))
     }
 }
 
