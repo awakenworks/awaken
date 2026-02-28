@@ -1,9 +1,9 @@
 use super::*;
-use crate::contracts::runtime::state_paths::RUN_LIFECYCLE_STATE_PATH;
-use crate::contracts::runtime::RunStatus;
+use crate::contracts::runtime::plugin::phase::{reduce_state_actions, AnyStateAction};
+use crate::contracts::runtime::{RunLifecycleAction, RunLifecycleState, RunStatus};
 use crate::contracts::storage::VersionPrecondition;
 use crate::runtime::loop_runner::run_loop_stream;
-use tirea_state::{Op, Patch, Path, TrackedPatch};
+use tirea_state::TrackedPatch;
 
 fn now_unix_millis() -> u64 {
     std::time::SystemTime::now()
@@ -11,17 +11,27 @@ fn now_unix_millis() -> u64 {
         .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
 }
 
-fn run_lifecycle_running_patch(run_id: &str) -> TrackedPatch {
-    TrackedPatch::new(Patch::with_ops(vec![Op::set(
-        Path::root().key(RUN_LIFECYCLE_STATE_PATH),
-        serde_json::json!({
-            "id": run_id,
-            "status": RunStatus::Running,
-            "done_reason": serde_json::Value::Null,
-            "updated_at": now_unix_millis(),
-        }),
-    )]))
-    .with_source("agentos_prepare_run")
+fn run_lifecycle_running_patch(
+    base_state: &serde_json::Value,
+    run_id: &str,
+) -> Result<TrackedPatch, AgentOsRunError> {
+    let updated_at = now_unix_millis();
+    let actions = vec![AnyStateAction::new::<RunLifecycleState>(
+        RunLifecycleAction::Set {
+            id: run_id.to_string(),
+            status: RunStatus::Running,
+            done_reason: None,
+            updated_at,
+        },
+    )];
+    let mut patches = reduce_state_actions(actions, base_state, "agentos_prepare_run")
+        .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
+    let Some(patch) = patches.pop() else {
+        return Err(AgentOsRunError::Loop(AgentLoopError::StateError(
+            "failed to emit run lifecycle running patch: reducer produced no patch".to_string(),
+        )));
+    };
+    Ok(patch)
 }
 
 impl AgentOs {
@@ -113,7 +123,7 @@ impl AgentOs {
         // 4. Persist run-start changes (user messages + frontend state snapshot + run state)
         let delta_messages: Vec<Arc<Message>> =
             deduped_messages.into_iter().map(Arc::new).collect();
-        let delta_patches = vec![run_lifecycle_running_patch(&run_id)];
+        let delta_patches = vec![run_lifecycle_running_patch(&thread.state, &run_id)?];
         let changeset = crate::contracts::ThreadChangeSet::from_parts(
             run_id.clone(),
             parent_run_id.clone(),

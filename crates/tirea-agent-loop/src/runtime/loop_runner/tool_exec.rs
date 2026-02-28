@@ -1077,6 +1077,11 @@ pub(super) async fn execute_single_tool_with_phases(
         tool_state_actions.insert(0, AnyStateAction::Patch(tool_patch));
     }
 
+    let phase_patch_actions = std::mem::take(&mut step.pending_patches)
+        .into_iter()
+        .map(AnyStateAction::Patch);
+    tool_state_actions.extend(phase_patch_actions);
+
     let mut pending_patches =
         reduce_tool_state_actions(state, tool_state_actions, &format!("tool:{}", call.name))?;
     if had_promoted_tool_patch {
@@ -1089,7 +1094,6 @@ pub(super) async fn execute_single_tool_with_phases(
         execution.patch = Some(tool_patch);
         let _ = pending_patches.remove(0);
     }
-    pending_patches.extend(std::mem::take(&mut step.pending_patches));
 
     Ok(ToolExecutionResult {
         execution,

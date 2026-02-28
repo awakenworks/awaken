@@ -1,6 +1,8 @@
+use crate::runtime::plugin::phase::state_spec::StateSpec;
 use crate::runtime::state_paths::RUN_LIFECYCLE_STATE_PATH;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tirea_state::State;
 
 /// Generic stopped payload emitted when a plugin decides to terminate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,18 +68,17 @@ impl TerminationReason {
             Self::BehaviorRequested => (RunStatus::Done, Some("behavior_requested".to_string())),
             Self::Cancelled => (RunStatus::Done, Some("cancelled".to_string())),
             Self::Error => (RunStatus::Done, Some("error".to_string())),
-            Self::Stopped(stopped) => {
-                (RunStatus::Done, Some(format!("stopped:{}", stopped.code)))
-            }
+            Self::Stopped(stopped) => (RunStatus::Done, Some(format!("stopped:{}", stopped.code))),
         }
     }
 }
 
 /// Coarse run lifecycle status persisted in thread state.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
     /// Run is actively executing.
+    #[default]
     Running,
     /// Run is waiting for external decisions.
     Waiting,
@@ -134,6 +135,58 @@ pub struct RunState {
     pub updated_at: u64,
 }
 
+/// Internal runtime state spec for run lifecycle updates.
+///
+/// This state is reducer-driven and bound to `__run`, while [`RunState`]
+/// remains the durable/public lifecycle envelope parsed from snapshots.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State, PartialEq, Eq)]
+#[tirea(path = "__run")]
+pub struct RunLifecycleState {
+    /// Current run id associated with this lifecycle record.
+    #[serde(default)]
+    pub id: String,
+    /// Coarse lifecycle status.
+    #[serde(default)]
+    pub status: RunStatus,
+    /// Optional terminal reason when `status=done`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_reason: Option<String>,
+    /// Last update timestamp (unix millis).
+    #[serde(default)]
+    pub updated_at: u64,
+}
+
+/// Action type for [`RunLifecycleState`] reducer.
+pub enum RunLifecycleAction {
+    /// Set the entire run lifecycle envelope in one reducer step.
+    Set {
+        id: String,
+        status: RunStatus,
+        done_reason: Option<String>,
+        updated_at: u64,
+    },
+}
+
+impl StateSpec for RunLifecycleState {
+    type Action = RunLifecycleAction;
+
+    fn reduce(&mut self, action: Self::Action) {
+        match action {
+            RunLifecycleAction::Set {
+                id,
+                status,
+                done_reason,
+                updated_at,
+            } => {
+                self.id = id;
+                self.status = status;
+                self.done_reason = done_reason;
+                self.updated_at = updated_at;
+            }
+        }
+    }
+}
+
 /// Parse persisted run lifecycle from a rebuilt state snapshot.
 pub fn run_lifecycle_from_state(state: &Value) -> Option<RunState> {
     state
@@ -145,6 +198,8 @@ pub fn run_lifecycle_from_state(state: &Value) -> Option<RunState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::plugin::phase::state_spec::{reduce_state_actions, AnyStateAction};
+    use tirea_state::apply_patch;
 
     #[test]
     fn run_lifecycle_roundtrip_from_state() {
@@ -222,5 +277,27 @@ mod tests {
         assert!(diagram.contains("waiting"));
         assert!(diagram.contains("done"));
         assert!(diagram.contains("start"));
+    }
+
+    #[test]
+    fn run_lifecycle_state_action_reduces_into_run_envelope_patch() {
+        let base = serde_json::json!({});
+        let actions = vec![AnyStateAction::new::<RunLifecycleState>(
+            RunLifecycleAction::Set {
+                id: "run_42".to_string(),
+                status: RunStatus::Waiting,
+                done_reason: None,
+                updated_at: 99,
+            },
+        )];
+
+        let patches = reduce_state_actions(actions, &base, "agent_loop").expect("reduce");
+        assert_eq!(patches.len(), 1);
+
+        let merged = apply_patch(&base, patches[0].patch()).expect("apply");
+        assert_eq!(merged["__run"]["id"], serde_json::json!("run_42"));
+        assert_eq!(merged["__run"]["status"], serde_json::json!("waiting"));
+        assert!(merged["__run"]["done_reason"].is_null());
+        assert_eq!(merged["__run"]["updated_at"], serde_json::json!(99u64));
     }
 }

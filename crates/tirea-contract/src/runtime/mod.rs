@@ -17,8 +17,8 @@ pub use plugin::{
     StepOutcome, StepStartContext, SuspendTicket, ToolCallAction, ToolContext,
 };
 pub use run::{
-    run_lifecycle_from_state, InferenceError, InferenceErrorState, RunContext, RunDelta, RunState,
-    RunStatus, StoppedReason, TerminationReason,
+    run_lifecycle_from_state, InferenceError, InferenceErrorState, RunContext, RunDelta,
+    RunLifecycleAction, RunLifecycleState, RunState, RunStatus, StoppedReason, TerminationReason,
 };
 pub use tool_call::{
     suspended_calls_from_state, tool_call_states_from_state, ActivityContext, DecisionReplayPolicy,

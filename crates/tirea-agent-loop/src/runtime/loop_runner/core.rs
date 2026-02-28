@@ -1,19 +1,20 @@
 use super::AgentLoopError;
 use crate::contracts::runtime::plugin::phase::StepContext;
+use crate::contracts::runtime::plugin::phase::{reduce_state_actions, AnyStateAction};
 use crate::contracts::runtime::state_paths::{
     INFERENCE_ERROR_STATE_PATH, SKILLS_STATE_PATH, SUSPENDED_TOOL_CALLS_STATE_PATH,
     TOOL_CALL_STATES_STATE_PATH,
 };
+use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::SuspendedCall;
 use crate::contracts::thread::{Message, MessageMetadata, Role};
-use crate::contracts::runtime::tool_call::Tool;
-use crate::contracts::RunContext;
 use crate::contracts::RunAction;
+use crate::contracts::RunContext;
 use crate::runtime::control::{
-    InferenceError, InferenceErrorState, SuspendedToolCallsState, ToolCallState,
-    ToolCallResume, ToolCallStatus,
+    InferenceError, InferenceErrorState, SuspendedToolCallsState, ToolCallResume, ToolCallState,
+    ToolCallStatus,
 };
-use tirea_state::{DocCell, Op, Path, StateContext, TireaError, TrackedPatch};
+use tirea_state::{DocCell, Op, Patch, Path, StateContext, TireaError, TrackedPatch};
 
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -192,9 +193,7 @@ pub(super) fn set_agent_inference_error(
     Ok(ctx.take_tracked_patch("agent_loop"))
 }
 
-pub(super) fn tool_call_states_from_ctx(
-    run_ctx: &RunContext,
-) -> HashMap<String, ToolCallState> {
+pub(super) fn tool_call_states_from_ctx(run_ctx: &RunContext) -> HashMap<String, ToolCallState> {
     run_ctx
         .snapshot()
         .ok()
@@ -203,9 +202,7 @@ pub(super) fn tool_call_states_from_ctx(
                 .get(TOOL_CALL_STATES_STATE_PATH)
                 .and_then(|v| v.get("calls"))
                 .cloned()
-                .and_then(|raw| {
-                    serde_json::from_value::<HashMap<String, ToolCallState>>(raw).ok()
-                })
+                .and_then(|raw| serde_json::from_value::<HashMap<String, ToolCallState>>(raw).ok())
         })
         .unwrap_or_default()
 }
@@ -256,6 +253,7 @@ pub(super) fn transition_tool_call_state(
 }
 
 pub(super) fn upsert_tool_call_state(
+    base_state: &Value,
     call_id: &str,
     tool_state: ToolCallState,
 ) -> Result<TrackedPatch, AgentLoopError> {
@@ -274,10 +272,15 @@ pub(super) fn upsert_tool_call_state(
             "failed to serialize tool call state for '{call_id}': {e}"
         ))
     })?;
-    Ok(
-        TrackedPatch::new(tirea_state::Patch::with_ops(vec![Op::set(path, value)]))
-            .with_source("agent_loop"),
-    )
+    let raw = TrackedPatch::new(tirea_state::Patch::with_ops(vec![Op::set(path, value)]))
+        .with_source("agent_loop");
+    let mut reduced =
+        reduce_state_actions(vec![AnyStateAction::Patch(raw)], base_state, "agent_loop")
+            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    match reduced.pop() {
+        Some(patch) => Ok(patch),
+        None => Ok(TrackedPatch::new(Patch::new()).with_source("agent_loop")),
+    }
 }
 
 pub(super) fn clear_agent_inference_error(state: &Value) -> Result<TrackedPatch, AgentLoopError> {
@@ -415,7 +418,7 @@ mod tests {
         });
 
         let updated = sample_state("call_a", ToolCallStatus::Resuming);
-        let patch = upsert_tool_call_state("call_a", updated).expect("patch should build");
+        let patch = upsert_tool_call_state(&state, "call_a", updated).expect("patch should build");
         let ops = patch.patch().ops();
         assert_eq!(ops.len(), 1);
         assert_eq!(
@@ -436,7 +439,7 @@ mod tests {
 
     #[test]
     fn upsert_tool_call_state_rejects_empty_call_id() {
-        let error = upsert_tool_call_state(" ", sample_state("x", ToolCallStatus::New))
+        let error = upsert_tool_call_state(&json!({}), " ", sample_state("x", ToolCallStatus::New))
             .expect_err("empty call_id must fail");
         let AgentLoopError::StateError(message) = error else {
             panic!("unexpected error type");

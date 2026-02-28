@@ -52,10 +52,11 @@ mod tool_exec;
 
 use crate::contracts::io::ResumeDecisionAction;
 use crate::contracts::runtime::plugin::phase::Phase;
+use crate::contracts::runtime::plugin::phase::{reduce_state_actions, AnyStateAction};
 use crate::contracts::runtime::tool_call::{Tool, ToolResult};
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
-    state_paths::RUN_LIFECYCLE_STATE_PATH, DecisionReplayPolicy, StreamResult, SuspendedCall,
+    DecisionReplayPolicy, RunLifecycleAction, RunLifecycleState, StreamResult, SuspendedCall,
     ToolCallResume, ToolCallResumeMode, ToolCallStatus, ToolExecutionRequest, ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
@@ -103,7 +104,7 @@ use run_state::RunState;
 pub use state_commit::ChannelStateCommitter;
 use state_commit::PendingDeltaCommitContext;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tirea_state::{Op, Patch, Path, TrackedPatch};
+use tirea_state::TrackedPatch;
 #[cfg(test)]
 use tokio_util::sync::CancellationToken;
 #[cfg(test)]
@@ -178,18 +179,20 @@ pub(super) fn sync_run_lifecycle_for_termination(
 
     let (status, done_reason) = termination.to_run_status();
 
-    let patch = TrackedPatch::new(Patch::with_ops(vec![Op::set(
-        Path::root().key(RUN_LIFECYCLE_STATE_PATH),
-        serde_json::json!({
-            "id": run_id,
-            "status": status,
-            "done_reason": done_reason,
-            "updated_at": current_unix_millis(),
-        }),
-    )]))
-    .with_source("agent_loop");
-
-    run_ctx.add_thread_patch(patch);
+    let base_state = run_ctx
+        .snapshot()
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    let actions = vec![AnyStateAction::new::<RunLifecycleState>(
+        RunLifecycleAction::Set {
+            id: run_id.to_string(),
+            status,
+            done_reason,
+            updated_at: current_unix_millis(),
+        },
+    )];
+    let patches = reduce_state_actions(actions, &base_state, "agent_loop")
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    run_ctx.add_thread_patches(patches);
     Ok(())
 }
 
@@ -752,7 +755,10 @@ fn settle_orphan_resuming_tool_states(
             continue;
         };
 
-        let patch = upsert_tool_call_state(call_id, next_state)?;
+        let base_state = run_ctx
+            .snapshot()
+            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+        let patch = upsert_tool_call_state(&base_state, call_id, next_state)?;
         if patch.patch().is_empty() {
             continue;
         }
@@ -1142,7 +1148,10 @@ fn upsert_tool_call_lifecycle_state(
         return Ok(false);
     };
 
-    let patch = upsert_tool_call_state(&suspended_call.call_id, tool_state)?;
+    let base_state = run_ctx
+        .snapshot()
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    let patch = upsert_tool_call_state(&base_state, &suspended_call.call_id, tool_state)?;
     if patch.patch().is_empty() {
         return Ok(false);
     }
