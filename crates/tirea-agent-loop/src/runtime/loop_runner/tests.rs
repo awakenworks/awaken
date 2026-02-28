@@ -2213,6 +2213,93 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
 }
 
 #[tokio::test]
+async fn test_run_phase_block_commutative_actions_commit_to_pending_patches() {
+    struct RunPhaseCommutativePlugin;
+
+    #[async_trait]
+    impl AgentBehavior for RunPhaseCommutativePlugin {
+        fn id(&self) -> &str {
+            "run_phase_commutative"
+        }
+
+        async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().with_state_action(AnyStateAction::counter_add("counter", 1))
+        }
+
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            PhaseOutput::default().with_state_action(AnyStateAction::counter_add("counter", 2))
+        }
+    }
+
+    let agent = BaseAgent::new("mock").with_behavior(Arc::new(RunPhaseCommutativePlugin));
+    let thread = Thread::with_initial_state("test", json!({"counter": 0}))
+        .with_message(Message::user("run"));
+    let mut run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+
+    let (_, pending) = super::plugin_runtime::run_phase_block(
+        &run_ctx,
+        &[],
+        &agent,
+        &[Phase::StepStart, Phase::BeforeInference],
+        |_| {},
+        |_| (),
+    )
+    .await
+    .expect("run phase block should succeed");
+
+    run_ctx.add_thread_patches(pending);
+    let state = run_ctx.snapshot().expect("snapshot");
+    assert_eq!(state["counter"], json!(3));
+}
+
+#[tokio::test]
+async fn test_run_phase_block_rejects_conflicting_commutative_and_patch_outputs() {
+    struct RunPhaseConflictPlugin;
+
+    #[async_trait]
+    impl AgentBehavior for RunPhaseConflictPlugin {
+        fn id(&self) -> &str {
+            "run_phase_conflict"
+        }
+
+        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> PhaseOutput {
+            let patch = TrackedPatch::new(
+                Patch::new().with_op(Op::set(tirea_state::path!("counter"), json!(10))),
+            )
+            .with_source("test:run_phase_conflict");
+            PhaseOutput::default()
+                .with_state_action(AnyStateAction::Patch(patch))
+                .with_state_action(AnyStateAction::counter_add("counter", 1))
+        }
+    }
+
+    let agent = BaseAgent::new("mock").with_behavior(Arc::new(RunPhaseConflictPlugin));
+    let thread = Thread::with_initial_state("test", json!({"counter": 0}))
+        .with_message(Message::user("run"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+
+    let err = super::plugin_runtime::run_phase_block(
+        &run_ctx,
+        &[],
+        &agent,
+        &[Phase::BeforeInference],
+        |_| {},
+        |_| (),
+    )
+    .await
+    .expect_err("conflicting outputs should fail");
+
+    match err {
+        AgentLoopError::StateError(message) => {
+            assert!(message.contains("conflicting phase state patches"));
+            assert!(message.contains("counter"));
+        }
+        other => panic!("expected state error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() {
     struct CleanupBehavior {
         phases: Arc<Mutex<Vec<Phase>>>,
