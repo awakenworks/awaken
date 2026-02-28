@@ -50,6 +50,7 @@ fn apply_effect(step: &mut StepContext<'_>, effect: PhaseEffect) {
         PhaseEffect::AllowTool => step.allow(),
         PhaseEffect::SuspendTool(ticket) => step.suspend(ticket),
         PhaseEffect::OverrideToolResult(result) => step.set_tool_result(result),
+        PhaseEffect::AppendUserMessage(text) => step.user_message(text),
         PhaseEffect::RequestTermination(reason) => {
             step.set_run_action(RunAction::Terminate(reason));
         }

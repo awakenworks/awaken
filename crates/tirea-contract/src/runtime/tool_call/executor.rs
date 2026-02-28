@@ -69,6 +69,8 @@ pub struct ToolExecutionResult {
     /// Suspension payload for suspended outcomes.
     pub suspended_call: Option<SuspendedCall>,
     pub reminders: Vec<String>,
+    /// User messages to append after tool execution.
+    pub user_messages: Vec<String>,
     pub pending_patches: Vec<TrackedPatch>,
     /// Merge-friendly actions deferred to apply stage (primarily for parallel execution).
     pub commutative_state_actions: Vec<CommutativeAction>,

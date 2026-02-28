@@ -88,11 +88,6 @@ pub struct SkillState {
     /// Loaded assets, keyed by `<skill_id>:<relative_path>`.
     #[serde(default)]
     pub assets: HashMap<String, LoadedAsset>,
-    /// User messages requested by skill tools, keyed by tool call id.
-    ///
-    /// The runtime appends these messages in tool-call order after tool execution.
-    #[serde(default)]
-    pub append_user_messages: HashMap<String, Vec<String>>,
 }
 
 /// Build a stable map key for skill materials.

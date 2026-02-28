@@ -1,6 +1,6 @@
 use super::core::{
-    drain_agent_append_user_messages, set_agent_suspended_calls, transition_tool_call_state,
-    ToolCallStateSeed, ToolCallStateTransition,
+    set_agent_suspended_calls, transition_tool_call_state, ToolCallStateSeed,
+    ToolCallStateTransition,
 };
 use super::parallel_state_merge::merge_parallel_state_patches;
 use super::plugin_runtime::{emit_tool_phase, reduce_behavior_plugin_actions};
@@ -380,9 +380,27 @@ pub(super) fn apply_tool_results_impl(
         .collect();
 
     run_ctx.add_messages(tool_messages);
-    let appended_count = drain_agent_append_user_messages(run_ctx, results, metadata.as_ref())?;
-    if appended_count > 0 {
-        state_changed = true;
+
+    // Append user messages produced by tool effects and AfterToolExecute plugins.
+    let user_messages: Vec<Arc<Message>> = results
+        .iter()
+        .flat_map(|r| {
+            r.user_messages
+                .iter()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|text| {
+                    let mut msg = Message::user(text.to_string());
+                    if let Some(ref meta) = metadata {
+                        msg.metadata = Some(meta.clone());
+                    }
+                    Arc::new(msg)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    if !user_messages.is_empty() {
+        run_ctx.add_messages(user_messages);
     }
     let existing_suspended = run_ctx.suspended_calls();
 
@@ -894,9 +912,14 @@ async fn execute_single_tool_with_phases_impl(
     .await?;
 
     // Check if blocked or pending
-    let (mut execution, outcome, suspended_call, tool_state_actions, tool_plugin_actions) = if step
-        .tool_blocked()
-    {
+    let (
+        mut execution,
+        outcome,
+        suspended_call,
+        tool_state_actions,
+        tool_plugin_actions,
+        tool_user_messages,
+    ) = if step.tool_blocked() {
         let reason = step
             .tool
             .as_ref()
@@ -912,6 +935,7 @@ async fn execute_single_tool_with_phases_impl(
             None,
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
     } else if let Some(plugin_result) = step.tool_result().cloned() {
         let outcome = ToolCallOutcome::from_tool_result(&plugin_result);
@@ -923,6 +947,7 @@ async fn execute_single_tool_with_phases_impl(
             },
             outcome,
             None,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         )
@@ -937,6 +962,7 @@ async fn execute_single_tool_with_phases_impl(
             None,
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
     } else if let Err(e) = tool.unwrap().validate_args(&call.arguments) {
         // Argument validation failed — return error to the LLM
@@ -948,6 +974,7 @@ async fn execute_single_tool_with_phases_impl(
             },
             ToolCallOutcome::Failed,
             None,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         )
@@ -968,6 +995,7 @@ async fn execute_single_tool_with_phases_impl(
             },
             ToolCallOutcome::Suspended,
             Some(SuspendedCall::new(call, suspend_ticket)),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         )
@@ -1002,7 +1030,7 @@ async fn execute_single_tool_with_phases_impl(
         if let Err(result) = merge_context_patch_into_effect(call, &mut effect, context_patch) {
             effect = ToolExecutionEffect::from(result);
         }
-        let (result, state_actions, plugin_actions) = effect.into_parts();
+        let (result, state_actions, plugin_actions, user_messages) = effect.into_parts();
         let outcome = ToolCallOutcome::from_tool_result(&result);
 
         let suspended_call = if matches!(outcome, ToolCallOutcome::Suspended) {
@@ -1021,11 +1049,15 @@ async fn execute_single_tool_with_phases_impl(
             suspended_call,
             state_actions,
             plugin_actions,
+            user_messages,
         )
     };
 
     // Set tool result in context
     step.set_tool_result(execution.result.clone());
+
+    // Pre-populate user messages from tool effect so plugins see them in AfterToolExecute
+    step.user_messages = tool_user_messages;
 
     // Phase: AfterToolExecute
     emit_tool_phase(
@@ -1115,6 +1147,7 @@ async fn execute_single_tool_with_phases_impl(
         outcome,
         suspended_call,
         reminders: step.system_reminders.clone(),
+        user_messages: std::mem::take(&mut step.user_messages),
         pending_patches,
         commutative_state_actions,
     })

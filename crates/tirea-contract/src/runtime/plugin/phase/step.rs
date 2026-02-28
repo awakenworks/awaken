@@ -88,6 +88,8 @@ pub struct StepContext<'a> {
     pub session_context: Vec<String>,
     /// System reminders (after tool results) [Position 7].
     pub system_reminders: Vec<String>,
+    /// User messages to append after tool execution.
+    pub user_messages: Vec<String>,
 
     // === Tool Control ===
     /// Available tool descriptors (can be filtered).
@@ -125,6 +127,7 @@ impl<'a> StepContext<'a> {
             system_context: Vec::new(),
             session_context: Vec::new(),
             system_reminders: Vec::new(),
+            user_messages: Vec::new(),
             tools,
             tool: None,
             response: None,
@@ -193,6 +196,7 @@ impl<'a> StepContext<'a> {
         self.system_context.clear();
         self.session_context.clear();
         self.system_reminders.clear();
+        self.user_messages.clear();
         self.tool = None;
         self.response = None;
         self.run_action = None;
@@ -217,6 +221,11 @@ impl<'a> StepContext<'a> {
     /// Add system reminder (after tool result) [Position 7].
     pub fn reminder(&mut self, content: impl Into<String>) {
         self.system_reminders.push(content.into());
+    }
+
+    /// Append a user message to be injected after tool execution.
+    pub fn user_message(&mut self, content: impl Into<String>) {
+        self.user_messages.push(content.into());
     }
 
     // =========================================================================

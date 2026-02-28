@@ -26,6 +26,9 @@ pub enum PhaseEffect {
     SuspendTool(SuspendTicket),
     OverrideToolResult(ToolResult),
 
+    // User message injection — AfterToolExecute only
+    AppendUserMessage(String),
+
     // Lifecycle — BeforeInference + AfterInference
     RequestTermination(TerminationReason),
 }
@@ -103,6 +106,11 @@ impl PhaseOutput {
     }
 
     #[must_use]
+    pub fn append_user_message(self, text: impl Into<String>) -> Self {
+        self.with_effect(PhaseEffect::AppendUserMessage(text.into()))
+    }
+
+    #[must_use]
     pub fn request_termination(self, reason: TerminationReason) -> Self {
         self.with_effect(PhaseEffect::RequestTermination(reason))
     }
@@ -156,6 +164,15 @@ pub fn validate_effect(phase: Phase, effect: &PhaseEffect) -> Result<(), String>
             } else {
                 Err(format!(
                     "tool gate effects are only allowed in BeforeToolExecute, got {phase}"
+                ))
+            }
+        }
+        PhaseEffect::AppendUserMessage(_) => {
+            if phase == Phase::AfterToolExecute {
+                Ok(())
+            } else {
+                Err(format!(
+                    "append user message effects are only allowed in AfterToolExecute, got {phase}"
                 ))
             }
         }
@@ -242,6 +259,15 @@ mod tests {
     }
 
     #[test]
+    fn validate_effect_append_user_message() {
+        let effect = PhaseEffect::AppendUserMessage("msg".into());
+        assert!(validate_effect(Phase::AfterToolExecute, &effect).is_ok());
+        assert!(validate_effect(Phase::BeforeInference, &effect).is_err());
+        assert!(validate_effect(Phase::BeforeToolExecute, &effect).is_err());
+        assert!(validate_effect(Phase::StepEnd, &effect).is_err());
+    }
+
+    #[test]
     fn validate_effect_termination() {
         let effect = PhaseEffect::RequestTermination(TerminationReason::BehaviorRequested);
         assert!(validate_effect(Phase::BeforeInference, &effect).is_ok());
@@ -265,6 +291,7 @@ mod tests {
             PhaseEffect::ExcludeTool("t".into()),
             PhaseEffect::BlockTool("b".into()),
             PhaseEffect::AllowTool,
+            PhaseEffect::AppendUserMessage("u".into()),
             PhaseEffect::RequestTermination(TerminationReason::NaturalEnd),
         ];
         for phase in &read_only_phases {

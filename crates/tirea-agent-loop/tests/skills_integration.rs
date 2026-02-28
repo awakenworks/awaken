@@ -207,30 +207,34 @@ fn assert_invalid_arguments_error(result: &ToolResult) {
 }
 
 #[tokio::test]
-async fn test_skill_activation_delivers_instructions_via_append_user_messages() {
+async fn test_skill_activation_delivers_instructions_via_user_messages_on_effect() {
     let (_td, skills) = make_skill_tree();
     let activate = SkillActivateTool::new(skills);
 
-    let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let state = json!({});
+    let doc = tirea_state::DocCell::new(state);
+    let ops = std::sync::Mutex::new(Vec::new());
+    let pending_messages = std::sync::Mutex::new(Vec::new());
+    let scope = tirea_contract::RunConfig::default();
+    let ctx = tirea_contract::runtime::tool_call::ToolCallContext::new(
+        &doc,
+        &ops,
+        "call_1",
+        "tool:skill",
+        &scope,
+        &pending_messages,
+        tirea_contract::runtime::activity::NoOpActivityManager::arc(),
+    );
 
-    let (thread, result) = apply_tool(
-        thread,
-        &activate,
-        ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
-    )
-    .await;
+    let effect = activate
+        .execute_effect(json!({"skill": "docx"}), &ctx)
+        .await
+        .expect("execute_effect should succeed");
+    let (result, _state_actions, _plugin_actions, user_messages) = effect.into_parts();
     assert!(result.is_success(), "result={result:?}");
     assert_eq!(result.message.as_deref(), Some("Launching skill: docx"));
-
-    // Instructions should be delivered via append_user_messages, not system context.
-    let state = thread.rebuild_state().unwrap();
-    let items = state["skills"]["append_user_messages"]["call_1"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    assert_eq!(items.len(), 1);
-    let text = items[0].as_str().unwrap_or("");
-    assert!(text.contains("Use docx-js for new documents"));
+    assert_eq!(user_messages.len(), 1);
+    assert!(user_messages[0].contains("Use docx-js for new documents"));
 }
 
 #[tokio::test]
@@ -501,27 +505,37 @@ async fn test_skill_activation_applies_allowed_tools_to_permission_state() {
 }
 
 #[tokio::test]
-async fn test_skill_activation_writes_append_user_messages_to_agent_state() {
+async fn test_skill_activation_user_messages_contain_skill_instructions() {
     let (_td, skills) = make_skill_tree();
     let activate = SkillActivateTool::new(skills);
 
-    let thread = Thread::with_initial_state("s", json!({}));
-    let (thread, result) = apply_tool(
-        thread,
-        &activate,
-        ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
-    )
-    .await;
-    assert!(result.is_success());
+    let state = json!({});
+    let doc = tirea_state::DocCell::new(state);
+    let ops = std::sync::Mutex::new(Vec::new());
+    let pending_messages = std::sync::Mutex::new(Vec::new());
+    let scope = tirea_contract::RunConfig::default();
+    let ctx = tirea_contract::runtime::tool_call::ToolCallContext::new(
+        &doc,
+        &ops,
+        "call_1",
+        "tool:skill",
+        &scope,
+        &pending_messages,
+        tirea_contract::runtime::activity::NoOpActivityManager::arc(),
+    );
 
-    let state = thread.rebuild_state().unwrap();
-    let items = state["skills"]["append_user_messages"]["call_1"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    assert_eq!(items.len(), 1);
-    let text = items[0].as_str().unwrap_or("");
-    assert!(text.contains("# DOCX Processing"));
+    let effect = activate
+        .execute_effect(json!({"skill": "docx"}), &ctx)
+        .await
+        .expect("execute_effect should succeed");
+    let (result, _state_actions, _plugin_actions, user_messages) = effect.into_parts();
+    assert!(result.is_success());
+    assert_eq!(user_messages.len(), 1);
+    assert!(
+        user_messages[0].contains("# DOCX Processing"),
+        "expected SKILL.md heading in user message, got: {}",
+        &user_messages[0][..user_messages[0].len().min(200)]
+    );
 }
 
 #[tokio::test]

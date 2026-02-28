@@ -922,6 +922,7 @@ fn tool_execution_result(call_id: &str, patch: Option<TrackedPatch>) -> ToolExec
             patch,
         },
         reminders: Vec::new(),
+        user_messages: Vec::new(),
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
@@ -934,16 +935,10 @@ fn skill_activation_result(
     skill_id: &str,
     instruction: Option<&str>,
 ) -> ToolExecutionResult {
-    let patch = instruction.map(|text| {
-        let fix = TestFixture::new();
-        let ctx = fix.ctx_with(call_id, "skill_test");
-        let skill_state = ctx.state_of::<tirea_extension_skills::SkillState>();
-        skill_state
-            .append_user_messages_insert(call_id.to_string(), vec![text.to_string()])
-            .expect("failed to persist append_user_messages");
-        ctx.take_patch()
-    });
     let result = ToolResult::success("skill", json!({ "activated": true, "skill_id": skill_id }));
+    let user_messages = instruction
+        .map(|text| vec![text.to_string()])
+        .unwrap_or_default();
 
     ToolExecutionResult {
         execution: crate::engine::tool_execution::ToolExecution {
@@ -953,9 +948,10 @@ fn skill_activation_result(
                 json!({ "skill": skill_id }),
             ),
             result,
-            patch,
+            patch: None,
         },
         reminders: Vec::new(),
+        user_messages,
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
@@ -2989,27 +2985,18 @@ fn test_apply_tool_results_skill_without_instruction_does_not_append_user_messag
 }
 
 #[test]
-fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
+fn test_apply_tool_results_appends_user_messages_from_effect() {
     let thread = Thread::with_initial_state("test", json!({}));
     let mut run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let fix = TestFixture::new();
-    let ctx = fix.ctx_with("call_1", "test");
-    let skill_state = ctx.state_of::<tirea_extension_skills::SkillState>();
-    skill_state
-        .append_user_messages_insert(
-            "call_1".to_string(),
-            vec!["first".to_string(), "second".to_string()],
-        )
-        .expect("failed to persist append_user_messages");
-    let outbox_patch = ctx.take_patch();
     let result = ToolExecutionResult {
         execution: crate::engine::tool_execution::ToolExecution {
             call: crate::contracts::thread::ToolCall::new("call_1", "any_tool", json!({})),
             result: ToolResult::success("any_tool", json!({"ok": true})),
-            patch: Some(outbox_patch),
+            patch: None,
         },
         reminders: Vec::new(),
+        user_messages: vec!["first".to_string(), "second".to_string()],
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
@@ -3037,27 +3024,18 @@ fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
 }
 
 #[test]
-fn test_apply_tool_results_ignores_blank_agent_state_outbox_messages() {
+fn test_apply_tool_results_ignores_blank_user_messages() {
     let thread = Thread::with_initial_state("test", json!({}));
     let mut run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
-    let fix = TestFixture::new();
-    let ctx = fix.ctx_with("call_1", "test");
-    let skill_state = ctx.state_of::<tirea_extension_skills::SkillState>();
-    skill_state
-        .append_user_messages_insert(
-            "call_1".to_string(),
-            vec!["".to_string(), "   ".to_string()],
-        )
-        .expect("failed to persist append_user_messages");
-    let outbox_patch = ctx.take_patch();
     let result = ToolExecutionResult {
         execution: crate::engine::tool_execution::ToolExecution {
             call: crate::contracts::thread::ToolCall::new("call_1", "any_tool", json!({})),
             result: ToolResult::success("any_tool", json!({"ok": true})),
-            patch: Some(outbox_patch),
+            patch: None,
         },
         reminders: Vec::new(),
+        user_messages: vec!["".to_string(), "   ".to_string()],
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),

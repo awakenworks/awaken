@@ -2,12 +2,12 @@ use super::AgentLoopError;
 use crate::contracts::runtime::plugin::phase::StepContext;
 use crate::contracts::runtime::plugin::phase::{reduce_state_actions, AnyStateAction};
 use crate::contracts::runtime::state_paths::{
-    INFERENCE_ERROR_STATE_PATH, SKILLS_STATE_PATH, SUSPENDED_TOOL_CALLS_STATE_PATH,
+    INFERENCE_ERROR_STATE_PATH, SUSPENDED_TOOL_CALLS_STATE_PATH,
     TOOL_CALL_STATES_STATE_PATH,
 };
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::SuspendedCall;
-use crate::contracts::thread::{Message, MessageMetadata, Role};
+use crate::contracts::thread::{Message, Role};
 use crate::contracts::RunAction;
 use crate::contracts::RunContext;
 use crate::runtime::control::{
@@ -298,93 +298,6 @@ pub(super) fn clear_agent_inference_error(state: &Value) -> Result<TrackedPatch,
     Ok(ctx.take_tracked_patch("agent_loop"))
 }
 
-pub(super) fn drain_agent_append_user_messages(
-    run_ctx: &mut RunContext,
-    results: &[super::ToolExecutionResult],
-    metadata: Option<&MessageMetadata>,
-) -> Result<usize, AgentLoopError> {
-    let state = run_ctx
-        .snapshot()
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-
-    let queued_by_call = state
-        .get(SKILLS_STATE_PATH)
-        .and_then(|s| s.get("append_user_messages"))
-        .cloned()
-        .and_then(|v| serde_json::from_value::<HashMap<String, Vec<String>>>(v).ok())
-        .unwrap_or_default();
-
-    if queued_by_call.is_empty() {
-        return Ok(0);
-    }
-
-    let mut appended = 0usize;
-    let mut seen_call_ids = std::collections::HashSet::new();
-    let mut messages = Vec::new();
-    let mut patches = Vec::new();
-
-    for result in results {
-        let call_id = result.execution.call.id.as_str();
-        if !seen_call_ids.insert(call_id.to_string()) {
-            continue;
-        }
-        let Some(queued_messages) = queued_by_call.get(call_id) else {
-            continue;
-        };
-        for text in queued_messages
-            .iter()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-        {
-            let mut msg = Message::user(text.to_string());
-            if let Some(meta) = metadata {
-                msg.metadata = Some(meta.clone());
-            }
-            messages.push(Arc::new(msg));
-            appended += 1;
-        }
-    }
-
-    let mut stale_keys: Vec<&String> = queued_by_call
-        .keys()
-        .filter(|key| !seen_call_ids.contains(*key))
-        .collect();
-    stale_keys.sort();
-    for key in stale_keys {
-        if let Some(queued_messages) = queued_by_call.get(key) {
-            for text in queued_messages
-                .iter()
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-            {
-                let mut msg = Message::user(text.to_string());
-                if let Some(meta) = metadata {
-                    msg.metadata = Some(meta.clone());
-                }
-                messages.push(Arc::new(msg));
-                appended += 1;
-            }
-        }
-    }
-
-    let clear_patch = TrackedPatch::new(tirea_state::Patch::with_ops(vec![tirea_state::Op::set(
-        tirea_state::Path::root()
-            .key(SKILLS_STATE_PATH)
-            .key("append_user_messages"),
-        serde_json::Value::Object(Default::default()),
-    )]))
-    .with_source("agent_loop");
-    if !clear_patch.patch().is_empty() {
-        patches.push(clear_patch);
-    }
-
-    if appended == 0 && patches.is_empty() {
-        return Ok(0);
-    }
-    run_ctx.add_messages(messages);
-    run_ctx.add_thread_patches(patches);
-    Ok(appended)
-}
 
 #[cfg(test)]
 mod tests {

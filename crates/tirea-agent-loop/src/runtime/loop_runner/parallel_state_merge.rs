@@ -314,6 +314,7 @@ mod tests {
             outcome: ToolCallOutcome::Succeeded,
             suspended_call: None,
             reminders: Vec::new(),
+            user_messages: Vec::new(),
             pending_patches,
             commutative_state_actions,
         }

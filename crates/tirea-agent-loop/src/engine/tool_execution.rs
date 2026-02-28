@@ -118,7 +118,7 @@ pub async fn execute_single_tool_with_scope_and_behavior(
             patch: None,
         };
     }
-    let (result, state_actions, plugin_actions) = effect.into_parts();
+    let (result, state_actions, plugin_actions, _user_messages) = effect.into_parts();
 
     let action_patches =
         match reduce_state_actions(state_actions, state, &format!("tool:{}", call.name)) {

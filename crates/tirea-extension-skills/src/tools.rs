@@ -180,20 +180,6 @@ impl SkillActivateTool {
             );
         }
 
-        if !instruction_for_message.trim().is_empty() {
-            let skill_state = ctx.state_of::<SkillState>();
-            if let Err(err) = skill_state.append_user_messages_insert(
-                ctx.call_id().to_string(),
-                vec![instruction_for_message.clone()],
-            ) {
-                return Ok(ToolExecutionEffect::from(state_write_error(
-                    SKILL_ACTIVATE_TOOL_ID,
-                    "persist append_user_messages",
-                    err,
-                )));
-            }
-        }
-
         let result = ToolResult {
             tool_name: SKILL_ACTIVATE_TOOL_ID.to_string(),
             status: ToolStatus::Success,
@@ -209,6 +195,9 @@ impl SkillActivateTool {
         let mut effect = ToolExecutionEffect::from(result);
         for action in permission_actions {
             effect = effect.with_plugin_action(action);
+        }
+        if !instruction_for_message.trim().is_empty() {
+            effect = effect.with_user_message(instruction_for_message);
         }
         Ok(effect)
     }

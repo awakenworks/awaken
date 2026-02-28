@@ -200,6 +200,7 @@ pub struct ToolExecutionEffect {
     pub result: ToolResult,
     state_actions: Vec<AnyStateAction>,
     plugin_actions: Vec<AnyPluginAction>,
+    user_messages: Vec<String>,
 }
 
 impl ToolExecutionEffect {
@@ -209,6 +210,7 @@ impl ToolExecutionEffect {
             result,
             state_actions: Vec::new(),
             plugin_actions: Vec::new(),
+            user_messages: Vec::new(),
         }
     }
 
@@ -236,8 +238,26 @@ impl ToolExecutionEffect {
         self
     }
 
-    pub fn into_parts(self) -> (ToolResult, Vec<AnyStateAction>, Vec<AnyPluginAction>) {
-        (self.result, self.state_actions, self.plugin_actions)
+    #[must_use]
+    pub fn with_user_message(mut self, text: impl Into<String>) -> Self {
+        self.user_messages.push(text.into());
+        self
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        ToolResult,
+        Vec<AnyStateAction>,
+        Vec<AnyPluginAction>,
+        Vec<String>,
+    ) {
+        (
+            self.result,
+            self.state_actions,
+            self.plugin_actions,
+            self.user_messages,
+        )
     }
 }
 
