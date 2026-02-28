@@ -1,4 +1,5 @@
-use super::{Phase, SuspendTicket};
+use super::step::StepContext;
+use super::{Phase, RunAction, SuspendTicket};
 use crate::runtime::run::TerminationReason;
 use crate::runtime::tool_call::ToolResult;
 
@@ -6,7 +7,7 @@ use crate::runtime::tool_call::ToolResult;
 ///
 /// Each variant maps to a specific mutation that the loop engine will apply
 /// to the step context after the hook returns. Phase-validity is checked by
-/// [`validate_effect`].
+/// [`PhaseEffect::validate`].
 #[derive(Debug, Clone)]
 pub enum PhaseEffect {
     // Context injection — BeforeInference only
@@ -33,6 +34,37 @@ pub enum PhaseEffect {
     RequestTermination(TerminationReason),
 }
 
+impl PhaseEffect {
+    /// Check whether this effect is allowed in the given [`Phase`].
+    ///
+    /// Returns `Ok(())` if valid, or `Err(reason)` describing the violation.
+    pub fn validate(&self, phase: Phase) -> Result<(), String> {
+        validate_effect(phase, self)
+    }
+
+    /// Apply this effect to the mutable [`StepContext`].
+    pub fn apply(self, step: &mut StepContext<'_>) {
+        match self {
+            PhaseEffect::SystemContext(s) => step.system(s),
+            PhaseEffect::SessionContext(s) => step.thread(s),
+            PhaseEffect::SystemReminder(s) => step.reminder(s),
+            PhaseEffect::ExcludeTool(id) => step.exclude(&id),
+            PhaseEffect::IncludeOnlyTools(ids) => {
+                let refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+                step.include_only(&refs);
+            }
+            PhaseEffect::BlockTool(reason) => step.block(reason),
+            PhaseEffect::AllowTool => step.allow(),
+            PhaseEffect::SuspendTool(ticket) => step.suspend(ticket),
+            PhaseEffect::OverrideToolResult(result) => step.set_tool_result(result),
+            PhaseEffect::AppendUserMessage(text) => step.user_message(text),
+            PhaseEffect::RequestTermination(reason) => {
+                step.set_run_action(RunAction::Terminate(reason));
+            }
+        }
+    }
+}
+
 /// Return type for [`Agent`](crate::runtime::plugin::agent::Agent) phase hooks.
 ///
 /// Carries declarative effects that the loop engine applies after each hook
@@ -56,6 +88,19 @@ impl PhaseOutput {
 
     pub fn is_empty(&self) -> bool {
         self.effects.is_empty()
+    }
+
+    /// Validate all effects for the given phase, then apply them to the step.
+    ///
+    /// Returns `Err` on the first invalid effect without applying any.
+    pub fn validate_and_apply(self, phase: Phase, step: &mut StepContext<'_>) -> Result<(), String> {
+        for effect in &self.effects {
+            effect.validate(phase)?;
+        }
+        for effect in self.effects {
+            effect.apply(step);
+        }
+        Ok(())
     }
 
     // -- convenience builders for effects --

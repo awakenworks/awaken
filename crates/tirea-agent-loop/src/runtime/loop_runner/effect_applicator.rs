@@ -1,19 +1,19 @@
 use super::AgentLoopError;
-use crate::contracts::runtime::plugin::phase::effect::{validate_effect, PhaseEffect, PhaseOutput};
-use crate::contracts::runtime::plugin::phase::{Phase, RunAction, StepContext};
+use crate::contracts::runtime::plugin::phase::effect::PhaseOutput;
+use crate::contracts::runtime::plugin::phase::{Phase, StepContext};
 use tirea_state::DocCell;
 
 /// Apply a [`PhaseOutput`] to the mutable [`StepContext`].
 ///
-/// Each [`PhaseEffect`] is validated against the current phase before being
-/// applied.
+/// Each [`PhaseEffect`](crate::contracts::runtime::plugin::phase::effect::PhaseEffect)
+/// is validated against the current phase before being applied.
 pub fn apply_phase_output(
     phase: Phase,
     step: &mut StepContext<'_>,
     output: PhaseOutput,
-    doc: &DocCell,
+    _doc: &DocCell,
 ) -> Result<(), AgentLoopError> {
-    apply_phase_output_with_options(phase, step, output, doc, false)
+    apply_phase_output_with_options(phase, step, output, _doc, false)
 }
 
 /// Apply a [`PhaseOutput`] with compatible options signature.
@@ -24,42 +24,15 @@ pub fn apply_phase_output_with_options(
     _doc: &DocCell,
     _defer_commutative_state_actions: bool,
 ) -> Result<(), AgentLoopError> {
-    // Validate all effects before applying any.
-    for effect in &output.effects {
-        validate_effect(phase, effect).map_err(AgentLoopError::StateError)?;
-    }
-
-    for effect in output.effects {
-        apply_effect(step, effect);
-    }
-
-    Ok(())
-}
-
-fn apply_effect(step: &mut StepContext<'_>, effect: PhaseEffect) {
-    match effect {
-        PhaseEffect::SystemContext(s) => step.system(s),
-        PhaseEffect::SessionContext(s) => step.thread(s),
-        PhaseEffect::SystemReminder(s) => step.reminder(s),
-        PhaseEffect::ExcludeTool(id) => step.exclude(&id),
-        PhaseEffect::IncludeOnlyTools(ids) => {
-            let refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
-            step.include_only(&refs);
-        }
-        PhaseEffect::BlockTool(reason) => step.block(reason),
-        PhaseEffect::AllowTool => step.allow(),
-        PhaseEffect::SuspendTool(ticket) => step.suspend(ticket),
-        PhaseEffect::OverrideToolResult(result) => step.set_tool_result(result),
-        PhaseEffect::AppendUserMessage(text) => step.user_message(text),
-        PhaseEffect::RequestTermination(reason) => {
-            step.set_run_action(RunAction::Terminate(reason));
-        }
-    }
+    output
+        .validate_and_apply(phase, step)
+        .map_err(AgentLoopError::StateError)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::runtime::plugin::phase::effect::PhaseEffect;
     use crate::contracts::runtime::plugin::phase::ToolContext;
     use crate::contracts::runtime::run::TerminationReason;
     use crate::contracts::runtime::tool_call::Suspension;
@@ -175,7 +148,9 @@ mod tests {
 
         assert!(matches!(
             step.run_action(),
-            RunAction::Terminate(TerminationReason::BehaviorRequested)
+            crate::contracts::runtime::plugin::phase::RunAction::Terminate(
+                TerminationReason::BehaviorRequested
+            )
         ));
     }
 
@@ -233,5 +208,24 @@ mod tests {
         assert_eq!(step.session_context, vec!["session"]);
         assert!(step.pending_patches.is_empty());
         assert!(step.pending_commutative_actions.is_empty());
+    }
+
+    #[test]
+    fn apply_append_user_message() {
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
+        let doc = DocCell::new(json!({}));
+
+        let output = PhaseOutput::new().append_user_message("hello user");
+        apply_phase_output(Phase::AfterToolExecute, &mut step, output, &doc).unwrap();
+
+        assert_eq!(step.user_messages, vec!["hello user"]);
+    }
+
+    #[test]
+    fn effect_validate_method_delegates_correctly() {
+        let effect = PhaseEffect::SystemContext("x".into());
+        assert!(effect.validate(Phase::BeforeInference).is_ok());
+        assert!(effect.validate(Phase::AfterToolExecute).is_err());
     }
 }

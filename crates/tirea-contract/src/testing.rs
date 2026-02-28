@@ -4,11 +4,11 @@
 //! unaffected.  Enable via `[dev-dependencies] tirea-contract = { ..., features = ["test-support"] }`.
 
 use crate::runtime::activity::NoOpActivityManager;
-use crate::runtime::plugin::phase::effect::{validate_effect, PhaseEffect, PhaseOutput};
+use crate::runtime::plugin::phase::effect::PhaseOutput;
 use crate::runtime::tool_call::suspension::Suspension;
 use crate::runtime::tool_call::ToolDescriptor;
 use crate::runtime::{
-    PendingToolCall, Phase, RunAction, StepContext, SuspendTicket, ToolCallContext,
+    PendingToolCall, Phase, StepContext, SuspendTicket, ToolCallContext,
     ToolCallResumeMode,
 };
 use crate::thread::Message;
@@ -126,29 +126,5 @@ pub fn apply_phase_output_for_test(
     step: &mut StepContext<'_>,
     output: PhaseOutput,
 ) -> Result<(), String> {
-    for effect in &output.effects {
-        validate_effect(phase, effect)?;
-    }
-    for effect in output.effects {
-        match effect {
-            PhaseEffect::SystemContext(s) => step.system(s),
-            PhaseEffect::SessionContext(s) => step.thread(s),
-            PhaseEffect::SystemReminder(s) => step.reminder(s),
-            PhaseEffect::ExcludeTool(id) => step.exclude(&id),
-            PhaseEffect::IncludeOnlyTools(ids) => {
-                let refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
-                step.include_only(&refs);
-            }
-            PhaseEffect::BlockTool(reason) => step.block(reason),
-            PhaseEffect::AllowTool => step.allow(),
-            PhaseEffect::SuspendTool(ticket) => step.suspend(ticket),
-            PhaseEffect::OverrideToolResult(result) => step.set_tool_result(result),
-            PhaseEffect::AppendUserMessage(text) => step.user_message(text),
-            PhaseEffect::RequestTermination(reason) => {
-                step.set_run_action(RunAction::Terminate(reason));
-            }
-        }
-    }
-
-    Ok(())
+    output.validate_and_apply(phase, step)
 }
