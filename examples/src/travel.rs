@@ -1,7 +1,7 @@
 use clap::Parser;
 use genai::chat::ChatOptions;
 use std::sync::Arc;
-use tirea_agentos::contracts::runtime::plugin::agent::AgentBehavior;
+use tirea_agentos::contracts::runtime::behavior::AgentBehavior;
 use tirea_agentos::contracts::runtime::tool_call::Tool;
 use tirea_agentos::extensions::observability::{
     AgentMetrics, GenAISpan, LLMMetryPlugin, MetricsSink, ToolSpan,

@@ -12,7 +12,7 @@ use clap::Parser;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tirea_agentos::contracts::runtime::plugin::agent::AgentBehavior;
+use tirea_agentos::contracts::runtime::behavior::AgentBehavior;
 use tirea_agentos::contracts::runtime::tool_call::Tool;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::orchestrator::{AgentDefinition, AgentOsBuilder, ModelDefinition};
