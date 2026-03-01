@@ -157,9 +157,8 @@ pub(super) fn clear_suspended_call(
     let suspended_state = ctx.state_of::<SuspendedToolCallsState>();
     let mut suspended = state
         .get(SuspendedToolCallsState::PATH)
-        .and_then(|s| s.get("calls"))
-        .cloned()
-        .and_then(|raw| serde_json::from_value::<HashMap<String, SuspendedCall>>(raw).ok())
+        .and_then(|v| SuspendedToolCallsState::from_value(v).ok())
+        .map(|s| s.calls)
         .unwrap_or_default();
 
     if suspended.remove(call_id).is_none() {
@@ -194,15 +193,8 @@ pub(super) fn set_agent_inference_error(
 
 pub(super) fn tool_call_states_from_ctx(run_ctx: &RunContext) -> HashMap<String, ToolCallState> {
     run_ctx
-        .snapshot()
-        .ok()
-        .and_then(|state| {
-            state
-                .get(ToolCallStatesMap::PATH)
-                .and_then(|v| v.get("calls"))
-                .cloned()
-                .and_then(|raw| serde_json::from_value::<HashMap<String, ToolCallState>>(raw).ok())
-        })
+        .snapshot_of::<ToolCallStatesMap>()
+        .map(|s| s.calls)
         .unwrap_or_default()
 }
 

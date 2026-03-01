@@ -259,9 +259,8 @@ impl StateSpec for ToolCallStatesMap {
 pub fn suspended_calls_from_state(state: &Value) -> HashMap<String, SuspendedCall> {
     state
         .get(SuspendedToolCallsState::PATH)
-        .and_then(|value| value.get("calls"))
-        .cloned()
-        .and_then(|value| serde_json::from_value(value).ok())
+        .and_then(|v| SuspendedToolCallsState::from_value(v).ok())
+        .map(|s| s.calls)
         .unwrap_or_default()
 }
 
@@ -269,9 +268,8 @@ pub fn suspended_calls_from_state(state: &Value) -> HashMap<String, SuspendedCal
 pub fn tool_call_states_from_state(state: &Value) -> HashMap<String, ToolCallState> {
     state
         .get(ToolCallStatesMap::PATH)
-        .and_then(|value| value.get("calls"))
-        .cloned()
-        .and_then(|value| serde_json::from_value(value).ok())
+        .and_then(|v| ToolCallStatesMap::from_value(v).ok())
+        .map(|s| s.calls)
         .unwrap_or_default()
 }
 

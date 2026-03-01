@@ -1,5 +1,5 @@
 use super::*;
-use tirea_contract::runtime::{SuspendedCall, SuspendedToolCallsState};
+use tirea_contract::runtime::SuspendedToolCallsState;
 use tirea_state::State;
 pub(super) fn as_delegation_record(
     summary: &AgentRunSummary,
@@ -29,9 +29,8 @@ pub(super) fn as_agent_run_summary(run_id: &str, state: &DelegationRecord) -> Ag
 
 pub(super) fn parse_persisted_runs_from_doc(doc: &Value) -> HashMap<String, DelegationRecord> {
     doc.get(DelegationState::PATH)
-        .and_then(|v| v.get("runs"))
-        .cloned()
-        .and_then(|v| serde_json::from_value::<HashMap<String, DelegationRecord>>(v).ok())
+        .and_then(|v| DelegationState::from_value(v).ok())
+        .map(|s| s.runs)
         .unwrap_or_default()
 }
 
@@ -89,9 +88,8 @@ pub(super) fn build_recovery_interaction(run_id: &str, run: &DelegationRecord) -
 pub(super) fn has_suspended_recovery_interaction(state: &Value) -> bool {
     state
         .get(SuspendedToolCallsState::PATH)
-        .and_then(|a| a.get("calls"))
-        .cloned()
-        .and_then(|v| serde_json::from_value::<HashMap<String, SuspendedCall>>(v).ok())
+        .and_then(|v| SuspendedToolCallsState::from_value(v).ok())
+        .map(|s| s.calls)
         .unwrap_or_default()
         .values()
         .any(|call| call.ticket.suspension.action == AGENT_RECOVERY_INTERACTION_ACTION)

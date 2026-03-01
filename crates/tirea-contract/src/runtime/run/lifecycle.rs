@@ -173,8 +173,7 @@ impl StateSpec for RunLifecycleState {
 pub fn run_lifecycle_from_state(state: &Value) -> Option<RunLifecycleState> {
     state
         .get(RunLifecycleState::PATH)
-        .cloned()
-        .and_then(|value| serde_json::from_value(value).ok())
+        .and_then(|v| RunLifecycleState::from_value(v).ok())
 }
 
 #[cfg(test)]

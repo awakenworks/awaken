@@ -103,21 +103,22 @@ pub fn resolve_permission_behavior(
     snapshot: &serde_json::Value,
     tool_id: &str,
 ) -> ToolPermissionBehavior {
-    let perms = snapshot
-        .get("permissions")
-        .unwrap_or(&serde_json::Value::Null);
+    let perms_value = snapshot.get(PermissionState::PATH);
 
-    let tool_permission = perms
-        .get("tools")
-        .and_then(|tools| tools.get(tool_id))
-        .and_then(|v| serde_json::from_value::<ToolPermissionBehavior>(v.clone()).ok());
+    // Happy path: full struct deserializes cleanly.
+    if let Some(perms) = perms_value.and_then(|v| PermissionState::from_value(v).ok()) {
+        return perms
+            .tools
+            .get(tool_id)
+            .copied()
+            .unwrap_or(perms.default_behavior);
+    }
 
-    tool_permission.unwrap_or_else(|| {
-        perms
-            .get("default_behavior")
-            .and_then(|v| serde_json::from_value::<ToolPermissionBehavior>(v.clone()).ok())
-            .unwrap_or_default()
-    })
+    // Fallback for corrupted tools map: honor default_behavior if parseable.
+    perms_value
+        .and_then(|v| v.get("default_behavior"))
+        .and_then(|v| serde_json::from_value::<ToolPermissionBehavior>(v.clone()).ok())
+        .unwrap_or_default()
 }
 
 // =============================================================================

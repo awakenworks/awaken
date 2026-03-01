@@ -1,7 +1,7 @@
 use crate::runtime::activity::ActivityManager;
 use crate::runtime::run::delta::RunDelta;
 use crate::runtime::tool_call::ToolCallContext;
-use crate::runtime::tool_call::{suspended_calls_from_state, SuspendedCall};
+use crate::runtime::tool_call::{SuspendedCall, SuspendedToolCallsState};
 use crate::thread::Message;
 use crate::RunConfig;
 use serde_json::Value;
@@ -94,9 +94,8 @@ impl RunContext {
 
     /// Read all suspended calls from durable control state.
     pub fn suspended_calls(&self) -> std::collections::HashMap<String, SuspendedCall> {
-        self.snapshot()
-            .ok()
-            .map(|state| suspended_calls_from_state(&state))
+        self.snapshot_of::<SuspendedToolCallsState>()
+            .map(|s| s.calls)
             .unwrap_or_default()
     }
 
