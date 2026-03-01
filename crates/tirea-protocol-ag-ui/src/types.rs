@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use tirea_contract::io::ResumeDecisionAction;
+use tirea_contract::runtime::tool_call::SuspendedToolCallsState;
 use tirea_contract::runtime::ToolCallResume;
+use tirea_state::State as _;
 use tirea_contract::{gen_message_id, RunRequest, Visibility};
 use tirea_contract::{SuspensionResponse, ToolCallDecision};
 use tracing::warn;
@@ -386,7 +388,7 @@ impl RunAgentInput {
         };
 
         if let Some(calls) = state
-            .get("__suspended_tool_calls")
+            .get(SuspendedToolCallsState::PATH)
             .and_then(|v| v.get("calls"))
             .and_then(Value::as_object)
         {

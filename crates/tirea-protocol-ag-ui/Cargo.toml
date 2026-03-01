@@ -8,6 +8,7 @@ description = "AG-UI protocol types and adapters for tirea"
 
 [dependencies]
 tirea-contract = { version = "0.2.0", path = "../tirea-contract" }
+tirea-state = { version = "0.2.0", path = "../tirea-state" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 json-patch = "3"

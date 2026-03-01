@@ -11,7 +11,7 @@ use tirea_agent_loop::contracts::runtime::tool_call::{Tool, ToolResult};
 use tirea_agent_loop::contracts::thread::Thread;
 use tirea_agent_loop::contracts::thread::{Message, ToolCall};
 use tirea_agent_loop::engine::tool_execution::execute_single_tool_with_scope_and_behavior;
-use tirea_extension_permission::PermissionPlugin;
+use tirea_extension_permission::{PermissionPlugin, SCOPE_ALLOWED_SKILLS_KEY};
 use tirea_extension_skills::{
     FsSkill, InMemorySkillRegistry, LoadSkillResourceTool, Skill, SkillActivateTool, SkillRegistry,
     SkillRuntimePlugin, SkillScriptTool,
@@ -187,7 +187,7 @@ async fn test_skill_activation_respects_scope_skill_policy() {
     let thread = Thread::with_initial_state("s", json!({}));
     let mut scope = tirea_contract::RunConfig::new();
     scope
-        .set("__agent_policy_allowed_skills", vec!["other-skill"])
+        .set(SCOPE_ALLOWED_SKILLS_KEY, vec!["other-skill"])
         .unwrap();
 
     let (_thread, result) = apply_tool_with_scope(
@@ -207,7 +207,7 @@ async fn test_load_skill_resource_respects_scope_skill_policy() {
     let thread = Thread::with_initial_state("s", json!({}));
     let mut scope = tirea_contract::RunConfig::new();
     scope
-        .set("__agent_policy_allowed_skills", vec!["other-skill"])
+        .set(SCOPE_ALLOWED_SKILLS_KEY, vec!["other-skill"])
         .unwrap();
 
     let (_thread, result) = apply_tool_with_scope(
