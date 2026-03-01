@@ -1,9 +1,14 @@
 //! Runtime contracts grouped by run/tool_call/llm lifecycle boundaries.
 
+pub mod action;
 pub mod activity;
+pub mod behavior;
+pub mod extensions;
+pub mod inference;
 pub mod llm;
 pub mod plugin;
 pub mod run;
+pub mod state;
 pub mod state_paths;
 pub mod tool_call;
 

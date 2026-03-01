@@ -1,5 +1,6 @@
 pub mod context;
 pub mod executor;
+pub mod gate;
 pub mod lifecycle;
 pub mod suspension;
 pub mod tool;
@@ -16,6 +17,7 @@ pub use lifecycle::{
     SuspendedCall, SuspendedToolCallsAction, SuspendedToolCallsState, ToolCallResume,
     ToolCallResumeMode, ToolCallState, ToolCallStatesAction, ToolCallStatesMap, ToolCallStatus,
 };
+pub use gate::{SuspendTicket, ToolCallAction, ToolGate};
 pub use suspension::{Suspension, SuspensionResponse};
 pub use tool::{
     validate_against_schema, Tool, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult,

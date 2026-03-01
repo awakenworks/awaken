@@ -1,7 +1,5 @@
-use crate::runtime::run::TerminationReason;
-use crate::runtime::tool_call::Suspension;
-use crate::runtime::{PendingToolCall, ToolCallResumeMode};
-use serde::{Deserialize, Serialize};
+pub use crate::runtime::run::flow::RunAction;
+pub use crate::runtime::tool_call::gate::{SuspendTicket, ToolCallAction};
 
 /// Execution phase in the agent loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -97,70 +95,4 @@ pub enum StepOutcome {
     Complete,
     /// Pending external suspension.
     Pending(SuspendTicket),
-}
-
-/// Run-level control action emitted by plugins.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RunAction {
-    /// Continue normal execution.
-    Continue,
-    /// Terminate run with specific reason.
-    Terminate(TerminationReason),
-}
-
-/// Suspension payload for `ToolCallAction::Suspend`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SuspendTicket {
-    /// External suspension payload.
-    pub suspension: Suspension,
-    /// Pending call projection emitted to event stream.
-    pub pending: PendingToolCall,
-    /// Resume mapping strategy.
-    pub resume_mode: ToolCallResumeMode,
-}
-
-impl SuspendTicket {
-    pub fn new(
-        suspension: Suspension,
-        pending: PendingToolCall,
-        resume_mode: ToolCallResumeMode,
-    ) -> Self {
-        Self {
-            suspension,
-            pending,
-            resume_mode,
-        }
-    }
-
-    pub fn use_decision_as_tool_result(suspension: Suspension, pending: PendingToolCall) -> Self {
-        Self::new(
-            suspension,
-            pending,
-            ToolCallResumeMode::UseDecisionAsToolResult,
-        )
-    }
-
-    pub fn with_resume_mode(mut self, resume_mode: ToolCallResumeMode) -> Self {
-        self.resume_mode = resume_mode;
-        self
-    }
-
-    pub fn with_pending(mut self, pending: PendingToolCall) -> Self {
-        self.pending = pending;
-        self
-    }
-}
-
-/// Tool-call level control action emitted by plugins.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ToolCallAction {
-    Proceed,
-    Suspend(Box<SuspendTicket>),
-    Block { reason: String },
-}
-
-impl ToolCallAction {
-    pub fn suspend(ticket: SuspendTicket) -> Self {
-        Self::Suspend(Box::new(ticket))
-    }
 }
