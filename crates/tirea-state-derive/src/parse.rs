@@ -69,6 +69,10 @@ pub struct FieldInput {
     /// Flatten nested struct fields into parent.
     #[darling(default)]
     pub flatten: bool,
+
+    /// Treat as a lattice CRDT type.
+    #[darling(default)]
+    pub lattice: bool,
 }
 
 impl FieldInput {

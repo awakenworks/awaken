@@ -27,7 +27,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
 
         // Validate flatten fields
         if field.flatten {
-            let kind = FieldKind::from_type(&field.ty, /* is_nested_attr = */ true);
+            let kind = FieldKind::from_type(&field.ty, /* is_nested_attr = */ true, false);
             match kind {
                 FieldKind::Nested => {
                     // Valid: flatten on a struct field
@@ -39,6 +39,32 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
                          The field must be a type that implements State.",
                     ));
                 }
+            }
+        }
+
+        // Validate lattice fields
+        if field.lattice {
+            if field.nested {
+                return Err(syn::Error::new_spanned(
+                    field.ident(),
+                    "#[tirea(lattice)] and #[tirea(nested)] cannot be used together.",
+                ));
+            }
+            if field.flatten {
+                return Err(syn::Error::new_spanned(
+                    field.ident(),
+                    "#[tirea(lattice)] and #[tirea(flatten)] cannot be used together.",
+                ));
+            }
+            let kind = FieldKind::from_type(&field.ty, false, true);
+            if matches!(
+                kind,
+                FieldKind::Option(_) | FieldKind::Vec(_) | FieldKind::Map { .. }
+            ) {
+                return Err(syn::Error::new_spanned(
+                    &field.ty,
+                    "#[tirea(lattice)] is not supported on Option, Vec, or Map fields.",
+                ));
             }
         }
     }

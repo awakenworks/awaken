@@ -22,6 +22,9 @@ pub enum FieldKind {
 
     /// A nested State type
     Nested,
+
+    /// A lattice CRDT type
+    Lattice,
 }
 
 impl FieldKind {
@@ -34,14 +37,16 @@ impl FieldKind {
     /// - `Option<Profile>` with `nested=true` → `Option(Nested)`
     /// - `Vec<Profile>` with `nested=true` → `Vec(Nested)`
     /// - `Profile` with `nested=true` → `Nested`
-    pub fn from_type(ty: &Type, is_nested_attr: bool) -> Self {
+    pub fn from_type(ty: &Type, is_nested_attr: bool, is_lattice_attr: bool) -> Self {
         match ty {
-            Type::Path(type_path) => Self::from_type_path(type_path, is_nested_attr),
+            Type::Path(type_path) => {
+                Self::from_type_path(type_path, is_nested_attr, is_lattice_attr)
+            }
             _ => FieldKind::Primitive,
         }
     }
 
-    fn from_type_path(type_path: &TypePath, is_nested_attr: bool) -> Self {
+    fn from_type_path(type_path: &TypePath, is_nested_attr: bool, is_lattice_attr: bool) -> Self {
         let path = &type_path.path;
 
         // Get the last segment (the actual type name)
@@ -51,16 +56,16 @@ impl FieldKind {
             match type_name.as_str() {
                 "Option" => {
                     if let Some(inner) = extract_single_generic_arg(&segment.arguments) {
-                        // Propagate nested attr to inner type
-                        FieldKind::Option(Box::new(Self::from_type(inner, is_nested_attr)))
+                        // Propagate nested attr to inner type (lattice not propagated into containers)
+                        FieldKind::Option(Box::new(Self::from_type(inner, is_nested_attr, false)))
                     } else {
                         FieldKind::Primitive
                     }
                 }
                 "Vec" => {
                     if let Some(inner) = extract_single_generic_arg(&segment.arguments) {
-                        // Propagate nested attr to inner type
-                        FieldKind::Vec(Box::new(Self::from_type(inner, is_nested_attr)))
+                        // Propagate nested attr to inner type (lattice not propagated into containers)
+                        FieldKind::Vec(Box::new(Self::from_type(inner, is_nested_attr, false)))
                     } else {
                         FieldKind::Primitive
                     }
@@ -69,9 +74,9 @@ impl FieldKind {
                     if let Some((key, value)) = extract_two_generic_args(&segment.arguments) {
                         FieldKind::Map {
                             // JSON keys are always strings, never nested
-                            key: Box::new(Self::from_type(key, false)),
-                            // Propagate nested attr to value type
-                            value: Box::new(Self::from_type(value, is_nested_attr)),
+                            key: Box::new(Self::from_type(key, false, false)),
+                            // Propagate nested attr to value type (lattice not propagated into containers)
+                            value: Box::new(Self::from_type(value, is_nested_attr, false)),
                         }
                     } else {
                         FieldKind::Primitive
@@ -82,10 +87,12 @@ impl FieldKind {
                 | "isize" | "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "f32" | "f64" => {
                     FieldKind::Primitive
                 }
-                // Unknown types - check nested attr
+                // Unknown types - check nested/lattice attr
                 _ => {
                     if is_nested_attr {
                         FieldKind::Nested
+                    } else if is_lattice_attr {
+                        FieldKind::Lattice
                     } else {
                         // Treat as primitive (will use serde for serialization)
                         FieldKind::Primitive
@@ -124,6 +131,11 @@ impl FieldKind {
     /// Check if this is a nested type.
     pub fn is_nested(&self) -> bool {
         matches!(self, FieldKind::Nested)
+    }
+
+    /// Check if this is a lattice CRDT type.
+    pub fn is_lattice(&self) -> bool {
+        matches!(self, FieldKind::Lattice)
     }
 }
 
@@ -168,19 +180,19 @@ mod tests {
     #[test]
     fn test_primitive_types() {
         let ty: Type = parse_quote!(String);
-        assert!(FieldKind::from_type(&ty, false).is_primitive());
+        assert!(FieldKind::from_type(&ty, false, false).is_primitive());
 
         let ty: Type = parse_quote!(i32);
-        assert!(FieldKind::from_type(&ty, false).is_primitive());
+        assert!(FieldKind::from_type(&ty, false, false).is_primitive());
 
         let ty: Type = parse_quote!(bool);
-        assert!(FieldKind::from_type(&ty, false).is_primitive());
+        assert!(FieldKind::from_type(&ty, false, false).is_primitive());
     }
 
     #[test]
     fn test_option_type() {
         let ty: Type = parse_quote!(Option<String>);
-        let kind = FieldKind::from_type(&ty, false);
+        let kind = FieldKind::from_type(&ty, false, false);
         assert!(kind.is_option());
 
         if let FieldKind::Option(inner) = kind {
@@ -191,7 +203,7 @@ mod tests {
     #[test]
     fn test_vec_type() {
         let ty: Type = parse_quote!(Vec<i32>);
-        let kind = FieldKind::from_type(&ty, false);
+        let kind = FieldKind::from_type(&ty, false, false);
         assert!(kind.is_vec());
 
         if let FieldKind::Vec(inner) = kind {
@@ -202,14 +214,37 @@ mod tests {
     #[test]
     fn test_map_type() {
         let ty: Type = parse_quote!(BTreeMap<String, i32>);
-        let kind = FieldKind::from_type(&ty, false);
+        let kind = FieldKind::from_type(&ty, false, false);
         assert!(kind.is_map());
     }
 
     #[test]
     fn test_nested_attr() {
         let ty: Type = parse_quote!(Profile);
-        let kind = FieldKind::from_type(&ty, true);
+        let kind = FieldKind::from_type(&ty, true, false);
         assert!(kind.is_nested());
+    }
+
+    #[test]
+    fn test_lattice_attr() {
+        let ty: Type = parse_quote!(GCounter);
+        let kind = FieldKind::from_type(&ty, false, true);
+        assert!(kind.is_lattice());
+    }
+
+    #[test]
+    fn test_lattice_on_container_stays_container() {
+        // Lattice attr is NOT propagated into containers
+        let ty: Type = parse_quote!(Option<GCounter>);
+        let kind = FieldKind::from_type(&ty, false, true);
+        assert!(kind.is_option());
+
+        let ty: Type = parse_quote!(Vec<GCounter>);
+        let kind = FieldKind::from_type(&ty, false, true);
+        assert!(kind.is_vec());
+
+        let ty: Type = parse_quote!(BTreeMap<String, GCounter>);
+        let kind = FieldKind::from_type(&ty, false, true);
+        assert!(kind.is_map());
     }
 }

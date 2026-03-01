@@ -101,7 +101,7 @@ fn generate_read_method(field: &FieldInput) -> syn::Result<TokenStream> {
     let field_name = field.ident();
     let field_ty = &field.ty;
     let json_key = field.json_key();
-    let kind = FieldKind::from_type(field_ty, field.flatten || field.nested);
+    let kind = FieldKind::from_type(field_ty, field.flatten || field.nested, field.lattice);
 
     let method = match &kind {
         FieldKind::Nested => {
@@ -206,6 +206,37 @@ fn generate_read_method(field: &FieldInput) -> syn::Result<TokenStream> {
                 }
             }
         }
+        FieldKind::Lattice => {
+            if let Some(default) = &field.default {
+                let expr: syn::Expr = syn::parse_str(default).map_err(|e| {
+                    syn::Error::new_spanned(field_ty, format!("invalid default expression: {}", e))
+                })?;
+                quote! {
+                    /// Read the lattice field value.
+                    pub fn #field_name(&self) -> ::tirea_state::TireaResult<#field_ty> {
+                        let path = self.base.clone().key(#json_key);
+                        match { let __guard = self.doc.get(); ::tirea_state::get_at_path(&__guard, &path).cloned() } {
+                            None => Ok(#expr),
+                            Some(value) => {
+                                ::serde_json::from_value(value)
+                                    .map_err(::tirea_state::TireaError::from)
+                            }
+                        }
+                    }
+                }
+            } else {
+                quote! {
+                    /// Read the lattice field value.
+                    pub fn #field_name(&self) -> ::tirea_state::TireaResult<#field_ty> {
+                        let path = self.base.clone().key(#json_key);
+                        let value = { let __guard = self.doc.get(); ::tirea_state::get_at_path(&__guard, &path).cloned() }
+                            .ok_or_else(|| ::tirea_state::TireaError::path_not_found(path.clone()))?;
+                        ::serde_json::from_value(value)
+                            .map_err(::tirea_state::TireaError::from)
+                    }
+                }
+            }
+        }
         FieldKind::Primitive => {
             if let Some(default) = &field.default {
                 let expr: syn::Expr = syn::parse_str(default).map_err(|e| {
@@ -259,7 +290,7 @@ fn generate_write_method(field: &FieldInput) -> syn::Result<TokenStream> {
     let field_name = field.ident();
     let field_ty = &field.ty;
     let json_key = field.json_key();
-    let kind = FieldKind::from_type(field_ty, field.flatten || field.nested);
+    let kind = FieldKind::from_type(field_ty, field.flatten || field.nested, field.lattice);
 
     let methods = match &kind {
         FieldKind::Nested => {
@@ -413,6 +444,42 @@ fn generate_write_method(field: &FieldInput) -> syn::Result<TokenStream> {
                 #insert_method
             }
         }
+        FieldKind::Lattice => {
+            let set_name = format_ident!("set_{}", field_name);
+            let merge_name = format_ident!("merge_{}", field_name);
+            quote! {
+                /// Set the lattice field value.
+                pub fn #set_name(&self, value: #field_ty) -> ::tirea_state::TireaResult<()> {
+                    let path = self.base.clone().key(#json_key);
+                    let value = ::serde_json::to_value(&value)
+                        .map_err(::tirea_state::TireaError::from)?;
+                    self.sink.collect(::tirea_state::Op::Set { path, value })
+                }
+
+                /// Merge another lattice value into this field.
+                ///
+                /// If the field is missing, writes `other` directly.
+                /// If the field exists, deserialises, calls `Lattice::merge`, and writes the result.
+                pub fn #merge_name(&self, other: &#field_ty) -> ::tirea_state::TireaResult<()> {
+                    let path = self.base.clone().key(#json_key);
+                    let current_val = {
+                        let __guard = self.doc.get();
+                        ::tirea_state::get_at_path(&__guard, &path).cloned()
+                    };
+                    let merged = match current_val {
+                        None => other.clone(),
+                        Some(v) => {
+                            let current: #field_ty = ::serde_json::from_value(v)
+                                .map_err(::tirea_state::TireaError::from)?;
+                            ::tirea_state::Lattice::merge(&current, other)
+                        }
+                    };
+                    let value = ::serde_json::to_value(&merged)
+                        .map_err(::tirea_state::TireaError::from)?;
+                    self.sink.collect(::tirea_state::Op::Set { path, value })
+                }
+            }
+        }
         FieldKind::Primitive => {
             let set_name = format_ident!("set_{}", field_name);
             let type_name = get_type_name(field_ty);
@@ -481,7 +548,7 @@ fn generate_increment_methods(fields: &[&FieldInput]) -> syn::Result<TokenStream
 
     for field in fields {
         let field_ty = &field.ty;
-        let kind = FieldKind::from_type(field_ty, field.flatten || field.nested);
+        let kind = FieldKind::from_type(field_ty, field.flatten || field.nested, field.lattice);
 
         if !matches!(kind, FieldKind::Primitive) {
             continue;
