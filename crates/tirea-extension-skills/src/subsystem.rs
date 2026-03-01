@@ -136,6 +136,7 @@ mod tests {
     use tempfile::TempDir;
     use tirea_contract::runtime::behavior::ReadOnlyContext;
     use tirea_contract::runtime::phase::Phase;
+    use tirea_contract::runtime::state::{reduce_state_actions, ScopeContext};
     use tirea_contract::runtime::tool_call::{ToolError, ToolResult};
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::Thread;
@@ -165,16 +166,28 @@ mod tests {
 
         let fix = TestFixture::new_with_state(state.clone());
         let tool_ctx = fix.ctx_with(&call.id, format!("tool:{}", call.name));
-        let result = match tool.execute(call.arguments.clone(), &tool_ctx).await {
-            Ok(r) => r,
-            Err(e) => ToolResult::error(&call.name, e.to_string()),
+        let effect = match tool.execute_effect(call.arguments.clone(), &tool_ctx).await {
+            Ok(e) => e,
+            Err(e) => {
+                return LocalToolExecution {
+                    result: ToolResult::error(&call.name, e.to_string()),
+                    patch: None,
+                };
+            }
         };
-        let patch = tool_ctx.take_patch();
-        let patch = if patch.patch().is_empty() {
-            None
-        } else {
-            Some(patch)
-        };
+        let (result, state_actions, _user_messages) = effect.into_parts();
+        let scope_ctx = ScopeContext::run();
+        let patches = reduce_state_actions(
+            state_actions,
+            state,
+            &format!("tool:{}", call.name),
+            &scope_ctx,
+        )
+        .unwrap();
+        let patch = patches.into_iter().reduce(|mut acc, p| {
+            acc.patch.merge(p.into_patch());
+            acc
+        }).filter(|p| !p.patch().is_empty());
         LocalToolExecution { result, patch }
     }
 

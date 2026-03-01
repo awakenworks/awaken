@@ -2,21 +2,20 @@ use crate::skill_md::{parse_allowed_tool_token, parse_skill_md};
 use crate::tool_filter::{is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
 use crate::{
     Skill, SkillError, SkillMaterializeError, SkillRegistry, SkillResource, SkillResourceKind,
-    SkillState, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
+    SkillState, SkillStateAction, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID,
+    SKILL_SCRIPT_TOOL_ID,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use std::sync::Arc;
 use tirea_contract::runtime::state::AnyStateAction;
-use tirea_contract::runtime::tool_call::ToolCallContext;
 use tirea_contract::runtime::tool_call::{
-    Tool, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult, ToolStatus,
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult, ToolStatus,
 };
 use tirea_extension_permission::{
     permission_state_action, PermissionAction, ToolPermissionBehavior,
 };
-use tirea_state::GSet;
 use tracing::{debug, warn};
 
 #[derive(Debug)]
@@ -122,18 +121,8 @@ impl SkillActivateTool {
         let instructions = doc.body;
         let instruction_for_message = instructions.clone();
 
-        let state = ctx.state_of::<SkillState>();
-        {
-            let mut delta = GSet::new();
-            delta.insert(meta.id.clone());
-            if let Err(err) = state.merge_active(&delta) {
-                return Ok(ToolExecutionEffect::from(state_write_error(
-                    SKILL_ACTIVATE_TOOL_ID,
-                    "merge skills.active",
-                    err,
-                )));
-            }
-        }
+        let activate_action =
+            AnyStateAction::new::<SkillState>(SkillStateAction::Activate(meta.id.clone()));
         let mut applied_tool_ids: Vec<String> = Vec::new();
         let mut skipped_tokens: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -187,7 +176,8 @@ impl SkillActivateTool {
             suspension: None,
         };
 
-        let mut effect = ToolExecutionEffect::from(result);
+        let mut effect = ToolExecutionEffect::from(result)
+            .with_state_action(activate_action);
         for action in permission_actions {
             effect = effect.with_state_action(permission_state_action(action));
         }
@@ -229,12 +219,7 @@ impl Tool for SkillActivateTool {
         args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolExecutionEffect, ToolError> {
-        let mut effect = self.execute_effect_impl(args, ctx).await?;
-        let direct_patch = ctx.take_patch();
-        if !direct_patch.patch().is_empty() {
-            effect = effect.with_state_action(AnyStateAction::Patch(direct_patch));
-        }
-        Ok(effect)
+        self.execute_effect_impl(args, ctx).await
     }
 }
 
@@ -590,14 +575,6 @@ fn is_obviously_invalid_relative_path(path: &str) -> bool {
 
 fn tool_error(tool_name: &str, code: &str, message: impl Into<String>) -> ToolResult {
     ToolResult::error_with_code(tool_name, code, message)
-}
-
-fn state_write_error(tool_name: &str, action: &str, err: impl std::fmt::Display) -> ToolResult {
-    tool_error(
-        tool_name,
-        "state_error",
-        format!("failed to {action}: {err}"),
-    )
 }
 
 fn map_skill_error(tool_name: &str, e: SkillError) -> ToolResult {

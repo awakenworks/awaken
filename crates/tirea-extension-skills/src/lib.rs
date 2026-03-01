@@ -41,5 +41,6 @@ pub use tool_filter::{SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
 pub use tools::{LoadSkillResourceTool, SkillActivateTool, SkillScriptTool};
 pub use types::{
     collect_skills, material_key, LoadedAsset, LoadedReference, ScriptResult, Skill, SkillError,
-    SkillMaterializeError, SkillMeta, SkillResource, SkillResourceKind, SkillState, SkillWarning,
+    SkillMaterializeError, SkillMeta, SkillResource, SkillResourceKind, SkillState,
+    SkillStateAction, SkillWarning,
 };

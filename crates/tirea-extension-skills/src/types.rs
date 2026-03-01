@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tirea_contract::runtime::state::StateSpec;
 use tirea_state::{GSet, State};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +82,24 @@ pub struct SkillState {
     #[serde(default)]
     #[tirea(lattice)]
     pub active: GSet<String>,
+}
+
+/// Action type for [`SkillState`] reducer.
+pub enum SkillStateAction {
+    /// Mark a skill as activated (insert into the grow-only set).
+    Activate(String),
+}
+
+impl StateSpec for SkillState {
+    type Action = SkillStateAction;
+
+    fn reduce(&mut self, action: Self::Action) {
+        match action {
+            SkillStateAction::Activate(id) => {
+                self.active.insert(id);
+            }
+        }
+    }
 }
 
 /// Build a stable map key for skill materials.
