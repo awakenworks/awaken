@@ -1,6 +1,5 @@
 use super::*;
-use tirea_contract::runtime::state_paths::SUSPENDED_TOOL_CALLS_STATE_PATH;
-use tirea_contract::runtime::SuspendedCall;
+use tirea_contract::runtime::{SuspendedCall, SuspendedToolCallsState};
 use tirea_state::State;
 pub(super) fn as_delegation_record(
     summary: &AgentRunSummary,
@@ -89,7 +88,7 @@ pub(super) fn build_recovery_interaction(run_id: &str, run: &DelegationRecord) -
 
 pub(super) fn has_suspended_recovery_interaction(state: &Value) -> bool {
     state
-        .get(SUSPENDED_TOOL_CALLS_STATE_PATH)
+        .get(SuspendedToolCallsState::PATH)
         .and_then(|a| a.get("calls"))
         .cloned()
         .and_then(|v| serde_json::from_value::<HashMap<String, SuspendedCall>>(v).ok())

@@ -1,5 +1,4 @@
 use crate::runtime::state::StateSpec;
-use crate::runtime::state_paths::RUN_LIFECYCLE_STATE_PATH;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tirea_state::State;
@@ -173,7 +172,7 @@ impl StateSpec for RunLifecycleState {
 /// Parse persisted run lifecycle from a rebuilt state snapshot.
 pub fn run_lifecycle_from_state(state: &Value) -> Option<RunLifecycleState> {
     state
-        .get(RUN_LIFECYCLE_STATE_PATH)
+        .get(RunLifecycleState::PATH)
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
 }

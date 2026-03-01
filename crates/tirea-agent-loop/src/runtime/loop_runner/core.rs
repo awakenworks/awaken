@@ -1,10 +1,6 @@
 use super::AgentLoopError;
 use crate::contracts::runtime::phase::StepContext;
 use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction};
-use crate::contracts::runtime::state_paths::{
-    INFERENCE_ERROR_STATE_PATH, SUSPENDED_TOOL_CALLS_STATE_PATH,
-    TOOL_CALL_STATES_STATE_PATH,
-};
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::SuspendedCall;
 use crate::contracts::thread::{Message, Role};
@@ -12,9 +8,9 @@ use crate::contracts::RunAction;
 use crate::contracts::RunContext;
 use crate::runtime::control::{
     InferenceError, InferenceErrorState, SuspendedToolCallsState, ToolCallResume, ToolCallState,
-    ToolCallStatus,
+    ToolCallStatesMap, ToolCallStatus,
 };
-use tirea_state::{DocCell, Op, Patch, Path, StateContext, TireaError, TrackedPatch};
+use tirea_state::{DocCell, Op, Patch, Path, State, StateContext, TireaError, TrackedPatch};
 
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -145,9 +141,8 @@ pub(super) fn set_agent_suspended_calls(
     let map: HashMap<String, SuspendedCall> =
         calls.into_iter().map(|c| (c.call_id.clone(), c)).collect();
     suspended_state.set_calls(map).map_err(|e| {
-        AgentLoopError::StateError(format!(
-            "failed to set {SUSPENDED_TOOL_CALLS_STATE_PATH}.calls: {e}"
-        ))
+        let path = SuspendedToolCallsState::PATH;
+        AgentLoopError::StateError(format!("failed to set {path}.calls: {e}"))
     })?;
     Ok(ctx.take_tracked_patch("agent_loop"))
 }
@@ -161,7 +156,7 @@ pub(super) fn clear_suspended_call(
     let ctx = StateContext::new(&doc);
     let suspended_state = ctx.state_of::<SuspendedToolCallsState>();
     let mut suspended = state
-        .get(SUSPENDED_TOOL_CALLS_STATE_PATH)
+        .get(SuspendedToolCallsState::PATH)
         .and_then(|s| s.get("calls"))
         .cloned()
         .and_then(|raw| serde_json::from_value::<HashMap<String, SuspendedCall>>(raw).ok())
@@ -172,9 +167,8 @@ pub(super) fn clear_suspended_call(
     }
 
     suspended_state.set_calls(suspended).map_err(|e| {
-        AgentLoopError::StateError(format!(
-            "failed to set {SUSPENDED_TOOL_CALLS_STATE_PATH}.calls: {e}"
-        ))
+        let path = SuspendedToolCallsState::PATH;
+        AgentLoopError::StateError(format!("failed to set {path}.calls: {e}"))
     })?;
     Ok(ctx.take_tracked_patch("agent_loop"))
 }
@@ -192,9 +186,8 @@ pub(super) fn set_agent_inference_error(
     let ctx = StateContext::new(&doc);
     let inference = ctx.state_of::<InferenceErrorState>();
     inference.set_error(Some(error)).map_err(|e| {
-        AgentLoopError::StateError(format!(
-            "failed to set {INFERENCE_ERROR_STATE_PATH}.error: {e}"
-        ))
+        let path = InferenceErrorState::PATH;
+        AgentLoopError::StateError(format!("failed to set {path}.error: {e}"))
     })?;
     Ok(ctx.take_tracked_patch("agent_loop"))
 }
@@ -205,7 +198,7 @@ pub(super) fn tool_call_states_from_ctx(run_ctx: &RunContext) -> HashMap<String,
         .ok()
         .and_then(|state| {
             state
-                .get(TOOL_CALL_STATES_STATE_PATH)
+                .get(ToolCallStatesMap::PATH)
                 .and_then(|v| v.get("calls"))
                 .cloned()
                 .and_then(|raw| serde_json::from_value::<HashMap<String, ToolCallState>>(raw).ok())
@@ -270,7 +263,7 @@ pub(super) fn upsert_tool_call_state(
     }
 
     let path = Path::root()
-        .key(TOOL_CALL_STATES_STATE_PATH)
+        .key(ToolCallStatesMap::PATH)
         .key("calls")
         .key(call_id);
     let value = serde_json::to_value(tool_state).map_err(|e| {
@@ -296,8 +289,9 @@ pub(super) fn clear_agent_inference_error(state: &Value) -> Result<TrackedPatch,
     match inference.error_none() {
         Ok(()) | Err(TireaError::PathNotFound { .. }) => {}
         Err(e) => {
+            let path = InferenceErrorState::PATH;
             return Err(AgentLoopError::StateError(format!(
-                "failed to clear {INFERENCE_ERROR_STATE_PATH}.error: {e}"
+                "failed to clear {path}.error: {e}"
             )))
         }
     }

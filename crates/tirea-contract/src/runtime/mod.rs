@@ -8,7 +8,6 @@ pub mod inference;
 pub mod phase;
 pub mod run;
 pub mod state;
-pub mod state_paths;
 pub mod tool_call;
 
 pub use action::Action;

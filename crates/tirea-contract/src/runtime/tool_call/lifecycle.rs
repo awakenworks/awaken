@@ -1,6 +1,5 @@
 use crate::runtime::state::StateSpec;
 use crate::runtime::phase::SuspendTicket;
-use crate::runtime::state_paths::{SUSPENDED_TOOL_CALLS_STATE_PATH, TOOL_CALL_STATES_STATE_PATH};
 use crate::thread::ToolCall;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -259,7 +258,7 @@ impl StateSpec for ToolCallStatesMap {
 /// Parse suspended tool calls from a rebuilt state snapshot.
 pub fn suspended_calls_from_state(state: &Value) -> HashMap<String, SuspendedCall> {
     state
-        .get(SUSPENDED_TOOL_CALLS_STATE_PATH)
+        .get(SuspendedToolCallsState::PATH)
         .and_then(|value| value.get("calls"))
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
@@ -269,7 +268,7 @@ pub fn suspended_calls_from_state(state: &Value) -> HashMap<String, SuspendedCal
 /// Parse persisted tool call runtime states from a rebuilt state snapshot.
 pub fn tool_call_states_from_state(state: &Value) -> HashMap<String, ToolCallState> {
     state
-        .get(TOOL_CALL_STATES_STATE_PATH)
+        .get(ToolCallStatesMap::PATH)
         .and_then(|value| value.get("calls"))
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())

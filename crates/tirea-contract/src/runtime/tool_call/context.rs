@@ -5,7 +5,6 @@
 //! entity (`Thread`) invisible to tools and plugins.
 
 use crate::runtime::activity::ActivityManager;
-use crate::runtime::state_paths::TOOL_CALL_STATES_STATE_PATH;
 use crate::runtime::{ToolCallResume, ToolCallState, ToolCallStatesMap};
 use crate::thread::Message;
 use crate::RunConfig;
@@ -56,7 +55,7 @@ pub struct ToolCallContext<'a> {
 impl<'a> ToolCallContext<'a> {
     fn tool_call_state_path(call_id: &str) -> Path {
         Path::root()
-            .key(TOOL_CALL_STATES_STATE_PATH)
+            .key(ToolCallStatesMap::PATH)
             .key("calls")
             .key(call_id)
     }
