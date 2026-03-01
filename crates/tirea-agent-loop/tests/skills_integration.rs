@@ -245,10 +245,14 @@ async fn test_load_reference_returns_content_in_tool_result() {
     assert_eq!(result.data["loaded"], true);
     assert_eq!(result.data["kind"], "reference");
     assert_eq!(result.data["path"], "references/DOCX-JS.md");
+    assert!(
+        result.data["content"].as_str().map_or(false, |s| !s.is_empty()),
+        "expected non-empty content in tool result"
+    );
 }
 
 #[tokio::test]
-async fn test_script_result_is_persisted_in_state() {
+async fn test_script_result_is_in_tool_result() {
     let (_td, skills) = make_skill_tree();
     let activate = SkillActivateTool::new(skills.clone());
     let run_script = SkillScriptTool::new(skills);
@@ -275,6 +279,14 @@ async fn test_script_result_is_persisted_in_state() {
     assert!(result.is_success(), "result={result:?}");
     assert_eq!(result.data["ok"], true);
     assert_eq!(result.data["script"], "scripts/hello.sh");
+    assert!(
+        result.data["stdout"].is_string(),
+        "expected stdout in tool result"
+    );
+    assert!(
+        result.data["stderr"].is_string(),
+        "expected stderr in tool result"
+    );
 }
 
 #[tokio::test]
@@ -298,6 +310,10 @@ async fn test_load_asset_returns_metadata_in_tool_result() {
     assert_eq!(result.data["encoding"], "base64");
     assert_eq!(result.data["kind"], "asset");
     assert_eq!(result.data["path"], "assets/logo.txt");
+    assert!(
+        result.data["content"].as_str().map_or(false, |s| !s.is_empty()),
+        "expected non-empty content in tool result"
+    );
 }
 
 #[tokio::test]
@@ -444,7 +460,15 @@ async fn test_skill_activation_applies_allowed_tools_to_permission_state() {
     assert!(result.is_success());
 
     let state = thread.rebuild_state().unwrap();
-    assert_eq!(state["permissions"]["tools"]["read_file"], "allow");
+    // Allowed tools are now stored via CRDT GSet at permission_policy.allowed_tools
+    let allowed: Vec<String> = serde_json::from_value(
+        state["permission_policy"]["allowed_tools"].clone(),
+    )
+    .unwrap_or_default();
+    assert!(
+        allowed.contains(&"read_file".to_string()),
+        "read_file should be in allowed_tools, got: {allowed:?}"
+    );
 }
 
 #[tokio::test]
@@ -817,9 +841,16 @@ Body
 
     // Verify bare tool ids are applied but scoped ones are not widened.
     let state = thread.rebuild_state().unwrap();
-    assert_eq!(state["permissions"]["tools"]["read_file"], "allow");
+    let allowed: Vec<String> = serde_json::from_value(
+        state["permission_policy"]["allowed_tools"].clone(),
+    )
+    .unwrap_or_default();
     assert!(
-        state["permissions"]["tools"].get("Bash").is_none(),
+        allowed.contains(&"read_file".to_string()),
+        "read_file should be in allowed_tools, got: {allowed:?}"
+    );
+    assert!(
+        !allowed.contains(&"Bash".to_string()),
         "scoped Bash permission must not be widened to plain Bash"
     );
 }

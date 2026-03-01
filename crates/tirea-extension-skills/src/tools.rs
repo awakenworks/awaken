@@ -1,9 +1,8 @@
 use crate::skill_md::{parse_allowed_tool_token, parse_skill_md};
 use crate::tool_filter::{is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
 use crate::{
-    material_key, Skill, SkillError, SkillMaterializeError, SkillRegistry, SkillResource,
-    SkillResourceKind, SkillState, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID,
-    SKILL_SCRIPT_TOOL_ID,
+    Skill, SkillError, SkillMaterializeError, SkillRegistry, SkillResource, SkillResourceKind,
+    SkillState, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -17,6 +16,7 @@ use tirea_contract::runtime::tool_call::{
 use tirea_extension_permission::{
     permission_state_action, PermissionAction, ToolPermissionBehavior,
 };
+use tirea_state::GSet;
 use tracing::{debug, warn};
 
 #[derive(Debug)]
@@ -123,24 +123,17 @@ impl SkillActivateTool {
         let instruction_for_message = instructions.clone();
 
         let state = ctx.state_of::<SkillState>();
-        let active = state.active().ok().unwrap_or_default();
-        if !active.iter().any(|s| s == &meta.id) {
-            if let Err(err) = state.active_push(meta.id.clone()) {
+        {
+            let mut delta = GSet::new();
+            delta.insert(meta.id.clone());
+            if let Err(err) = state.merge_active(&delta) {
                 return Ok(ToolExecutionEffect::from(state_write_error(
                     SKILL_ACTIVATE_TOOL_ID,
-                    "append skills.active",
+                    "merge skills.active",
                     err,
                 )));
             }
         }
-        if let Err(err) = state.instructions_insert(meta.id.clone(), instructions) {
-            return Ok(ToolExecutionEffect::from(state_write_error(
-                SKILL_ACTIVATE_TOOL_ID,
-                "persist skill instructions",
-                err,
-            )));
-        }
-
         let mut applied_tool_ids: Vec<String> = Vec::new();
         let mut skipped_tokens: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -337,12 +330,6 @@ impl Tool for LoadSkillResourceTool {
 
         match resource {
             SkillResource::Reference(mat) => {
-                let key = material_key(&meta.id, &mat.path);
-                let state = ctx.state_of::<SkillState>();
-                if let Err(err) = state.references_insert(key, mat.clone()) {
-                    return Ok(state_write_error(tool_name, "persist skill reference", err));
-                }
-
                 debug!(
                     call_id = %ctx.call_id(),
                     skill_id = %meta.id,
@@ -362,16 +349,11 @@ impl Tool for LoadSkillResourceTool {
                         "path": mat.path,
                         "bytes": mat.bytes,
                         "truncated": mat.truncated,
+                        "content": mat.content,
                     }),
                 ))
             }
             SkillResource::Asset(asset) => {
-                let key = material_key(&meta.id, &asset.path);
-                let state = ctx.state_of::<SkillState>();
-                if let Err(err) = state.assets_insert(key, asset.clone()) {
-                    return Ok(state_write_error(tool_name, "persist skill asset", err));
-                }
-
                 debug!(
                     call_id = %ctx.call_id(),
                     skill_id = %meta.id,
@@ -394,6 +376,7 @@ impl Tool for LoadSkillResourceTool {
                         "truncated": asset.truncated,
                         "media_type": asset.media_type,
                         "encoding": asset.encoding,
+                        "content": asset.content,
                     }),
                 ))
             }
@@ -498,16 +481,6 @@ impl Tool for SkillScriptTool {
             Err(r) => return Ok(r),
         };
 
-        let key = material_key(&meta.id, &res.script);
-        let state = ctx.state_of::<SkillState>();
-        if let Err(err) = state.scripts_insert(key, res.clone()) {
-            return Ok(state_write_error(
-                SKILL_SCRIPT_TOOL_ID,
-                "persist script result",
-                err,
-            ));
-        }
-
         debug!(
             call_id = %ctx.call_id(),
             skill_id = %meta.id,
@@ -527,6 +500,8 @@ impl Tool for SkillScriptTool {
                 "exit_code": res.exit_code,
                 "stdout_truncated": res.truncated_stdout,
                 "stderr_truncated": res.truncated_stderr,
+                "stdout": res.stdout,
+                "stderr": res.stderr,
             }),
         ))
     }

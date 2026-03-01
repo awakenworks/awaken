@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tirea_state::State;
+use tirea_state::{GSet, State};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillMeta {
@@ -69,25 +69,18 @@ pub struct LoadedAsset {
     pub content: String,
 }
 
-/// Persisted skill state (instructions + loaded materials).
+/// Persisted skill state — only the CRDT active set.
+///
+/// Material content (instructions, references, scripts, assets) is delivered
+/// inline via `ToolResult` / `with_user_message` and never stored in state,
+/// avoiding parallel-branch conflicts on HashMap writes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[tirea(path = "skills")]
 pub struct SkillState {
-    /// Activated skill IDs (stable identifiers from the registry).
+    /// Activated skill IDs (grow-only set for conflict-free parallel merges).
     #[serde(default)]
-    pub active: Vec<String>,
-    /// Activated skill instructions (SKILL.md body), keyed by skill ID.
-    #[serde(default)]
-    pub instructions: HashMap<String, String>,
-    /// Loaded references, keyed by `<skill_id>:<relative_path>`.
-    #[serde(default)]
-    pub references: HashMap<String, LoadedReference>,
-    /// Script results, keyed by `<skill_id>:<relative_path>`.
-    #[serde(default)]
-    pub scripts: HashMap<String, ScriptResult>,
-    /// Loaded assets, keyed by `<skill_id>:<relative_path>`.
-    #[serde(default)]
-    pub assets: HashMap<String, LoadedAsset>,
+    #[tirea(lattice)]
+    pub active: GSet<String>,
 }
 
 /// Build a stable map key for skill materials.

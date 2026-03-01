@@ -312,7 +312,11 @@ mod tests {
         let load_resource_tool = tools.get(SKILL_LOAD_RESOURCE_TOOL_ID).unwrap().as_ref();
         let exec = execute_single_tool(Some(load_resource_tool), &call, &state).await;
         assert!(exec.result.is_success());
-        let thread = thread.with_patch(exec.patch.unwrap());
+        let thread = if let Some(patch) = exec.patch {
+            thread.with_patch(patch)
+        } else {
+            thread
+        };
 
         // Run the subsystem plugin and verify discovery catalog is injected.
         let plugin = sys.plugin();
