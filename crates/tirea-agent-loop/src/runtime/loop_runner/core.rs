@@ -130,36 +130,6 @@ pub(super) fn build_request_for_filtered_tools(
     crate::engine::convert::build_request(messages, &filtered_tool_refs)
 }
 
-/// Write suspended calls to internal state.
-///
-/// Each suspended call is stored at `__tool_call_scope.<call_id>.suspended_call`.
-pub(super) fn set_agent_suspended_calls(
-    _state: &Value,
-    calls: Vec<SuspendedCall>,
-) -> Result<TrackedPatch, AgentLoopError> {
-    let mut ops = Vec::new();
-    for call in calls {
-        let scope_path = format!("__tool_call_scope.{}.suspended_call", call.call_id);
-        let path = parse_path(&scope_path);
-        let value = serde_json::to_value(&call)
-            .map_err(|e| AgentLoopError::StateError(format!("failed to serialize call: {e}")))?;
-        ops.push(Op::set(path, value));
-    }
-    let patch = Patch::with_ops(ops);
-    Ok(TrackedPatch::new(patch).with_source("agent_loop"))
-}
-
-/// Clear one suspended call.
-pub(super) fn clear_suspended_call(
-    _state: &Value,
-    call_id: &str,
-) -> Result<TrackedPatch, AgentLoopError> {
-    let scope_path = format!("__tool_call_scope.{}.suspended_call", call_id);
-    let path = parse_path(&scope_path);
-    let patch = Patch::with_ops(vec![Op::delete(path)]);
-    Ok(TrackedPatch::new(patch).with_source("agent_loop"))
-}
-
 #[allow(dead_code)]
 pub(super) fn suspended_calls_from_ctx(run_ctx: &RunContext) -> HashMap<String, SuspendedCall> {
     run_ctx.suspended_calls()

@@ -57,7 +57,8 @@ use crate::contracts::runtime::tool_call::{Tool, ToolResult};
 use crate::contracts::runtime::ActivityManager;
 use crate::contracts::runtime::{
     DecisionReplayPolicy, RunLifecycleAction, RunLifecycleState, StreamResult, SuspendedCall,
-    ToolCallResume, ToolCallResumeMode, ToolCallStatus, ToolExecutionRequest, ToolExecutionResult,
+    SuspendedCallAction, SuspendedCallState, ToolCallResume, ToolCallResumeMode, ToolCallStatus,
+    ToolExecutionRequest, ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
@@ -90,9 +91,9 @@ pub use config::{StepToolInput, StepToolProvider, StepToolSnapshot};
 #[cfg(test)]
 use core::build_messages;
 use core::{
-    build_request_for_filtered_tools, clear_suspended_call, inference_inputs_from_step,
-    set_agent_suspended_calls, suspended_calls_from_ctx, tool_call_states_from_ctx,
-    transition_tool_call_state, upsert_tool_call_state, ToolCallStateSeed, ToolCallStateTransition,
+    build_request_for_filtered_tools, inference_inputs_from_step, suspended_calls_from_ctx,
+    tool_call_states_from_ctx, transition_tool_call_state, upsert_tool_call_state,
+    ToolCallStateSeed, ToolCallStateTransition,
 };
 pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
 pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
@@ -843,7 +844,6 @@ async fn drain_resuming_tool_calls_and_replay(
     decision_ids.sort();
 
     let mut replayed = false;
-    let mut suspended_to_clear = Vec::new();
 
     for call_id in decision_ids {
         let Some(suspended_call) = suspended.get(&call_id).cloned() else {
@@ -880,7 +880,22 @@ async fn drain_resuming_tool_calls_and_replay(
                     Some(&suspended_call.tool_name),
                     cancel_reason.as_deref(),
                 ));
-                suspended_to_clear.push(call_id);
+                // Cancel path skips tool execution, so no automatic scope
+                // cleanup runs. Delete just the suspended_call entry; keep
+                // tool_call_state (Cancelled status) for audit.
+                let cleanup_path = format!(
+                    "__tool_call_scope.{}.suspended_call",
+                    suspended_call.call_id
+                );
+                let cleanup_patch = tirea_state::Patch::with_ops(vec![
+                    tirea_state::Op::delete(tirea_state::parse_path(&cleanup_path)),
+                ]);
+                let tracked = tirea_state::TrackedPatch::new(cleanup_patch)
+                    .with_source("framework:scope_cleanup");
+                if !tracked.patch().is_empty() {
+                    state_changed = true;
+                    run_ctx.add_thread_patch(tracked);
+                }
             }
             ResumeDecisionAction::Resume => {
                 if upsert_tool_call_lifecycle_state(
@@ -961,47 +976,38 @@ async fn drain_resuming_tool_calls_and_replay(
                     let state = run_ctx
                         .snapshot()
                         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-                    let mut merged = run_ctx.suspended_calls();
-                    merged.insert(
-                        next_suspended_call.call_id.clone(),
-                        next_suspended_call.clone(),
+                    let action = AnyStateAction::new_for_call::<SuspendedCallState>(
+                        SuspendedCallAction::Set(next_suspended_call.clone()),
+                        &next_suspended_call.call_id,
                     );
-                    let patch = set_agent_suspended_calls(
+                    let patches = reduce_state_actions(
+                        vec![action],
                         &state,
-                        merged.into_values().collect::<Vec<_>>(),
-                    )?;
-                    if !patch.patch().is_empty() {
-                        state_changed = true;
-                        run_ctx.add_thread_patch(patch);
+                        "agent_loop",
+                        &ScopeContext::run(),
+                    )
+                    .map_err(|e| {
+                        AgentLoopError::StateError(format!(
+                            "failed to reduce suspended call action: {e}"
+                        ))
+                    })?;
+                    for patch in patches {
+                        if !patch.patch().is_empty() {
+                            state_changed = true;
+                            run_ctx.add_thread_patch(patch);
+                        }
                     }
                     for event in pending_tool_events(&next_suspended_call) {
                         events.push(event);
                     }
-                    if next_suspended_call.call_id != call_id {
-                        suspended_to_clear.push(call_id);
-                    }
-                } else {
-                    suspended_to_clear.push(call_id);
                 }
             }
         }
     }
 
-    if !suspended_to_clear.is_empty() {
-        let mut unique = suspended_to_clear;
-        unique.sort();
-        unique.dedup();
-        for call_id in &unique {
-            let state = run_ctx
-                .snapshot()
-                .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-            let clear_patch = clear_suspended_call(&state, call_id)?;
-            if !clear_patch.patch().is_empty() {
-                state_changed = true;
-                run_ctx.add_thread_patch(clear_patch);
-            }
-        }
-    }
+    // No explicit clear_suspended_call needed: terminal-outcome tool calls
+    // have their entire `__tool_call_scope.<call_id>` subtree deleted by
+    // automatic scope cleanup in execute_single_tool_with_phases_impl.
 
     if state_changed {
         let snapshot = run_ctx

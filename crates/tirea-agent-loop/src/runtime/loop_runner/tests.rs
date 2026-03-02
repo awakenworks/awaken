@@ -373,12 +373,22 @@ fn set_single_suspended_call(
     let invocation = invocation.unwrap_or_else(|| test_frontend_invocation(&suspension));
     let call_id = invocation.call_id.clone();
     let tool_name = invocation.tool_name.clone();
-    set_agent_suspended_calls(
+    let suspended_call = build_suspended_call(call_id.clone(), tool_name, suspension, invocation);
+    let action = AnyStateAction::new_for_call::<crate::contracts::runtime::SuspendedCallState>(
+        crate::contracts::runtime::SuspendedCallAction::Set(suspended_call),
+        call_id,
+    );
+    let patches = crate::contracts::runtime::state::reduce_state_actions(
+        vec![action],
         state,
-        vec![build_suspended_call(
-            call_id, tool_name, suspension, invocation,
-        )],
+        "test",
+        &crate::contracts::runtime::state::ScopeContext::run(),
     )
+    .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    Ok(patches
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| TrackedPatch::new(Patch::new()).with_source("test")))
 }
 
 fn build_suspended_call(
@@ -2532,11 +2542,10 @@ fn test_invalid_args_are_returned_as_tool_error_before_pending_confirmation() {
         );
 
         let final_state = thread.rebuild_state().expect("state should rebuild");
-        let pending = final_state
-            .get("__tool_call_scope").and_then(|v| v.as_object());
+        let suspended = crate::contracts::runtime::suspended_calls_from_state(&final_state);
         assert!(
-            pending.map_or(true, |calls| calls.is_empty()),
-            "invalid args should not persist suspended suspension: {pending:?}"
+            suspended.is_empty(),
+            "invalid args should not persist suspended suspension: {suspended:?}"
         );
     });
 }
@@ -2927,13 +2936,20 @@ fn test_execute_tools_with_config_with_blocking_plugin() {
 
 #[test]
 fn test_execute_tools_with_config_denied_response_is_applied_via_tool_call_state_resume() {
+    use crate::contracts::Suspension;
+
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let thread = Thread::with_initial_state(
-            "test",
-            json!({
-            }),
-        );
+        let base_state = json!({});
+        let pending_patch = set_single_suspended_call(
+            &base_state,
+            Suspension::new("call_1", "tool:echo")
+                .with_message("awaiting approval"),
+            None,
+        )
+        .expect("failed to seed suspended interaction");
+        let thread = Thread::with_initial_state("test", base_state)
+            .with_patch(pending_patch);
         let result = StreamResult {
             text: "Trying tool after denial".to_string(),
             tool_calls: vec![crate::contracts::thread::ToolCall::new(
@@ -2964,11 +2980,10 @@ fn test_execute_tools_with_config_denied_response_is_applied_via_tool_call_state
         );
 
         let final_state = thread.rebuild_state().expect("state should rebuild");
-        let suspended = final_state
-            .get("__tool_call_scope").and_then(|v| v.as_object());
+        let suspended = crate::contracts::runtime::suspended_calls_from_state(&final_state);
         assert!(
-            suspended.map_or(true, |calls| !calls.contains_key("call_1")),
-            "resolved suspended call should be cleared"
+            suspended.is_empty(),
+            "resolved suspended call should be cleared: {suspended:?}"
         );
 
         assert_eq!(
@@ -3147,40 +3162,54 @@ fn test_execute_tools_with_config_preserves_unresolved_suspended_calls_on_succes
 }
 
 #[test]
-fn test_set_agent_suspended_calls_persists_all_entries() {
+fn test_suspended_call_action_persists_all_entries() {
     let base_state = json!({});
-    let patch = set_agent_suspended_calls(
+    let calls: Vec<crate::contracts::runtime::SuspendedCall> = vec![
+        {
+            let suspension = Suspension::new("int_b", "confirm").with_message("b");
+            build_suspended_call(
+                "call_b",
+                "echo",
+                suspension.clone(),
+                test_frontend_invocation(&suspension),
+            )
+        },
+        {
+            let suspension = Suspension::new("int_a", "confirm").with_message("a");
+            build_suspended_call(
+                "call_a",
+                "echo",
+                suspension.clone(),
+                test_frontend_invocation(&suspension),
+            )
+        },
+    ];
+    let actions: Vec<AnyStateAction> = calls
+        .into_iter()
+        .map(|call| {
+            let call_id = call.call_id.clone();
+            AnyStateAction::new_for_call::<crate::contracts::runtime::SuspendedCallState>(
+                crate::contracts::runtime::SuspendedCallAction::Set(call),
+                call_id,
+            )
+        })
+        .collect();
+    let patches = crate::contracts::runtime::state::reduce_state_actions(
+        actions,
         &base_state,
-        vec![
-            {
-                let suspension = Suspension::new("int_b", "confirm").with_message("b");
-                build_suspended_call(
-                    "call_b",
-                    "echo",
-                    suspension.clone(),
-                    test_frontend_invocation(&suspension),
-                )
-            },
-            {
-                let suspension = Suspension::new("int_a", "confirm").with_message("a");
-                build_suspended_call(
-                    "call_a",
-                    "echo",
-                    suspension.clone(),
-                    test_frontend_invocation(&suspension),
-                )
-            },
-        ],
+        "test",
+        &crate::contracts::runtime::state::ScopeContext::run(),
     )
-    .expect("set suspended calls");
-    let run_ctx = RunContext::new(
+    .expect("reduce suspended call actions");
+    let mut run_ctx = RunContext::new(
         "test",
         base_state,
         Vec::<Arc<Message>>::new(),
         tirea_contract::RunConfig::default(),
     );
-    let mut run_ctx = run_ctx;
-    run_ctx.add_thread_patch(patch);
+    for patch in patches {
+        run_ctx.add_thread_patch(patch);
+    }
     let suspended = run_ctx.suspended_calls();
     assert_eq!(suspended.len(), 2);
     assert_eq!(suspended["call_a"].ticket.suspension.id, "int_a");
@@ -3410,6 +3439,14 @@ async fn test_stream_run_start_resume_replay_emits_after_run_start() {
                             "updated_at": 1
                         },
                         "updated_at": 1
+                    },
+                    "suspended_call": {
+                        "call_id": "call_1",
+                        "tool_name": "echo",
+                        "arguments": {},
+                        "suspension": { "id": "call_1", "action": "tool:echo" },
+                        "pending": { "id": "call_1", "name": "echo", "arguments": {} },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }
@@ -3517,14 +3554,20 @@ async fn test_stream_run_action_with_suspended_only_state_emits_pending_events()
         }
     }
 
+    use crate::contracts::Suspension;
+
     let config = BaseAgent::new("gpt-4o-mini")
         .with_behavior(Arc::new(PendingTerminatePlugin) as Arc<dyn AgentBehavior>);
-    let thread = Thread::with_initial_state(
-        "test",
-        json!({
-        }),
+    let base_state = json!({});
+    let pending_patch = set_single_suspended_call(
+        &base_state,
+        Suspension::new("recover_1", "recover_agent_run").with_message("resume?"),
+        None,
     )
-    .with_message(crate::contracts::thread::Message::user("hello"));
+    .expect("failed to seed suspended interaction");
+    let thread = Thread::with_initial_state("test", base_state)
+        .with_patch(pending_patch)
+        .with_message(crate::contracts::thread::Message::user("hello"));
     let tools = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
@@ -3572,18 +3615,25 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
         }
     }
 
+    use crate::contracts::Suspension;
+
     let interaction =
         TestInteractionPlugin::with_responses(Vec::new(), vec!["call_write".to_string()]);
     let config = BaseAgent::new("gpt-4o-mini").with_behavior(compose_test_behaviors(vec![
         Arc::new(interaction),
         Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>,
     ]));
-    let thread = Thread::with_initial_state(
-        "test",
-        serde_json::json!({
-        }),
+    let base_state = json!({});
+    let pending_patch = set_single_suspended_call(
+        &base_state,
+        Suspension::new("call_write", "tool:write")
+            .with_message("awaiting approval"),
+        None,
     )
-    .with_message(crate::contracts::thread::Message::user("continue"));
+    .expect("failed to seed suspended interaction");
+    let thread = Thread::with_initial_state("test", base_state)
+        .with_patch(pending_patch)
+        .with_message(crate::contracts::thread::Message::user("continue"));
     let tools = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
@@ -3709,9 +3759,11 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
     );
 
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
-    let suspended = final_state
-        .get("__tool_call_scope").and_then(|v| v.as_object());
-    assert!(suspended.map_or(true, |calls| calls.is_empty()));
+    let suspended = crate::contracts::runtime::suspended_calls_from_state(&final_state);
+    assert!(
+        suspended.is_empty(),
+        "suspended calls should be cleared after approval replay: {suspended:?}"
+    );
 }
 
 #[tokio::test]
@@ -3796,9 +3848,11 @@ async fn test_run_loop_permission_approval_replays_tool_and_updates_lifecycle_st
     );
 
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
-    let suspended = state
-        .get("__tool_call_scope").and_then(|v| v.as_object());
-    assert!(suspended.map_or(true, |calls| calls.is_empty()));
+    let suspended = crate::contracts::runtime::suspended_calls_from_state(&state);
+    assert!(
+        suspended.is_empty(),
+        "suspended calls should be cleared after approval replay: {suspended:?}"
+    );
 
     assert_eq!(
         state["__tool_call_scope"]["call_1"]["tool_call_state"]["status"],
@@ -3918,6 +3972,7 @@ async fn test_run_loop_run_start_replay_uses_tool_call_resume_state_without_mail
             "unused",
         ))])) as Arc<dyn LlmExecutor>);
 
+    let echo_args = json!({"message": "approved-run"});
     let thread = Thread::with_initial_state(
         "test",
         json!({
@@ -3926,7 +3981,7 @@ async fn test_run_loop_run_start_replay_uses_tool_call_resume_state_without_mail
                     "tool_call_state": {
                         "call_id": "call_1",
                         "tool_name": "echo",
-                        "arguments": { "message": "approved-run" },
+                        "arguments": echo_args,
                         "status": "resuming",
                         "resume_token": "call_1",
                         "resume": {
@@ -3936,6 +3991,14 @@ async fn test_run_loop_run_start_replay_uses_tool_call_resume_state_without_mail
                             "updated_at": 1
                         },
                         "updated_at": 1
+                    },
+                    "suspended_call": {
+                        "call_id": "call_1",
+                        "tool_name": "echo",
+                        "arguments": echo_args,
+                        "suspension": { "id": "call_1", "action": "tool:echo" },
+                        "pending": { "id": "call_1", "name": "echo", "arguments": echo_args },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }
@@ -3969,10 +4032,9 @@ async fn test_run_loop_run_start_replay_uses_tool_call_resume_state_without_mail
     );
 
     let final_state = outcome.run_ctx.snapshot().expect("snapshot");
+    let suspended = crate::contracts::runtime::suspended_calls_from_state(&final_state);
     assert!(
-        final_state
-            .get("__tool_call_scope").and_then(|v| v.as_object())
-            .map_or(true, |calls| calls.is_empty()),
+        suspended.is_empty(),
         "replayed call should clear suspended queue"
     );
     assert_eq!(
@@ -4057,28 +4119,35 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
         }
     }
 
+    use crate::contracts::Suspension;
+
     let interaction = TestInteractionPlugin::with_responses(Vec::new(), vec!["call_1".to_string()]);
     let config = BaseAgent::new("mock").with_behavior(compose_test_behaviors(vec![
         Arc::new(interaction),
         Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>,
     ]));
-    let thread = Thread::with_initial_state(
-        "test",
-        json!({
-        }),
+    let base_state = json!({});
+    let pending_patch = set_single_suspended_call(
+        &base_state,
+        Suspension::new("call_1", "tool:echo")
+            .with_message("awaiting approval"),
+        None,
     )
-    .with_message(Message::assistant_with_tool_calls(
-        "need permission",
-        vec![crate::contracts::thread::ToolCall::new(
+    .expect("failed to seed suspended interaction");
+    let thread = Thread::with_initial_state("test", base_state)
+        .with_patch(pending_patch)
+        .with_message(Message::assistant_with_tool_calls(
+            "need permission",
+            vec![crate::contracts::thread::ToolCall::new(
+                "call_1",
+                "echo",
+                json!({"message": "denied-run"}),
+            )],
+        ))
+        .with_message(Message::tool(
             "call_1",
-            "echo",
-            json!({"message": "denied-run"}),
-        )],
-    ))
-    .with_message(Message::tool(
-        "call_1",
-        "Tool 'echo' is awaiting approval. Execution paused.",
-    ));
+            "Tool 'echo' is awaiting approval. Execution paused.",
+        ));
 
     let tools = tool_map([EchoTool]);
     let (events, final_thread) = run_mock_stream_with_final_thread(
@@ -4128,9 +4197,8 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
     assert!(denied_tool_msg.content.contains("denied"));
 
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
-    let suspended = final_state
-        .get("__tool_call_scope").and_then(|v| v.as_object());
-    assert!(suspended.map_or(true, |calls| calls.is_empty()));
+    let suspended = crate::contracts::runtime::suspended_calls_from_state(&final_state);
+    assert!(suspended.is_empty());
 }
 
 #[tokio::test]
@@ -4147,29 +4215,36 @@ async fn test_run_loop_permission_denied_appends_tool_result_for_model_context()
         }
     }
 
+    use crate::contracts::Suspension;
+
     let interaction = TestInteractionPlugin::with_responses(Vec::new(), vec!["call_1".to_string()]);
     let config = BaseAgent::new("mock").with_behavior(compose_test_behaviors(vec![
         Arc::new(interaction),
         Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>,
     ]));
 
-    let thread = Thread::with_initial_state(
-        "test",
-        json!({
-        }),
+    let base_state = json!({});
+    let pending_patch = set_single_suspended_call(
+        &base_state,
+        Suspension::new("call_1", "tool:echo")
+            .with_message("awaiting approval"),
+        None,
     )
-    .with_message(Message::assistant_with_tool_calls(
-        "need permission",
-        vec![crate::contracts::thread::ToolCall::new(
+    .expect("failed to seed suspended interaction");
+    let thread = Thread::with_initial_state("test", base_state)
+        .with_patch(pending_patch)
+        .with_message(Message::assistant_with_tool_calls(
+            "need permission",
+            vec![crate::contracts::thread::ToolCall::new(
+                "call_1",
+                "echo",
+                json!({"message": "denied-run"}),
+            )],
+        ))
+        .with_message(Message::tool(
             "call_1",
-            "echo",
-            json!({"message": "denied-run"}),
-        )],
-    ))
-    .with_message(Message::tool(
-        "call_1",
-        "Tool 'echo' is awaiting approval. Execution paused.",
-    ));
+            "Tool 'echo' is awaiting approval. Execution paused.",
+        ));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
@@ -4207,6 +4282,8 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
         }
     }
 
+    use crate::contracts::Suspension;
+
     let interaction = TestInteractionPlugin::from_interaction_responses(vec![
         crate::contracts::SuspensionResponse::new(
             "call_1",
@@ -4218,23 +4295,28 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
         Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>,
     ]));
 
-    let thread = Thread::with_initial_state(
-        "test",
-        json!({
-        }),
+    let base_state = json!({});
+    let pending_patch = set_single_suspended_call(
+        &base_state,
+        Suspension::new("call_1", "tool:echo")
+            .with_message("awaiting approval"),
+        None,
     )
-    .with_message(Message::assistant_with_tool_calls(
-        "need permission",
-        vec![crate::contracts::thread::ToolCall::new(
+    .expect("failed to seed suspended interaction");
+    let thread = Thread::with_initial_state("test", base_state)
+        .with_patch(pending_patch)
+        .with_message(Message::assistant_with_tool_calls(
+            "need permission",
+            vec![crate::contracts::thread::ToolCall::new(
+                "call_1",
+                "echo",
+                json!({"message": "cancel-run"}),
+            )],
+        ))
+        .with_message(Message::tool(
             "call_1",
-            "echo",
-            json!({"message": "cancel-run"}),
-        )],
-    ))
-    .with_message(Message::tool(
-        "call_1",
-        "Tool 'echo' is awaiting approval. Execution paused.",
-    ));
+            "Tool 'echo' is awaiting approval. Execution paused.",
+        ));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
@@ -4268,9 +4350,8 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
     );
 
     let final_state = outcome.run_ctx.snapshot().expect("snapshot");
-    let suspended = final_state
-        .get("__tool_call_scope").and_then(|v| v.as_object());
-    assert!(suspended.map_or(true, |calls| calls.is_empty()));
+    let suspended = crate::contracts::runtime::suspended_calls_from_state(&final_state);
+    assert!(suspended.is_empty());
 }
 
 #[tokio::test]
@@ -4561,14 +4642,20 @@ async fn test_run_loop_terminate_behavior_requested_with_suspended_only_state_re
         }
     }
 
+    use crate::contracts::Suspension;
+
     let config = BaseAgent::new("gpt-4o-mini")
         .with_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>);
-    let thread = Thread::with_initial_state(
-        "test",
-        json!({
-        }),
+    let base_state = json!({});
+    let pending_patch = set_single_suspended_call(
+        &base_state,
+        Suspension::new("call_pending", "tool:echo").with_message("awaiting approval"),
+        None,
     )
-    .with_message(crate::contracts::thread::Message::user("hello"));
+    .expect("failed to seed suspended interaction");
+    let thread = Thread::with_initial_state("test", base_state)
+        .with_patch(pending_patch)
+        .with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
@@ -6137,9 +6224,12 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
 
     // Seed state with a pre-existing suspended interaction for the pending tool call.
     let base_state = json!({});
+    let echo_args = json!({"message": "approved-run"});
     let pending_patch = set_single_suspended_call(
         &base_state,
-        Suspension::new("call_1", "tool:counting_echo").with_message("awaiting approval"),
+        Suspension::new("call_1", "tool:counting_echo")
+            .with_message("awaiting approval")
+            .with_parameters(echo_args.clone()),
         None,
     )
     .expect("failed to seed suspended interaction");
@@ -6150,7 +6240,7 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
             vec![crate::contracts::thread::ToolCall::new(
                 "call_1",
                 "counting_echo",
-                json!({"message": "approved-run"}),
+                echo_args,
             )],
         ))
         .with_message(Message::tool(
@@ -6200,9 +6290,11 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
     );
 
     let final_state = second_thread.rebuild_state().expect("state should rebuild");
-    let suspended = final_state
-        .get("__tool_call_scope").and_then(|v| v.as_object());
-    assert!(suspended.map_or(true, |calls| calls.is_empty()));
+    let suspended = crate::contracts::runtime::suspended_calls_from_state(&final_state);
+    assert!(
+        suspended.is_empty(),
+        "no suspended calls should remain after replay"
+    );
 }
 
 #[tokio::test]
@@ -6240,9 +6332,12 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
 
     // Seed state with a pre-existing suspended interaction for the pending tool call.
     let base_state = json!({});
+    let echo_args = json!({"message": "approved-run"});
     let pending_patch = set_single_suspended_call(
         &base_state,
-        Suspension::new("call_1", "tool:counting_echo").with_message("awaiting approval"),
+        Suspension::new("call_1", "tool:counting_echo")
+            .with_message("awaiting approval")
+            .with_parameters(echo_args.clone()),
         None,
     )
     .expect("failed to seed suspended interaction");
@@ -6253,7 +6348,7 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
             vec![crate::contracts::thread::ToolCall::new(
                 "call_1",
                 "counting_echo",
-                json!({"message": "approved-run"}),
+                echo_args,
             )],
         ))
         .with_message(Message::tool(
@@ -10591,7 +10686,8 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
     assert_eq!(
         state
             .get("__tool_call_scope").and_then(|scope| scope.get("call_2"))
-            .and_then(|entry| entry.get("suspension"))
+            .and_then(|entry| entry.get("suspended_call"))
+            .and_then(|sc| sc.get("suspension"))
             .and_then(|pi| pi.get("id"))
             .and_then(|id| id.as_str()),
         Some("confirm_call_2"),
@@ -11216,12 +11312,18 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
         }
     }
 
-    let thread = Thread::with_initial_state(
-        "test",
-        json!({
-        }),
+    use crate::contracts::Suspension;
+
+    let base_state = json!({});
+    let pending_patch = set_single_suspended_call(
+        &base_state,
+        Suspension::new("call_keep", "tool:echo").with_message("awaiting approval"),
+        None,
     )
-    .with_message(Message::user("continue"));
+    .expect("failed to seed suspended interaction");
+    let thread = Thread::with_initial_state("test", base_state)
+        .with_patch(pending_patch)
+        .with_message(Message::user("continue"));
     let mut run_config = tirea_contract::RunConfig::default();
     run_config.set("run_id", "run-unknown-decision").unwrap();
     let run_ctx = RunContext::from_thread(&thread, run_config).expect("run ctx");
@@ -11294,6 +11396,14 @@ async fn test_run_loop_decision_channel_rejects_illegal_terminal_to_resuming_tra
                         "arguments": { "message": "already-finished" },
                         "status": "succeeded",
                         "updated_at": 1
+                    },
+                    "suspended_call": {
+                        "call_id": "call_pending",
+                        "tool_name": "echo",
+                        "arguments": { "message": "should-not-replay" },
+                        "suspension": { "id": "call_pending", "action": "tool:echo" },
+                        "pending": { "id": "call_pending", "name": "echo", "arguments": { "message": "should-not-replay" } },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }
@@ -11370,12 +11480,18 @@ async fn test_stream_decision_channel_ignores_unknown_target_id() {
         }
     }
 
-    let mut final_thread = Thread::with_initial_state(
-        "test",
-        json!({
-        }),
+    use crate::contracts::Suspension;
+
+    let base_state = json!({});
+    let pending_patch = set_single_suspended_call(
+        &base_state,
+        Suspension::new("call_keep", "tool:echo").with_message("awaiting approval"),
+        None,
     )
-    .with_message(Message::user("continue"));
+    .expect("failed to seed suspended interaction");
+    let mut final_thread = Thread::with_initial_state("test", base_state)
+        .with_patch(pending_patch)
+        .with_message(Message::user("continue"));
     let run_ctx = RunContext::from_thread(&final_thread, tirea_contract::RunConfig::default())
         .expect("run ctx");
     let config = BaseAgent::new("mock")
@@ -11452,6 +11568,14 @@ async fn test_stream_decision_channel_rejects_illegal_terminal_to_resuming_trans
                         "arguments": { "message": "already-finished" },
                         "status": "succeeded",
                         "updated_at": 1
+                    },
+                    "suspended_call": {
+                        "call_id": "call_pending",
+                        "tool_name": "echo",
+                        "arguments": { "message": "should-not-replay" },
+                        "suspension": { "id": "call_pending", "action": "tool:echo" },
+                        "pending": { "id": "call_pending", "name": "echo", "arguments": { "message": "should-not-replay" } },
+                        "resume_mode": "replay_tool_call"
                     }
                 }
             }
@@ -11705,26 +11829,35 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
         }
     }
 
+    use crate::contracts::Suspension;
+
     let config = BaseAgent::new("mock")
         .with_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>);
 
-    let thread = Thread::with_initial_state(
-        "test",
-        json!({
-        }),
+    let base_state = json!({});
+    let cancel_args = json!({"message": "cancel-run"});
+    let pending_patch = set_single_suspended_call(
+        &base_state,
+        Suspension::new("call_pending", "tool:echo")
+            .with_message("awaiting approval")
+            .with_parameters(cancel_args.clone()),
+        None,
     )
-    .with_message(Message::assistant_with_tool_calls(
-        "need permission",
-        vec![crate::contracts::thread::ToolCall::new(
+    .expect("failed to seed suspended interaction");
+    let thread = Thread::with_initial_state("test", base_state)
+        .with_patch(pending_patch)
+        .with_message(Message::assistant_with_tool_calls(
+            "need permission",
+            vec![crate::contracts::thread::ToolCall::new(
+                "call_pending",
+                "echo",
+                cancel_args,
+            )],
+        ))
+        .with_message(Message::tool(
             "call_pending",
-            "echo",
-            json!({"message": "cancel-run"}),
-        )],
-    ))
-    .with_message(Message::tool(
-        "call_pending",
-        "Tool 'echo' is awaiting approval. Execution paused.",
-    ));
+            "Tool 'echo' is awaiting approval. Execution paused.",
+        ));
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
     let tools = tool_map([EchoTool]);
 
@@ -11771,9 +11904,11 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
     );
 
     let final_state = outcome.run_ctx.snapshot().expect("snapshot");
-    let suspended = final_state
-        .get("__tool_call_scope").and_then(|v| v.as_object());
-    assert!(suspended.map_or(true, |calls| calls.is_empty()));
+    let suspended = crate::contracts::runtime::suspended_calls_from_state(&final_state);
+    assert!(
+        suspended.is_empty(),
+        "cancelled call should clear suspended calls"
+    );
     assert_eq!(
         final_state["__tool_call_scope"]["call_pending"]["tool_call_state"]["status"],
         json!("cancelled")
@@ -12243,14 +12378,21 @@ async fn test_stream_decision_channel_drains_while_inference_stream_is_running()
         }
     }
 
-    let _suspended_interaction = json!({
-        "id": "call_pending",
-        "action": "confirm",
-        "parameters": { "message": "approved during stream" }
-    });
-    let state = json!({
-    });
-    let thread = Thread::with_initial_state("test", state).with_message(Message::user("resume"));
+    use crate::contracts::Suspension;
+
+    let base_state = json!({});
+    let echo_args = json!({"message": "approved during stream"});
+    let pending_patch = set_single_suspended_call(
+        &base_state,
+        Suspension::new("call_pending", "tool:echo")
+            .with_message("awaiting approval")
+            .with_parameters(echo_args),
+        None,
+    )
+    .expect("failed to seed suspended interaction");
+    let thread = Thread::with_initial_state("test", base_state)
+        .with_patch(pending_patch)
+        .with_message(Message::user("resume"));
     let run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).expect("run ctx");
     let config = BaseAgent::new("mock")
@@ -12337,14 +12479,58 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_tool_call_resu
         }
     }
 
-    let _suspended_interaction = json!({
-        "id": "fc_perm_1",
-        "action": "tool:PermissionConfirm",
-        "parameters": { "source": "permission" }
-    });
-    let state = json!({
-    });
-    let thread = Thread::with_initial_state("test", state).with_message(Message::user("resume"));
+    use crate::contracts::Suspension;
+
+    let echo_args = json!({"message": "perm-replay"});
+    let base_state = json!({});
+    let invocation = FrontendToolInvocation::new(
+        "fc_perm_1",
+        "PermissionConfirm",
+        echo_args.clone(),
+        InvocationOrigin::ToolCallIntercepted {
+            backend_call_id: "call_write".to_string(),
+            backend_tool_name: "echo".to_string(),
+            backend_arguments: echo_args.clone(),
+        },
+        ResponseRouting::ReplayOriginalTool,
+    );
+    let suspension = Suspension::new("fc_perm_1", "tool:PermissionConfirm")
+        .with_parameters(json!({"source": "permission"}));
+    let suspended_call = build_suspended_call(
+        "call_write",
+        "echo",
+        suspension,
+        invocation,
+    );
+    let action = AnyStateAction::new_for_call::<crate::contracts::runtime::SuspendedCallState>(
+        crate::contracts::runtime::SuspendedCallAction::Set(suspended_call),
+        "call_write",
+    );
+    let pending_patch = crate::contracts::runtime::state::reduce_state_actions(
+        vec![action],
+        &base_state,
+        "test",
+        &crate::contracts::runtime::state::ScopeContext::run(),
+    )
+    .expect("failed to seed suspended interaction")
+    .into_iter()
+    .next()
+    .expect("expected a patch");
+    let thread = Thread::with_initial_state("test", base_state)
+        .with_patch(pending_patch)
+        .with_message(Message::assistant_with_tool_calls(
+            "need permission",
+            vec![crate::contracts::thread::ToolCall::new(
+                "call_write",
+                "echo",
+                echo_args.clone(),
+            )],
+        ))
+        .with_message(Message::tool(
+            "call_write",
+            "Tool 'echo' is awaiting approval. Execution paused.",
+        ))
+        .with_message(Message::user("resume"));
     let run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).expect("run ctx");
 

@@ -1,7 +1,4 @@
-use super::core::{
-    set_agent_suspended_calls, transition_tool_call_state, ToolCallStateSeed,
-    ToolCallStateTransition,
-};
+use super::core::{transition_tool_call_state, ToolCallStateSeed, ToolCallStateTransition};
 use super::parallel_state_merge::merge_parallel_state_patches;
 use super::plugin_runtime::emit_tool_phase;
 use super::{
@@ -15,7 +12,8 @@ use crate::contracts::runtime::tool_call::ToolGate;
 use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::runtime::{
-    ActivityManager, PendingToolCall, SuspendTicket, SuspendedCall, ToolCallResumeMode,
+    ActivityManager, PendingToolCall, SuspendTicket, SuspendedCall, SuspendedCallAction,
+    SuspendedCallState, ToolCallResumeMode,
 };
 use crate::contracts::runtime::{
     DecisionReplayPolicy, StreamResult, ToolCallOutcome, ToolCallStatus, ToolExecution,
@@ -406,21 +404,30 @@ pub(super) fn apply_tool_results_impl(
     if !user_messages.is_empty() {
         run_ctx.add_messages(user_messages);
     }
-    let existing_suspended = run_ctx.suspended_calls();
-
     if !suspended.is_empty() {
-        let mut merged_suspended = existing_suspended;
-        for call in &suspended {
-            merged_suspended.insert(call.call_id.clone(), call.clone());
-        }
         let state = run_ctx
             .snapshot()
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-        let patch =
-            set_agent_suspended_calls(&state, merged_suspended.into_values().collect::<Vec<_>>())?;
-        if !patch.patch().is_empty() {
-            state_changed = true;
-            run_ctx.add_thread_patch(patch);
+        let actions: Vec<AnyStateAction> = suspended
+            .iter()
+            .map(|call| {
+                AnyStateAction::new_for_call::<SuspendedCallState>(
+                    SuspendedCallAction::Set(call.clone()),
+                    &call.call_id,
+                )
+            })
+            .collect();
+        let patches = reduce_state_actions(actions, &state, "agent_loop", &ScopeContext::run())
+            .map_err(|e| {
+                AgentLoopError::StateError(format!(
+                    "failed to reduce suspended call actions: {e}"
+                ))
+            })?;
+        for patch in patches {
+            if !patch.patch().is_empty() {
+                state_changed = true;
+                run_ctx.add_thread_patch(patch);
+            }
         }
         let state_snapshot = if state_changed {
             Some(
