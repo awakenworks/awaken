@@ -232,6 +232,15 @@ pub trait Agent: Send + Sync {
 
     /// The agent behavior (phase hooks) dispatched by the loop.
     fn behavior(&self) -> &dyn AgentBehavior;
+
+    // --- Recovery ---
+
+    /// Registry for deserializing pending-write actions during crash recovery.
+    fn action_deserializer_registry(
+        &self,
+    ) -> Arc<tirea_contract::runtime::state::ActionDeserializerRegistry> {
+        Arc::new(tirea_contract::runtime::state::ActionDeserializerRegistry::new())
+    }
 }
 
 impl std::fmt::Debug for dyn Agent {
@@ -281,6 +290,8 @@ pub struct BaseAgent {
     pub step_tool_provider: Option<Arc<dyn StepToolProvider>>,
     /// Optional LLM executor override.
     pub llm_executor: Option<Arc<dyn LlmExecutor>>,
+    /// Registry for deserializing pending-write actions during crash recovery.
+    pub action_deserializer_registry: Arc<tirea_contract::runtime::state::ActionDeserializerRegistry>,
 }
 
 impl Default for BaseAgent {
@@ -304,6 +315,9 @@ impl Default for BaseAgent {
             state_scope_registry: Arc::new(tirea_contract::runtime::state::StateScopeRegistry::new()),
             step_tool_provider: None,
             llm_executor: None,
+            action_deserializer_registry: Arc::new(
+                tirea_contract::runtime::state::ActionDeserializerRegistry::new(),
+            ),
         }
     }
 }
@@ -382,6 +396,12 @@ impl Agent for BaseAgent {
 
     fn behavior(&self) -> &dyn AgentBehavior {
         self.behavior.as_ref()
+    }
+
+    fn action_deserializer_registry(
+        &self,
+    ) -> Arc<tirea_contract::runtime::state::ActionDeserializerRegistry> {
+        self.action_deserializer_registry.clone()
     }
 }
 

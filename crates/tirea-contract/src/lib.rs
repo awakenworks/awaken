@@ -135,7 +135,8 @@ pub use io::{
 
 // runtime plugin/tool-call/lifecycle
 pub use runtime::{
-    build_read_only_context_from_step, recover_pending_writes, reduce_state_actions, Action,
+    build_read_only_context_from_step, recover_pending_writes,
+    recover_pending_writes_from_entries, reduce_state_actions, Action,
     ActionDeserializerRegistry, ActivityContext, ActivityManager, AfterInferenceContext,
     AfterToolExecuteContext, AgentBehavior, AnyStateAction, BeforeInferenceContext,
     BeforeToolExecuteContext, DecisionReplayPolicy, Extensions, InMemoryPendingWriteStore,

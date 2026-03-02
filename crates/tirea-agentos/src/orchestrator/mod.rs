@@ -332,6 +332,7 @@ pub struct PreparedRun {
     run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
+    pending_write_store: Option<Arc<dyn tirea_contract::PendingWriteStore>>,
     decision_tx: tokio::sync::mpsc::UnboundedSender<ToolCallDecision>,
     decision_rx: tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>,
 }
@@ -344,6 +345,16 @@ impl PreparedRun {
     #[must_use]
     pub fn with_cancellation_token(mut self, token: RunCancellationToken) -> Self {
         self.cancellation_token = Some(token);
+        self
+    }
+
+    /// Attach a pending-write store for crash recovery.
+    #[must_use]
+    pub fn with_pending_write_store(
+        mut self,
+        store: Arc<dyn tirea_contract::PendingWriteStore>,
+    ) -> Self {
+        self.pending_write_store = Some(store);
         self
     }
 }

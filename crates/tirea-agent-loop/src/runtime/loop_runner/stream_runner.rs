@@ -304,6 +304,67 @@ pub(super) fn run_stream(
             }
             yield emitter.emit_existing(event);
         }
+
+        // Recovery: replay pending writes from previously crashed runs.
+        if let Some(ref store) = pending_write_store {
+            match store.read_by_thread(run_ctx.thread_id()).await {
+                Ok(entries) if !entries.is_empty() => {
+                    let registry = agent.action_deserializer_registry();
+                    match run_ctx.snapshot() {
+                        Ok(base_state) => {
+                            let stale_run_ids: HashSet<String> =
+                                entries.iter().map(|e| e.run_id.clone()).collect();
+                            match tirea_contract::recover_pending_writes_from_entries(
+                                &entries, &registry, &base_state,
+                            ) {
+                                Ok((patches, completed_ids)) => {
+                                    tracing::info!(
+                                        recovered_calls = completed_ids.len(),
+                                        patches = patches.len(),
+                                        "recovered pending writes from crashed run"
+                                    );
+                                    run_ctx.add_thread_patches(patches);
+                                    if let Err(e) = pending_delta_commit
+                                        .commit(
+                                            &mut run_ctx,
+                                            CheckpointReason::ToolResultsCommitted,
+                                            false,
+                                        )
+                                        .await
+                                    {
+                                        let msg = e.to_string();
+                                        terminate_stream_error!(
+                                            outcome::LoopFailure::State(msg.clone()),
+                                            msg
+                                        );
+                                    }
+                                    for rid in &stale_run_ids {
+                                        let _ = store.acknowledge(run_ctx.thread_id(), rid).await;
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "pending write recovery failed; continuing"
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "snapshot failed during recovery; continuing"
+                            );
+                        }
+                    }
+                }
+                Ok(_) => {} // no pending writes
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to read pending writes; continuing");
+                }
+            }
+        }
+
         let run_start_new_suspended =
             newly_suspended_call_ids(&run_ctx, &baseline_suspended_call_ids);
         if !run_start_new_suspended.is_empty() {

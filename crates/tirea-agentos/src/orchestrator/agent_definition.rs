@@ -227,6 +227,14 @@ impl AgentDefinition {
         }
         let state_scope_registry = Arc::new(scope_registry);
 
+        // Collect action deserializer registrations from all behaviors.
+        let mut action_deser_registry =
+            tirea_contract::runtime::state::ActionDeserializerRegistry::new();
+        for b in &behaviors {
+            b.register_action_deserializers(&mut action_deser_registry);
+        }
+        let action_deserializer_registry = Arc::new(action_deser_registry);
+
         let behavior: Arc<dyn AgentBehavior> = if behaviors.is_empty() {
             Arc::new(NoOpBehavior)
         } else {
@@ -246,6 +254,7 @@ impl AgentDefinition {
             state_scope_registry,
             step_tool_provider: None,
             llm_executor: None,
+            action_deserializer_registry,
         }
     }
 }

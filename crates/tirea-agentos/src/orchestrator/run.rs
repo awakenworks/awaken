@@ -188,6 +188,7 @@ impl AgentOs {
             state_committer: Some(Arc::new(AgentStateStoreStateCommitter::new(
                 agent_state_store.clone(),
             ))),
+            pending_write_store: None,
             decision_tx,
             decision_rx,
         })
@@ -202,7 +203,7 @@ impl AgentOs {
             prepared.cancellation_token,
             prepared.state_committer,
             Some(prepared.decision_rx),
-            None,
+            prepared.pending_write_store,
         );
         Ok(RunStream {
             thread_id: prepared.thread_id,

@@ -184,6 +184,18 @@ pub trait PendingWriteStore: Send + Sync {
         run_id: &str,
     ) -> Result<Vec<PendingWriteEntry>, PendingWriteError>;
 
+    /// Read all pending writes for a thread, across all runs.
+    ///
+    /// Used during recovery to find pending writes from previously crashed
+    /// runs when the new run has a different `run_id`.
+    async fn read_by_thread(
+        &self,
+        thread_id: &str,
+    ) -> Result<Vec<PendingWriteEntry>, PendingWriteError> {
+        let _ = thread_id;
+        Ok(Vec::new())
+    }
+
     /// Acknowledge (delete) all pending writes for a run after successful batch commit.
     async fn acknowledge(
         &self,
@@ -237,6 +249,21 @@ impl PendingWriteStore for InMemoryPendingWriteStore {
             .unwrap_or_default())
     }
 
+    async fn read_by_thread(
+        &self,
+        thread_id: &str,
+    ) -> Result<Vec<PendingWriteEntry>, PendingWriteError> {
+        let guard = self
+            .entries
+            .lock()
+            .map_err(|e| PendingWriteError::Store(e.to_string()))?;
+        Ok(guard
+            .iter()
+            .filter(|((tid, _), _)| tid == thread_id)
+            .flat_map(|(_, entries)| entries.iter().cloned())
+            .collect())
+    }
+
     async fn acknowledge(
         &self,
         thread_id: &str,
@@ -254,6 +281,39 @@ impl PendingWriteStore for InMemoryPendingWriteStore {
 // ---------------------------------------------------------------------------
 // Recovery
 // ---------------------------------------------------------------------------
+
+/// Recover state from a pre-fetched list of pending-write entries.
+///
+/// This is the synchronous core of recovery: it deserializes actions through
+/// the [`ActionDeserializerRegistry`] and reduces them against `base_state`.
+///
+/// Returns:
+/// - `Vec<TrackedPatch>` — patches to apply to the base state to catch up
+/// - `HashSet<String>` — call IDs of tools that completed before the crash
+pub fn recover_pending_writes_from_entries(
+    entries: &[PendingWriteEntry],
+    registry: &ActionDeserializerRegistry,
+    base_state: &Value,
+) -> Result<(Vec<TrackedPatch>, HashSet<String>), PendingWriteError> {
+    if entries.is_empty() {
+        return Ok((Vec::new(), HashSet::new()));
+    }
+
+    let completed_call_ids: HashSet<String> = entries.iter().map(|e| e.call_id.clone()).collect();
+
+    let mut all_actions = Vec::new();
+    for entry in entries {
+        for sa in &entry.actions {
+            all_actions.push(registry.deserialize(sa)?);
+        }
+    }
+
+    let patches =
+        reduce_state_actions(all_actions, base_state, "recovery", &ScopeContext::run())
+            .map_err(|e| PendingWriteError::Reduce(e.to_string()))?;
+
+    Ok((patches, completed_call_ids))
+}
 
 /// Recover state from pending writes after a crash.
 ///
@@ -275,24 +335,7 @@ pub async fn recover_pending_writes(
     base_state: &Value,
 ) -> Result<(Vec<TrackedPatch>, HashSet<String>), PendingWriteError> {
     let entries = store.read(thread_id, run_id).await?;
-    if entries.is_empty() {
-        return Ok((Vec::new(), HashSet::new()));
-    }
-
-    let completed_call_ids: HashSet<String> = entries.iter().map(|e| e.call_id.clone()).collect();
-
-    let mut all_actions = Vec::new();
-    for entry in &entries {
-        for sa in &entry.actions {
-            all_actions.push(registry.deserialize(sa)?);
-        }
-    }
-
-    let patches =
-        reduce_state_actions(all_actions, base_state, "recovery", &ScopeContext::run())
-            .map_err(|e| PendingWriteError::Reduce(e.to_string()))?;
-
-    Ok((patches, completed_call_ids))
+    recover_pending_writes_from_entries(&entries, registry, base_state)
 }
 
 #[cfg(test)]
@@ -689,5 +732,109 @@ mod tests {
 
         assert_eq!(original_result, recovered_result);
         assert_eq!(recovered_result["test_counter"]["value"], 25);
+    }
+
+    #[tokio::test]
+    async fn read_by_thread_returns_entries_across_runs() {
+        let store = InMemoryPendingWriteStore::new();
+
+        // Write entries for two different runs on the same thread
+        for (run_id, call_id) in [("run_1", "call_a"), ("run_2", "call_b")] {
+            store
+                .write(PendingWriteEntry {
+                    run_id: run_id.into(),
+                    thread_id: "t1".into(),
+                    call_id: call_id.into(),
+                    tool_name: "tool".into(),
+                    actions: vec![],
+                    created_at: 100,
+                })
+                .await
+                .unwrap();
+        }
+
+        // Write entry for a different thread
+        store
+            .write(PendingWriteEntry {
+                run_id: "run_3".into(),
+                thread_id: "t2".into(),
+                call_id: "call_c".into(),
+                tool_name: "tool".into(),
+                actions: vec![],
+                created_at: 100,
+            })
+            .await
+            .unwrap();
+
+        let entries = store.read_by_thread("t1").await.unwrap();
+        assert_eq!(entries.len(), 2);
+        let call_ids: HashSet<String> = entries.iter().map(|e| e.call_id.clone()).collect();
+        assert!(call_ids.contains("call_a"));
+        assert!(call_ids.contains("call_b"));
+
+        // Different thread should not include t1 entries
+        let t2_entries = store.read_by_thread("t2").await.unwrap();
+        assert_eq!(t2_entries.len(), 1);
+        assert_eq!(t2_entries[0].call_id, "call_c");
+
+        // Unknown thread returns empty
+        let empty = store.read_by_thread("t_unknown").await.unwrap();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn recover_from_entries_produces_correct_state() {
+        let mut registry = ActionDeserializerRegistry::new();
+        registry.register::<TestCounter>();
+
+        let entries = vec![
+            PendingWriteEntry {
+                run_id: "run_old".into(),
+                thread_id: "t1".into(),
+                call_id: "call_a".into(),
+                tool_name: "tool".into(),
+                actions: vec![AnyStateAction::new::<TestCounter>(
+                    TestCounterAction::Increment(7),
+                )
+                .to_serialized_action()
+                .unwrap()],
+                created_at: 100,
+            },
+            PendingWriteEntry {
+                run_id: "run_old".into(),
+                thread_id: "t1".into(),
+                call_id: "call_b".into(),
+                tool_name: "tool".into(),
+                actions: vec![AnyStateAction::new::<TestCounter>(
+                    TestCounterAction::Increment(3),
+                )
+                .to_serialized_action()
+                .unwrap()],
+                created_at: 200,
+            },
+        ];
+
+        let base = json!({});
+        let (patches, completed) =
+            recover_pending_writes_from_entries(&entries, &registry, &base).unwrap();
+
+        assert_eq!(completed.len(), 2);
+        assert!(completed.contains("call_a"));
+        assert!(completed.contains("call_b"));
+
+        let mut state = base;
+        for p in &patches {
+            state = apply_patch(&state, p.patch()).unwrap();
+        }
+        assert_eq!(state["test_counter"]["value"], 10);
+    }
+
+    #[test]
+    fn recover_from_entries_empty_returns_empty() {
+        let registry = ActionDeserializerRegistry::new();
+        let (patches, completed) =
+            recover_pending_writes_from_entries(&[], &registry, &json!({})).unwrap();
+        assert!(patches.is_empty());
+        assert!(completed.is_empty());
     }
 }
