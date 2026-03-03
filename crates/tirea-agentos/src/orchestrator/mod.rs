@@ -373,6 +373,7 @@ pub struct AgentOs {
     agent_runs: Arc<AgentRunManager>,
     agent_tools: AgentToolsConfig,
     agent_state_store: Option<Arc<dyn ThreadStore>>,
+    pending_write_store: Option<Arc<dyn tirea_contract::PendingWriteStore>>,
 }
 
 #[derive(Clone)]
@@ -397,4 +398,5 @@ pub struct AgentOsBuilder {
     skills_config: SkillsConfig,
     agent_tools: AgentToolsConfig,
     agent_state_store: Option<Arc<dyn ThreadStore>>,
+    pending_write_store: Option<Arc<dyn tirea_contract::PendingWriteStore>>,
 }

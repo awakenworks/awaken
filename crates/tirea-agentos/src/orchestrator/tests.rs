@@ -227,6 +227,13 @@ impl AgentBehavior for TerminateWithRunEndPatchPlugin {
         ))
     }
 
+    fn register_action_deserializers(
+        &self,
+        registry: &mut crate::contracts::runtime::state::ActionDeserializerRegistry,
+    ) {
+        registry.register::<RunEndMarkerState>();
+    }
+
     async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         ActionSet::single(LifecycleAction::State(
             AnyStateAction::new::<RunEndMarkerState>(true),
@@ -3326,3 +3333,85 @@ async fn resolve_wires_stop_conditions_from_registry() {
         "stop policies should be handled by stop_policy behavior"
     );
 }
+
+#[tokio::test]
+async fn run_stream_recovers_pending_writes_from_stale_run() {
+    use futures::StreamExt;
+    use tirea_contract::PendingWriteStore as _;
+
+    let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
+    let pending_store = Arc::new(
+        tirea_contract::runtime::state::InMemoryPendingWriteStore::new(),
+    );
+
+    // Seed a pending write from a stale run_id.
+    let action = AnyStateAction::new::<RunEndMarkerState>(true);
+    let serialized = action.to_serialized_action().unwrap();
+    pending_store
+        .write(tirea_contract::runtime::state::PendingWriteEntry {
+            run_id: "run_old".into(),
+            thread_id: "t1".into(),
+            call_id: "call_stale".into(),
+            tool_name: "stale_tool".into(),
+            actions: vec![serialized],
+            created_at: 1,
+        })
+        .await
+        .unwrap();
+
+    let os = AgentOs::builder()
+        .with_agent_state_store(
+            storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>,
+        )
+        .with_pending_write_store(
+            pending_store.clone() as Arc<dyn tirea_contract::PendingWriteStore>,
+        )
+        .with_registered_behavior(
+            "terminate_with_run_end_patch",
+            Arc::new(TerminateWithRunEndPatchPlugin),
+        )
+        .with_agent(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini")
+                .with_behavior_id("terminate_with_run_end_patch"),
+        )
+        .build()
+        .unwrap();
+
+    let run = os
+        .run_stream(RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some("t1".to_string()),
+            run_id: Some("run_new".to_string()),
+            parent_run_id: None,
+            resource_id: None,
+            state: Some(json!({})),
+            messages: vec![],
+            initial_decisions: vec![],
+        })
+        .await
+        .unwrap();
+    let events: Vec<_> = run.events.collect().await;
+
+    assert!(
+        events.iter().any(|ev| matches!(ev, AgentEvent::RunFinish { .. })),
+        "expected RunFinish event, got: {events:?}"
+    );
+
+    let head = storage.load("t1").await.unwrap().unwrap();
+    let state = head.thread.rebuild_state().unwrap();
+
+    // The stale pending write should have been recovered: run_end_marker == true
+    assert_eq!(
+        state["run_end_marker"], json!(true),
+        "pending write from stale run must be recovered via run_stream; state: {state}"
+    );
+
+    // Stale run entries should be acknowledged (cleaned up)
+    let remaining = pending_store.read_by_thread("t1").await.unwrap();
+    assert!(
+        remaining.is_empty(),
+        "pending writes must be acknowledged after recovery"
+    );
+}
+

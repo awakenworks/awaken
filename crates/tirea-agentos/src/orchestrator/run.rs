@@ -44,6 +44,10 @@ impl AgentOs {
         self.agent_state_store.as_ref()
     }
 
+    pub fn pending_write_store(&self) -> Option<&Arc<dyn tirea_contract::PendingWriteStore>> {
+        self.pending_write_store.as_ref()
+    }
+
     fn require_agent_state_store(&self) -> Result<&Arc<dyn ThreadStore>, AgentOsRunError> {
         self.agent_state_store
             .as_ref()
@@ -188,7 +192,7 @@ impl AgentOs {
             state_committer: Some(Arc::new(AgentStateStoreStateCommitter::new(
                 agent_state_store.clone(),
             ))),
-            pending_write_store: None,
+            pending_write_store: self.pending_write_store.clone(),
             decision_tx,
             decision_rx,
         })
