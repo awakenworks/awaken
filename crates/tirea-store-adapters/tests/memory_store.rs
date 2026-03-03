@@ -1,11 +1,13 @@
 use serde_json::json;
 use std::sync::Arc;
+use tirea_contract::runtime::state::SerializedAction;
 use tirea_contract::storage::{
     ThreadReader, ThreadStore, ThreadStoreError, ThreadSync, ThreadWriter, VersionPrecondition,
 };
 use tirea_contract::thread::ThreadChangeSet;
 use tirea_contract::{
-    CheckpointReason, Message, MessageMetadata, MessageQuery, Role, Thread, ThreadListQuery,
+    CheckpointReason, Message, MessageMetadata, MessageQuery, Role, StateScope, Thread,
+    ThreadListQuery,
 };
 use tirea_state::{path, Op, Patch, TrackedPatch};
 use tirea_store_adapters::MemoryStore;
@@ -886,6 +888,39 @@ async fn test_append_preserves_parent_run_id() {
 
     let head = ThreadReader::load(&store, "child").await.unwrap().unwrap();
     assert_eq!(head.thread.parent_thread_id.as_deref(), Some("parent"));
+}
+
+/// Verify that actions in a ThreadChangeSet survive append → load_deltas roundtrip.
+#[tokio::test]
+async fn test_load_deltas_preserves_actions() {
+    let store = MemoryStore::new();
+    store.create(&Thread::new("t1")).await.unwrap();
+
+    let delta = ThreadChangeSet {
+        run_id: "run-1".to_string(),
+        parent_run_id: None,
+        reason: CheckpointReason::ToolResultsCommitted,
+        messages: vec![Arc::new(Message::assistant("hi"))],
+        patches: vec![],
+        actions: vec![SerializedAction {
+            state_type_name: "MyState".into(),
+            base_path: "my_state".into(),
+            scope: StateScope::Thread,
+            call_id_override: None,
+            payload: json!({"DoSomething": 42}),
+        }],
+        snapshot: None,
+    };
+    store
+        .append("t1", &delta, VersionPrecondition::Any)
+        .await
+        .unwrap();
+
+    let deltas = store.load_deltas("t1", 0).await.unwrap();
+    assert_eq!(deltas.len(), 1);
+    assert_eq!(deltas[0].actions.len(), 1);
+    assert_eq!(deltas[0].actions[0].state_type_name, "MyState");
+    assert_eq!(deltas[0].actions[0].payload, json!({"DoSomething": 42}));
 }
 
 /// Empty delta produces no change but still increments version.

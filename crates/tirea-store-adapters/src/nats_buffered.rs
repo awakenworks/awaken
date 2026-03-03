@@ -26,7 +26,7 @@
 use async_nats::jetstream;
 use async_trait::async_trait;
 use futures::StreamExt;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tirea_contract::storage::{
     Committed, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore,
@@ -173,7 +173,7 @@ impl NatsBufferedThreadWriter {
         };
 
         for (delta, _) in &deltas_with_msgs {
-            apply_delta(&mut thread, delta);
+            delta.apply_to(&mut thread);
         }
 
         self.inner.save(&thread).await?;
@@ -301,29 +301,6 @@ impl ThreadReader for NatsBufferedThreadWriter {
         query: &ThreadListQuery,
     ) -> Result<ThreadListPage, ThreadStoreError> {
         self.inner.list_threads(query).await
-    }
-}
-
-/// Apply a delta to a thread in-place (same logic as agent_state_store::apply_delta but
-/// accessible here without depending on the private function).
-fn apply_delta(thread: &mut Thread, delta: &ThreadChangeSet) {
-    let mut existing_message_ids: HashSet<String> = thread
-        .messages
-        .iter()
-        .filter_map(|m| m.id.clone())
-        .collect();
-    for message in &delta.messages {
-        if let Some(id) = message.id.as_ref() {
-            if !existing_message_ids.insert(id.clone()) {
-                continue;
-            }
-        }
-        thread.messages.push(message.clone());
-    }
-    thread.patches.extend(delta.patches.iter().cloned());
-    if let Some(ref snapshot) = delta.snapshot {
-        thread.state = snapshot.clone();
-        thread.patches.clear();
     }
 }
 

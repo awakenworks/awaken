@@ -28,10 +28,8 @@ pub use run::{
     RunLifecycleAction, RunLifecycleState, RunStatus, StoppedReason, TerminationReason,
 };
 pub use state::{
-    recover_pending_writes, recover_pending_writes_from_entries, reduce_state_actions,
-    ActionDeserializerRegistry, AnyStateAction, InMemoryPendingWriteStore, PendingWriteEntry,
-    PendingWriteError, PendingWriteStore, ScopeContext, SerializedAction, StateScope,
-    StateScopeRegistry, StateSpec,
+    reduce_state_actions, ActionDeserializerRegistry, AnyStateAction, PendingWriteError,
+    ScopeContext, SerializedAction, StateScope, StateScopeRegistry, StateSpec,
 };
 pub use tool_call::{
     suspended_calls_from_state, tool_call_states_from_state, ActivityContext, DecisionReplayPolicy,

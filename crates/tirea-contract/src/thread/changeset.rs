@@ -4,6 +4,7 @@ use crate::runtime::state::SerializedAction;
 use crate::thread::{Message, Thread};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tirea_state::TrackedPatch;
 
@@ -64,13 +65,102 @@ impl ThreadChangeSet {
     }
 
     /// Apply this delta to a thread in place.
+    ///
+    /// Messages are deduplicated by `id` — if a message with the same id
+    /// already exists in the thread it is skipped. Messages without an id
+    /// are always appended.
     pub fn apply_to(&self, thread: &mut Thread) {
         if let Some(ref snapshot) = self.snapshot {
             thread.state = snapshot.clone();
             thread.patches.clear();
         }
 
-        thread.messages.extend(self.messages.iter().cloned());
+        let mut existing_ids: HashSet<String> =
+            thread.messages.iter().filter_map(|m| m.id.clone()).collect();
+        for msg in &self.messages {
+            if let Some(ref id) = msg.id {
+                if !existing_ids.insert(id.clone()) {
+                    continue;
+                }
+            }
+            thread.messages.push(msg.clone());
+        }
         thread.patches.extend(self.patches.iter().cloned());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::thread::{Message, Thread};
+    use serde_json::json;
+
+    fn sample_changeset_with_actions() -> ThreadChangeSet {
+        ThreadChangeSet {
+            run_id: "run-1".into(),
+            parent_run_id: None,
+            reason: CheckpointReason::AssistantTurnCommitted,
+            messages: vec![Arc::new(Message::assistant("hello"))],
+            patches: vec![],
+            actions: vec![SerializedAction {
+                state_type_name: "TestCounter".into(),
+                base_path: "test_counter".into(),
+                scope: crate::runtime::state::StateScope::Thread,
+                call_id_override: None,
+                payload: json!({"Increment": 1}),
+            }],
+            snapshot: None,
+        }
+    }
+
+    #[test]
+    fn test_changeset_serde_roundtrip_with_actions() {
+        let cs = sample_changeset_with_actions();
+        assert_eq!(cs.actions.len(), 1);
+
+        let json = serde_json::to_string(&cs).unwrap();
+        let restored: ThreadChangeSet = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.actions.len(), 1);
+        assert_eq!(restored.actions[0].state_type_name, "TestCounter");
+        assert_eq!(restored.actions[0].payload, json!({"Increment": 1}));
+    }
+
+    #[test]
+    fn test_changeset_serde_backward_compat_no_actions() {
+        // Simulate old JSON that has no `actions` field.
+        let json = r#"{
+            "run_id": "run-1",
+            "reason": "RunFinished",
+            "messages": [],
+            "patches": []
+        }"#;
+        let cs: ThreadChangeSet = serde_json::from_str(json).unwrap();
+        assert!(cs.actions.is_empty());
+    }
+
+    #[test]
+    fn test_apply_to_deduplicates_messages() {
+        let msg = Arc::new(Message::user("hello"));
+        let delta = ThreadChangeSet {
+            run_id: "run-1".into(),
+            parent_run_id: None,
+            reason: CheckpointReason::AssistantTurnCommitted,
+            messages: vec![msg.clone()],
+            patches: vec![],
+            actions: vec![],
+            snapshot: None,
+        };
+
+        let mut thread = Thread::new("t1");
+        delta.apply_to(&mut thread);
+        delta.apply_to(&mut thread);
+
+        // The same message (by id) applied twice should appear only once.
+        assert_eq!(
+            thread.messages.len(),
+            1,
+            "apply_to should deduplicate messages by id"
+        );
     }
 }
