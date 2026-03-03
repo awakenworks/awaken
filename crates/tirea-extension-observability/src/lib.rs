@@ -3,630 +3,19 @@
 //! Captures per-inference and per-tool metrics via the Phase system,
 //! forwarding them to a pluggable [`MetricsSink`].
 
-use async_trait::async_trait;
-use genai::chat::ChatOptions;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
-use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
-use tirea_contract::runtime::action::Action;
-use tirea_contract::TokenUsage;
+mod metrics;
+mod plugin;
+mod sink;
+mod spans;
 
-fn lock_unpoison<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    match m.lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
+pub use metrics::{AgentMetrics, ModelStats, ToolStats};
+pub use plugin::LLMMetryPlugin;
+pub use sink::{InMemorySink, MetricsSink};
+pub use spans::{GenAISpan, ToolSpan};
 
-// =============================================================================
-// Span types (OTel GenAI aligned)
-// =============================================================================
-
-/// A single LLM inference span.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GenAISpan {
-    /// Model identifier (e.g. "gpt-4o-mini"). OTel: `gen_ai.request.model`.
-    pub model: String,
-    /// Provider name (e.g. "openai"). OTel: `gen_ai.provider.name`.
-    pub provider: String,
-    /// Operation name (e.g. "chat"). OTel: `gen_ai.operation.name`.
-    pub operation: String,
-    /// Response model (may differ from request model). OTel: `gen_ai.response.model`.
-    pub response_model: Option<String>,
-    /// Response ID. OTel: `gen_ai.response.id`.
-    pub response_id: Option<String>,
-    /// Finish reasons. OTel: `gen_ai.response.finish_reasons`.
-    pub finish_reasons: Vec<String>,
-    /// Error type if the inference failed. OTel: `error.type`.
-    pub error_type: Option<String>,
-    /// Input (prompt) tokens. OTel: `gen_ai.usage.input_tokens`.
-    pub input_tokens: Option<i32>,
-    /// Output (completion) tokens. OTel: `gen_ai.usage.output_tokens`.
-    pub output_tokens: Option<i32>,
-    /// Total tokens (non-OTel convenience).
-    pub total_tokens: Option<i32>,
-    /// Cache-read input tokens. OTel: `gen_ai.usage.cache_read.input_tokens`.
-    pub cache_read_input_tokens: Option<i32>,
-    /// Cache-creation input tokens. OTel: `gen_ai.usage.cache_creation.input_tokens`.
-    pub cache_creation_input_tokens: Option<i32>,
-    /// Sampling temperature. OTel: `gen_ai.request.temperature`.
-    pub temperature: Option<f64>,
-    /// Nucleus sampling (top-p). OTel: `gen_ai.request.top_p`.
-    pub top_p: Option<f64>,
-    /// Maximum tokens to generate. OTel: `gen_ai.request.max_tokens`.
-    pub max_tokens: Option<u32>,
-    /// Stop sequences. OTel: `gen_ai.request.stop_sequences`.
-    pub stop_sequences: Vec<String>,
-    /// Wall-clock duration in milliseconds. OTel: `gen_ai.client.operation.duration`.
-    pub duration_ms: u64,
-}
-
-/// A single tool execution span.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolSpan {
-    /// Tool name. OTel: `gen_ai.tool.name`.
-    pub name: String,
-    /// Operation name (always "execute_tool"). OTel: `gen_ai.operation.name`.
-    pub operation: String,
-    /// Tool call ID. OTel: `gen_ai.tool.call.id`.
-    pub call_id: String,
-    /// Tool type (always "function"). OTel: `gen_ai.tool.type`.
-    pub tool_type: String,
-    /// Error type when the tool failed. OTel: `error.type`.
-    pub error_type: Option<String>,
-    /// Wall-clock duration in milliseconds.
-    pub duration_ms: u64,
-}
-
-impl ToolSpan {
-    /// Whether the tool execution succeeded (no error).
-    pub fn is_success(&self) -> bool {
-        self.error_type.is_none()
-    }
-}
-
-/// Per-model aggregated inference statistics.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ModelStats {
-    /// Model identifier (e.g. "claude-sonnet-4-5").
-    pub model: String,
-    /// Provider name (e.g. "anthropic").
-    pub provider: String,
-    /// Number of inference calls.
-    pub inference_count: usize,
-    /// Total input (prompt) tokens.
-    pub input_tokens: i32,
-    /// Total output (completion) tokens.
-    pub output_tokens: i32,
-    /// Total tokens (input + output).
-    pub total_tokens: i32,
-    /// Total cache-read input tokens.
-    pub cache_read_input_tokens: i32,
-    /// Total cache-creation input tokens.
-    pub cache_creation_input_tokens: i32,
-    /// Total wall-clock inference duration in milliseconds.
-    pub total_duration_ms: u64,
-}
-
-/// Per-tool aggregated execution statistics.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ToolStats {
-    /// Tool name.
-    pub name: String,
-    /// Number of calls.
-    pub call_count: usize,
-    /// Number of failed calls.
-    pub failure_count: usize,
-    /// Total wall-clock execution duration in milliseconds.
-    pub total_duration_ms: u64,
-}
-
-/// Aggregated metrics for an agent session.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AgentMetrics {
-    /// All inference spans.
-    pub inferences: Vec<GenAISpan>,
-    /// All tool spans.
-    pub tools: Vec<ToolSpan>,
-    /// Total session duration in milliseconds.
-    pub session_duration_ms: u64,
-}
-
-impl AgentMetrics {
-    /// Total input tokens across all inferences.
-    pub fn total_input_tokens(&self) -> i32 {
-        self.inferences.iter().filter_map(|s| s.input_tokens).sum()
-    }
-
-    /// Total output tokens across all inferences.
-    pub fn total_output_tokens(&self) -> i32 {
-        self.inferences.iter().filter_map(|s| s.output_tokens).sum()
-    }
-
-    /// Total tokens across all inferences.
-    pub fn total_tokens(&self) -> i32 {
-        self.inferences.iter().filter_map(|s| s.total_tokens).sum()
-    }
-
-    /// Total cache-read input tokens across all inferences.
-    pub fn total_cache_read_tokens(&self) -> i32 {
-        self.inferences
-            .iter()
-            .filter_map(|s| s.cache_read_input_tokens)
-            .sum()
-    }
-
-    /// Total cache-creation input tokens across all inferences.
-    pub fn total_cache_creation_tokens(&self) -> i32 {
-        self.inferences
-            .iter()
-            .filter_map(|s| s.cache_creation_input_tokens)
-            .sum()
-    }
-
-    /// Total wall-clock inference duration in milliseconds.
-    pub fn total_inference_duration_ms(&self) -> u64 {
-        self.inferences.iter().map(|s| s.duration_ms).sum()
-    }
-
-    /// Total wall-clock tool execution duration in milliseconds.
-    pub fn total_tool_duration_ms(&self) -> u64 {
-        self.tools.iter().map(|s| s.duration_ms).sum()
-    }
-
-    /// Number of inferences.
-    pub fn inference_count(&self) -> usize {
-        self.inferences.len()
-    }
-
-    /// Number of tool executions.
-    pub fn tool_count(&self) -> usize {
-        self.tools.len()
-    }
-
-    /// Number of failed tool executions.
-    pub fn tool_failures(&self) -> usize {
-        self.tools.iter().filter(|t| !t.is_success()).count()
-    }
-
-    /// Inference statistics grouped by `(model, provider)`.
-    ///
-    /// Results are sorted by model name for deterministic output.
-    pub fn stats_by_model(&self) -> Vec<ModelStats> {
-        let mut map: HashMap<(String, String), ModelStats> = HashMap::new();
-        for span in &self.inferences {
-            let key = (span.model.clone(), span.provider.clone());
-            let entry = map.entry(key).or_insert_with(|| ModelStats {
-                model: span.model.clone(),
-                provider: span.provider.clone(),
-                ..Default::default()
-            });
-            entry.inference_count += 1;
-            entry.input_tokens += span.input_tokens.unwrap_or(0);
-            entry.output_tokens += span.output_tokens.unwrap_or(0);
-            entry.total_tokens += span.total_tokens.unwrap_or(0);
-            entry.cache_read_input_tokens += span.cache_read_input_tokens.unwrap_or(0);
-            entry.cache_creation_input_tokens += span.cache_creation_input_tokens.unwrap_or(0);
-            entry.total_duration_ms += span.duration_ms;
-        }
-        let mut result: Vec<ModelStats> = map.into_values().collect();
-        result.sort_by(|a, b| a.model.cmp(&b.model));
-        result
-    }
-
-    /// Tool execution statistics grouped by tool name.
-    ///
-    /// Results are sorted by tool name for deterministic output.
-    pub fn stats_by_tool(&self) -> Vec<ToolStats> {
-        let mut map: HashMap<String, ToolStats> = HashMap::new();
-        for span in &self.tools {
-            let entry = map.entry(span.name.clone()).or_insert_with(|| ToolStats {
-                name: span.name.clone(),
-                ..Default::default()
-            });
-            entry.call_count += 1;
-            if !span.is_success() {
-                entry.failure_count += 1;
-            }
-            entry.total_duration_ms += span.duration_ms;
-        }
-        let mut result: Vec<ToolStats> = map.into_values().collect();
-        result.sort_by(|a, b| a.name.cmp(&b.name));
-        result
-    }
-}
-
-// =============================================================================
-// MetricsSink trait
-// =============================================================================
-
-/// Trait for consuming telemetry data.
-///
-/// Implementations can send data to OTel collectors, log files, etc.
-pub trait MetricsSink: Send + Sync {
-    /// Called when an inference completes.
-    fn on_inference(&self, span: &GenAISpan);
-
-    /// Called when a tool execution completes.
-    fn on_tool(&self, span: &ToolSpan);
-
-    /// Called when a session ends with aggregated metrics.
-    fn on_run_end(&self, metrics: &AgentMetrics);
-}
-
-// =============================================================================
-// InMemorySink
-// =============================================================================
-
-/// In-memory sink for testing and inspection.
-#[derive(Debug, Clone, Default)]
-pub struct InMemorySink {
-    inner: Arc<Mutex<AgentMetrics>>,
-}
-
-impl InMemorySink {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Get a snapshot of the current metrics.
-    pub fn metrics(&self) -> AgentMetrics {
-        self.inner.lock().unwrap().clone()
-    }
-}
-
-impl MetricsSink for InMemorySink {
-    fn on_inference(&self, span: &GenAISpan) {
-        self.inner.lock().unwrap().inferences.push(span.clone());
-    }
-
-    fn on_tool(&self, span: &ToolSpan) {
-        self.inner.lock().unwrap().tools.push(span.clone());
-    }
-
-    fn on_run_end(&self, metrics: &AgentMetrics) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.session_duration_ms = metrics.session_duration_ms;
-    }
-}
-
-// =============================================================================
-// LLMMetryPlugin
-// =============================================================================
-
-/// Plugin that captures LLM and tool telemetry.
-///
-/// Attach an [`InMemorySink`] (or custom sink) to collect metrics:
-///
-/// ```ignore
-/// let sink = InMemorySink::new();
-/// let plugin = LLMMetryPlugin::new(sink.clone())
-///     .with_model("gpt-4o-mini")
-///     .with_provider("openai");
-/// let config = AgentDefinition::new("gpt-4o-mini")
-///     .with_behavior(Arc::new(plugin));
-/// // ... run agent ...
-/// let metrics = sink.metrics();
-/// let _total = metrics.total_tokens();
-/// ```
-pub struct LLMMetryPlugin {
-    sink: Arc<dyn MetricsSink>,
-    run_start: Mutex<Option<Instant>>,
-    metrics: Mutex<AgentMetrics>,
-    /// Inference timing: set at BeforeInference, consumed at AfterInference.
-    inference_start: Mutex<Option<Instant>>,
-    /// Tool timing per call_id: set at BeforeToolExecute, consumed at AfterToolExecute.
-    tool_start: Mutex<HashMap<String, Instant>>,
-    /// Model name captured from AgentDefinition (set externally or from data).
-    model: Mutex<String>,
-    /// Provider name (e.g. "openai", "anthropic"). OTel: `gen_ai.provider.name`.
-    provider: Mutex<String>,
-    /// Operation name (defaults to "chat").
-    operation: String,
-    /// Sampling temperature. OTel: `gen_ai.request.temperature`.
-    temperature: Mutex<Option<f64>>,
-    /// Nucleus sampling (top-p). OTel: `gen_ai.request.top_p`.
-    top_p: Mutex<Option<f64>>,
-    /// Maximum tokens to generate. OTel: `gen_ai.request.max_tokens`.
-    max_tokens: Mutex<Option<u32>>,
-    /// Stop sequences. OTel: `gen_ai.request.stop_sequences`.
-    stop_sequences: Mutex<Vec<String>>,
-    /// Tracing span for the current inference (created at BeforeInference, closed at AfterInference).
-    inference_tracing_span: Mutex<Option<tracing::Span>>,
-    /// Tracing span per tool call_id (created at BeforeToolExecute, closed at AfterToolExecute).
-    tool_tracing_span: Mutex<HashMap<String, tracing::Span>>,
-}
-
-impl LLMMetryPlugin {
-    pub fn new(sink: impl MetricsSink + 'static) -> Self {
-        Self {
-            sink: Arc::new(sink),
-            run_start: Mutex::new(None),
-            metrics: Mutex::new(AgentMetrics::default()),
-            inference_start: Mutex::new(None),
-            tool_start: Mutex::new(HashMap::new()),
-            model: Mutex::new(String::new()),
-            provider: Mutex::new(String::new()),
-            operation: "chat".to_string(),
-            temperature: Mutex::new(None),
-            top_p: Mutex::new(None),
-            max_tokens: Mutex::new(None),
-            stop_sequences: Mutex::new(Vec::new()),
-            inference_tracing_span: Mutex::new(None),
-            tool_tracing_span: Mutex::new(HashMap::new()),
-        }
-    }
-
-    pub fn with_model(self, model: impl Into<String>) -> Self {
-        *lock_unpoison(&self.model) = model.into();
-        self
-    }
-
-    pub fn with_provider(self, provider: impl Into<String>) -> Self {
-        *lock_unpoison(&self.provider) = provider.into();
-        self
-    }
-
-    pub fn with_chat_options(self, opts: &ChatOptions) -> Self {
-        *lock_unpoison(&self.temperature) = opts.temperature;
-        *lock_unpoison(&self.top_p) = opts.top_p;
-        *lock_unpoison(&self.max_tokens) = opts.max_tokens;
-        let seqs = &opts.stop_sequences;
-        if !seqs.is_empty() {
-            *lock_unpoison(&self.stop_sequences) = seqs.clone();
-        }
-        self
-    }
-}
-
-#[async_trait]
-impl AgentBehavior for LLMMetryPlugin {
-    fn id(&self) -> &str {
-        "llmmetry"
-    }
-
-    async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        *lock_unpoison(&self.run_start) = Some(Instant::now());
-        vec![]
-    }
-
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        *lock_unpoison(&self.inference_start) = Some(Instant::now());
-        let model = lock_unpoison(&self.model).clone();
-        let provider = lock_unpoison(&self.provider).clone();
-        let span_name = format!("{} {}", self.operation, model);
-        let span = tracing::info_span!("gen_ai",
-            "otel.name" = %span_name,
-            "otel.kind" = "client",
-            "otel.status_code" = tracing::field::Empty,
-            "otel.status_description" = tracing::field::Empty,
-            "gen_ai.provider.name" = %provider,
-            "gen_ai.operation.name" = %self.operation,
-            "gen_ai.request.model" = %model,
-            "gen_ai.request.temperature" = tracing::field::Empty,
-            "gen_ai.request.top_p" = tracing::field::Empty,
-            "gen_ai.request.max_tokens" = tracing::field::Empty,
-            "gen_ai.request.stop_sequences" = tracing::field::Empty,
-            "gen_ai.response.model" = tracing::field::Empty,
-            "gen_ai.response.id" = tracing::field::Empty,
-            "gen_ai.usage.input_tokens" = tracing::field::Empty,
-            "gen_ai.usage.output_tokens" = tracing::field::Empty,
-            "gen_ai.response.finish_reasons" = tracing::field::Empty,
-            "gen_ai.usage.cache_read.input_tokens" = tracing::field::Empty,
-            "gen_ai.usage.cache_creation.input_tokens" = tracing::field::Empty,
-            "error.type" = tracing::field::Empty,
-            "error.message" = tracing::field::Empty,
-        );
-        if let Some(t) = *lock_unpoison(&self.temperature) {
-            span.record("gen_ai.request.temperature", t);
-        }
-        if let Some(t) = *lock_unpoison(&self.top_p) {
-            span.record("gen_ai.request.top_p", t);
-        }
-        if let Some(t) = *lock_unpoison(&self.max_tokens) {
-            span.record("gen_ai.request.max_tokens", t as i64);
-        }
-        {
-            let seqs = lock_unpoison(&self.stop_sequences);
-            if !seqs.is_empty() {
-                span.record(
-                    "gen_ai.request.stop_sequences",
-                    format!("{:?}", *seqs).as_str(),
-                );
-            }
-        }
-        *lock_unpoison(&self.inference_tracing_span) = Some(span);
-        vec![]
-    }
-
-    async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        let duration_ms = self
-            .inference_start
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take()
-            .map(|s| s.elapsed().as_millis() as u64)
-            .unwrap_or(0);
-
-        let usage = ctx.response().and_then(|r| r.usage.as_ref());
-        let (input_tokens, output_tokens, total_tokens) = extract_token_counts(usage);
-        let (cache_read_input_tokens, cache_creation_input_tokens) = extract_cache_tokens(usage);
-        let error = ctx.inference_error().cloned();
-
-        let model = lock_unpoison(&self.model).clone();
-        let provider = lock_unpoison(&self.provider).clone();
-        let span = GenAISpan {
-            model,
-            provider,
-            operation: self.operation.clone(),
-            response_model: None,
-            response_id: None,
-            finish_reasons: Vec::new(),
-            error_type: error.as_ref().map(|e| e.error_type.clone()),
-            input_tokens,
-            output_tokens,
-            total_tokens,
-            cache_read_input_tokens,
-            cache_creation_input_tokens,
-            temperature: *lock_unpoison(&self.temperature),
-            top_p: *lock_unpoison(&self.top_p),
-            max_tokens: *lock_unpoison(&self.max_tokens),
-            stop_sequences: lock_unpoison(&self.stop_sequences).clone(),
-            duration_ms,
-        };
-
-        if let Some(tracing_span) = lock_unpoison(&self.inference_tracing_span).take() {
-            if let Some(v) = span.input_tokens {
-                tracing_span.record("gen_ai.usage.input_tokens", v);
-            }
-            if let Some(v) = span.output_tokens {
-                tracing_span.record("gen_ai.usage.output_tokens", v);
-            }
-            if let Some(v) = span.cache_read_input_tokens {
-                tracing_span.record("gen_ai.usage.cache_read.input_tokens", v);
-            }
-            if let Some(v) = span.cache_creation_input_tokens {
-                tracing_span.record("gen_ai.usage.cache_creation.input_tokens", v);
-            }
-            if !span.finish_reasons.is_empty() {
-                tracing_span.record(
-                    "gen_ai.response.finish_reasons",
-                    format!("{:?}", span.finish_reasons).as_str(),
-                );
-            }
-            if let Some(ref v) = span.response_model {
-                tracing_span.record("gen_ai.response.model", v.as_str());
-            }
-            if let Some(ref v) = span.response_id {
-                tracing_span.record("gen_ai.response.id", v.as_str());
-            }
-            if let Some(ref err) = error {
-                tracing_span.record("error.type", err.error_type.as_str());
-                tracing_span.record("error.message", err.message.as_str());
-                tracing_span.record("otel.status_code", "ERROR");
-                tracing_span.record("otel.status_description", err.message.as_str());
-            }
-            drop(tracing_span);
-        }
-
-        self.sink.on_inference(&span);
-        lock_unpoison(&self.metrics).inferences.push(span);
-        vec![]
-    }
-
-    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        let tool_name = ctx.tool_name().unwrap_or_default().to_string();
-        let call_id = ctx.tool_call_id().unwrap_or_default().to_string();
-        if !call_id.is_empty() {
-            self.tool_start
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .insert(call_id.clone(), Instant::now());
-        }
-        let provider = lock_unpoison(&self.provider).clone();
-        let span_name = format!("execute_tool {}", tool_name);
-        let span = tracing::info_span!("gen_ai",
-            "otel.name" = %span_name,
-            "otel.kind" = "internal",
-            "otel.status_code" = tracing::field::Empty,
-            "otel.status_description" = tracing::field::Empty,
-            "gen_ai.provider.name" = %provider,
-            "gen_ai.operation.name" = "execute_tool",
-            "gen_ai.tool.name" = %tool_name,
-            "gen_ai.tool.call.id" = %call_id,
-            "gen_ai.tool.type" = "function",
-            "error.type" = tracing::field::Empty,
-            "error.message" = tracing::field::Empty,
-        );
-        if !call_id.is_empty() {
-            lock_unpoison(&self.tool_tracing_span).insert(call_id, span);
-        }
-        vec![]
-    }
-
-    async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        let call_id_for_span = ctx.tool_call_id().unwrap_or_default().to_string();
-        let duration_ms = self
-            .tool_start
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&call_id_for_span)
-            .map(|s| s.elapsed().as_millis() as u64)
-            .unwrap_or(0);
-
-        let Some(result) = ctx.tool_result() else {
-            return vec![];
-        };
-        let error_type = if result.status == tirea_contract::runtime::tool_call::ToolStatus::Error {
-            Some("tool_error".to_string())
-        } else {
-            None
-        };
-        let error_message = result.message.clone().filter(|_| error_type.is_some());
-        let span = ToolSpan {
-            name: result.tool_name.clone(),
-            operation: "execute_tool".to_string(),
-            call_id: call_id_for_span.clone(),
-            tool_type: "function".to_string(),
-            error_type,
-            duration_ms,
-        };
-
-        let tracing_span = self
-            .tool_tracing_span
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&call_id_for_span);
-        if let Some(tracing_span) = tracing_span {
-            if let (Some(ref v), Some(ref msg)) = (&span.error_type, &error_message) {
-                tracing_span.record("error.type", v.as_str());
-                tracing_span.record("error.message", msg.as_str());
-                tracing_span.record("otel.status_code", "ERROR");
-                tracing_span.record("otel.status_description", msg.as_str());
-            }
-            drop(tracing_span);
-        }
-
-        self.sink.on_tool(&span);
-        lock_unpoison(&self.metrics).tools.push(span);
-        vec![]
-    }
-
-    async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> Vec<Box<dyn Action>> {
-        let session_duration_ms = self
-            .run_start
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take()
-            .map(|s| s.elapsed().as_millis() as u64)
-            .unwrap_or(0);
-
-        lock_unpoison(&self.inference_tracing_span).take();
-        lock_unpoison(&self.tool_tracing_span).clear();
-        lock_unpoison(&self.tool_start).clear();
-
-        let mut metrics = lock_unpoison(&self.metrics).clone();
-        metrics.session_duration_ms = session_duration_ms;
-        self.sink.on_run_end(&metrics);
-        vec![]
-    }
-}
-
-fn extract_token_counts(usage: Option<&TokenUsage>) -> (Option<i32>, Option<i32>, Option<i32>) {
-    match usage {
-        Some(u) => (u.prompt_tokens, u.completion_tokens, u.total_tokens),
-        None => (None, None, None),
-    }
-}
-
-fn extract_cache_tokens(usage: Option<&TokenUsage>) -> (Option<i32>, Option<i32>) {
-    match usage {
-        Some(u) => (u.cache_read_tokens, u.cache_creation_tokens),
-        None => (None, None),
-    }
-}
+// Make private helpers visible to the test module below.
+#[cfg(test)]
+use plugin::{extract_cache_tokens, extract_token_counts};
 
 // =============================================================================
 // Tests
@@ -645,15 +34,18 @@ mod tests {
     use tirea_contract::runtime::StreamResult;
     use tirea_contract::testing::TestFixture;
     use tirea_contract::thread::ToolCall;
+    use tirea_contract::TokenUsage;
 
     /// Dispatch helper that builds a ReadOnlyContext from StepContext + fixture
     /// and calls the appropriate AgentBehavior hook.
     async fn run_phase(
-        plugin: &(impl AgentBehavior + ?Sized),
+        plugin: &(impl tirea_contract::AgentBehavior + ?Sized),
         phase: Phase,
         step: &StepContext<'_>,
         fixture: &TestFixture,
     ) {
+        use tirea_contract::ReadOnlyContext;
+
         let config = &fixture.run_config;
         let doc = &fixture.doc;
         let messages = step.messages();
@@ -674,28 +66,28 @@ mod tests {
 
         match phase {
             Phase::RunStart => {
-                AgentBehavior::run_start(plugin, &ctx).await;
+                tirea_contract::AgentBehavior::run_start(plugin, &ctx).await;
             }
             Phase::StepStart => {
-                AgentBehavior::step_start(plugin, &ctx).await;
+                tirea_contract::AgentBehavior::step_start(plugin, &ctx).await;
             }
             Phase::BeforeInference => {
-                AgentBehavior::before_inference(plugin, &ctx).await;
+                tirea_contract::AgentBehavior::before_inference(plugin, &ctx).await;
             }
             Phase::AfterInference => {
-                AgentBehavior::after_inference(plugin, &ctx).await;
+                tirea_contract::AgentBehavior::after_inference(plugin, &ctx).await;
             }
             Phase::BeforeToolExecute => {
-                AgentBehavior::before_tool_execute(plugin, &ctx).await;
+                tirea_contract::AgentBehavior::before_tool_execute(plugin, &ctx).await;
             }
             Phase::AfterToolExecute => {
-                AgentBehavior::after_tool_execute(plugin, &ctx).await;
+                tirea_contract::AgentBehavior::after_tool_execute(plugin, &ctx).await;
             }
             Phase::StepEnd => {
-                AgentBehavior::step_end(plugin, &ctx).await;
+                tirea_contract::AgentBehavior::step_end(plugin, &ctx).await;
             }
             Phase::RunEnd => {
-                AgentBehavior::run_end(plugin, &ctx).await;
+                tirea_contract::AgentBehavior::run_end(plugin, &ctx).await;
             }
         }
     }
@@ -931,7 +323,8 @@ mod tests {
 
         run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
 
-        step.extensions.get_mut::<ToolGate>().unwrap().result = Some(ToolResult::error("write", "permission denied"));
+        step.extensions.get_mut::<ToolGate>().unwrap().result =
+            Some(ToolResult::error("write", "permission denied"));
 
         run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
@@ -946,7 +339,7 @@ mod tests {
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone());
 
-        let mut step = fix.step(vec![]);
+        let step = fix.step(vec![]);
 
         run_phase(&plugin, Phase::RunStart, &step, &fix).await;
 
@@ -1327,7 +720,7 @@ mod tests {
     }
 
     struct SpanCaptureLayer {
-        captured: Arc<Mutex<Vec<CapturedSpan>>>,
+        captured: Arc<std::sync::Mutex<Vec<CapturedSpan>>>,
     }
 
     impl<S: tracing::Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S>
@@ -1361,7 +754,7 @@ mod tests {
     #[tokio::test]
     async fn test_tracing_span_inference() {
         let fix = TestFixture::new();
-        let captured = Arc::new(Mutex::new(Vec::<CapturedSpan>::new()));
+        let captured = Arc::new(std::sync::Mutex::new(Vec::<CapturedSpan>::new()));
         let layer = SpanCaptureLayer {
             captured: captured.clone(),
         };
@@ -1392,7 +785,7 @@ mod tests {
     #[tokio::test]
     async fn test_tracing_span_tool() {
         let fix = TestFixture::new();
-        let captured = Arc::new(Mutex::new(Vec::<CapturedSpan>::new()));
+        let captured = Arc::new(std::sync::Mutex::new(Vec::<CapturedSpan>::new()));
         let layer = SpanCaptureLayer {
             captured: captured.clone(),
         };
@@ -1422,7 +815,7 @@ mod tests {
     fn test_plugin_id() {
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink);
-        assert_eq!(AgentBehavior::id(&plugin), "llmmetry");
+        assert_eq!(tirea_contract::AgentBehavior::id(&plugin), "llmmetry");
     }
 
     // ---- OTel export compatibility tests ----
@@ -1521,7 +914,6 @@ mod tests {
         async fn test_otel_export_inference_error_sets_status_and_error_type() {
             let fix = TestFixture::new();
             use opentelemetry::trace::Status;
-            use tirea_contract::runtime::inference::{InferenceError, LLMResponse};
 
             let (_guard, exporter, provider) = setup_otel_test();
 
@@ -1721,7 +1113,8 @@ mod tests {
                 let call = ToolCall::new("c1", "test", json!({}));
                 step.extensions.insert(ToolGate::from_tool_call(&call));
                 run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-                step.extensions.get_mut::<ToolGate>().unwrap().result = Some(ToolResult::success("test", json!({})));
+                step.extensions.get_mut::<ToolGate>().unwrap().result =
+                    Some(ToolResult::success("test", json!({})));
                 run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
             }
 
@@ -1766,7 +1159,8 @@ mod tests {
                 let call = ToolCall::new("c1", "search", json!({}));
                 step.extensions.insert(ToolGate::from_tool_call(&call));
                 run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-                step.extensions.get_mut::<ToolGate>().unwrap().result = Some(ToolResult::success("search", json!({})));
+                step.extensions.get_mut::<ToolGate>().unwrap().result =
+                    Some(ToolResult::success("search", json!({})));
                 run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
             }
 
@@ -1915,7 +1309,8 @@ mod tests {
             step.extensions.insert(ToolGate::from_tool_call(&call));
 
             run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-            step.extensions.get_mut::<ToolGate>().unwrap().result = Some(ToolResult::success("web_search", json!({})));
+            step.extensions.get_mut::<ToolGate>().unwrap().result =
+                Some(ToolResult::success("web_search", json!({})));
             run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
             let _ = provider.force_flush();
@@ -1984,7 +1379,8 @@ mod tests {
             step.extensions.insert(ToolGate::from_tool_call(&call));
 
             run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-            step.extensions.get_mut::<ToolGate>().unwrap().result = Some(ToolResult::success("search", json!({})));
+            step.extensions.get_mut::<ToolGate>().unwrap().result =
+                Some(ToolResult::success("search", json!({})));
             run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
             let _ = provider.force_flush();
@@ -2016,7 +1412,8 @@ mod tests {
             step.extensions.insert(ToolGate::from_tool_call(&call));
 
             run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-            step.extensions.get_mut::<ToolGate>().unwrap().result = Some(ToolResult::success("search", json!({})));
+            step.extensions.get_mut::<ToolGate>().unwrap().result =
+                Some(ToolResult::success("search", json!({})));
             run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
             let _ = provider.force_flush();
@@ -2260,7 +1657,7 @@ mod tests {
             let fix = TestFixture::new();
             let sink = InMemorySink::new();
 
-            let opts = ChatOptions::default()
+            let opts = genai::chat::ChatOptions::default()
                 .with_temperature(0.7)
                 .with_max_tokens(2048)
                 .with_top_p(0.9);
@@ -2293,7 +1690,7 @@ mod tests {
             let fix = TestFixture::new();
             let (_guard, exporter, provider) = setup_otel_test();
 
-            let opts = ChatOptions::default()
+            let opts = genai::chat::ChatOptions::default()
                 .with_temperature(0.5)
                 .with_max_tokens(1024);
 
@@ -2381,7 +1778,8 @@ mod tests {
             step.extensions.insert(ToolGate::from_tool_call(&call));
 
             run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-            step.extensions.get_mut::<ToolGate>().unwrap().result = Some(ToolResult::success("search", json!({})));
+            step.extensions.get_mut::<ToolGate>().unwrap().result =
+                Some(ToolResult::success("search", json!({})));
             run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
             let _ = provider.force_flush();
