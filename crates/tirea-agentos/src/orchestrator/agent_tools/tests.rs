@@ -1,7 +1,7 @@
 use super::*;
 use crate::contracts::runtime::behavior::ReadOnlyContext;
+use crate::contracts::runtime::phase::{ActionSet, BeforeInferenceAction};
 use crate::contracts::runtime::phase::{Phase, StepContext};
-use crate::contracts::runtime::phase::{BeforeInferenceAction, ActionSet};
 use crate::contracts::runtime::state::{reduce_state_actions, ScopeContext};
 use crate::contracts::runtime::tool_call::ToolStatus;
 use crate::contracts::thread::Thread;
@@ -137,7 +137,10 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
     let fixture = TestFixture::new();
     let mut step = StepContext::new(fixture.ctx(), "owner-1", &fixture.messages, vec![]);
     plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
-    let reminder = step.messaging.reminders.first()
+    let reminder = step
+        .messaging
+        .reminders
+        .first()
         .expect("running reminder should be present");
     assert!(reminder.contains("status=\"running\""));
 
@@ -145,7 +148,10 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
     let fixture2 = TestFixture::new();
     let mut step2 = StepContext::new(fixture2.ctx(), "owner-1", &fixture2.messages, vec![]);
     plugin.run_phase(Phase::AfterToolExecute, &mut step2).await;
-    let reminder2 = step2.messaging.reminders.first()
+    let reminder2 = step2
+        .messaging
+        .reminders
+        .first()
         .expect("stopped reminder should be present");
     assert!(reminder2.contains("status=\"stopped\""));
 }
@@ -209,6 +215,38 @@ async fn handle_table_ignores_stale_completion_by_epoch() {
         .await
         .expect("latest epoch completion should apply");
     assert_eq!(applied.status, SubAgentStatus::Completed);
+}
+
+#[tokio::test]
+async fn handle_table_remove_if_epoch_only_removes_matching_generation() {
+    let handles = SubAgentHandleTable::new();
+    let epoch1 = handles
+        .put_running(
+            "run-1",
+            "owner".to_string(),
+            "sub-agent-run-1".to_string(),
+            "agent-a".to_string(),
+            None,
+            None,
+        )
+        .await;
+    let epoch2 = handles
+        .put_running(
+            "run-1",
+            "owner".to_string(),
+            "sub-agent-run-1".to_string(),
+            "agent-a".to_string(),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(epoch1, 1);
+    assert_eq!(epoch2, 2);
+
+    assert!(!handles.remove_if_epoch("run-1", epoch1).await);
+    assert!(handles.contains("run-1").await);
+    assert!(handles.remove_if_epoch("run-1", epoch2).await);
+    assert!(!handles.contains("run-1").await);
 }
 
 #[tokio::test]
@@ -297,7 +335,10 @@ impl AgentBehavior for SlowTerminatePlugin {
         "slow_terminate_behavior_requested"
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+    async fn before_inference(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeInferenceAction> {
         tokio::time::sleep(Duration::from_millis(120)).await;
         ActionSet::single(BeforeInferenceAction::Terminate(
             crate::contracts::TerminationReason::BehaviorRequested,
@@ -626,7 +667,9 @@ async fn agent_run_tool_persists_run_state_patch() {
     );
     // No thread field in SubAgent.
     assert!(
-        updated["sub_agents"]["runs"][&run_id].get("thread").is_none()
+        updated["sub_agents"]["runs"][&run_id]
+            .get("thread")
+            .is_none()
             || updated["sub_agents"]["runs"][&run_id]["thread"].is_null(),
         "SubAgent should not contain embedded thread"
     );
@@ -681,6 +724,67 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
     assert_eq!(
         updated["sub_agents"]["runs"][&run_id]["parent_run_id"],
         json!("parent-run-42")
+    );
+}
+
+#[tokio::test]
+async fn agent_run_tool_query_existing_run_keeps_original_parent_lineage() {
+    let os = AgentOs::builder()
+        .with_agent(
+            "worker",
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+        )
+        .build()
+        .unwrap();
+    let handles = Arc::new(SubAgentHandleTable::new());
+    handles
+        .put_running(
+            "run-1",
+            "owner-thread".to_string(),
+            "custom-child-thread".to_string(),
+            "worker".to_string(),
+            Some("origin-parent-run".to_string()),
+            None,
+        )
+        .await;
+    let run_tool = AgentRunTool::new(os, handles);
+
+    let base_doc = json!({
+        "sub_agents": {
+            "runs": {
+                "run-1": {
+                    "thread_id": "custom-child-thread",
+                    "parent_run_id": "origin-parent-run",
+                    "agent_id": "worker",
+                    "status": "running"
+                }
+            }
+        }
+    });
+    let mut fix = TestFixture::new_with_state(base_doc.clone());
+    fix.run_config = caller_scope_with_state_and_run(base_doc.clone(), "query-parent-run");
+
+    let result = run_tool
+        .execute(
+            json!({
+                "run_id":"run-1",
+                "background": false
+            }),
+            &fix.ctx_with("call-run", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Success);
+
+    let patch = fix.ctx_with("call-run", "tool:agent_run").take_patch();
+    let updated = apply_patches(&base_doc, std::iter::once(patch.patch())).unwrap();
+    assert_eq!(
+        updated["sub_agents"]["runs"]["run-1"]["parent_run_id"],
+        json!("origin-parent-run")
+    );
+    assert_eq!(
+        updated["sub_agents"]["runs"]["run-1"]["thread_id"],
+        json!("custom-child-thread")
     );
 }
 
@@ -926,7 +1030,8 @@ async fn recovery_plugin_detects_orphan_and_records_confirmation() {
         json!("stopped")
     );
     assert_eq!(
-        updated["__tool_call_scope"]["agent_recovery_run-1"]["suspended_call"]["suspension"]["action"],
+        updated["__tool_call_scope"]["agent_recovery_run-1"]["suspended_call"]["suspension"]
+            ["action"],
         json!(AGENT_RECOVERY_INTERACTION_ACTION)
     );
     assert_eq!(
@@ -1218,7 +1323,8 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
         "tool-level ask should not set recovery tool-call resume state"
     );
     assert_eq!(
-        updated["__tool_call_scope"]["agent_recovery_run-1"]["suspended_call"]["suspension"]["action"],
+        updated["__tool_call_scope"]["agent_recovery_run-1"]["suspended_call"]["suspension"]
+            ["action"],
         json!(AGENT_RECOVERY_INTERACTION_ACTION)
     );
 }
@@ -1288,12 +1394,7 @@ async fn parallel_background_runs_and_stop_all() {
             .unwrap();
         assert_eq!(started.status, ToolStatus::Success);
         assert_eq!(started.data["status"], json!("running"));
-        run_ids.push(
-            started.data["run_id"]
-                .as_str()
-                .unwrap()
-                .to_string(),
-        );
+        run_ids.push(started.data["run_id"].as_str().unwrap().to_string());
     }
 
     // All should show as running.
@@ -1405,10 +1506,7 @@ async fn cancellation_requested_overrides_completion_status() {
         .await;
 
     // Stop the run (sets run_cancellation_requested).
-    handles
-        .stop_owned_tree("owner", "run-1")
-        .await
-        .unwrap();
+    handles.stop_owned_tree("owner", "run-1").await.unwrap();
 
     // Completion arrives with Completed, but cancellation should win.
     let result = handles
@@ -1532,12 +1630,24 @@ async fn handle_table_different_owners_cannot_see_each_others_runs() {
         .await;
 
     // Owner-1 can see run-a but not run-b.
-    assert!(handles.get_owned_summary("owner-1", "run-a").await.is_some());
-    assert!(handles.get_owned_summary("owner-1", "run-b").await.is_none());
+    assert!(handles
+        .get_owned_summary("owner-1", "run-a")
+        .await
+        .is_some());
+    assert!(handles
+        .get_owned_summary("owner-1", "run-b")
+        .await
+        .is_none());
 
     // Owner-2 can see run-b but not run-a.
-    assert!(handles.get_owned_summary("owner-2", "run-b").await.is_some());
-    assert!(handles.get_owned_summary("owner-2", "run-a").await.is_none());
+    assert!(handles
+        .get_owned_summary("owner-2", "run-b")
+        .await
+        .is_some());
+    assert!(handles
+        .get_owned_summary("owner-2", "run-a")
+        .await
+        .is_none());
 
     // running_or_stopped_for_owner returns only own runs.
     let owner1_runs = handles.running_or_stopped_for_owner("owner-1").await;
@@ -1660,7 +1770,10 @@ async fn running_or_stopped_for_owner_excludes_completed_and_failed() {
             },
         )
         .await;
-    handles.stop_owned_tree("owner", "run-stopped").await.unwrap();
+    handles
+        .stop_owned_tree("owner", "run-stopped")
+        .await
+        .unwrap();
 
     // Verify: only Running and Stopped returned.
     let visible = handles.running_or_stopped_for_owner("owner").await;
@@ -1677,7 +1790,10 @@ async fn running_or_stopped_for_owner_excludes_completed_and_failed() {
     });
 
     // Verify epoch1 is untouched.
-    let s = handles.get_owned_summary("owner", "run-running").await.unwrap();
+    let s = handles
+        .get_owned_summary("owner", "run-running")
+        .await
+        .unwrap();
     assert_eq!(s.status, SubAgentStatus::Running);
     let _ = epoch1;
 }
@@ -1776,7 +1892,10 @@ async fn concurrent_put_running_same_run_id_increments_epoch() {
     assert_eq!(max_epoch, 2);
 
     // The final state should reflect the last writer.
-    let summary = handles.get_owned_summary("owner", "run-race").await.unwrap();
+    let summary = handles
+        .get_owned_summary("owner", "run-race")
+        .await
+        .unwrap();
     assert_eq!(summary.status, SubAgentStatus::Running);
 }
 
@@ -2252,10 +2371,7 @@ async fn agent_stop_tool_requires_run_id() {
     fix.run_config = caller_scope();
 
     let result = stop_tool
-        .execute(
-            json!({}),
-            &fix.ctx_with("call-1", "tool:agent_stop"),
-        )
+        .execute(json!({}), &fix.ctx_with("call-1", "tool:agent_stop"))
         .await
         .unwrap();
     assert_eq!(result.status, ToolStatus::Error);
@@ -2317,10 +2433,7 @@ async fn agent_output_tool_requires_run_id() {
     let fix = TestFixture::new();
 
     let result = tool
-        .execute(
-            json!({}),
-            &fix.ctx_with("call-1", "tool:agent_output"),
-        )
+        .execute(json!({}), &fix.ctx_with("call-1", "tool:agent_output"))
         .await
         .unwrap();
     assert_eq!(result.status, ToolStatus::Error);
@@ -2520,12 +2633,12 @@ async fn recovery_plugin_no_action_when_all_running_have_live_handles() {
     let has_suspended = updated
         .get("__tool_call_scope")
         .and_then(|scope| scope.as_object())
-        .map(|obj| {
-            obj.values()
-                .any(|v| v.get("suspended_call").is_some())
-        })
+        .map(|obj| obj.values().any(|v| v.get("suspended_call").is_some()))
         .unwrap_or(false);
-    assert!(!has_suspended, "no recovery suspension should be created when all have live handles");
+    assert!(
+        !has_suspended,
+        "no recovery suspension should be created when all have live handles"
+    );
 }
 
 // ── Recovery plugin: mixed statuses only Running without handle is orphan ────
@@ -2583,10 +2696,7 @@ async fn recovery_plugin_ignores_completed_stopped_failed_in_persisted_state() {
     let has_suspended = updated
         .get("__tool_call_scope")
         .and_then(|scope| scope.as_object())
-        .map(|obj| {
-            obj.values()
-                .any(|v| v.get("suspended_call").is_some())
-        })
+        .map(|obj| obj.values().any(|v| v.get("suspended_call").is_some()))
         .unwrap_or(false);
     assert!(!has_suspended);
 }
@@ -2747,17 +2857,11 @@ async fn parallel_background_launches_produce_unique_run_ids() {
             .await
             .unwrap();
         assert_eq!(started.status, ToolStatus::Success);
-        run_ids.push(
-            started.data["run_id"]
-                .as_str()
-                .unwrap()
-                .to_string(),
-        );
+        run_ids.push(started.data["run_id"].as_str().unwrap().to_string());
     }
 
     // All run_ids should be unique.
-    let unique: std::collections::HashSet<&str> =
-        run_ids.iter().map(|s| s.as_str()).collect();
+    let unique: std::collections::HashSet<&str> = run_ids.iter().map(|s| s.as_str()).collect();
     assert_eq!(unique.len(), 5, "all run_ids should be unique");
 
     // All should be visible as running.
@@ -2816,7 +2920,10 @@ async fn parallel_launch_and_immediate_stop() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Verify the run is stopped (cancellation override should prevent it from flipping to completed).
-    let summary = handles.get_owned_summary("owner-thread", &run_id).await.unwrap();
+    let summary = handles
+        .get_owned_summary("owner-thread", &run_id)
+        .await
+        .unwrap();
     assert_eq!(summary.status, SubAgentStatus::Stopped);
 }
 
@@ -2911,7 +3018,10 @@ async fn handle_table_collect_descendants_across_owners() {
     assert!(!stopped_ids.contains(&"other-child"));
 
     // other-child should still be running.
-    let other = handles.get_owned_summary("owner-2", "other-child").await.unwrap();
+    let other = handles
+        .get_owned_summary("owner-2", "other-child")
+        .await
+        .unwrap();
     assert_eq!(other.status, SubAgentStatus::Running);
 }
 
@@ -2969,7 +3079,10 @@ async fn plugin_reminder_shows_multiple_runs() {
     let fixture = TestFixture::new();
     let mut step = StepContext::new(fixture.ctx(), "owner-1", &fixture.messages, vec![]);
     plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
-    let reminder = step.messaging.reminders.first()
+    let reminder = step
+        .messaging
+        .reminders
+        .first()
         .expect("should have a reminder for multiple running sub-agents");
     assert!(reminder.contains("run-1"));
     assert!(reminder.contains("run-2"));
@@ -2987,9 +3100,7 @@ async fn plugin_reminder_shows_multiple_runs() {
 fn build_integration_os() -> (AgentOs, Arc<tirea_store_adapters::MemoryStore>) {
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
     let os = AgentOs::builder()
-        .with_agent_state_store(
-            storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>,
-        )
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_registered_behavior(
             "slow_terminate_behavior_requested",
             Arc::new(SlowTerminatePlugin),
@@ -3208,23 +3319,19 @@ async fn integration_parent_state_contains_only_lightweight_metadata() {
 
     // Should NOT have embedded thread or messages.
     assert!(
-        sub_agent_entry.get("thread").is_none()
-            || sub_agent_entry["thread"].is_null(),
+        sub_agent_entry.get("thread").is_none() || sub_agent_entry["thread"].is_null(),
         "SubAgent should NOT contain embedded Thread"
     );
     assert!(
-        sub_agent_entry.get("messages").is_none()
-            || sub_agent_entry["messages"].is_null(),
+        sub_agent_entry.get("messages").is_none() || sub_agent_entry["messages"].is_null(),
         "SubAgent should NOT contain messages"
     );
     assert!(
-        sub_agent_entry.get("state").is_none()
-            || sub_agent_entry["state"].is_null(),
+        sub_agent_entry.get("state").is_none() || sub_agent_entry["state"].is_null(),
         "SubAgent should NOT contain state snapshot"
     );
     assert!(
-        sub_agent_entry.get("patches").is_none()
-            || sub_agent_entry["patches"].is_null(),
+        sub_agent_entry.get("patches").is_none() || sub_agent_entry["patches"].is_null(),
         "SubAgent should NOT contain patches"
     );
 }
@@ -3289,6 +3396,57 @@ async fn integration_background_sub_agent_persists_to_store_after_completion() {
 }
 
 #[tokio::test]
+async fn integration_background_sub_agent_preserves_parent_run_id_in_deltas() {
+    use crate::contracts::storage::ThreadSync;
+
+    let (os, storage) = build_integration_os();
+    let handles = Arc::new(SubAgentHandleTable::new());
+    let run_tool = AgentRunTool::new(os, handles);
+
+    let mut fix = TestFixture::new();
+    fix.run_config = integration_caller_scope(
+        json!({}),
+        "parent-run-lineage",
+        vec![crate::contracts::thread::Message::user("hi")],
+    );
+
+    let result = run_tool
+        .execute(
+            json!({
+                "agent_id": "worker",
+                "prompt": "background lineage check",
+                "background": true
+            }),
+            &fix.ctx_with("call-1", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.status, ToolStatus::Success);
+    let run_id = result.data["run_id"].as_str().unwrap().to_string();
+    let child_thread_id = super::tools::sub_agent_thread_id(&run_id);
+
+    let mut deltas = Vec::new();
+    for _ in 0..20 {
+        match storage.load_deltas(&child_thread_id, 0).await {
+            Ok(found) if !found.is_empty() => {
+                deltas = found;
+                break;
+            }
+            _ => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+    assert!(
+        !deltas.is_empty(),
+        "expected at least one persisted delta for child thread"
+    );
+    assert_eq!(
+        deltas[0].parent_run_id.as_deref(),
+        Some("parent-run-lineage"),
+        "background sub-agent delta should retain parent_run_id lineage"
+    );
+}
+
+#[tokio::test]
 async fn integration_fork_context_passes_state_to_sub_agent_thread() {
     use crate::contracts::storage::ThreadReader;
 
@@ -3306,11 +3464,7 @@ async fn integration_fork_context_passes_state_to_sub_agent_thread() {
     ];
 
     let mut fix = TestFixture::new();
-    fix.run_config = integration_caller_scope(
-        fork_state.clone(),
-        "parent-run-1",
-        fork_messages,
-    );
+    fix.run_config = integration_caller_scope(fork_state.clone(), "parent-run-1", fork_messages);
 
     let result = run_tool
         .execute(
@@ -3559,9 +3713,7 @@ impl crate::runtime::loop_runner::LlmExecutor for ToolCallMockLlm {
         _chat_req: genai::chat::ChatRequest,
         _options: Option<&genai::chat::ChatOptions>,
     ) -> genai::Result<crate::runtime::loop_runner::LlmEventStream> {
-        use genai::chat::{
-            ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk,
-        };
+        use genai::chat::{ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk};
 
         let n = self
             .call_count
@@ -3667,9 +3819,7 @@ impl crate::contracts::runtime::tool_call::Tool for CountingTool {
         crate::contracts::runtime::tool_call::ToolResult,
         crate::contracts::runtime::tool_call::ToolError,
     > {
-        let n = self
-            .count
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let n = self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(crate::contracts::runtime::tool_call::ToolResult::success(
             "count",
             json!({"invocation": n + 1}),
@@ -3679,14 +3829,12 @@ impl crate::contracts::runtime::tool_call::Tool for CountingTool {
 
 #[tokio::test]
 async fn integration_sub_agent_executes_tool_via_mock_llm() {
-    use crate::contracts::storage::ThreadReader;
     use crate::contracts::io::RunRequest;
+    use crate::contracts::storage::ThreadReader;
 
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
     let os = AgentOs::builder()
-        .with_agent_state_store(
-            storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>,
-        )
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_agent("worker", crate::orchestrator::AgentDefinition::new("mock"))
         .with_tools(HashMap::from([(
             "echo".to_string(),
@@ -3697,10 +3845,13 @@ async fn integration_sub_agent_executes_tool_via_mock_llm() {
 
     // Resolve, inject mock LLM, prepare, execute.
     let mut resolved = os.resolve("worker").unwrap();
-    resolved.agent = resolved.agent.with_llm_executor(
-        Arc::new(ToolCallMockLlm::new("echo", json!({"input": "hello world"})))
-            as Arc<dyn crate::runtime::loop_runner::LlmExecutor>,
-    );
+    resolved.agent = resolved
+        .agent
+        .with_llm_executor(Arc::new(ToolCallMockLlm::new(
+            "echo",
+            json!({"input": "hello world"}),
+        ))
+            as Arc<dyn crate::runtime::loop_runner::LlmExecutor>);
 
     let child_thread_id = "sub-agent-tool-test";
     let prepared = os
@@ -3808,9 +3959,7 @@ async fn integration_sub_agent_tool_invocation_counted() {
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
     let counting_tool = Arc::new(CountingTool::new());
     let os = AgentOs::builder()
-        .with_agent_state_store(
-            storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>,
-        )
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_agent("worker", crate::orchestrator::AgentDefinition::new("mock"))
         .with_tools(HashMap::from([(
             "count".to_string(),
@@ -3820,10 +3969,10 @@ async fn integration_sub_agent_tool_invocation_counted() {
         .unwrap();
 
     let mut resolved = os.resolve("worker").unwrap();
-    resolved.agent = resolved.agent.with_llm_executor(
-        Arc::new(ToolCallMockLlm::new("count", json!({})))
-            as Arc<dyn crate::runtime::loop_runner::LlmExecutor>,
-    );
+    resolved.agent = resolved
+        .agent
+        .with_llm_executor(Arc::new(ToolCallMockLlm::new("count", json!({})))
+            as Arc<dyn crate::runtime::loop_runner::LlmExecutor>);
 
     let prepared = os
         .prepare_run(
@@ -3861,9 +4010,7 @@ async fn integration_consecutive_runs_on_same_thread_accumulate_messages() {
 
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
     let os = AgentOs::builder()
-        .with_agent_state_store(
-            storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>,
-        )
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_registered_behavior(
             "slow_terminate_behavior_requested",
             Arc::new(SlowTerminatePlugin),
@@ -3967,9 +4114,7 @@ async fn integration_sub_agent_thread_independent_from_parent_thread() {
 
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
     let os = AgentOs::builder()
-        .with_agent_state_store(
-            storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>,
-        )
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_registered_behavior(
             "slow_terminate_behavior_requested",
             Arc::new(SlowTerminatePlugin),
@@ -4062,8 +4207,7 @@ async fn integration_sub_agent_thread_independent_from_parent_thread() {
     // Child should NOT have parent's initial state.
     let child_state = child_head.thread.rebuild_state().unwrap();
     assert!(
-        child_state.get("parent_data").is_none()
-            || child_state["parent_data"].is_null(),
+        child_state.get("parent_data").is_none() || child_state["parent_data"].is_null(),
         "child should not inherit parent's state unless forked"
     );
 
@@ -4080,9 +4224,7 @@ async fn integration_agent_output_reads_tool_result_from_sub_agent() {
 
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
     let os = AgentOs::builder()
-        .with_agent_state_store(
-            storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>,
-        )
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_agent("worker", crate::orchestrator::AgentDefinition::new("mock"))
         .with_tools(HashMap::from([(
             "echo".to_string(),
@@ -4093,10 +4235,12 @@ async fn integration_agent_output_reads_tool_result_from_sub_agent() {
 
     // Run sub-agent with mock LLM that calls echo tool.
     let mut resolved = os.resolve("worker").unwrap();
-    resolved.agent = resolved.agent.with_llm_executor(
-        Arc::new(ToolCallMockLlm::new("echo", json!({"input": "test data"})))
-            as Arc<dyn crate::runtime::loop_runner::LlmExecutor>,
-    );
+    resolved.agent = resolved
+        .agent
+        .with_llm_executor(
+            Arc::new(ToolCallMockLlm::new("echo", json!({"input": "test data"})))
+                as Arc<dyn crate::runtime::loop_runner::LlmExecutor>,
+        );
 
     let child_thread_id = "sub-agent-output-test";
     let prepared = os
@@ -4157,4 +4301,3 @@ async fn integration_agent_output_reads_tool_result_from_sub_agent() {
         output
     );
 }
-

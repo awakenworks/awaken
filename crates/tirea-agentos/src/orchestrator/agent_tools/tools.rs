@@ -247,6 +247,7 @@ impl AgentRunTool {
 
         if background {
             let token = RunCancellationToken::new();
+            let parent_run_id_bg = parent_run_id.clone();
             let epoch = self
                 .handles
                 .put_running(
@@ -254,7 +255,7 @@ impl AgentRunTool {
                     owner_thread_id.clone(),
                     child_thread_id.clone(),
                     agent_id.clone(),
-                    parent_run_id,
+                    parent_run_id.clone(),
                     Some(token.clone()),
                 )
                 .await;
@@ -264,6 +265,7 @@ impl AgentRunTool {
                 .state_of::<SubAgentState>()
                 .runs_insert(run_id.to_string(), sub)
             {
+                let _ = self.handles.remove_if_epoch(&run_id, epoch).await;
                 return state_write_failed(tool_name, err);
             }
 
@@ -279,7 +281,7 @@ impl AgentRunTool {
                     agent_id_bg,
                     child_thread_id_bg,
                     run_id_bg.clone(),
-                    None, // parent_run_id already set in RunRequest
+                    parent_run_id_bg,
                     parent_thread_id_bg,
                     messages,
                     initial_state,
@@ -411,13 +413,20 @@ impl Tool for AgentRunTool {
                     SubAgentStatus::Running
                     | SubAgentStatus::Completed
                     | SubAgentStatus::Failed => {
-                        let child_thread_id = sub_agent_thread_id(&run_id);
+                        let handle = match self
+                            .handles
+                            .handle_for_resume(&owner_thread_id, &run_id)
+                            .await
+                        {
+                            Ok(v) => v,
+                            Err(e) => return Ok(tool_error(tool_name, "unknown_run", e)),
+                        };
                         let result = self
                             .persist_live_summary(
                                 ctx,
                                 &run_id,
-                                &child_thread_id,
-                                caller_run_id.clone(),
+                                &handle.child_thread_id,
+                                handle.parent_run_id.clone(),
                                 &existing,
                                 tool_name,
                             )
@@ -702,9 +711,8 @@ impl Tool for AgentStopTool {
                 run.error = summary.error;
             } else {
                 run.status = SubAgentStatus::Stopped;
-                run.error = Some(
-                    "No live executor found in current process; marked stopped".to_string(),
-                );
+                run.error =
+                    Some("No live executor found in current process; marked stopped".to_string());
             }
             stopped_any = true;
             if let Err(err) = ctx

@@ -95,8 +95,7 @@ impl SubAgentHandleTable {
             return Err(format!("Unknown run_id: {run_id}"));
         }
 
-        let run_ids =
-            collect_descendant_run_ids_by_parent(&handles, owner_thread_id, run_id, true);
+        let run_ids = collect_descendant_run_ids_by_parent(&handles, owner_thread_id, run_id, true);
         if run_ids.is_empty() {
             return Err(format!(
                 "Run '{run_id}' is not running (current status: {})",
@@ -161,6 +160,15 @@ impl SubAgentHandleTable {
             },
         );
         epoch
+    }
+
+    pub(super) async fn remove_if_epoch(&self, run_id: &str, epoch: u64) -> bool {
+        let mut handles = self.handles.lock().await;
+        if handles.get(run_id).is_some_and(|h| h.epoch == epoch) {
+            handles.remove(run_id);
+            return true;
+        }
+        false
     }
 
     pub(super) async fn update_after_completion(
