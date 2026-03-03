@@ -401,6 +401,7 @@ fn sample_delta(run_id: &str, reason: CheckpointReason) -> ThreadChangeSet {
         reason,
         messages: vec![Arc::new(Message::assistant("hello"))],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     }
 }
@@ -492,6 +493,7 @@ async fn test_thread_store_append_with_snapshot() {
         reason: CheckpointReason::RunFinished,
         messages: vec![],
         patches: vec![],
+        actions: vec![],
         snapshot: Some(json!({"counter": 42})),
     };
     store
@@ -639,6 +641,7 @@ async fn test_full_agent_run_via_append() {
         reason: CheckpointReason::UserMessage,
         messages: vec![Arc::new(Message::user("What is 2+2?"))],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     let committed = store
@@ -656,6 +659,7 @@ async fn test_full_agent_run_via_append() {
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("2+2 = 4"))],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     let committed = store
@@ -676,6 +680,7 @@ async fn test_full_agent_run_via_append() {
         reason: CheckpointReason::ToolResultsCommitted,
         messages: vec![Arc::new(Message::tool("call-1", "4"))],
         patches: vec![patch],
+        actions: vec![],
         snapshot: None,
     };
     let committed = store
@@ -693,6 +698,7 @@ async fn test_full_agent_run_via_append() {
         reason: CheckpointReason::RunFinished,
         messages: vec![Arc::new(Message::assistant("The answer is 4."))],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     let committed = store
@@ -728,6 +734,7 @@ async fn test_delta_replay_reconstructs_thread() {
             patches: vec![TrackedPatch::new(
                 Patch::new().with_op(Op::increment(path!("count"), 1)),
             )],
+            actions: vec![],
             snapshot: None,
         },
         ThreadChangeSet {
@@ -738,6 +745,7 @@ async fn test_delta_replay_reconstructs_thread() {
             patches: vec![TrackedPatch::new(
                 Patch::new().with_op(Op::increment(path!("count"), 1)),
             )],
+            actions: vec![],
             snapshot: None,
         },
         ThreadChangeSet {
@@ -746,6 +754,7 @@ async fn test_delta_replay_reconstructs_thread() {
             reason: CheckpointReason::RunFinished,
             messages: vec![],
             patches: vec![],
+            actions: vec![],
             snapshot: None,
         },
     ];
@@ -791,6 +800,7 @@ async fn test_partial_delta_replay() {
             reason: CheckpointReason::AssistantTurnCommitted,
             messages: vec![Arc::new(Message::assistant(format!("msg-{i}")))],
             patches: vec![],
+            actions: vec![],
             snapshot: None,
         };
         store
@@ -822,6 +832,7 @@ async fn test_append_preserves_patch_provenance() {
         reason: CheckpointReason::ToolResultsCommitted,
         messages: vec![],
         patches: vec![patch],
+        actions: vec![],
         snapshot: None,
     };
     store
@@ -861,6 +872,7 @@ async fn test_append_preserves_parent_run_id() {
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("sub-agent reply"))],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     store
@@ -891,6 +903,7 @@ async fn test_append_empty_delta() {
         reason: CheckpointReason::RunFinished,
         messages: vec![],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     let committed = store
@@ -922,6 +935,7 @@ async fn frontend_state_replaces_existing_thread_state_in_user_message_delta() {
         patches: vec![TrackedPatch::new(
             Patch::new().with_op(Op::set(path!("counter"), json!(5))),
         )],
+        actions: vec![],
         snapshot: None,
     };
     store
@@ -943,6 +957,7 @@ async fn frontend_state_replaces_existing_thread_state_in_user_message_delta() {
         reason: CheckpointReason::UserMessage,
         messages: vec![Arc::new(Message::user("hello"))],
         patches: vec![],
+        actions: vec![],
         snapshot: Some(frontend_state.clone()),
     };
     store

@@ -1,6 +1,6 @@
 use crate::runtime::inference::{InferenceContext, LLMResponse, MessagingContext};
 use crate::runtime::run::{FlowControl, RunAction};
-use crate::runtime::state::AnyStateAction;
+use crate::runtime::state::{AnyStateAction, SerializedAction};
 use crate::runtime::tool_call::gate::ToolGate;
 use crate::runtime::tool_call::{ToolCallContext, ToolDescriptor, ToolResult};
 use crate::thread::Message;
@@ -60,6 +60,10 @@ pub struct StepContext<'a> {
     // === Pending patches (output) ===
     /// Reduced patches ready for the thread store.
     pub pending_patches: Vec<TrackedPatch>,
+
+    // === Pending serialized actions (intent log) ===
+    /// Serialized actions captured during this step for persistence.
+    pub(crate) pending_serialized_actions: Vec<SerializedAction>,
 }
 
 impl<'a> StepContext<'a> {
@@ -84,6 +88,7 @@ impl<'a> StepContext<'a> {
             flow: FlowControl::default(),
             pending_state_actions: Vec::new(),
             pending_patches: Vec::new(),
+            pending_serialized_actions: Vec::new(),
         }
     }
 
@@ -146,6 +151,7 @@ impl<'a> StepContext<'a> {
         self.flow = FlowControl::default();
         self.pending_state_actions.clear();
         self.pending_patches.clear();
+        self.pending_serialized_actions.clear();
     }
 
     // =========================================================================
@@ -192,6 +198,16 @@ impl<'a> StepContext<'a> {
     /// Push a state action for deferred reduction.
     pub fn emit_state_action(&mut self, action: AnyStateAction) {
         self.pending_state_actions.push(action);
+    }
+
+    /// Push a serialized action for intent-log persistence.
+    pub fn emit_serialized_action(&mut self, action: SerializedAction) {
+        self.pending_serialized_actions.push(action);
+    }
+
+    /// Drain and return all accumulated serialized actions.
+    pub fn take_pending_serialized_actions(&mut self) -> Vec<SerializedAction> {
+        std::mem::take(&mut self.pending_serialized_actions)
     }
 
     // =========================================================================

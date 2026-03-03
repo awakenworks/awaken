@@ -74,8 +74,6 @@ pub(super) struct ToolPhaseContext<'a> {
     pub(super) thread_id: &'a str,
     pub(super) thread_messages: &'a [Arc<Message>],
     pub(super) cancellation_token: Option<&'a RunCancellationToken>,
-    pub(super) pending_write_store: Option<Arc<dyn tirea_contract::PendingWriteStore>>,
-    pub(super) run_id: Option<String>,
 }
 
 impl<'a> ToolPhaseContext<'a> {
@@ -88,8 +86,6 @@ impl<'a> ToolPhaseContext<'a> {
             thread_id: request.thread_id,
             thread_messages: request.thread_messages,
             cancellation_token: request.cancellation_token,
-            pending_write_store: request.pending_write_store.clone(),
-            run_id: request.run_id.clone(),
         }
     }
 }
@@ -336,6 +332,15 @@ pub(super) fn apply_tool_results_impl(
             }
         })
         .collect();
+
+    // Collect serialized actions from all tool execution results into RunContext.
+    let all_serialized_actions: Vec<tirea_contract::SerializedAction> = results
+        .iter()
+        .flat_map(|r| r.serialized_actions.iter().cloned())
+        .collect();
+    if !all_serialized_actions.is_empty() {
+        run_ctx.add_serialized_actions(all_serialized_actions);
+    }
 
     let base_snapshot = run_ctx
         .snapshot()
@@ -681,8 +686,6 @@ async fn execute_tools_with_agent_and_executor(
             thread_messages: run_ctx.messages(),
             state_version: run_ctx.version(),
             cancellation_token: None,
-            pending_write_store: None,
-            run_id: None,
         })
         .await?;
 
@@ -733,9 +736,6 @@ pub(super) async fn execute_tools_parallel_with_phases(
     let tool_descriptors = phase_ctx.tool_descriptors.to_vec();
     let agent = phase_ctx.agent_behavior;
 
-    let pw_store = phase_ctx.pending_write_store.clone();
-    let pw_run_id = phase_ctx.run_id.clone();
-
     let futures = calls.iter().map(|call| {
         let tool = tools.get(&call.name).cloned();
         let state = state.clone();
@@ -745,8 +745,6 @@ pub(super) async fn execute_tools_parallel_with_phases(
         let rt = run_config_owned.clone();
         let sid = thread_id.clone();
         let thread_messages = thread_messages.clone();
-        let pw_store = pw_store.clone();
-        let pw_run_id = pw_run_id.clone();
 
         async move {
             execute_single_tool_with_phases_impl(
@@ -761,8 +759,6 @@ pub(super) async fn execute_tools_parallel_with_phases(
                     thread_id: &sid,
                     thread_messages: thread_messages.as_slice(),
                     cancellation_token: None,
-                    pending_write_store: pw_store,
-                    run_id: pw_run_id,
                 },
             )
             .await
@@ -804,8 +800,6 @@ pub(super) async fn execute_tools_sequential_with_phases(
             thread_id: phase_ctx.thread_id,
             thread_messages: phase_ctx.thread_messages,
             cancellation_token: None,
-            pending_write_store: phase_ctx.pending_write_store.clone(),
-            run_id: phase_ctx.run_id.clone(),
         };
         let result = match await_or_cancel(
             phase_ctx.cancellation_token,
@@ -1120,8 +1114,8 @@ async fn execute_single_tool_with_phases_impl(
         .into_iter()
         .map(AnyStateAction::Patch);
 
-    // Capture serialized actions before reduce consumes them (for pending-write persistence).
-    let serialized_actions: Vec<tirea_contract::SerializedAction> = tool_state_actions
+    // Capture serialized actions before reduce consumes them.
+    let mut serialized_actions: Vec<tirea_contract::SerializedAction> = tool_state_actions
         .iter()
         .filter_map(|a| a.to_serialized_action())
         .collect();
@@ -1134,27 +1128,6 @@ async fn execute_single_tool_with_phases_impl(
         &tool_scope_ctx,
     )?;
     execution.patch = merge_tracked_patches(&execution_patch_parts, &format!("tool:{}", call.name));
-
-    // Persist pending write for crash recovery (best-effort: failure is logged, not fatal).
-    if let Some(ref store) = phase_ctx.pending_write_store {
-        if !serialized_actions.is_empty() {
-            let entry = tirea_contract::PendingWriteEntry {
-                run_id: phase_ctx.run_id.clone().unwrap_or_default(),
-                thread_id: phase_ctx.thread_id.to_string(),
-                call_id: call.id.clone(),
-                tool_name: call.name.clone(),
-                actions: serialized_actions,
-                created_at: now_unix_millis(),
-            };
-            if let Err(e) = store.write(entry).await {
-                tracing::warn!(
-                    error = %e,
-                    call_id = %call.id,
-                    "failed to persist pending write for tool call"
-                );
-            }
-        }
-    }
 
     let phase_base_state = if let Some(tool_patch) = execution.patch.as_ref() {
         tirea_state::apply_patch(state, tool_patch.patch()).map_err(|e| {
@@ -1176,6 +1149,9 @@ async fn execute_single_tool_with_phases_impl(
     let reminders = step.messaging.reminders.clone();
     let user_messages = std::mem::take(&mut step.messaging.user_messages);
 
+    // Merge plugin-phase serialized actions with tool-level ones.
+    serialized_actions.extend(step.take_pending_serialized_actions());
+
     Ok(ToolExecutionResult {
         execution,
         outcome,
@@ -1183,6 +1159,7 @@ async fn execute_single_tool_with_phases_impl(
         reminders,
         user_messages,
         pending_patches,
+        serialized_actions,
     })
 }
 

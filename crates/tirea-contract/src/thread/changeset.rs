@@ -1,5 +1,6 @@
 //! Shared persistence change-set types shared by runtime and storage.
 
+use crate::runtime::state::SerializedAction;
 use crate::thread::{Message, Thread};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -32,6 +33,9 @@ pub struct ThreadChangeSet {
     pub messages: Vec<Arc<Message>>,
     /// New patches appended in this step.
     pub patches: Vec<TrackedPatch>,
+    /// Serialized state actions captured during this step (intent log).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<SerializedAction>,
     /// If `Some`, a full state snapshot was taken (replaces base state).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<Value>,
@@ -45,6 +49,7 @@ impl ThreadChangeSet {
         reason: CheckpointReason,
         messages: Vec<Arc<Message>>,
         patches: Vec<TrackedPatch>,
+        actions: Vec<SerializedAction>,
         snapshot: Option<Value>,
     ) -> Self {
         Self {
@@ -53,6 +58,7 @@ impl ThreadChangeSet {
             reason,
             messages,
             patches,
+            actions,
             snapshot,
         }
     }

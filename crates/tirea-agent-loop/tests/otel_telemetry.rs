@@ -372,7 +372,6 @@ async fn test_run_loop_stream_http_error_closes_inference_span() {
         None,
         None,
         None,
-        None,
     )
     .collect()
     .await;
@@ -443,7 +442,6 @@ async fn test_run_loop_stream_success_exports_tokens_to_otel() {
         Arc::new(config) as Arc<dyn Agent>,
         HashMap::new(),
         run_ctx,
-        None,
         None,
         None,
         None,
@@ -536,7 +534,6 @@ async fn test_run_loop_stream_connection_refused_closes_inference_span() {
         Arc::new(config) as Arc<dyn Agent>,
         HashMap::new(),
         run_ctx,
-        None,
         None,
         None,
         None,
@@ -656,7 +653,6 @@ async fn test_run_loop_stream_parse_error_closes_inference_span() {
         Arc::new(config) as Arc<dyn Agent>,
         HashMap::new(),
         run_ctx,
-        None,
         None,
         None,
         None,

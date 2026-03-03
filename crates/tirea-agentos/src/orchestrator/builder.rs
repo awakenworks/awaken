@@ -41,7 +41,6 @@ impl std::fmt::Debug for AgentOs {
             .field("skills_config", &self.skills_config)
             .field("agent_tools", &self.agent_tools)
             .field("agent_state_store", &self.agent_state_store.is_some())
-            .field("pending_write_store", &self.pending_write_store.is_some())
             .finish()
     }
 }
@@ -64,7 +63,6 @@ impl std::fmt::Debug for AgentOsBuilder {
             .field("skills_config", &self.skills_config)
             .field("agent_tools", &self.agent_tools)
             .field("agent_state_store", &self.agent_state_store.is_some())
-            .field("pending_write_store", &self.pending_write_store.is_some())
             .finish()
     }
 }
@@ -92,7 +90,6 @@ impl AgentOsBuilder {
             skills_config: SkillsConfig::default(),
             agent_tools: AgentToolsConfig::default(),
             agent_state_store: None,
-            pending_write_store: None,
         }
     }
 
@@ -209,14 +206,6 @@ impl AgentOsBuilder {
         self
     }
 
-    pub fn with_pending_write_store(
-        mut self,
-        store: Arc<dyn tirea_contract::PendingWriteStore>,
-    ) -> Self {
-        self.pending_write_store = Some(store);
-        self
-    }
-
     pub fn build(self) -> Result<AgentOs, AgentOsBuildError> {
         let AgentOsBuilder {
             client,
@@ -239,7 +228,6 @@ impl AgentOsBuilder {
             skills_config,
             agent_tools,
             agent_state_store,
-            pending_write_store,
         } = self;
 
         BundleComposer::apply(
@@ -439,7 +427,6 @@ impl AgentOsBuilder {
             agent_runs: Arc::new(AgentRunManager::new()),
             agent_tools,
             agent_state_store,
-            pending_write_store,
         })
     }
 }

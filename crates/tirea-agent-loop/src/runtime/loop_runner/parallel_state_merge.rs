@@ -173,6 +173,7 @@ mod tests {
             reminders: Vec::new(),
             user_messages: Vec::new(),
             pending_patches,
+            serialized_actions: vec![],
         }
     }
 

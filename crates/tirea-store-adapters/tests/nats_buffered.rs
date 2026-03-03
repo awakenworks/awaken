@@ -225,6 +225,7 @@ async fn test_append_does_not_write_to_inner() {
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("world"))],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
 
@@ -256,6 +257,7 @@ async fn test_save_flushes_to_inner_and_purges_nats() {
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("world"))],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     storage
@@ -326,6 +328,7 @@ async fn test_recover_replays_unacked_deltas() {
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("response 1"))],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     let delta2 = ThreadChangeSet {
@@ -334,6 +337,7 @@ async fn test_recover_replays_unacked_deltas() {
         reason: CheckpointReason::ToolResultsCommitted,
         messages: vec![Arc::new(Message::assistant("response 2"))],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     storage
@@ -382,6 +386,7 @@ async fn test_query_returns_last_flush_snapshot_during_active_run() {
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("second reply"))],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     storage
@@ -422,6 +427,7 @@ async fn test_load_messages_returns_last_flush_snapshot_during_active_run() {
             reason: CheckpointReason::AssistantTurnCommitted,
             messages: vec![Arc::new(Message::assistant(format!("msg-{i}")))],
             patches: vec![],
+            actions: vec![],
             snapshot: None,
         };
         storage
@@ -460,6 +466,7 @@ async fn test_query_accurate_after_run_end_flush() {
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("world"))],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     storage
@@ -508,6 +515,7 @@ async fn test_multi_run_query_sees_previous_run_data() {
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("a1"))],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     storage
@@ -528,6 +536,7 @@ async fn test_multi_run_query_sees_previous_run_data() {
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("a2"))],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     storage
@@ -573,6 +582,7 @@ async fn test_run_finished_append_auto_flushes_to_inner() {
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("first"))],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     storage
@@ -589,6 +599,7 @@ async fn test_run_finished_append_auto_flushes_to_inner() {
         reason: CheckpointReason::RunFinished,
         messages: vec![Arc::new(Message::assistant("second"))],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     storage
@@ -630,6 +641,7 @@ async fn test_buffered_vs_direct_write_latency_and_amplification() {
             reason,
             messages: vec![Arc::new(Message::assistant(format!("d{i}")))],
             patches: vec![],
+            actions: vec![],
             snapshot: None,
         };
         direct
@@ -663,6 +675,7 @@ async fn test_buffered_vs_direct_write_latency_and_amplification() {
             reason,
             messages: vec![Arc::new(Message::assistant(format!("b{i}")))],
             patches: vec![],
+            actions: vec![],
             snapshot: None,
         };
         buffered
@@ -715,6 +728,7 @@ async fn test_run_finished_flush_failure_can_be_recovered() {
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("step"))],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     storage
@@ -728,6 +742,7 @@ async fn test_run_finished_flush_failure_can_be_recovered() {
         reason: CheckpointReason::RunFinished,
         messages: vec![Arc::new(Message::assistant("finish"))],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     let err = storage
@@ -774,6 +789,7 @@ async fn test_duplicate_run_finished_delta_is_idempotent_by_message_id() {
             Message::assistant("done").with_id("msg-run-finished".to_string()),
         )],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
 
@@ -818,6 +834,7 @@ async fn test_concurrent_appends_flush_to_consistent_snapshot() {
                     Message::assistant(format!("m{i}")).with_id(format!("m-{i}")),
                 )],
                 patches: vec![],
+                actions: vec![],
                 snapshot: None,
             };
             storage
@@ -836,6 +853,7 @@ async fn test_concurrent_appends_flush_to_consistent_snapshot() {
         reason: CheckpointReason::RunFinished,
         messages: vec![],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     storage

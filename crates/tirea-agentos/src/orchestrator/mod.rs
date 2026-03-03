@@ -332,7 +332,6 @@ pub struct PreparedRun {
     run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
-    pending_write_store: Option<Arc<dyn tirea_contract::PendingWriteStore>>,
     decision_tx: tokio::sync::mpsc::UnboundedSender<ToolCallDecision>,
     decision_rx: tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>,
 }
@@ -348,15 +347,6 @@ impl PreparedRun {
         self
     }
 
-    /// Attach a pending-write store for crash recovery.
-    #[must_use]
-    pub fn with_pending_write_store(
-        mut self,
-        store: Arc<dyn tirea_contract::PendingWriteStore>,
-    ) -> Self {
-        self.pending_write_store = Some(store);
-        self
-    }
 }
 
 #[derive(Clone)]
@@ -373,7 +363,6 @@ pub struct AgentOs {
     agent_runs: Arc<AgentRunManager>,
     agent_tools: AgentToolsConfig,
     agent_state_store: Option<Arc<dyn ThreadStore>>,
-    pending_write_store: Option<Arc<dyn tirea_contract::PendingWriteStore>>,
 }
 
 #[derive(Clone)]
@@ -398,5 +387,4 @@ pub struct AgentOsBuilder {
     skills_config: SkillsConfig,
     agent_tools: AgentToolsConfig,
     agent_state_store: Option<Arc<dyn ThreadStore>>,
-    pending_write_store: Option<Arc<dyn tirea_contract::PendingWriteStore>>,
 }

@@ -328,6 +328,7 @@ async fn e2e_nats_buffered_postgres_recover_replays_pending_deltas() {
             tirea_agentos::contracts::thread::Message::assistant("mid"),
         )],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     storage
@@ -343,6 +344,7 @@ async fn e2e_nats_buffered_postgres_recover_replays_pending_deltas() {
             tirea_agentos::contracts::thread::Message::assistant("tail"),
         )],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     storage
@@ -530,6 +532,7 @@ async fn e2e_nats_buffered_postgres_recover_deduplicates_duplicate_message_ids()
         reason: tirea_agentos::contracts::thread::CheckpointReason::AssistantTurnCommitted,
         messages: vec![duplicate_msg.clone()],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     storage
@@ -602,6 +605,7 @@ async fn e2e_nats_buffered_postgres_flush_retry_after_transient_save_failure() {
             tirea_agentos::contracts::thread::Message::assistant("mid"),
         )],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     storage
@@ -617,6 +621,7 @@ async fn e2e_nats_buffered_postgres_flush_retry_after_transient_save_failure() {
             tirea_agentos::contracts::thread::Message::assistant("tail"),
         )],
         patches: vec![],
+        actions: vec![],
         snapshot: None,
     };
     let flush_err = storage

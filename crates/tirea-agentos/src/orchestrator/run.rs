@@ -44,10 +44,6 @@ impl AgentOs {
         self.agent_state_store.as_ref()
     }
 
-    pub fn pending_write_store(&self) -> Option<&Arc<dyn tirea_contract::PendingWriteStore>> {
-        self.pending_write_store.as_ref()
-    }
-
     fn require_agent_state_store(&self) -> Result<&Arc<dyn ThreadStore>, AgentOsRunError> {
         self.agent_state_store
             .as_ref()
@@ -139,6 +135,7 @@ impl AgentOs {
             CheckpointReason::UserMessage,
             delta_messages,
             delta_patches.clone(),
+            Vec::new(),
             state_snapshot_for_delta,
         );
         let committed = agent_state_store
@@ -192,7 +189,6 @@ impl AgentOs {
             state_committer: Some(Arc::new(AgentStateStoreStateCommitter::new(
                 agent_state_store.clone(),
             ))),
-            pending_write_store: self.pending_write_store.clone(),
             decision_tx,
             decision_rx,
         })
@@ -207,7 +203,6 @@ impl AgentOs {
             prepared.cancellation_token,
             prepared.state_committer,
             Some(prepared.decision_rx),
-            prepared.pending_write_store,
         );
         Ok(RunStream {
             thread_id: prepared.thread_id,
@@ -287,7 +282,6 @@ impl AgentOs {
             run_ctx,
             cancellation_token,
             state_committer,
-            None,
             None,
         ))
     }

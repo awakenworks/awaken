@@ -55,13 +55,28 @@ pub(super) async fn commit_pending_delta(
         return Ok(());
     }
 
+    // On RunFinished, write a full state snapshot to bound the action/patch
+    // replay window to a single run.
+    let snapshot = if reason == CheckpointReason::RunFinished {
+        match run_ctx.snapshot() {
+            Ok(state) => Some(state),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to compute RunFinished snapshot; continuing without snapshot");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let changeset = ThreadChangeSet::from_parts(
         run_id.to_string(),
         parent_run_id.map(str::to_string),
         reason,
         delta.messages,
         delta.patches,
-        None,
+        delta.actions,
+        snapshot,
     );
     let precondition = VersionPrecondition::Exact(run_ctx.version());
     let committed_version = committer

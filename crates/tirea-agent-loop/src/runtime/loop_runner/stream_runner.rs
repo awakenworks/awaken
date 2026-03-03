@@ -138,7 +138,6 @@ pub(super) fn run_stream(
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
     decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
-    pending_write_store: Option<Arc<dyn tirea_contract::runtime::state::PendingWriteStore>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     Box::pin(stream! {
     let mut run_ctx = run_ctx;
@@ -270,8 +269,9 @@ pub(super) fn run_stream(
         )
             .await
         {
-            Ok(pending) => {
+            Ok((pending, actions)) => {
                 run_ctx.add_thread_patches(pending);
+                run_ctx.add_serialized_actions(actions);
             }
             Err(e) => {
                 let message = e.to_string();
@@ -303,74 +303,6 @@ pub(super) fn run_stream(
                 emitted_run_start_pending_keys.insert(key);
             }
             yield emitter.emit_existing(event);
-        }
-
-        // Recovery: replay pending writes from previously crashed runs.
-        if let Some(ref store) = pending_write_store {
-            match store.read_by_thread(run_ctx.thread_id()).await {
-                Ok(entries) if !entries.is_empty() => {
-                    let registry = agent.action_deserializer_registry();
-                    match run_ctx.snapshot() {
-                        Ok(base_state) => {
-                            let stale_run_ids: HashSet<String> =
-                                entries.iter().map(|e| e.run_id.clone()).collect();
-                            match tirea_contract::recover_pending_writes_from_entries(
-                                &entries, &registry, &base_state,
-                            ) {
-                                Ok((patches, completed_ids)) => {
-                                    tracing::info!(
-                                        recovered_calls = completed_ids.len(),
-                                        patches = patches.len(),
-                                        "recovered pending writes from crashed run"
-                                    );
-                                    run_ctx.add_thread_patches(patches);
-                                    if let Err(e) = pending_delta_commit
-                                        .commit(
-                                            &mut run_ctx,
-                                            CheckpointReason::ToolResultsCommitted,
-                                            false,
-                                        )
-                                        .await
-                                    {
-                                        let msg = e.to_string();
-                                        terminate_stream_error!(
-                                            outcome::LoopFailure::State(msg.clone()),
-                                            msg
-                                        );
-                                    }
-                                    for rid in &stale_run_ids {
-                                        if let Err(e) =
-                                            store.acknowledge(run_ctx.thread_id(), rid).await
-                                        {
-                                            tracing::warn!(
-                                                error = %e,
-                                                run_id = %rid,
-                                                "failed to acknowledge pending write; entries may replay on next crash"
-                                            );
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        error = %e,
-                                        "pending write recovery failed; continuing"
-                                    );
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                "snapshot failed during recovery; continuing"
-                            );
-                        }
-                    }
-                }
-                Ok(_) => {} // no pending writes
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to read pending writes; continuing");
-                }
-            }
         }
 
         let run_start_new_suspended =
@@ -434,6 +366,7 @@ pub(super) fn run_stream(
                 }
             };
             run_ctx.add_thread_patches(prepared.pending_patches);
+            run_ctx.add_serialized_actions(prepared.serialized_actions);
             let messages = prepared.messages;
             let filtered_tools = prepared.filtered_tools;
 
@@ -747,8 +680,6 @@ pub(super) fn run_stream(
                         thread_messages: &thread_messages_for_tools,
                         state_version: thread_version_for_tools,
                         cancellation_token: run_cancellation_token.as_ref(),
-                        pending_write_store: pending_write_store.clone(),
-                        run_id: Some(run_id.clone()),
                     })
                     .await
                     .map_err(AgentLoopError::from)
@@ -865,16 +796,6 @@ pub(super) fn run_stream(
             {
                 let message = e.to_string();
                 terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
-            }
-
-            // Acknowledge pending writes after successful batch commit.
-            if let Some(ref store) = pending_write_store {
-                if let Err(e) = store.acknowledge(run_ctx.thread_id(), &run_id).await {
-                    tracing::warn!(
-                        error = %e,
-                        "failed to acknowledge pending writes; stale entries may remain"
-                    );
-                }
             }
 
             let decision_events = match apply_decisions_and_replay(

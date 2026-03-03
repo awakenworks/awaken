@@ -20,7 +20,7 @@ Thread persistence uses append-style changesets and optimistic concurrency.
 The runtime persists state through incremental checkpoints.
 
 - Delta source: `RunContext::take_delta()`
-- Delta payload: `ThreadChangeSet { reason, messages, patches, snapshot }`
+- Delta payload: `ThreadChangeSet { reason, messages, patches, actions, snapshot }`
 - Concurrency: append with `VersionPrecondition::Exact(version)`
 - Version update: committed version is written back to `RunContext`
 
