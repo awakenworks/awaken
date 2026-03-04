@@ -1,5 +1,10 @@
 use super::*;
 
+type SubAgentProgressReporter<'a> = dyn Fn(crate::contracts::runtime::tool_call::ToolCallProgressUpdate) -> tirea_state::TireaResult<()>
+    + Send
+    + Sync
+    + 'a;
+
 #[derive(Debug, Clone)]
 pub struct SubAgentSummary {
     pub run_id: String,
@@ -247,6 +252,7 @@ pub(super) async fn execute_sub_agent(
     messages: Vec<crate::contracts::thread::Message>,
     initial_state: Option<serde_json::Value>,
     cancellation_token: Option<RunCancellationToken>,
+    progress_reporter: Option<&SubAgentProgressReporter<'_>>,
 ) -> SubAgentCompletion {
     let request = crate::contracts::io::RunRequest {
         agent_id,
@@ -302,26 +308,8 @@ pub(super) async fn execute_sub_agent(
         }
     };
 
-    let mut events = run_stream.events;
-    let mut saw_error: Option<String> = None;
-    let mut termination: Option<crate::contracts::TerminationReason> = None;
-
-    while let Some(ev) = events.next().await {
-        match ev {
-            AgentEvent::Error { message, .. } => {
-                if saw_error.is_none() {
-                    saw_error = Some(message);
-                }
-            }
-            AgentEvent::RunFinish {
-                termination: reason,
-                ..
-            } => {
-                termination = Some(reason);
-            }
-            _ => {}
-        }
-    }
+    let (saw_error, termination) =
+        collect_sub_agent_terminal_state(run_stream.events, progress_reporter).await;
 
     if saw_error.is_some() {
         return SubAgentCompletion {
@@ -339,6 +327,85 @@ pub(super) async fn execute_sub_agent(
         status,
         error: None,
     }
+}
+
+fn is_tool_call_progress_activity(activity_type: &str) -> bool {
+    activity_type == crate::contracts::runtime::tool_call::TOOL_CALL_PROGRESS_ACTIVITY_TYPE
+        || activity_type == crate::contracts::runtime::tool_call::TOOL_PROGRESS_ACTIVITY_TYPE
+        || activity_type == crate::contracts::runtime::tool_call::TOOL_PROGRESS_ACTIVITY_TYPE_LEGACY
+}
+
+fn decode_tool_call_progress_snapshot(
+    content: &serde_json::Value,
+) -> Option<(
+    String,
+    crate::contracts::runtime::tool_call::ToolCallProgressUpdate,
+)> {
+    let payload = serde_json::from_value::<
+        crate::contracts::runtime::tool_call::ToolCallProgressState,
+    >(content.clone())
+    .ok()?;
+    Some((
+        payload.call_id,
+        crate::contracts::runtime::tool_call::ToolCallProgressUpdate {
+            status: payload.status,
+            progress: payload.progress,
+            loaded: payload.loaded,
+            total: payload.total,
+            message: payload.message,
+        },
+    ))
+}
+
+async fn collect_sub_agent_terminal_state<S>(
+    mut events: S,
+    progress_reporter: Option<&SubAgentProgressReporter<'_>>,
+) -> (Option<String>, Option<crate::contracts::TerminationReason>)
+where
+    S: futures::Stream<Item = AgentEvent> + Unpin,
+{
+    let mut saw_error: Option<String> = None;
+    let mut termination: Option<crate::contracts::TerminationReason> = None;
+    let mut seen_child_tool_calls: HashSet<String> = HashSet::new();
+
+    while let Some(ev) = events.next().await {
+        match ev {
+            AgentEvent::Error { message, .. } => {
+                if saw_error.is_none() {
+                    saw_error = Some(message);
+                }
+            }
+            AgentEvent::RunFinish {
+                termination: reason,
+                ..
+            } => {
+                termination = Some(reason);
+            }
+            AgentEvent::ToolCallStart { id, .. } => {
+                seen_child_tool_calls.insert(id);
+            }
+            AgentEvent::ActivitySnapshot {
+                activity_type,
+                content,
+                ..
+            } if is_tool_call_progress_activity(&activity_type) => {
+                let Some(reporter) = progress_reporter else {
+                    continue;
+                };
+                let Some((child_call_id, update)) = decode_tool_call_progress_snapshot(&content)
+                else {
+                    continue;
+                };
+                if !seen_child_tool_calls.contains(&child_call_id) {
+                    continue;
+                }
+                let _ = reporter(update);
+            }
+            _ => {}
+        }
+    }
+
+    (saw_error, termination)
 }
 
 #[cfg(test)]
@@ -363,6 +430,130 @@ mod tests {
         let mut run_config = crate::contracts::RunConfig::default();
         bind_parent_tool_call_scope(&mut run_config, Some("   ")).expect("ignore blank id");
         assert!(run_config.value(SCOPE_PARENT_TOOL_CALL_ID_KEY).is_none());
+    }
+
+    #[tokio::test]
+    async fn collect_sub_agent_terminal_state_forwards_child_tool_progress_snapshot() {
+        let updates = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_updates = updates.clone();
+        let reporter =
+            move |update: crate::contracts::runtime::tool_call::ToolCallProgressUpdate| {
+                sink_updates.lock().unwrap().push(update);
+                Ok(())
+            };
+
+        let payload = crate::contracts::runtime::tool_call::ToolCallProgressState {
+            event_type: crate::contracts::runtime::tool_call::TOOL_CALL_PROGRESS_TYPE.to_string(),
+            schema: crate::contracts::runtime::tool_call::TOOL_CALL_PROGRESS_SCHEMA.to_string(),
+            node_id: "tool_call:child-call-1".to_string(),
+            parent_node_id: Some("tool_call:parent-call".to_string()),
+            parent_call_id: Some("parent-call".to_string()),
+            call_id: "child-call-1".to_string(),
+            tool_name: Some("echo".to_string()),
+            status: crate::contracts::runtime::tool_call::ToolCallProgressStatus::Running,
+            progress: Some(0.5),
+            loaded: Some(1.0),
+            total: Some(2.0),
+            message: Some("half".to_string()),
+            run_id: Some("child-run".to_string()),
+            parent_run_id: Some("parent-run".to_string()),
+            thread_id: Some("child-thread".to_string()),
+            updated_at_ms: 1,
+        };
+
+        let events = futures::stream::iter(vec![
+            AgentEvent::ToolCallStart {
+                id: "child-call-1".to_string(),
+                name: "echo".to_string(),
+            },
+            AgentEvent::ActivitySnapshot {
+                message_id: "tool_call:child-call-1".to_string(),
+                activity_type:
+                    crate::contracts::runtime::tool_call::TOOL_CALL_PROGRESS_ACTIVITY_TYPE
+                        .to_string(),
+                content: serde_json::to_value(payload).expect("serialize payload"),
+                replace: Some(true),
+            },
+            AgentEvent::RunFinish {
+                thread_id: "child-thread".to_string(),
+                run_id: "child-run".to_string(),
+                result: None,
+                termination: crate::contracts::TerminationReason::NaturalEnd,
+            },
+        ]);
+
+        let (saw_error, termination) =
+            collect_sub_agent_terminal_state(events, Some(&reporter)).await;
+        assert!(saw_error.is_none());
+        assert_eq!(
+            termination,
+            Some(crate::contracts::TerminationReason::NaturalEnd)
+        );
+
+        let forwarded = updates.lock().unwrap();
+        assert_eq!(forwarded.len(), 1);
+        assert_eq!(
+            forwarded[0].status,
+            crate::contracts::runtime::tool_call::ToolCallProgressStatus::Running
+        );
+        assert_eq!(forwarded[0].progress, Some(0.5));
+        assert_eq!(forwarded[0].message.as_deref(), Some("half"));
+    }
+
+    #[tokio::test]
+    async fn collect_sub_agent_terminal_state_ignores_unknown_child_progress_nodes() {
+        let updates = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_updates = updates.clone();
+        let reporter =
+            move |update: crate::contracts::runtime::tool_call::ToolCallProgressUpdate| {
+                sink_updates.lock().unwrap().push(update);
+                Ok(())
+            };
+
+        let payload = crate::contracts::runtime::tool_call::ToolCallProgressState {
+            event_type: crate::contracts::runtime::tool_call::TOOL_CALL_PROGRESS_TYPE.to_string(),
+            schema: crate::contracts::runtime::tool_call::TOOL_CALL_PROGRESS_SCHEMA.to_string(),
+            node_id: "tool_call:grand-child-call".to_string(),
+            parent_node_id: Some("tool_call:child-agent-run".to_string()),
+            parent_call_id: Some("child-agent-run".to_string()),
+            call_id: "grand-child-call".to_string(),
+            tool_name: Some("hidden".to_string()),
+            status: crate::contracts::runtime::tool_call::ToolCallProgressStatus::Running,
+            progress: Some(0.1),
+            loaded: None,
+            total: None,
+            message: Some("nested".to_string()),
+            run_id: Some("child-run".to_string()),
+            parent_run_id: Some("parent-run".to_string()),
+            thread_id: Some("child-thread".to_string()),
+            updated_at_ms: 1,
+        };
+
+        let events = futures::stream::iter(vec![
+            AgentEvent::ActivitySnapshot {
+                message_id: "tool_call:grand-child-call".to_string(),
+                activity_type:
+                    crate::contracts::runtime::tool_call::TOOL_CALL_PROGRESS_ACTIVITY_TYPE
+                        .to_string(),
+                content: serde_json::to_value(payload).expect("serialize payload"),
+                replace: Some(true),
+            },
+            AgentEvent::RunFinish {
+                thread_id: "child-thread".to_string(),
+                run_id: "child-run".to_string(),
+                result: None,
+                termination: crate::contracts::TerminationReason::NaturalEnd,
+            },
+        ]);
+
+        let (saw_error, termination) =
+            collect_sub_agent_terminal_state(events, Some(&reporter)).await;
+        assert!(saw_error.is_none());
+        assert_eq!(
+            termination,
+            Some(crate::contracts::TerminationReason::NaturalEnd)
+        );
+        assert!(updates.lock().unwrap().is_empty());
     }
 }
 

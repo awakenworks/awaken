@@ -289,6 +289,7 @@ impl AgentRunTool {
                     messages,
                     initial_state,
                     Some(token),
+                    None,
                 )
                 .await;
                 let _ = handles
@@ -320,6 +321,11 @@ impl AgentRunTool {
             )
             .await;
 
+        let forward_progress =
+            |update: crate::contracts::runtime::tool_call::ToolCallProgressUpdate| {
+                ctx.report_tool_call_progress(update)
+            };
+
         let completion = execute_sub_agent(
             self.os.clone(),
             agent_id.clone(),
@@ -331,6 +337,7 @@ impl AgentRunTool {
             messages,
             initial_state,
             None,
+            Some(&forward_progress),
         )
         .await;
 
