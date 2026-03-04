@@ -64,8 +64,7 @@ pub(crate) async fn connect_transport(
 ) -> Result<Arc<dyn McpToolTransport>, McpTransportError> {
     match config.transport {
         TransportTypeId::Stdio => {
-            let transport =
-                ProgressAwareStdioTransport::connect(config, sampling_handler).await?;
+            let transport = ProgressAwareStdioTransport::connect(config, sampling_handler).await?;
             Ok(Arc::new(transport))
         }
         TransportTypeId::Http => {
@@ -222,12 +221,12 @@ impl ProgressAwareStdioTransport {
                     break;
                 }
                 if let Err(e) = stdin.write_all(req.line.as_bytes()).await {
-                    eprintln!("MCP stdio write error: {}", e);
+                    tracing::error!(error = %e, "MCP stdio write error");
                     alive_writer.store(false, Ordering::SeqCst);
                     break;
                 }
                 if let Err(e) = stdin.flush().await {
-                    eprintln!("MCP stdio flush error: {}", e);
+                    tracing::error!(error = %e, "MCP stdio flush error");
                     alive_writer.store(false, Ordering::SeqCst);
                     break;
                 }
@@ -276,11 +275,15 @@ impl ProgressAwareStdioTransport {
                             });
                         }
                         Err(e) => {
-                            eprintln!("Failed to parse MCP message: {} - {}", e, line.trim());
+                            tracing::warn!(
+                                error = %e,
+                                message = %line.trim(),
+                                "Failed to parse MCP message from stdio"
+                            );
                         }
                     },
                     Err(e) => {
-                        eprintln!("MCP stdio read error: {}", e);
+                        tracing::error!(error = %e, "MCP stdio read error");
                         alive_reader.store(false, Ordering::SeqCst);
                         break;
                     }
@@ -535,16 +538,10 @@ async fn handle_server_request(
             };
             match handler.handle_create_message(params).await {
                 Ok(result) => {
-                    let result_value =
-                        serde_json::to_value(&result).unwrap_or(Value::Null);
+                    let result_value = serde_json::to_value(&result).unwrap_or(Value::Null);
                     JsonRpcResponse::success(request.id.clone(), result_value)
                 }
-                Err(e) => JsonRpcResponse::error(
-                    request.id.clone(),
-                    -32000,
-                    e.to_string(),
-                    None,
-                ),
+                Err(e) => JsonRpcResponse::error(request.id.clone(), -32000, e.to_string(), None),
             }
         }
         _ => JsonRpcResponse::error(

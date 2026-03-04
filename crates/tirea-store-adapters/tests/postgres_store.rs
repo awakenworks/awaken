@@ -12,7 +12,7 @@ use std::sync::Arc;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ImageExt;
 use testcontainers_modules::postgres::Postgres;
-use tirea_contract::storage::{ThreadReader, ThreadWriter, VersionPrecondition};
+use tirea_contract::storage::{ThreadReader, ThreadStoreError, ThreadWriter, VersionPrecondition};
 use tirea_contract::thread::ThreadChangeSet;
 use tirea_contract::{CheckpointReason, Message, MessageQuery, Thread, ToolCall};
 use tirea_store_adapters::PostgresStore;
@@ -44,10 +44,7 @@ async fn make_store(database_url: &str) -> PostgresStore {
         .await
         .expect("failed to connect to Postgres");
     let store = PostgresStore::new(pool);
-    store
-        .ensure_table()
-        .await
-        .expect("failed to create tables");
+    store.ensure_table().await.expect("failed to create tables");
     store
 }
 
@@ -89,8 +86,13 @@ async fn test_tool_call_message_roundtrip_via_save() {
             "Let me search for that.",
             vec![tool_call],
         ))
-        .with_message(Message::tool("call_1", r#"{"result": "Rust is a language"}"#))
-        .with_message(Message::assistant("Rust is a systems programming language."));
+        .with_message(Message::tool(
+            "call_1",
+            r#"{"result": "Rust is a language"}"#,
+        ))
+        .with_message(Message::assistant(
+            "Rust is a systems programming language.",
+        ));
 
     store.save(&thread).await.unwrap();
     let loaded = store.load_thread("tool-rt").await.unwrap().unwrap();
@@ -122,7 +124,10 @@ async fn test_tool_call_message_roundtrip_via_create() {
 
     let tool_call = ToolCall::new("call_c", "calc", json!({"expr": "2+2"}));
     let thread = Thread::new("tool-create")
-        .with_message(Message::assistant_with_tool_calls("calculating", vec![tool_call]))
+        .with_message(Message::assistant_with_tool_calls(
+            "calculating",
+            vec![tool_call],
+        ))
         .with_message(Message::tool("call_c", "4"));
 
     store.create(&thread).await.unwrap();
@@ -240,4 +245,43 @@ async fn test_tool_call_message_roundtrip_via_load_messages() {
         page.messages[3].message.tool_call_id.as_deref(),
         Some("call_b")
     );
+}
+
+#[tokio::test]
+async fn test_load_messages_returns_error_when_row_is_corrupted() {
+    let Some((_container, url)) = start_postgres().await else {
+        return;
+    };
+    let store = make_store(&url).await;
+    store
+        .save(&Thread::new("corrupt-thread").with_message(Message::user("hello")))
+        .await
+        .expect("seed thread");
+
+    let pool = sqlx::PgPool::connect(&url).await.expect("connect raw pool");
+    sqlx::query(
+        "INSERT INTO agent_messages (session_id, message_id, run_id, step_index, data) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind("corrupt-thread")
+    .bind(Option::<String>::None)
+    .bind(Option::<String>::None)
+    .bind(Option::<i32>::None)
+    .bind(json!({ "role": "user" })) // missing required `content`
+    .execute(&pool)
+    .await
+    .expect("insert corrupted row");
+
+    let err = store
+        .load_messages("corrupt-thread", &MessageQuery::default())
+        .await
+        .expect_err("corrupted row must fail");
+    match err {
+        ThreadStoreError::Serialization(message) => {
+            assert!(
+                message.contains("failed to deserialize message row"),
+                "unexpected error message: {message}"
+            );
+        }
+        other => panic!("expected serialization error, got: {other:?}"),
+    }
 }

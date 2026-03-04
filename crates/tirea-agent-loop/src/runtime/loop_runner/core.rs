@@ -1,27 +1,35 @@
 use super::AgentLoopError;
 use crate::contracts::runtime::phase::StepContext;
 use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction, ScopeContext};
+use crate::contracts::runtime::tool_call::tool_call_states_from_state;
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::SuspendedCall;
 use crate::contracts::thread::{Message, Role};
 use crate::contracts::RunAction;
 use crate::contracts::RunContext;
-use crate::runtime::control::{
-    ToolCallResume, ToolCallState,
-    ToolCallStatus,
-};
-use crate::contracts::runtime::tool_call::tool_call_states_from_state;
+use crate::runtime::control::{ToolCallResume, ToolCallState, ToolCallStatus};
 use tirea_state::{parse_path, Op, Patch, TrackedPatch};
 
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+const PENDING_APPROVAL_PLACEHOLDER_PREFIX: &str = "Tool '";
+const PENDING_APPROVAL_PLACEHOLDER_SUFFIX: &str = "' is awaiting approval. Execution paused.";
+
+pub(super) fn pending_approval_placeholder_message(tool_name: &str) -> String {
+    format!("{PENDING_APPROVAL_PLACEHOLDER_PREFIX}{tool_name}{PENDING_APPROVAL_PLACEHOLDER_SUFFIX}")
+}
+
+fn is_pending_approval_placeholder_content(content: &str) -> bool {
+    content
+        .strip_prefix(PENDING_APPROVAL_PLACEHOLDER_PREFIX)
+        .and_then(|rest| rest.strip_suffix(PENDING_APPROVAL_PLACEHOLDER_SUFFIX))
+        .is_some_and(|tool_name| !tool_name.is_empty())
+}
+
 fn is_pending_approval_placeholder(msg: &Message) -> bool {
-    msg.role == Role::Tool
-        && msg
-            .content
-            .contains("is awaiting approval. Execution paused.")
+    msg.role == Role::Tool && is_pending_approval_placeholder_content(&msg.content)
 }
 
 pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec<Message> {
@@ -348,5 +356,17 @@ mod tests {
             },
         );
         assert!(transitioned.is_none(), "terminal state should not reopen");
+    }
+
+    #[test]
+    fn pending_approval_placeholder_detection_requires_exact_template() {
+        let exact = pending_approval_placeholder_message("echo");
+        assert!(is_pending_approval_placeholder_content(&exact));
+        assert!(!is_pending_approval_placeholder_content(
+            "prefix Tool 'echo' is awaiting approval. Execution paused. suffix"
+        ));
+        assert!(!is_pending_approval_placeholder_content(
+            "Tool '' is awaiting approval. Execution paused."
+        ));
     }
 }

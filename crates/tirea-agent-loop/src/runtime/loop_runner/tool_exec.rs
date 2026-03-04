@@ -1,15 +1,18 @@
-use super::core::{transition_tool_call_state, ToolCallStateSeed, ToolCallStateTransition};
+use super::core::{
+    pending_approval_placeholder_message, transition_tool_call_state, ToolCallStateSeed,
+    ToolCallStateTransition,
+};
 use super::parallel_state_merge::merge_parallel_state_patches;
 use super::plugin_runtime::emit_tool_phase;
 use super::{
     Agent, AgentLoopError, BaseAgent, RunCancellationToken, TOOL_SCOPE_CALLER_MESSAGES_KEY,
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
-use crate::contracts::runtime::behavior::AgentBehavior;
-use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction, ScopeContext};
 use crate::contracts::runtime::action::Action;
-use crate::contracts::runtime::tool_call::ToolGate;
+use crate::contracts::runtime::behavior::AgentBehavior;
 use crate::contracts::runtime::phase::{Phase, StepContext};
+use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction, ScopeContext};
+use crate::contracts::runtime::tool_call::ToolGate;
 use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::runtime::{
     ActivityManager, PendingToolCall, SuspendTicket, SuspendedCall, ToolCallResumeMode,
@@ -362,10 +365,7 @@ pub(super) fn apply_tool_results_impl(
             let mut msgs = if is_suspended {
                 vec![Message::tool(
                     &r.execution.call.id,
-                    format!(
-                        "Tool '{}' is awaiting approval. Execution paused.",
-                        r.execution.call.name
-                    ),
+                    pending_approval_placeholder_message(&r.execution.call.name),
                 )]
             } else {
                 let mut tool_msg = tool_response(&r.execution.call.id, &r.execution.result);
@@ -422,9 +422,7 @@ pub(super) fn apply_tool_results_impl(
             .collect();
         let patches = reduce_state_actions(actions, &state, "agent_loop", &ScopeContext::run())
             .map_err(|e| {
-                AgentLoopError::StateError(format!(
-                    "failed to reduce suspended call actions: {e}"
-                ))
+                AgentLoopError::StateError(format!("failed to reduce suspended call actions: {e}"))
             })?;
         for patch in patches {
             if !patch.patch().is_empty() {
@@ -803,12 +801,7 @@ pub(super) async fn execute_tools_sequential_with_phases(
         };
         let result = match await_or_cancel(
             phase_ctx.cancellation_token,
-            execute_single_tool_with_phases_impl(
-                tool.as_deref(),
-                call,
-                &state,
-                &call_phase_ctx,
-            ),
+            execute_single_tool_with_phases_impl(tool.as_deref(), call, &state, &call_phase_ctx),
         )
         .await
         {
@@ -910,12 +903,7 @@ async fn execute_single_tool_with_phases_impl(
     .await?;
 
     // Check if blocked or pending
-    let (
-        mut execution,
-        outcome,
-        suspended_call,
-        tool_actions,
-    ) = if step.tool_blocked() {
+    let (mut execution, outcome, suspended_call, tool_actions) = if step.tool_blocked() {
         let reason = step
             .gate
             .as_ref()
@@ -1099,8 +1087,7 @@ async fn execute_single_tool_with_phases_impl(
         let cleanup_patch = Patch::with_ops(vec![tirea_state::Op::delete(
             tirea_state::parse_path(&cleanup_path),
         )]);
-        let tracked =
-            TrackedPatch::new(cleanup_patch).with_source("framework:scope_cleanup");
+        let tracked = TrackedPatch::new(cleanup_patch).with_source("framework:scope_cleanup");
         step.emit_patch(tracked);
     }
 

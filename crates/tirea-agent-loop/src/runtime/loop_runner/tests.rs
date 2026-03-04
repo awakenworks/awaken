@@ -10178,6 +10178,42 @@ fn build_messages_drops_superseded_pending_placeholder_for_same_tool_call() {
 }
 
 #[test]
+fn build_messages_keeps_tool_result_that_only_contains_placeholder_phrase() {
+    let mut fix = TestFixture::new();
+    fix.messages = vec![
+        Arc::new(Message::user("hi")),
+        Arc::new(Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCall::new("call_1", "echo", json!({"message":"hello"}))],
+        )),
+        Arc::new(Message::tool(
+            "call_1",
+            "Log: Tool 'echo' is awaiting approval. Execution paused. But this is just debug output.",
+        )),
+        Arc::new(Message::tool(
+            "call_1",
+            r#"{"status":"ok","data":{"message":"hello"}}"#,
+        )),
+    ];
+    let step = fix.step(vec![]);
+    let msgs = build_messages(&step, "sys");
+
+    let call_1_tool_msgs: Vec<&Message> = msgs
+        .iter()
+        .filter(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("call_1"))
+        .collect();
+
+    assert_eq!(
+        call_1_tool_msgs.len(),
+        2,
+        "substring match must not misclassify normal tool output as pending placeholder"
+    );
+    assert!(call_1_tool_msgs
+        .iter()
+        .any(|m| m.content.starts_with("Log: Tool 'echo'")));
+}
+
+#[test]
 fn build_messages_keeps_pending_placeholder_when_no_real_tool_result_exists() {
     let mut fix = TestFixture::new();
     fix.messages = vec![

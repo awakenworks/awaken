@@ -480,15 +480,20 @@ impl ThreadReader for PostgresStore {
 
         let messages: Vec<MessageWithCursor> = limited
             .into_iter()
-            .map(|(seq, data)| {
-                let message: Message = serde_json::from_value(data)
-                    .unwrap_or_else(|_| Message::system("[deserialization error]"));
-                MessageWithCursor {
-                    cursor: seq,
-                    message,
-                }
-            })
-            .collect();
+            .map(
+                |(seq, data)| -> Result<MessageWithCursor, ThreadStoreError> {
+                    let message: Message = serde_json::from_value(data).map_err(|e| {
+                        ThreadStoreError::Serialization(format!(
+                        "failed to deserialize message row (thread_id={thread_id}, seq={seq}): {e}"
+                    ))
+                    })?;
+                    Ok(MessageWithCursor {
+                        cursor: seq,
+                        message,
+                    })
+                },
+            )
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(MessagePage {
             next_cursor: messages.last().map(|m| m.cursor),

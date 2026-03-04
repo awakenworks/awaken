@@ -14,6 +14,7 @@ thiserror = "2"
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }
 tokio = { version = "1", default-features = false, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tracing = "0.1"
 
 [dev-dependencies]
 tirea-contract = { version = "0.2.0", path = "../tirea-contract", features = ["test-support"] }
