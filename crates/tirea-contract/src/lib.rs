@@ -143,11 +143,12 @@ pub use runtime::{
     ScopeContext, SerializedAction, StateScope, StateScopeRegistry, StateSpec, StepContext,
     StepEndContext, StepOutcome, StepStartContext, StoppedReason, StreamResult, SuspendTicket,
     Suspension, SuspensionResponse, TerminationReason, TokenUsage, ToolCallAction, ToolCallContext,
-    ToolCallOutcome, ToolCallProgressState, ToolCallProgressStatus, ToolCallProgressUpdate,
-    ToolExecution, ToolExecutionEffect, ToolExecutionRequest, ToolExecutionResult, ToolExecutor,
-    ToolExecutorError, ToolGate, ToolProgressState, TOOL_CALL_PROGRESS_ACTIVITY_TYPE,
-    TOOL_CALL_PROGRESS_SCHEMA, TOOL_CALL_PROGRESS_TYPE, TOOL_PROGRESS_ACTIVITY_TYPE,
-    TOOL_PROGRESS_ACTIVITY_TYPE_LEGACY, TOOL_SCOPE_PARENT_TOOL_CALL_ID_KEY,
+    ToolCallOutcome, ToolCallProgressSink, ToolCallProgressState, ToolCallProgressStatus,
+    ToolCallProgressUpdate, ToolExecution, ToolExecutionEffect, ToolExecutionRequest,
+    ToolExecutionResult, ToolExecutor, ToolExecutorError, ToolGate, ToolProgressState,
+    TOOL_CALL_PROGRESS_ACTIVITY_TYPE, TOOL_CALL_PROGRESS_SCHEMA, TOOL_CALL_PROGRESS_TYPE,
+    TOOL_PROGRESS_ACTIVITY_TYPE, TOOL_PROGRESS_ACTIVITY_TYPE_LEGACY,
+    TOOL_SCOPE_PARENT_TOOL_CALL_ID_KEY,
 };
 
 // storage

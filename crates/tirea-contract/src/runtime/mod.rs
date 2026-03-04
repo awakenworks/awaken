@@ -34,11 +34,11 @@ pub use state::{
 pub use tool_call::{
     suspended_calls_from_state, tool_call_states_from_state, ActivityContext, DecisionReplayPolicy,
     PendingToolCall, SuspendedCall, SuspendedCallAction, SuspendedCallState, Suspension,
-    SuspensionResponse, ToolCallContext, ToolCallOutcome, ToolCallProgressState,
-    ToolCallProgressStatus, ToolCallProgressUpdate, ToolCallResume, ToolCallResumeMode,
-    ToolCallState, ToolCallStateAction, ToolCallStatus, ToolExecution, ToolExecutionEffect,
-    ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError, ToolGate,
-    ToolProgressState, TOOL_CALL_PROGRESS_ACTIVITY_TYPE, TOOL_CALL_PROGRESS_SCHEMA,
-    TOOL_CALL_PROGRESS_TYPE, TOOL_PROGRESS_ACTIVITY_TYPE, TOOL_PROGRESS_ACTIVITY_TYPE_LEGACY,
-    TOOL_SCOPE_PARENT_TOOL_CALL_ID_KEY,
+    SuspensionResponse, ToolCallContext, ToolCallOutcome, ToolCallProgressSink,
+    ToolCallProgressState, ToolCallProgressStatus, ToolCallProgressUpdate, ToolCallResume,
+    ToolCallResumeMode, ToolCallState, ToolCallStateAction, ToolCallStatus, ToolExecution,
+    ToolExecutionEffect, ToolExecutionRequest, ToolExecutionResult, ToolExecutor,
+    ToolExecutorError, ToolGate, ToolProgressState, TOOL_CALL_PROGRESS_ACTIVITY_TYPE,
+    TOOL_CALL_PROGRESS_SCHEMA, TOOL_CALL_PROGRESS_TYPE, TOOL_PROGRESS_ACTIVITY_TYPE,
+    TOOL_PROGRESS_ACTIVITY_TYPE_LEGACY, TOOL_SCOPE_PARENT_TOOL_CALL_ID_KEY,
 };

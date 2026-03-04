@@ -126,6 +126,52 @@ pub struct ToolProgressState {
     pub message: Option<String>,
 }
 
+/// Sink interface for tool-call progress events.
+///
+/// Tools report progress through [`ToolCallContext::report_tool_call_progress`], and
+/// the context forwards canonical payloads into this sink. The sink implementation
+/// decides how payloads are emitted/transported.
+pub trait ToolCallProgressSink: Send + Sync {
+    /// Consume a canonical tool-call progress payload.
+    fn report(
+        &self,
+        stream_id: &str,
+        activity_type: &str,
+        payload: &ToolCallProgressState,
+    ) -> TireaResult<()>;
+}
+
+#[derive(Clone)]
+struct ActivityManagerProgressSink {
+    manager: Arc<dyn ActivityManager>,
+}
+
+impl ActivityManagerProgressSink {
+    fn new(manager: Arc<dyn ActivityManager>) -> Self {
+        Self { manager }
+    }
+}
+
+impl ToolCallProgressSink for ActivityManagerProgressSink {
+    fn report(
+        &self,
+        stream_id: &str,
+        activity_type: &str,
+        payload: &ToolCallProgressState,
+    ) -> TireaResult<()> {
+        let Value::Object(fields) = serde_json::to_value(payload)? else {
+            return Err(TireaError::invalid_operation(
+                "tool-call-progress payload must serialize as object",
+            ));
+        };
+        for (key, value) in fields {
+            let op = Op::set(Path::root().key(key), value);
+            self.manager.on_activity_op(stream_id, activity_type, &op);
+        }
+        Ok(())
+    }
+}
+
 /// Execution context for tool invocations.
 ///
 /// Provides typed state access (read/write), run config access, identity,
@@ -139,6 +185,7 @@ pub struct ToolCallContext<'a> {
     run_config: &'a RunConfig,
     pending_messages: &'a Mutex<Vec<Arc<Message>>>,
     activity_manager: Arc<dyn ActivityManager>,
+    tool_call_progress_sink: Arc<dyn ToolCallProgressSink>,
     cancellation_token: Option<&'a CancellationToken>,
 }
 
@@ -166,6 +213,8 @@ impl<'a> ToolCallContext<'a> {
         pending_messages: &'a Mutex<Vec<Arc<Message>>>,
         activity_manager: Arc<dyn ActivityManager>,
     ) -> Self {
+        let tool_call_progress_sink: Arc<dyn ToolCallProgressSink> =
+            Arc::new(ActivityManagerProgressSink::new(activity_manager.clone()));
         Self {
             doc,
             ops,
@@ -174,6 +223,7 @@ impl<'a> ToolCallContext<'a> {
             run_config,
             pending_messages,
             activity_manager,
+            tool_call_progress_sink,
             cancellation_token: None,
         }
     }
@@ -182,6 +232,16 @@ impl<'a> ToolCallContext<'a> {
     #[must_use]
     pub fn with_cancellation_token(mut self, token: &'a CancellationToken) -> Self {
         self.cancellation_token = Some(token);
+        self
+    }
+
+    /// Override the sink used for tool-call progress payload forwarding.
+    ///
+    /// This allows runtime integrations to decouple progress collection from
+    /// activity transport details.
+    #[must_use]
+    pub fn with_tool_call_progress_sink(mut self, sink: Arc<dyn ToolCallProgressSink>) -> Self {
+        self.tool_call_progress_sink = sink;
         self
     }
 
@@ -473,18 +533,8 @@ impl<'a> ToolCallContext<'a> {
             updated_at_ms: current_unix_millis(),
         };
 
-        let Value::Object(fields) = serde_json::to_value(payload)? else {
-            return Err(TireaError::invalid_operation(
-                "tool-call-progress payload must serialize as object",
-            ));
-        };
-        for (key, value) in fields {
-            let op = Op::set(Path::root().key(key), value);
-            self.activity_manager
-                .on_activity_op(&stream_id, TOOL_CALL_PROGRESS_ACTIVITY_TYPE, &op);
-        }
-
-        Ok(())
+        self.tool_call_progress_sink
+            .report(&stream_id, TOOL_CALL_PROGRESS_ACTIVITY_TYPE, &payload)
     }
 
     // =========================================================================
@@ -906,6 +956,40 @@ mod tests {
         value
     }
 
+    #[derive(Default)]
+    struct RecordingProgressSink {
+        events: Mutex<Vec<(String, String, ToolCallProgressState)>>,
+    }
+
+    impl ToolCallProgressSink for RecordingProgressSink {
+        fn report(
+            &self,
+            stream_id: &str,
+            activity_type: &str,
+            payload: &ToolCallProgressState,
+        ) -> TireaResult<()> {
+            self.events.lock().unwrap().push((
+                stream_id.to_string(),
+                activity_type.to_string(),
+                payload.clone(),
+            ));
+            Ok(())
+        }
+    }
+
+    struct FailingProgressSink;
+
+    impl ToolCallProgressSink for FailingProgressSink {
+        fn report(
+            &self,
+            _stream_id: &str,
+            _activity_type: &str,
+            _payload: &ToolCallProgressState,
+        ) -> TireaResult<()> {
+            Err(TireaError::invalid_operation("sink failed"))
+        }
+    }
+
     #[test]
     fn test_report_tool_call_progress_emits_tool_call_progress_activity() {
         let doc = DocCell::new(json!({}));
@@ -1069,5 +1153,75 @@ mod tests {
         let state = rebuild_activity_state(&events);
         assert_eq!(state["parent_node_id"], "run:run-123");
         assert!(state["parent_call_id"].is_null());
+    }
+
+    #[test]
+    fn test_report_tool_call_progress_uses_injected_sink_instead_of_activity_manager() {
+        let doc = DocCell::new(json!({}));
+        let ops = Mutex::new(Vec::new());
+        let scope = RunConfig::default();
+        let pending = Mutex::new(Vec::new());
+        let activity_manager = Arc::new(RecordingActivityManager::default());
+        let sink = Arc::new(RecordingProgressSink::default());
+        let ctx = ToolCallContext::new(
+            &doc,
+            &ops,
+            "call-1",
+            "tool:echo",
+            &scope,
+            &pending,
+            activity_manager.clone(),
+        )
+        .with_tool_call_progress_sink(sink.clone());
+
+        ctx.report_tool_call_progress(ToolCallProgressUpdate {
+            status: ToolCallProgressStatus::Running,
+            progress: Some(0.2),
+            loaded: None,
+            total: Some(10.0),
+            message: Some("working".to_string()),
+        })
+        .expect("tool call progress should be reported");
+
+        let sink_events = sink.events.lock().unwrap();
+        assert_eq!(sink_events.len(), 1);
+        let (stream_id, activity_type, payload) = &sink_events[0];
+        assert_eq!(stream_id, "tool_call:call-1");
+        assert_eq!(activity_type, TOOL_CALL_PROGRESS_ACTIVITY_TYPE);
+        assert_eq!(payload.call_id, "call-1");
+        assert_eq!(payload.progress, Some(0.2));
+
+        let activity_events = activity_manager.events.lock().unwrap();
+        assert!(
+            activity_events.is_empty(),
+            "injected sink should bypass default activity manager sink"
+        );
+    }
+
+    #[test]
+    fn test_report_tool_call_progress_propagates_sink_error() {
+        let doc = DocCell::new(json!({}));
+        let ops = Mutex::new(Vec::new());
+        let scope = RunConfig::default();
+        let pending = Mutex::new(Vec::new());
+        let ctx = ToolCallContext::new(
+            &doc,
+            &ops,
+            "call-1",
+            "tool:echo",
+            &scope,
+            &pending,
+            NoOpActivityManager::arc(),
+        )
+        .with_tool_call_progress_sink(Arc::new(FailingProgressSink));
+
+        let result = ctx.report_tool_call_progress(ToolCallProgressUpdate {
+            status: ToolCallProgressStatus::Running,
+            progress: Some(0.1),
+            loaded: None,
+            total: None,
+            message: None,
+        });
+        assert!(result.is_err());
     }
 }
