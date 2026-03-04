@@ -9,7 +9,19 @@ export function createTransport(
     api: chatApiUrl(agentId),
     headers: { "x-session-id": sessionId },
     prepareSendMessagesRequest: ({ messages, trigger, messageId }) => {
-      const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+      const lastAssistantIndex = (() => {
+        for (let i = messages.length - 1; i >= 0; i -= 1) {
+          if (messages[i]?.role === "assistant") return i;
+        }
+        return -1;
+      })();
+      const newUserMessages = messages
+        .slice(lastAssistantIndex + 1)
+        .filter((m) => m.role === "user");
+      const lastUserMsg =
+        newUserMessages.length > 0
+          ? null
+          : [...messages].reverse().find((m) => m.role === "user");
       return {
         body: {
           id: sessionId,
@@ -17,9 +29,11 @@ export function createTransport(
           messages:
             trigger === "regenerate-message"
               ? []
-              : lastUserMsg
-                ? [lastUserMsg]
-                : [],
+              : newUserMessages.length > 0
+                ? newUserMessages
+                : lastUserMsg
+                  ? [lastUserMsg]
+                  : [],
           ...(trigger ? { trigger } : {}),
           ...(messageId ? { messageId } : {}),
         },

@@ -30,5 +30,25 @@ describe("createTransport", () => {
     expect(result.body.messages).toHaveLength(1);
     expect(result.body.messages[0]?.id).toBe("u2");
   });
-});
 
+  it("sends all new user messages after the latest assistant message", () => {
+    const transport = createTransport("thread-1", "default") as unknown as {
+      prepareSendMessagesRequest?: (arg: {
+        messages: UiMsg[];
+        trigger?: string;
+        messageId?: string;
+      }) => { body: { messages: UiMsg[] } };
+    };
+
+    const result = transport.prepareSendMessagesRequest!({
+      messages: [
+        { role: "user", id: "u1", parts: [{ type: "text", text: "request" }] },
+        { role: "assistant", id: "a1", parts: [{ type: "text", text: "need approval" }] },
+        { role: "user", id: "u2", parts: [{ type: "tool-approval-response" }] },
+      ],
+    });
+
+    expect(result.body.messages).toHaveLength(1);
+    expect(result.body.messages[0]?.id).toBe("u2");
+  });
+});

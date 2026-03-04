@@ -27,7 +27,6 @@ export function ChatPanel({
     sendMessage,
     status,
     error,
-    addToolApprovalResponse,
     addToolOutput,
     historyLoaded,
     metrics,
@@ -103,8 +102,22 @@ export function ChatPanel({
           onAskAnswerChange={(toolCallId, value) =>
             setAskAnswers((prev) => ({ ...prev, [toolCallId]: value }))
           }
-          onApprove={(id) => addToolApprovalResponse({ id, approved: true })}
-          onDeny={(id) => addToolApprovalResponse({ id, approved: false })}
+          onApprove={async (id) => {
+            await addToolOutput({
+              tool: "PermissionConfirm" as never,
+              toolCallId: id,
+              state: "output-available",
+              output: { approved: true } as never,
+            });
+          }}
+          onDeny={async (id) => {
+            await addToolOutput({
+              tool: "PermissionConfirm" as never,
+              toolCallId: id,
+              state: "output-denied",
+              output: { approved: false } as never,
+            });
+          }}
           onAskSubmit={async (toolCallId, answer) => {
             await addToolOutput({
               tool: "askUserQuestion" as never,

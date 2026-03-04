@@ -15,7 +15,7 @@ export default defineConfig({
   projects: [
     {
       name: "ai-sdk",
-      testMatch: "ai-sdk-chat.spec.ts",
+      testMatch: /ai-sdk-.*\.spec\.ts/,
       use: { baseURL: `http://localhost:${AI_SDK_PORT}` },
     },
     {

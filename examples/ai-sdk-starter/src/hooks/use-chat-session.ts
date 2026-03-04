@@ -128,7 +128,7 @@ export function useChatSession(threadId: string, agentId = "default") {
   const sendAutomaticallyWhen = useCallback(
     ({ messages }: { messages: UIMessage[] }) => {
       const last = messages[messages.length - 1];
-      if (!last || last.role !== "assistant") return false;
+      if (!last) return false;
 
       const interactionIds = last.parts.flatMap((part) => {
         if (
@@ -155,7 +155,8 @@ export function useChatSession(threadId: string, agentId = "default") {
           }
 
           if (
-            (toolName === "askUserQuestion" ||
+            (toolName === "PermissionConfirm" ||
+              toolName === "askUserQuestion" ||
               toolName === "highlight_place" ||
               toolName === "set_background_color") &&
             (state === "output-available" || state === "output-denied" || state === "output-error")
