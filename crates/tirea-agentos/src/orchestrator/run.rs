@@ -218,9 +218,11 @@ impl AgentOs {
         thread.metadata.version = Some(version);
 
         // 5. Set run identity on the run_config
-        let _ = resolved.run_config.set("run_id", run_id.clone());
+        resolved.run_config.set("run_id", run_id.clone())?;
         if let Some(parent) = parent_run_id.as_deref() {
-            let _ = resolved.run_config.set("parent_run_id", parent.to_string());
+            resolved
+                .run_config
+                .set("parent_run_id", parent.to_string())?;
         }
 
         // 6. Behavior uniqueness: wiring ensures base uniqueness, but callers

@@ -68,6 +68,63 @@ async fn test_save_load_roundtrip() {
     assert_eq!(loaded.messages[0].content, "hello");
 }
 
+#[tokio::test]
+async fn test_save_replaces_messages_and_advances_version() {
+    let Some((_container, url)) = start_postgres().await else {
+        return;
+    };
+    let store = make_store(&url).await;
+
+    let initial = Thread::new("replace-thread").with_messages(vec![
+        Message::user("hello-1").with_id("m1".to_string()),
+        Message::assistant("hello-2").with_id("m2".to_string()),
+    ]);
+    store.save(&initial).await.unwrap();
+
+    let replacement = Thread::new("replace-thread")
+        .with_message(Message::user("hello-1-updated").with_id("m1".to_string()));
+    store.save(&replacement).await.unwrap();
+
+    let head = store.load("replace-thread").await.unwrap().unwrap();
+    assert_eq!(head.version, 1, "save should increment thread version");
+    assert_eq!(
+        head.thread.messages.len(),
+        1,
+        "save should replace persisted messages"
+    );
+    assert_eq!(head.thread.messages[0].content, "hello-1-updated");
+    assert_eq!(head.thread.messages[0].id.as_deref(), Some("m1"));
+}
+
+#[tokio::test]
+async fn test_ensure_table_creates_thread_filter_indexes() {
+    let Some((_container, url)) = start_postgres().await else {
+        return;
+    };
+    let _store = make_store(&url).await;
+    let pool = sqlx::PgPool::connect(&url)
+        .await
+        .expect("failed to connect to Postgres");
+    let indexes: Vec<String> = sqlx::query_scalar(
+        "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() AND tablename = 'agent_sessions'",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load indexes");
+    assert!(
+        indexes
+            .iter()
+            .any(|index| index == "idx_agent_sessions_resource_id"),
+        "resource_id filter index should exist"
+    );
+    assert!(
+        indexes
+            .iter()
+            .any(|index| index == "idx_agent_sessions_parent_thread_id"),
+        "parent_thread_id filter index should exist"
+    );
+}
+
 // ========================================================================
 // Tool call message round-trip tests
 // ========================================================================

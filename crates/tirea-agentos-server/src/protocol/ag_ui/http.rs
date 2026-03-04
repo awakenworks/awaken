@@ -62,7 +62,8 @@ async fn run(
     }
 
     let mut resolved = st.os.resolve(&agent_id).map_err(AgentOsRunError::from)?;
-    apply_agui_extensions(&mut resolved, &req);
+    apply_agui_extensions(&mut resolved, &req)
+        .map_err(|err| ApiError::Internal(err.to_string()))?;
     let run_request = req.into_runtime_run_request(agent_id.clone());
 
     let prepared = prepare_http_run(&st.os, resolved, run_request, "ag_ui", &agent_id).await?;

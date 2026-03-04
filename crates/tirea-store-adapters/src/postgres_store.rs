@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 #[cfg(feature = "postgres")]
 use sqlx::{Postgres, QueryBuilder};
-use std::collections::HashSet;
 use tirea_contract::storage::{
     Committed, MessagePage, MessageQuery, MessageWithCursor, SortOrder, ThreadHead, ThreadListPage,
     ThreadListQuery, ThreadReader, ThreadStoreError, ThreadWriter, VersionPrecondition,
@@ -63,6 +62,14 @@ impl PostgresStore {
             format!(
                 "CREATE INDEX IF NOT EXISTS idx_{}_session_run ON {} (session_id, run_id) WHERE run_id IS NOT NULL",
                 self.messages_table, self.messages_table
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_{}_resource_id ON {} ((data->>'resource_id')) WHERE data ? 'resource_id'",
+                self.table, self.table
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_{}_parent_thread_id ON {} ((data->>'parent_thread_id')) WHERE data ? 'parent_thread_id'",
+                self.table, self.table
             ),
         ];
 
@@ -269,46 +276,62 @@ impl ThreadWriter for PostgresStore {
         // Use a transaction to keep sessions and messages consistent.
         let mut tx = self.pool.begin().await.map_err(Self::sql_err)?;
 
-        // Upsert session skeleton.
-        let upsert_sql = format!(
-            r#"
-            INSERT INTO {} (id, data, updated_at)
-            VALUES ($1, $2, now())
-            ON CONFLICT (id) DO UPDATE
-            SET data = EXCLUDED.data, updated_at = now()
-            "#,
-            self.table
-        );
-        sqlx::query(&upsert_sql)
+        // Lock existing row to preserve save-version semantics (create = 0, update = +1).
+        let select_sql = format!("SELECT data FROM {} WHERE id = $1 FOR UPDATE", self.table);
+        let existing: Option<(serde_json::Value,)> = sqlx::query_as(&select_sql)
             .bind(&thread.id)
-            .bind(&v)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(Self::sql_err)?;
+
+        let next_version = existing
+            .as_ref()
+            .and_then(|(data,)| data.get("_version").and_then(serde_json::Value::as_u64))
+            .map_or(0, |version| version.saturating_add(1));
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert(
+                "_version".to_string(),
+                serde_json::Value::Number(next_version.into()),
+            );
+        }
+
+        if existing.is_some() {
+            let update_sql = format!(
+                "UPDATE {} SET data = $1, updated_at = now() WHERE id = $2",
+                self.table
+            );
+            sqlx::query(&update_sql)
+                .bind(&v)
+                .bind(&thread.id)
+                .execute(&mut *tx)
+                .await
+                .map_err(Self::sql_err)?;
+        } else {
+            let insert_sql = format!(
+                "INSERT INTO {} (id, data, updated_at) VALUES ($1, $2, now())",
+                self.table
+            );
+            sqlx::query(&insert_sql)
+                .bind(&thread.id)
+                .bind(&v)
+                .execute(&mut *tx)
+                .await
+                .map_err(Self::sql_err)?;
+        }
+
+        // `save()` is replace semantics: persist exactly the provided message set.
+        let delete_messages_sql =
+            format!("DELETE FROM {} WHERE session_id = $1", self.messages_table);
+        sqlx::query(&delete_messages_sql)
+            .bind(&thread.id)
             .execute(&mut *tx)
             .await
             .map_err(Self::sql_err)?;
 
-        // Incremental append: only INSERT messages not yet persisted.
-        let existing_sql = format!(
-            "SELECT message_id FROM {} WHERE session_id = $1 AND message_id IS NOT NULL",
-            self.messages_table,
-        );
-        let existing_rows: Vec<(String,)> = sqlx::query_as(&existing_sql)
-            .bind(&thread.id)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(Self::sql_err)?;
-        let existing_ids: HashSet<String> = existing_rows.into_iter().map(|(id,)| id).collect();
-
-        let new_messages: Vec<&Message> = thread
-            .messages
-            .iter()
-            .filter(|m| m.id.as_ref().is_none_or(|id| !existing_ids.contains(id)))
-            .map(|m| m.as_ref())
-            .collect();
-
-        if !new_messages.is_empty() {
-            let mut rows = Vec::with_capacity(new_messages.len());
-            for msg in &new_messages {
-                let data = serde_json::to_value(*msg)
+        if !thread.messages.is_empty() {
+            let mut rows = Vec::with_capacity(thread.messages.len());
+            for msg in &thread.messages {
+                let data = serde_json::to_value(msg.as_ref())
                     .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
                 let message_id = msg.id.clone();
                 let (run_id, step_index) = msg

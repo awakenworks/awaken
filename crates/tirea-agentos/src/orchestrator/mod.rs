@@ -6,8 +6,8 @@ use std::time::Duration;
 use futures::Stream;
 use genai::Client;
 
-use crate::contracts::runtime::AgentBehavior;
 use crate::contracts::runtime::tool_call::Tool;
+use crate::contracts::runtime::AgentBehavior;
 use crate::contracts::storage::{ThreadHead, ThreadStore, ThreadStoreError, VersionPrecondition};
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::thread::Message;
@@ -270,6 +270,9 @@ pub enum AgentOsResolveError {
     },
 
     #[error(transparent)]
+    RunConfig(#[from] crate::contracts::RunConfigError),
+
+    #[error(transparent)]
     Wiring(#[from] AgentOsWiringError),
 }
 
@@ -277,6 +280,9 @@ pub enum AgentOsResolveError {
 pub enum AgentOsRunError {
     #[error(transparent)]
     Resolve(#[from] AgentOsResolveError),
+
+    #[error(transparent)]
+    RunConfig(#[from] crate::contracts::RunConfigError),
 
     #[error(transparent)]
     Loop(#[from] AgentLoopError),
@@ -347,7 +353,6 @@ impl PreparedRun {
         self.cancellation_token = Some(token);
         self
     }
-
 }
 
 #[derive(Clone)]

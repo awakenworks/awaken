@@ -97,7 +97,7 @@ async fn agui_and_ai_sdk_have_equivalent_runtime_event_shape() {
     let agui_req = RunAgentInput::new("thread_parity_stream", "run_parity_stream")
         .with_message(Message::user("hello parity"));
     let mut agui_resolved = os.resolve("test").unwrap();
-    apply_agui_extensions(&mut agui_resolved, &agui_req);
+    apply_agui_extensions(&mut agui_resolved, &agui_req).expect("apply AG-UI extensions");
     let agui_run_req = agui_req.into_runtime_run_request("test".to_string());
     let agui_prepared = os.prepare_run(agui_run_req, agui_resolved).await.unwrap();
     let agui_run = AgentOs::execute_prepared(agui_prepared).unwrap();

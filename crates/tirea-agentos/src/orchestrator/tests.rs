@@ -23,7 +23,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tempfile::TempDir;
-use tirea_contract::testing::{apply_before_inference_for_test, apply_lifecycle_for_test, TestFixture};
+use tirea_contract::testing::{
+    apply_before_inference_for_test, apply_lifecycle_for_test, TestFixture,
+};
 use tirea_contract::TerminationReason;
 
 fn decision_for(
@@ -221,7 +223,10 @@ impl AgentBehavior for TerminateWithRunEndPatchPlugin {
         "terminate_with_run_end_patch"
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+    async fn before_inference(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeInferenceAction> {
         ActionSet::single(BeforeInferenceAction::Terminate(
             TerminationReason::BehaviorRequested,
         ))
@@ -235,9 +240,9 @@ impl AgentBehavior for TerminateWithRunEndPatchPlugin {
     }
 
     async fn run_end(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
-        ActionSet::single(LifecycleAction::State(
-            AnyStateAction::new::<RunEndMarkerState>(true),
-        ))
+        ActionSet::single(LifecycleAction::State(AnyStateAction::new::<
+            RunEndMarkerState,
+        >(true)))
     }
 }
 
@@ -993,7 +998,10 @@ async fn run_and_run_stream_work_without_llm_when_terminate_behavior_requested()
             "terminate_behavior_requested"
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
             ActionSet::single(BeforeInferenceAction::Terminate(
                 TerminationReason::BehaviorRequested,
             ))
@@ -1351,7 +1359,10 @@ impl AgentBehavior for TestPlugin {
         self.0
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+    async fn before_inference(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeInferenceAction> {
         ActionSet::single(BeforeInferenceAction::AddSystemContext(format!(
             "<plugin id=\"{}\"/>",
             self.0
@@ -1391,7 +1402,11 @@ async fn resolve_wires_plugins_from_registry() {
     let apply_fixture = TestFixture::new();
     let mut apply_step = apply_fixture.step(vec![]);
     apply_before_inference_for_test(&mut apply_step, actions);
-    assert!(apply_step.inference.system_context.iter().any(|s| s.contains("p1")));
+    assert!(apply_step
+        .inference
+        .system_context
+        .iter()
+        .any(|s| s.contains("p1")));
 }
 
 #[tokio::test]
@@ -1574,7 +1589,10 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
         fn id(&self) -> &str {
             "terminate_behavior_requested"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
             ActionSet::single(BeforeInferenceAction::Terminate(
                 TerminationReason::BehaviorRequested,
             ))
@@ -1641,7 +1659,10 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
         fn id(&self) -> &str {
             "terminate_behavior_requested"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
             ActionSet::single(BeforeInferenceAction::Terminate(
                 TerminationReason::BehaviorRequested,
             ))
@@ -1698,7 +1719,10 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
         fn id(&self) -> &str {
             "terminate_behavior_requested"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
             ActionSet::single(BeforeInferenceAction::Terminate(
                 TerminationReason::BehaviorRequested,
             ))
@@ -1758,7 +1782,10 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
         fn id(&self) -> &str {
             "terminate_behavior_requested"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
             ActionSet::single(BeforeInferenceAction::Terminate(
                 TerminationReason::BehaviorRequested,
             ))
@@ -1822,11 +1849,59 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
 }
 
 #[tokio::test]
+async fn prepare_run_returns_error_when_run_id_already_exists_in_run_config() {
+    use tirea_store_adapters::MemoryStore;
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = AgentOs::builder()
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
+        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .build()
+        .unwrap();
+
+    let mut resolved = os.resolve("a1").unwrap();
+    resolved
+        .run_config
+        .set("run_id", "preset-run-id")
+        .expect("preset run_id");
+
+    let err = match os
+        .prepare_run(
+            RunRequest {
+                agent_id: "a1".to_string(),
+                thread_id: Some("t-prepare-duplicate-run-id".to_string()),
+                run_id: Some("run-prepare".to_string()),
+                parent_run_id: None,
+                parent_thread_id: None,
+                resource_id: None,
+                state: None,
+                messages: vec![crate::contracts::thread::Message::user("hello")],
+                initial_decisions: vec![],
+            },
+            resolved,
+        )
+        .await
+    {
+        Ok(_) => panic!("duplicate run_id in run_config should fail"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(
+        err,
+        AgentOsRunError::RunConfig(crate::contracts::RunConfigError::AlreadySet(ref key))
+            if key == "run_id"
+    ));
+}
+
+#[tokio::test]
 async fn prepare_run_sets_parent_thread_id_for_existing_thread_without_lineage() {
     use tirea_store_adapters::MemoryStore;
 
     let storage = Arc::new(MemoryStore::new());
-    storage.create(&Thread::new("t-parent-upsert")).await.unwrap();
+    storage
+        .create(&Thread::new("t-parent-upsert"))
+        .await
+        .unwrap();
 
     let os = AgentOs::builder()
         .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
@@ -1916,7 +1991,10 @@ async fn execute_prepared_runs_stream() {
         fn id(&self) -> &str {
             "terminate_behavior_requested"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
             ActionSet::single(BeforeInferenceAction::Terminate(
                 TerminationReason::BehaviorRequested,
             ))
@@ -1981,7 +2059,10 @@ impl AgentBehavior for DecisionTerminatePlugin {
         "decision_terminate_behavior_requested"
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+    async fn before_inference(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeInferenceAction> {
         ActionSet::single(BeforeInferenceAction::Terminate(
             TerminationReason::BehaviorRequested,
         ))
@@ -2297,8 +2378,8 @@ async fn run_stream_persists_run_lifecycle_waiting_status_for_suspension() {
 #[tokio::test]
 async fn run_stream_initial_decisions_denied_returns_tool_error_and_clears_suspended() {
     use futures::StreamExt;
-    use tirea_store_adapters::MemoryStore;
     use tirea_contract::runtime::suspended_calls_from_state;
+    use tirea_store_adapters::MemoryStore;
 
     let storage = Arc::new(MemoryStore::new());
     let os = make_decision_test_os(storage.clone());
@@ -2379,8 +2460,8 @@ async fn run_stream_initial_decisions_denied_returns_tool_error_and_clears_suspe
 #[tokio::test]
 async fn run_stream_initial_decisions_cancelled_returns_tool_error_and_clears_suspended() {
     use futures::StreamExt;
-    use tirea_store_adapters::MemoryStore;
     use tirea_contract::runtime::suspended_calls_from_state;
+    use tirea_store_adapters::MemoryStore;
 
     let storage = Arc::new(MemoryStore::new());
     let os = make_decision_test_os(storage.clone());
@@ -2464,8 +2545,8 @@ async fn run_stream_initial_decisions_cancelled_returns_tool_error_and_clears_su
 #[tokio::test]
 async fn run_stream_initial_decisions_partial_match_keeps_unresolved_suspended_call() {
     use futures::StreamExt;
-    use tirea_store_adapters::MemoryStore;
     use tirea_contract::runtime::suspended_calls_from_state;
+    use tirea_store_adapters::MemoryStore;
 
     let storage = Arc::new(MemoryStore::new());
     let os = make_decision_test_os(storage.clone());
@@ -2569,8 +2650,8 @@ async fn run_stream_initial_decisions_partial_match_keeps_unresolved_suspended_c
 #[tokio::test]
 async fn run_stream_batch_approval_mode_waits_for_all_suspended_decisions_before_replay() {
     use futures::StreamExt;
-    use tirea_store_adapters::MemoryStore;
     use tirea_contract::runtime::suspended_calls_from_state;
+    use tirea_store_adapters::MemoryStore;
 
     let storage = Arc::new(MemoryStore::new());
     let os = make_decision_test_os_with_mode(
@@ -2723,8 +2804,8 @@ async fn run_stream_batch_approval_mode_waits_for_all_suspended_decisions_before
 #[tokio::test]
 async fn run_stream_initial_decisions_ignore_unknown_target() {
     use futures::StreamExt;
-    use tirea_store_adapters::MemoryStore;
     use tirea_contract::runtime::suspended_calls_from_state;
+    use tirea_store_adapters::MemoryStore;
 
     let storage = Arc::new(MemoryStore::new());
     let os = make_decision_test_os(storage.clone());
@@ -2804,8 +2885,8 @@ async fn run_stream_initial_decisions_ignore_unknown_target() {
 #[tokio::test]
 async fn run_stream_duplicate_initial_decisions_are_idempotent() {
     use futures::StreamExt;
-    use tirea_store_adapters::MemoryStore;
     use tirea_contract::runtime::suspended_calls_from_state;
+    use tirea_store_adapters::MemoryStore;
 
     let storage = Arc::new(MemoryStore::new());
     let os = make_decision_test_os(storage.clone());
@@ -3514,7 +3595,7 @@ async fn prepare_run_cleans_up_run_scoped_state_between_consecutive_runs() {
     // --- Run 1: creates StopPolicyRuntimeState via after_inference ---
     let mut resolved = os.resolve("a1").unwrap();
     resolved.agent = resolved.agent.with_llm_executor(
-        Arc::new(OneShotLlm) as Arc<dyn crate::runtime::loop_runner::LlmExecutor>,
+        Arc::new(OneShotLlm) as Arc<dyn crate::runtime::loop_runner::LlmExecutor>
     );
     let prepared = os
         .prepare_run(
@@ -3547,7 +3628,7 @@ async fn prepare_run_cleans_up_run_scoped_state_between_consecutive_runs() {
     // --- Run 2: prepare_run should clean up run-scoped state ---
     let mut resolved2 = os.resolve("a1").unwrap();
     resolved2.agent = resolved2.agent.with_llm_executor(
-        Arc::new(OneShotLlm) as Arc<dyn crate::runtime::loop_runner::LlmExecutor>,
+        Arc::new(OneShotLlm) as Arc<dyn crate::runtime::loop_runner::LlmExecutor>
     );
     let prepared2 = os
         .prepare_run(

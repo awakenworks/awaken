@@ -255,14 +255,15 @@ impl AgentOs {
         Self::ensure_agent_tools_plugin_not_installed(resolved_plugins)?;
         let pinned_os = self.with_registry_overrides(agents_registry.clone(), skills_registry);
 
-        let run_tool: Arc<dyn Tool> =
-            Arc::new(AgentRunTool::new(pinned_os.clone(), self.sub_agent_handles.clone()));
-        let stop_tool: Arc<dyn Tool> =
-            Arc::new(AgentStopTool::new(self.sub_agent_handles.clone()));
+        let run_tool: Arc<dyn Tool> = Arc::new(AgentRunTool::new(
+            pinned_os.clone(),
+            self.sub_agent_handles.clone(),
+        ));
+        let stop_tool: Arc<dyn Tool> = Arc::new(AgentStopTool::new(self.sub_agent_handles.clone()));
         let output_tool: Arc<dyn Tool> = Arc::new(AgentOutputTool::new(pinned_os));
 
-        let tools_plugin =
-            AgentToolsPlugin::new(agents_registry, self.sub_agent_handles.clone()).with_limits(
+        let tools_plugin = AgentToolsPlugin::new(agents_registry, self.sub_agent_handles.clone())
+            .with_limits(
                 self.agent_tools.discovery_max_entries,
                 self.agent_tools.discovery_max_chars,
             );
@@ -543,8 +544,8 @@ impl AgentOs {
             .ok_or_else(|| AgentOsResolveError::AgentNotFound(agent_id.to_string()))?;
 
         let mut run_config = crate::contracts::RunConfig::new();
-        let _ = run_config.set(SCOPE_CALLER_AGENT_ID_KEY, agent_id.to_string());
-        let _ = set_scope_filters_from_definition_if_absent(&mut run_config, &definition);
+        run_config.set(SCOPE_CALLER_AGENT_ID_KEY, agent_id.to_string())?;
+        set_scope_filters_from_definition_if_absent(&mut run_config, &definition)?;
 
         let allowed_tools = definition.allowed_tools.clone();
         let excluded_tools = definition.excluded_tools.clone();
