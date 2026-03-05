@@ -263,8 +263,7 @@ mod duplex_sampling {
             params: Option<Value>,
         ) -> Result<Value, McpTransportError> {
             let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-            let request =
-                JsonRpcRequest::new(JsonRpcId::Number(id), method.to_string(), params);
+            let request = JsonRpcRequest::new(JsonRpcId::Number(id), method.to_string(), params);
             let line = format!(
                 "{}\n",
                 serde_json::to_string(&request).map_err(McpTransportError::from)?
@@ -318,12 +317,9 @@ mod duplex_sampling {
                         let v = serde_json::to_value(&result).unwrap_or(Value::Null);
                         JsonRpcResponse::success(request.id.clone(), v)
                     }
-                    Err(e) => JsonRpcResponse::error(
-                        request.id.clone(),
-                        -32000,
-                        e.to_string(),
-                        None,
-                    ),
+                    Err(e) => {
+                        JsonRpcResponse::error(request.id.clone(), -32000, e.to_string(), None)
+                    }
                 }
             }
             _ => JsonRpcResponse::error(
@@ -391,9 +387,7 @@ mod duplex_sampling {
 
 /// Spawn a minimal MCP server on a DuplexStream that sends
 /// `sampling/createMessage` during tool execution.
-fn spawn_sampling_server(
-    prompt: &str,
-) -> (tokio::io::DuplexStream, tokio::task::JoinHandle<()>) {
+fn spawn_sampling_server(prompt: &str) -> (tokio::io::DuplexStream, tokio::task::JoinHandle<()>) {
     use serde_json::{json, Value};
     use std::sync::atomic::{AtomicI64, Ordering};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -459,8 +453,7 @@ fn spawn_sampling_server(
                             "maxTokens": 100
                         }
                     });
-                    let req_line =
-                        format!("{}\n", serde_json::to_string(&sampling_req).unwrap());
+                    let req_line = format!("{}\n", serde_json::to_string(&sampling_req).unwrap());
                     if writer.write_all(req_line.as_bytes()).await.is_err() {
                         break;
                     }
@@ -474,8 +467,7 @@ fn spawn_sampling_server(
                         Ok(_) => {}
                         Err(_) => break,
                     }
-                    let resp: Value =
-                        serde_json::from_str(&resp_line).unwrap_or(json!(null));
+                    let resp: Value = serde_json::from_str(&resp_line).unwrap_or(json!(null));
                     let llm_text = resp["result"]["content"]
                         .as_array()
                         .and_then(|arr| arr.first())
@@ -532,10 +524,7 @@ async fn sampling_request_routed_through_duplex_transport() {
     let fix = tirea_contract::testing::TestFixture::new();
     let ctx = fix.ctx_with("sampling-call", "test");
 
-    let result = tool
-        .execute(serde_json::json!({}), &ctx)
-        .await
-        .unwrap();
+    let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
 
     assert!(result.is_success());
     let result_text = result.data.as_str().unwrap();
@@ -564,10 +553,7 @@ async fn sampling_without_handler_returns_error_to_server() {
     let fix = tirea_contract::testing::TestFixture::new();
     let ctx = fix.ctx_with("no-handler-call", "test");
 
-    let result = tool
-        .execute(serde_json::json!({}), &ctx)
-        .await
-        .unwrap();
+    let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
 
     assert!(result.is_success());
     let result_text = result.data.as_str().unwrap();

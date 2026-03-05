@@ -10,8 +10,8 @@ use tirea_agent_loop::contracts::runtime::behavior::AgentBehavior;
 use tirea_agent_loop::contracts::runtime::tool_call::{Tool, ToolResult};
 use tirea_agent_loop::contracts::thread::Thread;
 use tirea_agent_loop::contracts::thread::{Message, ToolCall};
-use tirea_contract::testing::TestFixture;
 use tirea_agent_loop::engine::tool_execution::execute_single_tool_with_scope_and_behavior;
+use tirea_contract::testing::TestFixture;
 use tirea_extension_permission::{PermissionPlugin, SCOPE_ALLOWED_SKILLS_KEY};
 use tirea_extension_skills::{
     FsSkill, InMemorySkillRegistry, LoadSkillResourceTool, Skill, SkillActivateTool, SkillRegistry,
@@ -255,7 +255,9 @@ async fn test_load_reference_returns_content_in_tool_result() {
     assert_eq!(result.data["kind"], "reference");
     assert_eq!(result.data["path"], "references/DOCX-JS.md");
     assert!(
-        result.data["content"].as_str().map_or(false, |s| !s.is_empty()),
+        result.data["content"]
+            .as_str()
+            .map_or(false, |s| !s.is_empty()),
         "expected non-empty content in tool result"
     );
 }
@@ -320,7 +322,9 @@ async fn test_load_asset_returns_metadata_in_tool_result() {
     assert_eq!(result.data["kind"], "asset");
     assert_eq!(result.data["path"], "assets/logo.txt");
     assert!(
-        result.data["content"].as_str().map_or(false, |s| !s.is_empty()),
+        result.data["content"]
+            .as_str()
+            .map_or(false, |s| !s.is_empty()),
         "expected non-empty content in tool result"
     );
 }
@@ -470,10 +474,9 @@ async fn test_skill_activation_applies_allowed_tools_to_permission_state() {
 
     let state = thread.rebuild_state().unwrap();
     // Allowed tools are now stored via CRDT GSet at permission_policy.allowed_tools
-    let allowed: Vec<String> = serde_json::from_value(
-        state["permission_policy"]["allowed_tools"].clone(),
-    )
-    .unwrap_or_default();
+    let allowed: Vec<String> =
+        serde_json::from_value(state["permission_policy"]["allowed_tools"].clone())
+            .unwrap_or_default();
     assert!(
         allowed.contains(&"read_file".to_string()),
         "read_file should be in allowed_tools, got: {allowed:?}"
@@ -858,10 +861,9 @@ Body
 
     // Verify bare tool ids are applied but scoped ones are not widened.
     let state = thread.rebuild_state().unwrap();
-    let allowed: Vec<String> = serde_json::from_value(
-        state["permission_policy"]["allowed_tools"].clone(),
-    )
-    .unwrap_or_default();
+    let allowed: Vec<String> =
+        serde_json::from_value(state["permission_policy"]["allowed_tools"].clone())
+            .unwrap_or_default();
     assert!(
         allowed.contains(&"read_file".to_string()),
         "read_file should be in allowed_tools, got: {allowed:?}"

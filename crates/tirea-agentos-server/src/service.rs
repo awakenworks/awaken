@@ -17,6 +17,7 @@ use tirea_agentos::runtime::loop_runner::RunCancellationToken;
 use tirea_contract::RuntimeInput;
 use tokio::sync::{mpsc, RwLock};
 
+use crate::run_service::{global_run_service, origin_from_protocol};
 use crate::transport::runtime_endpoint::RunStarter;
 use crate::transport::TransportError;
 
@@ -34,6 +35,9 @@ pub enum ApiError {
     #[error("thread not found: {0}")]
     ThreadNotFound(String),
 
+    #[error("run not found: {0}")]
+    RunNotFound(String),
+
     #[error("bad request: {0}")]
     BadRequest(String),
 
@@ -46,6 +50,7 @@ impl IntoResponse for ApiError {
         let (code, msg) = match &self {
             ApiError::AgentNotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
             ApiError::ThreadNotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
+            ApiError::RunNotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
             ApiError::BadRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
         };
@@ -69,11 +74,34 @@ impl From<AgentOsRunError> for ApiError {
 #[derive(Default)]
 struct ActiveRunRegistry {
     senders: RwLock<HashMap<String, tokio::sync::mpsc::UnboundedSender<RuntimeInput>>>,
+    run_id_to_key: RwLock<HashMap<String, String>>,
+    cancellation_tokens: RwLock<HashMap<String, RunCancellationToken>>,
 }
 
 impl ActiveRunRegistry {
-    async fn register(&self, key: String, tx: tokio::sync::mpsc::UnboundedSender<RuntimeInput>) {
+    fn run_id_from_key(key: &str) -> Option<String> {
+        let run_id = key.rsplit(':').next()?.trim();
+        if run_id.is_empty() {
+            None
+        } else {
+            Some(run_id.to_string())
+        }
+    }
+
+    async fn register(
+        &self,
+        key: String,
+        run_id: Option<String>,
+        tx: tokio::sync::mpsc::UnboundedSender<RuntimeInput>,
+    ) {
+        if let Some(run_id) = run_id.or_else(|| Self::run_id_from_key(&key)) {
+            self.run_id_to_key.write().await.insert(run_id, key.clone());
+        }
         self.senders.write().await.insert(key, tx);
+    }
+
+    async fn register_cancellation_token(&self, run_id: String, token: RunCancellationToken) {
+        self.cancellation_tokens.write().await.insert(run_id, token);
     }
 
     async fn sender_for(
@@ -83,8 +111,31 @@ impl ActiveRunRegistry {
         self.senders.read().await.get(key).cloned()
     }
 
+    async fn sender_for_run_id(
+        &self,
+        run_id: &str,
+    ) -> Option<tokio::sync::mpsc::UnboundedSender<RuntimeInput>> {
+        let key = self.run_id_to_key.read().await.get(run_id).cloned()?;
+        self.sender_for(&key).await
+    }
+
+    async fn cancellation_token_for_run_id(&self, run_id: &str) -> Option<RunCancellationToken> {
+        self.cancellation_tokens.read().await.get(run_id).cloned()
+    }
+
     async fn remove(&self, key: &str) {
         self.senders.write().await.remove(key);
+        if let Some(run_id) = Self::run_id_from_key(key) {
+            self.run_id_to_key.write().await.remove(&run_id);
+            self.cancellation_tokens.write().await.remove(&run_id);
+        }
+    }
+
+    async fn remove_by_run_id(&self, run_id: &str) {
+        if let Some(key) = self.run_id_to_key.write().await.remove(run_id) {
+            self.senders.write().await.remove(&key);
+        }
+        self.cancellation_tokens.write().await.remove(run_id);
     }
 }
 
@@ -102,7 +153,21 @@ pub async fn register_active_run(
     key: String,
     tx: tokio::sync::mpsc::UnboundedSender<RuntimeInput>,
 ) {
-    active_run_registry().register(key, tx).await;
+    active_run_registry().register(key, None, tx).await;
+}
+
+pub async fn register_active_run_with_id(
+    key: String,
+    run_id: String,
+    tx: tokio::sync::mpsc::UnboundedSender<RuntimeInput>,
+) {
+    active_run_registry().register(key, Some(run_id), tx).await;
+}
+
+pub async fn register_active_run_cancellation(run_id: String, token: RunCancellationToken) {
+    active_run_registry()
+        .register_cancellation_token(run_id, token)
+        .await;
 }
 
 pub async fn remove_active_run(key: &str) {
@@ -129,6 +194,51 @@ pub async fn try_forward_decisions_to_active_run(
     }
 
     true
+}
+
+pub async fn try_forward_decisions_to_active_run_by_id(
+    run_id: &str,
+    decisions: Vec<ToolCallDecision>,
+) -> bool {
+    if decisions.is_empty() {
+        return false;
+    }
+
+    let Some(tx) = active_run_registry().sender_for_run_id(run_id).await else {
+        return false;
+    };
+
+    for decision in decisions {
+        if tx.send(RuntimeInput::Decision(decision)).is_err() {
+            active_run_registry().remove_by_run_id(run_id).await;
+            return false;
+        }
+    }
+
+    true
+}
+
+pub async fn try_cancel_active_run_by_id(run_id: &str) -> bool {
+    let token = active_run_registry()
+        .cancellation_token_for_run_id(run_id)
+        .await;
+    let sender = active_run_registry().sender_for_run_id(run_id).await;
+
+    let mut cancelled = false;
+    if let Some(token) = token {
+        token.cancel();
+        cancelled = true;
+    }
+
+    if let Some(tx) = sender {
+        if tx.send(RuntimeInput::Cancel).is_err() {
+            active_run_registry().remove_by_run_id(run_id).await;
+            return cancelled;
+        }
+        cancelled = true;
+    }
+
+    cancelled
 }
 
 fn default_message_limit() -> usize {
@@ -220,6 +330,7 @@ pub fn require_agent_state_store(os: &Arc<AgentOs>) -> Result<Arc<dyn ThreadStor
 pub struct PreparedHttpRun {
     pub starter: RunStarter,
     pub thread_id: String,
+    pub run_id: String,
     pub cancellation_token: RunCancellationToken,
     pub ingress_rx: mpsc::UnboundedReceiver<RuntimeInput>,
     pub active_key: String,
@@ -232,6 +343,8 @@ pub async fn prepare_http_run(
     protocol_label: &str,
     agent_id: &str,
 ) -> Result<PreparedHttpRun, ApiError> {
+    let parent_run_id = run_request.parent_run_id.clone();
+    let parent_thread_id = run_request.parent_thread_id.clone();
     let cancellation_token = RunCancellationToken::new();
     let prepared = os.prepare_run(run_request.clone(), resolved).await?;
     let thread_id = prepared.thread_id.clone();
@@ -253,11 +366,24 @@ pub async fn prepare_http_run(
     ingress_tx
         .send(RuntimeInput::Run(run_request))
         .expect("ingress channel just created");
-    register_active_run(active_key.clone(), ingress_tx).await;
+    register_active_run_with_id(active_key.clone(), run_id.clone(), ingress_tx).await;
+    register_active_run_cancellation(run_id.clone(), cancellation_token.clone()).await;
+    if let Some(service) = global_run_service() {
+        let _ = service
+            .begin_intent(
+                &run_id,
+                &thread_id,
+                origin_from_protocol(protocol_label),
+                parent_run_id,
+                parent_thread_id,
+            )
+            .await;
+    }
 
     Ok(PreparedHttpRun {
         starter,
         thread_id,
+        run_id,
         cancellation_token,
         ingress_rx,
         active_key,

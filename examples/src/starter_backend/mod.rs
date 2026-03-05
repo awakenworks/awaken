@@ -17,8 +17,9 @@ use tirea_agentos::orchestrator::{
 use tirea_agentos::runtime::loop_runner::tool_map_from_arc;
 use tirea_agentos_server::http::{self, AppState};
 use tirea_agentos_server::protocol;
+use tirea_agentos_server::run_service::init_run_service;
 use tirea_extension_mcp::McpToolRegistryManager;
-use tirea_store_adapters::FileStore;
+use tirea_store_adapters::{FileRunStore, FileStore};
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::starter_backend::frontend_tools::FrontendToolPlugin;
@@ -169,7 +170,9 @@ Deterministic compatibility directives:\n\
         None
     };
 
+    let run_store_dir = args.storage_dir.join("runs");
     let file_store = Arc::new(FileStore::new(args.storage_dir));
+    let _ = init_run_service(Arc::new(FileRunStore::new(run_store_dir)));
     let default_agent_id = default_agent.id.clone();
     let mut builder = AgentOsBuilder::new()
         .with_agent(&default_agent_id, default_agent)
@@ -201,8 +204,11 @@ Deterministic compatibility directives:\n\
     let mut app = axum::Router::new()
         .merge(http::health_routes())
         .merge(http::thread_routes())
+        .merge(http::run_routes())
+        .merge(protocol::a2a::http::well_known_routes())
         .nest("/v1/ag-ui", protocol::ag_ui::http::routes())
         .nest("/v1/ai-sdk", protocol::ai_sdk_v6::http::routes())
+        .nest("/v1/a2a", protocol::a2a::http::routes())
         .with_state(AppState {
             os: Arc::new(os),
             read_store,

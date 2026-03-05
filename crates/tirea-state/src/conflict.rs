@@ -141,11 +141,7 @@ fn is_lattice_only_at(patch: &Patch, path: &Path) -> bool {
 /// Behaves like [`PatchExt::conflicts_with`], but suppresses conflicts
 /// at paths where both patches use only `LatticeMerge` ops AND the
 /// path is registered in the [`LatticeRegistry`].
-pub fn conflicts_with_registry(
-    a: &Patch,
-    b: &Patch,
-    registry: &LatticeRegistry,
-) -> Vec<Conflict> {
+pub fn conflicts_with_registry(a: &Patch, b: &Patch, registry: &LatticeRegistry) -> Vec<Conflict> {
     let touched_a = compute_touched(a, false);
     let touched_b = compute_touched(b, false);
     detect_conflicts(&touched_a, &touched_b)
@@ -269,14 +265,8 @@ mod tests {
         let mut registry = LatticeRegistry::new();
         registry.register::<GSet<String>>(path!("tags"));
 
-        let patch_a = Patch::new().with_op(Op::lattice_merge(
-            path!("tags"),
-            json!(["a"]),
-        ));
-        let patch_b = Patch::new().with_op(Op::lattice_merge(
-            path!("tags"),
-            json!(["b"]),
-        ));
+        let patch_a = Patch::new().with_op(Op::lattice_merge(path!("tags"), json!(["a"])));
+        let patch_b = Patch::new().with_op(Op::lattice_merge(path!("tags"), json!(["b"])));
 
         // Without registry: conflict detected
         let conflicts = patch_a.conflicts_with(&patch_b);
@@ -295,10 +285,7 @@ mod tests {
         let patch_a = Patch::new()
             .with_op(Op::lattice_merge(path!("tags"), json!(["a"])))
             .with_op(Op::set(path!("tags"), json!(["override"])));
-        let patch_b = Patch::new().with_op(Op::lattice_merge(
-            path!("tags"),
-            json!(["b"]),
-        ));
+        let patch_b = Patch::new().with_op(Op::lattice_merge(path!("tags"), json!(["b"])));
 
         let conflicts = conflicts_with_registry(&patch_a, &patch_b, &registry);
         assert!(!conflicts.is_empty(), "mixed ops should still conflict");
@@ -308,14 +295,8 @@ mod tests {
     fn test_conflicts_with_registry_unregistered_path_still_conflicts() {
         let registry = LatticeRegistry::new(); // empty registry
 
-        let patch_a = Patch::new().with_op(Op::lattice_merge(
-            path!("tags"),
-            json!(["a"]),
-        ));
-        let patch_b = Patch::new().with_op(Op::lattice_merge(
-            path!("tags"),
-            json!(["b"]),
-        ));
+        let patch_a = Patch::new().with_op(Op::lattice_merge(path!("tags"), json!(["a"])));
+        let patch_b = Patch::new().with_op(Op::lattice_merge(path!("tags"), json!(["b"])));
 
         let conflicts = conflicts_with_registry(&patch_a, &patch_b, &registry);
         assert!(

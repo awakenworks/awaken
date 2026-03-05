@@ -193,9 +193,8 @@ pub(super) fn sync_run_lifecycle_for_termination(
             updated_at: current_unix_millis(),
         },
     )];
-    let patches =
-        reduce_state_actions(actions, &base_state, "agent_loop", &ScopeContext::run())
-            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    let patches = reduce_state_actions(actions, &base_state, "agent_loop", &ScopeContext::run())
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     run_ctx.add_thread_patches(patches);
     Ok(())
 }
@@ -429,17 +428,27 @@ pub(super) async fn run_step_prepare_phases(
     run_ctx: &RunContext,
     tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
     agent: &dyn Agent,
-) -> Result<(Vec<Message>, Vec<String>, RunAction, Vec<TrackedPatch>, Vec<tirea_contract::SerializedAction>), AgentLoopError> {
+) -> Result<
+    (
+        Vec<Message>,
+        Vec<String>,
+        RunAction,
+        Vec<TrackedPatch>,
+        Vec<tirea_contract::SerializedAction>,
+    ),
+    AgentLoopError,
+> {
     let system_prompt = agent.system_prompt().to_string();
-    let ((messages, filtered_tools, run_action), pending, actions) = plugin_runtime::run_phase_block(
-        run_ctx,
-        tool_descriptors,
-        agent,
-        &[Phase::StepStart, Phase::BeforeInference],
-        |_| {},
-        |step| inference_inputs_from_step(step, &system_prompt),
-    )
-    .await?;
+    let ((messages, filtered_tools, run_action), pending, actions) =
+        plugin_runtime::run_phase_block(
+            run_ctx,
+            tool_descriptors,
+            agent,
+            &[Phase::StepStart, Phase::BeforeInference],
+            |_| {},
+            |step| inference_inputs_from_step(step, &system_prompt),
+        )
+        .await?;
     Ok((messages, filtered_tools, run_action, pending, actions))
 }
 
@@ -890,9 +899,9 @@ async fn drain_resuming_tool_calls_and_replay(
                     "__tool_call_scope.{}.suspended_call",
                     suspended_call.call_id
                 );
-                let cleanup_patch = tirea_state::Patch::with_ops(vec![
-                    tirea_state::Op::delete(tirea_state::parse_path(&cleanup_path)),
-                ]);
+                let cleanup_patch = tirea_state::Patch::with_ops(vec![tirea_state::Op::delete(
+                    tirea_state::parse_path(&cleanup_path),
+                )]);
                 let tracked = tirea_state::TrackedPatch::new(cleanup_patch)
                     .with_source("framework:scope_cleanup");
                 if !tracked.patch().is_empty() {

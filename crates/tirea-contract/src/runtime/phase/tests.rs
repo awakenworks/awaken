@@ -594,9 +594,7 @@ fn test_exclude_nonexistent_tool() {
     let original_len = tools.len();
     let mut ctx = fix.step(tools);
 
-    ctx.inference
-        .tools
-        .retain(|t| t.id != "nonexistent_tool");
+    ctx.inference.tools.retain(|t| t.id != "nonexistent_tool");
 
     assert_eq!(ctx.inference.tools.len(), original_len);
 }

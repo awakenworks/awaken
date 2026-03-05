@@ -16,6 +16,7 @@ use tirea_protocol_ai_sdk_v6::{
 use super::runtime::apply_ai_sdk_extensions;
 use tokio::sync::{broadcast, RwLock};
 
+use crate::run_service::wrap_with_run_tracking;
 use crate::service::{
     active_run_key, encode_message_page, load_message_page, prepare_http_run, remove_active_run,
     truncate_thread_at_message, try_forward_decisions_to_active_run, ApiError, AppState,
@@ -128,7 +129,12 @@ async fn run(
     let active_key = prepared.active_key.clone();
     let fanout = stream_registry().register(stream_key.clone()).await;
 
-    let encoder = AiSdkEncoder::new();
+    let encoder = wrap_with_run_tracking(
+        AiSdkEncoder::new(),
+        prepared.run_id.clone(),
+        prepared.thread_id.clone(),
+        "ai_sdk",
+    );
     let sse_rx = wire_http_sse_relay(
         prepared.starter,
         encoder,

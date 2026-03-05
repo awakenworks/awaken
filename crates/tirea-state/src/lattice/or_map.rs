@@ -48,12 +48,7 @@ where
         }
 
         let raw = Raw::<K, V>::deserialize(deserializer)?;
-        let max_entry = raw
-            .entries
-            .values()
-            .map(|e| e.timestamp)
-            .max()
-            .unwrap_or(0);
+        let max_entry = raw.entries.values().map(|e| e.timestamp).max().unwrap_or(0);
         let max_tomb = raw.tombstones.values().copied().max().unwrap_or(0);
         let clock = max_entry.max(max_tomb);
 

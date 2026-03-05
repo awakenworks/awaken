@@ -9,6 +9,7 @@ use tirea_protocol_ag_ui::{AgUiHistoryEncoder, AgUiProtocolEncoder, Event, RunAg
 
 use super::runtime::apply_agui_extensions;
 
+use crate::run_service::wrap_with_run_tracking;
 use crate::service::{
     active_run_key, encode_message_page, load_message_page, prepare_http_run, remove_active_run,
     try_forward_decisions_to_active_run, ApiError, AppState, MessageQueryParams,
@@ -69,7 +70,12 @@ async fn run(
     let prepared = prepare_http_run(&st.os, resolved, run_request, "ag_ui", &agent_id).await?;
     let active_key = prepared.active_key.clone();
 
-    let enc = AgUiProtocolEncoder::new();
+    let enc = wrap_with_run_tracking(
+        AgUiProtocolEncoder::new(),
+        prepared.run_id.clone(),
+        prepared.thread_id.clone(),
+        "ag_ui",
+    );
     let sse_rx = wire_http_sse_relay(
         prepared.starter,
         enc,

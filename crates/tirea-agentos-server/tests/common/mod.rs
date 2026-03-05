@@ -32,8 +32,13 @@ impl AgentBehavior for TerminatePlugin {
         &self.id
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-        ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+    async fn before_inference(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeInferenceAction> {
+        ActionSet::single(BeforeInferenceAction::Terminate(
+            TerminationReason::BehaviorRequested,
+        ))
     }
 }
 
@@ -58,9 +63,14 @@ impl AgentBehavior for SlowTerminatePlugin {
         &self.id
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+    async fn before_inference(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeInferenceAction> {
         tokio::time::sleep(self.delay).await;
-        ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        ActionSet::single(BeforeInferenceAction::Terminate(
+            TerminationReason::BehaviorRequested,
+        ))
     }
 }
 
@@ -69,8 +79,11 @@ pub fn compose_http_app(state: AppState) -> axum::Router {
     axum::Router::new()
         .merge(http::health_routes())
         .merge(http::thread_routes())
+        .merge(http::run_routes())
+        .merge(protocol::a2a::http::well_known_routes())
         .nest("/v1/ag-ui", protocol::ag_ui::http::routes())
         .nest("/v1/ai-sdk", protocol::ai_sdk_v6::http::routes())
+        .nest("/v1/a2a", protocol::a2a::http::routes())
         .with_state(state)
 }
 

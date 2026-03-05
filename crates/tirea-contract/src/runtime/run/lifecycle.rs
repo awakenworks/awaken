@@ -274,9 +274,8 @@ mod tests {
             },
         )];
 
-        let patches =
-            reduce_state_actions(actions, &base, "agent_loop", &ScopeContext::run())
-                .expect("reduce");
+        let patches = reduce_state_actions(actions, &base, "agent_loop", &ScopeContext::run())
+            .expect("reduce");
         assert_eq!(patches.len(), 1);
 
         let merged = apply_patch(&base, patches[0].patch()).expect("apply");

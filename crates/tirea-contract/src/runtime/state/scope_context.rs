@@ -51,10 +51,7 @@ mod tests {
     #[test]
     fn run_scope_returns_base_path() {
         let ctx = ScopeContext::run();
-        assert_eq!(
-            ctx.resolve_path(StateScope::Run, "my_state"),
-            "my_state"
-        );
+        assert_eq!(ctx.resolve_path(StateScope::Run, "my_state"), "my_state");
     }
 
     #[test]
@@ -78,10 +75,7 @@ mod tests {
     #[test]
     fn for_call_leaves_run_scope_unchanged() {
         let ctx = ScopeContext::for_call("call_42");
-        assert_eq!(
-            ctx.resolve_path(StateScope::Run, "my_state"),
-            "my_state"
-        );
+        assert_eq!(ctx.resolve_path(StateScope::Run, "my_state"), "my_state");
     }
 
     #[test]

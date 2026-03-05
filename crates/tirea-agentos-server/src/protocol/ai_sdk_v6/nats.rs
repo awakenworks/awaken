@@ -5,6 +5,7 @@ use tirea_protocol_ai_sdk_v6::{AiSdkEncoder, AiSdkV6RunRequest, UIStreamEvent};
 
 use super::runtime::apply_ai_sdk_extensions;
 
+use crate::run_service::{global_run_service, origin_from_protocol, wrap_with_run_tracking};
 use crate::transport::nats::NatsTransport;
 use crate::transport::NatsProtocolError;
 
@@ -66,6 +67,7 @@ async fn handle_message(
 
     let req_for_runtime =
         AiSdkV6RunRequest::from_thread_input(req.thread_id, req.input, req.run_id);
+    let parent_thread_id = req_for_runtime.parent_thread_id.clone();
     apply_ai_sdk_extensions(&mut resolved, &req_for_runtime);
     let run_request = req_for_runtime.into_runtime_run_request(req.agent_id);
 
@@ -75,7 +77,30 @@ async fn handle_message(
             run_request,
             resolved,
             reply,
-            |_run| AiSdkEncoder::new(),
+            move |run| {
+                if let Some(service) = global_run_service() {
+                    let run_id = run.run_id.clone();
+                    let thread_id = run.thread_id.clone();
+                    let parent_thread_id = parent_thread_id.clone();
+                    tokio::spawn(async move {
+                        let _ = service
+                            .begin_intent(
+                                &run_id,
+                                &thread_id,
+                                origin_from_protocol("ai_sdk"),
+                                None,
+                                parent_thread_id,
+                            )
+                            .await;
+                    });
+                }
+                wrap_with_run_tracking(
+                    AiSdkEncoder::new(),
+                    run.run_id.clone(),
+                    run.thread_id.clone(),
+                    "ai_sdk",
+                )
+            },
             UIStreamEvent::error,
         )
         .await

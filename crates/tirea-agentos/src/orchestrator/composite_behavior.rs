@@ -79,18 +79,23 @@ impl AgentBehavior for CompositeBehavior {
         &self,
         ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<BeforeInferenceAction> {
-        let futs: Vec<_> = self.behaviors.iter().map(|b| b.before_inference(ctx)).collect();
+        let futs: Vec<_> = self
+            .behaviors
+            .iter()
+            .map(|b| b.before_inference(ctx))
+            .collect();
         futures::future::join_all(futs)
             .await
             .into_iter()
             .fold(ActionSet::empty(), |acc, a| acc.and(a))
     }
 
-    async fn after_inference(
-        &self,
-        ctx: &ReadOnlyContext<'_>,
-    ) -> ActionSet<AfterInferenceAction> {
-        let futs: Vec<_> = self.behaviors.iter().map(|b| b.after_inference(ctx)).collect();
+    async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
+        let futs: Vec<_> = self
+            .behaviors
+            .iter()
+            .map(|b| b.after_inference(ctx))
+            .collect();
         futures::future::join_all(futs)
             .await
             .into_iter()
@@ -101,7 +106,11 @@ impl AgentBehavior for CompositeBehavior {
         &self,
         ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<BeforeToolExecuteAction> {
-        let futs: Vec<_> = self.behaviors.iter().map(|b| b.before_tool_execute(ctx)).collect();
+        let futs: Vec<_> = self
+            .behaviors
+            .iter()
+            .map(|b| b.before_tool_execute(ctx))
+            .collect();
         futures::future::join_all(futs)
             .await
             .into_iter()
@@ -112,7 +121,11 @@ impl AgentBehavior for CompositeBehavior {
         &self,
         ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<AfterToolExecuteAction> {
-        let futs: Vec<_> = self.behaviors.iter().map(|b| b.after_tool_execute(ctx)).collect();
+        let futs: Vec<_> = self
+            .behaviors
+            .iter()
+            .map(|b| b.after_tool_execute(ctx))
+            .collect();
         futures::future::join_all(futs)
             .await
             .into_iter()

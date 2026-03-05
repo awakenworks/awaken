@@ -61,6 +61,13 @@ impl AgentOs {
         self.agents.get(agent_id)
     }
 
+    /// Return all registered agent ids in stable order.
+    pub fn agent_ids(&self) -> Vec<String> {
+        let mut ids = self.agents.ids();
+        ids.sort();
+        ids
+    }
+
     pub fn tools(&self) -> HashMap<String, Arc<dyn Tool>> {
         self.base_tools.snapshot()
     }

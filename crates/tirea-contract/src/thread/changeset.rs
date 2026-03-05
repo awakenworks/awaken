@@ -75,8 +75,11 @@ impl ThreadChangeSet {
             thread.patches.clear();
         }
 
-        let mut existing_ids: HashSet<String> =
-            thread.messages.iter().filter_map(|m| m.id.clone()).collect();
+        let mut existing_ids: HashSet<String> = thread
+            .messages
+            .iter()
+            .filter_map(|m| m.id.clone())
+            .collect();
         for msg in &self.messages {
             if let Some(ref id) = msg.id {
                 if !existing_ids.insert(id.clone()) {

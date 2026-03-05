@@ -640,8 +640,13 @@ async fn test_tool_call_message_roundtrip_via_save() {
             "Let me search for that.",
             vec![tool_call],
         ))
-        .with_message(Message::tool("call_1", r#"{"result": "Rust is a language"}"#))
-        .with_message(Message::assistant("Rust is a systems programming language."));
+        .with_message(Message::tool(
+            "call_1",
+            r#"{"result": "Rust is a language"}"#,
+        ))
+        .with_message(Message::assistant(
+            "Rust is a systems programming language.",
+        ));
 
     store.save(&thread).await.unwrap();
     let loaded = store.load_thread("tool-rt").await.unwrap().unwrap();
@@ -744,13 +749,22 @@ async fn test_tool_call_message_roundtrip_via_load_deltas() {
     assert_eq!(deltas[0].messages.len(), 3);
 
     let assistant = &deltas[0].messages[0];
-    let tool_calls = assistant.tool_calls.as_ref().expect("tool_calls lost in delta");
+    let tool_calls = assistant
+        .tool_calls
+        .as_ref()
+        .expect("tool_calls lost in delta");
     assert_eq!(tool_calls.len(), 2);
     assert_eq!(tool_calls[0].id, "call_a");
     assert_eq!(tool_calls[1].id, "call_b");
 
-    assert_eq!(deltas[0].messages[1].tool_call_id.as_deref(), Some("call_a"));
-    assert_eq!(deltas[0].messages[2].tool_call_id.as_deref(), Some("call_b"));
+    assert_eq!(
+        deltas[0].messages[1].tool_call_id.as_deref(),
+        Some("call_a")
+    );
+    assert_eq!(
+        deltas[0].messages[2].tool_call_id.as_deref(),
+        Some("call_b")
+    );
 }
 
 /// Verify tool call messages survive load_messages pagination.
@@ -760,7 +774,10 @@ async fn test_tool_call_message_roundtrip_via_load_messages() {
     let tool_call = ToolCall::new("call_pg", "search", json!({"q": "test"}));
     let thread = Thread::new("tool-paged")
         .with_message(Message::user("search"))
-        .with_message(Message::assistant_with_tool_calls("searching", vec![tool_call]))
+        .with_message(Message::assistant_with_tool_calls(
+            "searching",
+            vec![tool_call],
+        ))
         .with_message(Message::tool("call_pg", "found it"));
 
     store.save(&thread).await.unwrap();
@@ -779,7 +796,10 @@ async fn test_tool_call_message_roundtrip_via_load_messages() {
     assert_eq!(page.messages.len(), 3);
 
     let assistant = &page.messages[1].message;
-    let calls = assistant.tool_calls.as_ref().expect("tool_calls lost in pagination");
+    let calls = assistant
+        .tool_calls
+        .as_ref()
+        .expect("tool_calls lost in pagination");
     assert_eq!(calls[0].id, "call_pg");
 
     let tool = &page.messages[2].message;

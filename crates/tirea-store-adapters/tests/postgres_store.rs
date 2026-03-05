@@ -12,7 +12,10 @@ use std::sync::Arc;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ImageExt;
 use testcontainers_modules::postgres::Postgres;
-use tirea_contract::storage::{ThreadReader, ThreadStoreError, ThreadWriter, VersionPrecondition};
+use tirea_contract::storage::{
+    RunOrigin, RunQuery, RunReader, RunRecord, RunRecordStatus, RunWriter, ThreadReader,
+    ThreadStoreError, ThreadWriter, VersionPrecondition,
+};
 use tirea_contract::thread::ThreadChangeSet;
 use tirea_contract::{CheckpointReason, Message, MessageQuery, Thread, ToolCall};
 use tirea_store_adapters::PostgresStore;
@@ -123,6 +126,80 @@ async fn test_ensure_table_creates_thread_filter_indexes() {
             .any(|index| index == "idx_agent_sessions_parent_thread_id"),
         "parent_thread_id filter index should exist"
     );
+}
+
+#[tokio::test]
+async fn test_run_projection_roundtrip_and_filters() {
+    let Some((_container, url)) = start_postgres().await else {
+        return;
+    };
+    let store = make_store(&url).await;
+
+    let mut root = RunRecord::new(
+        "run-root",
+        "thread-a",
+        RunOrigin::AgUi,
+        RunRecordStatus::Working,
+        100,
+    );
+    root.updated_at = 150;
+    store.upsert_run(&root).await.expect("upsert root");
+
+    let mut child = RunRecord::new(
+        "run-child",
+        "thread-b",
+        RunOrigin::Subagent,
+        RunRecordStatus::Completed,
+        200,
+    );
+    child.parent_run_id = Some("run-root".to_string());
+    child.parent_thread_id = Some("thread-a".to_string());
+    store.upsert_run(&child).await.expect("upsert child");
+
+    let loaded = store
+        .load_run("run-child")
+        .await
+        .expect("load child")
+        .expect("child exists");
+    assert_eq!(loaded.parent_run_id.as_deref(), Some("run-root"));
+    assert_eq!(loaded.origin, RunOrigin::Subagent);
+
+    let page = store
+        .list_runs(&RunQuery {
+            status: Some(RunRecordStatus::Completed),
+            origin: Some(RunOrigin::Subagent),
+            ..Default::default()
+        })
+        .await
+        .expect("list runs");
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].run_id, "run-child");
+
+    let page = store
+        .list_runs(&RunQuery {
+            created_at_from: Some(80),
+            created_at_to: Some(180),
+            updated_at_from: Some(120),
+            updated_at_to: Some(180),
+            ..Default::default()
+        })
+        .await
+        .expect("list runs by timestamp");
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].run_id, "run-root");
+
+    let resolved = store
+        .resolve_thread_id("run-root")
+        .await
+        .expect("resolve thread");
+    assert_eq!(resolved.as_deref(), Some("thread-a"));
+
+    store.delete_run("run-root").await.expect("delete run");
+    assert!(store
+        .load_run("run-root")
+        .await
+        .expect("load deleted")
+        .is_none());
 }
 
 // ========================================================================

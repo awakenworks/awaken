@@ -4,8 +4,8 @@ use crate::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_contract::runtime::AgentBehavior;
 use tirea_contract::runtime::tool_call::Tool;
+use tirea_contract::runtime::AgentBehavior;
 
 /// Errors returned when wiring the skills subsystem into an agent.
 #[derive(Debug, thiserror::Error)]
@@ -178,7 +178,13 @@ mod tests {
         let (result, actions) = effect.into_parts();
         let state_actions: Vec<_> = actions
             .into_iter()
-            .filter_map(|a| if a.is_state_action() { a.into_state_action() } else { None })
+            .filter_map(|a| {
+                if a.is_state_action() {
+                    a.into_state_action()
+                } else {
+                    None
+                }
+            })
             .collect();
         let scope_ctx = ScopeContext::run();
         let patches = reduce_state_actions(
@@ -188,10 +194,13 @@ mod tests {
             &scope_ctx,
         )
         .unwrap();
-        let patch = patches.into_iter().reduce(|mut acc, p| {
-            acc.patch.merge(p.into_patch());
-            acc
-        }).filter(|p| !p.patch().is_empty());
+        let patch = patches
+            .into_iter()
+            .reduce(|mut acc, p| {
+                acc.patch.merge(p.into_patch());
+                acc
+            })
+            .filter(|p| !p.patch().is_empty());
         LocalToolExecution { result, patch }
     }
 

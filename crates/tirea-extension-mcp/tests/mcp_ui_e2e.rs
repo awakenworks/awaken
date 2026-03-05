@@ -65,12 +65,11 @@ async fn tool_with_ui_resource_has_metadata_in_descriptor() {
 #[tokio::test]
 async fn tool_execution_fetches_ui_resource_content() {
     let transport = Arc::new(
-        TestMcpTransport::new(vec![tool_with_ui("chart", "ui://chart/render")])
-            .with_resource(
-                "ui://chart/render",
-                "<html><body><canvas id=\"chart\"></canvas></body></html>",
-                "text/html",
-            ),
+        TestMcpTransport::new(vec![tool_with_ui("chart", "ui://chart/render")]).with_resource(
+            "ui://chart/render",
+            "<html><body><canvas id=\"chart\"></canvas></body></html>",
+            "text/html",
+        ),
     );
 
     let (_manager, registry) = build_registry(transport).await;
@@ -149,7 +148,10 @@ async fn ui_resource_fetch_failure_does_not_break_tool_result() {
     let ctx = fix.ctx_with("broken-ui-call", "test");
     let result = tool.execute(json!({}), &ctx).await.unwrap();
 
-    assert!(result.is_success(), "tool result should succeed even when UI resource fetch fails");
+    assert!(
+        result.is_success(),
+        "tool result should succeed even when UI resource fetch fails"
+    );
     assert!(
         result.metadata.get("mcp.ui.content").is_none(),
         "no UI content when fetch fails"
@@ -163,11 +165,7 @@ async fn mixed_tools_with_and_without_ui() {
             tool_with_ui("with_ui", "ui://with_ui/view"),
             tool_without_ui("no_ui"),
         ])
-        .with_resource(
-            "ui://with_ui/view",
-            "<div>Hello</div>",
-            "text/html",
-        ),
+        .with_resource("ui://with_ui/view", "<div>Hello</div>", "text/html"),
     );
 
     let (_manager, registry) = build_registry(transport).await;
@@ -179,20 +177,16 @@ async fn mixed_tools_with_and_without_ui() {
     let ui_tool = registry.get(ui_tool_id).unwrap();
     let no_ui_tool = registry.get(no_ui_tool_id).unwrap();
 
-    assert!(
-        ui_tool
-            .descriptor()
-            .metadata
-            .get("mcp.ui.resourceUri")
-            .is_some()
-    );
-    assert!(
-        no_ui_tool
-            .descriptor()
-            .metadata
-            .get("mcp.ui.resourceUri")
-            .is_none()
-    );
+    assert!(ui_tool
+        .descriptor()
+        .metadata
+        .get("mcp.ui.resourceUri")
+        .is_some());
+    assert!(no_ui_tool
+        .descriptor()
+        .metadata
+        .get("mcp.ui.resourceUri")
+        .is_none());
 
     let fix = tirea_contract::testing::TestFixture::new();
 

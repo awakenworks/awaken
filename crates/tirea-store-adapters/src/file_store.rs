@@ -418,8 +418,13 @@ mod tests {
                 "Let me search for that.",
                 vec![tool_call],
             ))
-            .with_message(Message::tool("call_1", r#"{"result": "Rust is a language"}"#))
-            .with_message(Message::assistant("Rust is a systems programming language."));
+            .with_message(Message::tool(
+                "call_1",
+                r#"{"result": "Rust is a language"}"#,
+            ))
+            .with_message(Message::assistant(
+                "Rust is a systems programming language.",
+            ));
 
         storage.save(&thread).await.unwrap();
         let loaded = storage.load_thread("tool-rt").await.unwrap().unwrap();

@@ -1,9 +1,9 @@
+use crate::types::SkillState;
 use crate::{SkillDiscoveryPlugin, SkillRuntimePlugin, SKILLS_PLUGIN_ID};
 use async_trait::async_trait;
 use std::sync::Arc;
 use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
 use tirea_contract::runtime::phase::{ActionSet, BeforeInferenceAction};
-use crate::types::SkillState;
 
 /// Single plugin wrapper that injects both:
 /// - the skills catalog (discovery)

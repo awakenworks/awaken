@@ -1,7 +1,7 @@
 use super::spec::{AnyStateAction, StateScope};
-use tirea_state::StateSpec;
 use std::any::TypeId;
 use std::collections::HashMap;
+use tirea_state::StateSpec;
 
 /// Registry mapping `StateSpec` types to their declared [`StateScope`] and path.
 ///

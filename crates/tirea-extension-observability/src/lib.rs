@@ -323,8 +323,7 @@ mod tests {
 
         run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
 
-        step.gate.as_mut().unwrap().result =
-            Some(ToolResult::error("write", "permission denied"));
+        step.gate.as_mut().unwrap().result = Some(ToolResult::error("write", "permission denied"));
 
         run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
@@ -1113,8 +1112,7 @@ mod tests {
                 let call = ToolCall::new("c1", "test", json!({}));
                 step.gate = Some(ToolGate::from_tool_call(&call));
                 run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-                step.gate.as_mut().unwrap().result =
-                    Some(ToolResult::success("test", json!({})));
+                step.gate.as_mut().unwrap().result = Some(ToolResult::success("test", json!({})));
                 run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
             }
 
@@ -1159,8 +1157,7 @@ mod tests {
                 let call = ToolCall::new("c1", "search", json!({}));
                 step.gate = Some(ToolGate::from_tool_call(&call));
                 run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-                step.gate.as_mut().unwrap().result =
-                    Some(ToolResult::success("search", json!({})));
+                step.gate.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
                 run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
             }
 
@@ -1309,8 +1306,7 @@ mod tests {
             step.gate = Some(ToolGate::from_tool_call(&call));
 
             run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-            step.gate.as_mut().unwrap().result =
-                Some(ToolResult::success("web_search", json!({})));
+            step.gate.as_mut().unwrap().result = Some(ToolResult::success("web_search", json!({})));
             run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
             let _ = provider.force_flush();
@@ -1379,8 +1375,7 @@ mod tests {
             step.gate = Some(ToolGate::from_tool_call(&call));
 
             run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-            step.gate.as_mut().unwrap().result =
-                Some(ToolResult::success("search", json!({})));
+            step.gate.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
             run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
             let _ = provider.force_flush();
@@ -1412,8 +1407,7 @@ mod tests {
             step.gate = Some(ToolGate::from_tool_call(&call));
 
             run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-            step.gate.as_mut().unwrap().result =
-                Some(ToolResult::success("search", json!({})));
+            step.gate.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
             run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
             let _ = provider.force_flush();
@@ -1778,8 +1772,7 @@ mod tests {
             step.gate = Some(ToolGate::from_tool_call(&call));
 
             run_phase(&plugin, Phase::BeforeToolExecute, &step, &fix).await;
-            step.gate.as_mut().unwrap().result =
-                Some(ToolResult::success("search", json!({})));
+            step.gate.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
             run_phase(&plugin, Phase::AfterToolExecute, &step, &fix).await;
 
             let _ = provider.force_flush();

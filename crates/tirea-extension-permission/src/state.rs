@@ -16,9 +16,16 @@ pub enum ToolPermissionBehavior {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PermissionAction {
-    SetDefault { behavior: ToolPermissionBehavior },
-    SetTool { tool_id: String, behavior: ToolPermissionBehavior },
-    RemoveTool { tool_id: String },
+    SetDefault {
+        behavior: ToolPermissionBehavior,
+    },
+    SetTool {
+        tool_id: String,
+        behavior: ToolPermissionBehavior,
+    },
+    RemoveTool {
+        tool_id: String,
+    },
     ClearTools,
 }
 
@@ -58,7 +65,11 @@ impl PermissionOverrides {
 /// Run-scoped CRDT permission policy.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[serde(default)]
-#[tirea(path = "permission_policy", action = "PermissionPolicyAction", scope = "thread")]
+#[tirea(
+    path = "permission_policy",
+    action = "PermissionPolicyAction",
+    scope = "thread"
+)]
 pub struct PermissionPolicy {
     pub default_behavior: ToolPermissionBehavior,
     #[tirea(lattice)]

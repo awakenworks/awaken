@@ -1,11 +1,11 @@
 //! Tool execution utilities.
 
-use crate::contracts::{reduce_state_actions, AnyStateAction, ScopeContext};
 use crate::contracts::runtime::behavior::AgentBehavior;
 use crate::contracts::runtime::tool_call::ToolCallContext;
 use crate::contracts::runtime::tool_call::{Tool, ToolExecutionEffect, ToolResult};
 pub use crate::contracts::runtime::ToolExecution;
 use crate::contracts::thread::ToolCall;
+use crate::contracts::{reduce_state_actions, AnyStateAction, ScopeContext};
 use futures::future::join_all;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -120,7 +120,13 @@ pub async fn execute_single_tool_with_scope_and_behavior(
     let (result, actions) = effect.into_parts();
     let state_actions: Vec<AnyStateAction> = actions
         .into_iter()
-        .filter_map(|a| if a.is_state_action() { a.into_state_action() } else { None })
+        .filter_map(|a| {
+            if a.is_state_action() {
+                a.into_state_action()
+            } else {
+                None
+            }
+        })
         .collect();
 
     let tool_scope_ctx = ScopeContext::for_call(&call.id);
@@ -130,18 +136,18 @@ pub async fn execute_single_tool_with_scope_and_behavior(
         &format!("tool:{}", call.name),
         &tool_scope_ctx,
     ) {
-            Ok(patches) => patches,
-            Err(err) => {
-                return ToolExecution {
-                    call: call.clone(),
-                    result: ToolResult::error(
-                        &call.name,
-                        format!("tool state action reduce failed: {err}"),
-                    ),
-                    patch: None,
-                };
-            }
-        };
+        Ok(patches) => patches,
+        Err(err) => {
+            return ToolExecution {
+                call: call.clone(),
+                result: ToolResult::error(
+                    &call.name,
+                    format!("tool state action reduce failed: {err}"),
+                ),
+                patch: None,
+            };
+        }
+    };
 
     let mut merged_patch = Patch::new();
     for tracked in action_patches {
@@ -205,14 +211,14 @@ pub fn collect_patches(executions: &[ToolExecution]) -> Vec<TrackedPatch> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::runtime::state::StateSpec;
     use crate::contracts::runtime::state::AnyStateAction;
+    use crate::contracts::runtime::state::StateSpec;
     use crate::contracts::runtime::tool_call::{ToolDescriptor, ToolError};
-    use tirea_contract::testing::TestFixtureState;
     use crate::contracts::ToolCallContext;
     use async_trait::async_trait;
     use serde::{Deserialize, Serialize};
     use serde_json::json;
+    use tirea_contract::testing::TestFixtureState;
     use tirea_state::{PatchSink, Path as TPath, State, TireaResult};
 
     struct EchoTool;

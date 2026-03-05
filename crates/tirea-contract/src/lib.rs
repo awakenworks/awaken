@@ -153,9 +153,10 @@ pub use runtime::{
 
 // storage
 pub use storage::{
-    paginate_in_memory, Committed, MessagePage, MessageQuery, MessageWithCursor, SortOrder,
-    ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore, ThreadStoreError,
-    ThreadSync, ThreadWriter, VersionPrecondition,
+    paginate_in_memory, paginate_runs_in_memory, Committed, MessagePage, MessageQuery,
+    MessageWithCursor, RunOrigin, RunPage, RunQuery, RunReader, RunRecord, RunRecordStatus,
+    RunStore, RunStoreError, RunWriter, SortOrder, ThreadHead, ThreadListPage, ThreadListQuery,
+    ThreadReader, ThreadStore, ThreadStoreError, ThreadSync, ThreadWriter, VersionPrecondition,
 };
 
 // transport

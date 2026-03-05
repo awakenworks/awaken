@@ -9,12 +9,13 @@ use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::orchestrator::{AgentDefinition, StopConditionSpec, ToolExecutionMode};
 use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder, ModelDefinition};
 use tirea_agentos_server::nats::NatsConfig;
+use tirea_agentos_server::run_service::init_run_service;
 use tirea_agentos_server::service::AppState;
 use tirea_agentos_server::{http, protocol};
 use tirea_contract::runtime::tool_call::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_contract::runtime::tool_call::ToolCallContext;
 use tirea_extension_permission::{PermissionPlugin, ToolPolicyPlugin};
-use tirea_store_adapters::FileStore;
+use tirea_store_adapters::{FileRunStore, FileStore};
 
 #[derive(Debug, Parser)]
 #[command(name = "tirea-agentos-server")]
@@ -313,16 +314,22 @@ async fn main() {
         None => None,
     };
 
+    let run_store_dir = args.storage_dir.join("runs");
     let file_store = Arc::new(FileStore::new(args.storage_dir));
     let write_store: Arc<dyn ThreadStore> = file_store.clone();
     let read_store: Arc<dyn ThreadReader> = file_store.clone();
+    let run_store = Arc::new(FileRunStore::new(run_store_dir));
+    let _ = init_run_service(run_store);
     let os = Arc::new(build_os(cfg, args.tensorzero_url, write_store));
 
     let app = axum::Router::new()
         .merge(http::health_routes())
         .merge(http::thread_routes())
+        .merge(http::run_routes())
+        .merge(protocol::a2a::http::well_known_routes())
         .nest("/v1/ag-ui", protocol::ag_ui::http::routes())
         .nest("/v1/ai-sdk", protocol::ai_sdk_v6::http::routes())
+        .nest("/v1/a2a", protocol::a2a::http::routes())
         .with_state(AppState {
             os: os.clone(),
             read_store,

@@ -21,7 +21,9 @@ pub(super) fn lock_unpoison<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     }
 }
 
-pub(super) fn extract_token_counts(usage: Option<&TokenUsage>) -> (Option<i32>, Option<i32>, Option<i32>) {
+pub(super) fn extract_token_counts(
+    usage: Option<&TokenUsage>,
+) -> (Option<i32>, Option<i32>, Option<i32>) {
     match usage {
         Some(u) => (u.prompt_tokens, u.completion_tokens, u.total_tokens),
         None => (None, None, None),
@@ -106,7 +108,10 @@ impl AgentBehavior for LLMMetryPlugin {
         ActionSet::empty()
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+    async fn before_inference(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeInferenceAction> {
         *lock_unpoison(&self.inference_start) = Some(Instant::now());
         let model = lock_unpoison(&self.model).clone();
         let provider = lock_unpoison(&self.provider).clone();
@@ -230,7 +235,10 @@ impl AgentBehavior for LLMMetryPlugin {
         ActionSet::empty()
     }
 
-    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+    async fn before_tool_execute(
+        &self,
+        ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeToolExecuteAction> {
         let tool_name = ctx.tool_name().unwrap_or_default().to_string();
         let call_id = ctx.tool_call_id().unwrap_or_default().to_string();
         if !call_id.is_empty() {
@@ -260,7 +268,10 @@ impl AgentBehavior for LLMMetryPlugin {
         ActionSet::empty()
     }
 
-    async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
+    async fn after_tool_execute(
+        &self,
+        ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<AfterToolExecuteAction> {
         let call_id_for_span = ctx.tool_call_id().unwrap_or_default().to_string();
         let duration_ms = self
             .tool_start

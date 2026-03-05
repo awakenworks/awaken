@@ -119,15 +119,15 @@ impl ActionDeserializerRegistry {
         self.factories.insert(
             type_name,
             Box::new(|entry: &SerializedAction| {
-                let action: S::Action = serde_json::from_value(entry.payload.clone())
-                    .map_err(|e| PendingWriteError::DeserializationFailed {
-                        state_type: entry.state_type_name.clone(),
-                        source: e,
+                let action: S::Action =
+                    serde_json::from_value(entry.payload.clone()).map_err(|e| {
+                        PendingWriteError::DeserializationFailed {
+                            state_type: entry.state_type_name.clone(),
+                            source: e,
+                        }
                     })?;
                 match entry.scope {
-                    StateScope::Thread | StateScope::Run => {
-                        Ok(AnyStateAction::new::<S>(action))
-                    }
+                    StateScope::Thread | StateScope::Run => Ok(AnyStateAction::new::<S>(action)),
                     StateScope::ToolCall => {
                         let call_id = entry.call_id_override.as_deref().unwrap_or("");
                         Ok(AnyStateAction::new_for_call::<S>(
@@ -162,21 +162,22 @@ impl Default for ActionDeserializerRegistry {
 impl std::fmt::Debug for ActionDeserializerRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ActionDeserializerRegistry")
-            .field("registered_types", &self.factories.keys().collect::<Vec<_>>())
+            .field(
+                "registered_types",
+                &self.factories.keys().collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::scope_context::ScopeContext;
     use super::super::spec::reduce_state_actions;
+    use super::*;
     use serde::{Deserialize, Serialize};
     use serde_json::json;
-    use tirea_state::{
-        apply_patch, DocCell, PatchSink, Path, State, TireaResult,
-    };
+    use tirea_state::{apply_patch, DocCell, PatchSink, Path, State, TireaResult};
 
     // -- Test state type --
 
@@ -279,9 +280,8 @@ mod tests {
 
     #[test]
     fn to_serialized_action_returns_none_for_patch() {
-        let raw = AnyStateAction::Patch(tirea_state::TrackedPatch::new(
-            tirea_state::Patch::default(),
-        ));
+        let raw =
+            AnyStateAction::Patch(tirea_state::TrackedPatch::new(tirea_state::Patch::default()));
         assert!(raw.to_serialized_action().is_none());
     }
 
@@ -298,20 +298,10 @@ mod tests {
 
         // Reduce both against the same base state
         let base = json!({});
-        let original_patches = reduce_state_actions(
-            vec![original],
-            &base,
-            "test",
-            &ScopeContext::run(),
-        )
-        .unwrap();
-        let reconstructed_patches = reduce_state_actions(
-            vec![reconstructed],
-            &base,
-            "test",
-            &ScopeContext::run(),
-        )
-        .unwrap();
+        let original_patches =
+            reduce_state_actions(vec![original], &base, "test", &ScopeContext::run()).unwrap();
+        let reconstructed_patches =
+            reduce_state_actions(vec![reconstructed], &base, "test", &ScopeContext::run()).unwrap();
 
         // Both should produce identical results
         let result_a = apply_patch(&base, original_patches[0].patch()).unwrap();
@@ -347,7 +337,10 @@ mod tests {
             payload: json!({"BadVariant": 99}),
         };
         let err = registry.deserialize(&entry).unwrap_err();
-        assert!(matches!(err, PendingWriteError::DeserializationFailed { .. }));
+        assert!(matches!(
+            err,
+            PendingWriteError::DeserializationFailed { .. }
+        ));
     }
 
     #[test]
@@ -366,13 +359,8 @@ mod tests {
         let reconstructed = registry.deserialize(&serialized).unwrap();
 
         let base = json!({});
-        let patches = reduce_state_actions(
-            vec![reconstructed],
-            &base,
-            "test",
-            &ScopeContext::run(),
-        )
-        .unwrap();
+        let patches =
+            reduce_state_actions(vec![reconstructed], &base, "test", &ScopeContext::run()).unwrap();
         let result = apply_patch(&base, patches[0].patch()).unwrap();
         assert_eq!(
             result["__tool_call_scope"]["call_99"]["tc_counter"]["value"],

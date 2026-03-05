@@ -98,7 +98,11 @@ impl SuspendedCall {
 /// interaction payload, and resume strategy. It is automatically deleted when the
 /// tool call reaches a terminal outcome (Succeeded/Failed/Cancelled).
 #[derive(Debug, Clone, Serialize, Deserialize, State)]
-#[tirea(path = "suspended_call", action = "SuspendedCallAction", scope = "tool_call")]
+#[tirea(
+    path = "suspended_call",
+    action = "SuspendedCallAction",
+    scope = "tool_call"
+)]
 pub struct SuspendedCallState {
     /// The suspended call data (flattened for serialization).
     #[serde(flatten)]
@@ -233,7 +237,11 @@ pub struct ToolCallResume {
 ///
 /// Stored under `__tool_call_scope.<call_id>.tool_call_state` (ToolCall-scoped).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, State)]
-#[tirea(path = "tool_call_state", action = "ToolCallStateAction", scope = "tool_call")]
+#[tirea(
+    path = "tool_call_state",
+    action = "ToolCallStateAction",
+    scope = "tool_call"
+)]
 pub struct ToolCallState {
     /// Stable tool call id.
     #[serde(default, skip_serializing_if = "String::is_empty")]

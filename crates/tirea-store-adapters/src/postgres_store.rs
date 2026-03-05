@@ -2,8 +2,10 @@ use async_trait::async_trait;
 #[cfg(feature = "postgres")]
 use sqlx::{Postgres, QueryBuilder};
 use tirea_contract::storage::{
-    Committed, MessagePage, MessageQuery, MessageWithCursor, SortOrder, ThreadHead, ThreadListPage,
-    ThreadListQuery, ThreadReader, ThreadStoreError, ThreadWriter, VersionPrecondition,
+    Committed, MessagePage, MessageQuery, MessageWithCursor, RunOrigin, RunPage, RunQuery,
+    RunReader, RunRecord, RunRecordStatus, RunStoreError, RunWriter, SortOrder, ThreadHead,
+    ThreadListPage, ThreadListQuery, ThreadReader, ThreadStoreError, ThreadWriter,
+    VersionPrecondition,
 };
 use tirea_contract::{Message, Thread, ThreadChangeSet, Visibility};
 
@@ -11,6 +13,7 @@ pub struct PostgresStore {
     pool: sqlx::PgPool,
     table: String,
     messages_table: String,
+    runs_table: String,
 }
 
 #[cfg(feature = "postgres")]
@@ -24,6 +27,7 @@ impl PostgresStore {
             pool,
             table: "agent_sessions".to_string(),
             messages_table: "agent_messages".to_string(),
+            runs_table: "agent_runs".to_string(),
         }
     }
 
@@ -33,10 +37,12 @@ impl PostgresStore {
     pub fn with_table(pool: sqlx::PgPool, table: impl Into<String>) -> Self {
         let table = table.into();
         let messages_table = format!("{}_messages", table);
+        let runs_table = format!("{}_runs", table);
         Self {
             pool,
             table,
             messages_table,
+            runs_table,
         }
     }
 
@@ -71,6 +77,30 @@ impl PostgresStore {
                 "CREATE INDEX IF NOT EXISTS idx_{}_parent_thread_id ON {} ((data->>'parent_thread_id')) WHERE data ? 'parent_thread_id'",
                 self.table, self.table
             ),
+            format!(
+                "CREATE TABLE IF NOT EXISTS {} (run_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, parent_run_id TEXT, parent_thread_id TEXT, origin TEXT NOT NULL, status TEXT NOT NULL, termination_code TEXT, termination_detail TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, metadata JSONB)",
+                self.runs_table
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_{}_thread_id ON {} (thread_id)",
+                self.runs_table, self.runs_table
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_{}_parent_run_id ON {} (parent_run_id) WHERE parent_run_id IS NOT NULL",
+                self.runs_table, self.runs_table
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_{}_status ON {} (status)",
+                self.runs_table, self.runs_table
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_{}_origin ON {} (origin)",
+                self.runs_table, self.runs_table
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_{}_created_at ON {} (created_at, run_id)",
+                self.runs_table, self.runs_table
+            ),
         ];
 
         for sql in statements {
@@ -84,6 +114,80 @@ impl PostgresStore {
 
     fn sql_err(e: sqlx::Error) -> ThreadStoreError {
         ThreadStoreError::Io(std::io::Error::other(e.to_string()))
+    }
+
+    fn run_sql_err(e: sqlx::Error) -> RunStoreError {
+        RunStoreError::Io(std::io::Error::other(e.to_string()))
+    }
+
+    fn encode_origin(origin: RunOrigin) -> &'static str {
+        match origin {
+            RunOrigin::User => "user",
+            RunOrigin::Subagent => "subagent",
+            RunOrigin::AgUi => "ag_ui",
+            RunOrigin::AiSdk => "ai_sdk",
+            RunOrigin::A2a => "a2a",
+            RunOrigin::Internal => "internal",
+        }
+    }
+
+    fn decode_origin(raw: &str) -> Result<RunOrigin, RunStoreError> {
+        match raw {
+            "user" => Ok(RunOrigin::User),
+            "subagent" => Ok(RunOrigin::Subagent),
+            "ag_ui" => Ok(RunOrigin::AgUi),
+            "ai_sdk" => Ok(RunOrigin::AiSdk),
+            "a2a" => Ok(RunOrigin::A2a),
+            "internal" => Ok(RunOrigin::Internal),
+            _ => Err(RunStoreError::Serialization(format!(
+                "invalid run origin value: {raw}"
+            ))),
+        }
+    }
+
+    fn encode_status(status: RunRecordStatus) -> &'static str {
+        match status {
+            RunRecordStatus::Submitted => "submitted",
+            RunRecordStatus::Working => "working",
+            RunRecordStatus::InputRequired => "input_required",
+            RunRecordStatus::AuthRequired => "auth_required",
+            RunRecordStatus::Completed => "completed",
+            RunRecordStatus::Failed => "failed",
+            RunRecordStatus::Canceled => "canceled",
+            RunRecordStatus::Rejected => "rejected",
+        }
+    }
+
+    fn decode_status(raw: &str) -> Result<RunRecordStatus, RunStoreError> {
+        match raw {
+            "submitted" => Ok(RunRecordStatus::Submitted),
+            "working" => Ok(RunRecordStatus::Working),
+            "input_required" => Ok(RunRecordStatus::InputRequired),
+            "auth_required" => Ok(RunRecordStatus::AuthRequired),
+            "completed" => Ok(RunRecordStatus::Completed),
+            "failed" => Ok(RunRecordStatus::Failed),
+            "canceled" | "cancelled" => Ok(RunRecordStatus::Canceled),
+            "rejected" => Ok(RunRecordStatus::Rejected),
+            _ => Err(RunStoreError::Serialization(format!(
+                "invalid run status value: {raw}"
+            ))),
+        }
+    }
+
+    fn to_db_timestamp(value: u64, field: &str) -> Result<i64, RunStoreError> {
+        i64::try_from(value).map_err(|_| {
+            RunStoreError::Serialization(format!(
+                "{field} is too large for postgres BIGINT: {value}"
+            ))
+        })
+    }
+
+    fn from_db_timestamp(value: i64, field: &str) -> Result<u64, RunStoreError> {
+        u64::try_from(value).map_err(|_| {
+            RunStoreError::Serialization(format!(
+                "{field} cannot be negative in postgres BIGINT: {value}"
+            ))
+        })
     }
 }
 
@@ -616,5 +720,262 @@ impl ThreadReader for PostgresStore {
             total: total as usize,
             has_more,
         })
+    }
+}
+
+#[cfg(feature = "postgres")]
+type RunRowTuple = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    i64,
+    i64,
+    Option<serde_json::Value>,
+);
+
+#[cfg(feature = "postgres")]
+impl PostgresStore {
+    fn run_from_row(row: RunRowTuple) -> Result<RunRecord, RunStoreError> {
+        let (
+            run_id,
+            thread_id,
+            parent_run_id,
+            parent_thread_id,
+            origin,
+            status,
+            termination_code,
+            termination_detail,
+            created_at,
+            updated_at,
+            metadata,
+        ) = row;
+        Ok(RunRecord {
+            run_id,
+            thread_id,
+            parent_run_id,
+            parent_thread_id,
+            origin: Self::decode_origin(&origin)?,
+            status: Self::decode_status(&status)?,
+            termination_code,
+            termination_detail,
+            created_at: Self::from_db_timestamp(created_at, "created_at")?,
+            updated_at: Self::from_db_timestamp(updated_at, "updated_at")?,
+            metadata,
+        })
+    }
+}
+
+#[cfg(feature = "postgres")]
+#[async_trait]
+impl RunReader for PostgresStore {
+    async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, RunStoreError> {
+        let sql = format!(
+            "SELECT run_id, thread_id, parent_run_id, parent_thread_id, origin, status, termination_code, termination_detail, created_at, updated_at, metadata FROM {} WHERE run_id = $1",
+            self.runs_table
+        );
+        let row = sqlx::query_as::<_, RunRowTuple>(&sql)
+            .bind(run_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(Self::run_sql_err)?;
+        row.map(Self::run_from_row).transpose()
+    }
+
+    async fn list_runs(&self, query: &RunQuery) -> Result<RunPage, RunStoreError> {
+        let limit = query.limit.clamp(1, 200);
+        let fetch_limit = (limit + 1) as i64;
+        let offset = i64::try_from(query.offset)
+            .map_err(|_| RunStoreError::Serialization("offset is too large".to_string()))?;
+
+        let mut count_qb = QueryBuilder::<Postgres>::new(format!(
+            "SELECT COUNT(*)::bigint FROM {}",
+            self.runs_table
+        ));
+        let mut has_where = false;
+        if let Some(thread_id) = query.thread_id.as_deref() {
+            count_qb.push(if has_where { " AND " } else { " WHERE " });
+            has_where = true;
+            count_qb.push("thread_id = ").push_bind(thread_id);
+        }
+        if let Some(parent_run_id) = query.parent_run_id.as_deref() {
+            count_qb.push(if has_where { " AND " } else { " WHERE " });
+            has_where = true;
+            count_qb.push("parent_run_id = ").push_bind(parent_run_id);
+        }
+        if let Some(status) = query.status {
+            count_qb.push(if has_where { " AND " } else { " WHERE " });
+            has_where = true;
+            count_qb
+                .push("status = ")
+                .push_bind(Self::encode_status(status));
+        }
+        if let Some(origin) = query.origin {
+            count_qb.push(if has_where { " AND " } else { " WHERE " });
+            has_where = true;
+            count_qb
+                .push("origin = ")
+                .push_bind(Self::encode_origin(origin));
+        }
+        if let Some(created_at_from) = query.created_at_from {
+            let created_at_from = Self::to_db_timestamp(created_at_from, "created_at_from")?;
+            count_qb.push(if has_where { " AND " } else { " WHERE " });
+            has_where = true;
+            count_qb.push("created_at >= ").push_bind(created_at_from);
+        }
+        if let Some(created_at_to) = query.created_at_to {
+            let created_at_to = Self::to_db_timestamp(created_at_to, "created_at_to")?;
+            count_qb.push(if has_where { " AND " } else { " WHERE " });
+            has_where = true;
+            count_qb.push("created_at <= ").push_bind(created_at_to);
+        }
+        if let Some(updated_at_from) = query.updated_at_from {
+            let updated_at_from = Self::to_db_timestamp(updated_at_from, "updated_at_from")?;
+            count_qb.push(if has_where { " AND " } else { " WHERE " });
+            has_where = true;
+            count_qb.push("updated_at >= ").push_bind(updated_at_from);
+        }
+        if let Some(updated_at_to) = query.updated_at_to {
+            let updated_at_to = Self::to_db_timestamp(updated_at_to, "updated_at_to")?;
+            count_qb.push(if has_where { " AND " } else { " WHERE " });
+            count_qb.push("updated_at <= ").push_bind(updated_at_to);
+        }
+        let total: i64 = count_qb
+            .build_query_scalar()
+            .fetch_one(&self.pool)
+            .await
+            .map_err(Self::run_sql_err)?;
+
+        let mut data_qb = QueryBuilder::<Postgres>::new(format!(
+            "SELECT run_id, thread_id, parent_run_id, parent_thread_id, origin, status, termination_code, termination_detail, created_at, updated_at, metadata FROM {}",
+            self.runs_table
+        ));
+        let mut has_where = false;
+        if let Some(thread_id) = query.thread_id.as_deref() {
+            data_qb.push(if has_where { " AND " } else { " WHERE " });
+            has_where = true;
+            data_qb.push("thread_id = ").push_bind(thread_id);
+        }
+        if let Some(parent_run_id) = query.parent_run_id.as_deref() {
+            data_qb.push(if has_where { " AND " } else { " WHERE " });
+            has_where = true;
+            data_qb.push("parent_run_id = ").push_bind(parent_run_id);
+        }
+        if let Some(status) = query.status {
+            data_qb.push(if has_where { " AND " } else { " WHERE " });
+            has_where = true;
+            data_qb
+                .push("status = ")
+                .push_bind(Self::encode_status(status));
+        }
+        if let Some(origin) = query.origin {
+            data_qb.push(if has_where { " AND " } else { " WHERE " });
+            has_where = true;
+            data_qb
+                .push("origin = ")
+                .push_bind(Self::encode_origin(origin));
+        }
+        if let Some(created_at_from) = query.created_at_from {
+            let created_at_from = Self::to_db_timestamp(created_at_from, "created_at_from")?;
+            data_qb.push(if has_where { " AND " } else { " WHERE " });
+            has_where = true;
+            data_qb.push("created_at >= ").push_bind(created_at_from);
+        }
+        if let Some(created_at_to) = query.created_at_to {
+            let created_at_to = Self::to_db_timestamp(created_at_to, "created_at_to")?;
+            data_qb.push(if has_where { " AND " } else { " WHERE " });
+            has_where = true;
+            data_qb.push("created_at <= ").push_bind(created_at_to);
+        }
+        if let Some(updated_at_from) = query.updated_at_from {
+            let updated_at_from = Self::to_db_timestamp(updated_at_from, "updated_at_from")?;
+            data_qb.push(if has_where { " AND " } else { " WHERE " });
+            has_where = true;
+            data_qb.push("updated_at >= ").push_bind(updated_at_from);
+        }
+        if let Some(updated_at_to) = query.updated_at_to {
+            let updated_at_to = Self::to_db_timestamp(updated_at_to, "updated_at_to")?;
+            data_qb.push(if has_where { " AND " } else { " WHERE " });
+            data_qb.push("updated_at <= ").push_bind(updated_at_to);
+        }
+        data_qb
+            .push(" ORDER BY created_at ASC, run_id ASC LIMIT ")
+            .push_bind(fetch_limit)
+            .push(" OFFSET ")
+            .push_bind(offset);
+
+        let rows: Vec<RunRowTuple> = data_qb
+            .build_query_as()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(Self::run_sql_err)?;
+        let has_more = rows.len() > limit;
+        let items = rows
+            .into_iter()
+            .take(limit)
+            .map(Self::run_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(RunPage {
+            items,
+            total: usize::try_from(total)
+                .map_err(|_| RunStoreError::Serialization("total is negative".to_string()))?,
+            has_more,
+        })
+    }
+
+    async fn resolve_thread_id(&self, run_id: &str) -> Result<Option<String>, RunStoreError> {
+        let sql = format!(
+            "SELECT thread_id FROM {} WHERE run_id = $1",
+            self.runs_table
+        );
+        sqlx::query_scalar::<_, String>(&sql)
+            .bind(run_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(Self::run_sql_err)
+    }
+}
+
+#[cfg(feature = "postgres")]
+#[async_trait]
+impl RunWriter for PostgresStore {
+    async fn upsert_run(&self, record: &RunRecord) -> Result<(), RunStoreError> {
+        let created_at = Self::to_db_timestamp(record.created_at, "created_at")?;
+        let updated_at = Self::to_db_timestamp(record.updated_at, "updated_at")?;
+        let sql = format!(
+            "INSERT INTO {} (run_id, thread_id, parent_run_id, parent_thread_id, origin, status, termination_code, termination_detail, created_at, updated_at, metadata) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (run_id) DO UPDATE SET thread_id = EXCLUDED.thread_id, parent_run_id = EXCLUDED.parent_run_id, parent_thread_id = EXCLUDED.parent_thread_id, origin = EXCLUDED.origin, status = EXCLUDED.status, termination_code = EXCLUDED.termination_code, termination_detail = EXCLUDED.termination_detail, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at, metadata = EXCLUDED.metadata",
+            self.runs_table
+        );
+        sqlx::query(&sql)
+            .bind(&record.run_id)
+            .bind(&record.thread_id)
+            .bind(record.parent_run_id.as_deref())
+            .bind(record.parent_thread_id.as_deref())
+            .bind(Self::encode_origin(record.origin))
+            .bind(Self::encode_status(record.status))
+            .bind(record.termination_code.as_deref())
+            .bind(record.termination_detail.as_deref())
+            .bind(created_at)
+            .bind(updated_at)
+            .bind(&record.metadata)
+            .execute(&self.pool)
+            .await
+            .map_err(Self::run_sql_err)?;
+        Ok(())
+    }
+
+    async fn delete_run(&self, run_id: &str) -> Result<(), RunStoreError> {
+        let sql = format!("DELETE FROM {} WHERE run_id = $1", self.runs_table);
+        sqlx::query(&sql)
+            .bind(run_id)
+            .execute(&self.pool)
+            .await
+            .map_err(Self::run_sql_err)?;
+        Ok(())
     }
 }

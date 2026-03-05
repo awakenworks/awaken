@@ -187,7 +187,9 @@ impl BeforeToolExecuteAction {
         match decision {
             ToolCallAction::Block { reason } => Self::Block(reason),
             ToolCallAction::Suspend(ticket) => Self::Suspend(*ticket),
-            ToolCallAction::Proceed => unreachable!("Proceed is not emitted as a BeforeToolExecuteAction"),
+            ToolCallAction::Proceed => {
+                unreachable!("Proceed is not emitted as a BeforeToolExecuteAction")
+            }
         }
     }
 }

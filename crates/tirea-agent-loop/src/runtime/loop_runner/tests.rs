@@ -76,29 +76,57 @@ fn compose_test_behaviors(behaviors: Vec<Arc<dyn AgentBehavior>>) -> Arc<dyn Age
                 .into_iter()
                 .fold(ActionSet::empty(), |acc, a| acc.and(a))
         }
-        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            let futs: Vec<_> = self.behaviors.iter().map(|b| b.before_inference(ctx)).collect();
+        async fn before_inference(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            let futs: Vec<_> = self
+                .behaviors
+                .iter()
+                .map(|b| b.before_inference(ctx))
+                .collect();
             futures::future::join_all(futs)
                 .await
                 .into_iter()
                 .fold(ActionSet::empty(), |acc, a| acc.and(a))
         }
-        async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
-            let futs: Vec<_> = self.behaviors.iter().map(|b| b.after_inference(ctx)).collect();
+        async fn after_inference(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<AfterInferenceAction> {
+            let futs: Vec<_> = self
+                .behaviors
+                .iter()
+                .map(|b| b.after_inference(ctx))
+                .collect();
             futures::future::join_all(futs)
                 .await
                 .into_iter()
                 .fold(ActionSet::empty(), |acc, a| acc.and(a))
         }
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
-            let futs: Vec<_> = self.behaviors.iter().map(|b| b.before_tool_execute(ctx)).collect();
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
+            let futs: Vec<_> = self
+                .behaviors
+                .iter()
+                .map(|b| b.before_tool_execute(ctx))
+                .collect();
             futures::future::join_all(futs)
                 .await
                 .into_iter()
                 .fold(ActionSet::empty(), |acc, a| acc.and(a))
         }
-        async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
-            let futs: Vec<_> = self.behaviors.iter().map(|b| b.after_tool_execute(ctx)).collect();
+        async fn after_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<AfterToolExecuteAction> {
+            let futs: Vec<_> = self
+                .behaviors
+                .iter()
+                .map(|b| b.after_tool_execute(ctx))
+                .collect();
             futures::future::join_all(futs)
                 .await
                 .into_iter()
@@ -518,8 +546,7 @@ impl AgentBehavior for TestInteractionPlugin {
             return ActionSet::empty();
         }
 
-        let mut states =
-            crate::contracts::runtime::tool_call_states_from_state(&ctx.snapshot());
+        let mut states = crate::contracts::runtime::tool_call_states_from_state(&ctx.snapshot());
         let mut actions = ActionSet::empty();
         for (call_id, suspended_call) in suspended_calls {
             if states.get(&call_id).is_some_and(|state| {
@@ -554,7 +581,9 @@ impl AgentBehavior for TestInteractionPlugin {
             state.resume_token = Some(suspended_call.ticket.pending.id.clone());
             state.resume = Some(resume);
             state.updated_at = updated_at;
-            actions = actions.and(ActionSet::single(LifecycleAction::State(state.into_state_action())));
+            actions = actions.and(ActionSet::single(LifecycleAction::State(
+                state.into_state_action(),
+            )));
         }
         actions
     }
@@ -990,7 +1019,8 @@ fn test_execute_tools_tool_can_suspend_itself() {
 
         let state = thread.rebuild_state().expect("state should rebuild");
         assert_eq!(
-            get_suspended_call(&state, "call_1").expect("call should be suspended")["pending"]["name"],
+            get_suspended_call(&state, "call_1").expect("call should be suspended")["pending"]
+                ["name"],
             json!("self_suspend")
         );
     });
@@ -1378,14 +1408,26 @@ impl AgentBehavior for TestPhasePlugin {
         &self.id
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-        ActionSet::single(BeforeInferenceAction::AddSystemContext("Test system context".into()))
-            .and(ActionSet::single(BeforeInferenceAction::AddSessionContext("Test thread context".into())))
+    async fn before_inference(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeInferenceAction> {
+        ActionSet::single(BeforeInferenceAction::AddSystemContext(
+            "Test system context".into(),
+        ))
+        .and(ActionSet::single(BeforeInferenceAction::AddSessionContext(
+            "Test thread context".into(),
+        )))
     }
 
-    async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
+    async fn after_tool_execute(
+        &self,
+        ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<AfterToolExecuteAction> {
         if ctx.tool_name() == Some("echo") {
-            ActionSet::single(AfterToolExecuteAction::AddSystemReminder("Check the echo result".into()))
+            ActionSet::single(AfterToolExecuteAction::AddSystemReminder(
+                "Check the echo result".into(),
+            ))
         } else {
             ActionSet::empty()
         }
@@ -1408,9 +1450,14 @@ impl AgentBehavior for BlockingPhasePlugin {
         "blocker"
     }
 
-    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+    async fn before_tool_execute(
+        &self,
+        ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeToolExecuteAction> {
         if ctx.tool_name() == Some("echo") {
-            ActionSet::single(BeforeToolExecuteAction::Block("Echo tool is blocked".into()))
+            ActionSet::single(BeforeToolExecuteAction::Block(
+                "Echo tool is blocked".into(),
+            ))
         } else {
             ActionSet::empty()
         }
@@ -1457,7 +1504,10 @@ impl AgentBehavior for InvalidAfterToolMutationPlugin {
         "invalid_after_tool_mutation"
     }
 
-    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
+    async fn after_tool_execute(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<AfterToolExecuteAction> {
         // BlockTool is now type-safe: it cannot be expressed in AfterToolExecuteAction.
         // The typed ActionSet system prevents this at compile time.
         ActionSet::empty()
@@ -1486,7 +1536,9 @@ fn test_execute_tools_gate_mutation_type_safe_in_after_tool_execute() {
 
         let thread = execute_tools_with_config(thread, &result, &tools, &agent)
             .await
-            .expect("tool execution should succeed when after_tool_execute returns empty action set")
+            .expect(
+                "tool execution should succeed when after_tool_execute returns empty action set",
+            )
             .into_thread();
 
         assert_eq!(thread.message_count(), 1);
@@ -1501,11 +1553,15 @@ impl AgentBehavior for InvalidDualToolGatePlugin {
         "invalid_dual_tool_gate"
     }
 
-    async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
-        ActionSet::single(BeforeToolExecuteAction::Block("invalid gate".into()))
-            .and(ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
+    async fn before_tool_execute(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeToolExecuteAction> {
+        ActionSet::single(BeforeToolExecuteAction::Block("invalid gate".into())).and(
+            ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
                 Suspension::new("confirm", "confirm").with_message("invalid gate"),
-            ))))
+            ))),
+        )
     }
 }
 
@@ -1553,7 +1609,10 @@ impl AgentBehavior for InvalidSuspendTicketMutationPlugin {
         "invalid_suspend_ticket_mutation"
     }
 
-    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
+    async fn after_tool_execute(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<AfterToolExecuteAction> {
         // SuspendTool is now type-safe: it cannot be expressed in AfterToolExecuteAction.
         // The typed ActionSet system prevents this at compile time.
         ActionSet::empty()
@@ -1582,7 +1641,9 @@ fn test_execute_tools_suspend_ticket_type_safe_in_after_tool_execute() {
 
         let thread = execute_tools_with_config(thread, &result, &tools, &agent)
             .await
-            .expect("tool execution should succeed when after_tool_execute returns empty action set")
+            .expect(
+                "tool execution should succeed when after_tool_execute returns empty action set",
+            )
             .into_thread();
 
         assert_eq!(thread.message_count(), 1);
@@ -1597,8 +1658,13 @@ impl AgentBehavior for ReminderPhasePlugin {
         "reminder"
     }
 
-    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
-        ActionSet::single(AfterToolExecuteAction::AddSystemReminder("Tool execution completed".into()))
+    async fn after_tool_execute(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<AfterToolExecuteAction> {
+        ActionSet::single(AfterToolExecuteAction::AddSystemReminder(
+            "Tool execution completed".into(),
+        ))
     }
 }
 
@@ -1641,8 +1707,12 @@ fn test_build_messages_with_context() {
     fixture.messages = thread.messages.clone();
     let mut step = fixture.step(tool_descriptors);
 
-    step.inference.system_context.push("System context 1".into());
-    step.inference.system_context.push("System context 2".into());
+    step.inference
+        .system_context
+        .push("System context 1".into());
+    step.inference
+        .system_context
+        .push("System context 2".into());
     step.inference.session_context.push("Thread context".into());
 
     let messages = build_messages(&step, "Base system prompt");
@@ -1676,7 +1746,10 @@ impl AgentBehavior for ToolFilterPlugin {
         "filter"
     }
 
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+    async fn before_inference(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeInferenceAction> {
         ActionSet::single(BeforeInferenceAction::ExcludeTool("dangerous_tool".into()))
     }
 }
@@ -1714,7 +1787,10 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
             "guarded"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             let state = ctx.snapshot();
             let allow_exec = state
                 .get("plugin")
@@ -1723,7 +1799,9 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
                 .unwrap_or(false);
 
             if !allow_exec {
-                ActionSet::single(BeforeToolExecuteAction::Block("missing plugin.allow_exec in state".into()))
+                ActionSet::single(BeforeToolExecuteAction::Block(
+                    "missing plugin.allow_exec in state".into(),
+                ))
             } else {
                 ActionSet::empty()
             }
@@ -1990,7 +2068,10 @@ async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
             "session_check"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             assert_eq!(ctx.thread_id(), "real-thread-42");
             assert_eq!(ctx.run_config().value("user_id"), Some(&json!("u-abc")),);
             VERIFIED.store(true, Ordering::SeqCst);
@@ -2037,17 +2118,22 @@ async fn test_plugin_state_patch_visible_in_next_step_before_inference() {
             "state_channel"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             self.before_tool_actions(ctx).await
         }
 
-        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        async fn before_inference(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
             self.before_inference_actions(ctx).await
         }
     }
 
     impl StateChannelPlugin {
-
         async fn before_tool_actions(
             &self,
             _ctx: &ReadOnlyContext<'_>,
@@ -2126,26 +2212,44 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
             self.phases.lock().unwrap().push(Phase::StepStart);
             ActionSet::empty()
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
             self.phases.lock().unwrap().push(Phase::BeforeInference);
             let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
                 tirea_state::path!("debug", "phase_block"),
                 json!(true),
             )))
             .with_source("test:phase_block");
-            ActionSet::single(BeforeInferenceAction::AddSystemContext("from_before_inference".into()))
-                .and(ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested)))
-                .and(ActionSet::single(BeforeInferenceAction::State(AnyStateAction::Patch(patch))))
+            ActionSet::single(BeforeInferenceAction::AddSystemContext(
+                "from_before_inference".into(),
+            ))
+            .and(ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            )))
+            .and(ActionSet::single(BeforeInferenceAction::State(
+                AnyStateAction::Patch(patch),
+            )))
         }
-        async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
+        async fn after_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<AfterInferenceAction> {
             self.phases.lock().unwrap().push(Phase::AfterInference);
             ActionSet::empty()
         }
-        async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             self.phases.lock().unwrap().push(Phase::BeforeToolExecute);
             ActionSet::empty()
         }
-        async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
+        async fn after_tool_execute(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<AfterToolExecuteAction> {
             self.phases.lock().unwrap().push(Phase::AfterToolExecute);
             ActionSet::empty()
         }
@@ -2188,10 +2292,16 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
             "cleanup_plugin"
         }
 
-        async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
+        async fn after_inference(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<AfterInferenceAction> {
             self.phases.lock().unwrap().push(Phase::AfterInference);
             let err = ctx.inference_error();
-            assert_eq!(err.map(|e| e.error_type.as_str()), Some("llm_stream_start_error"));
+            assert_eq!(
+                err.map(|e| e.error_type.as_str()),
+                Some("llm_stream_start_error")
+            );
             ActionSet::empty()
         }
 
@@ -2256,7 +2366,6 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
     }
 
     impl RunScopedStatePlugin {
-
         async fn phase_actions(
             &self,
             phase: Phase,
@@ -2408,7 +2517,10 @@ impl AgentBehavior for PendingPhasePlugin {
         "pending"
     }
 
-    async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+    async fn before_tool_execute(
+        &self,
+        ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeToolExecuteAction> {
         if ctx.tool_name() == Some("echo") {
             use crate::contracts::Suspension;
             ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
@@ -2461,7 +2573,8 @@ fn test_execute_tools_with_pending_phase_plugin() {
 
         let state = thread.rebuild_state().unwrap();
         assert_eq!(
-            get_suspended_call(&state, "call_1").expect("call should be suspended")["suspension"]["id"],
+            get_suspended_call(&state, "call_1").expect("call should be suspended")["suspension"]
+                ["id"],
             "confirm_1"
         );
     });
@@ -2573,8 +2686,16 @@ fn test_apply_tool_results_suspends_all_interactions() {
     );
     // Per-call map has both entries
     let scopes = state.get("__tool_call_scope").and_then(|v| v.as_object());
-    assert!(scopes.as_ref().and_then(|s| s.get("call_1")).and_then(|e| e.get("suspended_call")).is_some());
-    assert!(scopes.as_ref().and_then(|s| s.get("call_2")).and_then(|e| e.get("suspended_call")).is_some());
+    assert!(scopes
+        .as_ref()
+        .and_then(|s| s.get("call_1"))
+        .and_then(|e| e.get("suspended_call"))
+        .is_some());
+    assert!(scopes
+        .as_ref()
+        .and_then(|s| s.get("call_2"))
+        .and_then(|e| e.get("suspended_call"))
+        .is_some());
 }
 
 #[test]
@@ -2914,13 +3035,11 @@ fn test_execute_tools_with_config_denied_response_is_applied_via_tool_call_state
         let base_state = json!({});
         let pending_patch = set_single_suspended_call(
             &base_state,
-            Suspension::new("call_1", "tool:echo")
-                .with_message("awaiting approval"),
+            Suspension::new("call_1", "tool:echo").with_message("awaiting approval"),
             None,
         )
         .expect("failed to seed suspended interaction");
-        let thread = Thread::with_initial_state("test", base_state)
-            .with_patch(pending_patch);
+        let thread = Thread::with_initial_state("test", base_state).with_patch(pending_patch);
         let result = StreamResult {
             text: "Trying tool after denial".to_string(),
             tool_calls: vec![crate::contracts::thread::ToolCall::new(
@@ -3056,7 +3175,8 @@ fn test_execute_tools_with_config_with_pending_plugin() {
         // Pending interaction should be persisted via state.
         let state = thread.rebuild_state().unwrap();
         assert_eq!(
-            get_suspended_call(&state, "call_1").expect("call should be suspended")["suspension"]["id"],
+            get_suspended_call(&state, "call_1").expect("call should be suspended")["suspension"]
+                ["id"],
             "confirm_1"
         );
     });
@@ -3123,8 +3243,7 @@ fn test_execute_tools_with_config_preserves_unresolved_suspended_calls_on_succes
             .into_thread();
 
         let state = thread.rebuild_state().unwrap();
-        let suspended = state
-            .get("__tool_call_scope").and_then(|v| v.as_object());
+        let suspended = state.get("__tool_call_scope").and_then(|v| v.as_object());
         assert!(
             suspended.is_some_and(|calls| calls.contains_key("confirm_1")),
             "expected unresolved suspended call to be preserved, got: {suspended:?}"
@@ -3157,9 +3276,7 @@ fn test_suspended_call_action_persists_all_entries() {
     ];
     let actions: Vec<AnyStateAction> = calls
         .into_iter()
-        .map(|call| {
-            call.into_state_action()
-        })
+        .map(|call| call.into_state_action())
         .collect();
     let patches = crate::contracts::runtime::state::reduce_state_actions(
         actions,
@@ -3193,7 +3310,10 @@ fn test_execute_tools_sequential_propagates_intermediate_state_apply_errors() {
             "first_call_intermediate_patch"
         }
 
-        async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
+        async fn after_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<AfterToolExecuteAction> {
             if ctx.tool_call_id() != Some("call_1") {
                 return ActionSet::empty();
             }
@@ -3273,19 +3393,30 @@ impl AgentBehavior for RecordAndTerminatePlugin {
         self.phases.lock().unwrap().push(Phase::StepStart);
         ActionSet::empty()
     }
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+    async fn before_inference(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeInferenceAction> {
         self.phases.lock().unwrap().push(Phase::BeforeInference);
-        ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        ActionSet::single(BeforeInferenceAction::Terminate(
+            TerminationReason::BehaviorRequested,
+        ))
     }
     async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
         self.phases.lock().unwrap().push(Phase::AfterInference);
         ActionSet::empty()
     }
-    async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+    async fn before_tool_execute(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeToolExecuteAction> {
         self.phases.lock().unwrap().push(Phase::BeforeToolExecute);
         ActionSet::empty()
     }
-    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
+    async fn after_tool_execute(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<AfterToolExecuteAction> {
         self.phases.lock().unwrap().push(Phase::AfterToolExecute);
         ActionSet::empty()
     }
@@ -3454,7 +3585,10 @@ async fn test_stream_terminate_behavior_requested_with_pending_state_emits_pendi
             "pending_terminate_behavior_requested"
         }
 
-        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        async fn before_inference(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
             let state = ctx.snapshot();
             let patch = set_single_suspended_call(
                 &state,
@@ -3463,8 +3597,12 @@ async fn test_stream_terminate_behavior_requested_with_pending_state_emits_pendi
                 None,
             )
             .expect("failed to set suspended interaction");
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::Suspended))
-                .and(ActionSet::single(BeforeInferenceAction::State(AnyStateAction::Patch(patch))))
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::Suspended,
+            ))
+            .and(ActionSet::single(BeforeInferenceAction::State(
+                AnyStateAction::Patch(patch),
+            )))
         }
     }
 
@@ -3514,8 +3652,13 @@ async fn test_stream_run_action_with_suspended_only_state_emits_pending_events()
         fn id(&self) -> &str {
             "pending_terminate_suspended_only_stream"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::Suspended))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::Suspended,
+            ))
         }
     }
 
@@ -3575,8 +3718,13 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
         fn id(&self) -> &str {
             "terminate_behavior_requested"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -3591,8 +3739,7 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
     let base_state = json!({});
     let pending_patch = set_single_suspended_call(
         &base_state,
-        Suspension::new("call_write", "tool:write")
-            .with_message("awaiting approval"),
+        Suspension::new("call_write", "tool:write").with_message("awaiting approval"),
         None,
     )
     .expect("failed to seed suspended interaction");
@@ -3636,8 +3783,13 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
         fn id(&self) -> &str {
             "terminate_behavior_requested_for_permission_approval"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -3663,9 +3815,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
         .with_message(Message::assistant_with_tool_calls(
             "need permission",
             vec![crate::contracts::thread::ToolCall::new(
-                "call_1",
-                "echo",
-                echo_args,
+                "call_1", "echo", echo_args,
             )],
         ))
         .with_message(Message::tool(
@@ -3742,8 +3892,13 @@ async fn test_run_loop_permission_approval_replays_tool_and_updates_lifecycle_st
         fn id(&self) -> &str {
             "terminate_behavior_requested_for_permission_approval_nonstream"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -3773,9 +3928,7 @@ async fn test_run_loop_permission_approval_replays_tool_and_updates_lifecycle_st
         .with_message(Message::assistant_with_tool_calls(
             "need permission",
             vec![crate::contracts::thread::ToolCall::new(
-                "call_1",
-                "echo",
-                echo_args,
+                "call_1", "echo", echo_args,
             )],
         ))
         .with_message(Message::tool(
@@ -3837,8 +3990,13 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
         fn id(&self) -> &str {
             "terminate_behavior_requested_for_permission_approval_checkpoint"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -3870,9 +4028,7 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
         .with_message(Message::assistant_with_tool_calls(
             "need permission",
             vec![crate::contracts::thread::ToolCall::new(
-                "call_1",
-                "echo",
-                echo_args,
+                "call_1", "echo", echo_args,
             )],
         ))
         .with_message(Message::tool(
@@ -3926,8 +4082,13 @@ async fn test_run_loop_run_start_replay_uses_tool_call_resume_state_without_mail
         fn id(&self) -> &str {
             "terminate_behavior_requested_for_tool_state_replay_nonstream"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -4017,8 +4178,13 @@ async fn test_run_loop_run_start_settles_orphan_resuming_state_without_suspended
         fn id(&self) -> &str {
             "terminate_behavior_requested_settle_orphan_resuming_nonstream"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -4079,8 +4245,13 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
         fn id(&self) -> &str {
             "terminate_behavior_requested_for_permission_denial"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -4094,8 +4265,7 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
     let base_state = json!({});
     let pending_patch = set_single_suspended_call(
         &base_state,
-        Suspension::new("call_1", "tool:echo")
-            .with_message("awaiting approval"),
+        Suspension::new("call_1", "tool:echo").with_message("awaiting approval"),
         None,
     )
     .expect("failed to seed suspended interaction");
@@ -4175,8 +4345,13 @@ async fn test_run_loop_permission_denied_appends_tool_result_for_model_context()
         fn id(&self) -> &str {
             "terminate_behavior_requested_for_permission_denial_nonstream"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -4191,8 +4366,7 @@ async fn test_run_loop_permission_denied_appends_tool_result_for_model_context()
     let base_state = json!({});
     let pending_patch = set_single_suspended_call(
         &base_state,
-        Suspension::new("call_1", "tool:echo")
-            .with_message("awaiting approval"),
+        Suspension::new("call_1", "tool:echo").with_message("awaiting approval"),
         None,
     )
     .expect("failed to seed suspended interaction");
@@ -4242,8 +4416,13 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
         fn id(&self) -> &str {
             "terminate_behavior_requested_for_permission_cancel_nonstream"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -4263,8 +4442,7 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
     let base_state = json!({});
     let pending_patch = set_single_suspended_call(
         &base_state,
-        Suspension::new("call_1", "tool:echo")
-            .with_message("awaiting approval"),
+        Suspension::new("call_1", "tool:echo").with_message("awaiting approval"),
         None,
     )
     .expect("failed to seed suspended interaction");
@@ -4361,8 +4539,13 @@ async fn test_legacy_resume_replay_nonstream_resolution_state_is_ignored() {
         fn id(&self) -> &str {
             "legacy_resume_replay_nonstream_resolution_state"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -4419,7 +4602,10 @@ async fn test_legacy_resume_replay_nonstream_queue_is_ignored() {
         async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phase_actions(Phase::RunStart, ctx).await
         }
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             if ctx.tool_call_id() == Some("replay_call_1") {
                 return ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
                     Suspension::new("confirm_replay_call_1", "confirm")
@@ -4429,13 +4615,17 @@ async fn test_legacy_resume_replay_nonstream_queue_is_ignored() {
             ActionSet::empty()
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
     impl LegacyResumeReplayRequeuePlugin {
-
         async fn phase_actions(
             &self,
             phase: Phase,
@@ -4514,7 +4704,10 @@ async fn test_run_loop_terminate_behavior_requested_with_suspended_state_returns
             ActionSet::empty()
         }
 
-        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        async fn before_inference(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
             self.phases.lock().unwrap().push(Phase::BeforeInference);
             let state = ctx.snapshot();
             let patch = set_single_suspended_call(
@@ -4524,20 +4717,33 @@ async fn test_run_loop_terminate_behavior_requested_with_suspended_state_returns
                 None,
             )
             .expect("failed to set suspended interaction");
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
-                .and(ActionSet::single(BeforeInferenceAction::State(AnyStateAction::Patch(patch))))
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
+            .and(ActionSet::single(BeforeInferenceAction::State(
+                AnyStateAction::Patch(patch),
+            )))
         }
-        async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
+        async fn after_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<AfterInferenceAction> {
             self.phases.lock().unwrap().push(Phase::AfterInference);
             ActionSet::empty()
         }
 
-        async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             self.phases.lock().unwrap().push(Phase::BeforeToolExecute);
             ActionSet::empty()
         }
 
-        async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
+        async fn after_tool_execute(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<AfterToolExecuteAction> {
             self.phases.lock().unwrap().push(Phase::AfterToolExecute);
             ActionSet::empty()
         }
@@ -4575,7 +4781,8 @@ async fn test_run_loop_terminate_behavior_requested_with_suspended_state_returns
 
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     assert_eq!(
-        get_suspended_call(&state, "agent_recovery_run-1").expect("call should be suspended")["suspension"]["action"],
+        get_suspended_call(&state, "agent_recovery_run-1").expect("call should be suspended")
+            ["suspension"]["action"],
         Value::String("recover_agent_run".to_string())
     );
 
@@ -4600,8 +4807,13 @@ async fn test_run_loop_terminate_behavior_requested_with_suspended_only_state_re
         fn id(&self) -> &str {
             "terminate_behavior_requested_non_stream_suspended_only"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -4710,8 +4922,13 @@ async fn test_run_loop_step_start_run_action_mutation_is_type_safe() {
         async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             ActionSet::empty()
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -4781,8 +4998,13 @@ async fn test_run_loop_step_start_prompt_context_mutation_is_type_safe() {
         async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             ActionSet::empty()
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -4812,9 +5034,15 @@ async fn test_run_loop_multiple_prompt_context_behaviors_are_additive() {
         fn id(&self) -> &str {
             "prompt_append"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::AddSystemContext("base".into()))
-                .and(ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested)))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::AddSystemContext("base".into())).and(
+                ActionSet::single(BeforeInferenceAction::Terminate(
+                    TerminationReason::BehaviorRequested,
+                )),
+            )
         }
     }
 
@@ -4825,7 +5053,10 @@ async fn test_run_loop_multiple_prompt_context_behaviors_are_additive() {
         fn id(&self) -> &str {
             "prompt_replace"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
             ActionSet::single(BeforeInferenceAction::AddSystemContext("replaced".into()))
         }
     }
@@ -4893,11 +5124,16 @@ impl AgentBehavior for BlockBeforeToolPlugin {
     fn id(&self) -> &str {
         "block_before_tool"
     }
-    async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+    async fn before_tool_execute(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeToolExecuteAction> {
         // With typed ActionSet<BeforeToolExecuteAction>, AddSystemReminder cannot be placed here
         // (it belongs to AfterToolExecuteAction). This is type-safe by construction.
         // Block is the valid before_tool_execute action that prevents tool execution.
-        ActionSet::single(BeforeToolExecuteAction::Block("blocked in BeforeToolExecute".into()))
+        ActionSet::single(BeforeToolExecuteAction::Block(
+            "blocked in BeforeToolExecute".into(),
+        ))
     }
 }
 
@@ -4928,7 +5164,10 @@ fn test_execute_tools_reminder_mutation_outside_after_tool_execute_is_type_safe(
         let thread = outcome.into_thread();
         assert_eq!(thread.messages.len(), 1);
         assert!(
-            thread.messages[0].content.to_lowercase().contains("blocked"),
+            thread.messages[0]
+                .content
+                .to_lowercase()
+                .contains("blocked"),
             "blocked tool should have blocked message in result: {}",
             thread.messages[0].content
         );
@@ -4942,7 +5181,10 @@ impl AgentBehavior for ReminderAppendPlugin {
     fn id(&self) -> &str {
         "reminder_append"
     }
-    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
+    async fn after_tool_execute(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<AfterToolExecuteAction> {
         ActionSet::single(AfterToolExecuteAction::AddSystemReminder("first".into()))
     }
 }
@@ -4954,7 +5196,10 @@ impl AgentBehavior for ReminderReplacePlugin {
     fn id(&self) -> &str {
         "reminder_replace"
     }
-    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
+    async fn after_tool_execute(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<AfterToolExecuteAction> {
         ActionSet::single(AfterToolExecuteAction::AddSystemReminder("second".into()))
     }
 }
@@ -5256,7 +5501,10 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
             ActionSet::empty()
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
@@ -5264,7 +5512,10 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
             ActionSet::empty()
         }
 
-        async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
+        async fn after_inference(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<AfterInferenceAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
@@ -5274,7 +5525,10 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
             ActionSet::empty()
         }
 
-        async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
@@ -5282,7 +5536,10 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
             ActionSet::empty()
         }
 
-        async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
+        async fn after_tool_execute(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<AfterToolExecuteAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
@@ -5709,7 +5966,10 @@ async fn test_nonstream_inference_abort_message_persisted_and_visible_next_run()
             "observe_cancellation_message_inference_nonstream"
         }
 
-        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        async fn before_inference(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
             if ctx
                 .messages()
                 .iter()
@@ -5817,7 +6077,10 @@ async fn test_nonstream_tool_abort_message_persisted_and_visible_next_run() {
             "observe_cancellation_message_tool_nonstream"
         }
 
-        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        async fn before_inference(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
             if ctx
                 .messages()
                 .iter()
@@ -6025,7 +6288,10 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
             "golden_pending_plugin"
         }
 
-        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        async fn before_inference(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
             let state = ctx.snapshot();
             let patch = set_single_suspended_call(
                 &state,
@@ -6033,8 +6299,12 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
                 None,
             )
             .expect("failed to set suspended interaction");
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::Suspended))
-                .and(ActionSet::single(BeforeInferenceAction::State(AnyStateAction::Patch(patch))))
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::Suspended,
+            ))
+            .and(ActionSet::single(BeforeInferenceAction::State(
+                AnyStateAction::Patch(patch),
+            )))
         }
     }
 
@@ -6170,8 +6440,13 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
         fn id(&self) -> &str {
             "terminate_behavior_requested_replay_idempotent"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -6276,8 +6551,13 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
         fn id(&self) -> &str {
             "terminate_behavior_requested_replay_idempotent_nonstream"
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -6805,7 +7085,6 @@ impl AgentBehavior for RunStartSideEffectPlugin {
 }
 
 impl RunStartSideEffectPlugin {
-
     async fn phase_actions(
         &self,
         phase: Phase,
@@ -6814,7 +7093,9 @@ impl RunStartSideEffectPlugin {
         if phase != Phase::RunStart {
             return ActionSet::empty();
         }
-        ActionSet::single(LifecycleAction::State(AnyStateAction::new::<DebugFlags>(DebugFlagAction::SetRunStartSideEffect)))
+        ActionSet::single(LifecycleAction::State(AnyStateAction::new::<DebugFlags>(
+            DebugFlagAction::SetRunStartSideEffect,
+        )))
     }
 }
 
@@ -7224,7 +7505,10 @@ async fn test_stream_frontend_use_as_tool_result_emits_single_tool_call_start() 
             "frontend_pending_plugin"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             if ctx.tool_call_id() != Some("call_1") {
                 return ActionSet::empty();
             }
@@ -7238,7 +7522,9 @@ async fn test_stream_frontend_use_as_tool_result_emits_single_tool_call_start() 
                 },
                 ResponseRouting::UseAsToolResult,
             );
-            ActionSet::single(BeforeToolExecuteAction::Suspend(suspend_ticket_from_invocation(invocation)))
+            ActionSet::single(BeforeToolExecuteAction::Suspend(
+                suspend_ticket_from_invocation(invocation),
+            ))
         }
     }
 
@@ -7359,7 +7645,10 @@ async fn test_legacy_resume_replay_stream_queue_is_ignored() {
         async fn run_start(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             self.phase_actions(Phase::RunStart, ctx).await
         }
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             if ctx.tool_call_id() == Some("replay_call_1") {
                 return ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
                     Suspension::new("confirm_replay_call_1", "confirm")
@@ -7369,13 +7658,17 @@ async fn test_legacy_resume_replay_stream_queue_is_ignored() {
             ActionSet::empty()
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
     impl LegacyResumeReplayRequeuePlugin {
-
         async fn phase_actions(
             &self,
             phase: Phase,
@@ -7384,7 +7677,9 @@ async fn test_legacy_resume_replay_stream_queue_is_ignored() {
             if phase != Phase::RunStart {
                 return ActionSet::empty();
             }
-            ActionSet::single(LifecycleAction::State(AnyStateAction::new::<ResumeToolCallsState>(json!([
+            ActionSet::single(LifecycleAction::State(AnyStateAction::new::<
+                ResumeToolCallsState,
+            >(json!([
                 {
                     "id": "replay_call_1",
                     "name": "echo",
@@ -7464,7 +7759,10 @@ async fn test_stream_parallel_multiple_pending_emits_all_suspended() {
             "pending_and_run_end"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             if let Some(call_id) = ctx.tool_call_id() {
                 return ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
                     Suspension::new(format!("confirm_{call_id}"), "confirm")
@@ -8260,7 +8558,10 @@ async fn test_sequential_tools_stop_after_first_suspension() {
             "pending_every_tool"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             if let Some(call_id) = ctx.tool_call_id() {
                 self.seen_calls
                     .lock()
@@ -8325,7 +8626,10 @@ async fn test_parallel_tools_allow_single_suspended_interaction_per_round() {
             "pending_every_tool_parallel"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             if let Some(call_id) = ctx.tool_call_id() {
                 self.seen_calls
                     .lock()
@@ -8419,7 +8723,10 @@ impl AgentBehavior for OrderTrackingPlugin {
             .push(format!("{}:{:?}", self.id, Phase::StepStart));
         ActionSet::empty()
     }
-    async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+    async fn before_inference(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeInferenceAction> {
         self.order_log
             .lock()
             .unwrap()
@@ -8433,14 +8740,20 @@ impl AgentBehavior for OrderTrackingPlugin {
             .push(format!("{}:{:?}", self.id, Phase::AfterInference));
         ActionSet::empty()
     }
-    async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+    async fn before_tool_execute(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeToolExecuteAction> {
         self.order_log
             .lock()
             .unwrap()
             .push(format!("{}:{:?}", self.id, Phase::BeforeToolExecute));
         ActionSet::empty()
     }
-    async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
+    async fn after_tool_execute(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<AfterToolExecuteAction> {
         self.order_log
             .lock()
             .unwrap()
@@ -8543,8 +8856,13 @@ impl AgentBehavior for ConditionalBlockPlugin {
         "conditional_block"
     }
 
-    async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
-        ActionSet::single(BeforeToolExecuteAction::Block("Blocked because tool was pending".to_string()))
+    async fn before_tool_execute(
+        &self,
+        _ctx: &ReadOnlyContext<'_>,
+    ) -> ActionSet<BeforeToolExecuteAction> {
+        ActionSet::single(BeforeToolExecuteAction::Block(
+            "Blocked because tool was pending".to_string(),
+        ))
     }
 }
 
@@ -8561,7 +8879,10 @@ fn test_plugin_order_affects_outcome() {
             "pending"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             if ctx.tool_name() == Some("echo") {
                 ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
                     Suspension::new("confirm_1", "confirm").with_message("Execute echo?"),
@@ -8843,7 +9164,10 @@ async fn test_run_step_terminate_behavior_requested_with_suspended_state_returns
             "pending_terminate_behavior_requested_step"
         }
 
-        async fn before_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        async fn before_inference(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
             let state = ctx.snapshot();
             let patch = set_single_suspended_call(
                 &state,
@@ -8852,8 +9176,12 @@ async fn test_run_step_terminate_behavior_requested_with_suspended_state_returns
                 None,
             )
             .expect("failed to set suspended interaction");
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
-                .and(ActionSet::single(BeforeInferenceAction::State(AnyStateAction::Patch(patch))))
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
+            .and(ActionSet::single(BeforeInferenceAction::State(
+                AnyStateAction::Patch(patch),
+            )))
         }
     }
 
@@ -8878,7 +9206,8 @@ async fn test_run_step_terminate_behavior_requested_with_suspended_state_returns
 
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     assert_eq!(
-        get_suspended_call(&state, "agent_recovery_step-1").expect("call should be suspended")["suspension"]["action"],
+        get_suspended_call(&state, "agent_recovery_step-1").expect("call should be suspended")
+            ["suspension"]["action"],
         Value::String("recover_agent_run".to_string())
     );
 }
@@ -8947,14 +9276,20 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
                 .push(Phase::StepStart);
             ActionSet::empty()
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::BeforeInference);
             ActionSet::empty()
         }
-        async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
+        async fn after_inference(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<AfterInferenceAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
@@ -8963,14 +9298,20 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
             assert_eq!(err_type, Some("llm_stream_start_error"));
             ActionSet::empty()
         }
-        async fn before_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
                 .push(Phase::BeforeToolExecute);
             ActionSet::empty()
         }
-        async fn after_tool_execute(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
+        async fn after_tool_execute(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<AfterToolExecuteAction> {
             self.phases
                 .lock()
                 .expect("lock poisoned")
@@ -10257,7 +10598,10 @@ async fn test_stream_permission_intercept_emits_tool_call_start_for_frontend() {
             "permission_intercept_plugin"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             if ctx.tool_call_id() != Some("call_1") {
                 return ActionSet::empty();
             }
@@ -10340,13 +10684,18 @@ async fn test_nonstream_mixed_pending_and_completed_tools_continues_loop() {
             "pending_only_call_2_nonstream"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             if let Some(call_id) = ctx.tool_call_id() {
                 if call_id == "call_2" {
-                    return ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
-                        Suspension::new("confirm_call_2", "confirm")
-                            .with_message("approve delete?"),
-                    )));
+                    return ActionSet::single(BeforeToolExecuteAction::Suspend(
+                        test_suspend_ticket(
+                            Suspension::new("confirm_call_2", "confirm")
+                                .with_message("approve delete?"),
+                        ),
+                    ));
                 }
             }
             ActionSet::empty()
@@ -10427,7 +10776,10 @@ async fn test_nonstream_single_pending_tool_enters_waiting() {
             "pending_single_tool_nonstream"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             if let Some(call_id) = ctx.tool_call_id() {
                 return ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
                     Suspension::new(format!("confirm_{call_id}"), "confirm")
@@ -10486,13 +10838,18 @@ async fn test_stream_mixed_pending_and_completed_tools_continues_loop() {
             "pending_only_call_2"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             if let Some(call_id) = ctx.tool_call_id() {
                 if call_id == "call_2" {
-                    return ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
-                        Suspension::new("confirm_call_2", "confirm")
-                            .with_message("approve delete?"),
-                    )));
+                    return ActionSet::single(BeforeToolExecuteAction::Suspend(
+                        test_suspend_ticket(
+                            Suspension::new("confirm_call_2", "confirm")
+                                .with_message("approve delete?"),
+                        ),
+                    ));
                 }
             }
             ActionSet::empty()
@@ -10580,7 +10937,10 @@ async fn test_stream_all_tools_pending_pauses_run() {
             "pending_all_tools"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             if let Some(call_id) = ctx.tool_call_id() {
                 return ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
                     Suspension::new(format!("confirm_{call_id}"), "confirm")
@@ -10631,13 +10991,18 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
             "pending_only_call_2_persist"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             if let Some(call_id) = ctx.tool_call_id() {
                 if call_id == "call_2" {
-                    return ActionSet::single(BeforeToolExecuteAction::Suspend(test_suspend_ticket(
-                        Suspension::new("confirm_call_2", "confirm")
-                            .with_message("approve delete?"),
-                    )));
+                    return ActionSet::single(BeforeToolExecuteAction::Suspend(
+                        test_suspend_ticket(
+                            Suspension::new("confirm_call_2", "confirm")
+                                .with_message("approve delete?"),
+                        ),
+                    ));
                 }
             }
             ActionSet::empty()
@@ -10681,7 +11046,8 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
     let state = last_state.unwrap();
     assert_eq!(
         state
-            .get("__tool_call_scope").and_then(|scope| scope.get("call_2"))
+            .get("__tool_call_scope")
+            .and_then(|scope| scope.get("call_2"))
             .and_then(|entry| entry.get("suspended_call"))
             .and_then(|sc| sc.get("suspension"))
             .and_then(|pi| pi.get("id"))
@@ -10873,7 +11239,8 @@ async fn test_nonstream_completed_tool_round_does_not_clear_existing_suspended_c
     let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     assert!(
         state
-            .get("__tool_call_scope").and_then(|scope| scope.get("leftover_confirm"))
+            .get("__tool_call_scope")
+            .and_then(|scope| scope.get("leftover_confirm"))
             .is_some(),
         "existing unresolved suspended call must not be cleared by unrelated successful tool round"
     );
@@ -10912,7 +11279,8 @@ async fn test_stream_completed_tool_round_does_not_clear_existing_suspended_call
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
     assert!(
         final_state
-            .get("__tool_call_scope").and_then(|scope| scope.get("leftover_confirm"))
+            .get("__tool_call_scope")
+            .and_then(|scope| scope.get("leftover_confirm"))
             .is_some(),
         "existing unresolved suspended call must not be cleared by unrelated successful tool round"
     );
@@ -10930,8 +11298,13 @@ async fn test_plugin_run_action_stops_loop() {
             "terminate_plugin"
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -10979,8 +11352,13 @@ async fn test_run_loop_step_start_run_action_mutation_is_type_safe_v2() {
         async fn step_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
             ActionSet::empty()
         }
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -11049,8 +11427,13 @@ async fn test_run_loop_plugin_run_action_stops_loop() {
             "terminate_nonstream"
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -11085,14 +11468,21 @@ async fn test_run_loop_applies_plugin_state_effect_patch_before_inference() {
             "state_effect_before_inference"
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
             let patch = tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
                 tirea_state::path!("debug", "before_inference_effect"),
                 json!(true),
             )))
             .with_source("test:state_effect_before_inference");
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
-                .and(ActionSet::single(BeforeInferenceAction::State(AnyStateAction::Patch(patch))))
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
+            .and(ActionSet::single(BeforeInferenceAction::State(
+                AnyStateAction::Patch(patch),
+            )))
         }
     }
 
@@ -11118,7 +11508,10 @@ async fn test_run_loop_applies_plugin_state_effect_patch_after_tool_execute() {
             "state_effect_after_tool_execute"
         }
 
-        async fn after_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterToolExecuteAction> {
+        async fn after_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<AfterToolExecuteAction> {
             if ctx.tool_call_id() == Some("call_1") {
                 let patch = tirea_state::TrackedPatch::new(Patch::new().with_op(Op::set(
                     tirea_state::path!("debug", "after_tool_effect"),
@@ -11162,8 +11555,13 @@ async fn test_run_loop_after_inference_run_action_stops_before_tool_execution() 
             "after_inference_terminate_nonstream"
         }
 
-        async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
-            ActionSet::single(AfterInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn after_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<AfterInferenceAction> {
+            ActionSet::single(AfterInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -11210,8 +11608,13 @@ async fn test_stream_after_inference_run_action_stops_before_tool_events() {
             "after_inference_terminate_stream"
         }
 
-        async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
-            ActionSet::single(AfterInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn after_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<AfterInferenceAction> {
+            ActionSet::single(AfterInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -11261,8 +11664,13 @@ async fn test_request_termination_method_stops_stream() {
             "method_terminate"
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -11299,8 +11707,13 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
             "terminate_behavior_requested_unknown_decision_nonstream"
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -11345,7 +11758,8 @@ async fn test_run_loop_decision_channel_ignores_unknown_target_id() {
     let final_state = outcome.run_ctx.snapshot().expect("snapshot");
     assert!(
         final_state
-            .get("__tool_call_scope").and_then(|scope| scope.get("call_keep"))
+            .get("__tool_call_scope")
+            .and_then(|scope| scope.get("call_keep"))
             .is_some(),
         "unknown decision must not clear existing suspended calls"
     );
@@ -11372,8 +11786,13 @@ async fn test_run_loop_decision_channel_rejects_illegal_terminal_to_resuming_tra
             "terminate_behavior_requested_illegal_transition_nonstream"
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -11446,7 +11865,8 @@ async fn test_run_loop_decision_channel_rejects_illegal_terminal_to_resuming_tra
     let final_state = outcome.run_ctx.snapshot().expect("snapshot");
     assert!(
         final_state
-            .get("__tool_call_scope").and_then(|scope| scope.get("call_pending"))
+            .get("__tool_call_scope")
+            .and_then(|scope| scope.get("call_pending"))
             .is_some(),
         "illegal transition must keep suspended call pending"
     );
@@ -11467,8 +11887,13 @@ async fn test_stream_decision_channel_ignores_unknown_target_id() {
             "terminate_behavior_requested_unknown_decision_stream"
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -11528,7 +11953,8 @@ async fn test_stream_decision_channel_ignores_unknown_target_id() {
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
     assert!(
         final_state
-            .get("__tool_call_scope").and_then(|scope| scope.get("call_keep"))
+            .get("__tool_call_scope")
+            .and_then(|scope| scope.get("call_keep"))
             .is_some(),
         "unknown decision must not clear existing suspended calls"
     );
@@ -11544,8 +11970,13 @@ async fn test_stream_decision_channel_rejects_illegal_terminal_to_resuming_trans
             "terminate_behavior_requested_illegal_transition_stream"
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -11636,7 +12067,8 @@ async fn test_stream_decision_channel_rejects_illegal_terminal_to_resuming_trans
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
     assert!(
         final_state
-            .get("__tool_call_scope").and_then(|scope| scope.get("call_pending"))
+            .get("__tool_call_scope")
+            .and_then(|scope| scope.get("call_pending"))
             .is_some(),
         "illegal transition must keep suspended call pending"
     );
@@ -11698,7 +12130,10 @@ async fn test_run_loop_decision_channel_resolves_suspended_call() {
             "pending_frontend_tool_decision"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             if ctx.tool_name() != Some("frontend_tool") {
                 return ActionSet::empty();
             }
@@ -11816,8 +12251,13 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
             "terminate_behavior_requested_for_decision_cancel"
         }
 
-        async fn before_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::Terminate(TerminationReason::BehaviorRequested))
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::Terminate(
+                TerminationReason::BehaviorRequested,
+            ))
         }
     }
 
@@ -11956,7 +12396,10 @@ async fn test_run_loop_stream_decision_channel_emits_resolution_and_replay() {
             "pending_frontend_tool_stream_decision"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             if ctx.tool_name() != Some("frontend_tool") {
                 return ActionSet::empty();
             }
@@ -12103,7 +12546,10 @@ async fn test_run_loop_decision_channel_buffers_early_response_for_all_suspended
             "early_pending_nonstream"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             if ctx.tool_name() != Some("frontend_tool") {
                 return ActionSet::empty();
             }
@@ -12236,7 +12682,10 @@ async fn test_stream_decision_channel_buffers_early_response_for_all_suspended_t
             "early_pending_stream"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             if ctx.tool_name() != Some("frontend_tool") {
                 return ActionSet::empty();
             }
@@ -12446,7 +12895,10 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_tool_call_resu
             "test_one_shot_permission"
         }
 
-        async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<BeforeToolExecuteAction> {
+        async fn before_tool_execute(
+            &self,
+            ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeToolExecuteAction> {
             let has_resume_grant = ctx.resume_input().is_some_and(|resume| {
                 matches!(
                     resume.action,
@@ -12488,12 +12940,7 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_tool_call_resu
     );
     let suspension = Suspension::new("fc_perm_1", "tool:PermissionConfirm")
         .with_parameters(json!({"source": "permission"}));
-    let suspended_call = build_suspended_call(
-        "call_write",
-        "echo",
-        suspension,
-        invocation,
-    );
+    let suspended_call = build_suspended_call("call_write", "echo", suspension, invocation);
     let action = suspended_call.into_state_action();
     let pending_patch = crate::contracts::runtime::state::reduce_state_actions(
         vec![action],

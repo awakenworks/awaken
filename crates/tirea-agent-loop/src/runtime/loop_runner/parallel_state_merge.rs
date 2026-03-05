@@ -45,11 +45,8 @@ fn validate_parallel_state_patch_conflicts(
             }
             for left_patch in left.patches() {
                 for right_patch in right.patches() {
-                    let conflicts = conflicts_with_registry(
-                        left_patch.patch(),
-                        right_patch.patch(),
-                        registry,
-                    );
+                    let conflicts =
+                        conflicts_with_registry(left_patch.patch(), right_patch.patch(), registry);
                     if let Some(conflict) = conflicts.first() {
                         return Err(AgentLoopError::StateError(format!(
                             "conflicting parallel state patches between '{}' and '{}' at {}",
@@ -94,27 +91,24 @@ fn merge_sequential_state_patches(
 
     for result in results {
         if let Some(execution_patch) = result.execution.patch.clone() {
-            rolling =
-                apply_patch_with_registry(&rolling, execution_patch.patch(), registry).map_err(
-                    |e| {
-                        AgentLoopError::StateError(format!(
-                            "failed to apply execution patch for call '{}': {}",
-                            result.execution.call.id, e
-                        ))
-                    },
-                )?;
+            rolling = apply_patch_with_registry(&rolling, execution_patch.patch(), registry)
+                .map_err(|e| {
+                    AgentLoopError::StateError(format!(
+                        "failed to apply execution patch for call '{}': {}",
+                        result.execution.call.id, e
+                    ))
+                })?;
             patches.push(execution_patch);
         }
 
         for pending in &result.pending_patches {
-            rolling = apply_patch_with_registry(&rolling, pending.patch(), registry).map_err(
-                |e| {
+            rolling =
+                apply_patch_with_registry(&rolling, pending.patch(), registry).map_err(|e| {
                     AgentLoopError::StateError(format!(
                         "failed to apply pending patch for call '{}': {}",
                         result.execution.call.id, e
                     ))
-                },
-            )?;
+                })?;
             patches.push(pending.clone());
         }
     }
@@ -241,9 +235,8 @@ mod tests {
             Vec::new(),
         );
 
-        let err =
-            merge_parallel_state_patches(&json!({}), &[left, right], true, &empty_registry())
-                .expect_err("must conflict");
+        let err = merge_parallel_state_patches(&json!({}), &[left, right], true, &empty_registry())
+            .expect_err("must conflict");
         match err {
             AgentLoopError::StateError(message) => {
                 assert!(message.contains("call_left"));

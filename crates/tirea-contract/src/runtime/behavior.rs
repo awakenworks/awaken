@@ -1,12 +1,12 @@
 use crate::runtime::inference::response::{InferenceError, LLMResponse, StreamResult};
+use crate::runtime::phase::step::StepContext;
+use crate::runtime::phase::Phase;
 use crate::runtime::phase::{
     ActionSet, AfterInferenceAction, AfterToolExecuteAction, BeforeInferenceAction,
     BeforeToolExecuteAction, LifecycleAction,
 };
-use crate::runtime::phase::step::StepContext;
-use crate::runtime::phase::Phase;
-use crate::runtime::state::{ActionDeserializerRegistry, ScopeContext, StateScope, StateSpec};
 use crate::runtime::state::StateScopeRegistry;
+use crate::runtime::state::{ActionDeserializerRegistry, ScopeContext, StateScope, StateSpec};
 use crate::runtime::tool_call::{ToolCallResume, ToolResult};
 use crate::thread::Message;
 use crate::RunConfig;
@@ -217,10 +217,7 @@ pub trait AgentBehavior: Send + Sync {
         ActionSet::empty()
     }
 
-    async fn after_inference(
-        &self,
-        _ctx: &ReadOnlyContext<'_>,
-    ) -> ActionSet<AfterInferenceAction> {
+    async fn after_inference(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
         ActionSet::empty()
     }
 
@@ -325,9 +322,7 @@ mod tests {
                 &self,
                 _ctx: &ReadOnlyContext<'_>,
             ) -> ActionSet<BeforeInferenceAction> {
-                ActionSet::single(BeforeInferenceAction::AddSystemContext(
-                    "from agent".into(),
-                ))
+                ActionSet::single(BeforeInferenceAction::AddSystemContext("from agent".into()))
             }
         }
 

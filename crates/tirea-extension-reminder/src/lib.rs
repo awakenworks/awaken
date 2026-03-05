@@ -167,7 +167,9 @@ mod tests {
             .iter()
             .filter(|a| matches!(a, BeforeInferenceAction::AddSessionContext(_)))
             .count();
-        let has_state = v.iter().any(|a| matches!(a, BeforeInferenceAction::State(_)));
+        let has_state = v
+            .iter()
+            .any(|a| matches!(a, BeforeInferenceAction::State(_)));
         assert!(add_session_count > 0);
         assert!(!has_state);
     }

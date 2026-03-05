@@ -515,12 +515,12 @@ fn typed_tool_schema<T: JsonSchema>() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::state::StateSpec;
-    use crate::runtime::state::AnyStateAction;
     use crate::runtime::phase::SuspendTicket;
+    use crate::runtime::state::AnyStateAction;
+    use crate::runtime::state::StateSpec;
     use crate::runtime::Suspension;
-    use crate::testing::TestFixtureState;
     use crate::runtime::{PendingToolCall, ToolCallResumeMode};
+    use crate::testing::TestFixtureState;
     use serde_json::json;
     use tirea_state::{DocCell, PatchSink, Path as TPath, State, TireaResult};
 
@@ -1294,11 +1294,10 @@ mod tests {
             _args: Value,
             _ctx: &ToolCallContext<'_>,
         ) -> Result<ToolExecutionEffect, ToolError> {
-            Ok(ToolExecutionEffect::new(ToolResult::success(
-                "effect_only",
-                json!({"ok": true}),
-            ))
-            .with_action(AnyStateAction::new::<ToolEffectState>(1)))
+            Ok(
+                ToolExecutionEffect::new(ToolResult::success("effect_only", json!({"ok": true})))
+                    .with_action(AnyStateAction::new::<ToolEffectState>(1)),
+            )
         }
     }
 
@@ -1317,7 +1316,9 @@ mod tests {
         assert_eq!(actions.len(), 1);
         let boxed = actions.into_iter().next().unwrap();
         assert!(boxed.is_state_action());
-        let sa = boxed.into_state_action().expect("is_state_action returned true");
+        let sa = boxed
+            .into_state_action()
+            .expect("is_state_action returned true");
         assert!(sa.state_type_name().contains("ToolEffectState"));
     }
 }

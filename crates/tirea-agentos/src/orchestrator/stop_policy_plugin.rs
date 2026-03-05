@@ -35,7 +35,11 @@ pub enum StopConditionSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-#[tirea(path = "__kernel.stop_policy_runtime", action = "StopPolicyRuntimeAction", scope = "run")]
+#[tirea(
+    path = "__kernel.stop_policy_runtime",
+    action = "StopPolicyRuntimeAction",
+    scope = "run"
+)]
 struct StopPolicyRuntimeState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at_ms: Option<u64>,
@@ -58,7 +62,6 @@ pub(crate) enum StopPolicyRuntimeAction {
     },
 }
 
-
 impl StopPolicyRuntimeState {
     fn reduce(&mut self, action: StopPolicyRuntimeAction) {
         match action {
@@ -73,7 +76,8 @@ impl StopPolicyRuntimeState {
                     }
                 }
                 self.total_input_tokens.increment("_", prompt_tokens as u64);
-                self.total_output_tokens.increment("_", completion_tokens as u64);
+                self.total_output_tokens
+                    .increment("_", completion_tokens as u64);
             }
         }
     }
@@ -317,10 +321,7 @@ impl AgentBehavior for StopPolicyPlugin {
 
     tirea_contract::declare_plugin_states!(StopPolicyRuntimeState);
 
-    async fn after_inference(
-        &self,
-        ctx: &ReadOnlyContext<'_>,
-    ) -> ActionSet<AfterInferenceAction> {
+    async fn after_inference(&self, ctx: &ReadOnlyContext<'_>) -> ActionSet<AfterInferenceAction> {
         if self.conditions.is_empty() {
             return ActionSet::empty();
         }
@@ -344,15 +345,18 @@ impl AgentBehavior for StopPolicyPlugin {
             .snapshot_of::<StopPolicyRuntimeState>()
             .unwrap_or_default();
         let started_at_ms = runtime.started_at_ms.unwrap_or(now_ms);
-        let total_input_tokens = (runtime.total_input_tokens.value() as usize).saturating_add(prompt_tokens);
-        let total_output_tokens = (runtime.total_output_tokens.value() as usize)
-            .saturating_add(completion_tokens);
+        let total_input_tokens =
+            (runtime.total_input_tokens.value() as usize).saturating_add(prompt_tokens);
+        let total_output_tokens =
+            (runtime.total_output_tokens.value() as usize).saturating_add(completion_tokens);
 
         let mut actions: ActionSet<AfterInferenceAction> = ActionSet::empty();
 
         // Emit state patch for token recording
-        actions = actions.and(AfterInferenceAction::State(
-            AnyStateAction::new::<StopPolicyRuntimeState>(StopPolicyRuntimeAction::RecordTokens {
+        actions = actions.and(AfterInferenceAction::State(AnyStateAction::new::<
+            StopPolicyRuntimeState,
+        >(
+            StopPolicyRuntimeAction::RecordTokens {
                 started_at_ms: if runtime.started_at_ms.is_none() {
                     Some(now_ms)
                 } else {
@@ -360,8 +364,8 @@ impl AgentBehavior for StopPolicyPlugin {
                 },
                 prompt_tokens,
                 completion_tokens,
-            }),
-        ));
+            },
+        )));
 
         let message_stats = derive_stats_from_messages_with_response(ctx.messages(), response);
         let elapsed = std::time::Duration::from_millis(now_ms.saturating_sub(started_at_ms));
@@ -389,9 +393,9 @@ impl AgentBehavior for StopPolicyPlugin {
         };
         for condition in &self.conditions {
             if let Some(stopped) = condition.evaluate(&input) {
-                actions = actions.and(AfterInferenceAction::Terminate(
-                    TerminationReason::Stopped(stopped),
-                ));
+                actions = actions.and(AfterInferenceAction::Terminate(TerminationReason::Stopped(
+                    stopped,
+                )));
                 break;
             }
         }
@@ -640,7 +644,11 @@ mod tests {
         });
         assert_eq!(state.total_input_tokens.value(), 300);
         assert_eq!(state.total_output_tokens.value(), 200);
-        assert_eq!(state.started_at_ms, Some(1000), "started_at_ms should not change once set");
+        assert_eq!(
+            state.started_at_ms,
+            Some(1000),
+            "started_at_ms should not change once set"
+        );
     }
 
     #[test]

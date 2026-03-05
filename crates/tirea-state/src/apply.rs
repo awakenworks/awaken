@@ -139,11 +139,7 @@ pub(crate) fn apply_patch_in_place_with_registry(
 }
 
 /// Apply a single operation using a registry (for `LatticeMerge` ops).
-fn apply_op_with_registry(
-    doc: &mut Value,
-    op: &Op,
-    registry: &LatticeRegistry,
-) -> TireaResult<()> {
+fn apply_op_with_registry(doc: &mut Value, op: &Op, registry: &LatticeRegistry) -> TireaResult<()> {
     match op {
         Op::LatticeMerge { path, value } => {
             if let Some(merger) = registry.get(path) {

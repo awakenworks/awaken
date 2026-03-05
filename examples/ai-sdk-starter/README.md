@@ -1,69 +1,71 @@
 # AI SDK Starter
 
-Vite + React + React Router frontend using Vercel AI SDK v6 (`@ai-sdk/react`) to chat with a tirea agent backend.
+Vite + React Router frontend using Vercel AI SDK v6 (`@ai-sdk/react`) with a Rust `tirea-agentos-server` backend.
 
 ## Architecture
 
 ```
-Browser (useChat) → Rust Agent (axum + CORS) → LLM
-                    (SSE direct)
+Browser (useChat) -> Rust backend (axum + CORS) -> LLM
+                 -> HTTP SSE (AI SDK v6 stream)
 ```
 
-The Rust agent at `agent/` serves AI SDK v6 UI Message Stream events as SSE. The Vite SPA connects directly via CORS — no Node.js proxy layer.
+The frontend calls backend directly (no Node proxy).
 
-Three demo pages:
-- `/` — Canvas with todo board, shared state panel, theme toggle
-- `/basic` — Backend tools (weather, stock, notes), tool approval, interactive dialogs
-- `/threads` — Backend-persisted thread management with history
+## Demo Pages
 
-The chat panel also demonstrates parsing custom AI SDK data events:
-
-- `data-activity-snapshot` with `activityType = "tool-call-progress"`
-- rendered as a lightweight **Tool Call Progress** panel in the UI
-
-## Prerequisites
-
-- Node.js 18+
-- Rust toolchain (for the agent binary)
-- `DEEPSEEK_API_KEY` environment variable
+- `/` canvas + shared state panel
+- `/basic` tool calls + approval dialogs
+- `/threads` backend-persisted thread history
 
 ## Quick Start
 
 ```bash
 cd examples/ai-sdk-starter
-
-# Install frontend dependencies
 npm install
-
-# Start both frontend (Vite) and backend (Rust agent) concurrently
 DEEPSEEK_API_KEY=<key> npm run dev
 ```
 
-Or start them separately:
+Separate terminals:
 
 ```bash
-# Terminal 1: Rust agent
+# terminal 1
 DEEPSEEK_API_KEY=<key> cargo run -p ai-sdk-starter-agent
 
-# Terminal 2: Vite frontend
+# terminal 2
 cd examples/ai-sdk-starter
 npm run dev:ui
 ```
 
-Open http://localhost:3001 and send a message.
+Open `http://localhost:3001`.
 
 ## Configuration
 
 | Variable | Default | Description |
 |---|---|---|
-| `VITE_BACKEND_URL` | `http://localhost:38080` | Rust agent address (frontend) |
-| `AGENTOS_HTTP_ADDR` | `127.0.0.1:38080` | Rust agent listen address |
-| `AGENT_MODEL` | `deepseek-chat` | LLM model ID |
-| `AGENT_MAX_ROUNDS` | `8` | Max tool/model loop iterations |
+| `VITE_BACKEND_URL` | `http://localhost:38080` | Backend base URL (frontend) |
+| `AGENTOS_HTTP_ADDR` | `127.0.0.1:38080` | Backend listen address |
+| `AGENT_ID` | `default` | Agent id used by frontend transport |
+| `AGENT_MODEL` | `deepseek-chat` | Model id |
+| `AGENT_MAX_ROUNDS` | `8` | Max loop rounds |
+| `MCP_SERVER_CMD` | unset | Optional MCP stdio server command |
+
+## Backend Endpoint Surface
+
+This starter backend mounts full route groups, not only AI SDK:
+
+- Health: `GET /health`
+- Threads: `GET /v1/threads`, `GET /v1/threads/:id`, `GET /v1/threads/:id/messages`
+- Run API: `GET/POST /v1/runs`, `GET /v1/runs/:id`, `POST /v1/runs/:id/inputs`, `POST /v1/runs/:id/cancel`
+- AI SDK v6: `POST /v1/ai-sdk/agents/:agent_id/runs`, `GET /v1/ai-sdk/agents/:agent_id/runs/:chat_id/stream`, `GET /v1/ai-sdk/threads/:id/messages`
+- AG-UI: `POST /v1/ag-ui/agents/:agent_id/runs`, `GET /v1/ag-ui/threads/:id/messages`
+- A2A: `GET /.well-known/agent-card.json`, `/v1/a2a/...`
+
+AI SDK HTTP payload uses `id/messages` (not legacy `sessionId/input`).
 
 ## Verify
 
-1. Open http://localhost:3001
-2. Type a message (e.g. "What's the weather in Tokyo?")
-3. Confirm streaming response with weather card appears
-4. Navigate between Canvas / Basic / Threads pages
+1. Open `http://localhost:3001` and send a prompt.
+2. Confirm streamed response appears in chat.
+3. Navigate to `/threads` and reload prior thread history.
+4. Trigger an approval tool flow and confirm resume after approval.
+5. (Optional) run `npm run dev:mcp` and verify MCP tool cards render.

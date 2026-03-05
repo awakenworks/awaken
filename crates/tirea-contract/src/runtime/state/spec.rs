@@ -12,7 +12,6 @@ pub use tirea_state::{StateScope, StateSpec};
 
 type ReduceFn = Box<dyn FnOnce(&Value, &str) -> TireaResult<Patch> + Send>;
 
-
 /// Type-erased state action that can be applied to a JSON document.
 ///
 /// Two variants:
@@ -91,8 +90,8 @@ impl AnyStateAction {
             "StateSpec type has no bound path; cannot create AnyStateAction"
         );
 
-        let serialized_payload = serde_json::to_value(&action)
-            .expect("StateSpec::Action must be serializable");
+        let serialized_payload =
+            serde_json::to_value(&action).expect("StateSpec::Action must be serializable");
 
         Self::Typed {
             state_type_id: TypeId::of::<S>(),
@@ -114,8 +113,7 @@ impl AnyStateAction {
             // When true, we must emit a whole-state Op::set rather than a
             // per-field diff, because diff_ops would skip fields that match
             // the default (e.g., status=Running when default is Running).
-            let is_creation = sub_doc.is_null()
-                || sub_doc == Value::Object(Default::default());
+            let is_creation = sub_doc.is_null() || sub_doc == Value::Object(Default::default());
 
             // When the path doesn't exist (Null) and from_value fails,
             // fall back to an empty object. This handles derive(State) structs
@@ -244,11 +242,8 @@ pub fn reduce_state_actions(
                 if tracked.patch().is_empty() {
                     continue;
                 }
-                rolling_snapshot = apply_patch_with_registry(
-                    &rolling_snapshot,
-                    tracked.patch(),
-                    &local_registry,
-                )?;
+                rolling_snapshot =
+                    apply_patch_with_registry(&rolling_snapshot, tracked.patch(), &local_registry)?;
                 tracked_patches.push(tracked);
             }
             AnyStateAction::Typed {
@@ -271,11 +266,8 @@ pub fn reduce_state_actions(
                 if patch.is_empty() {
                     continue;
                 }
-                rolling_snapshot = apply_patch_with_registry(
-                    &rolling_snapshot,
-                    &patch,
-                    &local_registry,
-                )?;
+                rolling_snapshot =
+                    apply_patch_with_registry(&rolling_snapshot, &patch, &local_registry)?;
                 tracked_patches.push(TrackedPatch::new(patch).with_source(default_source));
             }
         }
@@ -457,13 +449,7 @@ mod tests {
     fn any_state_action_increment() {
         let doc = json!({"counters": {"main": {"value": 5}}});
         let action = AnyStateAction::new::<Counter>(CounterAction::Increment(3));
-        let patch = reduce_state_actions(
-            vec![action],
-            &doc,
-            "test",
-            &ScopeContext::run(),
-        )
-        .unwrap();
+        let patch = reduce_state_actions(vec![action], &doc, "test", &ScopeContext::run()).unwrap();
         let result = apply_patch(&doc, patch[0].patch()).unwrap();
         assert_eq!(result["counters"]["main"]["value"], 8);
     }
@@ -472,13 +458,7 @@ mod tests {
     fn any_state_action_reset() {
         let doc = json!({"counters": {"main": {"value": 42}}});
         let action = AnyStateAction::new::<Counter>(CounterAction::Reset);
-        let patch = reduce_state_actions(
-            vec![action],
-            &doc,
-            "test",
-            &ScopeContext::run(),
-        )
-        .unwrap();
+        let patch = reduce_state_actions(vec![action], &doc, "test", &ScopeContext::run()).unwrap();
         let result = apply_patch(&doc, patch[0].patch()).unwrap();
         assert_eq!(result["counters"]["main"]["value"], 0);
     }
@@ -487,13 +467,7 @@ mod tests {
     fn any_state_action_missing_path_defaults() {
         let doc = json!({});
         let action = AnyStateAction::new::<Counter>(CounterAction::Increment(1));
-        let patch = reduce_state_actions(
-            vec![action],
-            &doc,
-            "test",
-            &ScopeContext::run(),
-        )
-        .unwrap();
+        let patch = reduce_state_actions(vec![action], &doc, "test", &ScopeContext::run()).unwrap();
         let result = apply_patch(&doc, patch[0].patch()).unwrap();
         assert_eq!(result["counters"]["main"]["value"], 1);
     }
@@ -540,8 +514,7 @@ mod tests {
             AnyStateAction::new::<Counter>(CounterAction::Increment(1)),
             AnyStateAction::new::<Counter>(CounterAction::Increment(1)),
         ];
-        let tracked =
-            reduce_state_actions(actions, &base, "agent", &ScopeContext::run()).unwrap();
+        let tracked = reduce_state_actions(actions, &base, "agent", &ScopeContext::run()).unwrap();
         assert_eq!(tracked.len(), 2);
 
         let mut state = base.clone();
@@ -584,8 +557,7 @@ mod tests {
             CounterAction::Increment(5),
             "call_42",
         )];
-        let tracked =
-            reduce_state_actions(actions, &base, "test", &ScopeContext::run()).unwrap();
+        let tracked = reduce_state_actions(actions, &base, "test", &ScopeContext::run()).unwrap();
         assert_eq!(tracked.len(), 1);
 
         let result = apply_patch(&base, tracked[0].patch()).unwrap();
@@ -600,8 +572,7 @@ mod tests {
         let base = json!({});
         let scope_ctx = ScopeContext::for_call("call_42");
         let actions = vec![AnyStateAction::new::<Counter>(CounterAction::Increment(7))];
-        let tracked =
-            reduce_state_actions(actions, &base, "test", &scope_ctx).unwrap();
+        let tracked = reduce_state_actions(actions, &base, "test", &scope_ctx).unwrap();
 
         let result = apply_patch(&base, tracked[0].patch()).unwrap();
         assert_eq!(result["counters"]["main"]["value"], 7);
@@ -616,8 +587,7 @@ mod tests {
             CounterAction::Increment(3),
             "override_call",
         )];
-        let tracked =
-            reduce_state_actions(actions, &base, "test", &scope_ctx).unwrap();
+        let tracked = reduce_state_actions(actions, &base, "test", &scope_ctx).unwrap();
 
         let result = apply_patch(&base, tracked[0].patch()).unwrap();
         // Should use the override call_id, not the ambient one
@@ -701,14 +671,18 @@ mod tests {
         let base = json!({});
 
         let patches_a = reduce_state_actions(
-            vec![AnyStateAction::new::<TokenStats>(TokenStatsAction::AddInput(100))],
+            vec![AnyStateAction::new::<TokenStats>(
+                TokenStatsAction::AddInput(100),
+            )],
             &base,
             "plugin_a",
             &ScopeContext::run(),
         )
         .unwrap();
         let patches_b = reduce_state_actions(
-            vec![AnyStateAction::new::<TokenStats>(TokenStatsAction::AddInput(200))],
+            vec![AnyStateAction::new::<TokenStats>(
+                TokenStatsAction::AddInput(200),
+            )],
             &base,
             "plugin_b",
             &ScopeContext::run(),
@@ -720,11 +694,8 @@ mod tests {
         registry.register::<GCounter>(parse_path("token_stats.total_input"));
         registry.register::<GCounter>(parse_path("token_stats.total_output"));
 
-        let conflicts = conflicts_with_registry(
-            patches_a[0].patch(),
-            patches_b[0].patch(),
-            &registry,
-        );
+        let conflicts =
+            conflicts_with_registry(patches_a[0].patch(), patches_b[0].patch(), &registry);
 
         // After fix: CRDT fields should use Op::LatticeMerge → no conflict
         assert!(
@@ -737,7 +708,9 @@ mod tests {
     fn reducer_emits_lattice_merge_ops_for_crdt_fields() {
         let base = json!({});
         let patches = reduce_state_actions(
-            vec![AnyStateAction::new::<TokenStats>(TokenStatsAction::AddInput(100))],
+            vec![AnyStateAction::new::<TokenStats>(
+                TokenStatsAction::AddInput(100),
+            )],
             &base,
             "test",
             &ScopeContext::run(),
@@ -858,8 +831,7 @@ mod tests {
         )]));
 
         // Typed action that adds more input tokens
-        let typed_action =
-            AnyStateAction::new::<TokenStats>(TokenStatsAction::AddInput(3));
+        let typed_action = AnyStateAction::new::<TokenStats>(TokenStatsAction::AddInput(3));
 
         let tracked = reduce_state_actions(
             vec![AnyStateAction::Patch(raw_patch), typed_action],
@@ -897,7 +869,9 @@ mod tests {
         // Only modify one CRDT field; the other fields should not appear in ops.
         let base = json!({"token_stats": {"total_input": {}, "total_output": {}, "label": ""}});
         let patches = reduce_state_actions(
-            vec![AnyStateAction::new::<TokenStats>(TokenStatsAction::AddInput(42))],
+            vec![AnyStateAction::new::<TokenStats>(
+                TokenStatsAction::AddInput(42),
+            )],
             &base,
             "test",
             &ScopeContext::run(),
@@ -906,7 +880,11 @@ mod tests {
 
         let ops = patches[0].patch().ops();
         // Only total_input changed → exactly one op
-        assert_eq!(ops.len(), 1, "should only emit op for the changed field, got: {ops:?}");
+        assert_eq!(
+            ops.len(),
+            1,
+            "should only emit op for the changed field, got: {ops:?}"
+        );
         assert!(
             matches!(&ops[0], Op::LatticeMerge { .. }),
             "changed CRDT field should use LatticeMerge"
@@ -935,7 +913,9 @@ mod tests {
     #[test]
     fn serialized_payload_is_captured() {
         let action = AnyStateAction::new::<Counter>(CounterAction::Increment(42));
-        let payload = action.serialized_payload().expect("Typed action should have payload");
+        let payload = action
+            .serialized_payload()
+            .expect("Typed action should have payload");
         assert_eq!(*payload, json!({"Increment": 42}));
 
         // Patch variant returns None
@@ -945,11 +925,11 @@ mod tests {
 
     #[test]
     fn serialized_payload_captured_for_call_scoped() {
-        let action = AnyStateAction::new_for_call::<ToolScopedCounter>(
-            CounterAction::Reset,
-            "call_1",
-        );
-        let payload = action.serialized_payload().expect("Typed action should have payload");
+        let action =
+            AnyStateAction::new_for_call::<ToolScopedCounter>(CounterAction::Reset, "call_1");
+        let payload = action
+            .serialized_payload()
+            .expect("Typed action should have payload");
         assert_eq!(*payload, json!("Reset"));
     }
 }

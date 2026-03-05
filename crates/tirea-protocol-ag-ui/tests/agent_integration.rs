@@ -4685,8 +4685,7 @@ where
     async fn run_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         use tirea_contract::testing::{
             apply_after_inference_for_test, apply_after_tool_for_test,
-            apply_before_inference_for_test, apply_before_tool_for_test,
-            apply_lifecycle_for_test,
+            apply_before_inference_for_test, apply_before_tool_for_test, apply_lifecycle_for_test,
         };
         let ctx = build_read_only_ctx_for_dispatch(phase, step);
         match phase {
@@ -4719,9 +4718,8 @@ where
                     .unwrap_or_else(ScopeContext::run),
                 _ => ScopeContext::run(),
             };
-            let patches =
-                reduce_state_actions(state_actions, &snapshot, "test", &scope_ctx)
-                    .expect("state actions should reduce");
+            let patches = reduce_state_actions(state_actions, &snapshot, "test", &scope_ctx)
+                .expect("state actions should reduce");
             for patch in patches {
                 let doc = step.ctx().doc();
                 for op in patch.patch().ops() {
@@ -4854,16 +4852,18 @@ impl AgentBehavior for InteractionPlugin {
             };
             let resume = Self::to_tool_call_resume(call_id.as_str(), result);
             let updated_at = resume.updated_at;
-            let mut state = states.remove(call_id.as_str()).unwrap_or_else(|| ToolCallState {
-                call_id: call_id.clone(),
-                tool_name: suspended_call.tool_name.clone(),
-                arguments: suspended_call.arguments.clone(),
-                status: ToolCallStatus::Suspended,
-                resume_token: Some(suspended_call.ticket.pending.id.clone()),
-                resume: None,
-                scratch: Value::Null,
-                updated_at,
-            });
+            let mut state = states
+                .remove(call_id.as_str())
+                .unwrap_or_else(|| ToolCallState {
+                    call_id: call_id.clone(),
+                    tool_name: suspended_call.tool_name.clone(),
+                    arguments: suspended_call.arguments.clone(),
+                    status: ToolCallStatus::Suspended,
+                    resume_token: Some(suspended_call.ticket.pending.id.clone()),
+                    resume: None,
+                    scratch: Value::Null,
+                    updated_at,
+                });
             state.call_id = call_id.clone();
             state.tool_name = suspended_call.tool_name.clone();
             state.arguments = suspended_call.arguments.clone();
@@ -4957,7 +4957,8 @@ fn suspended_interaction(step: &StepContext<'_>) -> Option<Suspension> {
 fn suspended_invocation(step: &StepContext<'_>) -> Option<FrontendToolInvocation> {
     let gate = step.gate.as_ref()?;
     let backend = Some((gate.id.clone(), gate.name.clone(), gate.args.clone()));
-    gate.suspend_ticket.as_ref()
+    gate.suspend_ticket
+        .as_ref()
         .map(|ticket| FrontendToolInvocation {
             call_id: ticket.pending.id.clone(),
             tool_name: ticket.pending.name.clone(),

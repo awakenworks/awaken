@@ -30,7 +30,7 @@ This section is for **Mode A (local crates.io backend)**.
 Install frontend deps and create env file:
 
 ```bash
-cd with-tirea
+cd examples/copilotkit-starter
 npm install
 cp .env.example .env.local
 export DEEPSEEK_API_KEY=<your_key>

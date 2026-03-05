@@ -269,7 +269,12 @@ pub trait State: Sized {
             return Ok(vec![Op::set(base_path.clone(), new_val)]);
         }
         // Per-field diff with LatticeMerge for lattice fields
-        Ok(diff_state_fields(&old_val, &new_val, base_path, lattice_keys))
+        Ok(diff_state_fields(
+            &old_val,
+            &new_val,
+            base_path,
+            lattice_keys,
+        ))
     }
 
     /// Create a patch that sets this value at the root.

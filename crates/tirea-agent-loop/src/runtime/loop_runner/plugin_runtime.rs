@@ -44,8 +44,7 @@ fn apply_before_inference_actions(
                 step.inference.tools.retain(|t| ids.contains(&t.id));
             }
             BeforeInferenceAction::Terminate(reason) => {
-                step.flow.run_action =
-                    Some(RunAction::Terminate(reason));
+                step.flow.run_action = Some(RunAction::Terminate(reason));
             }
             BeforeInferenceAction::State(sa) => step.emit_state_action(sa),
         }
@@ -59,8 +58,7 @@ fn apply_after_inference_actions(
     for action in actions {
         match action {
             AfterInferenceAction::Terminate(reason) => {
-                step.flow.run_action =
-                    Some(RunAction::Terminate(reason));
+                step.flow.run_action = Some(RunAction::Terminate(reason));
             }
             AfterInferenceAction::State(sa) => step.emit_state_action(sa),
         }
@@ -142,13 +140,10 @@ async fn reduce_and_emit(
             .unwrap_or_else(ScopeContext::run),
         _ => ScopeContext::run(),
     };
-    let patches =
-        reduce_state_actions(state_actions, &doc.snapshot(), "agent:phase", &scope_ctx)
-            .map_err(|e| {
-                AgentLoopError::StateError(format!(
-                    "failed to reduce pending state actions: {e}"
-                ))
-            })?;
+    let patches = reduce_state_actions(state_actions, &doc.snapshot(), "agent:phase", &scope_ctx)
+        .map_err(|e| {
+        AgentLoopError::StateError(format!("failed to reduce pending state actions: {e}"))
+    })?;
     for p in patches {
         step.emit_patch(p);
     }
@@ -467,10 +462,7 @@ mod tests {
             .await
             .expect("actions should be applied");
 
-        assert_eq!(
-            step.inference.system_context,
-            vec!["injected by action"]
-        );
+        assert_eq!(step.inference.system_context, vec!["injected by action"]);
     }
 
     #[tokio::test]

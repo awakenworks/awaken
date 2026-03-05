@@ -3,8 +3,8 @@
 //! Gated behind the `test-support` cargo feature so production builds are
 //! unaffected.  Enable via `[dev-dependencies] tirea-contract = { ..., features = ["test-support"] }`.
 
-use crate::runtime::activity::NoOpActivityManager;
 use crate::runtime::action::Action;
+use crate::runtime::activity::NoOpActivityManager;
 use crate::runtime::phase::{
     ActionSet, AfterInferenceAction, AfterToolExecuteAction, BeforeInferenceAction,
     BeforeToolExecuteAction, LifecycleAction,
@@ -294,7 +294,9 @@ impl Action for TestIncludeOnlyTools {
     }
 
     fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        step.inference.tools.retain(|t| self.0.iter().any(|id| id == &t.id));
+        step.inference
+            .tools
+            .retain(|t| self.0.iter().any(|id| id == &t.id));
     }
 }
 

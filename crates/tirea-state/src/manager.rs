@@ -163,9 +163,7 @@ impl StateManager {
 
         let registry = self.registry.read().await;
 
-        if let Some((left, right, conflict)) =
-            first_batch_conflict(&patches, &registry)
-        {
+        if let Some((left, right, conflict)) = first_batch_conflict(&patches, &registry) {
             return Err(StateError::BatchConflict {
                 left,
                 right,

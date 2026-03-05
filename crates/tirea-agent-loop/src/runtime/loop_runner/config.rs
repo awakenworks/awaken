@@ -1,8 +1,8 @@
 use super::tool_exec::ParallelToolExecutor;
 use super::AgentLoopError;
 use crate::contracts::runtime::behavior::NoOpBehavior;
-use crate::contracts::runtime::AgentBehavior;
 use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor};
+use crate::contracts::runtime::AgentBehavior;
 use crate::contracts::runtime::ToolExecutor;
 use crate::contracts::RunContext;
 use async_trait::async_trait;
@@ -291,7 +291,8 @@ pub struct BaseAgent {
     /// Optional LLM executor override.
     pub llm_executor: Option<Arc<dyn LlmExecutor>>,
     /// Registry for deserializing pending-write actions during crash recovery.
-    pub action_deserializer_registry: Arc<tirea_contract::runtime::state::ActionDeserializerRegistry>,
+    pub action_deserializer_registry:
+        Arc<tirea_contract::runtime::state::ActionDeserializerRegistry>,
 }
 
 impl Default for BaseAgent {
@@ -312,7 +313,9 @@ impl Default for BaseAgent {
             llm_retry_policy: LlmRetryPolicy::default(),
             behavior: Arc::new(NoOpBehavior),
             lattice_registry: Arc::new(tirea_state::LatticeRegistry::new()),
-            state_scope_registry: Arc::new(tirea_contract::runtime::state::StateScopeRegistry::new()),
+            state_scope_registry: Arc::new(
+                tirea_contract::runtime::state::StateScopeRegistry::new(),
+            ),
             step_tool_provider: None,
             llm_executor: None,
             action_deserializer_registry: Arc::new(

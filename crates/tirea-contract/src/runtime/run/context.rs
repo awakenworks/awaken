@@ -1,9 +1,9 @@
 use crate::runtime::activity::ActivityManager;
 use crate::runtime::run::delta::RunDelta;
 use crate::runtime::state::SerializedAction;
-use crate::runtime::tool_call::ToolCallContext;
-use crate::runtime::tool_call::SuspendedCall;
 use crate::runtime::suspended_calls_from_state;
+use crate::runtime::tool_call::SuspendedCall;
+use crate::runtime::tool_call::ToolCallContext;
 use crate::thread::Message;
 use crate::RunConfig;
 use serde_json::Value;
@@ -269,11 +269,7 @@ impl RunContext {
         thread: &crate::thread::Thread,
         run_config: RunConfig,
     ) -> Result<Self, tirea_state::TireaError> {
-        Self::from_thread_with_registry(
-            thread,
-            run_config,
-            Arc::new(LatticeRegistry::new()),
-        )
+        Self::from_thread_with_registry(thread, run_config, Arc::new(LatticeRegistry::new()))
     }
 
     /// Convenience constructor from a `Thread` with a lattice registry.
@@ -284,8 +280,13 @@ impl RunContext {
     ) -> Result<Self, tirea_state::TireaError> {
         let state = thread.rebuild_state()?;
         let messages: Vec<Arc<Message>> = thread.messages.clone();
-        let mut ctx =
-            Self::with_registry(thread.id.clone(), state, messages, run_config, lattice_registry);
+        let mut ctx = Self::with_registry(
+            thread.id.clone(),
+            state,
+            messages,
+            run_config,
+            lattice_registry,
+        );
         if let Some(v) = thread.metadata.version {
             ctx.set_version(v, thread.metadata.version_timestamp);
         }

@@ -2,8 +2,8 @@ mod bundle;
 mod registry;
 mod stop_policy_registry;
 
-use crate::contracts::runtime::AgentBehavior;
 use crate::contracts::runtime::tool_call::Tool;
+use crate::contracts::runtime::AgentBehavior;
 use crate::orchestrator::AgentDefinition;
 use genai::chat::ChatOptions;
 use genai::Client;

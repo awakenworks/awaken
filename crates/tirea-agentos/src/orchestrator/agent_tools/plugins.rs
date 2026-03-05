@@ -100,8 +100,9 @@ impl AgentBehavior for AgentRecoveryPlugin {
                 let resume_token = suspended_call.ticket.pending.id.clone();
                 let arguments = suspended_call.arguments.clone();
 
-                actions =
-                    actions.and(LifecycleAction::State(suspended_call.clone().into_state_action()));
+                actions = actions.and(LifecycleAction::State(
+                    suspended_call.clone().into_state_action(),
+                ));
                 actions = actions.and(LifecycleAction::State(
                     ToolCallState {
                         call_id: call_id.clone(),
@@ -208,9 +209,7 @@ impl AgentToolsPlugin {
         out.push_str(
             "Stop running background run: tool \"agent_stop\" with {\"run_id\":\"...\"}.\n",
         );
-        out.push_str(
-            "Retrieve output: tool \"agent_output\" with {\"run_id\":\"...\"}.\n",
-        );
+        out.push_str("Retrieve output: tool \"agent_output\" with {\"run_id\":\"...\"}.\n");
         out.push_str("Statuses: running, completed, failed, stopped (stopped can be resumed).\n");
         out.push_str("</agent_tools_usage>");
 

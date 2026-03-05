@@ -18,7 +18,10 @@ pub fn request_permission(ticket: SuspendTicket) -> BeforeToolExecuteAction {
 
 /// Block tool execution due to policy (out-of-scope).
 pub fn reject_out_of_scope(tool_id: &str) -> BeforeToolExecuteAction {
-    deny(format!("Tool '{}' is not allowed by current policy", tool_id))
+    deny(format!(
+        "Tool '{}' is not allowed by current policy",
+        tool_id
+    ))
 }
 
 /// Block tool execution when permission check prerequisites fail (missing call id).
@@ -42,4 +45,3 @@ pub fn apply_tool_policy(
     }
     actions
 }
-
