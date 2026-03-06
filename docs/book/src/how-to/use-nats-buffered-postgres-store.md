@@ -23,7 +23,7 @@ postgres.ensure_table().await?;
 2. Wrap writer with NATS JetStream buffer.
 
 ```rust,ignore
-use tirea_agentos::contracts::storage::ThreadStore;
+use tirea::contracts::storage::ThreadStore;
 use tirea_store_adapters::NatsBufferedThreadWriter;
 
 let nats = async_nats::connect(std::env::var("NATS_URL")?).await?;
@@ -43,7 +43,7 @@ eprintln!("recovered {} buffered deltas", recovered);
 4. Wire buffered writer for runtime commits, Postgres for reads.
 
 ```rust,ignore
-use tirea_agentos::contracts::storage::ThreadReader;
+use tirea::contracts::storage::ThreadReader;
 
 let os = AgentOsBuilder::new()
     .with_agent_state_store(buffered.clone())

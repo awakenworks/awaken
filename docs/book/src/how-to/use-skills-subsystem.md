@@ -12,7 +12,7 @@ Use this when you want reusable file-backed skills (`SKILL.md`, references, scri
 1. Discover skills from filesystem.
 
 ```rust,ignore
-use tirea_agentos::extensions::skills::FsSkill;
+use tirea::skills::FsSkill;
 
 let discovered = FsSkill::discover("./skills")?;
 let skills = FsSkill::into_arc_skills(discovered.skills);
@@ -21,24 +21,23 @@ let skills = FsSkill::into_arc_skills(discovered.skills);
 2. Enable skills mode in builder.
 
 ```rust,ignore
-use tirea_agentos::orchestrator::{AgentDefinition, AgentOsBuilder, SkillsConfig, SkillsMode};
+use tirea::orchestrator::{AgentDefinition, AgentOsBuilder, SkillsConfig};
 
 let os = AgentOsBuilder::new()
     .with_skills(skills)
     .with_skills_config(SkillsConfig {
-        mode: SkillsMode::DiscoveryAndRuntime,
+        enabled: true,
+        advertise_catalog: true,
         ..SkillsConfig::default()
     })
     .with_agent("assistant", AgentDefinition::new("deepseek-chat"))
     .build()?;
 ```
 
-Modes:
+Config flags:
 
-- `DiscoveryAndRuntime`: skill catalog + runtime activation
-- `DiscoveryOnly`: catalog only
-- `RuntimeOnly`: runtime-only skill execution path
-- `Disabled`: no skills wiring
+- `enabled`: registers skill tools (`skill`, `load_skill_resource`, `skill_script`)
+- `advertise_catalog`: injects available-skills catalog into inference context
 
 3. (Optional) use scope filters per run.
 

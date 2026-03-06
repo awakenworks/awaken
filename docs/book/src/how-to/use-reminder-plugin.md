@@ -13,7 +13,7 @@ Use this when reminders should be injected into inference context from persisted
 
 ```rust,ignore
 use std::sync::Arc;
-use tirea_extension_reminder::ReminderPlugin;
+use tirea::extensions::reminder::ReminderPlugin;
 
 let os = AgentOsBuilder::new()
     .with_registered_behavior(
@@ -30,7 +30,7 @@ let os = AgentOsBuilder::new()
 2. Write reminder state actions.
 
 ```rust,ignore
-use tirea_extension_reminder::add_reminder_action;
+use tirea::extensions::reminder::add_reminder_action;
 
 let add = add_reminder_action("Call Alice at 3pm");
 // dispatch as state action in your behavior/tool pipeline

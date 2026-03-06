@@ -25,7 +25,7 @@ let cfg = McpServerConnectionConfig::stdio(
 2. Connect MCP registry manager and fetch tool snapshot.
 
 ```rust,ignore
-use tirea_extension_mcp::McpToolRegistryManager;
+use tirea::extensions::mcp::McpToolRegistryManager;
 
 let manager = McpToolRegistryManager::connect([cfg]).await?;
 let mcp_tools = manager.registry().snapshot();
@@ -36,7 +36,7 @@ let mcp_tools = manager.registry().snapshot();
 ```rust,ignore
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_agentos::contracts::runtime::tool_call::Tool;
+use tirea::contracts::runtime::tool_call::Tool;
 
 let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 // add your native tools first...
