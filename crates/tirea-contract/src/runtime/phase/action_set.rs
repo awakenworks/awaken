@@ -1,7 +1,9 @@
+use crate::runtime::inference::InferenceRequestTransform;
 use crate::runtime::run::TerminationReason;
 use crate::runtime::state::AnyStateAction;
 use crate::runtime::tool_call::gate::{SuspendTicket, ToolCallAction};
 use crate::runtime::tool_call::ToolResult;
+use std::sync::Arc;
 
 /// A typed collection of actions for a specific phase.
 ///
@@ -115,6 +117,8 @@ pub enum BeforeInferenceAction {
     ExcludeTool(String),
     /// Keep only the listed tool ids.
     IncludeOnlyTools(Vec<String>),
+    /// Register a request transform applied after messages are assembled.
+    AddRequestTransform(Arc<dyn InferenceRequestTransform>),
     /// Request run termination before inference fires.
     Terminate(TerminationReason),
     /// Emit a persistent state change.

@@ -68,6 +68,25 @@ pub fn build_request(messages: &[Message], tools: &[&dyn Tool]) -> ChatRequest {
     request
 }
 
+/// Apply prompt cache hints to a chat request.
+///
+/// Sets `CacheControl::Ephemeral` on the last system message in the request,
+/// which tells Anthropic to cache everything up to (and including) that message.
+/// This is a no-op for providers that don't support cache control.
+pub fn apply_prompt_cache_hints(request: &mut ChatRequest) {
+    // Find the last system message and mark it as the cache boundary.
+    if let Some(pos) = request
+        .messages
+        .iter()
+        .rposition(|m| matches!(m.role, genai::chat::ChatRole::System))
+    {
+        let msg = request.messages.remove(pos);
+        request
+            .messages
+            .insert(pos, msg.with_options(genai::chat::CacheControl::Ephemeral));
+    }
+}
+
 /// Create a user message (convenience function).
 pub fn user_message(content: impl Into<String>) -> Message {
     Message::user(content)
@@ -413,6 +432,58 @@ mod tests {
         let msg = assistant_message("Hi there");
         assert_eq!(msg.role, Role::Assistant);
         assert_eq!(msg.content, "Hi there");
+    }
+
+    #[test]
+    fn apply_prompt_cache_hints_marks_last_system_message() {
+        let messages = vec![
+            Message::system("System prompt"),
+            Message::system("Session context"),
+            Message::user("Hello"),
+            Message::assistant("Hi!"),
+        ];
+        let mut request = build_request(&messages, &[]);
+        apply_prompt_cache_hints(&mut request);
+
+        // Last system message (index 1) should have CacheControl::Ephemeral.
+        // First system message should not.
+        let debug_0 = format!("{:?}", request.messages[0]);
+        let debug_1 = format!("{:?}", request.messages[1]);
+        assert!(
+            !debug_0.contains("Ephemeral"),
+            "first system message should not have cache hint"
+        );
+        assert!(
+            debug_1.contains("Ephemeral"),
+            "last system message should have Ephemeral cache hint"
+        );
+        // Message count should be preserved.
+        assert_eq!(request.messages.len(), 4);
+    }
+
+    #[test]
+    fn apply_prompt_cache_hints_noop_without_system_messages() {
+        let messages = vec![Message::user("Hello"), Message::assistant("Hi!")];
+        let mut request = build_request(&messages, &[]);
+        let before = format!("{:?}", request.messages);
+        apply_prompt_cache_hints(&mut request);
+        let after = format!("{:?}", request.messages);
+        assert_eq!(before, after, "should be no-op when no system messages exist");
+    }
+
+    #[test]
+    fn apply_prompt_cache_hints_single_system_message() {
+        let messages = vec![
+            Message::system("Only system"),
+            Message::user("Hello"),
+        ];
+        let mut request = build_request(&messages, &[]);
+        apply_prompt_cache_hints(&mut request);
+        let debug_0 = format!("{:?}", request.messages[0]);
+        assert!(
+            debug_0.contains("Ephemeral"),
+            "single system message should get cache hint"
+        );
     }
 
     #[test]

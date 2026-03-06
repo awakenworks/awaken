@@ -387,6 +387,9 @@ pub fn apply_before_inference_for_test(
             BeforeInferenceAction::IncludeOnlyTools(ids) => {
                 step.inference.tools.retain(|t| ids.contains(&t.id));
             }
+            BeforeInferenceAction::AddRequestTransform(transform) => {
+                step.inference.request_transforms.push(transform);
+            }
             BeforeInferenceAction::Terminate(reason) => {
                 step.flow.run_action = Some(RunAction::Terminate(reason));
             }

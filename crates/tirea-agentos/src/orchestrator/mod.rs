@@ -29,6 +29,7 @@ pub(crate) mod agent_tools;
 mod builder;
 mod composite_behavior;
 mod composition;
+mod context_window_plugin;
 mod policy;
 mod run;
 mod stop_policy_plugin;
@@ -55,6 +56,7 @@ pub use composition::{
     StopPolicyRegistry, StopPolicyRegistryError, ToolBehaviorBundle, ToolRegistry,
     ToolRegistryError,
 };
+pub use context_window_plugin::{ContextWindowPlugin, CONTEXT_WINDOW_PLUGIN_ID};
 pub use stop_policy_plugin::{
     ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds, StopConditionSpec, StopOnTool,
     StopPolicy, StopPolicyInput, StopPolicyStats, Timeout, TokenBudget,

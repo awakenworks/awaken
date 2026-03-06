@@ -105,7 +105,12 @@ pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec
     messages
 }
 
-pub(super) type InferenceInputs = (Vec<Message>, Vec<String>, RunAction);
+pub(super) type InferenceInputs = (
+    Vec<Message>,
+    Vec<String>,
+    RunAction,
+    Vec<std::sync::Arc<dyn tirea_contract::runtime::inference::InferenceRequestTransform>>,
+);
 
 pub(super) fn inference_inputs_from_step(
     step: &mut StepContext<'_>,
@@ -115,13 +120,15 @@ pub(super) fn inference_inputs_from_step(
     let tools = &step.inference.tools[..];
     let filtered_tools = tools.iter().map(|td| td.id.clone()).collect::<Vec<_>>();
     let run_action = step.run_action();
-    (messages, filtered_tools, run_action)
+    let transforms = std::mem::take(&mut step.inference.request_transforms);
+    (messages, filtered_tools, run_action, transforms)
 }
 
 pub(super) fn build_request_for_filtered_tools(
     messages: &[Message],
     tools: &HashMap<String, Arc<dyn Tool>>,
     filtered_tools: &[String],
+    transforms: &[std::sync::Arc<dyn tirea_contract::runtime::inference::InferenceRequestTransform>],
 ) -> genai::chat::ChatRequest {
     let filtered: HashSet<&str> = filtered_tools.iter().map(String::as_str).collect();
     let filtered_tool_refs: Vec<&dyn Tool> = tools
@@ -129,7 +136,28 @@ pub(super) fn build_request_for_filtered_tools(
         .filter(|t| filtered.contains(t.descriptor().id.as_str()))
         .map(|t| t.as_ref())
         .collect();
-    crate::engine::convert::build_request(messages, &filtered_tool_refs)
+
+    // Apply registered request transforms (if any).
+    let (effective_messages, enable_prompt_cache) = if transforms.is_empty() {
+        (messages.to_vec(), false)
+    } else {
+        let tool_descriptors: Vec<_> = filtered_tool_refs.iter().map(|t| t.descriptor()).collect();
+        let output = tirea_contract::runtime::inference::apply_request_transforms(
+            messages.to_vec(),
+            &tool_descriptors,
+            transforms,
+        );
+        (output.messages, output.enable_prompt_cache)
+    };
+
+    let mut request =
+        crate::engine::convert::build_request(&effective_messages, &filtered_tool_refs);
+
+    if enable_prompt_cache {
+        crate::engine::convert::apply_prompt_cache_hints(&mut request);
+    }
+
+    request
 }
 
 #[allow(dead_code)]

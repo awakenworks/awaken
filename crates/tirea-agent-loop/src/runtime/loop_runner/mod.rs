@@ -433,13 +433,14 @@ pub(super) async fn run_step_prepare_phases(
         Vec<Message>,
         Vec<String>,
         RunAction,
+        Vec<std::sync::Arc<dyn tirea_contract::runtime::inference::InferenceRequestTransform>>,
         Vec<TrackedPatch>,
         Vec<tirea_contract::SerializedAction>,
     ),
     AgentLoopError,
 > {
     let system_prompt = agent.system_prompt().to_string();
-    let ((messages, filtered_tools, run_action), pending, actions) =
+    let ((messages, filtered_tools, run_action, transforms), pending, actions) =
         plugin_runtime::run_phase_block(
             run_ctx,
             tool_descriptors,
@@ -449,7 +450,7 @@ pub(super) async fn run_step_prepare_phases(
             |step| inference_inputs_from_step(step, &system_prompt),
         )
         .await?;
-    Ok((messages, filtered_tools, run_action, pending, actions))
+    Ok((messages, filtered_tools, run_action, transforms, pending, actions))
 }
 
 pub(super) struct PreparedStep {
@@ -458,6 +459,8 @@ pub(super) struct PreparedStep {
     pub(super) run_action: RunAction,
     pub(super) pending_patches: Vec<TrackedPatch>,
     pub(super) serialized_actions: Vec<tirea_contract::SerializedAction>,
+    pub(super) request_transforms:
+        Vec<std::sync::Arc<dyn tirea_contract::runtime::inference::InferenceRequestTransform>>,
 }
 
 pub(super) async fn prepare_step_execution(
@@ -465,7 +468,7 @@ pub(super) async fn prepare_step_execution(
     tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
     agent: &dyn Agent,
 ) -> Result<PreparedStep, AgentLoopError> {
-    let (messages, filtered_tools, run_action, pending, actions) =
+    let (messages, filtered_tools, run_action, transforms, pending, actions) =
         run_step_prepare_phases(run_ctx, tool_descriptors, agent).await?;
     Ok(PreparedStep {
         messages,
@@ -473,6 +476,7 @@ pub(super) async fn prepare_step_execution(
         run_action,
         pending_patches: pending,
         serialized_actions: actions,
+        request_transforms: transforms,
     })
 }
 
@@ -1578,6 +1582,7 @@ pub async fn run_loop(
         // Call LLM with unified retry + fallback model strategy.
         let messages = prepared.messages;
         let filtered_tools = prepared.filtered_tools;
+        let request_transforms = prepared.request_transforms;
         let chat_options = agent.chat_options().cloned();
         let attempt_outcome = run_llm_with_retry_and_fallback(
             agent,
@@ -1586,7 +1591,7 @@ pub async fn run_loop(
             "unknown llm error",
             |model| {
                 let request =
-                    build_request_for_filtered_tools(&messages, &step_tools.tools, &filtered_tools);
+                    build_request_for_filtered_tools(&messages, &step_tools.tools, &filtered_tools, &request_transforms);
                 let executor = executor.clone();
                 let chat_options = chat_options.clone();
                 async move {

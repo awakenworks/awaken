@@ -369,6 +369,7 @@ pub(super) fn run_stream(
             run_ctx.add_serialized_actions(prepared.serialized_actions);
             let messages = prepared.messages;
             let filtered_tools = prepared.filtered_tools;
+            let request_transforms = prepared.request_transforms;
 
             match prepared.run_action {
                 RunAction::Continue => {}
@@ -400,7 +401,7 @@ pub(super) fn run_stream(
                 "unknown llm stream start error",
                 |model| {
                     let request =
-                        build_request_for_filtered_tools(&messages, &active_tool_snapshot.tools, &filtered_tools);
+                        build_request_for_filtered_tools(&messages, &active_tool_snapshot.tools, &filtered_tools, &request_transforms);
                     let executor = executor.clone();
                     let chat_options = chat_options.clone();
                     async move {
