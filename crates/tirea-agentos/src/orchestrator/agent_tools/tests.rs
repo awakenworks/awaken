@@ -4304,3 +4304,50 @@ async fn integration_agent_output_reads_tool_result_from_sub_agent() {
         output
     );
 }
+
+// ── Permission fallback test ─────────────────────────────────────────────────
+
+#[cfg(not(feature = "permission"))]
+#[tokio::test]
+async fn recovery_plugin_fallback_always_approves_despite_deny_state() {
+    let plugin = AgentRecoveryPlugin::new(Arc::new(SubAgentHandleTable::new()));
+    // State declares "deny" for recover_agent_run, but without the permission
+    // feature the fallback always returns Allow.
+    let thread = Thread::with_initial_state(
+        "owner-1",
+        json!({
+            "permissions": {
+                "default_behavior": "deny",
+                "tools": {
+                    "recover_agent_run": "deny"
+                }
+            },
+            "sub_agents": {
+                "runs": {
+                    "run-1": {
+                        "thread_id": "sub-agent-run-1",
+                        "agent_id": "worker",
+                        "status": "running"
+                    }
+                }
+            }
+        }),
+    );
+    let doc = thread.rebuild_state().unwrap();
+    let fixture = TestFixture::new_with_state(doc);
+    let mut step = fixture.step(vec![]);
+    plugin.run_phase(Phase::RunStart, &mut step).await;
+
+    let updated = fixture.updated_state();
+    // Without permission feature, fallback always returns Allow — so recovery
+    // should auto-approve even though state says "deny".
+    assert_eq!(
+        updated["__tool_call_scope"]["agent_recovery_run-1"]["tool_call_state"]["status"],
+        json!("resuming"),
+        "fallback should auto-approve when permission feature is off"
+    );
+    assert_eq!(
+        updated["__tool_call_scope"]["agent_recovery_run-1"]["tool_call_state"]["resume"]["action"],
+        json!("resume"),
+    );
+}

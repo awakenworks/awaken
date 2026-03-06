@@ -3690,3 +3690,310 @@ async fn prepare_run_cleans_up_run_scoped_state_between_consecutive_runs() {
     );
     assert_run_lifecycle_state(&state_after_run2, "run-2", "done", Some("stopped:custom"));
 }
+
+// ── SystemWiring tests ───────────────────────────────────────────────────────
+
+/// A minimal test SystemWiring that contributes a tool and a behavior.
+#[derive(Debug)]
+struct FakeSystemWiring {
+    id: &'static str,
+    reserved: &'static [&'static str],
+    tool_id: &'static str,
+    behavior_id: &'static str,
+}
+
+impl FakeSystemWiring {
+    fn new(id: &'static str, tool_id: &'static str, behavior_id: &'static str) -> Self {
+        Self {
+            id,
+            reserved: &[],
+            tool_id,
+            behavior_id,
+        }
+    }
+
+    fn with_reserved(mut self, reserved: &'static [&'static str]) -> Self {
+        self.reserved = reserved;
+        self
+    }
+}
+
+/// A no-op tool for testing wiring.
+#[derive(Debug)]
+struct StubTool(&'static str);
+
+#[async_trait]
+impl crate::contracts::runtime::tool_call::Tool for StubTool {
+    fn descriptor(&self) -> crate::contracts::runtime::tool_call::ToolDescriptor {
+        crate::contracts::runtime::tool_call::ToolDescriptor::new(self.0, self.0, "stub")
+    }
+
+    async fn execute(
+        &self,
+        _args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<crate::contracts::runtime::tool_call::ToolResult, crate::contracts::runtime::tool_call::ToolError>
+    {
+        Ok(crate::contracts::runtime::tool_call::ToolResult::success(
+            self.0,
+            json!({}),
+        ))
+    }
+}
+
+impl SystemWiring for FakeSystemWiring {
+    fn id(&self) -> &str {
+        self.id
+    }
+
+    fn reserved_behavior_ids(&self) -> &[&'static str] {
+        self.reserved
+    }
+
+    fn wire(
+        &self,
+        _ctx: &WiringContext<'_>,
+    ) -> Result<Vec<Arc<dyn RegistryBundle>>, AgentOsWiringError> {
+        let bundle = ToolBehaviorBundle::new(self.id)
+            .with_tool(
+                Arc::new(StubTool(self.tool_id))
+                    as Arc<dyn crate::contracts::runtime::tool_call::Tool>,
+            )
+            .with_behavior(Arc::new(TestPlugin(self.behavior_id)));
+        Ok(vec![Arc::new(bundle)])
+    }
+}
+
+/// A SystemWiring that always returns an error from wire().
+#[derive(Debug)]
+struct FailingSystemWiring;
+
+impl SystemWiring for FailingSystemWiring {
+    fn id(&self) -> &str {
+        "failing"
+    }
+
+    fn wire(
+        &self,
+        _ctx: &WiringContext<'_>,
+    ) -> Result<Vec<Arc<dyn RegistryBundle>>, AgentOsWiringError> {
+        Err(AgentOsWiringError::BundleToolIdConflict {
+            bundle_id: "failing".to_string(),
+            id: "boom".to_string(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn custom_system_wiring_contributes_tools_and_behaviors() {
+    let wiring = FakeSystemWiring::new("ext1", "ext1_tool", "ext1_behavior");
+    let os = AgentOs::builder()
+        .with_system_wiring(Arc::new(wiring))
+        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .build()
+        .unwrap();
+
+    let resolved = os.resolve("a1").unwrap();
+    assert!(
+        resolved.tools.contains_key("ext1_tool"),
+        "custom wiring tool should be present"
+    );
+    let ids = resolved.agent.behavior.behavior_ids();
+    assert!(
+        ids.contains(&"ext1_behavior"),
+        "custom wiring behavior should be present"
+    );
+}
+
+#[tokio::test]
+async fn custom_system_wiring_reserved_ids_enforced_at_resolve() {
+    use crate::orchestrator::InMemoryAgentRegistry;
+    static RESERVED: &[&str] = &["my_reserved"];
+    let wiring =
+        FakeSystemWiring::new("ext1", "ext1_tool", "ext1_behavior").with_reserved(RESERVED);
+    // Use agent_registry to bypass build-time checks (build only validates
+    // inline agents, not registry agents).
+    let os = AgentOs::builder()
+        .with_system_wiring(Arc::new(wiring))
+        .with_registered_behavior("my_reserved", Arc::new(TestPlugin("my_reserved")))
+        .with_agent_registry(Arc::new({
+            let mut reg = InMemoryAgentRegistry::new();
+            reg.upsert(
+                "a1",
+                AgentDefinition::new("gpt-4o-mini").with_behavior_id("my_reserved"),
+            );
+            reg
+        }))
+        .build()
+        .unwrap();
+
+    let err = os.resolve("a1").err().unwrap();
+    assert!(
+        matches!(
+            err,
+            AgentOsResolveError::Wiring(AgentOsWiringError::ReservedBehaviorId(ref id))
+            if id == "my_reserved"
+        ),
+        "custom reserved behavior id should be rejected at resolve: {err:?}"
+    );
+}
+
+#[test]
+fn custom_system_wiring_reserved_ids_rejected_at_build() {
+    static RESERVED: &[&str] = &["my_reserved"];
+    let wiring =
+        FakeSystemWiring::new("ext1", "ext1_tool", "ext1_behavior").with_reserved(RESERVED);
+    let err = AgentOs::builder()
+        .with_system_wiring(Arc::new(wiring))
+        .with_agent(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini").with_behavior_id("my_reserved"),
+        )
+        .build()
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            AgentOsBuildError::AgentReservedBehaviorId { ref behavior_id, .. }
+            if behavior_id == "my_reserved"
+        ),
+        "build should reject agent referencing custom reserved id: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn custom_system_wiring_error_propagates() {
+    let os = AgentOs::builder()
+        .with_system_wiring(Arc::new(FailingSystemWiring))
+        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .build()
+        .unwrap();
+
+    let err = os.resolve("a1").err().unwrap();
+    assert!(
+        matches!(
+            err,
+            AgentOsResolveError::Wiring(AgentOsWiringError::BundleToolIdConflict { .. })
+        ),
+        "wiring error should propagate: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn multiple_system_wirings_merge_tools_and_behaviors() {
+    let w1 = FakeSystemWiring::new("ext1", "ext1_tool", "ext1_behavior");
+    let w2 = FakeSystemWiring::new("ext2", "ext2_tool", "ext2_behavior");
+    let os = AgentOs::builder()
+        .with_system_wiring(Arc::new(w1))
+        .with_system_wiring(Arc::new(w2))
+        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .build()
+        .unwrap();
+
+    let resolved = os.resolve("a1").unwrap();
+    assert!(resolved.tools.contains_key("ext1_tool"));
+    assert!(resolved.tools.contains_key("ext2_tool"));
+    let ids = resolved.agent.behavior.behavior_ids();
+    assert!(ids.contains(&"ext1_behavior"));
+    assert!(ids.contains(&"ext2_behavior"));
+}
+
+#[tokio::test]
+async fn system_wirings_run_before_user_behaviors() {
+    let w = FakeSystemWiring::new("ext1", "ext1_tool", "ext1_behavior");
+    let os = AgentOs::builder()
+        .with_system_wiring(Arc::new(w))
+        .with_registered_behavior("user_b", Arc::new(TestPlugin("user_b")))
+        .with_agent(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini").with_behavior_id("user_b"),
+        )
+        .build()
+        .unwrap();
+
+    let resolved = os.resolve("a1").unwrap();
+    let ids = resolved.agent.behavior.behavior_ids();
+    let ext1_pos = ids.iter().position(|id| *id == "ext1_behavior").unwrap();
+    let user_pos = ids.iter().position(|id| *id == "user_b").unwrap();
+    assert!(
+        ext1_pos < user_pos,
+        "system wiring behaviors should precede user behaviors: {ids:?}"
+    );
+}
+
+#[tokio::test]
+async fn system_wiring_tool_conflict_with_user_tool_returns_bundle_error() {
+    let w = FakeSystemWiring::new("ext1", "conflicting", "ext1_behavior");
+    let os = AgentOs::builder()
+        .with_system_wiring(Arc::new(w))
+        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_tools(HashMap::from([(
+            "conflicting".to_string(),
+            Arc::new(StubTool("conflicting"))
+                as Arc<dyn crate::contracts::runtime::tool_call::Tool>,
+        )]))
+        .build()
+        .unwrap();
+
+    let err = os.resolve("a1").err().unwrap();
+    assert!(
+        matches!(
+            err,
+            AgentOsResolveError::Wiring(AgentOsWiringError::BundleToolIdConflict {
+                ref id, ..
+            }) if id == "conflicting"
+        ),
+        "custom wiring tool conflict should return BundleToolIdConflict: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn cross_wiring_tool_conflict_detected() {
+    let w1 = FakeSystemWiring::new("ext1", "shared_tool", "ext1_behavior");
+    let w2 = FakeSystemWiring::new("ext2", "shared_tool", "ext2_behavior");
+    let os = AgentOs::builder()
+        .with_system_wiring(Arc::new(w1))
+        .with_system_wiring(Arc::new(w2))
+        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .build()
+        .unwrap();
+
+    let err = os.resolve("a1").err().unwrap();
+    assert!(
+        matches!(
+            err,
+            AgentOsResolveError::Wiring(AgentOsWiringError::BundleToolIdConflict {
+                ref id, ..
+            }) if id == "shared_tool"
+        ),
+        "cross-wiring tool conflict should be detected: {err:?}"
+    );
+}
+
+#[test]
+fn reserved_behavior_ids_without_wirings() {
+    let ids = AgentOs::reserved_behavior_ids(&[]);
+    assert!(ids.contains(&"agent_tools"));
+    assert!(ids.contains(&"agent_recovery"));
+    assert!(ids.contains(&"stop_policy"));
+    assert_eq!(ids.len(), 3, "only internal reserved ids: {ids:?}");
+}
+
+#[test]
+fn reserved_behavior_ids_aggregates_from_wirings() {
+    static R1: &[&str] = &["ext1_reserved_a", "ext1_reserved_b"];
+    static R2: &[&str] = &["ext2_reserved"];
+    let w1 = FakeSystemWiring::new("ext1", "t1", "b1").with_reserved(R1);
+    let w2 = FakeSystemWiring::new("ext2", "t2", "b2").with_reserved(R2);
+    let wirings: Vec<Arc<dyn SystemWiring>> = vec![Arc::new(w1), Arc::new(w2)];
+    let ids = AgentOs::reserved_behavior_ids(&wirings);
+    assert!(ids.contains(&"agent_tools"));
+    assert!(ids.contains(&"agent_recovery"));
+    assert!(ids.contains(&"stop_policy"));
+    assert!(ids.contains(&"ext1_reserved_a"));
+    assert!(ids.contains(&"ext1_reserved_b"));
+    assert!(ids.contains(&"ext2_reserved"));
+    assert_eq!(ids.len(), 6, "should aggregate all reserved ids: {ids:?}");
+}
+
