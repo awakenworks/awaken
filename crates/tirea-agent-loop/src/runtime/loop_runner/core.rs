@@ -102,7 +102,78 @@ pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec
         messages.push((**msg).clone());
     }
 
+    // Patch dangling assistant tool_calls that have no matching tool result.
+    // This happens when a run is interrupted after issuing tool_calls but before
+    // tool results are saved. Providers like DeepSeek require every tool_call to
+    // have a corresponding tool result message.
+    patch_dangling_tool_calls(&mut messages);
+
     messages
+}
+
+/// Ensure every assistant tool_call has a matching tool result message.
+///
+/// Scans the message list for assistant messages with `tool_calls` and checks
+/// that each call ID appears in a subsequent tool result. For any missing
+/// results, a synthetic "interrupted" tool result is inserted immediately
+/// after the last tool result for that assistant turn (or right after the
+/// assistant message if no results exist for that turn at all).
+fn patch_dangling_tool_calls(messages: &mut Vec<Message>) {
+    // Collect all tool result call IDs for quick lookup.
+    let result_ids: HashSet<String> = messages
+        .iter()
+        .filter(|m| m.role == Role::Tool)
+        .filter_map(|m| m.tool_call_id.clone())
+        .collect();
+
+    // Find insertion points (index, synthetic messages to insert).
+    // We walk forward: for each assistant message with tool_calls, find the
+    // last contiguous tool result message belonging to this turn, then insert
+    // synthetic results for any missing call IDs right after it.
+    let mut insertions: Vec<(usize, Vec<Message>)> = Vec::new();
+
+    let mut i = 0;
+    while i < messages.len() {
+        let msg = &messages[i];
+        if msg.role == Role::Assistant {
+            if let Some(ref calls) = msg.tool_calls {
+                let call_ids: Vec<&str> = calls.iter().map(|tc| tc.id.as_str()).collect();
+                let missing: Vec<&str> = call_ids
+                    .iter()
+                    .filter(|id| !result_ids.contains(**id))
+                    .copied()
+                    .collect();
+
+                if !missing.is_empty() {
+                    // Find the insertion point: skip past any tool result messages
+                    // that immediately follow this assistant message.
+                    let mut insert_at = i + 1;
+                    while insert_at < messages.len() && messages[insert_at].role == Role::Tool {
+                        insert_at += 1;
+                    }
+                    let synthetic: Vec<Message> = missing
+                        .into_iter()
+                        .map(|id| {
+                            Message::tool(
+                                id,
+                                "[Tool execution was interrupted before producing a result.]",
+                            )
+                        })
+                        .collect();
+                    insertions.push((insert_at, synthetic));
+                }
+            }
+        }
+        i += 1;
+    }
+
+    // Apply insertions in reverse order to preserve indices.
+    for (idx, msgs) in insertions.into_iter().rev() {
+        let idx = idx.min(messages.len());
+        for (offset, msg) in msgs.into_iter().enumerate() {
+            messages.insert(idx + offset, msg);
+        }
+    }
 }
 
 pub(super) type InferenceInputs = (
@@ -384,6 +455,96 @@ mod tests {
             },
         );
         assert!(transitioned.is_none(), "terminal state should not reopen");
+    }
+
+    #[test]
+    fn patch_dangling_tool_calls_adds_synthetic_results() {
+        use crate::contracts::thread::ToolCall;
+
+        let mut messages = vec![
+            Message::user("hi"),
+            Message::assistant_with_tool_calls(
+                "let me check",
+                vec![
+                    ToolCall::new("c1", "search", json!({"q": "x"})),
+                    ToolCall::new("c2", "fetch", json!({"url": "y"})),
+                ],
+            ),
+            // Only c1 has a result; c2 is dangling
+            Message::tool("c1", "found it"),
+        ];
+
+        patch_dangling_tool_calls(&mut messages);
+
+        // c2 should have a synthetic result inserted after c1's result
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[3].role, Role::Tool);
+        assert_eq!(messages[3].tool_call_id.as_deref(), Some("c2"));
+        assert!(messages[3].content.contains("interrupted"));
+    }
+
+    #[test]
+    fn patch_dangling_tool_calls_handles_end_of_history() {
+        use crate::contracts::thread::ToolCall;
+
+        let mut messages = vec![
+            Message::user("do something"),
+            Message::assistant_with_tool_calls(
+                "calling tool",
+                vec![ToolCall::new("c1", "search", json!({}))],
+            ),
+            // No tool results at all — run was interrupted
+        ];
+
+        patch_dangling_tool_calls(&mut messages);
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[2].role, Role::Tool);
+        assert_eq!(messages[2].tool_call_id.as_deref(), Some("c1"));
+    }
+
+    #[test]
+    fn patch_dangling_tool_calls_in_middle_of_history() {
+        use crate::contracts::thread::ToolCall;
+
+        let mut messages = vec![
+            Message::user("first"),
+            Message::assistant_with_tool_calls(
+                "calling",
+                vec![ToolCall::new("c1", "t", json!({}))],
+            ),
+            // c1 is dangling, then user starts new conversation
+            Message::user("second"),
+            Message::assistant("ok"),
+        ];
+
+        patch_dangling_tool_calls(&mut messages);
+
+        // Synthetic result for c1 should be inserted at index 2 (before "second")
+        assert_eq!(messages.len(), 5);
+        assert_eq!(messages[2].role, Role::Tool);
+        assert_eq!(messages[2].tool_call_id.as_deref(), Some("c1"));
+        assert_eq!(messages[3].role, Role::User);
+        assert_eq!(messages[4].role, Role::Assistant);
+    }
+
+    #[test]
+    fn patch_dangling_tool_calls_no_op_when_complete() {
+        use crate::contracts::thread::ToolCall;
+
+        let mut messages = vec![
+            Message::user("hi"),
+            Message::assistant_with_tool_calls(
+                "calling",
+                vec![ToolCall::new("c1", "t", json!({}))],
+            ),
+            Message::tool("c1", "result"),
+            Message::assistant("done"),
+        ];
+
+        let len_before = messages.len();
+        patch_dangling_tool_calls(&mut messages);
+        assert_eq!(messages.len(), len_before, "no synthetic results needed");
     }
 
     #[test]
