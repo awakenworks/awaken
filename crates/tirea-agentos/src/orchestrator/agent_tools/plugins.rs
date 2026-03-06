@@ -5,7 +5,16 @@ use crate::contracts::runtime::phase::{
     ActionSet, AfterToolExecuteAction, BeforeInferenceAction, LifecycleAction,
 };
 use crate::contracts::runtime::state::AnyStateAction;
+#[cfg(feature = "permission")]
 use tirea_extension_permission::resolve_permission_behavior;
+
+#[cfg(not(feature = "permission"))]
+fn resolve_permission_behavior(
+    _state: &serde_json::Value,
+    _action: &str,
+) -> ToolPermissionBehavior {
+    ToolPermissionBehavior::Allow
+}
 
 pub struct AgentRecoveryPlugin {
     handles: Arc<SubAgentHandleTable>,

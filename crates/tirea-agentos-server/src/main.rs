@@ -14,6 +14,7 @@ use tirea_agentos_server::service::AppState;
 use tirea_agentos_server::{http, protocol};
 use tirea_contract::runtime::tool_call::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_contract::runtime::tool_call::ToolCallContext;
+#[cfg(feature = "permission")]
 use tirea_extension_permission::{PermissionPlugin, ToolPolicyPlugin};
 use tirea_store_adapters::{FileRunStore, FileStore};
 
@@ -207,10 +208,14 @@ fn build_os(
     write_store: Arc<dyn ThreadStore>,
 ) -> AgentOs {
     let mut builder = AgentOsBuilder::new()
-        .with_agent_state_store(write_store)
-        .with_registered_behavior("tool_policy", Arc::new(ToolPolicyPlugin))
-        .with_registered_behavior("permission", Arc::new(PermissionPlugin))
-        .with_tools({
+        .with_agent_state_store(write_store);
+    #[cfg(feature = "permission")]
+    {
+        builder = builder
+            .with_registered_behavior("tool_policy", Arc::new(ToolPolicyPlugin))
+            .with_registered_behavior("permission", Arc::new(PermissionPlugin));
+    }
+    builder = builder.with_tools({
             let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
             tools.insert("serverInfo".to_string(), Arc::new(ServerInfoTool));
             tools.insert("failingTool".to_string(), Arc::new(FailingTool));

@@ -8,7 +8,7 @@ description = "HTTP/SSE/NATS gateway for tirea AgentOs"
 
 [dependencies]
 tirea-contract = { version = "0.2.0", path = "../tirea-contract" }
-tirea-extension-permission = { version = "0.2.0", path = "../tirea-extension-permission" }
+tirea-extension-permission = { version = "0.2.0", path = "../tirea-extension-permission", optional = true }
 tirea-agentos = { version = "0.2.0", path = "../tirea-agentos" }
 tirea-protocol-ag-ui = { version = "0.2.0", path = "../tirea-protocol-ag-ui" }
 tirea-protocol-ai-sdk-v6 = { version = "0.2.0", path = "../tirea-protocol-ai-sdk-v6" }
@@ -32,6 +32,10 @@ tracing = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
 async-nats = "0.38"
 genai = "0.5"
+
+[features]
+default = ["permission"]
+permission = ["dep:tirea-extension-permission", "tirea-agentos/permission"]
 
 [dev-dependencies]
 tirea-contract = { version = "0.2.0", path = "../tirea-contract", features = ["test-support"] }

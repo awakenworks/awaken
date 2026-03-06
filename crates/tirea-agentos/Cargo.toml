@@ -10,7 +10,7 @@ repository.workspace = true
 tirea-state = { version = "0.2.0", path = "../tirea-state" }
 tirea-contract = { version = "0.2.0", path = "../tirea-contract" }
 tirea-agent-loop = { version = "0.2.0", path = "../tirea-agent-loop" }
-tirea-extension-permission = { version = "0.2.0", path = "../tirea-extension-permission" }
+tirea-extension-permission = { version = "0.2.0", path = "../tirea-extension-permission", optional = true }
 tirea-extension-reminder = { version = "0.2.0", path = "../tirea-extension-reminder", optional = true }
 tirea-extension-observability = { version = "0.2.0", path = "../tirea-extension-observability", optional = true }
 tirea-extension-skills = { version = "0.2.0", path = "../tirea-extension-skills" }
@@ -25,7 +25,8 @@ futures = "0.3"
 uuid = { version = "1", features = ["v4", "v7"] }
 
 [features]
-default = ["reminder", "observability"]
+default = ["permission", "reminder", "observability"]
+permission = ["dep:tirea-extension-permission"]
 reminder = ["dep:tirea-extension-reminder"]
 observability = ["dep:tirea-extension-observability"]
 mcp = ["dep:tirea-extension-mcp"]
