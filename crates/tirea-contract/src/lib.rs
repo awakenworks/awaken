@@ -112,6 +112,7 @@ pub mod testing;
 
 pub mod io;
 pub mod runtime;
+pub mod scope;
 pub mod storage;
 pub mod thread;
 pub mod transport;

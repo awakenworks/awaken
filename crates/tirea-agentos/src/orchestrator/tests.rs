@@ -1149,7 +1149,7 @@ fn resolve_sets_runtime_caller_agent_id() {
     assert_eq!(
         resolved
             .run_config
-            .value(tirea_extension_skills::SCOPE_ALLOWED_SKILLS_KEY),
+            .value(tirea_contract::scope::SCOPE_ALLOWED_SKILLS_KEY),
         Some(&json!(["s1"]))
     );
     assert_eq!(
@@ -1161,7 +1161,7 @@ fn resolve_sets_runtime_caller_agent_id() {
     assert_eq!(
         resolved
             .run_config
-            .value(tirea_extension_permission::SCOPE_ALLOWED_TOOLS_KEY),
+            .value(tirea_contract::scope::SCOPE_ALLOWED_TOOLS_KEY),
         Some(&json!(["echo"]))
     );
 }

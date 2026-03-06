@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tirea_contract::RunConfig;
 
-pub(super) use tirea_extension_permission::{
+pub(super) use tirea_contract::scope::{
     is_id_allowed, is_scope_allowed, SCOPE_ALLOWED_AGENTS_KEY, SCOPE_ALLOWED_SKILLS_KEY,
     SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_AGENTS_KEY, SCOPE_EXCLUDED_SKILLS_KEY,
     SCOPE_EXCLUDED_TOOLS_KEY,
