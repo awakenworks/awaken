@@ -1,1 +1,0 @@
-{"version":3,"sources":["../../src/types/document-pointer.ts"],"sourcesContent":["export interface DocumentPointer {\n  id: string;\n  name: string;\n  sourceApplication: string;\n  iconImageUri: string;\n  getContents: () => string;\n}\n"],"mappings":";;;;;;;;;;;;;;;;AAAA;AAAA;","names":[]}

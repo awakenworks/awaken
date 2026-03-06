@@ -18,6 +18,9 @@ threads/
 # Next.js build artifacts
 **/.next/
 
+# Node.js dependencies
+**/node_modules/
+
 # mdbook-mermaid generated assets
 docs/book/mermaid.min.js
 docs/book/mermaid-init.js

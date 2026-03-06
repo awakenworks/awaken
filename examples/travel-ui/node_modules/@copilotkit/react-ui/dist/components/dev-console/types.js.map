@@ -1,1 +1,0 @@
-{"version":3,"sources":["../../../src/components/dev-console/types.ts"],"sourcesContent":["export interface CopilotKitVersion {\n  current: string;\n  latest: string;\n  severity: \"low\" | \"medium\" | \"high\";\n  advisory: string | null;\n  lastChecked: number;\n}\n"],"mappings":";;;;;;;;;;;;;;;;AAAA;AAAA;","names":[]}
