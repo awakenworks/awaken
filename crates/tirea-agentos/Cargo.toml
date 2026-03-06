@@ -11,8 +11,8 @@ tirea-state = { version = "0.2.0", path = "../tirea-state" }
 tirea-contract = { version = "0.2.0", path = "../tirea-contract" }
 tirea-agent-loop = { version = "0.2.0", path = "../tirea-agent-loop" }
 tirea-extension-permission = { version = "0.2.0", path = "../tirea-extension-permission" }
-tirea-extension-reminder = { version = "0.2.0", path = "../tirea-extension-reminder" }
-tirea-extension-observability = { version = "0.2.0", path = "../tirea-extension-observability" }
+tirea-extension-reminder = { version = "0.2.0", path = "../tirea-extension-reminder", optional = true }
+tirea-extension-observability = { version = "0.2.0", path = "../tirea-extension-observability", optional = true }
 tirea-extension-skills = { version = "0.2.0", path = "../tirea-extension-skills" }
 tirea-extension-mcp = { version = "0.2.0", path = "../tirea-extension-mcp", optional = true }
 serde = { version = "1", features = ["derive"] }
@@ -25,7 +25,9 @@ futures = "0.3"
 uuid = { version = "1", features = ["v4", "v7"] }
 
 [features]
-default = []
+default = ["reminder", "observability"]
+reminder = ["dep:tirea-extension-reminder"]
+observability = ["dep:tirea-extension-observability"]
 mcp = ["dep:tirea-extension-mcp"]
 
 [dev-dependencies]
@@ -34,6 +36,7 @@ tirea-store-adapters = { version = "0.2.0", path = "../tirea-store-adapters" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
 tempfile = "3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }
 
 [lints]
 workspace = true
