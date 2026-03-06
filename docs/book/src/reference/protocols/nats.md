@@ -1,13 +1,17 @@
 # NATS Protocol
 
-Gateway subjects:
+NATS gateway exposes protocol-encoded run streaming over request/reply subjects.
+
+## Subjects
+
+Default subjects:
 
 - `agentos.ag-ui.runs`
 - `agentos.ai-sdk.runs`
 
 ## Request Payloads
 
-AG-UI subject payload:
+AG-UI payload:
 
 ```json
 {
@@ -15,16 +19,14 @@ AG-UI subject payload:
   "request": {
     "threadId": "t1",
     "runId": "r1",
-    "messages": [
-      { "role": "user", "content": "hello" }
-    ],
+    "messages": [{ "role": "user", "content": "hello" }],
     "tools": []
   },
   "replySubject": "_INBOX.x"
 }
 ```
 
-AI SDK subject payload:
+AI SDK payload (NATS path):
 
 ```json
 {
@@ -36,15 +38,31 @@ AI SDK subject payload:
 }
 ```
 
+Note: AI SDK NATS currently uses `sessionId/input`, while AI SDK HTTP v6 UI route uses `id/messages`.
+
+## Reply Subject Resolution
+
+Gateway chooses reply target in this order:
+
+1. NATS message reply inbox (`msg.reply`)
+2. payload `replySubject`
+
+If both are missing, request is rejected with `missing reply subject`.
+
 ## Reply Behavior
 
-- Gateway publishes protocol-encoded run events to the reply subject.
-- Reply subject can come from NATS message reply inbox or payload `replySubject`.
-- If both are missing, request is rejected (`missing reply subject`).
-- If request is invalid or agent resolve fails, gateway publishes one error event.
+- Request starts run and publishes protocol events to reply subject.
+- Invalid request or agent resolution failure publishes one protocol error event.
+- AG-UI replies use AG-UI event encoding.
+- AI SDK replies use AI SDK UI stream event encoding.
 
 ## Operational Notes
 
-- NATS is transport only; run semantics still follow canonical `AgentEvent` lifecycle.
-- AG-UI streams terminate with AG-UI run-finished events.
-- AI SDK streams terminate with AI SDK finish semantics.
+- NATS is transport only; run lifecycle remains canonical `AgentEvent`-driven.
+- Run tracking/projection still uses configured run service/store.
+
+## Related
+
+- [Expose NATS](../../how-to/expose-nats.md)
+- [AG-UI Protocol](./ag-ui.md)
+- [AI SDK v6 Protocol](./ai-sdk-v6.md)

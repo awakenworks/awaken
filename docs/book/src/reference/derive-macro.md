@@ -1,122 +1,100 @@
 # Derive Macro Reference
 
-The `#[derive(State)]` macro generates typed state references with getter/setter methods and automatic patch collection.
+`#[derive(State)]` generates typed state refs, patch collection, and optional reducer wiring.
 
 ## Basic Usage
 
 ```rust,ignore
+use serde::{Deserialize, Serialize};
 use tirea_state::State;
 use tirea_state_derive::State;
-use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, State)]
-struct User {
-    name: String,
-    age: i64,
+#[tirea(path = "counter", action = "CounterAction", scope = "run")]
+struct Counter {
+    value: i64,
 }
 ```
 
-This generates:
+## Struct Attributes
 
-- `UserRef<'a>` — Typed reference with `name()`, `set_name()`, `age()`, `set_age()`, `increment_age()`
-- `impl State for User` — Enables `ctx.state::<User>(path)`
+### `#[tirea(path = "...")]`
+
+Sets canonical state path used by `State::PATH` and `state_of::<T>()`.
+
+### `#[tirea(action = "TypeName")]`
+
+Generates `impl StateSpec for T` with `type Action = TypeName`, delegating reducer to inherent `fn reduce(&mut self, action)`.
+
+### `#[tirea(scope = "thread|run|tool_call")]`
+
+When `action` is set, also generates `StateSpec::SCOPE`.
+
+- default: `thread`
+- valid values: `thread`, `run`, `tool_call`
 
 ## Field Attributes
 
-### `#[tirea(rename = "json_name")]`
+### `#[tirea(rename = "json_key")]`
 
-Use a different key name in the JSON document:
-
-```rust,ignore
-#[derive(State)]
-struct Config {
-    #[tirea(rename = "display_name")]
-    label: String,
-}
-// Reads/writes JSON key "display_name", Rust field is "label"
-```
+Maps Rust field to different JSON key.
 
 ### `#[tirea(default = "expr")]`
 
-Provide a default value expression when the field is missing from JSON:
-
-```rust,ignore
-#[derive(State)]
-struct Settings {
-    #[tirea(default = "60")]
-    timeout_secs: i64,
-
-    #[tirea(default = "\"en\".to_string()")]
-    language: String,
-}
-```
+Uses expression when field is missing.
 
 ### `#[tirea(skip)]`
 
-Exclude a field from the state ref. The field must implement `Default`:
-
-```rust,ignore
-#[derive(State)]
-struct Record {
-    data: String,
-    #[tirea(skip)]
-    _internal: Vec<u8>,  // not accessible via RecordRef
-}
-```
+Excludes field from generated ref API.
 
 ### `#[tirea(nested)]`
 
-Treat a struct field as nested state with its own typed ref:
-
-```rust,ignore
-#[derive(State)]
-struct User {
-    name: String,
-    #[tirea(nested)]
-    profile: Profile,
-}
-
-#[derive(State)]
-struct Profile {
-    bio: String,
-    avatar_url: String,
-}
-
-// Usage: user.profile().bio()?
-```
-
-Without `#[tirea(nested)]`, the field is treated as a whole JSON value (serialized/deserialized as one unit).
+Treats field type as nested `State`, returning nested ref accessors.
 
 ### `#[tirea(flatten)]`
 
-Flatten nested struct fields into the parent JSON object:
+Flattens nested struct fields into parent object.
 
-```rust,ignore
-#[derive(State)]
-struct Event {
-    name: String,
-    #[tirea(flatten)]
-    metadata: Metadata,
-}
+### `#[tirea(lattice)]`
 
-#[derive(State)]
-struct Metadata {
-    created_at: String,
-    updated_at: String,
-}
+Marks field as CRDT/lattice field.
 
-// JSON: {"name": "...", "created_at": "...", "updated_at": "..."}
-// No nesting in the JSON document
-```
+Generated behavior:
 
-## Generated Methods
+- field diff emits `Op::LatticeMerge`
+- generated ref includes `merge_<field>(&T)` helper
+- `register_lattice(...)` and `lattice_keys()` are emitted for this type
 
-For a field `value: i64`, the generated `Ref` type provides:
+## Validation Rules
 
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `value()` | `fn value(&self) -> TireaResult<i64>` | Read current value |
-| `set_value()` | `fn set_value(&self, v: i64)` | Set value (collects patch) |
-| `increment_value()` | `fn increment_value(&self, amount: impl Into<Number>)` | Increment (numeric fields) |
+Compile-time errors are raised for invalid combinations:
 
-For `String` and other non-numeric types, only `field()` and `set_field()` are generated.
+- `flatten` + `rename`
+- `lattice` + `nested`
+- `lattice` + `flatten`
+- `lattice` on `Option<T>`, `Vec<T>`, `Map<K,V>`
+- `flatten` on non-struct/non-`State` field
+
+## Generated API Shape
+
+For included fields, macro generates typed methods on `YourTypeRef<'a>` such as:
+
+- readers: `field()`
+- setters: `set_field(...)`
+- optional helpers: `field_none()`
+- vec helpers: `field_push(...)`
+- map helpers (`String` key): `field_insert(key, value)`
+- numeric helpers: `increment_field(...)`, `decrement_field(...)`
+- delete helpers: `delete_field()`
+- nested refs: `nested_field()`
+
+Exact method set depends on field type and attributes.
+
+## Generated Trait Implementations
+
+- `impl State for T`
+- `type Ref<'a> = TRef<'a>`
+- `const PATH: &'static str`
+- `from_value` / `to_value`
+- optimized `diff_ops` (field-level)
+- optional `impl StateSpec` when `action` is configured

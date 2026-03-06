@@ -1,12 +1,12 @@
 # Operations
 
-Operations (`Op`) are the atomic units of state change. Each operation targets a specific path in the JSON document.
+Operations (`Op`) are atomic state mutations against JSON paths.
 
 ## Operation Types
 
 ### `Set`
 
-Set a value at the given path. Creates intermediate objects if they don't exist.
+Set a value at path. Creates intermediate objects when needed.
 
 ```rust
 use tirea_state::{Op, path};
@@ -15,11 +15,9 @@ use serde_json::json;
 let op = Op::set(path!("user", "name"), json!("Alice"));
 ```
 
-**Error**: `IndexOutOfBounds` if an array index in the path is out of range.
-
 ### `Delete`
 
-Remove the value at the given path. No-op if the path doesn't exist.
+Delete value at path. No-op when path is absent.
 
 ```rust
 use tirea_state::{Op, path};
@@ -29,7 +27,7 @@ let op = Op::delete(path!("user", "temp_field"));
 
 ### `Append`
 
-Append a value to an array. Creates the array if the path doesn't exist.
+Append to array. Creates array when absent.
 
 ```rust
 use tirea_state::{Op, path};
@@ -38,11 +36,11 @@ use serde_json::json;
 let op = Op::append(path!("user", "roles"), json!("admin"));
 ```
 
-**Error**: `AppendRequiresArray` if the target exists but is not an array.
+Error: `AppendRequiresArray` when target exists but is not array.
 
 ### `MergeObject`
 
-Merge key-value pairs into an existing object. Creates the object if it doesn't exist.
+Shallow-merge object keys into target object.
 
 ```rust
 use tirea_state::{Op, path};
@@ -51,35 +49,24 @@ use serde_json::json;
 let op = Op::merge_object(path!("user", "settings"), json!({"theme": "dark"}));
 ```
 
-**Error**: `MergeRequiresObject` if the target exists but is not an object.
+Error: `MergeRequiresObject` when target is not object.
 
-### `Increment`
+### `Increment` / `Decrement`
 
-Add to a numeric value.
-
-```rust
-use tirea_state::{Op, path};
-
-let op = Op::increment(path!("counter"), 1i64);
-```
-
-**Error**: `NumericOperationOnNonNumber` if the target is not a number.
-
-### `Decrement`
-
-Subtract from a numeric value.
+Numeric arithmetic on existing numeric value.
 
 ```rust
 use tirea_state::{Op, path};
 
-let op = Op::decrement(path!("counter"), 1i64);
+let inc = Op::increment(path!("counter"), 1i64);
+let dec = Op::decrement(path!("counter"), 1i64);
 ```
 
-**Error**: `NumericOperationOnNonNumber` if the target is not a number.
+Error: `NumericOperationOnNonNumber`.
 
 ### `Insert`
 
-Insert a value at a specific index in an array, shifting elements to the right.
+Insert into array index (shift right).
 
 ```rust
 use tirea_state::{Op, path};
@@ -88,11 +75,11 @@ use serde_json::json;
 let op = Op::insert(path!("items"), 0, json!("first"));
 ```
 
-**Error**: `IndexOutOfBounds` if the index exceeds the array length.
+Error: `IndexOutOfBounds`.
 
 ### `Remove`
 
-Remove the first occurrence of a value from an array. No-op if the value is not found.
+Remove first matching array element.
 
 ```rust
 use tirea_state::{Op, path};
@@ -101,9 +88,25 @@ use serde_json::json;
 let op = Op::remove(path!("tags"), json!("deprecated"));
 ```
 
+### `LatticeMerge`
+
+Merge CRDT/lattice delta at path.
+
+```rust
+use tirea_state::{Op, path};
+use serde_json::json;
+
+let op = Op::lattice_merge(path!("permission_policy", "allowed_tools"), json!(["search"]));
+```
+
+Behavior:
+
+- with `LatticeRegistry`: performs registered lattice merge
+- without registry: falls back to `Set` semantics
+
 ## Number Type
 
-Numeric operations use the `Number` enum:
+Numeric ops use `Number`:
 
 ```rust,ignore
 pub enum Number {
@@ -112,27 +115,30 @@ pub enum Number {
 }
 ```
 
-Conversions from `i32`, `i64`, `u32`, `u64`, `f32`, `f64` are provided via `From` implementations. Use `as_i64()` and `as_f64()` for access.
+`From` is implemented for `i32`, `i64`, `u32`, `u64`, `f32`, `f64`.
 
 ## Paths
 
-The `path!` macro creates paths from segments:
+`path!` builds path segments:
 
 ```rust
 use tirea_state::path;
 
-let p = path!("users", 0, "name");    // users[0].name
-let p = path!("settings", "theme");    // settings.theme
+let p = path!("users", 0, "name");
+let p = path!("settings", "theme");
 ```
 
-Path segments can be strings (object keys) or integers (array indices).
+## Apply Semantics
+
+- `apply_patch` / `apply_patches`: plain op application
+- `apply_patch_with_registry` / `apply_patches_with_registry`: enables lattice-aware merge for `Op::LatticeMerge`
 
 ## Serialization
 
-Operations serialize to JSON with a `"op"` discriminator:
+`Op` serializes with `op` discriminator:
 
 ```json
-{"op": "set", "path": ["user", "name"], "value": "Alice"}
-{"op": "increment", "path": ["counter"], "amount": 1}
-{"op": "delete", "path": ["temp"]}
+{"op":"set","path":["user","name"],"value":"Alice"}
+{"op":"increment","path":["counter"],"amount":1}
+{"op":"lattice_merge","path":["permission_policy","allowed_tools"],"value":["search"]}
 ```

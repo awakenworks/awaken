@@ -1,131 +1,131 @@
 # Integrate AI SDK Frontend
 
-Use this when your web app uses `@ai-sdk/react` and you want to connect it to `tirea-agentos-server`.
+Use this when your web app uses `@ai-sdk/react` and backend is `tirea-agentos-server`.
 
 ## Prerequisites
 
-- `tirea-agentos-server` is reachable (default `http://localhost:8080`).
-- You are building a Next.js frontend.
-- AI SDK endpoint is enabled:
+- Backend is reachable (default `http://localhost:8080`).
+- AI SDK routes are enabled:
   - `POST /v1/ai-sdk/agents/:agent_id/runs`
+  - `GET /v1/ai-sdk/agents/:agent_id/runs/:chat_id/stream`
   - `GET /v1/ai-sdk/threads/:id/messages`
 
 ## Steps
 
-1. Add dependencies in your frontend:
+1. Install frontend deps.
 
 ```bash
 npm install @ai-sdk/react ai
 ```
 
-2. Create `app/api/chat/route.ts` as an SSE pass-through.
-
-This route maps AI SDK UI messages to the backend request format (`sessionId`, `input`, `runId`):
+2. Create `app/api/chat/route.ts` as pass-through proxy.
 
 ```ts,ignore
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8080";
 const AGENT_ID = process.env.AGENT_ID ?? "default";
 
 export async function POST(req: Request) {
-  const body = await req.json();
-  const { messages, agentId } = body;
-  const agent = agentId || AGENT_ID;
-  const sessionId = req.headers.get("x-session-id") || `ai-sdk-${crypto.randomUUID()}`;
+  const incoming = await req.json();
+  const agentId = incoming.agentId ?? AGENT_ID;
 
-  const lastUserMsg = [...messages].reverse().find((m: { role: string }) => m.role === "user");
-  if (!lastUserMsg) return new Response("No user message found", { status: 400 });
+  const sessionId =
+    req.headers.get("x-session-id") ??
+    incoming.id ??
+    `ai-sdk-${crypto.randomUUID()}`;
 
-  let input: string;
-  if (typeof lastUserMsg.content === "string") {
-    input = lastUserMsg.content;
-  } else if (Array.isArray(lastUserMsg.parts)) {
-    input = lastUserMsg.parts
-      .filter((p: { type: string }) => p.type === "text")
-      .map((p: { text: string }) => p.text)
-      .join("");
-  } else {
-    return new Response("Could not extract message text", { status: 400 });
+  const upstream = await fetch(
+    `${BACKEND_URL}/v1/ai-sdk/agents/${agentId}/runs`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...incoming, id: sessionId }),
+    },
+  );
+
+  if (!upstream.ok) {
+    return new Response(await upstream.text(), { status: upstream.status });
   }
-
-  const upstream = await fetch(`${BACKEND_URL}/v1/ai-sdk/agents/${agent}/runs`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId, input, runId: crypto.randomUUID() }),
-  });
-
-  if (!upstream.ok) return new Response(await upstream.text(), { status: upstream.status });
-  if (!upstream.body) return new Response("No response body from backend", { status: 502 });
+  if (!upstream.body) {
+    return new Response("upstream body missing", { status: 502 });
+  }
 
   return new Response(upstream.body, {
     headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-      "X-Vercel-AI-UI-Message-Stream": "v1",
-      "X-Session-Id": sessionId,
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+      "x-vercel-ai-ui-message-stream": "v1",
+      "x-session-id": sessionId,
     },
   });
 }
 ```
 
-3. Use `useChat` with `DefaultChatTransport` in your page.
+3. Build transport with explicit `id/messages` payload.
 
 ```tsx,ignore
 "use client";
 
+import { useMemo } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { useMemo } from "react";
 
 export default function ChatPage() {
   const sessionId = "ai-sdk-demo-session";
+
   const transport = useMemo(
-    () => new DefaultChatTransport({ headers: { "x-session-id": sessionId } }),
+    () =>
+      new DefaultChatTransport({
+        api: "/api/chat",
+        headers: { "x-session-id": sessionId },
+        prepareSendMessagesRequest: ({ messages, trigger, messageId }) => {
+          const lastAssistantIndex = (() => {
+            for (let i = messages.length - 1; i >= 0; i -= 1) {
+              if (messages[i]?.role === "assistant") return i;
+            }
+            return -1;
+          })();
+
+          const newUserMessages = messages
+            .slice(lastAssistantIndex + 1)
+            .filter((m) => m.role === "user");
+
+          return {
+            body: {
+              id: sessionId,
+              runId: crypto.randomUUID(),
+              messages: trigger === "regenerate-message" ? [] : newUserMessages,
+              ...(trigger ? { trigger } : {}),
+              ...(messageId ? { messageId } : {}),
+            },
+          };
+        },
+      }),
     [sessionId],
   );
 
   const { messages, sendMessage, status } = useChat({ transport });
-  // render messages and submit input via sendMessage({ text })
+  // render + sendMessage({ text })
 }
 ```
 
-### Optional: consume tool-call progress data
-
-`tirea-agentos-server` emits tool progress as `data-activity-snapshot`
-with `activityType = "tool-call-progress"`.
-
-```ts,ignore
-const { messages } = useChat({
-  transport,
-  onData(part) {
-    if (part.type !== "data-activity-snapshot") return;
-    const payload = part.data as any;
-    if (payload?.activityType !== "tool-call-progress") return;
-    const node = payload.content;
-    console.log("tool progress", node.node_id, node.status, node.progress);
-  },
-});
-```
-
-4. Optional: add `app/api/history/route.ts` that proxies
-`GET /v1/ai-sdk/threads/:id/messages` to preload history.
+4. Optional: load history from `GET /v1/ai-sdk/threads/:id/messages` before first render.
 
 ## Verify
 
-- `POST /api/chat` returns `text/event-stream`.
-- Response includes `X-Vercel-AI-UI-Message-Stream: v1`.
-- UI displays token streaming and final assistant output.
-- Reload with same session id replays history (if history proxy is enabled).
+- `/api/chat` responds with `text/event-stream`.
+- Response includes `x-vercel-ai-ui-message-stream: v1`.
+- Normal chat streams tokens.
+- Regenerate flow (`trigger=regenerate-message`) works with `messageId`.
 
 ## Common Errors
 
-- `400` No user message found: route failed to extract latest user input from `messages`.
-- `400` from backend for empty `input` or `sessionId`.
-- Missing stream headers causes client not to parse AI SDK stream correctly.
+- Sending legacy `sessionId/input` payload to backend HTTP v6 route.
+- Missing `id` (thread id) in forwarded payload.
+- Missing stream headers, causing client parser failures.
 
 ## Related
 
 - [AI SDK v6 Protocol](../reference/protocols/ai-sdk-v6.md)
 - [HTTP API](../reference/http-api.md)
-- `examples/ai-sdk-starter/README.md`
-- `examples/ai-sdk-starter/app/api/chat/route.ts`
+- `examples/ai-sdk-starter/src/lib/transport.ts`

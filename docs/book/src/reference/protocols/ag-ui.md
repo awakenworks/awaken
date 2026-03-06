@@ -1,41 +1,77 @@
 # AG-UI Protocol
 
-Endpoint:
+## Endpoints
 
 - `POST /v1/ag-ui/agents/:agent_id/runs`
+- `GET /v1/ag-ui/threads/:id/messages`
 
-## Request
+## Request Model (`RunAgentInput`)
 
-Core fields (`RunAgentRequest`):
+Required:
 
-- `threadId` (required)
-- `runId` (required)
+- `threadId`
+- `runId`
+
+Core optional fields:
+
 - `messages`
 - `tools`
-- `context` (optional)
-- `state` (optional)
-- `parentRunId`, `model`, `systemPrompt`, `config` (optional)
+- `context`
+- `state`
+- `parentRunId`
+- `parentThreadId`
+- `model`
+- `systemPrompt`
+- `config`
+- `forwardedProps`
 
-Minimal example:
+Minimal request:
 
 ```json
 {
   "threadId": "thread-1",
   "runId": "run-1",
-  "messages": [
-    { "role": "user", "content": "Plan my weekend" }
-  ],
+  "messages": [{ "role": "user", "content": "Plan my weekend" }],
   "tools": []
+}
+```
+
+## Runtime Mapping
+
+- `RunAgentInput` is converted to internal `RunRequest`.
+- `model` / `systemPrompt` override resolved agent defaults for this run.
+- `config` can override tool execution mode and selected chat options.
+- `forwardedProps` and `config` are preserved in run scope (`agui_forwarded_props`, `agui_config`).
+
+### Frontend tools
+
+When `tools[].execute = "frontend"`:
+
+- backend registers runtime stub descriptors
+- execution is suspended and returned as pending call
+- client decisions are consumed as tool result (`resume`) or denial (`cancel`)
+
+### Decision-only forwarding
+
+If request has no new user input but contains interaction decisions, server first attempts to forward them to active run key (`ag_ui + agent + thread + run`).
+
+Success response (`202`):
+
+```json
+{
+  "status": "decision_forwarded",
+  "threadId": "thread-1",
+  "runId": "run-1"
 }
 ```
 
 ## Response Transport
 
-- `Content-Type: text/event-stream`
-- SSE `data:` frames carry AG-UI protocol JSON events.
-- Typical lifecycle markers include `RUN_STARTED` and `RUN_FINISHED`.
+- `content-type: text/event-stream`
+- `data:` frames contain AG-UI protocol events
+- lifecycle includes events such as `RUN_STARTED`, `RUN_FINISHED`
 
-Tool-call progress example:
+Tool progress example:
 
 ```json
 {
@@ -58,16 +94,12 @@ Tool-call progress example:
 
 ## Validation and Errors
 
-- missing/empty `threadId` -> `400`
-- missing/empty `runId` -> `400`
+- empty `threadId` -> `400`
+- empty `runId` -> `400`
 - unknown `agent_id` -> `404`
 
-Error body shape:
+Error shape:
 
 ```json
 { "error": "bad request: threadId cannot be empty" }
 ```
-
-## Mapping
-
-`AgUiInputAdapter` converts AG-UI request into internal `RunRequest`, then `AgUiProtocolEncoder` maps internal `AgentEvent` back to AG-UI events.
