@@ -5,20 +5,17 @@ use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tirea_agentos::contracts::thread::Message;
 use tirea_agentos::contracts::{RunRequest, ToolCallDecision};
-use tirea_agentos::orchestrator::AgentOsRunError;
-use tirea_contract::{AgentEvent, Identity};
 
-use crate::run_service::{global_run_service, wrap_with_run_tracking};
+use crate::run_service::global_run_service;
 use crate::service::{
-    prepare_http_run, remove_active_run, try_cancel_active_run_by_id,
-    try_forward_decisions_to_active_run_by_id, ApiError, AppState,
+    check_run_liveness, resolve_thread_id_from_run, start_background_run,
+    try_cancel_active_run_by_id, try_forward_decisions_to_active_run_by_id, ApiError, AppState,
+    RunLookup,
 };
-use crate::transport::http_run::wire_http_sse_relay;
 
 const WELL_KNOWN_AGENT_CARD_PATH: &str = "/.well-known/agent-card.json";
 const WELL_KNOWN_CACHE_CONTROL: &str = "public, max-age=30, must-revalidate";
@@ -261,78 +258,6 @@ impl A2aMessageSendPayload {
     }
 }
 
-async fn run_exists(run_id: &str) -> Result<bool, ApiError> {
-    let Some(service) = global_run_service() else {
-        return Err(ApiError::Internal(
-            "run service not initialized".to_string(),
-        ));
-    };
-    Ok(service
-        .get_run(run_id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .is_some())
-}
-
-async fn resolve_thread_id_from_run(run_id: &str) -> Result<Option<String>, ApiError> {
-    let Some(service) = global_run_service() else {
-        return Err(ApiError::Internal(
-            "run service not initialized".to_string(),
-        ));
-    };
-    service
-        .resolve_thread_id(run_id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))
-}
-
-async fn start_background_run(
-    st: &AppState,
-    agent_id: &str,
-    run_request: RunRequest,
-) -> Result<(String, String), ApiError> {
-    let resolved = st.os.resolve(agent_id).map_err(AgentOsRunError::from)?;
-    let prepared = prepare_http_run(&st.os, resolved, run_request, "a2a", agent_id).await?;
-    let run_id = prepared.run_id.clone();
-    let thread_id = prepared.thread_id.clone();
-    let active_key = prepared.active_key.clone();
-    let thread_for_session = thread_id.clone();
-
-    let encoder = wrap_with_run_tracking(
-        Identity::<AgentEvent>::default(),
-        run_id.clone(),
-        thread_id.clone(),
-        "a2a",
-    );
-    let mut sse_rx = wire_http_sse_relay(
-        prepared.starter,
-        encoder,
-        prepared.ingress_rx,
-        thread_for_session,
-        None,
-        false,
-        "a2a",
-        move |_sse_tx| async move {
-            remove_active_run(&active_key).await;
-        },
-        |msg| {
-            let payload = serde_json::to_string(&json!({
-                "type": "error",
-                "message": msg,
-                "code": "RELAY_ERROR",
-            }))
-            .unwrap_or_else(|_| {
-                "{\"type\":\"error\",\"message\":\"relay error\",\"code\":\"RELAY_ERROR\"}"
-                    .to_string()
-            });
-            Bytes::from(format!("data: {payload}\n\n"))
-        },
-    );
-    tokio::spawn(async move { while sse_rx.recv().await.is_some() {} });
-
-    Ok((thread_id, run_id))
-}
-
 async fn message_send(
     State(st): State<AppState>,
     Path((agent_id, action)): Path<(String, String)>,
@@ -379,10 +304,12 @@ async fn message_send(
                 .into_response());
         }
 
-        if run_exists(task_id).await? {
-            return Err(ApiError::BadRequest("task is not active".to_string()));
-        }
-        return Err(ApiError::RunNotFound(task_id.to_string()));
+        return Err(match check_run_liveness(task_id).await? {
+            RunLookup::ExistsButInactive => {
+                ApiError::BadRequest("task is not active".to_string())
+            }
+            RunLookup::NotFound => ApiError::RunNotFound(task_id.to_string()),
+        });
     }
 
     let thread_id = if let Some(context_id) = context_id {
@@ -409,7 +336,7 @@ async fn message_send(
         initial_decisions: decisions,
     };
 
-    let (context_id, task_id) = start_background_run(&st, &agent_id, run_request).await?;
+    let (context_id, task_id) = start_background_run(&st.os, &agent_id, run_request, "a2a").await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({
@@ -496,11 +423,10 @@ async fn cancel_task(
             .into_response());
     }
 
-    if run_exists(&task_id).await? {
-        return Err(ApiError::BadRequest("task is not active".to_string()));
-    }
-
-    Err(ApiError::RunNotFound(task_id))
+    Err(match check_run_liveness(&task_id).await? {
+        RunLookup::ExistsButInactive => ApiError::BadRequest("task is not active".to_string()),
+        RunLookup::NotFound => ApiError::RunNotFound(task_id),
+    })
 }
 
 #[cfg(test)]

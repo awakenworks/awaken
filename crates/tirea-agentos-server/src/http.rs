@@ -17,8 +17,9 @@ use tirea_contract::{AgentEvent, Identity};
 
 use crate::run_service::{global_run_service, wrap_with_run_tracking};
 use crate::service::{
-    parse_message_query, prepare_http_run, remove_active_run, try_cancel_active_run_by_id,
-    try_forward_decisions_to_active_run_by_id, ApiError, MessageQueryParams,
+    check_run_liveness, load_run_record, parse_message_query, prepare_http_run, remove_active_run,
+    resolve_thread_id_from_run, start_background_run, try_cancel_active_run_by_id,
+    try_forward_decisions_to_active_run_by_id, ApiError, MessageQueryParams, RunLookup,
 };
 use crate::transport::http_run::wire_http_sse_relay;
 use crate::transport::http_sse::{sse_body_stream, sse_response};
@@ -319,79 +320,6 @@ async fn start_run(
     Ok(sse_response(sse_body_stream(sse_rx)))
 }
 
-async fn run_exists(run_id: &str) -> Result<bool, ApiError> {
-    let Some(service) = global_run_service() else {
-        return Err(ApiError::Internal(
-            "run service not initialized".to_string(),
-        ));
-    };
-    Ok(service
-        .get_run(run_id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .is_some())
-}
-
-async fn load_run_record(run_id: &str) -> Result<Option<RunRecord>, ApiError> {
-    let Some(service) = global_run_service() else {
-        return Err(ApiError::Internal(
-            "run service not initialized".to_string(),
-        ));
-    };
-    service
-        .get_run(run_id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))
-}
-
-async fn start_detached_run(
-    st: &AppState,
-    agent_id: &str,
-    run_request: RunRequest,
-    protocol_label: &'static str,
-) -> Result<(String, String), ApiError> {
-    let resolved = st.os.resolve(agent_id).map_err(AgentOsRunError::from)?;
-    let prepared =
-        prepare_http_run(&st.os, resolved, run_request, protocol_label, agent_id).await?;
-    let run_id = prepared.run_id.clone();
-    let thread_id = prepared.thread_id.clone();
-    let active_key = prepared.active_key.clone();
-    let thread_for_session = thread_id.clone();
-
-    let encoder = wrap_with_run_tracking(
-        Identity::<AgentEvent>::default(),
-        run_id.clone(),
-        thread_id.clone(),
-        protocol_label,
-    );
-    let mut sse_rx = wire_http_sse_relay(
-        prepared.starter,
-        encoder,
-        prepared.ingress_rx,
-        thread_for_session,
-        None,
-        false,
-        "run-api",
-        move |_sse_tx| async move {
-            remove_active_run(&active_key).await;
-        },
-        |msg| {
-            let error = json!({
-                "type": "error",
-                "message": msg,
-                "code": "RELAY_ERROR",
-            });
-            let payload = serde_json::to_string(&error).unwrap_or_else(|_| {
-                "{\"type\":\"error\",\"message\":\"relay error\",\"code\":\"RELAY_ERROR\"}"
-                    .to_string()
-            });
-            Bytes::from(format!("data: {payload}\n\n"))
-        },
-    );
-    tokio::spawn(async move { while sse_rx.recv().await.is_some() {} });
-    Ok((thread_id, run_id))
-}
-
 async fn push_run_inputs(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -409,13 +337,7 @@ async fn push_run_inputs(
 
     if payload.messages.is_empty() {
         if try_forward_decisions_to_active_run_by_id(&id, decisions).await {
-            let thread_id = match global_run_service() {
-                Some(service) => service
-                    .resolve_thread_id(&id)
-                    .await
-                    .map_err(|e| ApiError::Internal(e.to_string()))?,
-                None => None,
-            };
+            let thread_id = resolve_thread_id_from_run(&id).await?;
             return Ok((
                 StatusCode::ACCEPTED,
                 Json(json!({
@@ -427,10 +349,12 @@ async fn push_run_inputs(
                 .into_response());
         }
 
-        if run_exists(&id).await? {
-            return Err(ApiError::BadRequest("run is not active".to_string()));
-        }
-        return Err(ApiError::RunNotFound(id));
+        return Err(match check_run_liveness(&id).await? {
+            RunLookup::ExistsButInactive => {
+                ApiError::BadRequest("run is not active".to_string())
+            }
+            RunLookup::NotFound => ApiError::RunNotFound(id),
+        });
     }
 
     let Some(parent_run) = load_run_record(&id).await? else {
@@ -457,7 +381,8 @@ async fn push_run_inputs(
         initial_decisions: decisions,
     };
 
-    let (thread_id, run_id) = start_detached_run(&st, &agent_id, run_request, "run_api").await?;
+    let (thread_id, run_id) =
+        start_background_run(&st.os, &agent_id, run_request, "run_api").await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({
@@ -482,10 +407,10 @@ async fn cancel_run(Path(id): Path<String>) -> Result<Response, ApiError> {
             .into_response());
     }
 
-    if run_exists(&id).await? {
-        return Err(ApiError::BadRequest("run is not active".to_string()));
-    }
-    Err(ApiError::RunNotFound(id))
+    Err(match check_run_liveness(&id).await? {
+        RunLookup::ExistsButInactive => ApiError::BadRequest("run is not active".to_string()),
+        RunLookup::NotFound => ApiError::RunNotFound(id),
+    })
 }
 
 async fn get_run(Path(id): Path<String>) -> Result<Json<RunRecord>, ApiError> {

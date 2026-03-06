@@ -1,6 +1,7 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use bytes::Bytes;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -14,10 +15,12 @@ use tirea_agentos::contracts::RunRequest;
 use tirea_agentos::contracts::ToolCallDecision;
 use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError, ResolvedRun};
 use tirea_agentos::runtime::loop_runner::RunCancellationToken;
-use tirea_contract::RuntimeInput;
+use tirea_contract::storage::RunRecord;
+use tirea_contract::{AgentEvent, Identity, RuntimeInput};
 use tokio::sync::{mpsc, RwLock};
 
-use crate::run_service::{global_run_service, origin_from_protocol};
+use crate::run_service::{global_run_service, origin_from_protocol, wrap_with_run_tracking};
+use crate::transport::http_run::wire_http_sse_relay;
 use crate::transport::runtime_endpoint::RunStarter;
 use crate::transport::TransportError;
 
@@ -388,6 +391,121 @@ pub async fn prepare_http_run(
         ingress_rx,
         active_key,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Shared run-control helpers (used by run_api and a2a)
+// ---------------------------------------------------------------------------
+
+/// Check whether a run record exists in the persistent run store.
+pub async fn run_exists(run_id: &str) -> Result<bool, ApiError> {
+    let Some(service) = global_run_service() else {
+        return Err(ApiError::Internal(
+            "run service not initialized".to_string(),
+        ));
+    };
+    Ok(service
+        .get_run(run_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .is_some())
+}
+
+/// Load the full [`RunRecord`] for a given run id.
+pub async fn load_run_record(run_id: &str) -> Result<Option<RunRecord>, ApiError> {
+    let Some(service) = global_run_service() else {
+        return Err(ApiError::Internal(
+            "run service not initialized".to_string(),
+        ));
+    };
+    service
+        .get_run(run_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))
+}
+
+/// Resolve the thread id that a run belongs to.
+pub async fn resolve_thread_id_from_run(run_id: &str) -> Result<Option<String>, ApiError> {
+    let Some(service) = global_run_service() else {
+        return Err(ApiError::Internal(
+            "run service not initialized".to_string(),
+        ));
+    };
+    service
+        .resolve_thread_id(run_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))
+}
+
+/// Result of checking whether a run is currently active.
+pub enum RunLookup {
+    ExistsButInactive,
+    NotFound,
+}
+
+/// After an active-run operation (cancel/forward) fails, check if the run
+/// exists in the persistent store. Returns [`RunLookup::ExistsButInactive`]
+/// or [`RunLookup::NotFound`].
+pub async fn check_run_liveness(run_id: &str) -> Result<RunLookup, ApiError> {
+    if run_exists(run_id).await? {
+        Ok(RunLookup::ExistsButInactive)
+    } else {
+        Ok(RunLookup::NotFound)
+    }
+}
+
+/// Resolve an agent, prepare a run, wire an SSE relay that is immediately
+/// drained in the background, and return `(thread_id, run_id)`.
+///
+/// This is the shared "fire-and-forget" background run launcher used by both
+/// the run API and the A2A gateway.
+pub async fn start_background_run(
+    os: &Arc<AgentOs>,
+    agent_id: &str,
+    run_request: RunRequest,
+    protocol_label: &'static str,
+) -> Result<(String, String), ApiError> {
+    let resolved = os.resolve(agent_id).map_err(AgentOsRunError::from)?;
+    let prepared =
+        prepare_http_run(os, resolved, run_request, protocol_label, agent_id).await?;
+    let run_id = prepared.run_id.clone();
+    let thread_id = prepared.thread_id.clone();
+    let active_key = prepared.active_key.clone();
+    let thread_for_session = thread_id.clone();
+
+    let encoder = wrap_with_run_tracking(
+        Identity::<AgentEvent>::default(),
+        run_id.clone(),
+        thread_id.clone(),
+        protocol_label,
+    );
+    let mut sse_rx = wire_http_sse_relay(
+        prepared.starter,
+        encoder,
+        prepared.ingress_rx,
+        thread_for_session,
+        None,
+        false,
+        protocol_label,
+        move |_sse_tx| async move {
+            remove_active_run(&active_key).await;
+        },
+        |msg| {
+            let error = serde_json::json!({
+                "type": "error",
+                "message": msg,
+                "code": "RELAY_ERROR",
+            });
+            let payload = serde_json::to_string(&error).unwrap_or_else(|_| {
+                "{\"type\":\"error\",\"message\":\"relay error\",\"code\":\"RELAY_ERROR\"}"
+                    .to_string()
+            });
+            Bytes::from(format!("data: {payload}\n\n"))
+        },
+    );
+    tokio::spawn(async move { while sse_rx.recv().await.is_some() {} });
+
+    Ok((thread_id, run_id))
 }
 
 /// Truncate a stored thread so it includes messages up to and including `message_id`.
