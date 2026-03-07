@@ -19,6 +19,19 @@ cargo doc --workspace --no-deps --manifest-path "$WORKSPACE_ROOT/Cargo.toml"
 echo "==> Installing Mermaid support..."
 mdbook-mermaid install "$WORKSPACE_ROOT/docs/book"
 
+DOC_TEST_TARGET_DIR="$(mktemp -d "$WORKSPACE_ROOT/target/mdbook-doctest.XXXXXX")"
+trap 'rm -rf "$DOC_TEST_TARGET_DIR"' EXIT
+
+echo "==> Building mdBook doctest support crates..."
+CARGO_TARGET_DIR="$DOC_TEST_TARGET_DIR" cargo build \
+    --manifest-path "$WORKSPACE_ROOT/Cargo.toml" \
+    -p tirea-state \
+    -p tirea-contract \
+    -p tirea
+
+echo "==> Testing mdBook Rust snippets..."
+mdbook test "$WORKSPACE_ROOT/docs/book" -L "$DOC_TEST_TARGET_DIR/debug/deps"
+
 echo "==> Building mdBook..."
 mdbook build "$WORKSPACE_ROOT/docs/book"
 

@@ -9,6 +9,8 @@ Operations (`Op`) are atomic state mutations against JSON paths.
 Set a value at path. Creates intermediate objects when needed.
 
 ```rust
+# extern crate tirea_state;
+# extern crate serde_json;
 use tirea_state::{Op, path};
 use serde_json::json;
 
@@ -20,6 +22,7 @@ let op = Op::set(path!("user", "name"), json!("Alice"));
 Delete value at path. No-op when path is absent.
 
 ```rust
+# extern crate tirea_state;
 use tirea_state::{Op, path};
 
 let op = Op::delete(path!("user", "temp_field"));
@@ -30,6 +33,8 @@ let op = Op::delete(path!("user", "temp_field"));
 Append to array. Creates array when absent.
 
 ```rust
+# extern crate tirea_state;
+# extern crate serde_json;
 use tirea_state::{Op, path};
 use serde_json::json;
 
@@ -43,6 +48,8 @@ Error: `AppendRequiresArray` when target exists but is not array.
 Shallow-merge object keys into target object.
 
 ```rust
+# extern crate tirea_state;
+# extern crate serde_json;
 use tirea_state::{Op, path};
 use serde_json::json;
 
@@ -56,6 +63,7 @@ Error: `MergeRequiresObject` when target is not object.
 Numeric arithmetic on existing numeric value.
 
 ```rust
+# extern crate tirea_state;
 use tirea_state::{Op, path};
 
 let inc = Op::increment(path!("counter"), 1i64);
@@ -69,6 +77,8 @@ Error: `NumericOperationOnNonNumber`.
 Insert into array index (shift right).
 
 ```rust
+# extern crate tirea_state;
+# extern crate serde_json;
 use tirea_state::{Op, path};
 use serde_json::json;
 
@@ -82,6 +92,8 @@ Error: `IndexOutOfBounds`.
 Remove first matching array element.
 
 ```rust
+# extern crate tirea_state;
+# extern crate serde_json;
 use tirea_state::{Op, path};
 use serde_json::json;
 
@@ -93,6 +105,8 @@ let op = Op::remove(path!("tags"), json!("deprecated"));
 Merge CRDT/lattice delta at path.
 
 ```rust
+# extern crate tirea_state;
+# extern crate serde_json;
 use tirea_state::{Op, path};
 use serde_json::json;
 
@@ -122,6 +136,7 @@ pub enum Number {
 `path!` builds path segments:
 
 ```rust
+# extern crate tirea_state;
 use tirea_state::path;
 
 let p = path!("users", 0, "name");

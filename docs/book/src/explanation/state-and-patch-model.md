@@ -13,6 +13,8 @@ State' = apply_patch(State, Patch)
 A `Patch` contains a list of `Op` (operations), each targeting a specific path in the JSON document.
 
 ```rust
+# extern crate tirea_state;
+# extern crate serde_json;
 use tirea_state::{apply_patch, Patch, Op, path};
 use serde_json::json;
 
@@ -49,6 +51,8 @@ assert_eq!(state["count"], 0); // Original unchanged
 For dynamic JSON manipulation without typed structs, use `JsonWriter`:
 
 ```rust
+# extern crate tirea_state;
+# extern crate serde_json;
 use tirea_state::{JsonWriter, path};
 use serde_json::json;
 

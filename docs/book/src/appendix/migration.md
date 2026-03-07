@@ -6,7 +6,7 @@
 
 The `event` and `protocol` modules have been consolidated into a unified `io` module.
 
-```rust
+```rust,ignore
 // Before (0.1)
 use tirea_contract::event::AgentEvent;
 use tirea_contract::protocol::{ProtocolInputAdapter, ProtocolOutputEncoder, ProtocolHistoryEncoder};
@@ -25,7 +25,7 @@ transformation is needed.
 The single `on_phase(Phase, StepContext)` method is replaced by individual per-phase methods,
 each with a typed context parameter.
 
-```rust
+```rust,ignore
 // Before (0.1)
 #[async_trait]
 impl AgentPlugin for MyPlugin {
@@ -86,7 +86,7 @@ New variants:
 
 The single-slot "pending interaction" model is replaced by per-call tool-call suspension.
 
-```rust
+```rust,ignore
 // Before (0.1)
 let pending = ctx.pending_interaction();
 let frontend = ctx.pending_frontend_invocation();
@@ -136,7 +136,7 @@ Deprecated forwarding methods are provided. Update call sites to suppress warnin
 Stop conditions moved from core config to `StopPolicyPlugin`. If you were passing stop conditions
 to `BaseAgent`, register them as a plugin instead:
 
-```rust
+```rust,ignore
 use tirea::orchestrator::StopPolicyPlugin;
 use tirea::orchestrator::StopConditionSpec;
 
@@ -151,7 +151,7 @@ let stop_plugin = StopPolicyPlugin::from_specs(vec![
 
 `RunRequest` now requires `initial_decisions` and optionally accepts `parent_run_id`:
 
-```rust
+```rust,ignore
 // Before (0.1)
 let req = RunRequest {
     agent_id: "agent_1".into(),
