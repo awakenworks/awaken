@@ -161,8 +161,17 @@ mod tests {
     #[test]
     fn denied_tokens_cancel() {
         for token in &[
-            "deny", "denied", "reject", "rejected", "cancel", "canceled", "cancelled", "abort",
-            "aborted", "no", "false",
+            "deny",
+            "denied",
+            "reject",
+            "rejected",
+            "cancel",
+            "canceled",
+            "cancelled",
+            "abort",
+            "aborted",
+            "no",
+            "false",
         ] {
             assert!(
                 matches!(

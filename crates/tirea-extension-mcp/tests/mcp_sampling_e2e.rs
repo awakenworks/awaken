@@ -344,7 +344,7 @@ mod duplex_sampling {
             name: &str,
             args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-        ) -> Result<Value, McpTransportError> {
+        ) -> Result<CallToolResult, McpTransportError> {
             let params = CallToolParams {
                 name: name.to_string(),
                 arguments: Some(args),
@@ -365,13 +365,7 @@ mod duplex_sampling {
                 return Err(McpTransportError::ServerError(error_text.to_string()));
             }
 
-            let text = call_result
-                .content
-                .iter()
-                .filter_map(|c| c.as_text())
-                .collect::<Vec<_>>()
-                .join("\n");
-            Ok(Value::String(text))
+            Ok(call_result)
         }
 
         fn transport_type(&self) -> TransportTypeId {

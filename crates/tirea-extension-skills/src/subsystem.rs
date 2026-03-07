@@ -1,4 +1,6 @@
-use crate::{LoadSkillResourceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillRegistry, SkillScriptTool};
+use crate::{
+    LoadSkillResourceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillRegistry, SkillScriptTool,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tirea_contract::runtime::tool_call::Tool;

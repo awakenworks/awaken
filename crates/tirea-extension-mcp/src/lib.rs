@@ -3,11 +3,11 @@ mod client_transport;
 use async_trait::async_trait;
 use client_transport::connect_transport;
 use mcp::transport::{McpServerConnectionConfig, McpTransportError, TransportTypeId};
-use mcp::McpToolDefinition;
+use mcp::{CallToolResult, McpToolDefinition, ToolContent};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock, Weak};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tirea_contract::runtime::tool_call::{
     Tool, ToolCallProgressStatus, ToolCallProgressUpdate, ToolDescriptor, ToolError, ToolResult,
 };
@@ -25,6 +25,8 @@ const MCP_META_TRANSPORT: &str = "mcp.transport";
 const MCP_META_UI_RESOURCE_URI: &str = "mcp.ui.resourceUri";
 const MCP_META_UI_CONTENT: &str = "mcp.ui.content";
 const MCP_META_UI_MIME_TYPE: &str = "mcp.ui.mimeType";
+const MCP_META_RESULT_CONTENT: &str = "mcp.result.content";
+const MCP_META_RESULT_STRUCTURED_CONTENT: &str = "mcp.result.structuredContent";
 const MCP_PROGRESS_MIN_INTERVAL: Duration = Duration::from_millis(100);
 const MCP_PROGRESS_MIN_DELTA: f64 = 0.01;
 
@@ -33,6 +35,25 @@ struct ProgressEmitGate {
     last_emit_at: Option<Instant>,
     last_progress: Option<f64>,
     last_message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpRefreshHealth {
+    pub last_attempt_at: Option<SystemTime>,
+    pub last_success_at: Option<SystemTime>,
+    pub last_error: Option<String>,
+    pub consecutive_failures: u64,
+}
+
+impl Default for McpRefreshHealth {
+    fn default() -> Self {
+        Self {
+            last_attempt_at: None,
+            last_success_at: None,
+            last_error: None,
+            consecutive_failures: 0,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -98,6 +119,48 @@ fn with_mcp_result_metadata(
     tool_result
         .with_metadata(MCP_META_SERVER, Value::String(server_name.to_string()))
         .with_metadata(MCP_META_TOOL, Value::String(tool_name.to_string()))
+}
+
+fn with_mcp_call_result_metadata(
+    mut tool_result: ToolResult,
+    call_result: &CallToolResult,
+) -> ToolResult {
+    if !call_result.content.is_empty() {
+        if let Ok(content) = serde_json::to_value(&call_result.content) {
+            tool_result = tool_result.with_metadata(MCP_META_RESULT_CONTENT, content);
+        }
+    }
+
+    if let Some(structured) = call_result.structured_content.clone() {
+        tool_result = tool_result.with_metadata(MCP_META_RESULT_STRUCTURED_CONTENT, structured);
+    }
+
+    tool_result
+}
+
+fn plain_text_content(content: &[ToolContent]) -> Option<String> {
+    let mut text_parts = Vec::with_capacity(content.len());
+    for item in content {
+        match item {
+            ToolContent::Text {
+                text,
+                annotations: None,
+                meta: None,
+            } => text_parts.push(text.as_str()),
+            _ => return None,
+        }
+    }
+    Some(text_parts.join("\n"))
+}
+
+fn call_result_to_tool_data(call_result: &CallToolResult) -> Value {
+    if call_result.structured_content.is_none() {
+        if let Some(text) = plain_text_content(&call_result.content) {
+            return Value::String(text);
+        }
+    }
+
+    serde_json::to_value(call_result).unwrap_or(Value::Null)
 }
 
 struct McpTool {
@@ -194,10 +257,14 @@ impl Tool for McpTool {
             emit_mcp_progress(ctx, &mut gate, update);
         }
 
-        let mut result = with_mcp_result_metadata(
-            ToolResult::success(self.descriptor.id.clone(), res),
-            &self.server_name,
-            &self.tool_name,
+        let data = call_result_to_tool_data(&res);
+        let mut result = with_mcp_call_result_metadata(
+            with_mcp_result_metadata(
+                ToolResult::success(self.descriptor.id.clone(), data),
+                &self.server_name,
+                &self.tool_name,
+            ),
+            &res,
         );
 
         if let Some(ref uri) = self.ui_resource_uri {
@@ -347,6 +414,7 @@ struct PeriodicRefreshRuntime {
 struct McpRegistryState {
     servers: Vec<McpServerRuntime>,
     snapshot: RwLock<McpRegistrySnapshot>,
+    refresh_health: RwLock<McpRefreshHealth>,
     periodic_refresh: Mutex<Option<PeriodicRefreshRuntime>>,
 }
 
@@ -414,11 +482,29 @@ async fn discover_tools(
 }
 
 async fn refresh_state(state: &McpRegistryState) -> Result<u64, McpToolRegistryError> {
-    let tools = discover_tools(&state.servers).await?;
-    let mut snapshot = write_lock(&state.snapshot);
-    let version = snapshot.version.saturating_add(1);
-    *snapshot = McpRegistrySnapshot { version, tools };
-    Ok(version)
+    let attempted_at = SystemTime::now();
+    match discover_tools(&state.servers).await {
+        Ok(tools) => {
+            let mut snapshot = write_lock(&state.snapshot);
+            let version = snapshot.version.saturating_add(1);
+            *snapshot = McpRegistrySnapshot { version, tools };
+
+            let mut health = write_lock(&state.refresh_health);
+            health.last_attempt_at = Some(attempted_at);
+            health.last_success_at = Some(attempted_at);
+            health.last_error = None;
+            health.consecutive_failures = 0;
+
+            Ok(version)
+        }
+        Err(err) => {
+            let mut health = write_lock(&state.refresh_health);
+            health.last_attempt_at = Some(attempted_at);
+            health.last_error = Some(err.to_string());
+            health.consecutive_failures = health.consecutive_failures.saturating_add(1);
+            Err(err)
+        }
+    }
 }
 
 async fn periodic_refresh_loop(
@@ -437,7 +523,9 @@ async fn periodic_refresh_loop(
                 let Some(state) = state.upgrade() else {
                     break;
                 };
-                let _ = refresh_state(state.as_ref()).await;
+                if let Err(err) = refresh_state(state.as_ref()).await {
+                    tracing::warn!(error = %err, "MCP periodic refresh failed");
+                }
             }
         }
     }
@@ -507,6 +595,12 @@ impl McpToolRegistryManager {
             state: Arc::new(McpRegistryState {
                 servers,
                 snapshot: RwLock::new(snapshot),
+                refresh_health: RwLock::new(McpRefreshHealth {
+                    last_attempt_at: Some(SystemTime::now()),
+                    last_success_at: Some(SystemTime::now()),
+                    last_error: None,
+                    consecutive_failures: 0,
+                }),
                 periodic_refresh: Mutex::new(None),
             }),
         })
@@ -614,6 +708,10 @@ impl McpToolRegistryManager {
             .map(|server| (server.name.clone(), server.transport_type))
             .collect()
     }
+
+    pub fn refresh_health(&self) -> McpRefreshHealth {
+        read_lock(&self.state.refresh_health).clone()
+    }
 }
 
 /// Dynamic tool registry view backed by [`McpToolRegistryManager`].
@@ -671,6 +769,10 @@ impl McpToolRegistry {
     pub fn snapshot(&self) -> HashMap<String, Arc<dyn Tool>> {
         read_lock(&self.state.snapshot).tools.clone()
     }
+
+    pub fn refresh_health(&self) -> McpRefreshHealth {
+        read_lock(&self.state.refresh_health).clone()
+    }
 }
 
 #[cfg(test)]
@@ -686,6 +788,14 @@ mod tests {
     use tirea_state::{DocCell, Op};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
+
+    fn ok_text_result(text: &str) -> CallToolResult {
+        CallToolResult {
+            content: vec![ToolContent::text(text)],
+            structured_content: None,
+            is_error: None,
+        }
+    }
 
     #[derive(Debug, Clone)]
     struct FakeTransport {
@@ -733,9 +843,9 @@ mod tests {
             name: &str,
             args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-        ) -> Result<Value, McpTransportError> {
+        ) -> Result<CallToolResult, McpTransportError> {
             self.calls.lock().unwrap().push((name.to_string(), args));
-            Ok(serde_json::json!({"ok": true}))
+            Ok(ok_text_result("ok"))
         }
 
         fn transport_type(&self) -> TransportTypeId {
@@ -776,7 +886,7 @@ mod tests {
             _name: &str,
             _args: Value,
             progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-        ) -> Result<Value, McpTransportError> {
+        ) -> Result<CallToolResult, McpTransportError> {
             if let Some(progress_tx) = progress_tx {
                 let _ = progress_tx.send(McpProgressUpdate {
                     progress: 3.0,
@@ -789,7 +899,32 @@ mod tests {
                     message: Some("done".to_string()),
                 });
             }
-            Ok(json!({"ok": true}))
+            Ok(ok_text_result("ok"))
+        }
+
+        fn transport_type(&self) -> TransportTypeId {
+            TransportTypeId::Stdio
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct FakeStructuredTransport {
+        result: CallToolResult,
+    }
+
+    #[async_trait]
+    impl McpToolTransport for FakeStructuredTransport {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            Ok(vec![McpToolDefinition::new("echo")])
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _args: Value,
+            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        ) -> Result<CallToolResult, McpTransportError> {
+            Ok(self.result.clone())
         }
 
         fn transport_type(&self) -> TransportTypeId {
@@ -989,6 +1124,53 @@ mod tests {
         }));
     }
 
+    #[tokio::test]
+    async fn structured_mcp_results_are_preserved_in_tool_output() {
+        let transport = Arc::new(FakeStructuredTransport {
+            result: CallToolResult {
+                content: vec![ToolContent::Resource {
+                    uri: "file://report.json".to_string(),
+                    mime_type: Some("application/json".to_string()),
+                }],
+                structured_content: Some(json!({"sum": 3, "values": [1, 2]})),
+                is_error: None,
+            },
+        }) as Arc<dyn McpToolTransport>;
+        let manager = McpToolRegistryManager::from_transports([(cfg("s1"), transport)])
+            .await
+            .unwrap();
+        let registry = manager.registry();
+        let tool_id = registry
+            .ids()
+            .into_iter()
+            .find(|id| id.contains("echo"))
+            .expect("echo tool");
+        let tool = registry.get(&tool_id).expect("registry tool");
+
+        let fix = tirea_contract::testing::TestFixture::new();
+        let ctx = fix.ctx_with("call-structured", "test");
+        let result = tool.execute(json!({}), &ctx).await.expect("tool result");
+
+        assert_eq!(result.data["structuredContent"]["sum"], json!(3));
+        assert_eq!(
+            result.data["content"][0]["type"],
+            json!("resource"),
+            "non-text MCP content should be preserved in result data"
+        );
+        assert_eq!(
+            result.metadata.get(MCP_META_RESULT_STRUCTURED_CONTENT),
+            Some(&json!({"sum": 3, "values": [1, 2]}))
+        );
+        assert_eq!(
+            result.metadata.get(MCP_META_RESULT_CONTENT),
+            Some(&json!([{
+                "type": "resource",
+                "uri": "file://report.json",
+                "mimeType": "application/json"
+            }]))
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn connect_http_registry_forwards_progress_and_sets_transport_metadata() {
         let (endpoint, server) = spawn_http_server(Arc::new(|request| {
@@ -1165,6 +1347,37 @@ mod tests {
         assert!(matches!(err, McpToolRegistryError::Transport(_)));
         assert_eq!(manager.version(), 1);
         assert_eq!(reg.ids(), initial_ids);
+        let health = manager.refresh_health();
+        assert_eq!(
+            health.last_error.as_deref(),
+            Some("mcp transport error: Transport error: temporary outage")
+        );
+        assert_eq!(health.consecutive_failures, 1);
+        assert!(health.last_attempt_at.is_some());
+        assert!(health.last_success_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn refresh_health_clears_error_after_recovery() {
+        let fake = Arc::new(FakeTransport::new(vec![McpToolDefinition::new("echo")]));
+        let transport = fake.clone() as Arc<dyn McpToolTransport>;
+
+        let manager = McpToolRegistryManager::from_transports([(cfg("s1"), transport)])
+            .await
+            .unwrap();
+
+        fake.fail_next_list("temporary outage");
+        let _ = manager.refresh().await.err().expect("refresh should fail");
+
+        let failed_health = manager.refresh_health();
+        assert_eq!(failed_health.consecutive_failures, 1);
+        assert!(failed_health.last_error.is_some());
+
+        let _ = manager.refresh().await.expect("refresh should recover");
+        let recovered_health = manager.refresh_health();
+        assert_eq!(recovered_health.consecutive_failures, 0);
+        assert!(recovered_health.last_error.is_none());
+        assert!(recovered_health.last_success_at.is_some());
     }
 
     async fn wait_until(
@@ -1334,8 +1547,8 @@ mod tests {
             _name: &str,
             _args: Value,
             _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-        ) -> Result<Value, McpTransportError> {
-            Ok(json!({"ok": true}))
+        ) -> Result<CallToolResult, McpTransportError> {
+            Ok(ok_text_result("ok"))
         }
 
         fn transport_type(&self) -> TransportTypeId {

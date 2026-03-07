@@ -566,8 +566,8 @@ mod tests {
             text: "r1".to_string(),
             tool_calls: vec![ToolCall::new("c1", "echo", json!({}))],
             usage: None,
+            stop_reason: None,
         };
-
         let stats = derive_stats_from_messages_with_response(&prior_messages, &response);
         assert_eq!(stats.step, 1);
         assert_eq!(stats.step_tool_call_count, 1);

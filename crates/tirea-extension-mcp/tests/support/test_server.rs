@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use mcp::transport::{McpTransportError, TransportTypeId};
-use mcp::McpToolDefinition;
+use mcp::{CallToolResult, McpToolDefinition, ToolContent};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -14,7 +14,7 @@ pub struct ResourceContent {
     pub mime_type: String,
 }
 
-type CallHandler = dyn Fn(&str, &Value) -> Result<Value, String> + Send + Sync;
+type CallHandler = dyn Fn(&str, &Value) -> Result<CallToolResult, String> + Send + Sync;
 
 pub struct TestMcpTransport {
     tools: Vec<McpToolDefinition>,
@@ -51,7 +51,7 @@ impl TestMcpTransport {
 
     pub fn with_call_handler(
         mut self,
-        handler: impl Fn(&str, &Value) -> Result<Value, String> + Send + Sync + 'static,
+        handler: impl Fn(&str, &Value) -> Result<CallToolResult, String> + Send + Sync + 'static,
     ) -> Self {
         self.call_handler = Some(Box::new(handler));
         self
@@ -74,7 +74,7 @@ impl McpToolTransport for TestMcpTransport {
         name: &str,
         args: Value,
         _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-    ) -> Result<Value, McpTransportError> {
+    ) -> Result<CallToolResult, McpTransportError> {
         self.calls
             .lock()
             .unwrap()
@@ -82,7 +82,11 @@ impl McpToolTransport for TestMcpTransport {
         if let Some(ref handler) = self.call_handler {
             handler(name, &args).map_err(McpTransportError::ServerError)
         } else {
-            Ok(json!({"result": "ok"}))
+            Ok(CallToolResult {
+                content: vec![ToolContent::text("ok")],
+                structured_content: Some(json!({"result": "ok"})),
+                is_error: None,
+            })
         }
     }
 

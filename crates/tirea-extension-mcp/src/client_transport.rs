@@ -45,7 +45,7 @@ pub trait McpToolTransport: Send + Sync {
         name: &str,
         args: Value,
         progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-    ) -> Result<Value, McpTransportError>;
+    ) -> Result<CallToolResult, McpTransportError>;
     fn transport_type(&self) -> TransportTypeId;
 
     /// Read a resource by URI (e.g. `ui://...` for MCP Apps).
@@ -204,6 +204,10 @@ impl ProgressAwareStdioTransport {
             .stdout
             .take()
             .ok_or_else(|| McpTransportError::TransportError("Failed to get stdout".to_string()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| McpTransportError::TransportError("Failed to get stderr".to_string()))?;
 
         let alive = Arc::new(AtomicBool::new(true));
         let pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, McpTransportError>>>>> =
@@ -292,6 +296,22 @@ impl ProgressAwareStdioTransport {
 
             pending_reader.lock().unwrap().clear();
             progress_reader.lock().unwrap().clear();
+        });
+
+        tokio::spawn(async move {
+            let mut stderr_reader = BufReader::new(stderr);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match stderr_reader.read_line(&mut line).await {
+                    Ok(0) => break,
+                    Ok(_) => tracing::debug!(message = %line.trim_end(), "MCP stdio stderr"),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to drain MCP stdio stderr");
+                        break;
+                    }
+                }
+            }
         });
 
         let transport = Self {
@@ -433,6 +453,26 @@ fn decode_progress_notification(
     Some((key, update))
 }
 
+fn tool_result_error_text(result: &CallToolResult) -> String {
+    let text = result
+        .content
+        .iter()
+        .filter_map(|content| content.as_text())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !text.is_empty() {
+        return text;
+    }
+    if let Some(structured) = result.structured_content.clone() {
+        return structured.to_string();
+    }
+    if !result.content.is_empty() {
+        return serde_json::to_string(&result.content)
+            .unwrap_or_else(|_| "Unknown error".to_string());
+    }
+    "Unknown error".to_string()
+}
+
 fn map_response_payload(payload: JsonRpcPayload) -> Result<Value, McpTransportError> {
     match payload {
         JsonRpcPayload::Success { result } => Ok(result),
@@ -568,7 +608,7 @@ impl McpToolTransport for ProgressAwareStdioTransport {
         name: &str,
         args: Value,
         progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-    ) -> Result<Value, McpTransportError> {
+    ) -> Result<CallToolResult, McpTransportError> {
         let progress_registration = progress_tx.map(|sender| {
             let token =
                 ProgressToken::Number(self.next_progress_token.fetch_add(1, Ordering::SeqCst));
@@ -601,21 +641,12 @@ impl McpToolTransport for ProgressAwareStdioTransport {
         let call_result: CallToolResult = serde_json::from_value(result)?;
 
         if call_result.is_error == Some(true) {
-            let error_text = call_result
-                .content
-                .first()
-                .and_then(|c| c.as_text())
-                .unwrap_or("Unknown error");
-            return Err(McpTransportError::ServerError(error_text.to_string()));
+            return Err(McpTransportError::ServerError(tool_result_error_text(
+                &call_result,
+            )));
         }
 
-        let text = call_result
-            .content
-            .iter()
-            .filter_map(|c| c.as_text())
-            .collect::<Vec<_>>()
-            .join("\n");
-        Ok(Value::String(text))
+        Ok(call_result)
     }
 
     fn transport_type(&self) -> TransportTypeId {
@@ -643,7 +674,7 @@ impl McpToolTransport for ProgressAwareHttpTransport {
         name: &str,
         args: Value,
         progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
-    ) -> Result<Value, McpTransportError> {
+    ) -> Result<CallToolResult, McpTransportError> {
         let progress_registration = progress_tx.map(|sender| {
             let token =
                 ProgressToken::Number(self.next_progress_token.fetch_add(1, Ordering::SeqCst));
@@ -676,21 +707,12 @@ impl McpToolTransport for ProgressAwareHttpTransport {
         let call_result: CallToolResult = serde_json::from_value(result)?;
 
         if call_result.is_error == Some(true) {
-            let error_text = call_result
-                .content
-                .first()
-                .and_then(|c| c.as_text())
-                .unwrap_or("Unknown error");
-            return Err(McpTransportError::ServerError(error_text.to_string()));
+            return Err(McpTransportError::ServerError(tool_result_error_text(
+                &call_result,
+            )));
         }
 
-        let text = call_result
-            .content
-            .iter()
-            .filter_map(|c| c.as_text())
-            .collect::<Vec<_>>()
-            .join("\n");
-        Ok(Value::String(text))
+        Ok(call_result)
     }
 
     fn transport_type(&self) -> TransportTypeId {
@@ -937,6 +959,35 @@ mod tests {
         assert!(err.to_string().contains("tool failed"));
     }
 
+    #[tokio::test]
+    async fn http_call_tool_preserves_structured_content() {
+        let (endpoint, server) = spawn_http_server(Arc::new(|request| {
+            HttpResponseSpec::json(json!({
+                "jsonrpc": "2.0",
+                "id": request["id"].clone(),
+                "result": {
+                    "content": [{"type": "text", "text": "sum complete"}],
+                    "structuredContent": {"sum": 3, "values": [1, 2]}
+                }
+            }))
+        }))
+        .await;
+        let cfg = McpServerConnectionConfig::http("http_structured", endpoint);
+        let transport = ProgressAwareHttpTransport::connect(&cfg).expect("connect transport");
+        let result = transport
+            .call_tool("sum", json!({"values":[1,2]}), None)
+            .await
+            .expect("structured tool result");
+        server.abort();
+
+        assert_eq!(result.content.len(), 1);
+        assert_eq!(result.content[0].as_text(), Some("sum complete"));
+        assert_eq!(
+            result.structured_content,
+            Some(json!({"sum": 3, "values": [1, 2]}))
+        );
+    }
+
     #[test]
     fn decode_http_batch_ignores_malformed_notifications() {
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -1043,8 +1094,8 @@ mod tests {
 
         let update_a = rx_a.recv().await.expect("progress a");
         let update_b = rx_b.recv().await.expect("progress b");
-        assert_eq!(result_a, Value::String("A".to_string()));
-        assert_eq!(result_b, Value::String("B".to_string()));
+        assert_eq!(result_a.content[0].as_text(), Some("A"));
+        assert_eq!(result_b.content[0].as_text(), Some("B"));
         assert_eq!(update_a.message.as_deref(), Some("A"));
         assert_eq!(update_b.message.as_deref(), Some("B"));
         assert!(rx_a.try_recv().is_err());
@@ -1067,7 +1118,7 @@ mod tests {
             .expect("tool call");
         server.abort();
 
-        assert_eq!(result, Value::String("no-progress".to_string()));
+        assert_eq!(result.content[0].as_text(), Some("no-progress"));
         assert!(progress_rx.try_recv().is_err());
     }
 

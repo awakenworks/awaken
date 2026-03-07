@@ -305,9 +305,7 @@ async fn message_send(
         }
 
         return Err(match check_run_liveness(task_id).await? {
-            RunLookup::ExistsButInactive => {
-                ApiError::BadRequest("task is not active".to_string())
-            }
+            RunLookup::ExistsButInactive => ApiError::BadRequest("task is not active".to_string()),
             RunLookup::NotFound => ApiError::RunNotFound(task_id.to_string()),
         });
     }
