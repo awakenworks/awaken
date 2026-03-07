@@ -205,6 +205,7 @@ pub(super) fn run_stream(
     let mut last_text = String::new();
     let mut continued_response_prefix = String::new();
     let mut stream_retry_model_preference: Option<String> = None;
+    let mut stream_retry_backoff_window = RetryBackoffWindow::default();
     let mut stream_error_counts_by_model: HashMap<String, usize> = HashMap::new();
     let run_cancellation_token = cancellation_token;
     let step_tool_provider = step_tool_provider_for_run(agent.as_ref(), tools);
@@ -658,12 +659,61 @@ pub(super) fn run_stream(
                                 next_model = %stream_retry_model_preference.clone().unwrap_or_else(|| inference_model.clone()),
                                 "mid-stream error, recovering stream"
                             );
+                            match wait_retry_backoff(
+                                agent.as_ref(),
+                                run_state.stream_event_retries,
+                                &mut stream_retry_backoff_window,
+                                run_cancellation_token.as_ref(),
+                            )
+                            .await
+                            {
+                                RetryBackoffOutcome::Completed => {}
+                                RetryBackoffOutcome::Cancelled => {
+                                    append_cancellation_user_message(
+                                        &mut run_ctx,
+                                        CancellationStage::Inference,
+                                    );
+                                    finish_run!(TerminationReason::Cancelled, None);
+                                }
+                                RetryBackoffOutcome::BudgetExhausted => {
+                                    tracing::warn!(
+                                        error = %error_message,
+                                        retry = run_state.stream_event_retries,
+                                        "mid-stream retry budget exhausted"
+                                    );
+                                    match apply_llm_error_cleanup(
+                                        &mut run_ctx,
+                                        &active_tool_descriptors,
+                                        agent.as_ref(),
+                                        "llm_stream_event_error",
+                                        error_message.clone(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => {}
+                                        Err(phase_error) => {
+                                            let message = phase_error.to_string();
+                                            terminate_stream_error!(
+                                                outcome::LoopFailure::State(message.clone()),
+                                                message
+                                            );
+                                        }
+                                    }
+                                    terminate_stream_error!(
+                                        outcome::LoopFailure::Llm(error_message.clone()),
+                                        error_message
+                                    );
+                                }
+                            }
                             match recovery_checkpoint {
                                 StreamRecoveryCheckpoint::NoPayload => {}
                                 StreamRecoveryCheckpoint::PartialText(partial_text) => {
                                     let msg = assistant_message(&partial_text);
                                     run_ctx.add_message(Arc::new(msg));
-                                    extend_response_prefix(&mut continued_response_prefix, &partial_text);
+                                    extend_response_prefix(
+                                        &mut continued_response_prefix,
+                                        &partial_text,
+                                    );
                                     last_text = continued_response_prefix.clone();
                                     let continuation =
                                         truncation_recovery::stream_error_continuation_message();
@@ -676,12 +726,6 @@ pub(super) fn run_stream(
                             // Close the failed step and re-enter the outer loop.
                             yield emitter.step_end();
                             mark_step_completed(&mut run_state);
-                            // Backoff before retrying.
-                            let _ = wait_retry_backoff(
-                                agent.as_ref(),
-                                run_state.stream_event_retries.saturating_sub(1),
-                                run_cancellation_token.as_ref(),
-                            ).await;
                             continue 'step;
                         }
                         // Non-retryable or retries exhausted: terminate the run.
@@ -708,6 +752,7 @@ pub(super) fn run_stream(
             let max_output_tokens = chat_options.as_ref().and_then(|o| o.max_tokens);
             let result = collector.finish(max_output_tokens);
             stream_retry_model_preference = None;
+            stream_retry_backoff_window.reset();
             stream_error_counts_by_model.clear();
             if !saw_stream_payload
                 && result.text.is_empty()

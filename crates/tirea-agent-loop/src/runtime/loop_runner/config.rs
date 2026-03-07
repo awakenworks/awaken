@@ -20,6 +20,12 @@ pub struct LlmRetryPolicy {
     pub initial_backoff_ms: u64,
     /// Max backoff cap in milliseconds.
     pub max_backoff_ms: u64,
+    /// Random jitter applied around the exponential backoff base, expressed as
+    /// a percentage of the computed delay.
+    pub backoff_jitter_percent: u8,
+    /// Maximum wall-clock retry window in milliseconds for one retry sequence.
+    /// When exceeded, no further retry backoff is scheduled.
+    pub max_retry_window_ms: Option<u64>,
     /// Retry stream startup failures before any output is emitted.
     pub retry_stream_start: bool,
     /// Max retryable mid-stream recovery attempts across a single run.
@@ -35,6 +41,8 @@ impl Default for LlmRetryPolicy {
             max_attempts_per_model: 2,
             initial_backoff_ms: 250,
             max_backoff_ms: 2_000,
+            backoff_jitter_percent: 20,
+            max_retry_window_ms: Some(10_000),
             retry_stream_start: true,
             max_stream_event_retries: 2,
             stream_error_fallback_threshold: 2,

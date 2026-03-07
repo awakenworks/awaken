@@ -887,6 +887,8 @@ fn test_agent_config_with_fallback_models_and_retry_policy() {
         max_attempts_per_model: 3,
         initial_backoff_ms: 100,
         max_backoff_ms: 500,
+        backoff_jitter_percent: 15,
+        max_retry_window_ms: Some(2_500),
         retry_stream_start: true,
         max_stream_event_retries: 4,
         stream_error_fallback_threshold: 2,
@@ -904,6 +906,8 @@ fn test_agent_config_with_fallback_models_and_retry_policy() {
     assert_eq!(config.llm_retry_policy.max_attempts_per_model, 3);
     assert_eq!(config.llm_retry_policy.initial_backoff_ms, 100);
     assert_eq!(config.llm_retry_policy.max_backoff_ms, 500);
+    assert_eq!(config.llm_retry_policy.backoff_jitter_percent, 15);
+    assert_eq!(config.llm_retry_policy.max_retry_window_ms, Some(2_500));
     assert!(config.llm_retry_policy.retry_stream_start);
     assert_eq!(config.llm_retry_policy.max_stream_event_retries, 4);
     assert_eq!(config.llm_retry_policy.stream_error_fallback_threshold, 2);
@@ -977,6 +981,59 @@ fn test_llm_retry_error_classification() {
         LlmErrorClass::ClientRequest
     );
     assert!(!is_retryable_llm_error(&bad_request));
+}
+
+#[test]
+fn test_retry_backoff_plan_without_jitter_is_exponential_and_capped() {
+    let policy = LlmRetryPolicy {
+        initial_backoff_ms: 100,
+        max_backoff_ms: 500,
+        backoff_jitter_percent: 0,
+        max_retry_window_ms: None,
+        ..LlmRetryPolicy::default()
+    };
+
+    assert_eq!(retry_base_backoff_ms(&policy, 1), 100);
+    assert_eq!(retry_base_backoff_ms(&policy, 2), 200);
+    assert_eq!(retry_base_backoff_ms(&policy, 3), 400);
+    assert_eq!(retry_base_backoff_ms(&policy, 4), 500);
+    assert_eq!(retry_backoff_plan_ms(&policy, 4, 0, 7), Some(500));
+}
+
+#[test]
+fn test_retry_backoff_plan_with_jitter_stays_within_expected_range() {
+    let policy = LlmRetryPolicy {
+        initial_backoff_ms: 100,
+        max_backoff_ms: 500,
+        backoff_jitter_percent: 20,
+        max_retry_window_ms: None,
+        ..LlmRetryPolicy::default()
+    };
+
+    let waits: std::collections::HashSet<_> = (0..8)
+        .map(|entropy| retry_backoff_plan_ms(&policy, 2, 0, entropy).unwrap())
+        .collect();
+
+    assert!(
+        waits.iter().all(|wait_ms| (160..=240).contains(wait_ms)),
+        "jittered waits should stay within +/-20% of 200ms: {waits:?}"
+    );
+    assert!(waits.len() > 1, "expected entropy to produce varied waits");
+}
+
+#[test]
+fn test_retry_backoff_plan_respects_retry_window_budget() {
+    let policy = LlmRetryPolicy {
+        initial_backoff_ms: 100,
+        max_backoff_ms: 500,
+        backoff_jitter_percent: 0,
+        max_retry_window_ms: Some(250),
+        ..LlmRetryPolicy::default()
+    };
+
+    assert_eq!(retry_backoff_plan_ms(&policy, 1, 0, 0), Some(100));
+    assert_eq!(retry_backoff_plan_ms(&policy, 2, 25, 0), Some(200));
+    assert_eq!(retry_backoff_plan_ms(&policy, 2, 51, 0), None);
 }
 
 #[test]
@@ -5572,6 +5629,37 @@ async fn test_nonstream_uses_fallback_model_after_primary_failures() {
 }
 
 #[tokio::test]
+async fn test_nonstream_retry_budget_exhaustion_stops_additional_attempts() {
+    let provider = Arc::new(MockChatProvider::new(vec![
+        Err(genai::Error::Internal("429 rate limit".to_string())),
+        Ok(text_chat_response("ok")),
+    ]));
+    let config = BaseAgent::new("mock")
+        .with_llm_retry_policy(LlmRetryPolicy {
+            max_attempts_per_model: 2,
+            initial_backoff_ms: 10,
+            max_backoff_ms: 10,
+            backoff_jitter_percent: 0,
+            max_retry_window_ms: Some(5),
+            retry_stream_start: true,
+            ..LlmRetryPolicy::default()
+        })
+        .with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
+
+    assert!(matches!(outcome.termination, TerminationReason::Error(_)));
+    assert!(matches!(
+        outcome.failure,
+        Some(outcome::LoopFailure::Llm(message))
+            if message.contains("429") && message.contains("retry budget exhausted")
+    ));
+    assert_eq!(provider.seen_models(), vec!["mock".to_string()]);
+}
+
+#[tokio::test]
 async fn test_nonstream_truncation_recovery_stitches_final_response() {
     let provider = Arc::new(MockChatProvider::new(vec![
         Ok(truncated_chat_response("partial output...")),
@@ -7182,6 +7270,56 @@ async fn test_stream_retries_startup_error_then_succeeds() {
 }
 
 #[tokio::test]
+async fn test_stream_midstream_retry_budget_exhaustion_stops_recovery() {
+    let provider = Arc::new(ScriptedStreamProvider::new(vec![
+        text_stream_error_attempt(
+            "hel",
+            web_stream_io_error(
+                std::io::ErrorKind::ConnectionReset,
+                "connection reset by peer",
+            ),
+        ),
+        text_stream_success_attempt("lo"),
+    ]));
+    let config = BaseAgent::new("mock")
+        .with_llm_retry_policy(LlmRetryPolicy {
+            max_attempts_per_model: 1,
+            initial_backoff_ms: 10,
+            max_backoff_ms: 10,
+            backoff_jitter_percent: 0,
+            max_retry_window_ms: Some(5),
+            retry_stream_start: true,
+            max_stream_event_retries: 1,
+            stream_error_fallback_threshold: 2,
+        })
+        .with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunConfig::default()).unwrap();
+    let events = collect_stream_events(run_loop_stream(
+        Arc::new(config),
+        HashMap::new(),
+        run_ctx,
+        None,
+        None,
+        None,
+    ))
+    .await;
+
+    assert!(matches!(
+        extract_termination(&events),
+        Some(TerminationReason::Error(_))
+    ));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::Error { message, .. }
+                if message.contains("connection reset by peer"))),
+        "expected stream error after retry budget exhaustion: {events:?}"
+    );
+    assert_eq!(provider.seen_models(), vec!["mock".to_string()]);
+}
+
+#[tokio::test]
 async fn test_stream_uses_fallback_model_after_primary_failures() {
     let provider = Arc::new(FailingStartProvider::new(2));
     let config = BaseAgent::new("primary")
@@ -7237,6 +7375,8 @@ async fn test_stream_midstream_text_error_retries_with_continuation_context() {
             max_attempts_per_model: 1,
             initial_backoff_ms: 1,
             max_backoff_ms: 1,
+            backoff_jitter_percent: 0,
+            max_retry_window_ms: None,
             retry_stream_start: true,
             max_stream_event_retries: 1,
             stream_error_fallback_threshold: 2,
@@ -7297,6 +7437,8 @@ async fn test_stream_midstream_text_error_stitches_run_finish_response() {
             max_attempts_per_model: 1,
             initial_backoff_ms: 1,
             max_backoff_ms: 1,
+            backoff_jitter_percent: 0,
+            max_retry_window_ms: None,
             retry_stream_start: true,
             max_stream_event_retries: 1,
             stream_error_fallback_threshold: 2,
@@ -7371,6 +7513,8 @@ async fn test_stream_midstream_tool_call_error_restarts_step_without_continuatio
             max_attempts_per_model: 1,
             initial_backoff_ms: 1,
             max_backoff_ms: 1,
+            backoff_jitter_percent: 0,
+            max_retry_window_ms: None,
             retry_stream_start: true,
             max_stream_event_retries: 1,
             stream_error_fallback_threshold: 2,
@@ -7443,6 +7587,8 @@ async fn test_stream_midstream_repeated_errors_escalate_to_fallback_model() {
             max_attempts_per_model: 1,
             initial_backoff_ms: 1,
             max_backoff_ms: 1,
+            backoff_jitter_percent: 0,
+            max_retry_window_ms: None,
             retry_stream_start: true,
             max_stream_event_retries: 2,
             stream_error_fallback_threshold: 2,

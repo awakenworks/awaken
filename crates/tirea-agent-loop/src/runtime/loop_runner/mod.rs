@@ -75,7 +75,9 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 pub use crate::contracts::runtime::ToolExecutor;
@@ -104,7 +106,6 @@ use plugin_runtime::emit_cleanup_phases;
 use run_state::LoopRunState;
 pub use state_commit::ChannelStateCommitter;
 use state_commit::PendingDeltaCommitContext;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tirea_state::TrackedPatch;
 #[cfg(test)]
 use tokio_util::sync::CancellationToken;
@@ -406,32 +407,118 @@ pub(super) fn is_retryable_llm_error(error: &genai::Error) -> bool {
     classify_llm_error(error).is_retryable()
 }
 
-pub(super) fn retry_backoff_ms(agent: &dyn Agent, retry_index: usize) -> u64 {
-    let policy = agent.llm_retry_policy();
+static RETRY_BACKOFF_ENTROPY: AtomicU64 = AtomicU64::new(0x9e37_79b9_7f4a_7c15);
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct RetryBackoffWindow {
+    started_at: Option<Instant>,
+}
+
+impl RetryBackoffWindow {
+    pub(super) fn elapsed_ms(&mut self) -> u64 {
+        self.started_at
+            .get_or_insert_with(Instant::now)
+            .elapsed()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX)
+    }
+
+    pub(super) fn reset(&mut self) {
+        self.started_at = None;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RetryBackoffOutcome {
+    Completed,
+    Cancelled,
+    BudgetExhausted,
+}
+
+fn mix_retry_entropy(mut entropy: u64) -> u64 {
+    entropy = entropy.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    entropy = (entropy ^ (entropy >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    entropy = (entropy ^ (entropy >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    entropy ^ (entropy >> 31)
+}
+
+fn next_retry_entropy() -> u64 {
+    let counter = RETRY_BACKOFF_ENTROPY.fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::Relaxed);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(counter);
+    mix_retry_entropy(counter ^ now)
+}
+
+pub(super) fn retry_base_backoff_ms(policy: &LlmRetryPolicy, retry_attempt: usize) -> u64 {
     let initial = policy.initial_backoff_ms;
     let cap = policy.max_backoff_ms.max(policy.initial_backoff_ms);
-    if retry_index == 0 {
+    let attempt = retry_attempt.max(1);
+    if attempt == 1 {
         return initial.min(cap);
     }
-    let shift = (retry_index - 1).min(20) as u32;
+    let shift = (attempt - 1).min(20) as u32;
     let factor = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
     initial.saturating_mul(factor).min(cap)
 }
 
+fn jittered_backoff_ms(policy: &LlmRetryPolicy, retry_attempt: usize, entropy: u64) -> u64 {
+    let cap = policy.max_backoff_ms.max(policy.initial_backoff_ms);
+    let base_ms = retry_base_backoff_ms(policy, retry_attempt).min(cap);
+    let jitter_percent = policy.backoff_jitter_percent.min(100) as u64;
+    if jitter_percent == 0 || base_ms == 0 {
+        return base_ms;
+    }
+
+    let jitter_window = base_ms.saturating_mul(jitter_percent) / 100;
+    let lower = base_ms.saturating_sub(jitter_window);
+    let upper = base_ms.saturating_add(jitter_window).min(cap);
+    if upper <= lower {
+        return lower;
+    }
+
+    let span = upper - lower;
+    lower + (mix_retry_entropy(entropy) % (span.saturating_add(1)))
+}
+
+pub(super) fn retry_backoff_plan_ms(
+    policy: &LlmRetryPolicy,
+    retry_attempt: usize,
+    elapsed_ms: u64,
+    entropy: u64,
+) -> Option<u64> {
+    let wait_ms = jittered_backoff_ms(policy, retry_attempt, entropy);
+    match policy.max_retry_window_ms {
+        Some(budget_ms) if elapsed_ms.saturating_add(wait_ms) > budget_ms => None,
+        _ => Some(wait_ms),
+    }
+}
+
 pub(super) async fn wait_retry_backoff(
     agent: &dyn Agent,
-    retry_index: usize,
+    retry_attempt: usize,
+    retry_window: &mut RetryBackoffWindow,
     run_cancellation_token: Option<&RunCancellationToken>,
-) -> bool {
-    let wait_ms = retry_backoff_ms(agent, retry_index);
+) -> RetryBackoffOutcome {
+    let elapsed_ms = retry_window.elapsed_ms();
+    let Some(wait_ms) = retry_backoff_plan_ms(
+        agent.llm_retry_policy(),
+        retry_attempt,
+        elapsed_ms,
+        next_retry_entropy(),
+    ) else {
+        return RetryBackoffOutcome::BudgetExhausted;
+    };
     match await_or_cancel(
         run_cancellation_token,
         tokio::time::sleep(std::time::Duration::from_millis(wait_ms)),
     )
     .await
     {
-        CancelAware::Cancelled => true,
-        CancelAware::Value(_) => false,
+        CancelAware::Cancelled => RetryBackoffOutcome::Cancelled,
+        CancelAware::Value(_) => RetryBackoffOutcome::Completed,
     }
 }
 
@@ -532,8 +619,9 @@ where
     let model_candidates = effective_llm_models_from(agent, start_model);
     let max_attempts = llm_retry_attempts(agent);
     let mut total_attempts = 0usize;
+    let mut retry_window = RetryBackoffWindow::default();
 
-    for model in model_candidates {
+    'models: for model in model_candidates {
         for attempt in 1..=max_attempts {
             total_attempts = total_attempts.saturating_add(1);
             let response_res =
@@ -557,12 +645,24 @@ where
                     let can_retry_same_model =
                         retry_current_model && attempt < max_attempts && is_retryable_llm_error(&e);
                     if can_retry_same_model {
-                        let cancelled =
-                            wait_retry_backoff(agent, attempt, run_cancellation_token).await;
-                        if cancelled {
-                            return LlmAttemptOutcome::Cancelled;
+                        match wait_retry_backoff(
+                            agent,
+                            attempt,
+                            &mut retry_window,
+                            run_cancellation_token,
+                        )
+                        .await
+                        {
+                            RetryBackoffOutcome::Completed => continue,
+                            RetryBackoffOutcome::Cancelled => {
+                                return LlmAttemptOutcome::Cancelled;
+                            }
+                            RetryBackoffOutcome::BudgetExhausted => {
+                                last_llm_error =
+                                    format!("{last_llm_error} (retry budget exhausted)");
+                                break 'models;
+                            }
                         }
-                        continue;
                     }
                     break;
                 }
