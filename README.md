@@ -3,6 +3,12 @@
 Tirea is an immutable state-driven agent framework in Rust.
 It combines typed JSON state management, deterministic patch application, and an agent runtime/orchestration stack.
 
+## Documentation
+
+- Published docs: <https://tirea-ai.github.io/tirea/>
+- Book entrypoint in repo: [`docs/book/src/introduction.md`](./docs/book/src/introduction.md)
+- API reference guide: [`docs/book/src/reference/api.md`](./docs/book/src/reference/api.md)
+
 ## Start here
 
 Choose the path that matches what you want to do first:
@@ -122,13 +128,9 @@ Use this when you want a CopilotKit + AG-UI scenario demo focused on resource co
 
 See: [`examples/research-ui/README.md`](./examples/research-ui/README.md)
 
-## Documentation
+## Build docs locally
 
 - Book source: `docs/book/src/`
-- Book entrypoint: [`docs/book/src/introduction.md`](./docs/book/src/introduction.md)
-- API reference guide: [`docs/book/src/reference/api.md`](./docs/book/src/reference/api.md)
-
-Build docs locally:
 
 ```bash
 cargo install mdbook --locked --version 0.5.2

@@ -90,5 +90,6 @@ curl -X POST \
 ## Related
 
 - [Run API](../reference/run-api.md)
+- [Frontend Interaction and Approval Model](../explanation/frontend-interaction-and-approval-model.md)
 - [AG-UI Protocol](../reference/protocols/ag-ui.md)
 - [AI SDK v6 Protocol](../reference/protocols/ai-sdk-v6.md)

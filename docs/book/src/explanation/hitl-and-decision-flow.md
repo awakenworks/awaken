@@ -93,6 +93,7 @@ The transport changes payload shape and encoding, but the runtime semantics stay
 
 - Use [Enable Tool Permission HITL](../how-to/enable-tool-permission-hitl.md) to wire approval behavior
 - Use [Run API](../reference/run-api.md) for concrete HTTP payloads
+- Use [Frontend Interaction and Approval Model](./frontend-interaction-and-approval-model.md) for the unified design behind frontend tools and approvals
 - Use [Run Lifecycle and Phases](./run-lifecycle-and-phases.md) for full internal state-machine detail
 
 This page is the conceptual bridge between those pieces.

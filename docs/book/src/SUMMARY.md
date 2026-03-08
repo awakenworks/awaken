@@ -55,6 +55,7 @@
 - [Architecture](./explanation/architecture.md)
 - [State and Patch Model](./explanation/state-and-patch-model.md)
 - [Run Lifecycle and Phases](./explanation/run-lifecycle-and-phases.md)
+- [Frontend Interaction and Approval Model](./explanation/frontend-interaction-and-approval-model.md)
 - [HITL and Decision Flow](./explanation/hitl-and-decision-flow.md)
 - [Sub-Agent Delegation](./explanation/sub-agent-delegation.md)
 - [Persistence and Versioning](./explanation/persistence-and-versioning.md)

@@ -55,6 +55,7 @@ State mutation is patch-based:
 ## See Also
 
 - [Run Lifecycle and Phases](./run-lifecycle-and-phases.md)
+- [Frontend Interaction and Approval Model](./frontend-interaction-and-approval-model.md)
 - [Persistence and Versioning](./persistence-and-versioning.md)
 - [HTTP API](../reference/http-api.md)
 - [Events](../reference/events.md)

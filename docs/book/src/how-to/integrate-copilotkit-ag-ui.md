@@ -203,6 +203,7 @@ function onAgUiEvent(event: any) {
 
 - [AG-UI Protocol](../reference/protocols/ag-ui.md)
 - [Ecosystem Integrations](../reference/ecosystem-integrations.md)
+- [Frontend Interaction and Approval Model](../explanation/frontend-interaction-and-approval-model.md)
 - [HTTP API](../reference/http-api.md)
 - `examples/copilotkit-starter/README.md`
 - `examples/copilotkit-starter/lib/copilotkit-app.ts`
