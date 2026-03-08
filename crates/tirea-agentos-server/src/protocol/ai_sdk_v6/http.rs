@@ -222,7 +222,8 @@ mod tests {
     }
 
     fn ai_sdk_error_chunk(msg: &str) -> Bytes {
-        let json = serde_json::to_string(&UIStreamEvent::error(msg)).expect("serialize ai-sdk error");
+        let json =
+            serde_json::to_string(&UIStreamEvent::error(msg)).expect("serialize ai-sdk error");
         Bytes::from(format!("data: {json}\n\n"))
     }
 
@@ -245,12 +246,14 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_error_event_streams_as_valid_ai_sdk_error_chunk() {
-        let starter: RunStarter = Box::new(move |_request| Box::pin(async move {
-            Ok(fake_run(vec![AgentEvent::Error {
-                message: "provider stream failed".to_string(),
-                code: Some("PROVIDER_ERROR".to_string()),
-            }]))
-        }));
+        let starter: RunStarter = Box::new(move |_request| {
+            Box::pin(async move {
+                Ok(fake_run(vec![AgentEvent::Error {
+                    message: "provider stream failed".to_string(),
+                    code: Some("PROVIDER_ERROR".to_string()),
+                }]))
+            })
+        });
         let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
         ingress_tx
             .send(RuntimeInput::Run(test_run_request()))
@@ -286,7 +289,11 @@ mod tests {
             .filter_map(|text| text.trim().strip_prefix("data: "))
             .collect();
 
-        assert_eq!(payloads.len(), 1, "unexpected ai-sdk payloads: {payloads:?}");
+        assert_eq!(
+            payloads.len(),
+            1,
+            "unexpected ai-sdk payloads: {payloads:?}"
+        );
         let event: UIStreamEvent =
             serde_json::from_str(payloads[0]).expect("valid ai-sdk runtime error event");
         assert!(matches!(

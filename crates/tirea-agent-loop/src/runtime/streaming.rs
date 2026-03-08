@@ -431,7 +431,9 @@ mod tests {
                 completion_tokens: Some(128),
                 ..Default::default()
             }),
-            captured_stop_reason: Some(genai::chat::StopReason::from("unknown_stop_reason".to_string())),
+            captured_stop_reason: Some(genai::chat::StopReason::from(
+                "unknown_stop_reason".to_string(),
+            )),
             ..Default::default()
         }));
 

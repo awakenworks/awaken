@@ -843,10 +843,7 @@ mod tests {
     fn model_registry_trims_provider_and_model_names() {
         let mut registry = InMemoryModelRegistry::new();
         registry
-            .register(
-                "m1",
-                ModelDefinition::new(" openai ", " gemini-2.5-flash "),
-            )
+            .register("m1", ModelDefinition::new(" openai ", " gemini-2.5-flash "))
             .expect("register model");
 
         let model = registry.get("m1").expect("stored model");
