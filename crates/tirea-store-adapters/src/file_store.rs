@@ -4,8 +4,8 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tirea_contract::storage::{
-    Committed, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStoreError,
-    ThreadWriter, VersionPrecondition,
+    paginate_runs_in_memory, Committed, RunPage, RunQuery, RunRecord, ThreadHead, ThreadListPage,
+    ThreadListQuery, ThreadReader, ThreadStoreError, ThreadWriter, VersionPrecondition,
 };
 use tirea_contract::{Thread, ThreadChangeSet, Version};
 
@@ -85,6 +85,7 @@ impl ThreadWriter for FileStore {
             version: new_version,
         };
         self.save_head(&new_head).await?;
+        self.upsert_run_from_changeset(thread_id, delta).await?;
         Ok(Committed {
             version: new_version,
         })
@@ -121,6 +122,31 @@ impl ThreadWriter for FileStore {
 impl ThreadReader for FileStore {
     async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
         self.load_head(thread_id).await
+    }
+
+    async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, ThreadStoreError> {
+        self.load_run_record(run_id).await
+    }
+
+    async fn list_runs(&self, query: &RunQuery) -> Result<RunPage, ThreadStoreError> {
+        let records = self.load_all_run_records().await?;
+        Ok(paginate_runs_in_memory(&records, query))
+    }
+
+    async fn active_run_for_thread(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<RunRecord>, ThreadStoreError> {
+        let records = self.load_all_run_records().await?;
+        Ok(records
+            .into_iter()
+            .filter(|r| r.thread_id == thread_id && !r.status.is_terminal())
+            .max_by(|a, b| {
+                a.created_at
+                    .cmp(&b.created_at)
+                    .then_with(|| a.updated_at.cmp(&b.updated_at))
+                    .then_with(|| a.run_id.cmp(&b.run_id))
+            }))
     }
 
     async fn list_threads(
@@ -172,6 +198,101 @@ impl ThreadReader for FileStore {
 }
 
 impl FileStore {
+    fn runs_dir(&self) -> PathBuf {
+        self.base_path.join("_runs")
+    }
+
+    fn run_path(&self, run_id: &str) -> Result<PathBuf, ThreadStoreError> {
+        file_utils::validate_fs_id(run_id, "run id").map_err(ThreadStoreError::InvalidId)?;
+        Ok(self.runs_dir().join(format!("{run_id}.json")))
+    }
+
+    async fn save_run_record(&self, record: &RunRecord) -> Result<(), ThreadStoreError> {
+        let payload = serde_json::to_string_pretty(record)
+            .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
+        let filename = format!("{}.json", record.run_id);
+        file_utils::atomic_json_write(&self.runs_dir(), &filename, &payload)
+            .await
+            .map_err(ThreadStoreError::Io)
+    }
+
+    async fn load_run_record(&self, run_id: &str) -> Result<Option<RunRecord>, ThreadStoreError> {
+        let path = self.run_path(run_id)?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = tokio::fs::read_to_string(path).await?;
+        let record: RunRecord = serde_json::from_str(&content)
+            .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
+        Ok(Some(record))
+    }
+
+    async fn load_all_run_records(&self) -> Result<Vec<RunRecord>, ThreadStoreError> {
+        let dir = self.runs_dir();
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut entries = tokio::fs::read_dir(&dir).await?;
+        let mut records = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "json") {
+                continue;
+            }
+            let content = tokio::fs::read_to_string(path).await?;
+            let record: RunRecord = serde_json::from_str(&content)
+                .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
+            records.push(record);
+        }
+        Ok(records)
+    }
+
+    async fn upsert_run_from_changeset(
+        &self,
+        thread_id: &str,
+        delta: &ThreadChangeSet,
+    ) -> Result<(), ThreadStoreError> {
+        if delta.run_id.is_empty() {
+            return Ok(());
+        }
+        let now = now_millis();
+        if let Some(meta) = &delta.run_meta {
+            let mut record = self
+                .load_run_record(&delta.run_id)
+                .await?
+                .unwrap_or_else(|| {
+                    RunRecord::new(
+                        &delta.run_id,
+                        thread_id,
+                        &meta.agent_id,
+                        meta.origin,
+                        meta.status,
+                        now,
+                    )
+                });
+            record.status = meta.status;
+            record.agent_id.clone_from(&meta.agent_id);
+            record.origin = meta.origin;
+            record.thread_id = thread_id.to_string();
+            if record.parent_run_id.is_none() {
+                record.parent_run_id.clone_from(&delta.parent_run_id);
+            }
+            if record.parent_thread_id.is_none() {
+                record.parent_thread_id.clone_from(&meta.parent_thread_id);
+            }
+            record.termination_code.clone_from(&meta.termination_code);
+            record
+                .termination_detail
+                .clone_from(&meta.termination_detail);
+            record.updated_at = now;
+            self.save_run_record(&record).await?;
+        } else if let Some(mut record) = self.load_run_record(&delta.run_id).await? {
+            record.updated_at = now;
+            self.save_run_record(&record).await?;
+        }
+        Ok(())
+    }
+
     /// Load a thread head (thread + version) from file.
     async fn load_head(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
         let path = self.thread_path(thread_id)?;
@@ -303,6 +424,7 @@ mod tests {
         let d1 = ThreadChangeSet {
             run_id: "run-1".to_string(),
             parent_run_id: None,
+            run_meta: None,
             reason: CheckpointReason::UserMessage,
             messages: vec![Arc::new(Message::user("hello"))],
             patches: vec![],
@@ -318,6 +440,7 @@ mod tests {
         let d2 = ThreadChangeSet {
             run_id: "run-1".to_string(),
             parent_run_id: None,
+            run_meta: None,
             reason: CheckpointReason::AssistantTurnCommitted,
             messages: vec![Arc::new(Message::assistant("hi"))],
             patches: vec![TrackedPatch::new(
@@ -335,6 +458,7 @@ mod tests {
         let d3 = ThreadChangeSet {
             run_id: "run-1".to_string(),
             parent_run_id: None,
+            run_meta: None,
             reason: CheckpointReason::RunFinished,
             messages: vec![],
             patches: vec![],
@@ -407,6 +531,7 @@ mod tests {
         let delta = ThreadChangeSet {
             run_id: "run-1".to_string(),
             parent_run_id: None,
+            run_meta: None,
             reason: CheckpointReason::AssistantTurnCommitted,
             messages: vec![
                 Arc::new(Message::assistant_with_tool_calls(
@@ -459,6 +584,7 @@ mod tests {
         let delta = ThreadChangeSet {
             run_id: "run-1".to_string(),
             parent_run_id: None,
+            run_meta: None,
             reason: CheckpointReason::UserMessage,
             messages: vec![Arc::new(Message::user("hello"))],
             patches: vec![],

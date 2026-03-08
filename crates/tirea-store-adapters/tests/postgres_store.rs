@@ -13,7 +13,7 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::ImageExt;
 use testcontainers_modules::postgres::Postgres;
 use tirea_contract::storage::{
-    RunOrigin, RunQuery, RunReader, RunRecord, RunRecordStatus, RunWriter, ThreadReader,
+    RunOrigin, RunQuery, RunReader, RunRecord, RunStatus, RunWriter, ThreadReader,
     ThreadStoreError, ThreadWriter, VersionPrecondition,
 };
 use tirea_contract::thread::ThreadChangeSet;
@@ -138,8 +138,9 @@ async fn test_run_projection_roundtrip_and_filters() {
     let mut root = RunRecord::new(
         "run-root",
         "thread-a",
+        "",
         RunOrigin::AgUi,
-        RunRecordStatus::Working,
+        RunStatus::Running,
         100,
     );
     root.updated_at = 150;
@@ -148,43 +149,47 @@ async fn test_run_projection_roundtrip_and_filters() {
     let mut child = RunRecord::new(
         "run-child",
         "thread-b",
+        "",
         RunOrigin::Subagent,
-        RunRecordStatus::Completed,
+        RunStatus::Done,
         200,
     );
     child.parent_run_id = Some("run-root".to_string());
     child.parent_thread_id = Some("thread-a".to_string());
     store.upsert_run(&child).await.expect("upsert child");
 
-    let loaded = store
-        .load_run("run-child")
+    let loaded = tirea_contract::storage::RunReader::load_run(&store, "run-child")
         .await
         .expect("load child")
         .expect("child exists");
     assert_eq!(loaded.parent_run_id.as_deref(), Some("run-root"));
     assert_eq!(loaded.origin, RunOrigin::Subagent);
 
-    let page = store
-        .list_runs(&RunQuery {
-            status: Some(RunRecordStatus::Completed),
+    let page = tirea_contract::storage::RunReader::list_runs(
+        &store,
+        &RunQuery {
+            status: Some(RunStatus::Done),
             origin: Some(RunOrigin::Subagent),
             ..Default::default()
-        })
-        .await
-        .expect("list runs");
+        },
+    )
+    .await
+    .expect("list runs");
     assert_eq!(page.total, 1);
     assert_eq!(page.items[0].run_id, "run-child");
 
-    let page = store
-        .list_runs(&RunQuery {
+    let page = tirea_contract::storage::RunReader::list_runs(
+        &store,
+        &RunQuery {
             created_at_from: Some(80),
             created_at_to: Some(180),
             updated_at_from: Some(120),
             updated_at_to: Some(180),
             ..Default::default()
-        })
-        .await
-        .expect("list runs by timestamp");
+        },
+    )
+    .await
+    .expect("list runs by timestamp");
     assert_eq!(page.total, 1);
     assert_eq!(page.items[0].run_id, "run-root");
 
@@ -195,11 +200,86 @@ async fn test_run_projection_roundtrip_and_filters() {
     assert_eq!(resolved.as_deref(), Some("thread-a"));
 
     store.delete_run("run-root").await.expect("delete run");
-    assert!(store
-        .load_run("run-root")
+    assert!(
+        tirea_contract::storage::RunReader::load_run(&store, "run-root")
+            .await
+            .expect("load deleted")
+            .is_none()
+    );
+}
+
+// ========================================================================
+// load_current_run tests
+// ========================================================================
+
+#[tokio::test]
+async fn test_load_current_run_returns_latest_non_terminal() {
+    let Some((_container, url)) = start_postgres().await else {
+        return;
+    };
+    let store = make_store(&url).await;
+
+    // Completed run (terminal).
+    let mut done = RunRecord::new("run-old", "t1", "", RunOrigin::AgUi, RunStatus::Done, 100);
+    done.updated_at = 150;
+    store.upsert_run(&done).await.expect("upsert done");
+
+    // Active run (non-terminal).
+    let mut active = RunRecord::new(
+        "run-active",
+        "t1",
+        "",
+        RunOrigin::AgUi,
+        RunStatus::Running,
+        200,
+    );
+    active.updated_at = 250;
+    store.upsert_run(&active).await.expect("upsert active");
+
+    let current = store
+        .load_current_run("t1")
         .await
-        .expect("load deleted")
-        .is_none());
+        .expect("load current run");
+    assert_eq!(
+        current.as_ref().map(|r| r.run_id.as_str()),
+        Some("run-active"),
+        "should return the non-terminal run"
+    );
+}
+
+#[tokio::test]
+async fn test_load_current_run_returns_none_when_all_terminal() {
+    let Some((_container, url)) = start_postgres().await else {
+        return;
+    };
+    let store = make_store(&url).await;
+
+    let done = RunRecord::new("run-d", "t2", "", RunOrigin::AiSdk, RunStatus::Done, 100);
+    store.upsert_run(&done).await.expect("upsert done");
+
+    assert!(
+        store.load_current_run("t2").await.unwrap().is_none(),
+        "should return None when all runs are terminal"
+    );
+}
+
+#[tokio::test]
+async fn test_load_current_run_picks_latest_among_multiple_active() {
+    let Some((_container, url)) = start_postgres().await else {
+        return;
+    };
+    let store = make_store(&url).await;
+
+    let r1 = RunRecord::new("run-a", "t3", "", RunOrigin::AgUi, RunStatus::Running, 100);
+    let r2 = RunRecord::new("run-b", "t3", "", RunOrigin::AgUi, RunStatus::Waiting, 200);
+    store.upsert_run(&r1).await.unwrap();
+    store.upsert_run(&r2).await.unwrap();
+
+    let current = store.load_current_run("t3").await.unwrap().unwrap();
+    assert_eq!(
+        current.run_id, "run-b",
+        "should pick the run with the latest created_at"
+    );
 }
 
 // ========================================================================
@@ -292,6 +372,7 @@ async fn test_tool_call_message_roundtrip_via_append() {
     let delta = ThreadChangeSet {
         run_id: "run-1".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![
             Arc::new(Message::assistant_with_tool_calls(

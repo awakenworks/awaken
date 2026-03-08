@@ -25,16 +25,16 @@ impl FileRunStore {
     }
 
     fn validate_run_id(run_id: &str) -> Result<(), RunStoreError> {
-        file_utils::validate_fs_id(run_id, "run id").map_err(RunStoreError::InvalidId)
+        file_utils::validate_fs_id(run_id, "run id").map_err(RunStoreError::Backend)
     }
 
     async fn save_run(&self, record: &RunRecord) -> Result<(), RunStoreError> {
         let payload = serde_json::to_string_pretty(record)
-            .map_err(|e| RunStoreError::Serialization(e.to_string()))?;
+            .map_err(|e| RunStoreError::Backend(e.to_string()))?;
         let filename = format!("{}.json", record.run_id);
         file_utils::atomic_json_write(&self.base_path, &filename, &payload)
             .await
-            .map_err(RunStoreError::Io)
+            .map_err(RunStoreError::from)
     }
 
     async fn load_all_runs(&self) -> Result<Vec<RunRecord>, RunStoreError> {
@@ -50,7 +50,7 @@ impl FileRunStore {
             }
             let content = tokio::fs::read_to_string(path).await?;
             let record: RunRecord = serde_json::from_str(&content)
-                .map_err(|e| RunStoreError::Serialization(e.to_string()))?;
+                .map_err(|e| RunStoreError::Backend(e.to_string()))?;
             records.push(record);
         }
         Ok(records)
@@ -65,14 +65,27 @@ impl RunReader for FileRunStore {
             return Ok(None);
         }
         let content = tokio::fs::read_to_string(path).await?;
-        let record: RunRecord = serde_json::from_str(&content)
-            .map_err(|e| RunStoreError::Serialization(e.to_string()))?;
+        let record: RunRecord =
+            serde_json::from_str(&content).map_err(|e| RunStoreError::Backend(e.to_string()))?;
         Ok(Some(record))
     }
 
     async fn list_runs(&self, query: &RunQuery) -> Result<RunPage, RunStoreError> {
         let records = self.load_all_runs().await?;
         Ok(paginate_runs_in_memory(&records, query))
+    }
+
+    async fn load_current_run(&self, thread_id: &str) -> Result<Option<RunRecord>, RunStoreError> {
+        let records = self.load_all_runs().await?;
+        Ok(records
+            .into_iter()
+            .filter(|r| r.thread_id == thread_id && !r.status.is_terminal())
+            .max_by(|a, b| {
+                a.created_at
+                    .cmp(&b.created_at)
+                    .then_with(|| a.updated_at.cmp(&b.updated_at))
+                    .then_with(|| a.run_id.cmp(&b.run_id))
+            }))
     }
 }
 
@@ -95,7 +108,7 @@ impl RunWriter for FileRunStore {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use tirea_contract::storage::{RunOrigin, RunRecordStatus};
+    use tirea_contract::storage::{RunOrigin, RunStatus};
 
     #[tokio::test]
     async fn run_store_roundtrip() {
@@ -104,8 +117,9 @@ mod tests {
         let mut record = RunRecord::new(
             "run-roundtrip",
             "thread-1",
+            "",
             RunOrigin::A2a,
-            RunRecordStatus::Submitted,
+            RunStatus::Running,
             100,
         );
         record.updated_at = 120;
@@ -128,5 +142,43 @@ mod tests {
             .await
             .expect("load after delete")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn load_current_run_returns_latest_non_terminal() {
+        let temp = TempDir::new().expect("tempdir");
+        let store = FileRunStore::new(temp.path());
+
+        let mut done = RunRecord::new("run-old", "t1", "", RunOrigin::AgUi, RunStatus::Done, 1);
+        done.updated_at = 2;
+        store.upsert_run(&done).await.unwrap();
+
+        let mut active = RunRecord::new(
+            "run-active",
+            "t1",
+            "",
+            RunOrigin::AgUi,
+            RunStatus::Running,
+            3,
+        );
+        active.updated_at = 4;
+        store.upsert_run(&active).await.unwrap();
+
+        let current = store.load_current_run("t1").await.unwrap();
+        assert_eq!(
+            current.as_ref().map(|r| r.run_id.as_str()),
+            Some("run-active")
+        );
+    }
+
+    #[tokio::test]
+    async fn load_current_run_returns_none_when_all_terminal() {
+        let temp = TempDir::new().expect("tempdir");
+        let store = FileRunStore::new(temp.path());
+
+        let done = RunRecord::new("run-d", "t2", "", RunOrigin::AiSdk, RunStatus::Done, 1);
+        store.upsert_run(&done).await.unwrap();
+
+        assert!(store.load_current_run("t2").await.unwrap().is_none());
     }
 }

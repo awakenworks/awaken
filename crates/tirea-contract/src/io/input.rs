@@ -1,4 +1,5 @@
 use crate::io::ToolCallDecision;
+use crate::storage::RunOrigin;
 use crate::thread::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,6 +19,9 @@ pub struct RunRequest {
     pub parent_thread_id: Option<String>,
     /// Resource this thread belongs to (for listing/querying).
     pub resource_id: Option<String>,
+    /// Protocol origin for run index tracking.
+    #[serde(default)]
+    pub origin: RunOrigin,
     /// Frontend state snapshot.
     pub state: Option<Value>,
     /// Messages to append before running.

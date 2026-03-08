@@ -222,6 +222,7 @@ async fn test_append_does_not_write_to_inner() {
     let delta = ThreadChangeSet {
         run_id: "r1".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("world"))],
         patches: vec![],
@@ -254,6 +255,7 @@ async fn test_save_flushes_to_inner_and_purges_nats() {
     let delta = ThreadChangeSet {
         run_id: "r1".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("world"))],
         patches: vec![],
@@ -325,6 +327,7 @@ async fn test_recover_replays_unacked_deltas() {
     let delta1 = ThreadChangeSet {
         run_id: "r1".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("response 1"))],
         patches: vec![],
@@ -334,6 +337,7 @@ async fn test_recover_replays_unacked_deltas() {
     let delta2 = ThreadChangeSet {
         run_id: "r1".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::ToolResultsCommitted,
         messages: vec![Arc::new(Message::assistant("response 2"))],
         patches: vec![],
@@ -383,6 +387,7 @@ async fn test_query_returns_last_flush_snapshot_during_active_run() {
     let delta = ThreadChangeSet {
         run_id: "r2".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("second reply"))],
         patches: vec![],
@@ -424,6 +429,7 @@ async fn test_load_messages_returns_last_flush_snapshot_during_active_run() {
         let delta = ThreadChangeSet {
             run_id: "r2".to_string(),
             parent_run_id: None,
+            run_meta: None,
             reason: CheckpointReason::AssistantTurnCommitted,
             messages: vec![Arc::new(Message::assistant(format!("msg-{i}")))],
             patches: vec![],
@@ -463,6 +469,7 @@ async fn test_query_accurate_after_run_end_flush() {
     let delta = ThreadChangeSet {
         run_id: "r1".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("world"))],
         patches: vec![],
@@ -512,6 +519,7 @@ async fn test_multi_run_query_sees_previous_run_data() {
     let delta1 = ThreadChangeSet {
         run_id: "r1".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("a1"))],
         patches: vec![],
@@ -533,6 +541,7 @@ async fn test_multi_run_query_sees_previous_run_data() {
     let delta2 = ThreadChangeSet {
         run_id: "r2".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("a2"))],
         patches: vec![],
@@ -579,6 +588,7 @@ async fn test_run_finished_append_auto_flushes_to_inner() {
     let delta1 = ThreadChangeSet {
         run_id: "r-auto".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("first"))],
         patches: vec![],
@@ -596,6 +606,7 @@ async fn test_run_finished_append_auto_flushes_to_inner() {
     let delta2 = ThreadChangeSet {
         run_id: "r-auto".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::RunFinished,
         messages: vec![Arc::new(Message::assistant("second"))],
         patches: vec![],
@@ -638,6 +649,7 @@ async fn test_buffered_vs_direct_write_latency_and_amplification() {
         let delta = ThreadChangeSet {
             run_id: "r-compare".to_string(),
             parent_run_id: None,
+            run_meta: None,
             reason,
             messages: vec![Arc::new(Message::assistant(format!("d{i}")))],
             patches: vec![],
@@ -672,6 +684,7 @@ async fn test_buffered_vs_direct_write_latency_and_amplification() {
         let delta = ThreadChangeSet {
             run_id: "r-compare".to_string(),
             parent_run_id: None,
+            run_meta: None,
             reason,
             messages: vec![Arc::new(Message::assistant(format!("b{i}")))],
             patches: vec![],
@@ -725,6 +738,7 @@ async fn test_run_finished_flush_failure_can_be_recovered() {
     let delta1 = ThreadChangeSet {
         run_id: "r-fail".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("step"))],
         patches: vec![],
@@ -739,6 +753,7 @@ async fn test_run_finished_flush_failure_can_be_recovered() {
     let delta2 = ThreadChangeSet {
         run_id: "r-fail".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::RunFinished,
         messages: vec![Arc::new(Message::assistant("finish"))],
         patches: vec![],
@@ -784,6 +799,7 @@ async fn test_duplicate_run_finished_delta_is_idempotent_by_message_id() {
     let run_finished = ThreadChangeSet {
         run_id: "r-idempotent".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::RunFinished,
         messages: vec![Arc::new(
             Message::assistant("done").with_id("msg-run-finished".to_string()),
@@ -829,6 +845,7 @@ async fn test_concurrent_appends_flush_to_consistent_snapshot() {
             let delta = ThreadChangeSet {
                 run_id: "r-concurrent".to_string(),
                 parent_run_id: None,
+                run_meta: None,
                 reason: CheckpointReason::AssistantTurnCommitted,
                 messages: vec![Arc::new(
                     Message::assistant(format!("m{i}")).with_id(format!("m-{i}")),
@@ -850,6 +867,7 @@ async fn test_concurrent_appends_flush_to_consistent_snapshot() {
     let finish = ThreadChangeSet {
         run_id: "r-concurrent".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::RunFinished,
         messages: vec![],
         patches: vec![],

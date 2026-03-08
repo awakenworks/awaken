@@ -39,7 +39,7 @@ const STREAM_NAME: &str = "THREAD_DELTAS";
 
 /// Subject prefix.  Full subject: `thread.{thread_id}.deltas`.
 const SUBJECT_PREFIX: &str = "thread";
-const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
+const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 fn delta_subject(thread_id: &str) -> String {
     format!("{SUBJECT_PREFIX}.{thread_id}.deltas")

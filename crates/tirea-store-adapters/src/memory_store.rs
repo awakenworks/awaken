@@ -1,9 +1,16 @@
 use async_trait::async_trait;
 use tirea_contract::storage::{
+    paginate_runs_in_memory, RunPage, RunQuery, RunReader, RunRecord, RunStoreError, RunWriter,
     ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStoreError, ThreadSync,
     ThreadWriter, VersionPrecondition,
 };
 use tirea_contract::{Committed, Thread, ThreadChangeSet, Version};
+
+fn now_unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+}
 
 struct MemoryEntry {
     thread: Thread,
@@ -15,6 +22,7 @@ struct MemoryEntry {
 #[derive(Default)]
 pub struct MemoryStore {
     entries: tokio::sync::RwLock<std::collections::HashMap<String, MemoryEntry>>,
+    runs: tokio::sync::RwLock<std::collections::HashMap<String, RunRecord>>,
 }
 
 impl MemoryStore {
@@ -65,6 +73,42 @@ impl ThreadWriter for MemoryStore {
         delta.apply_to(&mut entry.thread);
         entry.version += 1;
         entry.deltas.push(delta.clone());
+
+        // Maintain run index from changeset metadata.
+        if !delta.run_id.is_empty() {
+            let now = now_unix_millis();
+            let mut runs = self.runs.write().await;
+            if let Some(meta) = &delta.run_meta {
+                let record = runs.entry(delta.run_id.clone()).or_insert_with(|| {
+                    RunRecord::new(
+                        &delta.run_id,
+                        thread_id,
+                        &meta.agent_id,
+                        meta.origin,
+                        meta.status,
+                        now,
+                    )
+                });
+                record.status = meta.status;
+                record.agent_id.clone_from(&meta.agent_id);
+                record.origin = meta.origin;
+                record.thread_id = thread_id.to_string();
+                if record.parent_run_id.is_none() {
+                    record.parent_run_id.clone_from(&delta.parent_run_id);
+                }
+                if record.parent_thread_id.is_none() {
+                    record.parent_thread_id.clone_from(&meta.parent_thread_id);
+                }
+                record.termination_code.clone_from(&meta.termination_code);
+                record
+                    .termination_detail
+                    .clone_from(&meta.termination_detail);
+                record.updated_at = now;
+            } else if let Some(record) = runs.get_mut(&delta.run_id) {
+                record.updated_at = now;
+            }
+        }
+
         Ok(Committed {
             version: entry.version,
         })
@@ -92,6 +136,49 @@ impl ThreadWriter for MemoryStore {
 }
 
 #[async_trait]
+impl RunReader for MemoryStore {
+    async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, RunStoreError> {
+        Ok(self.runs.read().await.get(run_id).cloned())
+    }
+
+    async fn list_runs(&self, query: &RunQuery) -> Result<RunPage, RunStoreError> {
+        let runs = self.runs.read().await;
+        let records: Vec<RunRecord> = runs.values().cloned().collect();
+        Ok(paginate_runs_in_memory(&records, query))
+    }
+
+    async fn load_current_run(&self, thread_id: &str) -> Result<Option<RunRecord>, RunStoreError> {
+        let runs = self.runs.read().await;
+        Ok(runs
+            .values()
+            .filter(|r| r.thread_id == thread_id && !r.status.is_terminal())
+            .max_by(|a, b| {
+                a.created_at
+                    .cmp(&b.created_at)
+                    .then_with(|| a.updated_at.cmp(&b.updated_at))
+                    .then_with(|| a.run_id.cmp(&b.run_id))
+            })
+            .cloned())
+    }
+}
+
+#[async_trait]
+impl RunWriter for MemoryStore {
+    async fn upsert_run(&self, record: &RunRecord) -> Result<(), RunStoreError> {
+        self.runs
+            .write()
+            .await
+            .insert(record.run_id.clone(), record.clone());
+        Ok(())
+    }
+
+    async fn delete_run(&self, run_id: &str) -> Result<(), RunStoreError> {
+        self.runs.write().await.remove(run_id);
+        Ok(())
+    }
+}
+
+#[async_trait]
 impl ThreadReader for MemoryStore {
     async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
         let entries = self.entries.read().await;
@@ -99,6 +186,33 @@ impl ThreadReader for MemoryStore {
             thread: e.thread.clone(),
             version: e.version,
         }))
+    }
+
+    async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, ThreadStoreError> {
+        Ok(self.runs.read().await.get(run_id).cloned())
+    }
+
+    async fn list_runs(&self, query: &RunQuery) -> Result<RunPage, ThreadStoreError> {
+        let runs = self.runs.read().await;
+        let records: Vec<RunRecord> = runs.values().cloned().collect();
+        Ok(paginate_runs_in_memory(&records, query))
+    }
+
+    async fn active_run_for_thread(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<RunRecord>, ThreadStoreError> {
+        let runs = self.runs.read().await;
+        Ok(runs
+            .values()
+            .filter(|r| r.thread_id == thread_id && !r.status.is_terminal())
+            .max_by(|a, b| {
+                a.created_at
+                    .cmp(&b.created_at)
+                    .then_with(|| a.updated_at.cmp(&b.updated_at))
+                    .then_with(|| a.run_id.cmp(&b.run_id))
+            })
+            .cloned())
     }
 
     async fn list_threads(

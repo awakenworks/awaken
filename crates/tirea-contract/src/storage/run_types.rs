@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::runtime::RunStatus;
+
 /// Origin of a run.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -21,32 +23,21 @@ pub enum RunOrigin {
     Internal,
 }
 
-/// Durable run status used by run/task projections.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunRecordStatus {
-    Submitted,
-    Working,
-    InputRequired,
-    AuthRequired,
-    Completed,
-    Failed,
-    Canceled,
-    Rejected,
-}
-
 /// Durable projection record for one run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRecord {
     pub run_id: String,
     pub thread_id: String,
+    /// The agent definition that owns this run.
+    #[serde(default)]
+    pub agent_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_thread_id: Option<String>,
     #[serde(default)]
     pub origin: RunOrigin,
-    pub status: RunRecordStatus,
+    pub status: RunStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub termination_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -62,13 +53,15 @@ impl RunRecord {
     pub fn new(
         run_id: impl Into<String>,
         thread_id: impl Into<String>,
+        agent_id: impl Into<String>,
         origin: RunOrigin,
-        status: RunRecordStatus,
+        status: RunStatus,
         now_ms: u64,
     ) -> Self {
         Self {
             run_id: run_id.into(),
             thread_id: thread_id.into(),
+            agent_id: agent_id.into(),
             parent_run_id: None,
             parent_thread_id: None,
             origin,
@@ -89,7 +82,8 @@ pub struct RunQuery {
     pub limit: usize,
     pub thread_id: Option<String>,
     pub parent_run_id: Option<String>,
-    pub status: Option<RunRecordStatus>,
+    pub status: Option<RunStatus>,
+    pub termination_code: Option<String>,
     pub origin: Option<RunOrigin>,
     /// Inclusive lower bound for `created_at` (unix millis).
     pub created_at_from: Option<u64>,
@@ -109,6 +103,7 @@ impl Default for RunQuery {
             thread_id: None,
             parent_run_id: None,
             status: None,
+            termination_code: None,
             origin: None,
             created_at_from: None,
             created_at_to: None,
@@ -148,6 +143,13 @@ pub fn paginate_runs_in_memory(records: &[RunRecord], query: &RunQuery) -> RunPa
         .filter(|record| {
             if let Some(status) = query.status {
                 record.status == status
+            } else {
+                true
+            }
+        })
+        .filter(|record| {
+            if let Some(termination_code) = query.termination_code.as_deref() {
+                record.termination_code.as_deref() == Some(termination_code)
             } else {
                 true
             }
@@ -213,14 +215,14 @@ pub fn paginate_runs_in_memory(records: &[RunRecord], query: &RunQuery) -> RunPa
 /// Run storage-level errors.
 #[derive(Debug, Error)]
 pub enum RunStoreError {
-    #[error("run not found: {0}")]
-    NotFound(String),
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("serialization error: {0}")]
-    Serialization(String),
-    #[error("invalid run id: {0}")]
-    InvalidId(String),
+    #[error("run store backend error: {0}")]
+    Backend(String),
+}
+
+impl From<std::io::Error> for RunStoreError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Backend(error.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -234,11 +236,12 @@ mod tests {
             records.push(RunRecord::new(
                 format!("run-{i}"),
                 if i < 4 { "thread-a" } else { "thread-b" },
+                "test-agent",
                 RunOrigin::User,
                 if i % 2 == 0 {
-                    RunRecordStatus::Working
+                    RunStatus::Running
                 } else {
-                    RunRecordStatus::Completed
+                    RunStatus::Done
                 },
                 i as u64,
             ));
@@ -249,13 +252,26 @@ mod tests {
             &RunQuery {
                 limit: 2,
                 thread_id: Some("thread-a".to_string()),
-                status: Some(RunRecordStatus::Working),
+                status: Some(RunStatus::Running),
                 ..Default::default()
             },
         );
         assert_eq!(page.total, 2);
         assert_eq!(page.items.len(), 2);
         assert!(!page.has_more);
+
+        records[2].termination_code = Some("cancel_requested".to_string());
+        records[4].termination_code = Some("cancel_requested".to_string());
+
+        let page = paginate_runs_in_memory(
+            &records,
+            &RunQuery {
+                termination_code: Some("cancel_requested".to_string()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(page.total, 2);
+        assert_eq!(page.items.len(), 2);
 
         let page = paginate_runs_in_memory(
             &records,

@@ -4,8 +4,8 @@ use crate::thread::Version;
 use async_trait::async_trait;
 
 use super::{
-    paginate_in_memory, Committed, MessagePage, MessageQuery, ThreadHead, ThreadListPage,
-    ThreadListQuery, ThreadStoreError, VersionPrecondition,
+    paginate_in_memory, Committed, MessagePage, MessageQuery, RunPage, RunQuery, RunRecord,
+    ThreadHead, ThreadListPage, ThreadListQuery, ThreadStoreError, VersionPrecondition,
 };
 
 #[async_trait]
@@ -65,6 +65,30 @@ pub trait ThreadReader: Send + Sync {
             .await?
             .ok_or_else(|| ThreadStoreError::NotFound(thread_id.to_string()))?;
         Ok(head.thread.messages.len())
+    }
+
+    // ----- run index (populated from `RunMeta` in changesets) -----
+
+    /// Load one run record by run id.
+    async fn load_run(&self, _run_id: &str) -> Result<Option<RunRecord>, ThreadStoreError> {
+        Ok(None)
+    }
+
+    /// List runs with optional filtering and pagination.
+    async fn list_runs(&self, _query: &RunQuery) -> Result<RunPage, ThreadStoreError> {
+        Ok(RunPage {
+            items: vec![],
+            total: 0,
+            has_more: false,
+        })
+    }
+
+    /// Load the most recent non-terminal run for a thread, if any.
+    async fn active_run_for_thread(
+        &self,
+        _thread_id: &str,
+    ) -> Result<Option<RunRecord>, ThreadStoreError> {
+        Ok(None)
     }
 }
 

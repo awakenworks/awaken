@@ -1,6 +1,8 @@
 //! Shared persistence change-set types shared by runtime and storage.
 
 use crate::runtime::state::SerializedAction;
+use crate::runtime::RunStatus;
+use crate::storage::RunOrigin;
 use crate::thread::{Message, Thread};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -20,6 +22,24 @@ pub enum CheckpointReason {
     RunFinished,
 }
 
+/// Run-level metadata carried in a [`ThreadChangeSet`].
+///
+/// When present, the thread store uses this to maintain a run index.
+/// Set on the first changeset of a run (to create the record) and the last
+/// (to finalize status / termination).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunMeta {
+    pub agent_id: String,
+    pub origin: RunOrigin,
+    pub status: RunStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_thread_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub termination_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub termination_detail: Option<String>,
+}
+
 /// An incremental change to a thread produced by a single step.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadChangeSet {
@@ -28,6 +48,9 @@ pub struct ThreadChangeSet {
     /// Parent run (for sub-agent deltas).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<String>,
+    /// Run-level metadata for run index maintenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_meta: Option<RunMeta>,
     /// Why this delta was created.
     pub reason: CheckpointReason,
     /// New messages appended in this step.
@@ -56,12 +79,20 @@ impl ThreadChangeSet {
         Self {
             run_id: run_id.into(),
             parent_run_id,
+            run_meta: None,
             reason,
             messages,
             patches,
             actions,
             snapshot,
         }
+    }
+
+    /// Attach run-level metadata for run index maintenance.
+    #[must_use]
+    pub fn with_run_meta(mut self, meta: RunMeta) -> Self {
+        self.run_meta = Some(meta);
+        self
     }
 
     /// Apply this delta to a thread in place.
@@ -102,6 +133,7 @@ mod tests {
         ThreadChangeSet {
             run_id: "run-1".into(),
             parent_run_id: None,
+            run_meta: None,
             reason: CheckpointReason::AssistantTurnCommitted,
             messages: vec![Arc::new(Message::assistant("hello"))],
             patches: vec![],
@@ -148,6 +180,7 @@ mod tests {
         let delta = ThreadChangeSet {
             run_id: "run-1".into(),
             parent_run_id: None,
+            run_meta: None,
             reason: CheckpointReason::AssistantTurnCommitted,
             messages: vec![msg.clone()],
             patches: vec![],

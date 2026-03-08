@@ -400,6 +400,7 @@ fn sample_delta(run_id: &str, reason: CheckpointReason) -> ThreadChangeSet {
     ThreadChangeSet {
         run_id: run_id.to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason,
         messages: vec![Arc::new(Message::assistant("hello"))],
         patches: vec![],
@@ -492,6 +493,7 @@ async fn test_thread_store_append_with_snapshot() {
     let delta = ThreadChangeSet {
         run_id: "run-1".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::RunFinished,
         messages: vec![],
         patches: vec![],
@@ -679,6 +681,7 @@ async fn test_tool_call_message_roundtrip_via_append() {
     let delta = ThreadChangeSet {
         run_id: "run-1".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![
             Arc::new(Message::assistant_with_tool_calls(
@@ -729,6 +732,7 @@ async fn test_tool_call_message_roundtrip_via_load_deltas() {
     let delta = ThreadChangeSet {
         run_id: "run-1".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![
             Arc::new(Message::assistant_with_tool_calls("multi-tool", calls)),
@@ -827,6 +831,7 @@ async fn test_full_agent_run_via_append() {
     let user_delta = ThreadChangeSet {
         run_id: "run-1".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::UserMessage,
         messages: vec![Arc::new(Message::user("What is 2+2?"))],
         patches: vec![],
@@ -845,6 +850,7 @@ async fn test_full_agent_run_via_append() {
     let assistant_delta = ThreadChangeSet {
         run_id: "run-1".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("2+2 = 4"))],
         patches: vec![],
@@ -866,6 +872,7 @@ async fn test_full_agent_run_via_append() {
     let tool_delta = ThreadChangeSet {
         run_id: "run-1".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::ToolResultsCommitted,
         messages: vec![Arc::new(Message::tool("call-1", "4"))],
         patches: vec![patch],
@@ -884,6 +891,7 @@ async fn test_full_agent_run_via_append() {
     let finished_delta = ThreadChangeSet {
         run_id: "run-1".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::RunFinished,
         messages: vec![Arc::new(Message::assistant("The answer is 4."))],
         patches: vec![],
@@ -918,6 +926,7 @@ async fn test_delta_replay_reconstructs_thread() {
         ThreadChangeSet {
             run_id: "run-1".to_string(),
             parent_run_id: None,
+            run_meta: None,
             reason: CheckpointReason::UserMessage,
             messages: vec![Arc::new(Message::user("inc"))],
             patches: vec![TrackedPatch::new(
@@ -929,6 +938,7 @@ async fn test_delta_replay_reconstructs_thread() {
         ThreadChangeSet {
             run_id: "run-1".to_string(),
             parent_run_id: None,
+            run_meta: None,
             reason: CheckpointReason::AssistantTurnCommitted,
             messages: vec![Arc::new(Message::assistant("done"))],
             patches: vec![TrackedPatch::new(
@@ -940,6 +950,7 @@ async fn test_delta_replay_reconstructs_thread() {
         ThreadChangeSet {
             run_id: "run-1".to_string(),
             parent_run_id: None,
+            run_meta: None,
             reason: CheckpointReason::RunFinished,
             messages: vec![],
             patches: vec![],
@@ -986,6 +997,7 @@ async fn test_partial_delta_replay() {
         let delta = ThreadChangeSet {
             run_id: "run-1".to_string(),
             parent_run_id: None,
+            run_meta: None,
             reason: CheckpointReason::AssistantTurnCommitted,
             messages: vec![Arc::new(Message::assistant(format!("msg-{i}")))],
             patches: vec![],
@@ -1018,6 +1030,7 @@ async fn test_append_preserves_patch_provenance() {
     let delta = ThreadChangeSet {
         run_id: "run-1".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::ToolResultsCommitted,
         messages: vec![],
         patches: vec![patch],
@@ -1058,6 +1071,7 @@ async fn test_append_preserves_parent_run_id() {
     let delta = ThreadChangeSet {
         run_id: "child-run-1".to_string(),
         parent_run_id: Some("parent-run-1".to_string()),
+        run_meta: None,
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("sub-agent reply"))],
         patches: vec![],
@@ -1086,6 +1100,7 @@ async fn test_load_deltas_preserves_actions() {
     let delta = ThreadChangeSet {
         run_id: "run-1".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::ToolResultsCommitted,
         messages: vec![Arc::new(Message::assistant("hi"))],
         patches: vec![],
@@ -1122,6 +1137,7 @@ async fn test_append_empty_delta() {
     let empty = ThreadChangeSet {
         run_id: "run-1".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::RunFinished,
         messages: vec![],
         patches: vec![],
@@ -1152,6 +1168,7 @@ async fn frontend_state_replaces_existing_thread_state_in_user_message_delta() {
     let patch_delta = ThreadChangeSet {
         run_id: "run-0".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::ToolResultsCommitted,
         messages: vec![],
         patches: vec![TrackedPatch::new(
@@ -1176,6 +1193,7 @@ async fn frontend_state_replaces_existing_thread_state_in_user_message_delta() {
     let user_delta = ThreadChangeSet {
         run_id: "run-1".to_string(),
         parent_run_id: None,
+        run_meta: None,
         reason: CheckpointReason::UserMessage,
         messages: vec![Arc::new(Message::user("hello"))],
         patches: vec![],

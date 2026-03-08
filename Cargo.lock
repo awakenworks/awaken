@@ -4617,6 +4617,7 @@ name = "tirea-agentos"
 version = "0.3.0-dev"
 dependencies = [
  "async-trait",
+ "bytes",
  "futures",
  "genai",
  "model-context-protocol",

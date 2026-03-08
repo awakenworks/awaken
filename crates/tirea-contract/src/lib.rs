@@ -125,8 +125,8 @@ pub type RunConfigError = tirea_state::SealedStateError;
 
 // thread
 pub use thread::{
-    gen_message_id, CheckpointReason, Message, MessageMetadata, Role, Thread, ThreadChangeSet,
-    ThreadMetadata, ToolCall, Version, Visibility,
+    gen_message_id, CheckpointReason, Message, MessageMetadata, Role, RunMeta, Thread,
+    ThreadChangeSet, ThreadMetadata, ToolCall, Version, Visibility,
 };
 
 // io
@@ -155,9 +155,9 @@ pub use runtime::{
 // storage
 pub use storage::{
     paginate_in_memory, paginate_runs_in_memory, Committed, MessagePage, MessageQuery,
-    MessageWithCursor, RunOrigin, RunPage, RunQuery, RunReader, RunRecord, RunRecordStatus,
-    RunStore, RunStoreError, RunWriter, SortOrder, ThreadHead, ThreadListPage, ThreadListQuery,
-    ThreadReader, ThreadStore, ThreadStoreError, ThreadSync, ThreadWriter, VersionPrecondition,
+    MessageWithCursor, RunOrigin, RunPage, RunQuery, RunReader, RunRecord, RunStore, RunStoreError,
+    RunWriter, SortOrder, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore,
+    ThreadStoreError, ThreadSync, ThreadWriter, VersionPrecondition,
 };
 
 // transport

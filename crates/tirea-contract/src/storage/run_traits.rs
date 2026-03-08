@@ -14,6 +14,12 @@ pub trait RunReader: Send + Sync {
     async fn resolve_thread_id(&self, run_id: &str) -> Result<Option<String>, RunStoreError> {
         Ok(self.load_run(run_id).await?.map(|r| r.thread_id))
     }
+
+    /// Load the most recent non-terminal run for a thread, if any.
+    ///
+    /// Returns the latest run whose status is not `Done`, ordered by
+    /// `created_at` descending (with `updated_at` and `run_id` as tiebreakers).
+    async fn load_current_run(&self, thread_id: &str) -> Result<Option<RunRecord>, RunStoreError>;
 }
 
 #[async_trait]
