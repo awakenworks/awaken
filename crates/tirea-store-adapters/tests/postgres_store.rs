@@ -270,7 +270,9 @@ async fn test_load_current_run_picks_latest_among_multiple_active() {
     };
     let store = make_store(&url).await;
 
-    let r1 = RunRecord::new("run-a", "t3", "", RunOrigin::AgUi, RunStatus::Running, 100);
+    // Insert an older terminal run and a newer active run.
+    // The unique constraint allows at most one non-terminal run per thread.
+    let r1 = RunRecord::new("run-a", "t3", "", RunOrigin::AgUi, RunStatus::Done, 100);
     let r2 = RunRecord::new("run-b", "t3", "", RunOrigin::AgUi, RunStatus::Waiting, 200);
     store.upsert_run(&r1).await.unwrap();
     store.upsert_run(&r2).await.unwrap();
@@ -278,7 +280,7 @@ async fn test_load_current_run_picks_latest_among_multiple_active() {
     let current = store.load_current_run("t3").await.unwrap().unwrap();
     assert_eq!(
         current.run_id, "run-b",
-        "should pick the run with the latest created_at"
+        "should return the active run, ignoring terminal ones"
     );
 }
 
