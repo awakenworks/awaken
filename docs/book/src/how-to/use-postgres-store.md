@@ -14,7 +14,7 @@ Use `PostgresStore` when you need shared durable storage across instances.
 
 ```toml
 [dependencies]
-tirea-store-adapters = { version = "0.3.0-dev", features = ["postgres"] }
+tirea-store-adapters = { version = "0.3.0-alpha.1", features = ["postgres"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres"], default-features = false }
 ```
 
