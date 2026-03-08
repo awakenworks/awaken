@@ -1,16 +1,13 @@
 //! Reminder policy extension.
 //!
-//! External callers only depend on [`ReminderAction`], [`AddReminderItem`],
-//! [`InjectReminders`], [`ClearReminderState`], and [`ReminderPlugin`].
+//! External callers only depend on [`ReminderAction`], [`add_reminder_action`],
+//! [`inject_reminders`], [`clear_reminder_action`], and [`ReminderPlugin`].
 
 mod actions;
 mod state;
 mod system_reminder;
 
-pub use actions::{
-    add_reminder_action, clear_reminder_action, inject_reminders, AddReminderItem,
-    ClearReminderState, InjectReminders,
-};
+pub use actions::{add_reminder_action, clear_reminder_action, inject_reminders};
 pub use state::ReminderAction;
 pub use system_reminder::SystemReminder;
 
@@ -196,8 +193,7 @@ mod tests {
 
     #[test]
     fn add_reminder_item_emits_state_action() {
-        let item = AddReminderItem("check logs".into());
-        let sa = item.into_state_action();
+        let sa = add_reminder_action("check logs");
         // Verify the state action was constructed (non-null check via debug or any method)
         let _ = sa;
     }

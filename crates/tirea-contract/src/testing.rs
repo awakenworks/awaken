@@ -3,18 +3,16 @@
 //! Gated behind the `test-support` cargo feature so production builds are
 //! unaffected.  Enable via `[dev-dependencies] tirea-contract = { ..., features = ["test-support"] }`.
 
-use crate::runtime::action::Action;
 use crate::runtime::activity::NoOpActivityManager;
 use crate::runtime::phase::{
     ActionSet, AfterInferenceAction, AfterToolExecuteAction, BeforeInferenceAction,
     BeforeToolExecuteAction, LifecycleAction,
 };
 use crate::runtime::run::{RunAction, TerminationReason};
-use crate::runtime::state::AnyStateAction;
 use crate::runtime::tool_call::suspension::Suspension;
-use crate::runtime::tool_call::{ToolDescriptor, ToolResult};
+use crate::runtime::tool_call::ToolDescriptor;
 use crate::runtime::{
-    PendingToolCall, Phase, StepContext, SuspendTicket, ToolCallContext, ToolCallResumeMode,
+    PendingToolCall, StepContext, SuspendTicket, ToolCallContext, ToolCallResumeMode,
 };
 use crate::thread::Message;
 use crate::RunConfig;
@@ -130,199 +128,6 @@ pub fn test_suspend_ticket(interaction: Suspension) -> SuspendTicket {
         PendingToolCall::new(interaction.id, tool_name, interaction.parameters),
         ToolCallResumeMode::PassDecisionToTool,
     )
-}
-
-// =============================================================================
-// Test-only Action types (legacy — kept for existing tests)
-//
-// New tests should use the typed phase action helpers below.
-// =============================================================================
-
-/// Test action: append a line to system prompt context.
-pub struct TestSystemContext(pub String);
-
-impl Action for TestSystemContext {
-    fn label(&self) -> &'static str {
-        "add_system_context"
-    }
-
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        step.inference.system_context.push(self.0);
-    }
-}
-
-/// Test action: append a session context message.
-pub struct TestSessionContext(pub String);
-
-impl Action for TestSessionContext {
-    fn label(&self) -> &'static str {
-        "add_session_context"
-    }
-
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        step.inference.session_context.push(self.0);
-    }
-}
-
-/// Test action: block tool execution with a reason.
-pub struct TestBlockTool(pub String);
-
-impl Action for TestBlockTool {
-    fn label(&self) -> &'static str {
-        "block_tool"
-    }
-
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        if let Some(gate) = step.gate.as_mut() {
-            gate.blocked = true;
-            gate.block_reason = Some(self.0);
-            gate.pending = false;
-            gate.suspend_ticket = None;
-        }
-    }
-}
-
-/// Test action: suspend tool execution with a ticket.
-pub struct TestSuspendTool(pub SuspendTicket);
-
-impl Action for TestSuspendTool {
-    fn label(&self) -> &'static str {
-        "suspend_tool"
-    }
-
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        if let Some(gate) = step.gate.as_mut() {
-            gate.blocked = false;
-            gate.block_reason = None;
-            gate.pending = true;
-            gate.suspend_ticket = Some(self.0);
-        }
-    }
-}
-
-/// Test action: exclude a tool by ID.
-pub struct TestExcludeTool(pub String);
-
-impl Action for TestExcludeTool {
-    fn label(&self) -> &'static str {
-        "exclude_tool"
-    }
-
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        step.inference.tools.retain(|t| t.id != self.0);
-    }
-}
-
-/// Test action: request run termination.
-pub struct TestRequestTermination(pub TerminationReason);
-
-impl Action for TestRequestTermination {
-    fn label(&self) -> &'static str {
-        "request_termination"
-    }
-
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        step.flow.run_action = Some(RunAction::Terminate(self.0));
-    }
-}
-
-/// Test action: emit a state patch.
-pub struct TestEmitStatePatch(pub AnyStateAction);
-
-impl Action for TestEmitStatePatch {
-    fn label(&self) -> &'static str {
-        "emit_state_patch"
-    }
-
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        step.emit_state_action(self.0);
-    }
-}
-
-/// Test action: append a system reminder after tool results.
-pub struct TestSystemReminder(pub String);
-
-impl Action for TestSystemReminder {
-    fn label(&self) -> &'static str {
-        "add_system_reminder"
-    }
-
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        step.messaging.reminders.push(self.0);
-    }
-}
-
-/// Test action: allow tool execution (clears block/suspend).
-pub struct TestAllowTool;
-
-impl Action for TestAllowTool {
-    fn label(&self) -> &'static str {
-        "allow_tool"
-    }
-
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        if let Some(gate) = step.gate.as_mut() {
-            gate.blocked = false;
-            gate.block_reason = None;
-            gate.pending = false;
-            gate.suspend_ticket = None;
-        }
-    }
-}
-
-/// Test action: override tool result directly.
-pub struct TestOverrideToolResult(pub ToolResult);
-
-impl Action for TestOverrideToolResult {
-    fn label(&self) -> &'static str {
-        "override_tool_result"
-    }
-
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        if let Some(gate) = step.gate.as_mut() {
-            gate.result = Some(self.0);
-        }
-    }
-}
-
-/// Test action: keep only specified tools.
-pub struct TestIncludeOnlyTools(pub Vec<String>);
-
-impl Action for TestIncludeOnlyTools {
-    fn label(&self) -> &'static str {
-        "include_only_tools"
-    }
-
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        step.inference
-            .tools
-            .retain(|t| self.0.iter().any(|id| id == &t.id));
-    }
-}
-
-/// Test action: append a user message.
-pub struct TestUserMessage(pub String);
-
-impl Action for TestUserMessage {
-    fn label(&self) -> &'static str {
-        "add_user_message"
-    }
-
-    fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
-        step.messaging.user_messages.push(self.0);
-    }
-}
-
-/// Apply actions directly to a step for testing purposes.
-pub fn apply_actions_for_test(
-    _phase: Phase,
-    step: &mut StepContext<'_>,
-    actions: Vec<Box<dyn Action>>,
-) -> Result<(), String> {
-    for action in actions {
-        action.apply(step);
-    }
-    Ok(())
 }
 
 // =============================================================================
