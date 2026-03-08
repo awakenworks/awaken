@@ -9,14 +9,13 @@ use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::orchestrator::{AgentDefinition, StopConditionSpec, ToolExecutionMode};
 use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder, ModelDefinition};
 use tirea_agentos_server::nats::NatsConfig;
-use tirea_agentos_server::run_service::init_run_service;
 use tirea_agentos_server::service::AppState;
 use tirea_agentos_server::{http, protocol};
 use tirea_contract::runtime::tool_call::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_contract::runtime::tool_call::ToolCallContext;
 #[cfg(feature = "permission")]
 use tirea_extension_permission::{PermissionPlugin, ToolPolicyPlugin};
-use tirea_store_adapters::{FileRunStore, FileStore};
+use tirea_store_adapters::FileStore;
 
 #[derive(Debug, Parser)]
 #[command(name = "tirea-agentos-server")]
@@ -313,12 +312,9 @@ async fn main() {
         None => None,
     };
 
-    let run_store_dir = args.storage_dir.join("runs");
     let file_store = Arc::new(FileStore::new(args.storage_dir));
     let write_store: Arc<dyn ThreadStore> = file_store.clone();
     let read_store: Arc<dyn ThreadReader> = file_store.clone();
-    let run_store = Arc::new(FileRunStore::new(run_store_dir));
-    let _ = init_run_service(run_store);
     let os = Arc::new(build_os(cfg, args.tensorzero_url, write_store));
 
     let app = axum::Router::new()

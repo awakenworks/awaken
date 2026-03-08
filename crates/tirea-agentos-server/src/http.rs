@@ -7,20 +7,17 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::Value;
-use tirea_agentos::contracts::storage::{MessagePage, ThreadListPage, ThreadListQuery};
+use tirea_agentos::contracts::storage::{ThreadListPage, ThreadListQuery};
 use tirea_agentos::contracts::thread::Message;
-use tirea_agentos::contracts::thread::Thread;
 use tirea_agentos::contracts::{RunRequest, ToolCallDecision};
 use tirea_agentos::orchestrator::AgentOsRunError;
-use tirea_contract::storage::{RunOrigin, RunPage, RunQuery, RunRecord, RunRecordStatus};
+use tirea_contract::storage::{RunOrigin, RunPage, RunQuery, RunRecord, RunStatus};
 use tirea_contract::{AgentEvent, Identity};
 
-use crate::run_service::{global_run_service, wrap_with_run_tracking};
 use crate::service::{
-    check_run_liveness, load_run_record, parse_message_query, prepare_http_run, remove_active_run,
-    require_agent_state_store, resolve_thread_id_from_run, start_background_run,
-    try_cancel_active_run_by_id, try_forward_decisions_to_active_run_by_id, ApiError,
-    MessageQueryParams, RunLookup,
+    check_run_liveness, load_run_record, normalize_optional_id, parse_message_query,
+    prepare_http_run, require_agent_state_store, start_background_run, try_cancel_active_run_by_id,
+    try_forward_decisions_to_active_run_by_id, ApiError, MessageQueryParams, RunLookup,
 };
 use crate::transport::http_run::{wire_http_sse_relay, HttpSseRelayConfig};
 use crate::transport::http_sse::{sse_body_stream, sse_response};
@@ -54,7 +51,7 @@ pub fn thread_routes() -> Router<AppState> {
         .route(THREAD_MESSAGES_PATH, get(get_thread_messages))
 }
 
-/// Build run projection query routes.
+/// Build run projection query routes (opt-in, not included in the default public router).
 pub fn run_routes() -> Router<AppState> {
     Router::new()
         .route(RUNS_PATH, get(list_runs).post(start_run))
@@ -101,7 +98,7 @@ async fn list_threads(
 async fn get_thread(
     State(st): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<Thread>, ApiError> {
+) -> Result<Json<Value>, ApiError> {
     let Some(thread) = st
         .read_store
         .load_thread(&id)
@@ -110,25 +107,71 @@ async fn get_thread(
     else {
         return Err(ApiError::ThreadNotFound(id));
     };
-    Ok(Json(thread))
+    let value = serde_json::to_value(thread).map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(sanitize_public_thread_value(value)))
 }
 
 async fn get_thread_messages(
     State(st): State<AppState>,
     Path(id): Path<String>,
     Query(params): Query<MessageQueryParams>,
-) -> Result<Json<MessagePage>, ApiError> {
+) -> Result<Json<Value>, ApiError> {
     let query = parse_message_query(&params);
-    st.read_store
+    let page = st
+        .read_store
         .load_messages(&id, &query)
         .await
-        .map(Json)
         .map_err(|e| match e {
             tirea_agentos::contracts::storage::ThreadStoreError::NotFound(_) => {
                 ApiError::ThreadNotFound(id)
             }
             other => ApiError::Internal(other.to_string()),
-        })
+        })?;
+    let value = serde_json::to_value(page).map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(sanitize_public_message_page_value(value)))
+}
+
+fn sanitize_public_thread_value(mut value: Value) -> Value {
+    if let Some(object) = value.as_object_mut() {
+        object.remove("patches");
+        if let Some(state) = object.get_mut("state") {
+            strip_public_run_state(state);
+        }
+        if let Some(messages) = object.get_mut("messages").and_then(Value::as_array_mut) {
+            for message in messages {
+                strip_public_message_run_metadata(message);
+            }
+        }
+    }
+    value
+}
+
+fn sanitize_public_message_page_value(mut value: Value) -> Value {
+    if let Some(messages) = value.get_mut("messages").and_then(Value::as_array_mut) {
+        for message in messages {
+            strip_public_message_run_metadata(message);
+        }
+    }
+    value
+}
+
+fn strip_public_run_state(state: &mut Value) {
+    if let Some(run_state) = state.get_mut("__run").and_then(Value::as_object_mut) {
+        run_state.remove("id");
+    }
+}
+
+fn strip_public_message_run_metadata(message: &mut Value) {
+    if let Some(object) = message.as_object_mut() {
+        let mut remove_metadata = false;
+        if let Some(metadata) = object.get_mut("metadata").and_then(Value::as_object_mut) {
+            metadata.remove("run_id");
+            remove_metadata = metadata.is_empty();
+        }
+        if remove_metadata {
+            object.remove("metadata");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +295,8 @@ struct RunListParams {
     parent_run_id: Option<String>,
     #[serde(default)]
     status: Option<String>,
+    #[serde(rename = "terminationCode", alias = "termination_code", default)]
+    termination_code: Option<String>,
     #[serde(default)]
     origin: Option<String>,
     #[serde(default)]
@@ -264,16 +309,11 @@ struct RunListParams {
     updated_at_to: Option<u64>,
 }
 
-fn parse_run_status(raw: &str) -> Option<RunRecordStatus> {
+fn parse_run_status(raw: &str) -> Option<RunStatus> {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "submitted" => Some(RunRecordStatus::Submitted),
-        "working" => Some(RunRecordStatus::Working),
-        "input_required" => Some(RunRecordStatus::InputRequired),
-        "auth_required" => Some(RunRecordStatus::AuthRequired),
-        "completed" => Some(RunRecordStatus::Completed),
-        "failed" => Some(RunRecordStatus::Failed),
-        "canceled" | "cancelled" => Some(RunRecordStatus::Canceled),
-        "rejected" => Some(RunRecordStatus::Rejected),
+        "running" => Some(RunStatus::Running),
+        "waiting" => Some(RunStatus::Waiting),
+        "done" => Some(RunStatus::Done),
         _ => None,
     }
 }
@@ -290,13 +330,13 @@ fn parse_run_origin(raw: &str) -> Option<RunOrigin> {
     }
 }
 
-fn normalize_optional_id(value: Option<String>) -> Option<String> {
+fn normalize_termination_code(value: Option<String>) -> Option<String> {
     value.and_then(|raw| {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             None
         } else {
-            Some(trimmed.to_string())
+            Some(trimmed.to_ascii_lowercase())
         }
     })
 }
@@ -362,6 +402,7 @@ impl CreateRunPayload {
                 parent_run_id: normalize_optional_id(self.parent_run_id),
                 parent_thread_id: normalize_optional_id(self.parent_thread_id),
                 resource_id: normalize_optional_id(self.resource_id),
+                origin: RunOrigin::default(),
                 state: self.state,
                 messages: self.messages,
                 initial_decisions: self.initial_decisions,
@@ -398,15 +439,11 @@ async fn start_run(
     let (agent_id, run_request) = payload.into_run_request()?;
 
     let resolved = st.os.resolve(&agent_id).map_err(AgentOsRunError::from)?;
-    let prepared = prepare_http_run(&st.os, resolved, run_request, "run_api", &agent_id).await?;
-    let active_key = prepared.active_key.clone();
+    let prepared = prepare_http_run(&st.os, resolved, run_request, &agent_id).await?;
+    let run_id_for_cleanup = prepared.run_id.clone();
+    let os_for_cleanup = st.os.clone();
 
-    let encoder = wrap_with_run_tracking(
-        Identity::<AgentEvent>::default(),
-        prepared.run_id.clone(),
-        prepared.thread_id.clone(),
-        "run_api",
-    );
+    let encoder = Identity::<AgentEvent>::default();
     let sse_rx = wire_http_sse_relay(
         prepared.starter,
         encoder,
@@ -417,7 +454,9 @@ async fn start_run(
             resumable_downstream: false,
             protocol_label: "run-api",
             on_relay_done: move |_sse_tx| async move {
-                remove_active_run(&active_key).await;
+                os_for_cleanup
+                    .remove_thread_run_handle(&run_id_for_cleanup)
+                    .await;
             },
             error_formatter: |msg| {
                 let error = json!({
@@ -453,26 +492,26 @@ async fn push_run_inputs(
     }
 
     if payload.messages.is_empty() {
-        if try_forward_decisions_to_active_run_by_id(&id, decisions).await {
-            let thread_id = resolve_thread_id_from_run(&id).await?;
-            return Ok((
-                StatusCode::ACCEPTED,
-                Json(json!({
-                    "status": "decision_forwarded",
-                    "run_id": id,
-                    "thread_id": thread_id,
-                })),
-            )
-                .into_response());
-        }
+        let forwarded = try_forward_decisions_to_active_run_by_id(
+            &st.os,
+            st.read_store.as_ref(),
+            &id,
+            decisions,
+        )
+        .await?;
 
-        return Err(match check_run_liveness(&id).await? {
-            RunLookup::ExistsButInactive => ApiError::BadRequest("run is not active".to_string()),
-            RunLookup::NotFound => ApiError::RunNotFound(id),
-        });
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "status": "decision_forwarded",
+                "run_id": id,
+                "thread_id": forwarded.thread_id,
+            })),
+        )
+            .into_response());
     }
 
-    let Some(parent_run) = load_run_record(&id).await? else {
+    let Some(parent_run) = load_run_record(st.read_store.as_ref(), &id).await? else {
         return Err(ApiError::RunNotFound(id));
     };
     let agent_id = payload
@@ -491,12 +530,13 @@ async fn push_run_inputs(
         parent_run_id: Some(id.clone()),
         parent_thread_id: parent_run.parent_thread_id,
         resource_id: payload.resource_id,
+        origin: RunOrigin::default(),
         state: payload.state,
         messages: payload.messages,
         initial_decisions: decisions,
     };
 
-    let (thread_id, run_id) =
+    let (thread_id, _run_id) =
         start_background_run(&st.os, &agent_id, run_request, "run_api").await?;
     Ok((
         StatusCode::ACCEPTED,
@@ -504,14 +544,16 @@ async fn push_run_inputs(
             "status": "continuation_started",
             "parent_run_id": id,
             "thread_id": thread_id,
-            "run_id": run_id,
         })),
     )
         .into_response())
 }
 
-async fn cancel_run(Path(id): Path<String>) -> Result<Response, ApiError> {
-    if try_cancel_active_run_by_id(&id).await {
+async fn cancel_run(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    if try_cancel_active_run_by_id(&st.os, st.read_store.as_ref(), &id).await? {
         return Ok((
             StatusCode::ACCEPTED,
             Json(json!({
@@ -522,20 +564,21 @@ async fn cancel_run(Path(id): Path<String>) -> Result<Response, ApiError> {
             .into_response());
     }
 
-    Err(match check_run_liveness(&id).await? {
-        RunLookup::ExistsButInactive => ApiError::BadRequest("run is not active".to_string()),
-        RunLookup::NotFound => ApiError::RunNotFound(id),
-    })
+    Err(
+        match check_run_liveness(st.read_store.as_ref(), &id).await? {
+            RunLookup::ExistsButInactive => ApiError::BadRequest("run is not active".to_string()),
+            RunLookup::NotFound => ApiError::RunNotFound(id),
+        },
+    )
 }
 
-async fn get_run(Path(id): Path<String>) -> Result<Json<RunRecord>, ApiError> {
-    let Some(service) = global_run_service() else {
-        return Err(ApiError::Internal(
-            "run service not initialized".to_string(),
-        ));
-    };
-    let Some(record) = service
-        .get_run(&id)
+async fn get_run(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<RunRecord>, ApiError> {
+    let Some(record) = st
+        .read_store
+        .load_run(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
     else {
@@ -544,25 +587,25 @@ async fn get_run(Path(id): Path<String>) -> Result<Json<RunRecord>, ApiError> {
     Ok(Json(record))
 }
 
-async fn list_runs(Query(params): Query<RunListParams>) -> Result<Json<RunPage>, ApiError> {
-    let Some(service) = global_run_service() else {
-        return Err(ApiError::Internal(
-            "run service not initialized".to_string(),
-        ));
-    };
+async fn list_runs(
+    State(st): State<AppState>,
+    Query(params): Query<RunListParams>,
+) -> Result<Json<RunPage>, ApiError> {
     let query = RunQuery {
         offset: params.offset.unwrap_or(0),
         limit: params.limit.clamp(1, 200),
         thread_id: params.thread_id,
         parent_run_id: params.parent_run_id,
         status: params.status.as_deref().and_then(parse_run_status),
+        termination_code: normalize_termination_code(params.termination_code),
         origin: params.origin.as_deref().and_then(parse_run_origin),
         created_at_from: params.created_at_from,
         created_at_to: params.created_at_to,
         updated_at_from: params.updated_at_from,
         updated_at_to: params.updated_at_to,
     };
-    let page = service
+    let page = st
+        .read_store
         .list_runs(&query)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -575,15 +618,14 @@ mod tests {
 
     #[test]
     fn parse_run_filters() {
-        assert_eq!(
-            parse_run_status("completed"),
-            Some(RunRecordStatus::Completed)
-        );
-        assert_eq!(
-            parse_run_status("cancelled"),
-            Some(RunRecordStatus::Canceled)
-        );
+        assert_eq!(parse_run_status("running"), Some(RunStatus::Running));
+        assert_eq!(parse_run_status("waiting"), Some(RunStatus::Waiting));
+        assert_eq!(parse_run_status("done"), Some(RunStatus::Done));
         assert_eq!(parse_run_status("unknown"), None);
+        assert_eq!(
+            normalize_termination_code(Some(" Cancelled ".to_string())),
+            Some("cancelled".to_string())
+        );
 
         assert_eq!(parse_run_origin("a2a"), Some(RunOrigin::A2a));
         assert_eq!(parse_run_origin("ag-ui"), Some(RunOrigin::AgUi));

@@ -95,6 +95,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use tirea_agentos::contracts::{AgentEvent, RunRequest, ToolCallDecision};
     use tirea_agentos::orchestrator::RunStream;
+    use tirea_contract::RunOrigin;
     use tirea_contract::Transcoder;
 
     /// Minimal encoder: maps each AgentEvent to a JSON string event.
@@ -154,8 +155,7 @@ mod tests {
         events: Vec<AgentEvent>,
     ) -> (RunStarter, mpsc::UnboundedReceiver<ToolCallDecision>) {
         let (run, decision_rx) = fake_run_stream(events);
-        let starter: RunStarter =
-            Box::new(move |_request| Box::pin(async move { Ok((run, None)) }));
+        let starter: RunStarter = Box::new(move |_request| Box::pin(async move { Ok(run) }));
         (starter, decision_rx)
     }
 
@@ -167,6 +167,7 @@ mod tests {
             parent_run_id: None,
             parent_thread_id: None,
             resource_id: None,
+            origin: RunOrigin::default(),
             state: None,
             messages: vec![],
             initial_decisions: vec![],
@@ -348,8 +349,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn decision_ingress_forwarded_to_run_decision_tx() {
-        let (starter, mut decision_rx) = fake_starter(vec![AgentEvent::TextDelta {
+    async fn decision_ingress_does_not_break_sse_stream() {
+        let (starter, _decision_rx) = fake_starter(vec![AgentEvent::TextDelta {
             delta: "a".to_string(),
         }]);
         let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
@@ -376,10 +377,20 @@ mod tests {
         ingress_tx.send(RuntimeInput::Decision(decision)).unwrap();
         drop(ingress_tx);
 
-        while sse_rx.recv().await.is_some() {}
-
-        let received = decision_rx.try_recv();
-        assert!(received.is_ok(), "decision should be forwarded to run");
-        assert_eq!(received.unwrap().target_id, "d1");
+        let mut chunks = Vec::new();
+        while let Some(chunk) = sse_rx.recv().await {
+            chunks.push(chunk);
+        }
+        let text = String::from_utf8(
+            chunks
+                .into_iter()
+                .flat_map(|chunk| chunk.to_vec())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_default();
+        assert!(
+            text.contains("text:a"),
+            "stream should still emit run output: {text}"
+        );
     }
 }

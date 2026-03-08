@@ -72,6 +72,7 @@ impl NatsTransport {
         run_request: RunRequest,
         resolved: ResolvedRun,
         reply: async_nats::Subject,
+        persist_run: bool,
         build_encoder: BuildEncoder,
         build_error_event: BuildErrorEvent,
     ) -> Result<(), NatsProtocolError>
@@ -82,28 +83,39 @@ impl NatsTransport {
         BuildEncoder: FnOnce(&RunStream) -> E,
         BuildErrorEvent: FnOnce(String) -> ErrEvent,
     {
-        let run = match os.prepare_run(run_request, resolved).await {
-            Ok(prepared) => match AgentOs::execute_prepared(prepared) {
-                Ok(run) => run,
-                Err(err) => {
-                    return self
-                        .publish_error_event(reply, build_error_event(err.to_string()))
-                        .await;
-                }
-            },
+        let owner_agent_id = run_request.agent_id.clone();
+        let (prepared, thread_id, run_id) = match os
+            .prepare_active_run_with_persistence(
+                &owner_agent_id,
+                run_request,
+                resolved,
+                persist_run,
+                !persist_run,
+            )
+            .await
+        {
+            Ok(prepared) => prepared,
             Err(err) => {
                 return self
                     .publish_error_event(reply, build_error_event(err.to_string()))
                     .await;
             }
         };
+        let run = match os.start_prepared_active_run(&run_id, prepared).await {
+            Ok(run) => run,
+            Err(err) => {
+                let _ = os.remove_thread_run_handle(&run_id).await;
+                return self
+                    .publish_error_event(reply, build_error_event(err.to_string()))
+                    .await;
+            }
+        };
 
-        let session_thread_id = run.thread_id.clone();
+        let session_thread_id = thread_id;
         let encoder = build_encoder(&run);
         let upstream = Arc::new(NatsReplyServerEndpoint::new(self.client.clone(), reply));
         let runtime_ep = Arc::new(RuntimeEndpoint::from_run_stream_with_buffer(
             run,
-            None,
             self.config.outbound_buffer,
         ));
         let downstream = Arc::new(TranscoderEndpoint::new(runtime_ep, encoder));
@@ -123,6 +135,7 @@ impl NatsTransport {
         relay_binding(binding, RelayCancellation::new())
             .await
             .map_err(|e| NatsProtocolError::Run(format!("transport relay failed: {e}")))?;
+        os.remove_thread_run_handle(&run_id).await;
 
         Ok(())
     }

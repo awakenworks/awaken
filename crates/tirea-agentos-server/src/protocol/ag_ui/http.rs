@@ -9,10 +9,9 @@ use tirea_protocol_ag_ui::{AgUiHistoryEncoder, AgUiProtocolEncoder, Event, RunAg
 
 use super::runtime::apply_agui_extensions;
 
-use crate::run_service::wrap_with_run_tracking;
 use crate::service::{
-    active_run_key, encode_message_page, load_message_page, prepare_http_run, remove_active_run,
-    try_forward_decisions_to_active_run, ApiError, AppState, MessageQueryParams,
+    encode_message_page, forward_dialog_decisions_by_thread, load_message_page,
+    prepare_http_dialog_run, ApiError, AppState, MessageQueryParams,
 };
 use crate::transport::http_run::{wire_http_sse_relay, HttpSseRelayConfig};
 use crate::transport::http_sse::{sse_body_stream, sse_response};
@@ -44,22 +43,28 @@ async fn run(
 ) -> Result<Response, ApiError> {
     req.validate()
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let frontend_run_id = req.run_id.clone();
 
     let suspension_decisions = req.suspension_decisions();
-    let decision_only = !req.has_user_input() && !suspension_decisions.is_empty();
-    if decision_only {
-        let key = active_run_key("ag_ui", &agent_id, &req.thread_id, &req.run_id);
-        if try_forward_decisions_to_active_run(&key, suspension_decisions).await {
-            return Ok((
-                axum::http::StatusCode::ACCEPTED,
-                Json(json!({
-                    "status": "decision_forwarded",
-                    "threadId": req.thread_id,
-                    "runId": req.run_id,
-                })),
-            )
-                .into_response());
-        }
+    let maybe_forwarded = forward_dialog_decisions_by_thread(
+        &st.os,
+        &agent_id,
+        &req.thread_id,
+        req.has_user_input(),
+        Some(frontend_run_id.as_str()),
+        &suspension_decisions,
+    )
+    .await?;
+    if let Some(forwarded) = maybe_forwarded {
+        return Ok((
+            axum::http::StatusCode::ACCEPTED,
+            Json(json!({
+                "status": "decision_forwarded",
+                "threadId": forwarded.thread_id,
+                "runId": frontend_run_id,
+            })),
+        )
+            .into_response());
     }
 
     let mut resolved = st.os.resolve(&agent_id).map_err(AgentOsRunError::from)?;
@@ -67,15 +72,11 @@ async fn run(
         .map_err(|err| ApiError::Internal(err.to_string()))?;
     let run_request = req.into_runtime_run_request(agent_id.clone());
 
-    let prepared = prepare_http_run(&st.os, resolved, run_request, "ag_ui", &agent_id).await?;
-    let active_key = prepared.active_key.clone();
+    let prepared = prepare_http_dialog_run(&st.os, resolved, run_request, &agent_id).await?;
+    let run_id_for_cleanup = prepared.run_id.clone();
+    let os_for_cleanup = st.os.clone();
 
-    let enc = wrap_with_run_tracking(
-        AgUiProtocolEncoder::new(),
-        prepared.run_id.clone(),
-        prepared.thread_id.clone(),
-        "ag_ui",
-    );
+    let enc = AgUiProtocolEncoder::new_with_frontend_run_id(frontend_run_id);
     let sse_rx = wire_http_sse_relay(
         prepared.starter,
         enc,
@@ -86,7 +87,9 @@ async fn run(
             resumable_downstream: false,
             protocol_label: "ag-ui",
             on_relay_done: move |_sse_tx| async move {
-                remove_active_run(&active_key).await;
+                os_for_cleanup
+                    .remove_thread_run_handle(&run_id_for_cleanup)
+                    .await;
             },
             error_formatter: |msg| {
                 let json =

@@ -3,8 +3,8 @@
 //! The endpoint lifecycle is fully driven by [`RuntimeInput`] messages:
 //!
 //! 1. `Run(request)` — starts execution via the injected run factory.
-//! 2. `Decision(d)` — forwards to the running loop's decision channel.
-//! 3. `Cancel` — triggers the cooperative cancellation token.
+//! 2. `Decision(d)` / `Cancel` — control messages managed by AgentOS
+//!    [`ThreadRunHandle`], not by this endpoint.
 //!
 //! `close()` is transport-only and does **not** cancel the run.
 
@@ -13,9 +13,8 @@ use std::pin::Pin;
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use tirea_agentos::contracts::{AgentEvent, RunRequest, ToolCallDecision};
+use tirea_agentos::contracts::{AgentEvent, RunRequest};
 use tirea_agentos::orchestrator::RunStream;
-use tirea_agentos::runtime::loop_runner::RunCancellationToken;
 use tirea_contract::RuntimeInput;
 use tokio::sync::{mpsc, Mutex};
 
@@ -23,8 +22,8 @@ use crate::transport::{BoxStream, Endpoint, TransportError};
 
 const DEFAULT_EVENT_BUFFER: usize = 64;
 
-/// Result produced by a run starter: the event stream + optional cancellation token.
-type RunStartResult = Result<(RunStream, Option<RunCancellationToken>), TransportError>;
+/// Result produced by a run starter.
+type RunStartResult = Result<RunStream, TransportError>;
 
 /// Async factory that prepares and executes a run from a [`RunRequest`].
 ///
@@ -40,8 +39,6 @@ pub type RunStarter =
 pub struct RuntimeEndpoint {
     event_tx: Mutex<Option<mpsc::Sender<AgentEvent>>>,
     event_rx: Mutex<Option<mpsc::Receiver<AgentEvent>>>,
-    decision_tx: Mutex<Option<mpsc::UnboundedSender<ToolCallDecision>>>,
-    cancellation_token: Mutex<Option<RunCancellationToken>>,
     run_starter: Mutex<Option<RunStarter>>,
 }
 
@@ -57,8 +54,6 @@ impl RuntimeEndpoint {
         Self {
             event_tx: Mutex::new(Some(event_tx)),
             event_rx: Mutex::new(Some(event_rx)),
-            decision_tx: Mutex::new(None),
-            cancellation_token: Mutex::new(None),
             run_starter: Mutex::new(Some(starter)),
         }
     }
@@ -66,29 +61,19 @@ impl RuntimeEndpoint {
     /// Attach an already-started run (bypasses the `Run` message).
     ///
     /// Useful for tests or contexts where the run was prepared externally.
-    pub fn from_run_stream(
-        run: RunStream,
-        cancellation_token: Option<RunCancellationToken>,
-    ) -> Self {
-        Self::from_run_stream_with_buffer(run, cancellation_token, DEFAULT_EVENT_BUFFER)
+    pub fn from_run_stream(run: RunStream) -> Self {
+        Self::from_run_stream_with_buffer(run, DEFAULT_EVENT_BUFFER)
     }
 
     /// Attach an already-started run with explicit buffer size.
-    pub fn from_run_stream_with_buffer(
-        run: RunStream,
-        cancellation_token: Option<RunCancellationToken>,
-        buffer: usize,
-    ) -> Self {
+    pub fn from_run_stream_with_buffer(run: RunStream, buffer: usize) -> Self {
         let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(buffer.max(1));
-        let decision_tx = run.decision_tx.clone();
 
         Self::spawn_event_pump(event_tx, run);
 
         Self {
             event_tx: Mutex::new(None),
             event_rx: Mutex::new(Some(event_rx)),
-            decision_tx: Mutex::new(Some(decision_tx)),
-            cancellation_token: Mutex::new(cancellation_token),
             run_starter: Mutex::new(None),
         }
     }
@@ -109,10 +94,7 @@ impl RuntimeEndpoint {
             .take()
             .ok_or_else(|| TransportError::Internal("event pump already started".into()))?;
 
-        let (run, token) = starter(request).await?;
-
-        *self.decision_tx.lock().await = Some(run.decision_tx.clone());
-        *self.cancellation_token.lock().await = token;
+        let run = starter(request).await?;
 
         Self::spawn_event_pump(event_tx, run);
 
@@ -148,21 +130,12 @@ impl Endpoint<AgentEvent, RuntimeInput> for RuntimeEndpoint {
     async fn send(&self, item: RuntimeInput) -> Result<(), TransportError> {
         match item {
             RuntimeInput::Run(request) => self.start_run(request).await,
-            RuntimeInput::Decision(d) => {
-                let guard = self.decision_tx.lock().await;
-                guard
-                    .as_ref()
-                    .ok_or_else(|| TransportError::Internal("run not started".into()))?
-                    .send(d)
-                    .map_err(|_| TransportError::Closed)
-            }
-            RuntimeInput::Cancel => {
-                let guard = self.cancellation_token.lock().await;
-                if let Some(token) = guard.as_ref() {
-                    token.cancel();
-                }
-                Ok(())
-            }
+            RuntimeInput::Decision(_) => Err(TransportError::Internal(
+                "decision ingress must be handled by AgentOS ThreadRunHandle".into(),
+            )),
+            RuntimeInput::Cancel => Err(TransportError::Internal(
+                "cancel ingress must be handled by AgentOS ThreadRunHandle".into(),
+            )),
         }
     }
 
@@ -177,6 +150,8 @@ mod tests {
     use super::*;
     use std::pin::Pin;
     use tirea_agentos::contracts::AgentEvent;
+    use tirea_agentos::contracts::ToolCallDecision;
+    use tirea_contract::RunOrigin;
 
     fn test_run_request() -> RunRequest {
         RunRequest {
@@ -186,14 +161,15 @@ mod tests {
             parent_run_id: None,
             parent_thread_id: None,
             resource_id: None,
+            origin: RunOrigin::default(),
             state: None,
             messages: vec![],
             initial_decisions: vec![],
         }
     }
 
-    fn fake_run(events: Vec<AgentEvent>) -> (RunStream, mpsc::UnboundedReceiver<ToolCallDecision>) {
-        let (decision_tx, decision_rx) = mpsc::unbounded_channel();
+    fn fake_run(events: Vec<AgentEvent>) -> RunStream {
+        let (decision_tx, _decision_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(64);
 
         tokio::spawn(async move {
@@ -216,56 +192,50 @@ mod tests {
             decision_tx,
             events: stream,
         };
-        (run, decision_rx)
+        run
     }
 
-    fn fake_starter(
-        events: Vec<AgentEvent>,
-    ) -> (RunStarter, mpsc::UnboundedReceiver<ToolCallDecision>) {
-        let (run, drx) = fake_run(events);
-        let starter: RunStarter =
-            Box::new(move |_request| Box::pin(async move { Ok((run, None)) }));
-        (starter, drx)
+    fn fake_starter(events: Vec<AgentEvent>) -> RunStarter {
+        let run = fake_run(events);
+        let starter: RunStarter = Box::new(move |_request| Box::pin(async move { Ok(run) }));
+        starter
     }
 
     // ── from_run_stream tests ───────────────────────────────────────
 
     #[tokio::test]
     async fn from_run_stream_recv_delivers_events() {
-        let (run, _drx) = fake_run(vec![
+        let run = fake_run(vec![
             AgentEvent::TextDelta { delta: "a".into() },
             AgentEvent::TextDelta { delta: "b".into() },
         ]);
-        let ep = RuntimeEndpoint::from_run_stream(run, None);
+        let ep = RuntimeEndpoint::from_run_stream(run);
         let stream = ep.recv().await.unwrap();
         let items: Vec<AgentEvent> = stream.map(|r| r.unwrap()).collect().await;
         assert_eq!(items.len(), 2);
     }
 
     #[tokio::test]
-    async fn from_run_stream_decision_forwarded() {
-        let (run, mut drx) = fake_run(vec![]);
-        let ep = RuntimeEndpoint::from_run_stream(run, None);
+    async fn from_run_stream_decision_is_rejected() {
+        let run = fake_run(vec![]);
+        let ep = RuntimeEndpoint::from_run_stream(run);
         let d = ToolCallDecision::resume("tc1", serde_json::Value::Null, 0);
-        ep.send(RuntimeInput::Decision(d.clone())).await.unwrap();
-        let received = drx.recv().await.unwrap();
-        assert_eq!(received, d);
+        let err = ep.send(RuntimeInput::Decision(d)).await;
+        assert!(err.is_err());
     }
 
     #[tokio::test]
     async fn from_run_stream_close_does_not_cancel() {
-        let (run, _drx) = fake_run(vec![]);
-        let token = RunCancellationToken::new();
-        let ep = RuntimeEndpoint::from_run_stream(run, Some(token.clone()));
+        let run = fake_run(vec![]);
+        let ep = RuntimeEndpoint::from_run_stream(run);
         ep.close().await.unwrap();
-        assert!(!token.is_cancelled(), "close must not cancel the run");
     }
 
     // ── run starter tests ───────────────────────────────────────────
 
     #[tokio::test]
     async fn run_message_starts_execution() {
-        let (starter, _drx) = fake_starter(vec![AgentEvent::TextDelta { delta: "x".into() }]);
+        let starter = fake_starter(vec![AgentEvent::TextDelta { delta: "x".into() }]);
         let ep = RuntimeEndpoint::new(starter);
         let stream = ep.recv().await.unwrap();
 
@@ -279,8 +249,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn decision_after_run_forwarded() {
-        let (starter, mut drx) = fake_starter(vec![]);
+    async fn decision_after_run_returns_error() {
+        let starter = fake_starter(vec![]);
         let ep = RuntimeEndpoint::new(starter);
 
         ep.send(RuntimeInput::Run(test_run_request()))
@@ -288,14 +258,13 @@ mod tests {
             .unwrap();
 
         let d = ToolCallDecision::resume("tc1", serde_json::Value::Null, 0);
-        ep.send(RuntimeInput::Decision(d.clone())).await.unwrap();
-        let received = drx.recv().await.unwrap();
-        assert_eq!(received, d);
+        let result = ep.send(RuntimeInput::Decision(d)).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn decision_before_run_returns_error() {
-        let (starter, _drx) = fake_starter(vec![]);
+        let starter = fake_starter(vec![]);
         let ep = RuntimeEndpoint::new(starter);
         let d = ToolCallDecision::resume("tc1", serde_json::Value::Null, 0);
         let result = ep.send(RuntimeInput::Decision(d)).await;
@@ -304,7 +273,7 @@ mod tests {
 
     #[tokio::test]
     async fn double_run_returns_error() {
-        let (starter, _drx) = fake_starter(vec![]);
+        let starter = fake_starter(vec![]);
         let ep = RuntimeEndpoint::new(starter);
         ep.send(RuntimeInput::Run(test_run_request()))
             .await
@@ -314,26 +283,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancel_triggers_token() {
-        let token = RunCancellationToken::new();
-        let token_clone = token.clone();
-        let (run, _drx) = fake_run(vec![]);
-        let starter: RunStarter =
-            Box::new(move |_request| Box::pin(async move { Ok((run, Some(token_clone))) }));
+    async fn cancel_returns_error() {
+        let run = fake_run(vec![]);
+        let starter: RunStarter = Box::new(move |_request| Box::pin(async move { Ok(run) }));
         let ep = RuntimeEndpoint::new(starter);
 
         ep.send(RuntimeInput::Run(test_run_request()))
             .await
             .unwrap();
-        assert!(!token.is_cancelled());
-
-        ep.send(RuntimeInput::Cancel).await.unwrap();
-        assert!(token.is_cancelled());
+        let result = ep.send(RuntimeInput::Cancel).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn recv_called_twice_returns_closed() {
-        let (starter, _drx) = fake_starter(vec![]);
+        let starter = fake_starter(vec![]);
         let ep = RuntimeEndpoint::new(starter);
         let _first = ep.recv().await.unwrap();
         assert!(matches!(ep.recv().await, Err(TransportError::Closed)));

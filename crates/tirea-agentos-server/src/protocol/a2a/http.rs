@@ -8,13 +8,12 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tirea_agentos::contracts::thread::Message;
-use tirea_agentos::contracts::{RunRequest, ToolCallDecision};
+use tirea_agentos::contracts::{RunOrigin, RunRequest, ToolCallDecision};
 
-use crate::run_service::global_run_service;
 use crate::service::{
-    check_run_liveness, resolve_thread_id_from_run, start_background_run,
-    try_cancel_active_run_by_id, try_forward_decisions_to_active_run_by_id, ApiError, AppState,
-    RunLookup,
+    check_run_liveness, load_run_record, normalize_optional_id, resolve_thread_id_from_run,
+    start_background_run, try_cancel_active_run_by_id, try_forward_decisions_to_active_run_by_id,
+    ApiError, AppState, RunLookup,
 };
 
 const WELL_KNOWN_AGENT_CARD_PATH: &str = "/.well-known/agent-card.json";
@@ -50,22 +49,29 @@ struct A2aGatewayCard {
     capabilities: Value,
 }
 
+fn sorted_agent_ids(agent_ids: &[String]) -> Vec<String> {
+    let mut ids = agent_ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
 fn build_gateway_card(agent_ids: &[String]) -> A2aGatewayCard {
-    let (name, description, url) = if let [single_agent_id] = agent_ids {
-        (
+    let normalized_agent_ids = sorted_agent_ids(agent_ids);
+    let (name, description, url) = match normalized_agent_ids.as_slice() {
+        [single_agent_id] => (
             format!("tirea-agent-{single_agent_id}"),
             format!("A2A discovery card for Tirea agent '{single_agent_id}'"),
             format!("/v1/a2a/agents/{single_agent_id}/message:send"),
-        )
-    } else {
-        (
+        ),
+        _ => (
             "tirea-a2a-gateway".to_string(),
             format!(
                 "A2A discovery card for Tirea multi-agent gateway ({} agents)",
-                agent_ids.len()
+                normalized_agent_ids.len()
             ),
             "/v1/a2a/agents".to_string(),
-        )
+        ),
     };
 
     A2aGatewayCard {
@@ -79,8 +85,8 @@ fn build_gateway_card(agent_ids: &[String]) -> A2aGatewayCard {
             "taskManagement": true,
             "streaming": true,
             "agentDiscovery": true,
-            "agentCount": agent_ids.len(),
-            "agents": agent_ids
+            "agentCount": normalized_agent_ids.len(),
+            "agents": normalized_agent_ids,
         }),
     }
 }
@@ -95,7 +101,7 @@ fn fnv1a64(data: &[u8]) -> u64 {
 }
 
 fn build_well_known_etag(agent_ids: &[String]) -> String {
-    let canonical = format!("v1|{}", agent_ids.join("\u{001f}"));
+    let canonical = format!("v1|{}", sorted_agent_ids(agent_ids).join("\u{001f}"));
     format!("W/\"a2a-agents-{:016x}\"", fnv1a64(canonical.as_bytes()))
 }
 
@@ -109,6 +115,48 @@ fn if_none_match_matches(headers: &HeaderMap, etag: &str) -> bool {
     raw.split(',')
         .map(str::trim)
         .any(|candidate| candidate == "*" || candidate == etag)
+}
+
+async fn well_known_agent_card(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    let agent_ids = st.os.agent_ids();
+    let etag = build_well_known_etag(&agent_ids);
+
+    if if_none_match_matches(&headers, &etag) {
+        let mut response = StatusCode::NOT_MODIFIED.into_response();
+        response.headers_mut().insert(
+            CACHE_CONTROL,
+            HeaderValue::from_static(WELL_KNOWN_CACHE_CONTROL),
+        );
+        if let Ok(value) = HeaderValue::from_str(&etag) {
+            response.headers_mut().insert(ETAG, value);
+        }
+        return response;
+    }
+
+    let mut response = Json(build_gateway_card(&agent_ids)).into_response();
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static(WELL_KNOWN_CACHE_CONTROL),
+    );
+    if let Ok(value) = HeaderValue::from_str(&etag) {
+        response.headers_mut().insert(ETAG, value);
+    }
+    response
+}
+
+async fn list_agents(State(st): State<AppState>) -> Json<Vec<A2aAgentEntry>> {
+    let mut agent_ids = st.os.agent_ids();
+    agent_ids.sort_unstable();
+    agent_ids.dedup();
+    let entries = agent_ids
+        .into_iter()
+        .map(|agent_id| A2aAgentEntry {
+            agent_card_url: format!("/v1/a2a/agents/{agent_id}/agent-card"),
+            message_send_url: format!("/v1/a2a/agents/{agent_id}/message:send"),
+            agent_id,
+        })
+        .collect::<Vec<_>>();
+    Json(entries)
 }
 
 #[derive(Debug, Serialize)]
@@ -146,47 +194,6 @@ fn build_agent_card(agent_id: &str) -> A2aAgentCard {
     }
 }
 
-async fn well_known_agent_card(State(st): State<AppState>, headers: HeaderMap) -> Response {
-    let agent_ids = st.os.agent_ids();
-    let etag = build_well_known_etag(&agent_ids);
-
-    if if_none_match_matches(&headers, &etag) {
-        let mut response = StatusCode::NOT_MODIFIED.into_response();
-        response.headers_mut().insert(
-            CACHE_CONTROL,
-            HeaderValue::from_static(WELL_KNOWN_CACHE_CONTROL),
-        );
-        if let Ok(value) = HeaderValue::from_str(&etag) {
-            response.headers_mut().insert(ETAG, value);
-        }
-        return response;
-    }
-
-    let mut response = Json(build_gateway_card(&agent_ids)).into_response();
-    response.headers_mut().insert(
-        CACHE_CONTROL,
-        HeaderValue::from_static(WELL_KNOWN_CACHE_CONTROL),
-    );
-    if let Ok(value) = HeaderValue::from_str(&etag) {
-        response.headers_mut().insert(ETAG, value);
-    }
-    response
-}
-
-async fn list_agents(State(st): State<AppState>) -> Json<Vec<A2aAgentEntry>> {
-    let entries = st
-        .os
-        .agent_ids()
-        .into_iter()
-        .map(|agent_id| A2aAgentEntry {
-            agent_card_url: format!("/v1/a2a/agents/{agent_id}/agent-card"),
-            message_send_url: format!("/v1/a2a/agents/{agent_id}/message:send"),
-            agent_id,
-        })
-        .collect();
-    Json(entries)
-}
-
 async fn get_agent_card(
     State(st): State<AppState>,
     Path(agent_id): Path<String>,
@@ -219,17 +226,6 @@ struct A2aMessageSendPayload {
 }
 
 impl A2aMessageSendPayload {
-    fn normalize_id(value: Option<String>) -> Option<String> {
-        value.and_then(|raw| {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        })
-    }
-
     fn to_messages(&self) -> Vec<Message> {
         let mut out = Vec::new();
         if let Some(input) = self.input.as_deref() {
@@ -273,8 +269,8 @@ async fn message_send(
         .validate_agent(&agent_id)
         .map_err(|_| ApiError::AgentNotFound(agent_id.clone()))?;
 
-    let task_id = A2aMessageSendPayload::normalize_id(payload.task_id.clone());
-    let context_id = A2aMessageSendPayload::normalize_id(payload.context_id.clone());
+    let task_id = normalize_optional_id(payload.task_id.clone());
+    let context_id = normalize_optional_id(payload.context_id.clone());
     let messages = payload.to_messages();
     let decisions = payload.decisions;
 
@@ -291,29 +287,28 @@ async fn message_send(
             ));
         };
 
-        if try_forward_decisions_to_active_run_by_id(task_id, decisions).await {
-            let thread_id = resolve_thread_id_from_run(task_id).await?;
-            return Ok((
-                StatusCode::ACCEPTED,
-                Json(json!({
-                    "contextId": thread_id,
-                    "taskId": task_id,
-                    "status": "decision_forwarded",
-                })),
-            )
-                .into_response());
-        }
-
-        return Err(match check_run_liveness(task_id).await? {
-            RunLookup::ExistsButInactive => ApiError::BadRequest("task is not active".to_string()),
-            RunLookup::NotFound => ApiError::RunNotFound(task_id.to_string()),
-        });
+        let forwarded = try_forward_decisions_to_active_run_by_id(
+            &st.os,
+            st.read_store.as_ref(),
+            task_id,
+            decisions,
+        )
+        .await?;
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "contextId": forwarded.thread_id,
+                "taskId": task_id,
+                "status": "decision_forwarded",
+            })),
+        )
+            .into_response());
     }
 
     let thread_id = if let Some(context_id) = context_id {
         Some(context_id)
     } else if let Some(task_id) = task_id.as_deref() {
-        resolve_thread_id_from_run(task_id).await?
+        resolve_thread_id_from_run(st.read_store.as_ref(), task_id).await?
     } else {
         None
     };
@@ -329,6 +324,7 @@ async fn message_send(
         parent_run_id: task_id,
         parent_thread_id: None,
         resource_id: None,
+        origin: RunOrigin::A2a,
         state: None,
         messages,
         initial_decisions: decisions,
@@ -364,16 +360,7 @@ async fn get_task(
             "task_id is required in task path".to_string(),
         ));
     }
-    let Some(service) = global_run_service() else {
-        return Err(ApiError::Internal(
-            "run service not initialized".to_string(),
-        ));
-    };
-    let Some(record) = service
-        .get_run(&task_id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-    else {
+    let Some(record) = load_run_record(st.read_store.as_ref(), &task_id).await? else {
         return Err(ApiError::RunNotFound(task_id));
     };
 
@@ -410,7 +397,7 @@ async fn cancel_task(
         ));
     }
 
-    if try_cancel_active_run_by_id(&task_id).await {
+    if try_cancel_active_run_by_id(&st.os, st.read_store.as_ref(), &task_id).await? {
         return Ok((
             StatusCode::ACCEPTED,
             Json(json!({
@@ -421,10 +408,12 @@ async fn cancel_task(
             .into_response());
     }
 
-    Err(match check_run_liveness(&task_id).await? {
-        RunLookup::ExistsButInactive => ApiError::BadRequest("task is not active".to_string()),
-        RunLookup::NotFound => ApiError::RunNotFound(task_id),
-    })
+    Err(
+        match check_run_liveness(st.read_store.as_ref(), &task_id).await? {
+            RunLookup::ExistsButInactive => ApiError::BadRequest("task is not active".to_string()),
+            RunLookup::NotFound => ApiError::RunNotFound(task_id),
+        },
+    )
 }
 
 #[cfg(test)]
@@ -435,9 +424,14 @@ mod tests {
     fn well_known_etag_is_stable_and_changes_with_agent_set() {
         let etag_a = build_well_known_etag(&["alpha".to_string()]);
         let etag_b = build_well_known_etag(&["alpha".to_string()]);
-        let etag_c = build_well_known_etag(&["alpha".to_string(), "beta".to_string()]);
+        let etag_c = build_well_known_etag(&["beta".to_string(), "alpha".to_string()]);
+        let etag_d = build_well_known_etag(&["alpha".to_string(), "beta".to_string()]);
         assert_eq!(etag_a, etag_b);
-        assert_ne!(etag_a, etag_c);
+        assert_eq!(etag_c, etag_d);
+        assert_ne!(
+            etag_a, etag_d,
+            "adding an extra agent id should change ETag"
+        );
     }
 
     #[test]

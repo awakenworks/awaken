@@ -4,9 +4,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
-use std::collections::HashMap;
 use std::convert::Infallible;
-use std::sync::OnceLock;
 use tirea_agentos::orchestrator::AgentOsRunError;
 use tirea_protocol_ai_sdk_v6::{
     AiSdkEncoder, AiSdkTrigger, AiSdkV6HistoryEncoder, AiSdkV6RunRequest, UIStreamEvent,
@@ -14,19 +12,21 @@ use tirea_protocol_ai_sdk_v6::{
 };
 
 use super::runtime::apply_ai_sdk_extensions;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::broadcast;
 
-use crate::run_service::wrap_with_run_tracking;
 use crate::service::{
-    active_run_key, encode_message_page, load_message_page, prepare_http_run, remove_active_run,
-    truncate_thread_at_message, try_forward_decisions_to_active_run, ApiError, AppState,
+    current_run_id_for_thread, encode_message_page, forward_dialog_decisions_by_thread,
+    load_message_page, prepare_http_dialog_run, truncate_thread_at_message, ApiError, AppState,
     MessageQueryParams,
 };
 use crate::transport::http_run::{wire_http_sse_relay, HttpSseRelayConfig};
 use crate::transport::http_sse::{sse_body_stream, sse_response};
 
 const RUN_PATH: &str = "/agents/:agent_id/runs";
-const RESUME_STREAM_PATH: &str = "/agents/:agent_id/runs/:chat_id/stream";
+const RESUME_STREAM_PATH: &str = "/agents/:agent_id/chats/:chat_id/stream";
+/// Legacy path kept for backward-compatibility with AI SDK clients that reconnect
+/// via `/runs/:chat_id/stream` after a network drop.
+const LEGACY_RESUME_STREAM_PATH: &str = "/agents/:agent_id/runs/:chat_id/stream";
 const THREAD_MESSAGES_PATH: &str = "/threads/:id/messages";
 
 /// Build AI SDK v6 HTTP routes.
@@ -34,46 +34,8 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route(RUN_PATH, post(run))
         .route(RESUME_STREAM_PATH, get(resume_stream))
+        .route(LEGACY_RESUME_STREAM_PATH, get(resume_stream))
         .route(THREAD_MESSAGES_PATH, get(thread_messages))
-}
-
-#[derive(Default)]
-struct StreamRegistry {
-    streams: RwLock<HashMap<String, broadcast::Sender<Bytes>>>,
-}
-
-impl StreamRegistry {
-    async fn register(&self, key: String) -> broadcast::Sender<Bytes> {
-        let (tx, _) = broadcast::channel(128);
-        self.streams.write().await.insert(key, tx.clone());
-        tx
-    }
-
-    async fn subscribe(&self, key: &str) -> Option<broadcast::Receiver<Bytes>> {
-        self.streams
-            .read()
-            .await
-            .get(key)
-            .map(|sender| sender.subscribe())
-    }
-
-    async fn remove(&self, key: &str) {
-        self.streams.write().await.remove(key);
-    }
-}
-
-/// Process-wide registry for SSE stream fanout (resume_stream endpoint).
-///
-/// Lifecycle: entries are registered in `run()` and unconditionally removed
-/// in the `on_relay_done` callback, which runs even on cancellation.
-static STREAM_REGISTRY: OnceLock<StreamRegistry> = OnceLock::new();
-
-fn stream_registry() -> &'static StreamRegistry {
-    STREAM_REGISTRY.get_or_init(StreamRegistry::default)
-}
-
-fn stream_key(agent_id: &str, chat_id: &str) -> String {
-    format!("{agent_id}:{chat_id}")
 }
 
 async fn thread_messages(
@@ -98,43 +60,45 @@ async fn run(
     }
 
     let suspension_decisions = req.suspension_decisions();
-    let decision_only = !req.has_user_input() && !suspension_decisions.is_empty();
-    if decision_only {
-        if let Some(run_id) = req
-            .run_id
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-        {
-            let key = active_run_key("ai_sdk", &agent_id, &req.thread_id, run_id);
-            if try_forward_decisions_to_active_run(&key, suspension_decisions).await {
-                return Ok((
-                    StatusCode::ACCEPTED,
-                    Json(serde_json::json!({
-                        "status": "decision_forwarded",
-                        "threadId": req.thread_id,
-                    })),
-                )
-                    .into_response());
-            }
-        }
+    let maybe_forwarded = forward_dialog_decisions_by_thread(
+        &st.os,
+        &agent_id,
+        &req.thread_id,
+        req.has_user_input(),
+        None,
+        &suspension_decisions,
+    )
+    .await?;
+    if let Some(forwarded) = maybe_forwarded {
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({
+                "status": "decision_forwarded",
+                "threadId": forwarded.thread_id,
+            })),
+        )
+            .into_response());
     }
 
     let mut resolved = st.os.resolve(&agent_id).map_err(AgentOsRunError::from)?;
     apply_ai_sdk_extensions(&mut resolved, &req);
     let run_request = req.into_runtime_run_request(agent_id.clone());
+    let prepared = prepare_http_dialog_run(&st.os, resolved, run_request, &agent_id).await?;
+    let (fanout, _) = broadcast::channel::<Bytes>(128);
+    if !st
+        .os
+        .bind_thread_run_stream_fanout(&prepared.run_id, fanout.clone())
+        .await
+    {
+        return Err(ApiError::Internal(format!(
+            "active run handle missing for run '{}'",
+            prepared.run_id
+        )));
+    }
+    let run_id_for_cleanup = prepared.run_id.clone();
+    let os_for_cleanup = st.os.clone();
 
-    let prepared = prepare_http_run(&st.os, resolved, run_request, "ai_sdk", &agent_id).await?;
-    let token_for_callback = prepared.cancellation_token.clone();
-    let stream_key = stream_key(&agent_id, &prepared.thread_id);
-    let active_key = prepared.active_key.clone();
-    let fanout = stream_registry().register(stream_key.clone()).await;
-
-    let encoder = wrap_with_run_tracking(
-        AiSdkEncoder::new(),
-        prepared.run_id.clone(),
-        prepared.thread_id.clone(),
-        "ai_sdk",
-    );
+    let encoder = AiSdkEncoder::new();
     let sse_rx = wire_http_sse_relay(
         prepared.starter,
         encoder,
@@ -148,10 +112,13 @@ async fn run(
                 let trailer = Bytes::from("data: [DONE]\n\n");
                 let _ = fanout.send(trailer.clone());
                 if sse_tx.send(trailer).await.is_err() {
-                    token_for_callback.cancel();
+                    let _ = os_for_cleanup
+                        .cancel_active_run_by_id(&run_id_for_cleanup)
+                        .await;
                 }
-                stream_registry().remove(&stream_key).await;
-                remove_active_run(&active_key).await;
+                os_for_cleanup
+                    .remove_thread_run_handle(&run_id_for_cleanup)
+                    .await;
             },
             error_formatter: |msg| {
                 let json = serde_json::to_string(&UIStreamEvent::error(&msg)).unwrap_or_default();
@@ -163,10 +130,17 @@ async fn run(
     Ok(ai_sdk_sse_response(sse_body_stream(sse_rx)))
 }
 
-async fn resume_stream(Path((agent_id, chat_id)): Path<(String, String)>) -> Response {
-    let key = stream_key(&agent_id, &chat_id);
-    let Some(mut receiver) = stream_registry().subscribe(&key).await else {
-        return StatusCode::NO_CONTENT.into_response();
+async fn resume_stream(
+    State(st): State<AppState>,
+    Path((agent_id, chat_id)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    let Some(run_id) =
+        current_run_id_for_thread(&st.os, &agent_id, &chat_id, st.read_store.as_ref()).await?
+    else {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    };
+    let Some(mut receiver) = st.os.subscribe_thread_run_stream(&run_id).await else {
+        return Ok(StatusCode::NO_CONTENT.into_response());
     };
 
     let stream = async_stream::stream! {
@@ -178,8 +152,7 @@ async fn resume_stream(Path((agent_id, chat_id)): Path<(String, String)>) -> Res
             }
         }
     };
-
-    ai_sdk_sse_response(stream)
+    Ok(ai_sdk_sse_response(stream))
 }
 
 fn ai_sdk_sse_response<S>(stream: S) -> Response

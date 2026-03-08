@@ -4,8 +4,6 @@ use tirea_agentos::orchestrator::AgentOs;
 use tirea_protocol_ag_ui::{AgUiProtocolEncoder, Event, RunAgentInput};
 
 use super::runtime::apply_agui_extensions;
-
-use crate::run_service::{global_run_service, origin_from_protocol, wrap_with_run_tracking};
 use crate::transport::nats::NatsTransport;
 use crate::transport::NatsProtocolError;
 
@@ -65,9 +63,9 @@ async fn handle_message(
             .publish_error_event(reply, Event::run_error(err.to_string(), None))
             .await;
     }
-    let parent_run_id = req.request.parent_run_id.clone();
-    let parent_thread_id = req.request.parent_thread_id.clone();
-    let run_request = req.request.into_runtime_run_request(req.agent_id);
+    let frontend_run_id = req.request.run_id.clone();
+    let mut run_request = req.request.into_runtime_run_request(req.agent_id);
+    run_request.run_id = None;
 
     transport
         .run_and_publish(
@@ -75,31 +73,8 @@ async fn handle_message(
             run_request,
             resolved,
             reply,
-            move |run| {
-                if let Some(service) = global_run_service() {
-                    let run_id = run.run_id.clone();
-                    let thread_id = run.thread_id.clone();
-                    let parent_run_id = parent_run_id.clone();
-                    let parent_thread_id = parent_thread_id.clone();
-                    tokio::spawn(async move {
-                        let _ = service
-                            .begin_intent(
-                                &run_id,
-                                &thread_id,
-                                origin_from_protocol("ag_ui"),
-                                parent_run_id,
-                                parent_thread_id,
-                            )
-                            .await;
-                    });
-                }
-                wrap_with_run_tracking(
-                    AgUiProtocolEncoder::new(),
-                    run.run_id.clone(),
-                    run.thread_id.clone(),
-                    "ag_ui",
-                )
-            },
+            false,
+            move |_run| AgUiProtocolEncoder::new_with_frontend_run_id(frontend_run_id),
             |msg| Event::run_error(msg, None),
         )
         .await
