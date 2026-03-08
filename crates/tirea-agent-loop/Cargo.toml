@@ -37,7 +37,7 @@ opentelemetry_sdk = { version = "0.28", features = ["rt-tokio", "testing"] }
 opentelemetry-otlp = { version = "0.28", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace"] }
 tracing-opentelemetry = "0.29"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-phoenix-test-helpers.workspace = true
+phoenix-test-helpers = { path = "../../e2e/phoenix/test-helpers" }
 criterion.workspace = true
 trybuild.workspace = true
 
