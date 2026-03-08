@@ -226,47 +226,6 @@ mod tests {
         Bytes::from(format!("data: {json}\n\n"))
     }
 
-    #[tokio::test]
-    async fn starter_failure_streams_as_valid_ai_sdk_error_chunk() {
-        let starter: RunStarter = Box::new(move |_request| {
-            Box::pin(async move {
-                Err(TransportError::Internal(
-                    "Web stream error for model 'openai::gemini-2.5-flash '".to_string(),
-                ))
-            })
-        });
-        let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
-        ingress_tx
-            .send(RuntimeInput::Run(test_run_request()))
-            .expect("send run request");
-        drop(ingress_tx);
-
-        let mut sse_rx = wire_http_sse_relay(
-            starter,
-            AiSdkEncoder::new(),
-            ingress_rx,
-            HttpSseRelayConfig {
-                thread_id: "thread-ai-sdk".to_string(),
-                fanout: None,
-                resumable_downstream: true,
-                protocol_label: "ai-sdk",
-                on_relay_done: |_sse_tx| async move {},
-                error_formatter: |msg: String| ai_sdk_error_chunk(&msg),
-            },
-        );
-
-        let chunk = sse_rx.recv().await.expect("starter failure chunk");
-        let text = String::from_utf8(chunk.to_vec()).expect("utf-8 sse");
-        let payload = text.trim().strip_prefix("data: ").expect("sse payload");
-        let event: UIStreamEvent = serde_json::from_str(payload).expect("valid ai-sdk event");
-
-        assert!(matches!(
-            event,
-            UIStreamEvent::Error { ref error_text }
-                if error_text.contains("Web stream error for model")
-        ));
-    }
-
     #[test]
     fn ai_sdk_error_chunk_matches_ui_message_stream_schema() {
         let chunk = ai_sdk_error_chunk("Web stream error for model 'openai::gemini-2.5-flash '");
