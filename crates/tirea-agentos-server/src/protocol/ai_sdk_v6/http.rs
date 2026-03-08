@@ -167,3 +167,153 @@ where
     );
     response
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::runtime_endpoint::RunStarter;
+    use std::pin::Pin;
+    use tirea_agentos::contracts::{AgentEvent, RunRequest, ToolCallDecision};
+    use tirea_agentos::orchestrator::RunStream;
+    use tirea_contract::RunOrigin;
+    use tirea_contract::RuntimeInput;
+    use tokio::sync::mpsc;
+
+    fn test_run_request() -> RunRequest {
+        RunRequest {
+            agent_id: "test".into(),
+            thread_id: None,
+            run_id: None,
+            parent_run_id: None,
+            parent_thread_id: None,
+            resource_id: None,
+            origin: RunOrigin::default(),
+            state: None,
+            messages: vec![],
+            initial_decisions: vec![],
+        }
+    }
+
+    fn fake_run(events: Vec<AgentEvent>) -> RunStream {
+        let (decision_tx, _decision_rx) = mpsc::unbounded_channel::<ToolCallDecision>();
+        let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(16);
+
+        tokio::spawn(async move {
+            for event in events {
+                let _ = event_tx.send(event).await;
+            }
+        });
+
+        let stream: Pin<Box<dyn futures::Stream<Item = AgentEvent> + Send>> =
+            Box::pin(async_stream::stream! {
+                let mut rx = event_rx;
+                while let Some(item) = rx.recv().await {
+                    yield item;
+                }
+            });
+
+        RunStream {
+            thread_id: "thread-ai-sdk".to_string(),
+            run_id: "run-ai-sdk".to_string(),
+            decision_tx,
+            events: stream,
+        }
+    }
+
+    fn ai_sdk_error_chunk(msg: &str) -> Bytes {
+        let json = serde_json::to_string(&UIStreamEvent::error(msg)).expect("serialize ai-sdk error");
+        Bytes::from(format!("data: {json}\n\n"))
+    }
+
+    #[test]
+    fn ai_sdk_error_chunk_matches_ui_message_stream_schema() {
+        let chunk = ai_sdk_error_chunk("Web stream error for model 'openai::gemini-2.5-flash '");
+        let text = String::from_utf8(chunk.to_vec()).expect("utf-8 sse");
+        let payload = text.trim().strip_prefix("data: ").expect("sse payload");
+        let event: UIStreamEvent = serde_json::from_str(payload).expect("valid ai-sdk event");
+
+        match event {
+            UIStreamEvent::Error { error_text } => {
+                assert!(error_text.contains("Web stream error for model"));
+                assert!(!payload.contains("recoverable"));
+                assert!(!payload.contains("\"message\""));
+            }
+            other => panic!("expected ai-sdk error event, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_error_event_streams_as_valid_ai_sdk_error_chunk() {
+        let starter: RunStarter = Box::new(move |_request| Box::pin(async move {
+            Ok(fake_run(vec![AgentEvent::Error {
+                message: "provider stream failed".to_string(),
+                code: Some("PROVIDER_ERROR".to_string()),
+            }]))
+        }));
+        let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
+        ingress_tx
+            .send(RuntimeInput::Run(test_run_request()))
+            .expect("send run request");
+        drop(ingress_tx);
+
+        let mut sse_rx = wire_http_sse_relay(
+            starter,
+            AiSdkEncoder::new(),
+            ingress_rx,
+            HttpSseRelayConfig {
+                thread_id: "thread-ai-sdk".to_string(),
+                fanout: None,
+                resumable_downstream: true,
+                protocol_label: "ai-sdk",
+                on_relay_done: |_sse_tx| async move {},
+                error_formatter: |msg: String| ai_sdk_error_chunk(&msg),
+            },
+        );
+
+        let chunks: Vec<Bytes> = async {
+            let mut out = Vec::new();
+            while let Some(chunk) = sse_rx.recv().await {
+                out.push(chunk);
+            }
+            out
+        }
+        .await;
+
+        let payloads: Vec<&str> = chunks
+            .iter()
+            .filter_map(|chunk| std::str::from_utf8(chunk).ok())
+            .filter_map(|text| text.trim().strip_prefix("data: "))
+            .collect();
+
+        assert_eq!(payloads.len(), 1, "unexpected ai-sdk payloads: {payloads:?}");
+        let event: UIStreamEvent =
+            serde_json::from_str(payloads[0]).expect("valid ai-sdk runtime error event");
+        assert!(matches!(
+            event,
+            UIStreamEvent::Error { ref error_text } if error_text == "provider stream failed"
+        ));
+    }
+
+    #[tokio::test]
+    async fn ai_sdk_sse_response_sets_protocol_headers() {
+        let response = ai_sdk_sse_response(futures::stream::empty::<Result<Bytes, Infallible>>());
+        let headers = response.headers();
+
+        assert_eq!(
+            headers.get("content-type").and_then(|v| v.to_str().ok()),
+            Some("text/event-stream")
+        );
+        assert_eq!(
+            headers
+                .get("x-vercel-ai-ui-message-stream")
+                .and_then(|v| v.to_str().ok()),
+            Some("v1")
+        );
+        assert_eq!(
+            headers
+                .get("x-tirea-ai-sdk-version")
+                .and_then(|v| v.to_str().ok()),
+            Some(AI_SDK_VERSION)
+        );
+    }
+}

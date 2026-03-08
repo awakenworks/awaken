@@ -637,16 +637,18 @@ impl InMemoryModelRegistry {
     pub fn register(
         &mut self,
         model_id: impl Into<String>,
-        def: ModelDefinition,
+        mut def: ModelDefinition,
     ) -> Result<(), ModelRegistryError> {
         let model_id = model_id.into();
         if self.models.contains_key(&model_id) {
             return Err(ModelRegistryError::ModelIdConflict(model_id));
         }
-        if def.provider.trim().is_empty() {
+        def.provider = def.provider.trim().to_string();
+        def.model = def.model.trim().to_string();
+        if def.provider.is_empty() {
             return Err(ModelRegistryError::EmptyProviderId);
         }
-        if def.model.trim().is_empty() {
+        if def.model.is_empty() {
             return Err(ModelRegistryError::EmptyModelName);
         }
         self.models.insert(model_id, def);
@@ -835,6 +837,34 @@ mod tests {
         assert!(ids.contains(&"dynamic_a".to_string()));
         assert!(ids.contains(&"dynamic_b".to_string()));
         assert!(ids.contains(&"static_tool".to_string()));
+    }
+
+    #[test]
+    fn model_registry_trims_provider_and_model_names() {
+        let mut registry = InMemoryModelRegistry::new();
+        registry
+            .register(
+                "m1",
+                ModelDefinition::new(" openai ", " gemini-2.5-flash "),
+            )
+            .expect("register model");
+
+        let model = registry.get("m1").expect("stored model");
+        assert_eq!(model.provider, "openai");
+        assert_eq!(model.model, "gemini-2.5-flash");
+    }
+
+    #[test]
+    fn model_registry_rejects_whitespace_only_provider_or_model() {
+        let mut registry = InMemoryModelRegistry::new();
+        assert!(matches!(
+            registry.register("m1", ModelDefinition::new("   ", "gpt-4o-mini")),
+            Err(ModelRegistryError::EmptyProviderId)
+        ));
+        assert!(matches!(
+            registry.register("m2", ModelDefinition::new("openai", "   ")),
+            Err(ModelRegistryError::EmptyModelName)
+        ));
     }
 
     #[test]

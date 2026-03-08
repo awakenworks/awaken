@@ -204,7 +204,15 @@ impl AgentDefinition {
     ///
     /// Behaviors are composed into a single behavior and set on
     /// `BaseAgent::behavior`.
-    pub(crate) fn into_loop_config(self, behaviors: Vec<Arc<dyn AgentBehavior>>) -> BaseAgent {
+    pub(crate) fn into_loop_config(mut self, behaviors: Vec<Arc<dyn AgentBehavior>>) -> BaseAgent {
+        self.model = self.model.trim().to_string();
+        self.fallback_models = self
+            .fallback_models
+            .into_iter()
+            .map(|model| model.trim().to_string())
+            .filter(|model| !model.is_empty())
+            .collect();
+
         let tool_executor: Arc<dyn ToolExecutor> = match self.tool_execution_mode {
             ToolExecutionMode::Sequential => Arc::new(SequentialToolExecutor),
             ToolExecutionMode::ParallelBatchApproval => {
@@ -323,5 +331,22 @@ mod tests {
         ]);
 
         assert_eq!(config.behavior.behavior_ids(), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn into_loop_config_trims_model_and_fallback_models() {
+        let config = AgentDefinition::new(" openai::gemini-2.5-flash ")
+            .with_fallback_models(vec![
+                " gpt-4o-mini ".to_string(),
+                "   ".to_string(),
+                " claude-3-7-sonnet ".to_string(),
+            ])
+            .into_loop_config(Vec::new());
+
+        assert_eq!(config.model, "openai::gemini-2.5-flash");
+        assert_eq!(
+            config.fallback_models,
+            vec!["gpt-4o-mini".to_string(), "claude-3-7-sonnet".to_string()]
+        );
     }
 }
