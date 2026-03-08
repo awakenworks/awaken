@@ -62,7 +62,7 @@ pub use stop_policy_plugin::{
     ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds, StopConditionSpec, StopOnTool,
     StopPolicy, StopPolicyInput, StopPolicyStats, Timeout, TokenBudget,
 };
-pub use thread_run::{ForwardedDecision, ThreadRunHandle};
+pub use thread_run::ForwardedDecision;
 
 pub use system_wiring::{SystemWiring, WiringContext};
 

@@ -5,6 +5,7 @@ use crate::contracts::runtime::state::{
 use crate::contracts::runtime::{RunLifecycleAction, RunLifecycleState, RunStatus};
 use crate::contracts::storage::VersionPrecondition;
 use crate::runtime::loop_runner::{run_loop_stream_with_context, RunExecutionContext};
+use futures::StreamExt;
 use tirea_contract::runtime::suspended_calls_from_state;
 use tirea_state::{Op, Patch, TrackedPatch};
 
@@ -12,6 +13,43 @@ fn now_unix_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+}
+
+struct ActiveRunCleanupGuard {
+    run_id: String,
+    registry: Arc<thread_run::ActiveThreadRunRegistry>,
+    armed: bool,
+}
+
+impl ActiveRunCleanupGuard {
+    fn new(run_id: String, registry: Arc<thread_run::ActiveThreadRunRegistry>) -> Self {
+        Self {
+            run_id,
+            registry,
+            armed: true,
+        }
+    }
+
+    async fn cleanup_now(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.registry.remove_by_run_id(&self.run_id).await;
+        self.armed = false;
+    }
+}
+
+impl Drop for ActiveRunCleanupGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let run_id = self.run_id.clone();
+        let registry = self.registry.clone();
+        tokio::spawn(async move {
+            registry.remove_by_run_id(&run_id).await;
+        });
+    }
 }
 
 /// Generate delete patches for all Run-scoped state paths that exist in the
@@ -185,7 +223,7 @@ impl AgentOs {
         Ok(())
     }
 
-    pub async fn prepare_active_run_with_persistence(
+    pub(crate) async fn prepare_active_run_with_persistence(
         &self,
         owner_agent_id: &str,
         mut run_request: RunRequest,
@@ -234,7 +272,7 @@ impl AgentOs {
         Ok((prepared, thread_id, run_id))
     }
 
-    pub async fn start_prepared_active_run(
+    pub(crate) async fn start_prepared_active_run(
         &self,
         run_id: &str,
         prepared: PreparedRun,
@@ -253,11 +291,66 @@ impl AgentOs {
             .bind_thread_run_decision_tx(run_id, run.decision_tx.clone())
             .await
         {
+            self.remove_thread_run_handle(run_id).await;
             return Err(AgentOsRunError::Loop(AgentLoopError::StateError(format!(
                 "active run handle missing for run '{run_id}'",
             ))));
         }
-        Ok(run)
+        Ok(self.wrap_run_stream_with_active_handle_cleanup(run))
+    }
+
+    pub async fn start_active_run_with_persistence(
+        &self,
+        owner_agent_id: &str,
+        run_request: RunRequest,
+        resolved: ResolvedRun,
+        persist_run: bool,
+        strip_lineage: bool,
+    ) -> Result<RunStream, AgentOsRunError> {
+        let (prepared, _thread_id, run_id) = self
+            .prepare_active_run_with_persistence(
+                owner_agent_id,
+                run_request,
+                resolved,
+                persist_run,
+                strip_lineage,
+            )
+            .await?;
+        self.start_prepared_active_run(&run_id, prepared).await
+    }
+
+    fn wrap_run_stream_with_active_handle_cleanup(&self, run: RunStream) -> RunStream {
+        let RunStream {
+            thread_id,
+            run_id,
+            decision_tx,
+            events,
+        } = run;
+        let run_id_for_cleanup = run_id.clone();
+        let registry = self.active_runs.clone();
+        let events = Box::pin(futures::stream::unfold(
+            (
+                events,
+                Some(ActiveRunCleanupGuard::new(run_id_for_cleanup, registry)),
+            ),
+            |(mut inner, mut cleanup)| async move {
+                match inner.next().await {
+                    Some(event) => Some((event, (inner, cleanup))),
+                    None => {
+                        if let Some(mut cleanup) = cleanup.take() {
+                            cleanup.cleanup_now().await;
+                        }
+                        None
+                    }
+                }
+            },
+        ));
+        RunStream {
+            thread_id,
+            run_id,
+            decision_tx,
+            events,
+        }
     }
 
     /// Prepare a resolved run for execution.

@@ -16,7 +16,7 @@ use tokio::sync::broadcast;
 
 use crate::service::{
     current_run_id_for_thread, encode_message_page, forward_dialog_decisions_by_thread,
-    load_message_page, prepare_http_dialog_run, truncate_thread_at_message, ApiError, AppState,
+    load_message_page, start_http_dialog_run, truncate_thread_at_message, ApiError, AppState,
     MessageQueryParams,
 };
 use crate::transport::http_run::{wire_http_sse_relay, HttpSseRelayConfig};
@@ -83,7 +83,7 @@ async fn run(
     let mut resolved = st.os.resolve(&agent_id).map_err(AgentOsRunError::from)?;
     apply_ai_sdk_extensions(&mut resolved, &req);
     let run_request = req.into_runtime_run_request(agent_id.clone());
-    let prepared = prepare_http_dialog_run(&st.os, resolved, run_request, &agent_id).await?;
+    let prepared = start_http_dialog_run(&st.os, resolved, run_request, &agent_id).await?;
     let (fanout, _) = broadcast::channel::<Bytes>(128);
     if !st
         .os
@@ -116,9 +116,6 @@ async fn run(
                         .cancel_active_run_by_id(&run_id_for_cleanup)
                         .await;
                 }
-                os_for_cleanup
-                    .remove_thread_run_handle(&run_id_for_cleanup)
-                    .await;
             },
             error_formatter: |msg| {
                 let json = serde_json::to_string(&UIStreamEvent::error(&msg)).unwrap_or_default();

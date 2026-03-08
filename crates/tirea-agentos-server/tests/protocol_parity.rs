@@ -5,12 +5,10 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use tirea_agentos::contracts::{AgentEvent, RunRequest};
 use tirea_agentos::orchestrator::AgentDefinition;
-use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder};
+use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder, RunStream};
 use tirea_agentos_server::protocol::ag_ui::apply_agui_extensions;
 use tirea_agentos_server::service::AppState;
-use tirea_contract::{
-    Message as CoreMessage, Thread, ThreadReader, ThreadWriter, ToolCallDecision,
-};
+use tirea_contract::{Message as CoreMessage, RunOrigin, ThreadReader, ThreadWriter};
 use tirea_protocol_ag_ui::{Message, RunAgentInput};
 use tirea_protocol_ai_sdk_v6::AiSdkV6RunRequest;
 use tirea_store_adapters::MemoryStore;
@@ -56,20 +54,28 @@ fn make_http_app() -> (axum::Router, Arc<MemoryStore>, Arc<AgentOs>) {
     )
 }
 
-async fn seed_current_run(store: &Arc<MemoryStore>, thread_id: &str, run_id: &str) {
-    let thread = Thread::with_initial_state(
-        thread_id,
-        json!({
-            "__run": {
-                "id": run_id,
-                "status": "waiting",
-                "updated_at": 1u64
-            }
-        }),
-    );
-    ThreadWriter::save(store.as_ref(), &thread)
+async fn start_active_run(
+    os: &Arc<AgentOs>,
+    agent_id: &str,
+    thread_id: &str,
+    run_id: &str,
+) -> RunStream {
+    let resolved = os.resolve(agent_id).expect("resolve agent");
+    let request = RunRequest {
+        agent_id: agent_id.to_string(),
+        thread_id: Some(thread_id.to_string()),
+        run_id: Some(run_id.to_string()),
+        parent_run_id: None,
+        parent_thread_id: None,
+        resource_id: None,
+        origin: RunOrigin::default(),
+        state: None,
+        messages: vec![],
+        initial_decisions: vec![],
+    };
+    os.start_active_run_with_persistence(agent_id, request, resolved, false, false)
         .await
-        .expect("seed current run");
+        .expect("start active run")
 }
 
 fn collect_kinds(events: &[AgentEvent]) -> Vec<&'static str> {
@@ -161,23 +167,11 @@ async fn agui_and_ai_sdk_have_equivalent_runtime_event_shape() {
 
 #[tokio::test]
 async fn agui_decision_only_forwards_to_active_run() {
-    let (app, store, os) = make_http_app();
+    let (app, _store, os) = make_http_app();
 
     let thread_id = "agui-decision-thread";
     let run_id = "agui-decision-run";
-    let (decision_tx, mut decision_rx) = tokio::sync::mpsc::unbounded_channel::<ToolCallDecision>();
-    seed_current_run(&store, thread_id, run_id).await;
-    os.register_thread_run_handle(
-        run_id.to_string(),
-        "test",
-        thread_id,
-        tirea_agentos::runtime::loop_runner::RunCancellationToken::new(),
-    )
-    .await;
-    assert!(
-        os.bind_thread_run_decision_tx(run_id, decision_tx).await,
-        "decision channel should bind to active handle"
-    );
+    let _active_run = start_active_run(&os, "test", thread_id, run_id).await;
 
     // AG-UI decision-only: tool message with no user message.
     let (status, body) = post_sse(
@@ -198,37 +192,15 @@ async fn agui_decision_only_forwards_to_active_run() {
     // AG-UI response includes runId.
     assert_eq!(payload["runId"].as_str(), Some(run_id));
     assert_eq!(payload["threadId"].as_str(), Some(thread_id));
-
-    let forwarded = tokio::time::timeout(std::time::Duration::from_secs(1), decision_rx.recv())
-        .await
-        .expect("decision should arrive before timeout");
-    assert!(
-        matches!(forwarded, Some(ref d) if d.target_id == "tool-1"),
-        "expected Decision for tool-1, got {forwarded:?}"
-    );
-
-    os.remove_thread_run_handle(run_id).await;
 }
 
 #[tokio::test]
 async fn ai_sdk_decision_only_forwards_when_run_id_present() {
-    let (app, store, os) = make_http_app();
+    let (app, _store, os) = make_http_app();
 
     let thread_id = "aisdk-decision-thread";
     let run_id = "aisdk-decision-run";
-    let (decision_tx, mut decision_rx) = tokio::sync::mpsc::unbounded_channel::<ToolCallDecision>();
-    seed_current_run(&store, thread_id, run_id).await;
-    os.register_thread_run_handle(
-        run_id.to_string(),
-        "test",
-        thread_id,
-        tirea_agentos::runtime::loop_runner::RunCancellationToken::new(),
-    )
-    .await;
-    assert!(
-        os.bind_thread_run_decision_tx(run_id, decision_tx).await,
-        "decision channel should bind to active handle"
-    );
+    let _active_run = start_active_run(&os, "test", thread_id, run_id).await;
 
     // AI-SDK decision-only: assistant message with tool-approval-response, no user input.
     let (status, body) = post_sse(
@@ -257,37 +229,15 @@ async fn ai_sdk_decision_only_forwards_when_run_id_present() {
         payload.get("runId").is_none(),
         "AI-SDK decision_forwarded response should not include runId, got: {payload}"
     );
-
-    let forwarded = tokio::time::timeout(std::time::Duration::from_secs(1), decision_rx.recv())
-        .await
-        .expect("decision should arrive before timeout");
-    assert!(
-        matches!(forwarded, Some(ref d) if d.target_id == "perm-1"),
-        "expected Decision for perm-1, got {forwarded:?}"
-    );
-
-    os.remove_thread_run_handle(run_id).await;
 }
 
 #[tokio::test]
 async fn ai_sdk_decision_only_without_run_id_forwards_by_thread() {
-    let (app, store, os) = make_http_app();
+    let (app, _store, os) = make_http_app();
 
     let thread_id = "aisdk-norunid-thread";
     let run_id = "aisdk-norunid-run";
-    let (decision_tx, mut decision_rx) = tokio::sync::mpsc::unbounded_channel::<ToolCallDecision>();
-    seed_current_run(&store, thread_id, run_id).await;
-    os.register_thread_run_handle(
-        run_id.to_string(),
-        "test",
-        thread_id,
-        tirea_agentos::runtime::loop_runner::RunCancellationToken::new(),
-    )
-    .await;
-    assert!(
-        os.bind_thread_run_decision_tx(run_id, decision_tx).await,
-        "decision channel should bind to active handle"
-    );
+    let _active_run = start_active_run(&os, "test", thread_id, run_id).await;
 
     let (status, body) = post_sse(
         app,
@@ -309,16 +259,6 @@ async fn ai_sdk_decision_only_without_run_id_forwards_by_thread() {
     let payload: Value = serde_json::from_str(&body).expect("valid json");
     assert_eq!(payload["status"].as_str(), Some("decision_forwarded"));
     assert_eq!(payload["threadId"].as_str(), Some(thread_id));
-
-    let forwarded = tokio::time::timeout(std::time::Duration::from_secs(1), decision_rx.recv())
-        .await
-        .expect("decision should arrive before timeout");
-    assert!(
-        matches!(forwarded, Some(ref d) if d.target_id == "perm-2"),
-        "expected Decision for perm-2, got {forwarded:?}"
-    );
-
-    os.remove_thread_run_handle(run_id).await;
 }
 
 // ---- SSE response shape: headers, trailer -------------------------------

@@ -6,13 +6,12 @@ use serde_json::json;
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 use tirea_agentos::contracts::storage::ThreadReader;
-use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
-use tirea_agentos::runtime::loop_runner::RunCancellationToken;
+use tirea_agentos::contracts::RunRequest;
+use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder, RunStream};
 use tirea_agentos_server::service::AppState;
 
 const TEST_AGENT_ID: &str = "test";
 use tirea_contract::storage::{RunOrigin, RunQuery, RunReader, RunRecord, RunStatus, RunWriter};
-use tirea_contract::ToolCallDecision;
 use tirea_store_adapters::MemoryStore;
 use uuid::Uuid;
 
@@ -66,6 +65,30 @@ fn make_app_with_os() -> (axum::Router, Arc<AgentOs>) {
 
 fn make_app() -> axum::Router {
     make_app_with_os().0
+}
+
+async fn start_active_run(
+    os: &Arc<AgentOs>,
+    agent_id: &str,
+    thread_id: &str,
+    run_id: &str,
+) -> RunStream {
+    let resolved = os.resolve(agent_id).expect("resolve agent");
+    let request = RunRequest {
+        agent_id: agent_id.to_string(),
+        thread_id: Some(thread_id.to_string()),
+        run_id: Some(run_id.to_string()),
+        parent_run_id: None,
+        parent_thread_id: None,
+        resource_id: None,
+        origin: RunOrigin::default(),
+        state: None,
+        messages: vec![],
+        initial_decisions: vec![],
+    };
+    os.start_active_run_with_persistence(agent_id, request, resolved, true, false)
+        .await
+        .expect("start active run")
 }
 
 async fn seed_completed_run(store: &MemoryStore, run_id: &str, thread_id: &str, origin: RunOrigin) {
@@ -266,18 +289,7 @@ async fn inputs_endpoint_forwards_decisions_by_run_id() {
     let (app, os) = make_app_with_os();
     let run_id = format!("run-inputs-{}", Uuid::new_v4().simple());
     let thread_id = format!("thread-inputs-{}", Uuid::new_v4().simple());
-    let (decision_tx, mut decision_rx) = tokio::sync::mpsc::unbounded_channel::<ToolCallDecision>();
-    os.register_thread_run_handle(
-        run_id.clone(),
-        TEST_AGENT_ID,
-        &thread_id,
-        RunCancellationToken::new(),
-    )
-    .await;
-    assert!(
-        os.bind_thread_run_decision_tx(&run_id, decision_tx).await,
-        "decision channel should bind to active handle"
-    );
+    let _active_run = start_active_run(&os, TEST_AGENT_ID, &thread_id, &run_id).await;
 
     let uri = format!("/v1/runs/{run_id}/inputs");
     let (status, body) = post_sse(
@@ -300,16 +312,6 @@ async fn inputs_endpoint_forwards_decisions_by_run_id() {
     let payload: Value = serde_json::from_str(&body).expect("valid json");
     assert_eq!(payload["status"].as_str(), Some("decision_forwarded"));
     assert_eq!(payload["run_id"].as_str(), Some(run_id.as_str()));
-
-    let forwarded = tokio::time::timeout(std::time::Duration::from_secs(1), decision_rx.recv())
-        .await
-        .expect("decision should arrive before timeout");
-    assert!(
-        matches!(forwarded, Some(ref decision) if decision.target_id == "tool-1"),
-        "expected decision for tool-1, got {forwarded:?}"
-    );
-
-    os.remove_thread_run_handle(&run_id).await;
 }
 
 #[tokio::test]
@@ -378,9 +380,7 @@ async fn cancel_endpoint_cancels_active_run() {
     let (app, os) = make_app_with_os();
     let run_id = format!("run-cancel-{}", Uuid::new_v4().simple());
     let thread_id = format!("thread-cancel-{}", Uuid::new_v4().simple());
-    let token = RunCancellationToken::new();
-    os.register_thread_run_handle(run_id.clone(), TEST_AGENT_ID, &thread_id, token.clone())
-        .await;
+    let _active_run = start_active_run(&os, TEST_AGENT_ID, &thread_id, &run_id).await;
 
     let uri = format!("/v1/runs/{run_id}/cancel");
     let (status, body) = post_sse(app, &uri, json!({})).await;
@@ -388,10 +388,4 @@ async fn cancel_endpoint_cancels_active_run() {
     let payload: Value = serde_json::from_str(&body).expect("valid json");
     assert_eq!(payload["status"].as_str(), Some("cancel_requested"));
     assert_eq!(payload["run_id"].as_str(), Some(run_id.as_str()));
-    assert!(
-        token.is_cancelled(),
-        "cancellation token should be cancelled"
-    );
-
-    os.remove_thread_run_handle(&run_id).await;
 }

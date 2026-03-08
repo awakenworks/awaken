@@ -397,7 +397,7 @@ async fn cancel_task(
         ));
     }
 
-    if try_cancel_active_run_by_id(&st.os, st.read_store.as_ref(), &task_id).await? {
+    if try_cancel_active_run_by_id(&st.os, &task_id).await? {
         return Ok((
             StatusCode::ACCEPTED,
             Json(json!({

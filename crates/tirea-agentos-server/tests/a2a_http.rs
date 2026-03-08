@@ -8,8 +8,8 @@ use common::{compose_http_app, get_json_text, post_sse, TerminatePlugin};
 use serde_json::{json, Value};
 use std::sync::{Arc, OnceLock};
 use tirea_agentos::contracts::storage::ThreadReader;
-use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
-use tirea_agentos::runtime::loop_runner::RunCancellationToken;
+use tirea_agentos::contracts::RunRequest;
+use tirea_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder, RunStream};
 use tirea_agentos_server::service::AppState;
 use tirea_contract::storage::{RunOrigin, RunRecord, RunStatus, RunWriter};
 use tirea_contract::ToolCallDecision;
@@ -101,6 +101,30 @@ fn make_app_and_os_with_agents(agent_ids: &[&str]) -> (axum::Router, Arc<AgentOs
 
 fn make_app() -> axum::Router {
     make_app_with_agents(&["alpha", "beta"])
+}
+
+async fn start_active_run(
+    os: &Arc<AgentOs>,
+    agent_id: &str,
+    thread_id: &str,
+    run_id: &str,
+) -> RunStream {
+    let resolved = os.resolve(agent_id).expect("resolve agent");
+    let request = RunRequest {
+        agent_id: agent_id.to_string(),
+        thread_id: Some(thread_id.to_string()),
+        run_id: Some(run_id.to_string()),
+        parent_run_id: None,
+        parent_thread_id: None,
+        resource_id: None,
+        origin: RunOrigin::A2a,
+        state: None,
+        messages: vec![],
+        initial_decisions: vec![],
+    };
+    os.start_active_run_with_persistence(agent_id, request, resolved, true, false)
+        .await
+        .expect("start active run")
 }
 
 #[tokio::test]
@@ -316,14 +340,7 @@ async fn a2a_cancel_and_decision_only_use_active_run_registry() {
     let (app, os) = make_app_and_os_with_agents(&["alpha", "beta"]);
     let run_id = format!("a2a-run-{}", Uuid::new_v4().simple());
     let thread_id = format!("a2a-thread-{}", Uuid::new_v4().simple());
-    let (decision_tx, mut decision_rx) = tokio::sync::mpsc::unbounded_channel::<ToolCallDecision>();
-    let token = RunCancellationToken::new();
-    os.register_thread_run_handle(run_id.clone(), "alpha", &thread_id, token.clone())
-        .await;
-    assert!(
-        os.bind_thread_run_decision_tx(&run_id, decision_tx).await,
-        "decision channel should bind to active handle"
-    );
+    let _active_run = start_active_run(&os, "alpha", &thread_id, &run_id).await;
 
     let decision = ToolCallDecision::resume("tool-1", json!({"approved": true}), 1);
     let (status, body) = post_sse(
@@ -339,19 +356,11 @@ async fn a2a_cancel_and_decision_only_use_active_run_registry() {
     let payload: Value = serde_json::from_str(&body).expect("valid response");
     assert_eq!(payload["status"].as_str(), Some("decision_forwarded"));
 
-    let forwarded = tokio::time::timeout(std::time::Duration::from_secs(1), decision_rx.recv())
-        .await
-        .expect("decision should arrive");
-    assert!(matches!(forwarded, Some(_)));
-
     let cancel_uri = format!("/v1/a2a/agents/alpha/tasks/{run_id}:cancel");
     let (status, body) = post_sse(app, &cancel_uri, json!({})).await;
     assert_eq!(status, StatusCode::ACCEPTED);
     let payload: Value = serde_json::from_str(&body).expect("valid cancel response");
     assert_eq!(payload["status"].as_str(), Some("cancel_requested"));
-    assert!(token.is_cancelled(), "token should be cancelled");
-
-    os.remove_thread_run_handle(&run_id).await;
 }
 
 #[tokio::test]

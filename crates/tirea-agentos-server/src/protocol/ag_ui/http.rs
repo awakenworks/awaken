@@ -11,7 +11,7 @@ use super::runtime::apply_agui_extensions;
 
 use crate::service::{
     encode_message_page, forward_dialog_decisions_by_thread, load_message_page,
-    prepare_http_dialog_run, ApiError, AppState, MessageQueryParams,
+    start_http_dialog_run, ApiError, AppState, MessageQueryParams,
 };
 use crate::transport::http_run::{wire_http_sse_relay, HttpSseRelayConfig};
 use crate::transport::http_sse::{sse_body_stream, sse_response};
@@ -72,10 +72,7 @@ async fn run(
         .map_err(|err| ApiError::Internal(err.to_string()))?;
     let run_request = req.into_runtime_run_request(agent_id.clone());
 
-    let prepared = prepare_http_dialog_run(&st.os, resolved, run_request, &agent_id).await?;
-    let run_id_for_cleanup = prepared.run_id.clone();
-    let os_for_cleanup = st.os.clone();
-
+    let prepared = start_http_dialog_run(&st.os, resolved, run_request, &agent_id).await?;
     let enc = AgUiProtocolEncoder::new_with_frontend_run_id(frontend_run_id);
     let sse_rx = wire_http_sse_relay(
         prepared.starter,
@@ -86,11 +83,7 @@ async fn run(
             fanout: None,
             resumable_downstream: false,
             protocol_label: "ag-ui",
-            on_relay_done: move |_sse_tx| async move {
-                os_for_cleanup
-                    .remove_thread_run_handle(&run_id_for_cleanup)
-                    .await;
-            },
+            on_relay_done: move |_sse_tx| async move {},
             error_formatter: |msg| {
                 let json =
                     serde_json::to_string(&Event::run_error(&msg, Some("RELAY_ERROR".to_string())))

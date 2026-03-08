@@ -16,7 +16,7 @@ use tirea_contract::{AgentEvent, Identity};
 
 use crate::service::{
     check_run_liveness, load_run_record, normalize_optional_id, parse_message_query,
-    prepare_http_run, require_agent_state_store, start_background_run, try_cancel_active_run_by_id,
+    require_agent_state_store, start_background_run, start_http_run, try_cancel_active_run_by_id,
     try_forward_decisions_to_active_run_by_id, ApiError, MessageQueryParams, RunLookup,
 };
 use crate::transport::http_run::{wire_http_sse_relay, HttpSseRelayConfig};
@@ -439,9 +439,7 @@ async fn start_run(
     let (agent_id, run_request) = payload.into_run_request()?;
 
     let resolved = st.os.resolve(&agent_id).map_err(AgentOsRunError::from)?;
-    let prepared = prepare_http_run(&st.os, resolved, run_request, &agent_id).await?;
-    let run_id_for_cleanup = prepared.run_id.clone();
-    let os_for_cleanup = st.os.clone();
+    let prepared = start_http_run(&st.os, resolved, run_request, &agent_id).await?;
 
     let encoder = Identity::<AgentEvent>::default();
     let sse_rx = wire_http_sse_relay(
@@ -453,11 +451,7 @@ async fn start_run(
             fanout: None,
             resumable_downstream: false,
             protocol_label: "run-api",
-            on_relay_done: move |_sse_tx| async move {
-                os_for_cleanup
-                    .remove_thread_run_handle(&run_id_for_cleanup)
-                    .await;
-            },
+            on_relay_done: move |_sse_tx| async move {},
             error_formatter: |msg| {
                 let error = json!({
                     "type": "error",
@@ -553,7 +547,7 @@ async fn cancel_run(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    if try_cancel_active_run_by_id(&st.os, st.read_store.as_ref(), &id).await? {
+    if try_cancel_active_run_by_id(&st.os, &id).await? {
         return Ok((
             StatusCode::ACCEPTED,
             Json(json!({

@@ -10,7 +10,6 @@ use tokio::sync::mpsc;
 
 use crate::transport::http_run::{wire_http_sse_relay, HttpSseRelayConfig};
 use crate::transport::runtime_endpoint::RunStarter;
-use crate::transport::TransportError;
 
 use super::ApiError;
 
@@ -91,13 +90,8 @@ pub async fn try_forward_decisions_to_active_run_by_id(
         ));
     }
 
-    if let Some(handle) = active_handle_by_run_id(os, read_store, run_id).await? {
-        if handle.send_decisions(&decisions).await {
-            return Ok(ForwardedDecision {
-                thread_id: handle.thread_id().to_string(),
-            });
-        }
-        os.remove_thread_run_handle(handle.run_id()).await;
+    if let Some(forwarded) = os.forward_decisions_by_run_id(run_id, &decisions).await {
+        return Ok(forwarded);
     }
 
     Err(match check_run_liveness(read_store, run_id).await? {
@@ -108,13 +102,9 @@ pub async fn try_forward_decisions_to_active_run_by_id(
 
 pub async fn try_cancel_active_run_by_id(
     os: &Arc<AgentOs>,
-    read_store: &dyn ThreadReader,
     run_id: &str,
 ) -> Result<bool, ApiError> {
-    let Some(handle) = active_handle_by_run_id(os, read_store, run_id).await? else {
-        return Ok(false);
-    };
-    Ok(handle.cancel())
+    Ok(os.cancel_active_run_by_id(run_id).await)
 }
 
 pub fn require_agent_state_store(os: &Arc<AgentOs>) -> Result<Arc<dyn ThreadStore>, ApiError> {
@@ -123,33 +113,10 @@ pub fn require_agent_state_store(os: &Arc<AgentOs>) -> Result<Arc<dyn ThreadStor
         .ok_or_else(|| ApiError::Internal("agent state store not configured".to_string()))
 }
 
-async fn active_handle_by_run_id(
-    os: &Arc<AgentOs>,
-    read_store: &dyn ThreadReader,
-    run_id: &str,
-) -> Result<Option<tirea_agentos::orchestrator::ThreadRunHandle>, ApiError> {
-    if let Some(handle) = os.active_thread_run_by_run_id(run_id).await {
-        return Ok(Some(handle));
-    }
-
-    let Some(record) = read_store
-        .load_run(run_id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-    else {
-        return Ok(None);
-    };
-    let Some(handle) = os.active_thread_run_by_thread(&record.thread_id).await else {
-        return Ok(None);
-    };
-    if handle.run_id() != run_id {
-        return Ok(None);
-    }
-    Ok(Some(handle))
-}
-
-/// Shared HTTP run preparation: creates a cancellation token, calls `prepare_run`,
-/// builds a `RunStarter`, sets up the ingress channel, and registers the active run.
+/// Shared HTTP run bootstrap result.
+///
+/// The run is already started via AgentOS lifecycle API; this payload only
+/// adapts it to transport wiring (`RunStarter` + ingress channel).
 pub struct PreparedHttpRun {
     pub starter: RunStarter,
     pub thread_id: String,
@@ -157,25 +124,25 @@ pub struct PreparedHttpRun {
     pub ingress_rx: mpsc::UnboundedReceiver<RuntimeInput>,
 }
 
-pub async fn prepare_http_run(
+pub async fn start_http_run(
     os: &Arc<AgentOs>,
     resolved: ResolvedRun,
     run_request: RunRequest,
     agent_id: &str,
 ) -> Result<PreparedHttpRun, ApiError> {
-    prepare_http_run_with_persistence(os, resolved, run_request, agent_id, true).await
+    start_http_run_with_persistence(os, resolved, run_request, agent_id, true).await
 }
 
-pub async fn prepare_http_dialog_run(
+pub async fn start_http_dialog_run(
     os: &Arc<AgentOs>,
     resolved: ResolvedRun,
     run_request: RunRequest,
     agent_id: &str,
 ) -> Result<PreparedHttpRun, ApiError> {
-    prepare_http_run_with_persistence(os, resolved, run_request, agent_id, false).await
+    start_http_run_with_persistence(os, resolved, run_request, agent_id, false).await
 }
 
-async fn prepare_http_run_with_persistence(
+async fn start_http_run_with_persistence(
     os: &Arc<AgentOs>,
     resolved: ResolvedRun,
     run_request: RunRequest,
@@ -183,8 +150,8 @@ async fn prepare_http_run_with_persistence(
     persist_run: bool,
 ) -> Result<PreparedHttpRun, ApiError> {
     let run_request_for_ingress = run_request.clone();
-    let (prepared, thread_id, run_id) = os
-        .prepare_active_run_with_persistence(
+    let run = os
+        .start_active_run_with_persistence(
             agent_id,
             run_request,
             resolved,
@@ -193,22 +160,15 @@ async fn prepare_http_run_with_persistence(
         )
         .await
         .map_err(ApiError::from)?;
+    let thread_id = run.thread_id.clone();
+    let run_id = run.run_id.clone();
 
     let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<RuntimeInput>();
     ingress_tx
         .send(RuntimeInput::Run(run_request_for_ingress))
         .expect("ingress channel just created");
 
-    let run_id_for_starter = run_id.clone();
-    let os_for_starter = os.clone();
-    let starter: RunStarter = Box::new(move |_request| {
-        Box::pin(async move {
-            os_for_starter
-                .start_prepared_active_run(&run_id_for_starter, prepared)
-                .await
-                .map_err(|e| TransportError::Internal(e.to_string()))
-        })
-    });
+    let starter: RunStarter = Box::new(move |_request| Box::pin(async move { Ok(run) }));
 
     Ok(PreparedHttpRun {
         starter,
@@ -278,11 +238,9 @@ pub async fn start_background_run(
     protocol_label: &'static str,
 ) -> Result<(String, String), ApiError> {
     let resolved = os.resolve(agent_id).map_err(AgentOsRunError::from)?;
-    let prepared = prepare_http_run(os, resolved, run_request, agent_id).await?;
+    let prepared = start_http_run(os, resolved, run_request, agent_id).await?;
     let run_id = prepared.run_id.clone();
     let thread_id = prepared.thread_id.clone();
-    let run_id_for_cleanup = run_id.clone();
-    let os_for_cleanup = os.clone();
 
     let encoder = Identity::<AgentEvent>::default();
     let mut sse_rx = wire_http_sse_relay(
@@ -294,11 +252,7 @@ pub async fn start_background_run(
             fanout: None,
             resumable_downstream: false,
             protocol_label,
-            on_relay_done: move |_sse_tx| async move {
-                os_for_cleanup
-                    .remove_thread_run_handle(&run_id_for_cleanup)
-                    .await;
-            },
+            on_relay_done: move |_sse_tx| async move {},
             error_formatter: |msg| {
                 let error = serde_json::json!({
                     "type": "error",

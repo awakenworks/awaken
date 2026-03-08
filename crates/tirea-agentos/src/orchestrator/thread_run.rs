@@ -27,10 +27,6 @@ impl ThreadRunHandle {
         &self.run_id
     }
 
-    pub fn agent_id(&self) -> &str {
-        &self.agent_id
-    }
-
     pub fn cancellation_token(&self) -> RunCancellationToken {
         self.cancellation_token.clone()
     }
@@ -139,7 +135,7 @@ impl ActiveThreadRunRegistry {
         Some(handle.clone())
     }
 
-    async fn remove_by_run_id(&self, run_id: &str) {
+    pub(super) async fn remove_by_run_id(&self, run_id: &str) {
         if let Some(thread_id) = self.run_index.write().await.remove(run_id) {
             self.handles.write().await.remove(&thread_id);
         }
@@ -147,7 +143,7 @@ impl ActiveThreadRunRegistry {
 }
 
 impl AgentOs {
-    pub async fn register_thread_run_handle(
+    pub(crate) async fn register_thread_run_handle(
         &self,
         run_id: String,
         agent_id: &str,
@@ -159,7 +155,7 @@ impl AgentOs {
             .await;
     }
 
-    pub async fn bind_thread_run_decision_tx(
+    pub(crate) async fn bind_thread_run_decision_tx(
         &self,
         run_id: &str,
         tx: mpsc::UnboundedSender<ToolCallDecision>,
@@ -170,7 +166,7 @@ impl AgentOs {
         handle.bind_decision_tx(tx).await
     }
 
-    pub async fn remove_thread_run_handle(&self, run_id: &str) {
+    pub(crate) async fn remove_thread_run_handle(&self, run_id: &str) {
         self.active_runs.remove_by_run_id(run_id).await;
     }
 
@@ -194,11 +190,10 @@ impl AgentOs {
         handle.subscribe_stream_fanout().await
     }
 
-    pub async fn active_thread_run_by_thread(&self, thread_id: &str) -> Option<ThreadRunHandle> {
-        self.active_runs.handle_by_thread(thread_id).await
-    }
-
-    pub async fn active_thread_run_by_run_id(&self, run_id: &str) -> Option<ThreadRunHandle> {
+    pub(crate) async fn active_thread_run_by_run_id(
+        &self,
+        run_id: &str,
+    ) -> Option<ThreadRunHandle> {
         self.active_runs.handle_by_run_id(run_id).await
     }
 
@@ -289,7 +284,7 @@ mod tests {
             .await
             .expect("handle should exist");
         assert_eq!(handle.run_id(), "run-1");
-        assert_eq!(handle.agent_id(), "agent-a");
+        assert!(handle.can_own("agent-a"));
     }
 
     #[tokio::test]
@@ -326,7 +321,7 @@ mod tests {
             .await
             .expect("handle should exist");
         assert_eq!(handle.run_id(), "run-b");
-        assert_eq!(handle.agent_id(), "agent-b");
+        assert!(handle.can_own("agent-b"));
         assert!(reg.handle_by_run_id("run-a").await.is_none());
         assert!(reg.handle_by_run_id("run-b").await.is_some());
     }
