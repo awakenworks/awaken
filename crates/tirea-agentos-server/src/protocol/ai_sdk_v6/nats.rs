@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use std::sync::Arc;
-use tirea_agentos::orchestrator::AgentOs;
+use tirea_agentos::runtime::AgentOs;
 use tirea_protocol_ai_sdk_v6::{AiSdkEncoder, AiSdkV6RunRequest, UIStreamEvent};
 
 use super::runtime::apply_ai_sdk_extensions;

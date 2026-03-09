@@ -24,8 +24,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tirea_agentos::contracts::runtime::tool_call::Tool;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
-use tirea_agentos::orchestrator::AgentDefinition;
-use tirea_agentos::orchestrator::{AgentOsBuilder, ModelDefinition};
+use tirea_agentos::composition::AgentDefinition;
+use tirea_agentos::composition::{AgentOsBuilder, ModelDefinition};
 use tirea_agentos_server::service::AppState;
 use tirea_store_adapters::MemoryStore;
 use tokio::sync::OnceCell;
@@ -106,7 +106,7 @@ async fn tensorzero_chat_smoke_ready() -> Result<(), String> {
     Ok(())
 }
 
-fn make_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::AgentOs {
+fn make_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::runtime::AgentOs {
     // Model name: "openai::tensorzero::function_name::agent_chat"
     //   - genai sees "openai::" prefix → selects OpenAI adapter (→ /v1/chat/completions)
     //   - genai strips the "openai::" namespace → sends "tensorzero::function_name::agent_chat"
@@ -411,7 +411,7 @@ fn make_tz_client() -> genai::Client {
         .build()
 }
 
-fn make_tool_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::AgentOs {
+fn make_tool_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::runtime::AgentOs {
     let def = AgentDefinition {
         id: "calc".to_string(),
         model: "deepseek".to_string(),

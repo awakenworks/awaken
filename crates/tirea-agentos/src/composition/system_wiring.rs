@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::composition::RegistryBundle;
+use super::registry_set::RegistryBundle;
 use super::AgentDefinition;
 use super::AgentOsWiringError;
 use crate::contracts::runtime::tool_call::Tool;

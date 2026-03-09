@@ -60,7 +60,7 @@ impl AgentBehavior for AuditBehavior {
 ## Key Files
 
 - `crates/tirea-contract/src/runtime/behavior.rs`
-- `crates/tirea-agentos/src/orchestrator/builder.rs`
+- `crates/tirea-agentos/src/composition/builder.rs`
 - `crates/tirea-extension-reminder/src/lib.rs`
 - `crates/tirea-extension-permission/src/plugin.rs`
 

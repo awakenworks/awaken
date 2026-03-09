@@ -11,8 +11,7 @@ use std::sync::Arc;
 use tirea_agent_loop::runtime::loop_runner::{
     BaseAgent, ParallelToolExecutor, SequentialToolExecutor,
 };
-use tirea_agentos::orchestrator::compose_behaviors;
-use tirea_agentos::orchestrator::ResolvedRun;
+use tirea_agentos::runtime::{compose_behaviors, ResolvedRun};
 use tirea_contract::runtime::behavior::ReadOnlyContext;
 use tirea_contract::runtime::phase::{
     ActionSet, BeforeInferenceAction, BeforeToolExecuteAction, SuspendTicket,

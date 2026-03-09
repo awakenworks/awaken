@@ -18,7 +18,8 @@ Use this when a run must terminate on explicit loop, budget, timeout, or domain-
 1. Add declarative stop specs on the agent definition.
 
 ```rust,ignore
-use tirea::orchestrator::{AgentDefinition, StopConditionSpec};
+use tirea::composition::AgentDefinition;
+use tirea::runtime::StopConditionSpec;
 
 let agent = AgentDefinition::new("deepseek-chat")
     .with_stop_condition_specs(vec![
@@ -39,7 +40,8 @@ let agent = AgentDefinition::new("deepseek-chat")
 
 ```rust,ignore
 use std::sync::Arc;
-use tirea::orchestrator::{AgentOsBuilder, StopPolicy, StopPolicyInput};
+use tirea::composition::AgentOsBuilder;
+use tirea::runtime::{StopPolicy, StopPolicyInput};
 use tirea::contracts::StoppedReason;
 
 struct AlwaysStop;
@@ -87,10 +89,10 @@ let os = AgentOsBuilder::new()
 
 ## Key Files
 
-- `crates/tirea-agentos/src/orchestrator/stop_policy_plugin.rs`
-- `crates/tirea-agentos/src/orchestrator/wiring.rs`
-- `crates/tirea-agentos/src/orchestrator/agent_definition.rs`
-- `crates/tirea-agentos/src/orchestrator/tests.rs`
+- `crates/tirea-agentos/src/runtime/stop_policy_plugin.rs`
+- `crates/tirea-agentos/src/composition/wiring.rs`
+- `crates/tirea-agentos/src/composition/agent_definition.rs`
+- `crates/tirea-agentos/src/runtime/tests.rs`
 
 ## Related
 

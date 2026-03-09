@@ -75,7 +75,7 @@ impl Tool for IncrementCounter {
 ## 3. Register the Tool
 
 ```rust,ignore
-use tirea::orchestrator::{tool_map, AgentOsBuilder};
+use tirea::composition::{tool_map, AgentOsBuilder};
 
 let os = AgentOsBuilder::new()
     .with_tools(tool_map([IncrementCounter]))

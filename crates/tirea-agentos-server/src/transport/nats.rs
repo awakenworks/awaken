@@ -2,7 +2,7 @@ use serde::Serialize;
 use std::future::Future;
 use std::sync::Arc;
 use tirea_agentos::contracts::{AgentEvent, RunRequest};
-use tirea_agentos::orchestrator::{AgentOs, ResolvedRun, RunStream};
+use tirea_agentos::runtime::{AgentOs, ResolvedRun, RunStream};
 use tirea_contract::{RuntimeInput, Transcoder};
 
 use crate::transport::NatsProtocolError;

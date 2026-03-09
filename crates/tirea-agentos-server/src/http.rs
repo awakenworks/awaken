@@ -10,7 +10,7 @@ use serde_json::Value;
 use tirea_agentos::contracts::storage::{ThreadListPage, ThreadListQuery};
 use tirea_agentos::contracts::thread::Message;
 use tirea_agentos::contracts::{RunRequest, ToolCallDecision};
-use tirea_agentos::orchestrator::AgentOsRunError;
+use tirea_agentos::runtime::AgentOsRunError;
 use tirea_contract::storage::{RunOrigin, RunPage, RunQuery, RunRecord, RunStatus};
 use tirea_contract::{AgentEvent, Identity};
 

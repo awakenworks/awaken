@@ -7,8 +7,8 @@ use crate::contracts::runtime::tool_call::ToolStatus;
 use crate::contracts::storage::RunOrigin;
 use crate::contracts::thread::Thread;
 use crate::contracts::AgentBehavior;
-use crate::orchestrator::InMemoryAgentRegistry;
-use crate::runtime::loop_runner::{
+use crate::runtime::InMemoryAgentRegistry;
+use crate::loop_runtime::loop_runner::{
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
     TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
@@ -80,8 +80,8 @@ where
 #[test]
 fn plugin_filters_out_caller_agent() {
     let mut reg = InMemoryAgentRegistry::new();
-    reg.upsert("a", crate::orchestrator::AgentDefinition::new("mock"));
-    reg.upsert("b", crate::orchestrator::AgentDefinition::new("mock"));
+    reg.upsert("a", crate::runtime::AgentDefinition::new("mock"));
+    reg.upsert("b", crate::runtime::AgentDefinition::new("mock"));
     let plugin = AgentToolsPlugin::new(Arc::new(reg), Arc::new(SubAgentHandleTable::new()));
     let rendered = plugin.render_available_agents(Some("a"), None);
     assert!(rendered.contains("<id>b</id>"));
@@ -91,10 +91,10 @@ fn plugin_filters_out_caller_agent() {
 #[test]
 fn plugin_filters_agents_by_scope_policy() {
     let mut reg = InMemoryAgentRegistry::new();
-    reg.upsert("writer", crate::orchestrator::AgentDefinition::new("mock"));
+    reg.upsert("writer", crate::runtime::AgentDefinition::new("mock"));
     reg.upsert(
         "reviewer",
-        crate::orchestrator::AgentDefinition::new("mock"),
+        crate::runtime::AgentDefinition::new("mock"),
     );
     let plugin = AgentToolsPlugin::new(Arc::new(reg), Arc::new(SubAgentHandleTable::new()));
     let mut rt = tirea_contract::RunConfig::new();
@@ -107,7 +107,7 @@ fn plugin_filters_agents_by_scope_policy() {
 #[test]
 fn plugin_renders_agent_output_tool_usage() {
     let mut reg = InMemoryAgentRegistry::new();
-    reg.upsert("worker", crate::orchestrator::AgentDefinition::new("mock"));
+    reg.upsert("worker", crate::runtime::AgentDefinition::new("mock"));
     let plugin = AgentToolsPlugin::new(Arc::new(reg), Arc::new(SubAgentHandleTable::new()));
     let rendered = plugin.render_available_agents(None, None);
     assert!(
@@ -119,7 +119,7 @@ fn plugin_renders_agent_output_tool_usage() {
 #[tokio::test]
 async fn plugin_adds_reminder_for_running_and_stopped_runs() {
     let mut reg = InMemoryAgentRegistry::new();
-    reg.upsert("worker", crate::orchestrator::AgentDefinition::new("mock"));
+    reg.upsert("worker", crate::runtime::AgentDefinition::new("mock"));
     let handles = Arc::new(SubAgentHandleTable::new());
     let plugin = AgentToolsPlugin::new(Arc::new(reg), handles.clone());
 
@@ -386,7 +386,7 @@ async fn agent_run_tool_requires_scope_context() {
     let os = AgentOs::builder()
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
         )
         .build()
         .unwrap();
@@ -411,11 +411,11 @@ async fn agent_run_tool_rejects_disallowed_target_agent() {
     let os = AgentOs::builder()
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
         )
         .with_agent(
             "reviewer",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
         )
         .build()
         .unwrap();
@@ -444,11 +444,11 @@ async fn agent_run_tool_rejects_self_target_agent() {
     let os = AgentOs::builder()
         .with_agent(
             "caller",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
         )
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
         )
         .build()
         .unwrap();
@@ -478,7 +478,7 @@ async fn agent_run_tool_fork_context_filters_messages() {
         )
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
+            crate::runtime::AgentDefinition::new("gpt-4o-mini")
                 .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
@@ -553,7 +553,7 @@ async fn background_stop_then_resume_completes() {
         )
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
+            crate::runtime::AgentDefinition::new("gpt-4o-mini")
                 .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
@@ -629,7 +629,7 @@ async fn agent_run_tool_persists_run_state_patch() {
         )
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
+            crate::runtime::AgentDefinition::new("gpt-4o-mini")
                 .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
@@ -692,7 +692,7 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
         )
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
+            crate::runtime::AgentDefinition::new("gpt-4o-mini")
                 .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
@@ -733,7 +733,7 @@ async fn agent_run_tool_query_existing_run_keeps_original_parent_lineage() {
     let os = AgentOs::builder()
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
         )
         .build()
         .unwrap();
@@ -798,7 +798,7 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
         )
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
+            crate::runtime::AgentDefinition::new("gpt-4o-mini")
                 .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
@@ -847,7 +847,7 @@ async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
         )
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
+            crate::runtime::AgentDefinition::new("gpt-4o-mini")
                 .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
@@ -1370,7 +1370,7 @@ async fn parallel_background_runs_and_stop_all() {
         )
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
+            crate::runtime::AgentDefinition::new("gpt-4o-mini")
                 .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
@@ -2066,7 +2066,7 @@ async fn agent_run_tool_returns_completed_status_when_resuming_completed_run() {
     let os = AgentOs::builder()
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
         )
         .build()
         .unwrap();
@@ -2112,7 +2112,7 @@ async fn agent_run_tool_returns_failed_status_when_resuming_failed_run() {
     let os = AgentOs::builder()
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
         )
         .build()
         .unwrap();
@@ -2161,7 +2161,7 @@ async fn agent_run_tool_requires_prompt_for_new_run() {
     let os = AgentOs::builder()
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
         )
         .build()
         .unwrap();
@@ -2188,7 +2188,7 @@ async fn agent_run_tool_requires_agent_id_for_new_run() {
     let os = AgentOs::builder()
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
         )
         .build()
         .unwrap();
@@ -2217,11 +2217,11 @@ async fn agent_run_tool_rejects_excluded_agent() {
     let os = AgentOs::builder()
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
         )
         .with_agent(
             "secret",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
         )
         .build()
         .unwrap();
@@ -2276,7 +2276,7 @@ async fn agent_run_tool_returns_persisted_completed_without_rerun() {
     let os = AgentOs::builder()
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
         )
         .build()
         .unwrap();
@@ -2312,7 +2312,7 @@ async fn agent_run_tool_returns_persisted_failed_with_error() {
     let os = AgentOs::builder()
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
         )
         .build()
         .unwrap();
@@ -2837,7 +2837,7 @@ async fn parallel_background_launches_produce_unique_run_ids() {
         )
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
+            crate::runtime::AgentDefinition::new("gpt-4o-mini")
                 .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
@@ -2882,7 +2882,7 @@ async fn parallel_launch_and_immediate_stop() {
         )
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
+            crate::runtime::AgentDefinition::new("gpt-4o-mini")
                 .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
@@ -3111,17 +3111,17 @@ fn build_integration_os() -> (AgentOs, Arc<tirea_store_adapters::MemoryStore>) {
         )
         .with_agent(
             "caller",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
+            crate::runtime::AgentDefinition::new("gpt-4o-mini")
                 .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
+            crate::runtime::AgentDefinition::new("gpt-4o-mini")
                 .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .with_agent(
             "reviewer",
-            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
+            crate::runtime::AgentDefinition::new("gpt-4o-mini")
                 .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
@@ -3701,7 +3701,7 @@ impl std::fmt::Debug for ToolCallMockLlm {
 }
 
 #[async_trait]
-impl crate::runtime::loop_runner::LlmExecutor for ToolCallMockLlm {
+impl crate::loop_runtime::loop_runner::LlmExecutor for ToolCallMockLlm {
     async fn exec_chat_response(
         &self,
         _model: &str,
@@ -3716,7 +3716,7 @@ impl crate::runtime::loop_runner::LlmExecutor for ToolCallMockLlm {
         _model: &str,
         _chat_req: genai::chat::ChatRequest,
         _options: Option<&genai::chat::ChatOptions>,
-    ) -> genai::Result<crate::runtime::loop_runner::LlmEventStream> {
+    ) -> genai::Result<crate::loop_runtime::loop_runner::LlmEventStream> {
         use genai::chat::{ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk};
 
         let n = self
@@ -3839,7 +3839,7 @@ async fn integration_sub_agent_executes_tool_via_mock_llm() {
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
     let os = AgentOs::builder()
         .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
-        .with_agent("worker", crate::orchestrator::AgentDefinition::new("mock"))
+        .with_agent("worker", crate::runtime::AgentDefinition::new("mock"))
         .with_tools(HashMap::from([(
             "echo".to_string(),
             Arc::new(EchoTool) as Arc<dyn crate::contracts::runtime::tool_call::Tool>,
@@ -3855,7 +3855,7 @@ async fn integration_sub_agent_executes_tool_via_mock_llm() {
             "echo",
             json!({"input": "hello world"}),
         ))
-            as Arc<dyn crate::runtime::loop_runner::LlmExecutor>);
+            as Arc<dyn crate::loop_runtime::loop_runner::LlmExecutor>);
 
     let child_thread_id = "sub-agent-tool-test";
     let prepared = os
@@ -3965,7 +3965,7 @@ async fn integration_sub_agent_tool_invocation_counted() {
     let counting_tool = Arc::new(CountingTool::new());
     let os = AgentOs::builder()
         .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
-        .with_agent("worker", crate::orchestrator::AgentDefinition::new("mock"))
+        .with_agent("worker", crate::runtime::AgentDefinition::new("mock"))
         .with_tools(HashMap::from([(
             "count".to_string(),
             counting_tool.clone() as Arc<dyn crate::contracts::runtime::tool_call::Tool>,
@@ -3977,7 +3977,7 @@ async fn integration_sub_agent_tool_invocation_counted() {
     resolved.agent = resolved
         .agent
         .with_llm_executor(Arc::new(ToolCallMockLlm::new("count", json!({})))
-            as Arc<dyn crate::runtime::loop_runner::LlmExecutor>);
+            as Arc<dyn crate::loop_runtime::loop_runner::LlmExecutor>);
 
     let prepared = os
         .prepare_run(
@@ -4023,7 +4023,7 @@ async fn integration_consecutive_runs_on_same_thread_accumulate_messages() {
         )
         .with_agent(
             "worker",
-            crate::orchestrator::AgentDefinition::new("mock")
+            crate::runtime::AgentDefinition::new("mock")
                 .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
@@ -4129,12 +4129,12 @@ async fn integration_sub_agent_thread_independent_from_parent_thread() {
         )
         .with_agent(
             "parent-agent",
-            crate::orchestrator::AgentDefinition::new("mock")
+            crate::runtime::AgentDefinition::new("mock")
                 .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .with_agent(
             "child-agent",
-            crate::orchestrator::AgentDefinition::new("mock")
+            crate::runtime::AgentDefinition::new("mock")
                 .with_behavior_id("slow_terminate_behavior_requested"),
         )
         .build()
@@ -4235,7 +4235,7 @@ async fn integration_agent_output_reads_tool_result_from_sub_agent() {
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
     let os = AgentOs::builder()
         .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
-        .with_agent("worker", crate::orchestrator::AgentDefinition::new("mock"))
+        .with_agent("worker", crate::runtime::AgentDefinition::new("mock"))
         .with_tools(HashMap::from([(
             "echo".to_string(),
             Arc::new(EchoTool) as Arc<dyn crate::contracts::runtime::tool_call::Tool>,
@@ -4249,7 +4249,7 @@ async fn integration_agent_output_reads_tool_result_from_sub_agent() {
         .agent
         .with_llm_executor(
             Arc::new(ToolCallMockLlm::new("echo", json!({"input": "test data"})))
-                as Arc<dyn crate::runtime::loop_runner::LlmExecutor>,
+                as Arc<dyn crate::loop_runtime::loop_runner::LlmExecutor>,
         );
 
     let child_thread_id = "sub-agent-output-test";

@@ -13,8 +13,8 @@ use crate::extensions::skills::{
     FsSkill, FsSkillRegistryManager, InMemorySkillRegistry, ScriptResult, Skill, SkillError,
     SkillMeta, SkillRegistry, SkillRegistryError, SkillResource, SkillResourceKind,
 };
-use crate::orchestrator::agent_tools::SCOPE_CALLER_AGENT_ID_KEY;
-use crate::runtime::loop_runner::{
+use crate::runtime::agent_tools::SCOPE_CALLER_AGENT_ID_KEY;
+use crate::loop_runtime::loop_runner::{
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use async_trait::async_trait;
@@ -1038,13 +1038,13 @@ async fn run_and_run_stream_work_without_llm_when_terminate_behavior_requested()
 
 #[tokio::test]
 async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_conditions_to_loop() {
-    use crate::orchestrator::StopPolicyInput;
-    use crate::runtime::loop_runner::run_loop;
+    use crate::runtime::StopPolicyInput;
+    use crate::loop_runtime::loop_runner::run_loop;
 
     #[derive(Debug)]
     struct AlwaysStopPolicy;
 
-    impl crate::orchestrator::StopPolicy for AlwaysStopPolicy {
+    impl crate::runtime::StopPolicy for AlwaysStopPolicy {
         fn id(&self) -> &str {
             "always_stop"
         }
@@ -1084,7 +1084,7 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
     struct OneShotLlm;
 
     #[async_trait]
-    impl crate::runtime::loop_runner::LlmExecutor for OneShotLlm {
+    impl crate::loop_runtime::loop_runner::LlmExecutor for OneShotLlm {
         async fn exec_chat_response(
             &self,
             _model: &str,
@@ -1109,7 +1109,7 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
             _model: &str,
             _chat_req: genai::chat::ChatRequest,
             _options: Option<&genai::chat::ChatOptions>,
-        ) -> genai::Result<crate::runtime::loop_runner::LlmEventStream> {
+        ) -> genai::Result<crate::loop_runtime::loop_runner::LlmEventStream> {
             use genai::chat::{ChatStreamEvent, StreamChunk, StreamEnd};
 
             Ok(Box::pin(futures::stream::iter(vec![
@@ -1127,7 +1127,7 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
     }
 
     let config = resolved.agent.with_llm_executor(
-        Arc::new(OneShotLlm) as Arc<dyn crate::runtime::loop_runner::LlmExecutor>
+        Arc::new(OneShotLlm) as Arc<dyn crate::loop_runtime::loop_runner::LlmExecutor>
     );
     let thread = crate::contracts::thread::Thread::new("stop-plugin-thread")
         .with_message(crate::contracts::thread::Message::user("go"));
@@ -3486,12 +3486,12 @@ fn build_errors_if_agent_references_missing_stop_condition() {
 #[test]
 fn build_errors_on_duplicate_stop_condition_ref_in_builder_agent() {
     use crate::contracts::StoppedReason;
-    use crate::orchestrator::StopPolicyInput;
+    use crate::runtime::StopPolicyInput;
 
     #[derive(Debug)]
     struct MockStop;
 
-    impl crate::orchestrator::StopPolicy for MockStop {
+    impl crate::runtime::StopPolicy for MockStop {
         fn id(&self) -> &str {
             "mock_stop"
         }
@@ -3536,12 +3536,12 @@ fn build_errors_on_empty_stop_condition_ref_in_builder_agent() {
 #[tokio::test]
 async fn resolve_wires_stop_conditions_from_registry() {
     use crate::contracts::StoppedReason;
-    use crate::orchestrator::StopPolicyInput;
+    use crate::runtime::StopPolicyInput;
 
     #[derive(Debug)]
     struct TestStopPolicy;
 
-    impl crate::orchestrator::StopPolicy for TestStopPolicy {
+    impl crate::runtime::StopPolicy for TestStopPolicy {
         fn id(&self) -> &str {
             "test_stop"
         }
@@ -3579,13 +3579,13 @@ async fn prepare_run_cleans_up_run_scoped_state_between_consecutive_runs() {
     #[derive(Debug)]
     struct AlwaysStopPolicy;
 
-    impl crate::orchestrator::StopPolicy for AlwaysStopPolicy {
+    impl crate::runtime::StopPolicy for AlwaysStopPolicy {
         fn id(&self) -> &str {
             "always_stop"
         }
         fn evaluate(
             &self,
-            _input: &crate::orchestrator::StopPolicyInput<'_>,
+            _input: &crate::runtime::StopPolicyInput<'_>,
         ) -> Option<crate::contracts::StoppedReason> {
             Some(crate::contracts::StoppedReason::with_detail(
                 "custom", "always",
@@ -3597,7 +3597,7 @@ async fn prepare_run_cleans_up_run_scoped_state_between_consecutive_runs() {
     struct OneShotLlm;
 
     #[async_trait]
-    impl crate::runtime::loop_runner::LlmExecutor for OneShotLlm {
+    impl crate::loop_runtime::loop_runner::LlmExecutor for OneShotLlm {
         async fn exec_chat_response(
             &self,
             _model: &str,
@@ -3622,7 +3622,7 @@ async fn prepare_run_cleans_up_run_scoped_state_between_consecutive_runs() {
             _model: &str,
             _chat_req: genai::chat::ChatRequest,
             _options: Option<&genai::chat::ChatOptions>,
-        ) -> genai::Result<crate::runtime::loop_runner::LlmEventStream> {
+        ) -> genai::Result<crate::loop_runtime::loop_runner::LlmEventStream> {
             use genai::chat::{ChatStreamEvent, StreamChunk, StreamEnd};
 
             Ok(Box::pin(futures::stream::iter(vec![
@@ -3655,7 +3655,7 @@ async fn prepare_run_cleans_up_run_scoped_state_between_consecutive_runs() {
     // --- Run 1: creates StopPolicyRuntimeState via after_inference ---
     let mut resolved = os.resolve("a1").unwrap();
     resolved.agent = resolved.agent.with_llm_executor(
-        Arc::new(OneShotLlm) as Arc<dyn crate::runtime::loop_runner::LlmExecutor>
+        Arc::new(OneShotLlm) as Arc<dyn crate::loop_runtime::loop_runner::LlmExecutor>
     );
     let prepared = os
         .prepare_run(
@@ -3689,7 +3689,7 @@ async fn prepare_run_cleans_up_run_scoped_state_between_consecutive_runs() {
     // --- Run 2: prepare_run should clean up run-scoped state ---
     let mut resolved2 = os.resolve("a1").unwrap();
     resolved2.agent = resolved2.agent.with_llm_executor(
-        Arc::new(OneShotLlm) as Arc<dyn crate::runtime::loop_runner::LlmExecutor>
+        Arc::new(OneShotLlm) as Arc<dyn crate::loop_runtime::loop_runner::LlmExecutor>
     );
     let prepared2 = os
         .prepare_run(
@@ -3851,7 +3851,7 @@ async fn custom_system_wiring_contributes_tools_and_behaviors() {
 
 #[tokio::test]
 async fn custom_system_wiring_reserved_ids_enforced_at_resolve() {
-    use crate::orchestrator::InMemoryAgentRegistry;
+    use crate::runtime::InMemoryAgentRegistry;
     static RESERVED: &[&str] = &["my_reserved"];
     let wiring =
         FakeSystemWiring::new("ext1", "ext1_tool", "ext1_behavior").with_reserved(RESERVED);

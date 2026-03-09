@@ -32,7 +32,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::{json, Value};
 use tirea::contracts::{AgentEvent, Message, RunOrigin, RunRequest, ToolCallContext};
-use tirea::orchestrator::{tool_map, AgentDefinition, AgentOsBuilder};
+use tirea::composition::{tool_map, AgentDefinition, AgentOsBuilder};
 
 struct EchoTool;
 

@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 use tirea_agent_loop::runtime::loop_runner::ParallelToolExecutor;
-use tirea_agentos::orchestrator::ResolvedRun;
+use tirea_agentos::runtime::ResolvedRun;
 
 use tirea_protocol_ai_sdk_v6::AiSdkV6RunRequest;
 

@@ -4,7 +4,7 @@
 //!
 //! | Feature    | What it enables                                  |
 //! |------------|--------------------------------------------------|
-//! | `core`     | Agent loop + AgentOS orchestrator (**default**)   |
+//! | `core`     | AgentOS composition + runtime (**default**)       |
 //! | `ag-ui`    | AG-UI protocol adapters                          |
 //! | `ai-sdk-v6`| Vercel AI SDK v6 protocol adapters               |
 //! | `mcp`      | MCP tool registry integration                    |
@@ -31,15 +31,19 @@ pub use tirea_contract as contracts;
 /// Typed JSON state engine (patches, ops, paths, state manager).
 pub use tirea_state as state;
 
-// ── Core (default): orchestrator ────────────────────────────────────────
+// ── Core (default): AgentOS composition + runtime ───────────────────────
 
-/// AgentOS orchestrator extensions (permission, reminder, interaction, etc.).
+/// AgentOS composition layer (builder, registries, agent definitions).
+#[cfg(feature = "core")]
+pub use tirea_agentos::composition;
+
+/// AgentOS runtime layer (run preparation, execution, active-run coordination).
+#[cfg(feature = "core")]
+pub use tirea_agentos::runtime;
+
+/// AgentOS extensions (permission, reminder, interaction, etc.).
 #[cfg(feature = "core")]
 pub use tirea_agentos::extensions;
-
-/// AgentOS orchestrator (agent registry, builder, run management).
-#[cfg(feature = "core")]
-pub use tirea_agentos::orchestrator;
 
 // ── Protocols ───────────────────────────────────────────────────────────
 

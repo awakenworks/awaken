@@ -2,7 +2,7 @@ use super::composite_behavior::CompositeBehavior;
 use super::stop_policy_plugin::StopConditionSpec;
 use crate::contracts::runtime::behavior::{AgentBehavior, NoOpBehavior};
 use crate::contracts::runtime::ToolExecutor;
-use crate::runtime::loop_runner::{
+use crate::loop_runtime::loop_runner::{
     BaseAgent, LlmRetryPolicy, ParallelToolExecutor, SequentialToolExecutor,
 };
 use genai::chat::ChatOptions;

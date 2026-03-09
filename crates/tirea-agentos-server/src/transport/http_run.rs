@@ -94,7 +94,7 @@ mod tests {
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tirea_agentos::contracts::{AgentEvent, RunRequest, ToolCallDecision};
-    use tirea_agentos::orchestrator::RunStream;
+    use tirea_agentos::runtime::RunStream;
     use tirea_contract::RunOrigin;
     use tirea_contract::Transcoder;
 

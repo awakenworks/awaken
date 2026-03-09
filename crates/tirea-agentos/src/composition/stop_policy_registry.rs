@@ -145,7 +145,7 @@ impl StopPolicyRegistry for CompositeStopPolicyRegistry {
 mod tests {
     use super::*;
     use crate::contracts::StoppedReason;
-    use crate::orchestrator::StopPolicyInput;
+    use crate::runtime::StopPolicyInput;
 
     #[derive(Debug)]
     struct MockStopPolicy {

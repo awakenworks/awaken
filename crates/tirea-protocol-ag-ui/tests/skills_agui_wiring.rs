@@ -12,7 +12,7 @@ use tirea_agentos::extensions::permission::PermissionPlugin;
 use tirea_agentos::extensions::skills::{
     FsSkill, InMemorySkillRegistry, SkillRegistry, SkillSubsystem,
 };
-use tirea_agentos::orchestrator::compose_behaviors;
+use tirea_agentos::runtime::compose_behaviors;
 use tirea_contract::testing::TestFixture;
 use tirea_protocol_ag_ui::{AgUiEventContext, Event};
 

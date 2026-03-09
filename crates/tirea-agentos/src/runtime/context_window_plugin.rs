@@ -14,8 +14,8 @@ use tirea_contract::runtime::phase::{ActionSet, BeforeInferenceAction};
 use tirea_contract::runtime::tool_call::ToolDescriptor;
 use tirea_contract::thread::Message;
 
-use crate::engine::context_window::truncate_to_budget;
-use crate::engine::token_estimator::estimate_tool_tokens;
+use crate::loop_engine::context_window::truncate_to_budget;
+use crate::loop_engine::token_estimator::estimate_tool_tokens;
 
 /// Behavior ID used for registration.
 pub const CONTEXT_WINDOW_PLUGIN_ID: &str = "context_window";

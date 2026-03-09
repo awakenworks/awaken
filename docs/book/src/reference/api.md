@@ -68,6 +68,6 @@ The published site is available at <https://tirea-ai.github.io/tirea/>.
 
 ### tirea_agentos
 
-- [`AgentOs`](../doc/tirea_agentos/orchestrator/struct.AgentOs.html) — Registry + run orchestration
-- [`AgentOsBuilder`](../doc/tirea_agentos/orchestrator/struct.AgentOsBuilder.html) — Builder for wiring
-- [`AgentDefinition`](../doc/tirea_agentos/orchestrator/struct.AgentDefinition.html) — Declarative agent config
+- [`AgentOs`](../doc/tirea_agentos/runtime/struct.AgentOs.html) — Registry + run orchestration
+- [`AgentOsBuilder`](../doc/tirea_agentos/composition/struct.AgentOsBuilder.html) — Builder for wiring
+- [`AgentDefinition`](../doc/tirea_agentos/composition/struct.AgentDefinition.html) — Declarative agent config

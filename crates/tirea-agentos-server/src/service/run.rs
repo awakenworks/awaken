@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::contracts::RunRequest;
 use tirea_agentos::contracts::ToolCallDecision;
-use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError, ForwardedDecision, ResolvedRun};
+use tirea_agentos::runtime::{AgentOs, AgentOsRunError, ForwardedDecision, ResolvedRun};
 use tirea_contract::storage::RunRecord;
 use tirea_contract::{AgentEvent, Identity, RuntimeInput};
 use tokio::sync::mpsc;

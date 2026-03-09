@@ -13,8 +13,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tirea_agentos::contracts::runtime::tool_call::Tool;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
-use tirea_agentos::orchestrator::AgentDefinition;
-use tirea_agentos::orchestrator::AgentOsBuilder;
+use tirea_agentos::composition::AgentDefinition;
+use tirea_agentos::composition::AgentOsBuilder;
 use tirea_agentos_server::service::AppState;
 use tirea_store_adapters::MemoryStore;
 use tower::ServiceExt;
@@ -65,7 +65,7 @@ async fn post_sse_with_retry(app: axum::Router, uri: &str, payload: Value) -> (S
     last.expect("retry loop must produce at least one response")
 }
 
-fn make_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::AgentOs {
+fn make_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::runtime::AgentOs {
     let def = AgentDefinition {
         id: "deepseek".to_string(),
         model: "deepseek-chat".to_string(),
@@ -84,7 +84,7 @@ If runtime context entries are provided, treat them as authoritative facts and a
 }
 
 /// Build AgentOs with a calculator tool and multi-round support.
-fn make_tool_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::AgentOs {
+fn make_tool_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::runtime::AgentOs {
     let def = AgentDefinition {
         id: "calc".to_string(),
         model: "deepseek-chat".to_string(),
@@ -110,7 +110,7 @@ fn make_tool_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrato
 }
 
 /// Build AgentOs for multi-turn conversation tests.
-fn make_multiturn_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::AgentOs {
+fn make_multiturn_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::runtime::AgentOs {
     let def = AgentDefinition {
         id: "chat".to_string(),
         model: "deepseek-chat".to_string(),

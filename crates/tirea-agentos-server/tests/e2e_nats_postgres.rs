@@ -11,7 +11,7 @@ use testcontainers_modules::postgres::Postgres;
 use tirea_agentos::contracts::storage::{
     ThreadReader, ThreadStore, ThreadWriter, VersionPrecondition,
 };
-use tirea_agentos::orchestrator::{AgentDefinition, AgentOsBuilder};
+use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder};
 use tirea_agentos_server::service::AppState;
 use tirea_store_adapters::{NatsBufferedThreadWriter, PostgresStore};
 use tower::ServiceExt;
@@ -20,7 +20,7 @@ mod common;
 
 use common::{compose_http_app, TerminatePlugin};
 
-fn make_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::AgentOs {
+fn make_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::runtime::AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
         behavior_ids: vec!["terminate_behavior_requested_e2e_nats_postgres".into()],

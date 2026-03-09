@@ -107,8 +107,8 @@ The important point is that `AgentDefinition` creation alone does not "start" an
 ## Key Files
 
 - `examples/src/starter_backend/mod.rs`
-- `crates/tirea-agentos/src/orchestrator/agent_definition.rs`
-- `crates/tirea-agentos/src/orchestrator/builder.rs`
+- `crates/tirea-agentos/src/composition/agent_definition.rs`
+- `crates/tirea-agentos/src/composition/builder.rs`
 - `crates/tirea-agentos-server/src/main.rs`
 
 ## Related

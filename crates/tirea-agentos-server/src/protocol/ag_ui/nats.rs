@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use std::sync::Arc;
-use tirea_agentos::orchestrator::AgentOs;
+use tirea_agentos::runtime::AgentOs;
 use tirea_protocol_ag_ui::{AgUiProtocolEncoder, Event, RunAgentInput};
 
 use super::runtime::apply_agui_extensions;

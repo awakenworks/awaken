@@ -4,7 +4,7 @@ use super::{
 };
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::AgentBehavior;
-use crate::orchestrator::AgentDefinition;
+use crate::runtime::AgentDefinition;
 use genai::Client;
 use std::collections::HashMap;
 use std::sync::Arc;

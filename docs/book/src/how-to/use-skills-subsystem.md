@@ -21,7 +21,7 @@ let skills = FsSkill::into_arc_skills(discovered.skills);
 2. Enable skills mode in builder.
 
 ```rust,ignore
-use tirea::orchestrator::{AgentDefinition, AgentOsBuilder, SkillsConfig};
+use tirea::composition::{AgentDefinition, AgentOsBuilder, SkillsConfig};
 
 let os = AgentOsBuilder::new()
     .with_skills(skills)
@@ -63,10 +63,10 @@ Config flags:
 
 - `crates/tirea-extension-skills/src/subsystem.rs`
 - `crates/tirea-extension-skills/src/lib.rs`
-- `crates/tirea-agentos/src/orchestrator/tests.rs`
+- `crates/tirea-agentos/src/runtime/tests.rs`
 
 ## Related
 
 - [Capability Matrix](../reference/capability-matrix.md)
 - [Config](../reference/config.md)
-- `crates/tirea-agentos/src/orchestrator/tests.rs`
+- `crates/tirea-agentos/src/runtime/tests.rs`

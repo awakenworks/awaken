@@ -5,7 +5,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
 use std::convert::Infallible;
-use tirea_agentos::orchestrator::AgentOsRunError;
+use tirea_agentos::runtime::AgentOsRunError;
 use tirea_protocol_ai_sdk_v6::{
     AiSdkEncoder, AiSdkTrigger, AiSdkV6HistoryEncoder, AiSdkV6RunRequest, UIStreamEvent,
     AI_SDK_VERSION,
@@ -175,7 +175,7 @@ mod tests {
     use crate::transport::TransportError;
     use std::pin::Pin;
     use tirea_agentos::contracts::{AgentEvent, RunRequest, ToolCallDecision};
-    use tirea_agentos::orchestrator::RunStream;
+    use tirea_agentos::runtime::RunStream;
     use tirea_contract::RunOrigin;
     use tirea_contract::RuntimeInput;
     use tokio::sync::mpsc;

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::contracts::runtime::tool_call::Tool;
-use crate::orchestrator::ToolRegistry;
+use crate::composition::ToolRegistry;
 
 pub use tirea_extension_mcp::*;
 
@@ -34,7 +34,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tokio::sync::mpsc;
 
-    use crate::orchestrator::{AgentDefinition, AgentOs};
+    use crate::composition::AgentDefinition;
+    use crate::runtime::AgentOs;
 
     #[derive(Debug, Clone)]
     struct MutableTransport {

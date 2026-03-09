@@ -137,8 +137,8 @@ Stop conditions moved from core config to `StopPolicyPlugin`. If you were passin
 to `BaseAgent`, register them as a plugin instead:
 
 ```rust,ignore
-use tirea::orchestrator::StopPolicyPlugin;
-use tirea::orchestrator::StopConditionSpec;
+use tirea::runtime::StopPolicyPlugin;
+use tirea::runtime::StopConditionSpec;
 
 let stop_plugin = StopPolicyPlugin::from_specs(vec![
     StopConditionSpec::MaxRounds { rounds: 10 },

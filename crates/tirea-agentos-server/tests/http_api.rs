@@ -16,8 +16,9 @@ use tirea_agentos::contracts::storage::{
 use tirea_agentos::contracts::thread::Thread;
 use tirea_agentos::contracts::ThreadChangeSet;
 use tirea_agentos::contracts::ToolCallContext;
-use tirea_agentos::orchestrator::AgentDefinition;
-use tirea_agentos::orchestrator::{AgentOs, AgentOsBuilder};
+use tirea_agentos::composition::AgentDefinition;
+use tirea_agentos::composition::AgentOsBuilder;
+use tirea_agentos::runtime::AgentOs;
 use tirea_agentos_server::service::AppState;
 use tirea_store_adapters::MemoryStore;
 use tokio::sync::{Notify, RwLock};

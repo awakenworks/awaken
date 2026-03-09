@@ -14,7 +14,7 @@ use std::pin::Pin;
 use async_trait::async_trait;
 use futures::StreamExt;
 use tirea_agentos::contracts::{AgentEvent, RunRequest};
-use tirea_agentos::orchestrator::RunStream;
+use tirea_agentos::runtime::RunStream;
 use tirea_contract::RuntimeInput;
 use tokio::sync::{mpsc, Mutex};
 

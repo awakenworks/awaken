@@ -4,8 +4,8 @@ use futures::StreamExt;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
-use tirea_agentos::orchestrator::AgentDefinition;
-use tirea_agentos::orchestrator::AgentOs;
+use tirea_agentos::composition::AgentDefinition;
+use tirea_agentos::runtime::AgentOs;
 use tirea_contract::thread::Message;
 use tirea_contract::{AgentEvent, RunOrigin, RunRequest};
 

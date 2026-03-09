@@ -20,21 +20,26 @@ use crate::extensions::skills::{
     CompositeSkillRegistry, InMemorySkillRegistry, Skill, SkillError, SkillRegistry,
     SkillRegistryError, SkillRegistryManagerError,
 };
-use crate::runtime::loop_runner::{
+use crate::loop_runtime::loop_runner::{
     Agent, AgentLoopError, BaseAgent, RunCancellationToken, StateCommitError, StateCommitter,
 };
 
+#[path = "../composition/agent_definition.rs"]
 mod agent_definition;
 pub(crate) mod agent_tools;
+#[path = "../composition/builder.rs"]
 mod builder;
 mod composite_behavior;
-mod composition;
 mod context_window_plugin;
 mod policy;
 mod run;
 mod stop_policy_plugin;
+#[path = "../composition/registry_set.rs"]
+mod registry_set;
+#[path = "../composition/system_wiring.rs"]
 pub(crate) mod system_wiring;
 mod thread_run;
+#[path = "../composition/wiring.rs"]
 mod wiring;
 
 #[cfg(test)]
@@ -46,7 +51,7 @@ use agent_tools::{
     SubAgentHandleTable,
 };
 pub use composite_behavior::compose_behaviors;
-pub use composition::{
+pub use registry_set::{
     AgentRegistry, AgentRegistryError, BehaviorRegistry, BehaviorRegistryError, BundleComposeError,
     BundleComposer, BundleRegistryAccumulator, BundleRegistryKind, CompositeAgentRegistry,
     CompositeBehaviorRegistry, CompositeModelRegistry, CompositeProviderRegistry,
@@ -60,13 +65,13 @@ pub use composition::{
 pub use context_window_plugin::{ContextWindowPlugin, CONTEXT_WINDOW_PLUGIN_ID};
 pub use stop_policy_plugin::{
     ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds, StopConditionSpec, StopOnTool,
-    StopPolicy, StopPolicyInput, StopPolicyStats, Timeout, TokenBudget,
+    StopPolicy, StopPolicyInput, StopPolicyPlugin, StopPolicyStats, Timeout, TokenBudget,
 };
 pub use thread_run::ForwardedDecision;
 
 pub use system_wiring::{SystemWiring, WiringContext};
 
-pub use crate::runtime::loop_runner::{tool_map, tool_map_from_arc, ResolvedRun};
+pub use crate::loop_runtime::loop_runner::{tool_map, tool_map_from_arc, ResolvedRun};
 
 #[derive(Clone)]
 struct AgentStateStoreStateCommitter {
@@ -362,7 +367,7 @@ pub struct PreparedRun {
     agent: Arc<dyn Agent>,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
-    execution_ctx: crate::runtime::loop_runner::RunExecutionContext,
+    execution_ctx: crate::loop_runtime::loop_runner::RunExecutionContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
     decision_tx: tokio::sync::mpsc::UnboundedSender<ToolCallDecision>,

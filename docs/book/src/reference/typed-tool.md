@@ -414,7 +414,7 @@ That separation keeps policy enforcement centralized while still allowing domain
 Register `TypedTool` exactly like any other tool:
 
 ```rust,ignore
-use tirea::orchestrator::{tool_map, AgentOsBuilder};
+use tirea::composition::{tool_map, AgentOsBuilder};
 
 let os = AgentOsBuilder::new()
     .with_tools(tool_map([SelectTripTool]))

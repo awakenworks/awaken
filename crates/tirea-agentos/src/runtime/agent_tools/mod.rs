@@ -16,8 +16,8 @@ pub(crate) enum ToolPermissionBehavior {
     Ask,
     Deny,
 }
-pub(super) use crate::runtime::loop_runner::TOOL_SCOPE_CALLER_AGENT_ID_KEY as SCOPE_CALLER_AGENT_ID_KEY;
-use crate::runtime::loop_runner::{
+pub(super) use crate::loop_runtime::loop_runner::TOOL_SCOPE_CALLER_AGENT_ID_KEY as SCOPE_CALLER_AGENT_ID_KEY;
+use crate::loop_runtime::loop_runner::{
     RunCancellationToken, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
     TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };

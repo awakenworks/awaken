@@ -3,7 +3,7 @@ use axum::http::{Request, StatusCode};
 use serde_json::json;
 use std::sync::Arc;
 use tirea_agentos::contracts::storage::ThreadReader;
-use tirea_agentos::orchestrator::{AgentDefinition, AgentOsBuilder};
+use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder};
 use tirea_agentos_server::service::AppState;
 use tirea_store_adapters::MemoryStore;
 use tower::ServiceExt;
@@ -12,7 +12,7 @@ mod common;
 
 use common::{compose_http_app, TerminatePlugin};
 
-fn make_os(store: Arc<MemoryStore>) -> tirea_agentos::orchestrator::AgentOs {
+fn make_os(store: Arc<MemoryStore>) -> tirea_agentos::runtime::AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
         behavior_ids: vec!["terminate_behavior_requested_e2e_http_matrix".into()],

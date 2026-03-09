@@ -14,8 +14,8 @@ use std::sync::Arc;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::nats::Nats;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
-use tirea_agentos::orchestrator::AgentDefinition;
-use tirea_agentos::orchestrator::AgentOsBuilder;
+use tirea_agentos::composition::AgentDefinition;
+use tirea_agentos::composition::AgentOsBuilder;
 use tirea_agentos_server::nats::NatsConfig;
 use tirea_agentos_server::protocol;
 use tirea_store_adapters::MemoryStore;
@@ -24,7 +24,7 @@ mod common;
 
 use common::TerminatePlugin;
 
-fn make_os(storage: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrator::AgentOs {
+fn make_os(storage: Arc<dyn ThreadStore>) -> tirea_agentos::runtime::AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
         behavior_ids: vec!["terminate_behavior_requested_test".into()],
@@ -86,7 +86,7 @@ async fn spawn_gateway_with_storage(
     })
 }
 
-async fn spawn_protocol_services(nats_url: &str, os: Arc<tirea_agentos::orchestrator::AgentOs>) {
+async fn spawn_protocol_services(nats_url: &str, os: Arc<tirea_agentos::runtime::AgentOs>) {
     let nats_config = NatsConfig::new(nats_url.to_string());
     let transport = nats_config
         .connect()

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tirea_agentos::contracts::runtime::behavior::AgentBehavior;
 use tirea_agentos::contracts::runtime::tool_call::Tool;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
-use tirea_agentos::orchestrator::{
+use tirea_agentos::composition::{
     tool_map_from_arc, AgentDefinition, AgentOsBuilder, ModelDefinition,
 };
 use tirea_agentos_server::http::{self, AppState};

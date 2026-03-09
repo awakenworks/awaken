@@ -3,7 +3,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use std::sync::Arc;
 use tirea_agentos::contracts::storage::ThreadReader;
-use tirea_agentos::orchestrator::{AgentOs, AgentOsRunError};
+use tirea_agentos::runtime::{AgentOs, AgentOsRunError};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -47,7 +47,7 @@ impl From<AgentOsRunError> for ApiError {
     fn from(e: AgentOsRunError) -> Self {
         match e {
             AgentOsRunError::Resolve(
-                tirea_agentos::orchestrator::AgentOsResolveError::AgentNotFound(id),
+                tirea_agentos::runtime::AgentOsResolveError::AgentNotFound(id),
             ) => ApiError::AgentNotFound(id),
             AgentOsRunError::Resolve(other) => ApiError::BadRequest(other.to_string()),
             other => ApiError::Internal(other.to_string()),

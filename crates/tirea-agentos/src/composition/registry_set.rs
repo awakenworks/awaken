@@ -4,7 +4,7 @@ mod stop_policy_registry;
 
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::AgentBehavior;
-use crate::orchestrator::AgentDefinition;
+use crate::runtime::AgentDefinition;
 use genai::chat::ChatOptions;
 use genai::Client;
 use std::collections::HashMap;

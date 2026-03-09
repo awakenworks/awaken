@@ -4,7 +4,7 @@ use crate::contracts::runtime::state::{
 };
 use crate::contracts::runtime::{RunLifecycleAction, RunLifecycleState, RunStatus};
 use crate::contracts::storage::VersionPrecondition;
-use crate::runtime::loop_runner::{run_loop_stream_with_context, RunExecutionContext};
+use crate::loop_runtime::loop_runner::{run_loop_stream_with_context, RunExecutionContext};
 use futures::StreamExt;
 use tirea_contract::runtime::suspended_calls_from_state;
 use tirea_state::{Op, Patch, TrackedPatch};

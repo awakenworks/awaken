@@ -1,6 +1,6 @@
 use super::AgentOs;
 use crate::contracts::ToolCallDecision;
-use crate::runtime::loop_runner::RunCancellationToken;
+use crate::loop_runtime::loop_runner::RunCancellationToken;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::Arc;

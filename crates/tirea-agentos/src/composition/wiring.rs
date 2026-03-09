@@ -10,7 +10,7 @@ use crate::extensions::skills::{
     InMemorySkillRegistry, Skill, SkillDiscoveryPlugin, SkillRegistry, SkillSubsystem,
     SkillSubsystemError, SKILLS_BUNDLE_ID, SKILLS_DISCOVERY_PLUGIN_ID, SKILLS_PLUGIN_ID,
 };
-use crate::runtime::loop_runner::GenaiLlmExecutor;
+use crate::loop_runtime::loop_runner::GenaiLlmExecutor;
 
 // ---------------------------------------------------------------------------
 // SkillsSystemWiring — feature-gated SystemWiring impl for the skills subsystem
