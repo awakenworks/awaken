@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
+use crate::composition::StopConditionSpec;
 use crate::contracts::runtime::behavior::{AgentBehavior, ReadOnlyContext};
 use crate::contracts::runtime::phase::{ActionSet, AfterInferenceAction};
 use crate::contracts::runtime::state::AnyStateAction;
@@ -13,26 +14,6 @@ use crate::contracts::{RunContext, StoppedReason, TerminationReason};
 use tirea_state::{GCounter, State};
 
 pub const STOP_POLICY_PLUGIN_ID: &str = "stop_policy";
-
-/// Declarative stop-condition configuration consumed by [`StopPolicyPlugin`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum StopConditionSpec {
-    /// Stop after a fixed number of tool-call rounds.
-    MaxRounds { rounds: usize },
-    /// Stop after a wall-clock duration (in seconds) elapses.
-    Timeout { seconds: u64 },
-    /// Stop when cumulative token usage exceeds a budget. 0 = unlimited.
-    TokenBudget { max_total: usize },
-    /// Stop after N consecutive rounds where all tools failed. 0 = disabled.
-    ConsecutiveErrors { max: usize },
-    /// Stop when a specific tool is called by the LLM.
-    StopOnTool { tool_name: String },
-    /// Stop when LLM output text contains a literal pattern.
-    ContentMatch { pattern: String },
-    /// Stop when identical tool call patterns repeat within a sliding window.
-    LoopDetection { window: usize },
-}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[tirea(

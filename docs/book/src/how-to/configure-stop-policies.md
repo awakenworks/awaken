@@ -19,7 +19,7 @@ Use this when a run must terminate on explicit loop, budget, timeout, or domain-
 
 ```rust,ignore
 use tirea::composition::AgentDefinition;
-use tirea::runtime::StopConditionSpec;
+use tirea::composition::StopConditionSpec;
 
 let agent = AgentDefinition::new("deepseek-chat")
     .with_stop_condition_specs(vec![

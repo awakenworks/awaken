@@ -1,4 +1,5 @@
 use super::*;
+use crate::composition::InMemoryAgentRegistry;
 use crate::contracts::runtime::behavior::ReadOnlyContext;
 use crate::contracts::runtime::phase::{ActionSet, BeforeInferenceAction};
 use crate::contracts::runtime::phase::{Phase, StepContext};
@@ -7,7 +8,6 @@ use crate::contracts::runtime::tool_call::ToolStatus;
 use crate::contracts::storage::RunOrigin;
 use crate::contracts::thread::Thread;
 use crate::contracts::AgentBehavior;
-use crate::runtime::InMemoryAgentRegistry;
 use crate::loop_runtime::loop_runner::{
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
     TOOL_SCOPE_CALLER_THREAD_ID_KEY,

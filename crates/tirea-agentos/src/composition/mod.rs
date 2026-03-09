@@ -1,17 +1,38 @@
-pub use crate::runtime::{
-    tool_map, tool_map_from_arc, AgentDefinition, AgentOsBuildError, AgentOsBuilder,
-    AgentOsWiringError, AgentToolsConfig, SkillsConfig, SystemWiring, ToolExecutionMode,
-    WiringContext,
-};
+mod agent_definition;
+mod builder;
+mod bundle;
+mod config;
+mod errors;
+mod registry;
+mod registry_set;
+mod stop_condition;
+mod stop_policy_registry;
+mod wiring;
 
-pub use crate::runtime::{
-    AgentRegistry, AgentRegistryError, BehaviorRegistry, BehaviorRegistryError,
-    BundleComposeError, BundleComposer, BundleRegistryAccumulator, BundleRegistryKind,
+pub use agent_definition::{AgentDefinition, ToolExecutionMode};
+pub use builder::AgentOsBuilder;
+pub use config::{AgentToolsConfig, SkillsConfig};
+pub use errors::{AgentOsBuildError, AgentOsWiringError};
+pub use registry::{
     CompositeAgentRegistry, CompositeBehaviorRegistry, CompositeModelRegistry,
-    CompositeProviderRegistry, CompositeStopPolicyRegistry, CompositeToolRegistry,
-    InMemoryAgentRegistry, InMemoryBehaviorRegistry, InMemoryModelRegistry,
-    InMemoryProviderRegistry, InMemoryStopPolicyRegistry, InMemoryToolRegistry, ModelDefinition,
-    ModelRegistry, ModelRegistryError, ProviderRegistry, ProviderRegistryError, RegistryBundle,
-    RegistrySet, StopPolicyRegistry, StopPolicyRegistryError, ToolBehaviorBundle, ToolRegistry,
-    ToolRegistryError,
+    CompositeProviderRegistry, CompositeToolRegistry, InMemoryAgentRegistry,
+    InMemoryBehaviorRegistry, InMemoryModelRegistry, InMemoryProviderRegistry,
+    InMemoryToolRegistry,
 };
+pub use registry_set::{
+    AgentRegistry, AgentRegistryError, BehaviorRegistry, BehaviorRegistryError, ModelDefinition,
+    ModelRegistry, ModelRegistryError, ProviderRegistry, ProviderRegistryError, RegistryBundle,
+    ToolRegistry, ToolRegistryError,
+};
+pub use stop_condition::StopConditionSpec;
+pub use stop_policy_registry::{
+    CompositeStopPolicyRegistry, InMemoryStopPolicyRegistry, StopPolicyRegistry,
+    StopPolicyRegistryError,
+};
+pub use bundle::{
+    BundleComposeError, BundleComposer, BundleRegistryAccumulator, BundleRegistryKind, RegistrySet,
+    ToolBehaviorBundle,
+};
+pub use wiring::{SystemWiring, WiringContext};
+
+pub use crate::loop_runtime::loop_runner::{tool_map, tool_map_from_arc};

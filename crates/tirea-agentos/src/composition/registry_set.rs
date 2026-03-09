@@ -1,29 +1,12 @@
-mod bundle;
-mod registry;
-mod stop_policy_registry;
-
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::AgentBehavior;
-use crate::runtime::AgentDefinition;
+use crate::composition::AgentDefinition;
 use genai::chat::ChatOptions;
 use genai::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub use bundle::{
-    BundleComposeError, BundleComposer, BundleRegistryAccumulator, BundleRegistryKind, RegistrySet,
-    ToolBehaviorBundle,
-};
-pub use registry::{
-    CompositeAgentRegistry, CompositeBehaviorRegistry, CompositeModelRegistry,
-    CompositeProviderRegistry, CompositeToolRegistry, InMemoryAgentRegistry,
-    InMemoryBehaviorRegistry, InMemoryModelRegistry, InMemoryProviderRegistry,
-    InMemoryToolRegistry,
-};
-pub use stop_policy_registry::{
-    CompositeStopPolicyRegistry, InMemoryStopPolicyRegistry, StopPolicyRegistry,
-    StopPolicyRegistryError,
-};
+pub use super::stop_policy_registry::StopPolicyRegistry;
 #[derive(Debug, thiserror::Error)]
 pub enum ToolRegistryError {
     #[error("tool id already registered: {0}")]

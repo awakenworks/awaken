@@ -1,4 +1,5 @@
 use super::*;
+use crate::composition::*;
 use crate::contracts::runtime::behavior::ReadOnlyContext;
 use crate::contracts::runtime::phase::{ActionSet, BeforeInferenceAction, LifecycleAction};
 use crate::contracts::runtime::state::AnyStateAction;
@@ -3851,7 +3852,7 @@ async fn custom_system_wiring_contributes_tools_and_behaviors() {
 
 #[tokio::test]
 async fn custom_system_wiring_reserved_ids_enforced_at_resolve() {
-    use crate::runtime::InMemoryAgentRegistry;
+    use crate::composition::InMemoryAgentRegistry;
     static RESERVED: &[&str] = &["my_reserved"];
     let wiring =
         FakeSystemWiring::new("ext1", "ext1_tool", "ext1_behavior").with_reserved(RESERVED);

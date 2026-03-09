@@ -138,7 +138,7 @@ to `BaseAgent`, register them as a plugin instead:
 
 ```rust,ignore
 use tirea::runtime::StopPolicyPlugin;
-use tirea::runtime::StopConditionSpec;
+use tirea::composition::StopConditionSpec;
 
 let stop_plugin = StopPolicyPlugin::from_specs(vec![
     StopConditionSpec::MaxRounds { rounds: 10 },

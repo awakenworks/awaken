@@ -75,7 +75,7 @@ mod types;
 #[cfg(test)]
 use manager::SubAgentCompletion;
 use manager::{execute_sub_agent, SubAgentExecutionRequest};
-pub(super) use manager::{SubAgentHandleTable, SubAgentSummary};
+pub(crate) use manager::{SubAgentHandleTable, SubAgentSummary};
 pub(super) use plugins::{AgentRecoveryPlugin, AgentToolsPlugin};
 use state::*;
 pub(super) use tools::{AgentOutputTool, AgentRunTool, AgentStopTool};

@@ -88,7 +88,7 @@ pub struct ForwardedDecision {
 }
 
 #[derive(Default)]
-pub(super) struct ActiveThreadRunRegistry {
+pub(crate) struct ActiveThreadRunRegistry {
     handles: RwLock<HashMap<String, ThreadRunHandle>>,
     run_index: RwLock<HashMap<String, String>>,
 }

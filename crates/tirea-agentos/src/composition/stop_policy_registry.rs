@@ -1,4 +1,4 @@
-use super::super::StopPolicy;
+use crate::runtime::StopPolicy;
 use std::collections::HashMap;
 use std::sync::Arc;
 

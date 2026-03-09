@@ -1,4 +1,50 @@
 use super::*;
+use crate::contracts::runtime::tool_call::Tool;
+use crate::contracts::runtime::AgentBehavior;
+use crate::runtime::AgentOs;
+use crate::runtime::agent_tools::SubAgentHandleTable;
+use crate::runtime::resolve::SkillsSystemWiring;
+use crate::runtime::thread_run::ActiveThreadRunRegistry;
+use crate::runtime::StopPolicy;
+use crate::contracts::storage::ThreadStore;
+#[cfg(feature = "skills")]
+use crate::extensions::skills::{
+    CompositeSkillRegistry, InMemorySkillRegistry, Skill, SkillRegistry,
+    SkillRegistryManagerError,
+};
+use genai::Client;
+use std::collections::HashMap;
+use std::sync::Arc;
+#[cfg(feature = "skills")]
+use std::time::Duration;
+
+pub struct AgentOsBuilder {
+    pub(crate) client: Option<Client>,
+    pub(crate) bundles: Vec<Arc<dyn RegistryBundle>>,
+    pub(crate) agents: HashMap<String, AgentDefinition>,
+    pub(crate) agent_registries: Vec<Arc<dyn AgentRegistry>>,
+    pub(crate) base_tools: HashMap<String, Arc<dyn Tool>>,
+    pub(crate) base_tool_registries: Vec<Arc<dyn ToolRegistry>>,
+    pub(crate) behaviors: HashMap<String, Arc<dyn AgentBehavior>>,
+    pub(crate) behavior_registries: Vec<Arc<dyn BehaviorRegistry>>,
+    pub(crate) stop_policies: HashMap<String, Arc<dyn StopPolicy>>,
+    pub(crate) stop_policy_registries: Vec<Arc<dyn StopPolicyRegistry>>,
+    pub(crate) providers: HashMap<String, Client>,
+    pub(crate) provider_registries: Vec<Arc<dyn ProviderRegistry>>,
+    pub(crate) models: HashMap<String, ModelDefinition>,
+    pub(crate) model_registries: Vec<Arc<dyn ModelRegistry>>,
+    #[cfg(feature = "skills")]
+    pub(crate) skills: Vec<Arc<dyn Skill>>,
+    #[cfg(feature = "skills")]
+    pub(crate) skill_registries: Vec<Arc<dyn SkillRegistry>>,
+    #[cfg(feature = "skills")]
+    pub(crate) skills_refresh_interval: Option<Duration>,
+    #[cfg(feature = "skills")]
+    pub(crate) skills_config: SkillsConfig,
+    pub(crate) system_wirings: Vec<Arc<dyn SystemWiring>>,
+    pub(crate) agent_tools: AgentToolsConfig,
+    pub(crate) agent_state_store: Option<Arc<dyn ThreadStore>>,
+}
 
 fn merge_registry<R: ?Sized, M>(
     memory: M,
@@ -306,7 +352,7 @@ impl AgentOsBuilder {
             // If skills are configured+enabled, push the built-in SkillsSystemWiring.
             if skills_config.enabled {
                 if let Some(ref reg) = registry {
-                    system_wirings.push(Arc::new(wiring::SkillsSystemWiring::new(
+                    system_wirings.push(Arc::new(SkillsSystemWiring::new(
                         reg.clone(),
                         skills_config.clone(),
                     )));
@@ -467,7 +513,7 @@ impl AgentOsBuilder {
             skills_registry,
             system_wirings,
             sub_agent_handles: Arc::new(SubAgentHandleTable::new()),
-            active_runs: Arc::new(thread_run::ActiveThreadRunRegistry::default()),
+            active_runs: Arc::new(ActiveThreadRunRegistry::default()),
             agent_tools,
             agent_state_store,
         })

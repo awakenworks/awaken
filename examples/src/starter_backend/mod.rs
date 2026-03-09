@@ -14,7 +14,7 @@ use tirea_agentos::extensions::permission::{PermissionPlugin, ToolPolicyPlugin};
 use tirea_agentos::composition::{
     tool_map_from_arc, AgentDefinition, AgentOsBuilder, ToolExecutionMode, ToolRegistry,
 };
-use tirea_agentos::runtime::StopConditionSpec;
+use tirea_agentos::composition::StopConditionSpec;
 use tirea_agentos_server::http::{self, AppState};
 use tirea_agentos_server::protocol;
 use tirea_extension_mcp::McpToolRegistryManager;

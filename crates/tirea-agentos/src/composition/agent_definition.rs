@@ -1,14 +1,6 @@
-use super::composite_behavior::CompositeBehavior;
-use super::stop_policy_plugin::StopConditionSpec;
-use crate::contracts::runtime::behavior::{AgentBehavior, NoOpBehavior};
-use crate::contracts::runtime::ToolExecutor;
-use crate::loop_runtime::loop_runner::{
-    BaseAgent, LlmRetryPolicy, ParallelToolExecutor, SequentialToolExecutor,
-};
+use super::StopConditionSpec;
+use crate::loop_runtime::loop_runner::LlmRetryPolicy;
 use genai::chat::ChatOptions;
-use std::sync::Arc;
-use tirea_contract::runtime::state::StateScopeRegistry;
-use tirea_state::LatticeRegistry;
 
 /// Tool execution strategy mode exposed by AgentDefinition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,7 +10,7 @@ pub enum ToolExecutionMode {
     ParallelStreaming,
 }
 
-/// Agent composition definition owned by AgentOS orchestration.
+/// Agent composition definition owned by AgentOS.
 ///
 /// This is the orchestration-facing model and uses only registry references
 /// (`behavior_ids`, `stop_condition_ids`) and declarative specs.
@@ -200,152 +192,26 @@ impl AgentDefinition {
         self
     }
 
-    /// Convert into loop-facing config with the given resolved behaviors.
-    ///
-    /// Behaviors are composed into a single behavior and set on
-    /// `BaseAgent::behavior`.
-    pub(crate) fn into_loop_config(mut self, behaviors: Vec<Arc<dyn AgentBehavior>>) -> BaseAgent {
-        self.model = self.model.trim().to_string();
-        self.fallback_models = self
-            .fallback_models
-            .into_iter()
-            .map(|model| model.trim().to_string())
-            .filter(|model| !model.is_empty())
-            .collect();
-
-        let tool_executor: Arc<dyn ToolExecutor> = match self.tool_execution_mode {
-            ToolExecutionMode::Sequential => Arc::new(SequentialToolExecutor),
-            ToolExecutionMode::ParallelBatchApproval => {
-                Arc::new(ParallelToolExecutor::batch_approval())
-            }
-            ToolExecutionMode::ParallelStreaming => Arc::new(ParallelToolExecutor::streaming()),
-        };
-
-        // Collect lattice registrations from all behaviors.
-        let mut registry = LatticeRegistry::new();
-        for b in &behaviors {
-            b.register_lattice_paths(&mut registry);
-        }
-        let lattice_registry = Arc::new(registry);
-
-        // Collect state scope registrations from all behaviors.
-        let mut scope_registry = StateScopeRegistry::new();
-        for b in &behaviors {
-            b.register_state_scopes(&mut scope_registry);
-        }
-        let state_scope_registry = Arc::new(scope_registry);
-
-        // Collect action deserializer registrations from all behaviors.
-        let mut action_deser_registry =
-            tirea_contract::runtime::state::ActionDeserializerRegistry::new();
-        for b in &behaviors {
-            b.register_action_deserializers(&mut action_deser_registry);
-        }
-        let action_deserializer_registry = Arc::new(action_deser_registry);
-
-        let behavior: Arc<dyn AgentBehavior> = if behaviors.is_empty() {
-            Arc::new(NoOpBehavior)
-        } else {
-            Arc::new(CompositeBehavior::new(self.id.clone(), behaviors))
-        };
-        BaseAgent {
-            id: self.id,
-            model: self.model,
-            system_prompt: self.system_prompt,
-            max_rounds: self.max_rounds,
-            tool_executor,
-            chat_options: self.chat_options,
-            fallback_models: self.fallback_models,
-            llm_retry_policy: self.llm_retry_policy,
-            behavior,
-            lattice_registry,
-            state_scope_registry,
-            step_tool_provider: None,
-            llm_executor: None,
-            action_deserializer_registry,
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
-    use std::sync::Arc;
-
-    struct TestBehavior {
-        id: &'static str,
-    }
-
-    #[async_trait]
-    impl AgentBehavior for TestBehavior {
-        fn id(&self) -> &str {
-            self.id
-        }
-    }
+    use crate::runtime::resolve::normalize_definition_models_for_test;
 
     #[test]
-    fn default_mode_maps_to_parallel_streaming_executor() {
-        let config = AgentDefinition::default().into_loop_config(Vec::new());
-        assert_eq!(config.tool_executor.name(), "parallel_streaming");
-    }
-
-    #[test]
-    fn explicit_tool_execution_mode_is_honored() {
-        let config = AgentDefinition::default()
-            .with_tool_execution_mode(ToolExecutionMode::ParallelStreaming)
-            .into_loop_config(Vec::new());
-        assert_eq!(config.tool_executor.name(), "parallel_streaming");
-    }
-
-    #[test]
-    fn parallel_batch_approval_mode_maps_to_batch_executor() {
-        let config = AgentDefinition::default()
-            .with_tool_execution_mode(ToolExecutionMode::ParallelBatchApproval)
-            .into_loop_config(Vec::new());
-        assert_eq!(config.tool_executor.name(), "parallel_batch_approval");
-    }
-
-    #[test]
-    fn sequential_mode_maps_to_sequential_executor() {
-        let config = AgentDefinition::default()
-            .with_tool_execution_mode(ToolExecutionMode::Sequential)
-            .into_loop_config(Vec::new());
-        assert_eq!(config.tool_executor.name(), "sequential");
-    }
-
-    #[test]
-    fn into_loop_config_uses_noop_when_no_behaviors_resolved() {
-        let config = AgentDefinition::default().into_loop_config(Vec::new());
-
-        assert_eq!(config.behavior.id(), "noop");
-        assert_eq!(config.behavior.behavior_ids(), vec!["noop"]);
-    }
-
-    #[test]
-    fn into_loop_config_preserves_behavior_order_for_duplicate_checks() {
-        let config = AgentDefinition::default().into_loop_config(vec![
-            Arc::new(TestBehavior { id: "a" }) as Arc<dyn AgentBehavior>,
-            Arc::new(TestBehavior { id: "b" }) as Arc<dyn AgentBehavior>,
-            Arc::new(TestBehavior { id: "c" }) as Arc<dyn AgentBehavior>,
-        ]);
-
-        assert_eq!(config.behavior.behavior_ids(), vec!["a", "b", "c"]);
-    }
-
-    #[test]
-    fn into_loop_config_trims_model_and_fallback_models() {
-        let config = AgentDefinition::new(" openai::gemini-2.5-flash ")
+    fn normalize_definition_trims_model_and_fallback_models() {
+        let definition = AgentDefinition::new(" openai::gemini-2.5-flash ")
             .with_fallback_models(vec![
                 " gpt-4o-mini ".to_string(),
                 "   ".to_string(),
                 " claude-3-7-sonnet ".to_string(),
-            ])
-            .into_loop_config(Vec::new());
+            ]);
+        let normalized = normalize_definition_models_for_test(definition);
 
-        assert_eq!(config.model, "openai::gemini-2.5-flash");
+        assert_eq!(normalized.model, "openai::gemini-2.5-flash");
         assert_eq!(
-            config.fallback_models,
+            normalized.fallback_models,
             vec!["gpt-4o-mini".to_string(), "claude-3-7-sonnet".to_string()]
         );
     }
