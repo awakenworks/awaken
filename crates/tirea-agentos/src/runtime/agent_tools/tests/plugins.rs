@@ -15,10 +15,7 @@ fn plugin_filters_out_caller_agent() {
 fn plugin_filters_agents_by_scope_policy() {
     let mut reg = InMemoryAgentRegistry::new();
     reg.upsert("writer", crate::runtime::AgentDefinition::new("mock"));
-    reg.upsert(
-        "reviewer",
-        crate::runtime::AgentDefinition::new("mock"),
-    );
+    reg.upsert("reviewer", crate::runtime::AgentDefinition::new("mock"));
     let plugin = AgentToolsPlugin::new(Arc::new(reg), Arc::new(SubAgentHandleTable::new()));
     let mut rt = tirea_contract::RunConfig::new();
     rt.set(SCOPE_ALLOWED_AGENTS_KEY, vec!["writer"]).unwrap();

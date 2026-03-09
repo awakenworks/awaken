@@ -1,25 +1,23 @@
 use super::agent_tools::{
-    AGENT_RECOVERY_PLUGIN_ID, AGENT_TOOLS_PLUGIN_ID, SCOPE_CALLER_AGENT_ID_KEY,
     AgentOutputTool, AgentRecoveryPlugin, AgentRunTool, AgentStopTool, AgentToolsPlugin,
-};
-use super::policy::{filter_tools_in_place, set_scope_filters_from_definition_if_absent};
-use super::plugin::stop_policy::{StopPolicyPlugin, STOP_POLICY_PLUGIN_ID};
-use super::{
-    behavior::CompositeBehavior, AgentOs, AgentOsResolveError, StopPolicy,
+    AGENT_RECOVERY_PLUGIN_ID, AGENT_TOOLS_PLUGIN_ID, SCOPE_CALLER_AGENT_ID_KEY,
 };
 #[cfg(feature = "skills")]
 pub(crate) use super::plugin::skills_wiring::SkillsSystemWiring;
-#[cfg(feature = "skills")]
-use crate::extensions::skills::{InMemorySkillRegistry, Skill, SkillRegistry};
+use super::plugin::stop_policy::{StopPolicyPlugin, STOP_POLICY_PLUGIN_ID};
+use super::policy::{filter_tools_in_place, set_scope_filters_from_definition_if_absent};
+use super::{behavior::CompositeBehavior, AgentOs, AgentOsResolveError, StopPolicy};
 use crate::composition::{
     AgentDefinition, AgentOsBuilder, AgentOsWiringError, AgentRegistry, InMemoryAgentRegistry,
-    RegistryBundle, StopConditionSpec, SystemWiring, ToolBehaviorBundle,
-    ToolExecutionMode, WiringContext,
+    RegistryBundle, StopConditionSpec, SystemWiring, ToolBehaviorBundle, ToolExecutionMode,
+    WiringContext,
 };
 use crate::contracts::runtime::behavior::{AgentBehavior, NoOpBehavior};
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::ToolExecutor;
 use crate::contracts::RunConfig;
+#[cfg(feature = "skills")]
+use crate::extensions::skills::{InMemorySkillRegistry, Skill, SkillRegistry};
 use crate::loop_runtime::loop_runner::{
     BaseAgent, GenaiLlmExecutor, ParallelToolExecutor, ResolvedRun, SequentialToolExecutor,
 };
@@ -29,9 +27,7 @@ use std::sync::Arc;
 use tirea_contract::runtime::state::{ActionDeserializerRegistry, StateScopeRegistry};
 use tirea_state::LatticeRegistry;
 
-use super::bundle_merge::{
-    ResolvedBehaviors, ensure_unique_behavior_ids, merge_wiring_bundles,
-};
+use super::bundle_merge::{ensure_unique_behavior_ids, merge_wiring_bundles, ResolvedBehaviors};
 
 // ---------------------------------------------------------------------------
 // AgentOs wiring implementation
@@ -455,8 +451,6 @@ fn normalize_definition_models(mut definition: AgentDefinition) -> AgentDefiniti
 }
 
 #[cfg(test)]
-pub(crate) fn normalize_definition_models_for_test(
-    definition: AgentDefinition,
-) -> AgentDefinition {
+pub(crate) fn normalize_definition_models_for_test(definition: AgentDefinition) -> AgentDefinition {
     normalize_definition_models(definition)
 }

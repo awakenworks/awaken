@@ -24,10 +24,7 @@ pub(super) struct ActiveRunCleanupGuard {
 }
 
 impl ActiveRunCleanupGuard {
-    pub(super) fn new(
-        run_id: String,
-        registry: Arc<thread_run::ActiveThreadRunRegistry>,
-    ) -> Self {
+    pub(super) fn new(run_id: String, registry: Arc<thread_run::ActiveThreadRunRegistry>) -> Self {
         Self {
             run_id,
             registry,

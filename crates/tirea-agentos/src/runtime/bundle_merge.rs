@@ -24,9 +24,7 @@ impl ResolvedBehaviors {
         self
     }
 
-    pub(super) fn into_plugins(
-        self,
-    ) -> Result<Vec<Arc<dyn AgentBehavior>>, AgentOsWiringError> {
+    pub(super) fn into_plugins(self) -> Result<Vec<Arc<dyn AgentBehavior>>, AgentOsWiringError> {
         let mut plugins = Vec::new();
         plugins.extend(self.global);
         plugins.extend(self.agent_default);
@@ -105,8 +103,7 @@ pub(super) fn merge_wiring_bundle_tools(
     bundle: &dyn RegistryBundle,
     tools: &mut HashMap<String, Arc<dyn Tool>>,
 ) -> Result<(), AgentOsWiringError> {
-    let mut defs: Vec<(String, Arc<dyn Tool>)> =
-        bundle.tool_definitions().into_iter().collect();
+    let mut defs: Vec<(String, Arc<dyn Tool>)> = bundle.tool_definitions().into_iter().collect();
     defs.sort_by(|a, b| a.0.cmp(&b.0));
     for (id, tool) in defs {
         if tools.contains_key(&id) {

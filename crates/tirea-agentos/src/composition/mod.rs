@@ -30,3 +30,4 @@ pub use registry::{
 pub use wiring::{SystemWiring, WiringContext};
 pub use bundle::ToolBehaviorBundle;
 pub use registry::RegistrySet;
+pub use crate::loop_runtime::loop_runner::{tool_map, tool_map_from_arc};
