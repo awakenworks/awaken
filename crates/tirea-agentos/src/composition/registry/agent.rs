@@ -1,5 +1,5 @@
-use super::traits::{AgentRegistry, AgentRegistryError};
 use super::sorted_registry_ids;
+use super::traits::{AgentRegistry, AgentRegistryError};
 use crate::composition::AgentDefinition;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};

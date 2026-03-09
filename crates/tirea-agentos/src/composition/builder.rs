@@ -1,15 +1,14 @@
 use super::*;
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::AgentBehavior;
-use crate::runtime::{AgentOs, RuntimeServices};
-use crate::runtime::resolve::SkillsSystemWiring;
-use crate::runtime::StopPolicy;
 use crate::contracts::storage::ThreadStore;
 #[cfg(feature = "skills")]
 use crate::extensions::skills::{
-    CompositeSkillRegistry, InMemorySkillRegistry, Skill, SkillRegistry,
-    SkillRegistryManagerError,
+    CompositeSkillRegistry, InMemorySkillRegistry, Skill, SkillRegistry, SkillRegistryManagerError,
 };
+use crate::runtime::resolve::SkillsSystemWiring;
+use crate::runtime::StopPolicy;
+use crate::runtime::{AgentOs, RuntimeServices};
 use genai::Client;
 use std::collections::HashMap;
 use std::sync::Arc;

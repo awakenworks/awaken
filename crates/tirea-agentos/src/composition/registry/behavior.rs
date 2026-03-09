@@ -1,5 +1,5 @@
-use super::traits::{BehaviorRegistry, BehaviorRegistryError};
 use super::sorted_registry_ids;
+use super::traits::{BehaviorRegistry, BehaviorRegistryError};
 use crate::contracts::runtime::AgentBehavior;
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -1,5 +1,5 @@
-use super::traits::{ToolRegistry, ToolRegistryError};
 use super::sorted_registry_ids;
+use super::traits::{ToolRegistry, ToolRegistryError};
 use crate::contracts::runtime::tool_call::Tool;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};

@@ -191,7 +191,6 @@ impl AgentDefinition {
         self.excluded_agents = Some(agents);
         self
     }
-
 }
 
 #[cfg(test)]
@@ -201,8 +200,8 @@ mod tests {
 
     #[test]
     fn normalize_definition_trims_model_and_fallback_models() {
-        let definition = AgentDefinition::new(" openai::gemini-2.5-flash ")
-            .with_fallback_models(vec![
+        let definition =
+            AgentDefinition::new(" openai::gemini-2.5-flash ").with_fallback_models(vec![
                 " gpt-4o-mini ".to_string(),
                 "   ".to_string(),
                 " claude-3-7-sonnet ".to_string(),

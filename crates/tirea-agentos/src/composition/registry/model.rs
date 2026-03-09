@@ -1,5 +1,5 @@
-use super::traits::{ModelDefinition, ModelRegistry, ModelRegistryError};
 use super::sorted_registry_ids;
+use super::traits::{ModelDefinition, ModelRegistry, ModelRegistryError};
 use std::collections::HashMap;
 use std::sync::Arc;
 

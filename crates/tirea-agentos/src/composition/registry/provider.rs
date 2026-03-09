@@ -1,5 +1,5 @@
-use super::traits::{ProviderRegistry, ProviderRegistryError};
 use super::sorted_registry_ids;
+use super::traits::{ProviderRegistry, ProviderRegistryError};
 use genai::Client;
 use std::collections::HashMap;
 use std::sync::Arc;

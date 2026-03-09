@@ -12,10 +12,8 @@ use std::sync::Arc;
 #[cfg(feature = "skills")]
 use crate::extensions::skills::SkillRegistry;
 
-pub use traits::{
-    AgentRegistry, BehaviorRegistry, ModelRegistry, ProviderRegistry, ToolRegistry,
-};
 pub use stop_policy::StopPolicyRegistry;
+pub use traits::{AgentRegistry, BehaviorRegistry, ModelRegistry, ProviderRegistry, ToolRegistry};
 
 pub use agent::{CompositeAgentRegistry, InMemoryAgentRegistry};
 pub use behavior::{CompositeBehaviorRegistry, InMemoryBehaviorRegistry};
