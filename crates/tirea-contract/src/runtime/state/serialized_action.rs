@@ -45,21 +45,12 @@ pub enum PendingWriteError {
 impl AnyStateAction {
     /// Convert this action into a serialized form for persistence.
     pub fn to_serialized_action(&self) -> SerializedAction {
-        match self {
-            Self::Typed {
-                state_type_name,
-                scope,
-                base_path,
-                call_id_override,
-                serialized_payload,
-                ..
-            } => SerializedAction {
-                state_type_name: (*state_type_name).to_owned(),
-                base_path: base_path.clone(),
-                scope: *scope,
-                call_id_override: call_id_override.clone(),
-                payload: serialized_payload.clone(),
-            },
+        SerializedAction {
+            state_type_name: self.state_type_name().to_owned(),
+            base_path: self.base_path().to_owned(),
+            scope: self.scope(),
+            call_id_override: self.call_id_override().map(str::to_owned),
+            payload: self.serialized_payload().clone(),
         }
     }
 }

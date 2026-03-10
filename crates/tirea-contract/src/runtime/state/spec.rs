@@ -17,27 +17,24 @@ type ReduceFn = Box<dyn FnOnce(&Value, &str) -> TireaResult<Patch> + Send>;
 /// Created via [`AnyStateAction::new`] / [`new_at`](Self::new_at) /
 /// [`new_for_call`](Self::new_for_call) from a concrete `StateSpec` type and
 /// reducer action.
-pub enum AnyStateAction {
-    /// Type-erased action targeting a specific `StateSpec` type.
-    Typed {
-        state_type_id: TypeId,
-        state_type_name: &'static str,
-        scope: StateScope,
-        base_path: String,
-        /// When set, overrides the `ScopeContext` call_id for path resolution.
-        /// Used by recovery/framework-internal scenarios that must target a
-        /// specific call_id without a live `ScopeContext`.
-        call_id_override: Option<String>,
-        reduce_fn: ReduceFn,
-        /// Type-erased lattice registration function captured from `S::register_lattice`.
-        /// Enables `reduce_state_actions` to build a local registry for
-        /// CRDT-aware rolling snapshot application.
-        register_lattice: fn(&mut LatticeRegistry),
-        /// Serialized action payload captured before the action is moved into
-        /// `reduce_fn`. Enables pending-write persistence for crash recovery
-        /// without requiring access to the concrete action type.
-        serialized_payload: Value,
-    },
+pub struct AnyStateAction {
+    state_type_id: TypeId,
+    state_type_name: &'static str,
+    scope: StateScope,
+    base_path: String,
+    /// When set, overrides the `ScopeContext` call_id for path resolution.
+    /// Used by recovery/framework-internal scenarios that must target a
+    /// specific call_id without a live `ScopeContext`.
+    call_id_override: Option<String>,
+    reduce_fn: ReduceFn,
+    /// Type-erased lattice registration function captured from `S::register_lattice`.
+    /// Enables `reduce_state_actions` to build a local registry for
+    /// CRDT-aware rolling snapshot application.
+    register_lattice: fn(&mut LatticeRegistry),
+    /// Serialized action payload captured before the action is moved into
+    /// `reduce_fn`. Enables pending-write persistence for crash recovery
+    /// without requiring access to the concrete action type.
+    serialized_payload: Value,
 }
 
 impl AnyStateAction {
@@ -131,7 +128,7 @@ impl AnyStateAction {
         let serialized_payload =
             serde_json::to_value(&action).expect("StateSpec::Action must be serializable");
 
-        Self::Typed {
+        Self {
             state_type_id: TypeId::of::<S>(),
             state_type_name: std::any::type_name::<S>(),
             scope,
@@ -193,35 +190,33 @@ impl AnyStateAction {
 
     /// The [`TypeId`] of the state type this action targets.
     pub fn state_type_id(&self) -> TypeId {
-        match self {
-            Self::Typed { state_type_id, .. } => *state_type_id,
-        }
+        self.state_type_id
     }
 
     /// Human-readable name of the state type (for diagnostics).
     pub fn state_type_name(&self) -> &str {
-        match self {
-            Self::Typed {
-                state_type_name, ..
-            } => state_type_name,
-        }
+        self.state_type_name
     }
 
     /// Scope of the targeted state.
     pub fn scope(&self) -> StateScope {
-        match self {
-            Self::Typed { scope, .. } => *scope,
-        }
+        self.scope
+    }
+
+    /// Canonical base JSON path for the targeted state.
+    pub fn base_path(&self) -> &str {
+        &self.base_path
+    }
+
+    /// Optional tool-call scope override captured for recovery/internal flows.
+    pub fn call_id_override(&self) -> Option<&str> {
+        self.call_id_override.as_deref()
     }
 
     /// The serialized action payload captured before the action is moved into
     /// the reduce closure.
     pub fn serialized_payload(&self) -> &Value {
-        match self {
-            Self::Typed {
-                serialized_payload, ..
-            } => serialized_payload,
-        }
+        &self.serialized_payload
     }
 }
 
@@ -244,42 +239,27 @@ pub fn reduce_state_actions(
     // to Op::Set semantics).
     let mut local_registry = LatticeRegistry::new();
     for action in &actions {
-        let AnyStateAction::Typed {
-            register_lattice, ..
-        } = action;
-        register_lattice(&mut local_registry);
+        (action.register_lattice)(&mut local_registry);
     }
 
     let mut rolling_snapshot = base_snapshot.clone();
     let mut tracked_patches = Vec::new();
 
     for action in actions {
-        match action {
-            AnyStateAction::Typed {
-                scope,
-                base_path,
-                call_id_override,
-                reduce_fn,
-                serialized_payload: _,
-                ..
-            } => {
-                // Resolve actual storage path: call_id_override takes priority,
-                // then fall back to the ambient scope_ctx.
-                let actual_path = if let Some(ref cid) = call_id_override {
-                    let override_ctx = ScopeContext::for_call(cid.as_str());
-                    override_ctx.resolve_path(scope, base_path.as_str())
-                } else {
-                    scope_ctx.resolve_path(scope, base_path.as_str())
-                };
-                let patch = reduce_fn(&rolling_snapshot, &actual_path)?;
-                if patch.is_empty() {
-                    continue;
-                }
-                rolling_snapshot =
-                    apply_patch_with_registry(&rolling_snapshot, &patch, &local_registry)?;
-                tracked_patches.push(TrackedPatch::new(patch).with_source(default_source));
-            }
+        // Resolve actual storage path: call_id_override takes priority,
+        // then fall back to the ambient scope_ctx.
+        let actual_path = if let Some(ref cid) = action.call_id_override {
+            let override_ctx = ScopeContext::for_call(cid.as_str());
+            override_ctx.resolve_path(action.scope, action.base_path.as_str())
+        } else {
+            scope_ctx.resolve_path(action.scope, action.base_path.as_str())
+        };
+        let patch = (action.reduce_fn)(&rolling_snapshot, &actual_path)?;
+        if patch.is_empty() {
+            continue;
         }
+        rolling_snapshot = apply_patch_with_registry(&rolling_snapshot, &patch, &local_registry)?;
+        tracked_patches.push(TrackedPatch::new(patch).with_source(default_source));
     }
 
     Ok(tracked_patches)
@@ -287,21 +267,12 @@ pub fn reduce_state_actions(
 
 impl fmt::Debug for AnyStateAction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Typed {
-                state_type_name,
-                state_type_id,
-                scope,
-                serialized_payload,
-                ..
-            } => f
-                .debug_struct("AnyStateAction::Typed")
-                .field("state", state_type_name)
-                .field("type_id", state_type_id)
-                .field("scope", scope)
-                .field("payload", serialized_payload)
-                .finish(),
-        }
+        f.debug_struct("AnyStateAction")
+            .field("state", &self.state_type_name)
+            .field("type_id", &self.state_type_id)
+            .field("scope", &self.scope)
+            .field("payload", &self.serialized_payload)
+            .finish()
     }
 }
 
