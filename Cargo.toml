@@ -48,6 +48,9 @@ tirea-store-adapters = { version = "0.3.0-alpha.2", path = "crates/tirea-store-a
 tirea-examples = { version = "0.3.0-alpha.2", path = "examples" }
 phoenix-test-helpers = { version = "0.3.0-alpha.2", path = "e2e/phoenix/test-helpers" }
 
+# LLM client
+genai = { git = "https://github.com/tirea-ai/rust-genai.git", branch = "tirea/gemini-fixes" }
+
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

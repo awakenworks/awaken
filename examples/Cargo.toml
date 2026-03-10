@@ -18,7 +18,7 @@ schemars = { workspace = true }
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 clap = { version = "4", features = ["derive", "env"] }
-genai = "0.6.0-beta.4"
+genai.workspace = true
 axum = { version = "0.7", default-features = false, features = ["http1", "json", "query", "tokio"] }
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }
 tower-http = { version = "0.6", features = ["cors"] }

@@ -1555,9 +1555,8 @@ dependencies = [
 
 [[package]]
 name = "genai"
-version = "0.6.0-beta.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df547f2f4fc66f61ce328aed3f04163d356d89d937671e7cd5eb74a67a257c9c"
+version = "0.6.0-beta.5-WIP"
+source = "git+https://github.com/tirea-ai/rust-genai.git?branch=tirea%2Fgemini-fixes#2bc87506b7b4c80d04eb34ada1b2e778a97deeb6"
 dependencies = [
  "base64 0.22.1",
  "bytes",
