@@ -1,6 +1,7 @@
 use super::*;
 use crate::runtime::background_tasks::{
     BackgroundTaskManager, NewTaskSpec, TaskResult as BgTaskResult, TaskStatus, TaskStore,
+    TaskStoreError,
 };
 
 /// Task type used when registering sub-agent background runs with [`BackgroundTaskManager`].
@@ -71,6 +72,43 @@ impl AgentRunTool {
         self.os.agent_state_store().cloned().map(TaskStore::new)
     }
 
+    async fn persist_task_start(
+        &self,
+        task_store: &TaskStore,
+        run_id: &str,
+        owner_thread_id: &str,
+        description: &str,
+        parent_task_id: Option<&str>,
+        metadata: &Value,
+    ) -> Result<(), TaskStoreError> {
+        match task_store.load_task(run_id).await? {
+            Some(task) => {
+                if task.owner_thread_id != owner_thread_id {
+                    return Err(TaskStoreError::OwnerMismatch {
+                        task_id: run_id.to_string(),
+                        expected_owner_thread_id: owner_thread_id.to_string(),
+                        actual_owner_thread_id: task.owner_thread_id,
+                    });
+                }
+                task_store.start_task_attempt(run_id).await?;
+            }
+            None => {
+                task_store
+                    .create_task(NewTaskSpec {
+                        task_id: run_id.to_string(),
+                        owner_thread_id: owner_thread_id.to_string(),
+                        task_type: AGENT_RUN_TASK_TYPE.to_string(),
+                        description: description.to_string(),
+                        parent_task_id: parent_task_id.map(str::to_string),
+                        supports_resume: true,
+                        metadata: metadata.clone(),
+                    })
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn launch_new_run(
         &self,
         ctx: &ToolCallContext<'_>,
@@ -101,24 +139,17 @@ impl AgentRunTool {
             let parent_tool_call_id_bg = parent_tool_call_id.clone();
 
             if let Some(task_store) = &task_store {
-                let task_persisted = if task_store.load_task(&run_id).await.ok().flatten().is_some()
+                if let Err(err) = self
+                    .persist_task_start(
+                        task_store,
+                        &run_id,
+                        &owner_thread_id,
+                        &description,
+                        parent_run_id.as_deref(),
+                        &metadata,
+                    )
+                    .await
                 {
-                    task_store.start_task_attempt(&run_id).await.map(|_| ())
-                } else {
-                    task_store
-                        .create_task(NewTaskSpec {
-                            task_id: run_id.clone(),
-                            owner_thread_id: owner_thread_id.clone(),
-                            task_type: AGENT_RUN_TASK_TYPE.to_string(),
-                            description: description.clone(),
-                            parent_task_id: parent_run_id.clone(),
-                            supports_resume: true,
-                            metadata: metadata.clone(),
-                        })
-                        .await
-                        .map(|_| ())
-                };
-                if let Err(err) = task_persisted {
                     return tool_error(
                         tool_name,
                         "task_persist_failed",
@@ -213,23 +244,17 @@ impl AgentRunTool {
         };
 
         if let Some(task_store) = &task_store {
-            let task_persisted = if task_store.load_task(&run_id).await.ok().flatten().is_some() {
-                task_store.start_task_attempt(&run_id).await.map(|_| ())
-            } else {
-                task_store
-                    .create_task(NewTaskSpec {
-                        task_id: run_id.clone(),
-                        owner_thread_id: owner_thread_id.clone(),
-                        task_type: AGENT_RUN_TASK_TYPE.to_string(),
-                        description: description.clone(),
-                        parent_task_id: parent_run_id.clone(),
-                        supports_resume: true,
-                        metadata: metadata.clone(),
-                    })
-                    .await
-                    .map(|_| ())
-            };
-            if let Err(err) = task_persisted {
+            if let Err(err) = self
+                .persist_task_start(
+                    task_store,
+                    &run_id,
+                    &owner_thread_id,
+                    &description,
+                    parent_run_id.as_deref(),
+                    &metadata,
+                )
+                .await
+            {
                 return tool_error(
                     tool_name,
                     "task_persist_failed",

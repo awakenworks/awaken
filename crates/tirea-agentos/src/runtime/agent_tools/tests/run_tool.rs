@@ -1,4 +1,82 @@
 use super::*;
+use crate::contracts::storage::{
+    Committed, MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, ThreadHead, ThreadListPage,
+    ThreadListQuery, ThreadReader, ThreadStore, ThreadStoreError, ThreadWriter,
+    VersionPrecondition,
+};
+use crate::contracts::thread::{Thread, ThreadChangeSet};
+use crate::runtime::background_tasks::TASK_THREAD_PREFIX;
+use async_trait::async_trait;
+
+struct TaskLoadFailingStore {
+    inner: Arc<tirea_store_adapters::MemoryStore>,
+}
+
+#[async_trait]
+impl ThreadReader for TaskLoadFailingStore {
+    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
+        if thread_id.starts_with(TASK_THREAD_PREFIX) {
+            return Err(ThreadStoreError::Io(std::io::Error::other(
+                "injected task load failure",
+            )));
+        }
+        self.inner.load(thread_id).await
+    }
+
+    async fn list_threads(
+        &self,
+        query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, ThreadStoreError> {
+        self.inner.list_threads(query).await
+    }
+
+    async fn load_messages(
+        &self,
+        thread_id: &str,
+        query: &MessageQuery,
+    ) -> Result<MessagePage, ThreadStoreError> {
+        self.inner.load_messages(thread_id, query).await
+    }
+
+    async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, ThreadStoreError> {
+        self.inner.load_run(run_id).await
+    }
+
+    async fn list_runs(&self, query: &RunQuery) -> Result<RunPage, ThreadStoreError> {
+        self.inner.list_runs(query).await
+    }
+
+    async fn active_run_for_thread(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<RunRecord>, ThreadStoreError> {
+        self.inner.active_run_for_thread(thread_id).await
+    }
+}
+
+#[async_trait]
+impl ThreadWriter for TaskLoadFailingStore {
+    async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError> {
+        self.inner.create(thread).await
+    }
+
+    async fn append(
+        &self,
+        thread_id: &str,
+        delta: &ThreadChangeSet,
+        precondition: VersionPrecondition,
+    ) -> Result<Committed, ThreadStoreError> {
+        self.inner.append(thread_id, delta, precondition).await
+    }
+
+    async fn delete(&self, thread_id: &str) -> Result<(), ThreadStoreError> {
+        self.inner.delete(thread_id).await
+    }
+
+    async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
+        self.inner.save(thread).await
+    }
+}
 
 fn build_worker_os_with_store(
     include_slow_terminate: bool,
@@ -146,6 +224,37 @@ async fn agent_run_tool_rejects_self_target_agent() {
         .message
         .unwrap_or_default()
         .contains("Unknown or unavailable agent_id"));
+}
+
+#[tokio::test]
+async fn agent_run_tool_surfaces_task_store_load_failure_on_start() {
+    let storage = Arc::new(TaskLoadFailingStore {
+        inner: Arc::new(tirea_store_adapters::MemoryStore::new()),
+    });
+    let os = AgentOs::builder()
+        .with_agent_state_store(storage as Arc<dyn ThreadStore>)
+        .with_agent(
+            "worker",
+            crate::runtime::AgentDefinition::new("gpt-4o-mini"),
+        )
+        .build()
+        .unwrap();
+    let tool = AgentRunTool::new(os, Arc::new(BackgroundTaskManager::new()));
+    let mut fix = TestFixture::new();
+    fix.run_config = caller_scope();
+
+    let result = tool
+        .execute(
+            json!({"agent_id":"worker","prompt":"hi","background":true}),
+            &fix.ctx_with("call-load-fail", "tool:agent_run"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.status, ToolStatus::Error);
+    let message = result.message.unwrap_or_default();
+    assert!(message.contains("failed to persist task start"));
+    assert!(message.contains("injected task load failure"));
 }
 
 #[tokio::test]

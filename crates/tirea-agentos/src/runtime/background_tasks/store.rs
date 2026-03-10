@@ -40,6 +40,20 @@ pub enum TaskStoreError {
     State(#[from] tirea_state::TireaError),
     #[error("task thread '{0}' is missing durable task state")]
     MissingTaskState(String),
+    #[error(
+        "task '{task_id}' belongs to owner '{actual_owner_thread_id}' instead of '{expected_owner_thread_id}'"
+    )]
+    OwnerMismatch {
+        task_id: String,
+        expected_owner_thread_id: String,
+        actual_owner_thread_id: String,
+    },
+    #[error("task thread '{thread_id}' contains invalid durable task state")]
+    InvalidTaskState {
+        thread_id: String,
+        #[source]
+        error: tirea_state::TireaError,
+    },
 }
 
 #[derive(Clone)]
@@ -383,10 +397,13 @@ impl TaskStore {
 
     fn task_state_from_thread(thread: &Thread) -> Result<TaskState, TaskStoreError> {
         let snapshot = thread.rebuild_state()?;
-        snapshot
-            .get(TaskState::PATH)
-            .and_then(|v| TaskState::from_value(v).ok())
-            .ok_or_else(|| TaskStoreError::MissingTaskState(thread.id.clone()))
+        let Some(value) = snapshot.get(TaskState::PATH) else {
+            return Err(TaskStoreError::MissingTaskState(thread.id.clone()));
+        };
+        TaskState::from_value(value).map_err(|error| TaskStoreError::InvalidTaskState {
+            thread_id: thread.id.clone(),
+            error,
+        })
     }
 
     async fn resolve_agent_output_ref(
@@ -705,5 +722,44 @@ mod tests {
         descendants.sort();
 
         assert_eq!(descendants, vec!["child", "grandchild", "root"]);
+    }
+
+    #[tokio::test]
+    async fn load_task_reports_invalid_task_state() {
+        let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
+        let store = TaskStore::new(storage.clone() as Arc<dyn ThreadStore>);
+        let thread_id = task_thread_id("broken-task");
+
+        let mut thread = Thread::with_initial_state(
+            thread_id.clone(),
+            json!({
+                TaskState::PATH: {
+                    "id": "broken-task",
+                    "status": 123
+                }
+            }),
+        )
+        .with_parent_thread_id("owner-1");
+        thread.metadata.extra.insert(
+            TASK_THREAD_KIND_METADATA_KEY.to_string(),
+            json!(TASK_THREAD_KIND_METADATA_VALUE),
+        );
+        storage
+            .create(&thread)
+            .await
+            .expect("broken task thread should persist");
+
+        let err = store
+            .load_task("broken-task")
+            .await
+            .expect_err("invalid task state should error");
+
+        match err {
+            TaskStoreError::InvalidTaskState {
+                thread_id: err_thread_id,
+                ..
+            } => assert_eq!(err_thread_id, thread_id),
+            other => panic!("expected InvalidTaskState, got {other:?}"),
+        }
     }
 }
