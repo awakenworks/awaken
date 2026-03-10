@@ -72,7 +72,7 @@ pub struct ToolExecutionResult {
     pub user_messages: Vec<String>,
     pub pending_patches: Vec<TrackedPatch>,
     /// Serialized state actions captured during this tool execution (intent log).
-    pub serialized_actions: Vec<crate::runtime::state::SerializedAction>,
+    pub serialized_state_actions: Vec<crate::runtime::state::SerializedStateAction>,
 }
 
 /// Error returned by custom tool executors.

@@ -10,10 +10,10 @@ use tirea_state::StateSpec;
 ///
 /// Captured at the point where a tool completes execution, before the batch
 /// commit. On crash recovery, these entries are deserialized back into
-/// `AnyStateAction` via [`ActionDeserializerRegistry`] and re-reduced against
+/// `AnyStateAction` via [`StateActionDeserializerRegistry`] and re-reduced against
 /// the base state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SerializedAction {
+pub struct SerializedStateAction {
     /// `std::any::type_name::<S>()` — used as the registry lookup key.
     pub state_type_name: String,
     /// `S::PATH` — the canonical JSON path for this state type.
@@ -28,7 +28,7 @@ pub struct SerializedAction {
 
 /// Errors from action deserialization operations.
 #[derive(Debug, thiserror::Error)]
-pub enum PendingWriteError {
+pub enum StateActionDecodeError {
     #[error("unknown state type: {0}")]
     UnknownStateType(String),
     #[error("action deserialization failed for {state_type}: {source}")]
@@ -39,13 +39,13 @@ pub enum PendingWriteError {
 }
 
 // ---------------------------------------------------------------------------
-// AnyStateAction → SerializedAction
+// AnyStateAction → SerializedStateAction
 // ---------------------------------------------------------------------------
 
 impl AnyStateAction {
     /// Convert this action into a serialized form for persistence.
-    pub fn to_serialized_action(&self) -> SerializedAction {
-        SerializedAction {
+    pub fn to_serialized_state_action(&self) -> SerializedStateAction {
+        SerializedStateAction {
             state_type_name: self.state_type_name().to_owned(),
             base_path: self.base_path().to_owned(),
             scope: self.scope(),
@@ -78,22 +78,23 @@ impl Action for AnyStateAction {
 }
 
 // ---------------------------------------------------------------------------
-// ActionDeserializerRegistry
+// StateActionDeserializerRegistry
 // ---------------------------------------------------------------------------
 
-type ActionFactory =
-    Box<dyn Fn(&SerializedAction) -> Result<AnyStateAction, PendingWriteError> + Send + Sync>;
+type ActionFactory = Box<
+    dyn Fn(&SerializedStateAction) -> Result<AnyStateAction, StateActionDecodeError> + Send + Sync,
+>;
 
 /// Registry that maps `state_type_name` → factory closure for reconstructing
-/// `AnyStateAction` from a [`SerializedAction`].
+/// `AnyStateAction` from a [`SerializedStateAction`].
 ///
 /// Built once at agent construction (alongside `StateScopeRegistry` and
 /// `LatticeRegistry`) by calling `register::<S>()` for every `StateSpec` type.
-pub struct ActionDeserializerRegistry {
+pub struct StateActionDeserializerRegistry {
     factories: HashMap<String, ActionFactory>,
 }
 
-impl ActionDeserializerRegistry {
+impl StateActionDeserializerRegistry {
     pub fn new() -> Self {
         Self {
             factories: HashMap::new(),
@@ -105,10 +106,10 @@ impl ActionDeserializerRegistry {
         let type_name = std::any::type_name::<S>().to_owned();
         self.factories.insert(
             type_name,
-            Box::new(|entry: &SerializedAction| {
+            Box::new(|entry: &SerializedStateAction| {
                 let action: S::Action =
                     serde_json::from_value(entry.payload.clone()).map_err(|e| {
-                        PendingWriteError::DeserializationFailed {
+                        StateActionDecodeError::DeserializationFailed {
                             state_type: entry.state_type_name.clone(),
                             source: e,
                         }
@@ -130,28 +131,27 @@ impl ActionDeserializerRegistry {
         );
     }
 
-    /// Deserialize a [`SerializedAction`] back into an [`AnyStateAction`].
+    /// Deserialize a [`SerializedStateAction`] back into an [`AnyStateAction`].
     pub fn deserialize(
         &self,
-        entry: &SerializedAction,
-    ) -> Result<AnyStateAction, PendingWriteError> {
-        let factory = self
-            .factories
-            .get(&entry.state_type_name)
-            .ok_or_else(|| PendingWriteError::UnknownStateType(entry.state_type_name.clone()))?;
+        entry: &SerializedStateAction,
+    ) -> Result<AnyStateAction, StateActionDecodeError> {
+        let factory = self.factories.get(&entry.state_type_name).ok_or_else(|| {
+            StateActionDecodeError::UnknownStateType(entry.state_type_name.clone())
+        })?;
         factory(entry)
     }
 }
 
-impl Default for ActionDeserializerRegistry {
+impl Default for StateActionDeserializerRegistry {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl std::fmt::Debug for ActionDeserializerRegistry {
+impl std::fmt::Debug for StateActionDeserializerRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ActionDeserializerRegistry")
+        f.debug_struct("StateActionDeserializerRegistry")
             .field(
                 "registered_types",
                 &self.factories.keys().collect::<Vec<_>>(),
@@ -257,9 +257,9 @@ mod tests {
     }
 
     #[test]
-    fn to_serialized_action_roundtrip() {
+    fn to_serialized_state_action_roundtrip() {
         let original = AnyStateAction::new::<TestCounter>(TestCounterAction::Increment(42));
-        let serialized = original.to_serialized_action();
+        let serialized = original.to_serialized_state_action();
 
         assert!(serialized.state_type_name.contains("TestCounter"));
         assert_eq!(serialized.base_path, "test_counter");
@@ -270,12 +270,12 @@ mod tests {
 
     #[test]
     fn registry_deserialize_and_reduce_roundtrip() {
-        let mut registry = ActionDeserializerRegistry::new();
+        let mut registry = StateActionDeserializerRegistry::new();
         registry.register::<TestCounter>();
 
         // Create original action, serialize, then deserialize through registry
         let original = AnyStateAction::new::<TestCounter>(TestCounterAction::Increment(7));
-        let serialized = original.to_serialized_action();
+        let serialized = original.to_serialized_state_action();
 
         let reconstructed = registry.deserialize(&serialized).unwrap();
 
@@ -295,8 +295,8 @@ mod tests {
 
     #[test]
     fn registry_unknown_type_returns_error() {
-        let registry = ActionDeserializerRegistry::new();
-        let entry = SerializedAction {
+        let registry = StateActionDeserializerRegistry::new();
+        let entry = SerializedStateAction {
             state_type_name: "unknown::Type".into(),
             base_path: "x".into(),
             scope: StateScope::Run,
@@ -304,15 +304,15 @@ mod tests {
             payload: json!(null),
         };
         let err = registry.deserialize(&entry).unwrap_err();
-        assert!(matches!(err, PendingWriteError::UnknownStateType(_)));
+        assert!(matches!(err, StateActionDecodeError::UnknownStateType(_)));
     }
 
     #[test]
     fn registry_bad_payload_returns_deserialization_error() {
-        let mut registry = ActionDeserializerRegistry::new();
+        let mut registry = StateActionDeserializerRegistry::new();
         registry.register::<TestCounter>();
 
-        let entry = SerializedAction {
+        let entry = SerializedStateAction {
             state_type_name: std::any::type_name::<TestCounter>().into(),
             base_path: "test_counter".into(),
             scope: StateScope::Run,
@@ -322,20 +322,20 @@ mod tests {
         let err = registry.deserialize(&entry).unwrap_err();
         assert!(matches!(
             err,
-            PendingWriteError::DeserializationFailed { .. }
+            StateActionDecodeError::DeserializationFailed { .. }
         ));
     }
 
     #[test]
     fn tool_call_scoped_roundtrip() {
-        let mut registry = ActionDeserializerRegistry::new();
+        let mut registry = StateActionDeserializerRegistry::new();
         registry.register::<ToolCallTestCounter>();
 
         let original = AnyStateAction::new_for_call::<ToolCallTestCounter>(
             TestCounterAction::Increment(3),
             "call_99",
         );
-        let serialized = original.to_serialized_action();
+        let serialized = original.to_serialized_state_action();
         assert_eq!(serialized.scope, StateScope::ToolCall);
         assert_eq!(serialized.call_id_override, Some("call_99".into()));
 

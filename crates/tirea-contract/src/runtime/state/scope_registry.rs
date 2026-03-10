@@ -7,14 +7,15 @@ use tirea_state::StateSpec;
 ///
 /// Built once at agent construction by calling
 /// [`AgentBehavior::register_state_scopes`] on each behavior. The loop then
-/// uses [`resolve`] to determine the scope of any [`AnyStateAction`] without
-/// relying on the action carrying the scope internally.
+/// uses [`resolve`] to determine the effective scope of any [`AnyStateAction`],
+/// overriding the action-carried default when a registered type provides a
+/// canonical scope.
 ///
 /// Also exposes [`run_scoped_paths`] for enumerating all Run-scoped state
 /// paths, enabling framework-driven cleanup at the start of each run.
 #[derive(Debug, Clone, Default)]
 pub struct StateScopeRegistry {
-    typed: HashMap<TypeId, (&'static str, StateScope, &'static str)>,
+    by_type_id: HashMap<TypeId, (&'static str, StateScope, &'static str)>,
 }
 
 impl StateScopeRegistry {
@@ -24,15 +25,15 @@ impl StateScopeRegistry {
 
     /// Register a [`StateSpec`] type with an explicit [`StateScope`].
     pub fn register<S: StateSpec>(&mut self, scope: StateScope) {
-        self.typed.insert(
+        self.by_type_id.insert(
             TypeId::of::<S>(),
             (std::any::type_name::<S>(), scope, S::PATH),
         );
     }
 
     /// Look up the scope of a registered type.
-    pub fn typed_scope(&self, type_id: TypeId) -> Option<StateScope> {
-        self.typed.get(&type_id).map(|(_, scope, _)| *scope)
+    pub fn scope_for_type_id(&self, type_id: TypeId) -> Option<StateScope> {
+        self.by_type_id.get(&type_id).map(|(_, scope, _)| *scope)
     }
 
     /// Return the canonical paths of all registered Run-scoped state types.
@@ -40,7 +41,7 @@ impl StateScopeRegistry {
     /// Used by `prepare_run` to emit delete patches for stale run-scoped
     /// state before starting a new run.
     pub fn run_scoped_paths(&self) -> Vec<&'static str> {
-        self.typed
+        self.by_type_id
             .values()
             .filter(|(_, scope, _)| *scope == StateScope::Run)
             .map(|(_, _, path)| *path)
@@ -52,7 +53,7 @@ impl StateScopeRegistry {
     /// If the action targets a registered type, returns the registered scope.
     /// Otherwise falls back to [`AnyStateAction::scope`].
     pub fn resolve(&self, action: &AnyStateAction) -> StateScope {
-        if let Some(scope) = self.typed_scope(action.state_type_id()) {
+        if let Some(scope) = self.scope_for_type_id(action.state_type_id()) {
             return scope;
         }
         action.scope()
@@ -134,11 +135,11 @@ mod tests {
         reg.register::<ToolScoped>(StateScope::ToolCall);
 
         assert_eq!(
-            reg.typed_scope(TypeId::of::<RunScoped>()),
+            reg.scope_for_type_id(TypeId::of::<RunScoped>()),
             Some(StateScope::Run)
         );
         assert_eq!(
-            reg.typed_scope(TypeId::of::<ToolScoped>()),
+            reg.scope_for_type_id(TypeId::of::<ToolScoped>()),
             Some(StateScope::ToolCall)
         );
     }
@@ -146,7 +147,7 @@ mod tests {
     #[test]
     fn unregistered_type_returns_none() {
         let reg = StateScopeRegistry::new();
-        assert_eq!(reg.typed_scope(TypeId::of::<RunScoped>()), None);
+        assert_eq!(reg.scope_for_type_id(TypeId::of::<RunScoped>()), None);
     }
 
     #[test]
@@ -164,7 +165,7 @@ mod tests {
         // Use a raw Typed variant to test resolution without assertion.
         // Instead, register and look up directly.
         assert_eq!(
-            reg.typed_scope(TypeId::of::<ToolScoped>()),
+            reg.scope_for_type_id(TypeId::of::<ToolScoped>()),
             Some(StateScope::ToolCall)
         );
     }

@@ -339,12 +339,12 @@ pub(super) fn apply_tool_results_impl(
         .collect();
 
     // Collect serialized actions from all tool execution results into RunContext.
-    let all_serialized_actions: Vec<tirea_contract::SerializedAction> = results
+    let all_serialized_state_actions: Vec<tirea_contract::SerializedStateAction> = results
         .iter()
-        .flat_map(|r| r.serialized_actions.iter().cloned())
+        .flat_map(|r| r.serialized_state_actions.iter().cloned())
         .collect();
-    if !all_serialized_actions.is_empty() {
-        run_ctx.add_serialized_actions(all_serialized_actions);
+    if !all_serialized_state_actions.is_empty() {
+        run_ctx.add_serialized_state_actions(all_serialized_state_actions);
     }
 
     let base_snapshot = run_ctx
@@ -1111,10 +1111,11 @@ async fn execute_single_tool_with_phases_impl(
     }
 
     // Capture serialized actions before reduce consumes them.
-    let mut serialized_actions: Vec<tirea_contract::SerializedAction> = tool_state_actions
-        .iter()
-        .map(|a| a.to_serialized_action())
-        .collect();
+    let mut serialized_state_actions: Vec<tirea_contract::SerializedStateAction> =
+        tool_state_actions
+            .iter()
+            .map(|a| a.to_serialized_state_action())
+            .collect();
 
     let tool_scope_ctx = ScopeContext::for_call(&call.id);
     let execution_patch_parts = reduce_tool_state_actions(
@@ -1145,7 +1146,7 @@ async fn execute_single_tool_with_phases_impl(
     let user_messages = std::mem::take(&mut step.messaging.user_messages);
 
     // Merge plugin-phase serialized actions with tool-level ones.
-    serialized_actions.extend(step.take_pending_serialized_actions());
+    serialized_state_actions.extend(step.take_pending_serialized_state_actions());
 
     Ok(ToolExecutionResult {
         execution,
@@ -1154,7 +1155,7 @@ async fn execute_single_tool_with_phases_impl(
         reminders,
         user_messages,
         pending_patches,
-        serialized_actions,
+        serialized_state_actions,
     })
 }
 

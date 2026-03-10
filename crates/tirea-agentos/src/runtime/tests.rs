@@ -240,9 +240,9 @@ impl AgentBehavior for TerminateWithRunEndPatchPlugin {
         ))
     }
 
-    fn register_action_deserializers(
+    fn register_state_action_deserializers(
         &self,
-        registry: &mut crate::contracts::runtime::state::ActionDeserializerRegistry,
+        registry: &mut crate::contracts::runtime::state::StateActionDeserializerRegistry,
     ) {
         registry.register::<RunEndMarkerState>();
     }

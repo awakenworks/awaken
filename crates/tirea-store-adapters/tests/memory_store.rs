@@ -1,6 +1,6 @@
 use serde_json::json;
 use std::sync::Arc;
-use tirea_contract::runtime::state::SerializedAction;
+use tirea_contract::runtime::state::SerializedStateAction;
 use tirea_contract::storage::{
     ThreadReader, ThreadStore, ThreadStoreError, ThreadSync, ThreadWriter, VersionPrecondition,
 };
@@ -404,7 +404,7 @@ fn sample_delta(run_id: &str, reason: CheckpointReason) -> ThreadChangeSet {
         reason,
         messages: vec![Arc::new(Message::assistant("hello"))],
         patches: vec![],
-        actions: vec![],
+        state_actions: vec![],
         snapshot: None,
     }
 }
@@ -497,7 +497,7 @@ async fn test_thread_store_append_with_snapshot() {
         reason: CheckpointReason::RunFinished,
         messages: vec![],
         patches: vec![],
-        actions: vec![],
+        state_actions: vec![],
         snapshot: Some(json!({"counter": 42})),
     };
     store
@@ -691,7 +691,7 @@ async fn test_tool_call_message_roundtrip_via_append() {
             Arc::new(Message::tool("call_42", r#"{"answer": 42}"#)),
         ],
         patches: vec![],
-        actions: vec![],
+        state_actions: vec![],
         snapshot: None,
     };
     store
@@ -740,7 +740,7 @@ async fn test_tool_call_message_roundtrip_via_load_deltas() {
             Arc::new(Message::tool("call_b", "fetch result")),
         ],
         patches: vec![],
-        actions: vec![],
+        state_actions: vec![],
         snapshot: None,
     };
     store
@@ -835,7 +835,7 @@ async fn test_full_agent_run_via_append() {
         reason: CheckpointReason::UserMessage,
         messages: vec![Arc::new(Message::user("What is 2+2?"))],
         patches: vec![],
-        actions: vec![],
+        state_actions: vec![],
         snapshot: None,
     };
     let committed = store
@@ -854,7 +854,7 @@ async fn test_full_agent_run_via_append() {
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("2+2 = 4"))],
         patches: vec![],
-        actions: vec![],
+        state_actions: vec![],
         snapshot: None,
     };
     let committed = store
@@ -876,7 +876,7 @@ async fn test_full_agent_run_via_append() {
         reason: CheckpointReason::ToolResultsCommitted,
         messages: vec![Arc::new(Message::tool("call-1", "4"))],
         patches: vec![patch],
-        actions: vec![],
+        state_actions: vec![],
         snapshot: None,
     };
     let committed = store
@@ -895,7 +895,7 @@ async fn test_full_agent_run_via_append() {
         reason: CheckpointReason::RunFinished,
         messages: vec![Arc::new(Message::assistant("The answer is 4."))],
         patches: vec![],
-        actions: vec![],
+        state_actions: vec![],
         snapshot: None,
     };
     let committed = store
@@ -932,7 +932,7 @@ async fn test_delta_replay_reconstructs_thread() {
             patches: vec![TrackedPatch::new(
                 Patch::new().with_op(Op::increment(path!("count"), 1)),
             )],
-            actions: vec![],
+            state_actions: vec![],
             snapshot: None,
         },
         ThreadChangeSet {
@@ -944,7 +944,7 @@ async fn test_delta_replay_reconstructs_thread() {
             patches: vec![TrackedPatch::new(
                 Patch::new().with_op(Op::increment(path!("count"), 1)),
             )],
-            actions: vec![],
+            state_actions: vec![],
             snapshot: None,
         },
         ThreadChangeSet {
@@ -954,7 +954,7 @@ async fn test_delta_replay_reconstructs_thread() {
             reason: CheckpointReason::RunFinished,
             messages: vec![],
             patches: vec![],
-            actions: vec![],
+            state_actions: vec![],
             snapshot: None,
         },
     ];
@@ -1001,7 +1001,7 @@ async fn test_partial_delta_replay() {
             reason: CheckpointReason::AssistantTurnCommitted,
             messages: vec![Arc::new(Message::assistant(format!("msg-{i}")))],
             patches: vec![],
-            actions: vec![],
+            state_actions: vec![],
             snapshot: None,
         };
         store
@@ -1034,7 +1034,7 @@ async fn test_append_preserves_patch_provenance() {
         reason: CheckpointReason::ToolResultsCommitted,
         messages: vec![],
         patches: vec![patch],
-        actions: vec![],
+        state_actions: vec![],
         snapshot: None,
     };
     store
@@ -1075,7 +1075,7 @@ async fn test_append_preserves_parent_run_id() {
         reason: CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(Message::assistant("sub-agent reply"))],
         patches: vec![],
-        actions: vec![],
+        state_actions: vec![],
         snapshot: None,
     };
     store
@@ -1104,7 +1104,7 @@ async fn test_load_deltas_preserves_actions() {
         reason: CheckpointReason::ToolResultsCommitted,
         messages: vec![Arc::new(Message::assistant("hi"))],
         patches: vec![],
-        actions: vec![SerializedAction {
+        state_actions: vec![SerializedStateAction {
             state_type_name: "MyState".into(),
             base_path: "my_state".into(),
             scope: StateScope::Thread,
@@ -1120,9 +1120,12 @@ async fn test_load_deltas_preserves_actions() {
 
     let deltas = store.load_deltas("t1", 0).await.unwrap();
     assert_eq!(deltas.len(), 1);
-    assert_eq!(deltas[0].actions.len(), 1);
-    assert_eq!(deltas[0].actions[0].state_type_name, "MyState");
-    assert_eq!(deltas[0].actions[0].payload, json!({"DoSomething": 42}));
+    assert_eq!(deltas[0].state_actions.len(), 1);
+    assert_eq!(deltas[0].state_actions[0].state_type_name, "MyState");
+    assert_eq!(
+        deltas[0].state_actions[0].payload,
+        json!({"DoSomething": 42})
+    );
 }
 
 /// Empty delta produces no change but still increments version.
@@ -1141,7 +1144,7 @@ async fn test_append_empty_delta() {
         reason: CheckpointReason::RunFinished,
         messages: vec![],
         patches: vec![],
-        actions: vec![],
+        state_actions: vec![],
         snapshot: None,
     };
     let committed = store
@@ -1174,7 +1177,7 @@ async fn frontend_state_replaces_existing_thread_state_in_user_message_delta() {
         patches: vec![TrackedPatch::new(
             Patch::new().with_op(Op::set(path!("counter"), json!(5))),
         )],
-        actions: vec![],
+        state_actions: vec![],
         snapshot: None,
     };
     store
@@ -1197,7 +1200,7 @@ async fn frontend_state_replaces_existing_thread_state_in_user_message_delta() {
         reason: CheckpointReason::UserMessage,
         messages: vec![Arc::new(Message::user("hello"))],
         patches: vec![],
-        actions: vec![],
+        state_actions: vec![],
         snapshot: Some(frontend_state.clone()),
     };
     store

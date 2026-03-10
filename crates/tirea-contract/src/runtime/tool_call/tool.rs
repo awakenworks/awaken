@@ -315,13 +315,18 @@ impl ToolDescriptor {
 /// # Example
 ///
 /// ```ignore
-/// use tirea::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
+/// use tirea::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolExecutionEffect, ToolResult};
+/// use tirea::contracts::runtime::state::AnyStateAction;
 /// use tirea::contracts::ToolCallContext;
 /// use tirea_state::State;
 ///
 /// #[derive(State)]
 /// struct MyToolState {
 ///     pub count: i64,
+/// }
+///
+/// enum MyToolAction {
+///     Increment,
 /// }
 ///
 /// struct CounterTool;
@@ -337,12 +342,16 @@ impl ToolDescriptor {
 ///         args: Value,
 ///         ctx: &ToolCallContext<'_>,
 ///     ) -> Result<ToolResult, ToolError> {
-///         let state = ctx.call_state::<MyToolState>();
-///         let current = state.count().unwrap_or(0);
-///         state.set_count(current + 1);
+///         let current = ctx
+///             .snapshot_of::<MyToolState>()
+///             .map(|state| state.count)
+///             .unwrap_or(0);
 ///
-///         // No need to call finish() - changes are auto-collected
-///         Ok(ToolResult::success("counter", json!({"count": current + 1})))
+///         Ok(ToolExecutionEffect::from(
+///             ToolResult::success("counter", json!({"count": current + 1}))
+///         ).with_action(
+///             AnyStateAction::new::<MyToolState>(MyToolAction::Increment)
+///         ))
 ///     }
 /// }
 /// ```

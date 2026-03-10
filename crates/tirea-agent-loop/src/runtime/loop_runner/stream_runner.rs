@@ -328,7 +328,7 @@ pub(super) fn run_stream(
         {
             Ok((pending, actions)) => {
                 run_ctx.add_thread_patches(pending);
-                run_ctx.add_serialized_actions(actions);
+                run_ctx.add_serialized_state_actions(actions);
             }
             Err(e) => {
                 let message = e.to_string();
@@ -423,7 +423,7 @@ pub(super) fn run_stream(
                 }
             };
             run_ctx.add_thread_patches(prepared.pending_patches);
-            run_ctx.add_serialized_actions(prepared.serialized_actions);
+            run_ctx.add_serialized_state_actions(prepared.serialized_state_actions);
             let messages = prepared.messages;
             let filtered_tools = prepared.filtered_tools;
             let request_transforms = prepared.request_transforms;

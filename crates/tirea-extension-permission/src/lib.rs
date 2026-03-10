@@ -103,7 +103,10 @@ mod tests {
             behavior: ToolPermissionBehavior::Allow,
         };
         let state_action = permission_state_action(action);
-        assert!(state_action.to_serialized_action().payload.is_object());
+        assert!(state_action
+            .to_serialized_state_action()
+            .payload
+            .is_object());
     }
 
     #[test]
@@ -544,7 +547,10 @@ mod tests {
             behavior: ToolPermissionBehavior::Allow,
         };
         let state_action = permission_state_action(action);
-        assert!(state_action.to_serialized_action().payload.is_object());
+        assert!(state_action
+            .to_serialized_state_action()
+            .payload
+            .is_object());
     }
 
     #[test]
@@ -554,7 +560,10 @@ mod tests {
             behavior: ToolPermissionBehavior::Deny,
         };
         let state_action = permission_state_action(action);
-        assert!(state_action.to_serialized_action().payload.is_object());
+        assert!(state_action
+            .to_serialized_state_action()
+            .payload
+            .is_object());
     }
 
     #[test]

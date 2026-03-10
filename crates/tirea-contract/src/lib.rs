@@ -98,9 +98,9 @@ macro_rules! declare_plugin_states {
             $(registry.register::<$state>(<$state as ::tirea_state::StateSpec>::SCOPE);)+
         }
 
-        fn register_action_deserializers(
+        fn register_state_action_deserializers(
             &self,
-            registry: &mut $crate::runtime::state::ActionDeserializerRegistry,
+            registry: &mut $crate::runtime::state::StateActionDeserializerRegistry,
         ) {
             $(registry.register::<$state>();)+
         }
@@ -136,19 +136,19 @@ pub use io::{
 
 // runtime plugin/tool-call/lifecycle
 pub use runtime::{
-    build_read_only_context_from_step, reduce_state_actions, Action, ActionDeserializerRegistry,
-    ActivityContext, ActivityManager, AfterInferenceContext, AfterToolExecuteContext,
-    AgentBehavior, AnyStateAction, BeforeInferenceContext, BeforeToolExecuteContext,
-    DecisionReplayPolicy, Extensions, NoOpBehavior, PendingWriteError, Phase, PhaseContext,
-    PhasePolicy, ReadOnlyContext, RunAction, RunContext, RunDelta, RunEndContext, RunStartContext,
-    ScopeContext, SerializedAction, StateScope, StateScopeRegistry, StateSpec, StepContext,
-    StepEndContext, StepOutcome, StepStartContext, StoppedReason, StreamResult, SuspendTicket,
-    Suspension, SuspensionResponse, TerminationReason, TokenUsage, ToolCallAction, ToolCallContext,
-    ToolCallOutcome, ToolCallProgressSink, ToolCallProgressState, ToolCallProgressStatus,
-    ToolCallProgressUpdate, ToolExecution, ToolExecutionEffect, ToolExecutionRequest,
-    ToolExecutionResult, ToolExecutor, ToolExecutorError, ToolGate, ToolProgressState,
-    TOOL_CALL_PROGRESS_ACTIVITY_TYPE, TOOL_CALL_PROGRESS_SCHEMA, TOOL_CALL_PROGRESS_TYPE,
-    TOOL_PROGRESS_ACTIVITY_TYPE, TOOL_PROGRESS_ACTIVITY_TYPE_LEGACY,
+    build_read_only_context_from_step, reduce_state_actions, Action, ActivityContext,
+    ActivityManager, AfterInferenceContext, AfterToolExecuteContext, AgentBehavior, AnyStateAction,
+    BeforeInferenceContext, BeforeToolExecuteContext, DecisionReplayPolicy, Extensions,
+    NoOpBehavior, Phase, PhaseContext, PhasePolicy, ReadOnlyContext, RunAction, RunContext,
+    RunDelta, RunEndContext, RunStartContext, ScopeContext, SerializedStateAction,
+    StateActionDecodeError, StateActionDeserializerRegistry, StateScope, StateScopeRegistry,
+    StateSpec, StepContext, StepEndContext, StepOutcome, StepStartContext, StoppedReason,
+    StreamResult, SuspendTicket, Suspension, SuspensionResponse, TerminationReason, TokenUsage,
+    ToolCallAction, ToolCallContext, ToolCallOutcome, ToolCallProgressSink, ToolCallProgressState,
+    ToolCallProgressStatus, ToolCallProgressUpdate, ToolExecution, ToolExecutionEffect,
+    ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError, ToolGate,
+    ToolProgressState, TOOL_CALL_PROGRESS_ACTIVITY_TYPE, TOOL_CALL_PROGRESS_SCHEMA,
+    TOOL_CALL_PROGRESS_TYPE, TOOL_PROGRESS_ACTIVITY_TYPE, TOOL_PROGRESS_ACTIVITY_TYPE_LEGACY,
     TOOL_SCOPE_PARENT_TOOL_CALL_ID_KEY,
 };
 

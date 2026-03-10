@@ -428,7 +428,7 @@ mod tests {
             reason: CheckpointReason::UserMessage,
             messages: vec![Arc::new(Message::user("hello"))],
             patches: vec![],
-            actions: vec![],
+            state_actions: vec![],
             snapshot: None,
         };
         let c1 = store
@@ -446,7 +446,7 @@ mod tests {
             patches: vec![TrackedPatch::new(
                 Patch::new().with_op(Op::set(path!("greeted"), json!(true))),
             )],
-            actions: vec![],
+            state_actions: vec![],
             snapshot: None,
         };
         let c2 = store
@@ -462,7 +462,7 @@ mod tests {
             reason: CheckpointReason::RunFinished,
             messages: vec![],
             patches: vec![],
-            actions: vec![],
+            state_actions: vec![],
             snapshot: Some(json!({"greeted": true})),
         };
         let c3 = store
@@ -541,7 +541,7 @@ mod tests {
                 Arc::new(Message::tool("call_42", r#"{"answer": 42}"#)),
             ],
             patches: vec![],
-            actions: vec![],
+            state_actions: vec![],
             snapshot: None,
         };
         store
@@ -588,7 +588,7 @@ mod tests {
             reason: CheckpointReason::UserMessage,
             messages: vec![Arc::new(Message::user("hello"))],
             patches: vec![],
-            actions: vec![],
+            state_actions: vec![],
             snapshot: None,
         };
         store

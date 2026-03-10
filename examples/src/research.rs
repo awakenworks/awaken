@@ -1,9 +1,9 @@
 use clap::Parser;
 use std::sync::Arc;
+use tirea_agentos::composition::AgentDefinition;
 use tirea_agentos::contracts::runtime::behavior::AgentBehavior;
 use tirea_agentos::contracts::runtime::tool_call::Tool;
 use tirea_agentos::extensions::permission::PermissionPlugin;
-use tirea_agentos::composition::AgentDefinition;
 use tirea_examples::research::tools::*;
 
 #[tokio::main]

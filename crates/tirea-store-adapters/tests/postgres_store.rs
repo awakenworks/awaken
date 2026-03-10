@@ -384,7 +384,7 @@ async fn test_tool_call_message_roundtrip_via_append() {
             Arc::new(Message::tool("call_42", r#"{"answer": 42}"#)),
         ],
         patches: vec![],
-        actions: vec![],
+        state_actions: vec![],
         snapshot: None,
     };
     store

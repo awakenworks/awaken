@@ -1,6 +1,6 @@
 //! Shared persistence change-set types shared by runtime and storage.
 
-use crate::runtime::state::SerializedAction;
+use crate::runtime::state::SerializedStateAction;
 use crate::runtime::RunStatus;
 use crate::storage::RunOrigin;
 use crate::thread::{Message, Thread};
@@ -58,8 +58,8 @@ pub struct ThreadChangeSet {
     /// New patches appended in this step.
     pub patches: Vec<TrackedPatch>,
     /// Serialized state actions captured during this step (intent log).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub actions: Vec<SerializedAction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "actions")]
+    pub state_actions: Vec<SerializedStateAction>,
     /// If `Some`, a full state snapshot was taken (replaces base state).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<Value>,
@@ -73,7 +73,7 @@ impl ThreadChangeSet {
         reason: CheckpointReason,
         messages: Vec<Arc<Message>>,
         patches: Vec<TrackedPatch>,
-        actions: Vec<SerializedAction>,
+        state_actions: Vec<SerializedStateAction>,
         snapshot: Option<Value>,
     ) -> Self {
         Self {
@@ -83,7 +83,7 @@ impl ThreadChangeSet {
             reason,
             messages,
             patches,
-            actions,
+            state_actions,
             snapshot,
         }
     }
@@ -129,7 +129,7 @@ mod tests {
     use crate::thread::{Message, Thread};
     use serde_json::json;
 
-    fn sample_changeset_with_actions() -> ThreadChangeSet {
+    fn sample_changeset_with_state_actions() -> ThreadChangeSet {
         ThreadChangeSet {
             run_id: "run-1".into(),
             parent_run_id: None,
@@ -137,7 +137,7 @@ mod tests {
             reason: CheckpointReason::AssistantTurnCommitted,
             messages: vec![Arc::new(Message::assistant("hello"))],
             patches: vec![],
-            actions: vec![SerializedAction {
+            state_actions: vec![SerializedStateAction {
                 state_type_name: "TestCounter".into(),
                 base_path: "test_counter".into(),
                 scope: crate::runtime::state::StateScope::Thread,
@@ -149,20 +149,20 @@ mod tests {
     }
 
     #[test]
-    fn test_changeset_serde_roundtrip_with_actions() {
-        let cs = sample_changeset_with_actions();
-        assert_eq!(cs.actions.len(), 1);
+    fn test_changeset_serde_roundtrip_with_state_actions() {
+        let cs = sample_changeset_with_state_actions();
+        assert_eq!(cs.state_actions.len(), 1);
 
         let json = serde_json::to_string(&cs).unwrap();
         let restored: ThreadChangeSet = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(restored.actions.len(), 1);
-        assert_eq!(restored.actions[0].state_type_name, "TestCounter");
-        assert_eq!(restored.actions[0].payload, json!({"Increment": 1}));
+        assert_eq!(restored.state_actions.len(), 1);
+        assert_eq!(restored.state_actions[0].state_type_name, "TestCounter");
+        assert_eq!(restored.state_actions[0].payload, json!({"Increment": 1}));
     }
 
     #[test]
-    fn test_changeset_serde_backward_compat_no_actions() {
+    fn test_changeset_serde_backward_compat_without_state_actions() {
         // Simulate old JSON that has no `actions` field.
         let json = r#"{
             "run_id": "run-1",
@@ -171,7 +171,7 @@ mod tests {
             "patches": []
         }"#;
         let cs: ThreadChangeSet = serde_json::from_str(json).unwrap();
-        assert!(cs.actions.is_empty());
+        assert!(cs.state_actions.is_empty());
     }
 
     #[test]
@@ -184,7 +184,7 @@ mod tests {
             reason: CheckpointReason::AssistantTurnCommitted,
             messages: vec![msg.clone()],
             patches: vec![],
-            actions: vec![],
+            state_actions: vec![],
             snapshot: None,
         };
 

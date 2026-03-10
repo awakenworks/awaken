@@ -28,7 +28,7 @@ use crate::loop_runtime::loop_runner::{
 use genai::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_contract::runtime::state::{ActionDeserializerRegistry, StateScopeRegistry};
+use tirea_contract::runtime::state::{StateActionDeserializerRegistry, StateScopeRegistry};
 use tirea_state::LatticeRegistry;
 
 use super::bundle_merge::{ensure_unique_behavior_ids, merge_wiring_bundles, ResolvedBehaviors};
@@ -446,9 +446,9 @@ fn build_base_agent_from_definition(
         behavior.register_state_scopes(&mut state_scope_registry);
     }
 
-    let mut action_deserializer_registry = ActionDeserializerRegistry::new();
+    let mut state_action_deserializer_registry = StateActionDeserializerRegistry::new();
     for behavior in &behaviors {
-        behavior.register_action_deserializers(&mut action_deserializer_registry);
+        behavior.register_state_action_deserializers(&mut state_action_deserializer_registry);
     }
 
     let behavior: Arc<dyn AgentBehavior> = if behaviors.is_empty() {
@@ -471,7 +471,7 @@ fn build_base_agent_from_definition(
         state_scope_registry: Arc::new(state_scope_registry),
         step_tool_provider: None,
         llm_executor: None,
-        action_deserializer_registry: Arc::new(action_deserializer_registry),
+        state_action_deserializer_registry: Arc::new(state_action_deserializer_registry),
     }
 }
 

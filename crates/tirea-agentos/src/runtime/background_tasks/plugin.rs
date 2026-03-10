@@ -283,8 +283,9 @@ mod tests {
         let mut scope_reg = tirea_contract::runtime::state::StateScopeRegistry::new();
         plugin.register_state_scopes(&mut scope_reg);
 
-        let mut action_reg = tirea_contract::runtime::state::ActionDeserializerRegistry::new();
-        plugin.register_action_deserializers(&mut action_reg);
+        let mut state_action_deserializer_registry =
+            tirea_contract::runtime::state::StateActionDeserializerRegistry::new();
+        plugin.register_state_action_deserializers(&mut state_action_deserializer_registry);
     }
 
     #[tokio::test]

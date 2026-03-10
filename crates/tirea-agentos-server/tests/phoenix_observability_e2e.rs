@@ -8,10 +8,10 @@ use phoenix_test_helpers::{
 };
 use serde_json::json;
 use std::sync::Arc;
-use tirea_agentos::contracts::storage::ThreadStore;
-use tirea_agentos::extensions::observability::{InMemorySink, LLMMetryPlugin};
 use tirea_agentos::composition::AgentDefinition;
 use tirea_agentos::composition::{AgentOsBuilder, ModelDefinition};
+use tirea_agentos::contracts::storage::ThreadStore;
+use tirea_agentos::extensions::observability::{InMemorySink, LLMMetryPlugin};
 use tirea_agentos::runtime::AgentOs;
 use tirea_agentos_server::service::AppState;
 use tower::ServiceExt;

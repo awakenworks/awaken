@@ -968,7 +968,7 @@ fn tool_execution_result(call_id: &str, patch: Option<TrackedPatch>) -> ToolExec
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
-        serialized_actions: vec![],
+        serialized_state_actions: vec![],
     }
 }
 
@@ -997,7 +997,7 @@ fn skill_activation_result(
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
-        serialized_actions: vec![],
+        serialized_state_actions: vec![],
     }
 }
 
@@ -3257,7 +3257,7 @@ fn test_apply_tool_results_appends_user_messages_from_effect() {
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
-        serialized_actions: vec![],
+        serialized_state_actions: vec![],
     };
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
@@ -3296,7 +3296,7 @@ fn test_apply_tool_results_ignores_blank_user_messages() {
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
-        serialized_actions: vec![],
+        serialized_state_actions: vec![],
     };
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)

@@ -250,11 +250,11 @@ pub trait Agent: Send + Sync {
 
     // --- Recovery ---
 
-    /// Registry for deserializing pending-write actions during crash recovery.
-    fn action_deserializer_registry(
+    /// Registry for deserializing persisted state-action intents during crash recovery.
+    fn state_action_deserializer_registry(
         &self,
-    ) -> Arc<tirea_contract::runtime::state::ActionDeserializerRegistry> {
-        Arc::new(tirea_contract::runtime::state::ActionDeserializerRegistry::new())
+    ) -> Arc<tirea_contract::runtime::state::StateActionDeserializerRegistry> {
+        Arc::new(tirea_contract::runtime::state::StateActionDeserializerRegistry::new())
     }
 }
 
@@ -305,9 +305,9 @@ pub struct BaseAgent {
     pub step_tool_provider: Option<Arc<dyn StepToolProvider>>,
     /// Optional LLM executor override.
     pub llm_executor: Option<Arc<dyn LlmExecutor>>,
-    /// Registry for deserializing pending-write actions during crash recovery.
-    pub action_deserializer_registry:
-        Arc<tirea_contract::runtime::state::ActionDeserializerRegistry>,
+    /// Registry for deserializing persisted state-action intents during crash recovery.
+    pub state_action_deserializer_registry:
+        Arc<tirea_contract::runtime::state::StateActionDeserializerRegistry>,
 }
 
 impl Default for BaseAgent {
@@ -333,8 +333,8 @@ impl Default for BaseAgent {
             ),
             step_tool_provider: None,
             llm_executor: None,
-            action_deserializer_registry: Arc::new(
-                tirea_contract::runtime::state::ActionDeserializerRegistry::new(),
+            state_action_deserializer_registry: Arc::new(
+                tirea_contract::runtime::state::StateActionDeserializerRegistry::new(),
             ),
         }
     }
@@ -416,10 +416,10 @@ impl Agent for BaseAgent {
         self.behavior.as_ref()
     }
 
-    fn action_deserializer_registry(
+    fn state_action_deserializer_registry(
         &self,
-    ) -> Arc<tirea_contract::runtime::state::ActionDeserializerRegistry> {
-        self.action_deserializer_registry.clone()
+    ) -> Arc<tirea_contract::runtime::state::StateActionDeserializerRegistry> {
+        self.state_action_deserializer_registry.clone()
     }
 }
 

@@ -1455,7 +1455,7 @@ async fn test_incremental_checkpoints_via_append() {
             },
             messages: delta_messages,
             patches: vec![delta_patch],
-            actions: vec![],
+            state_actions: vec![],
             snapshot: None,
         };
 

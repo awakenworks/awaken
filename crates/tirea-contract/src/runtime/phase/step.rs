@@ -1,6 +1,6 @@
 use crate::runtime::inference::{InferenceContext, LLMResponse, MessagingContext};
 use crate::runtime::run::{FlowControl, RunAction};
-use crate::runtime::state::{AnyStateAction, SerializedAction};
+use crate::runtime::state::{AnyStateAction, SerializedStateAction};
 use crate::runtime::tool_call::gate::ToolGate;
 use crate::runtime::tool_call::{ToolCallContext, ToolDescriptor, ToolResult};
 use crate::thread::Message;
@@ -66,7 +66,7 @@ pub struct StepContext<'a> {
 
     // === Pending serialized actions (intent log) ===
     /// Serialized actions captured during this step for persistence.
-    pub(crate) pending_serialized_actions: Vec<SerializedAction>,
+    pub(crate) pending_serialized_state_actions: Vec<SerializedStateAction>,
 }
 
 impl<'a> StepContext<'a> {
@@ -92,7 +92,7 @@ impl<'a> StepContext<'a> {
             flow: FlowControl::default(),
             pending_state_actions: Vec::new(),
             pending_patches: Vec::new(),
-            pending_serialized_actions: Vec::new(),
+            pending_serialized_state_actions: Vec::new(),
         }
     }
 
@@ -165,7 +165,7 @@ impl<'a> StepContext<'a> {
         self.flow = FlowControl::default();
         self.pending_state_actions.clear();
         self.pending_patches.clear();
-        self.pending_serialized_actions.clear();
+        self.pending_serialized_state_actions.clear();
     }
 
     // =========================================================================
@@ -215,13 +215,13 @@ impl<'a> StepContext<'a> {
     }
 
     /// Push a serialized action for intent-log persistence.
-    pub fn emit_serialized_action(&mut self, action: SerializedAction) {
-        self.pending_serialized_actions.push(action);
+    pub fn emit_serialized_state_action(&mut self, action: SerializedStateAction) {
+        self.pending_serialized_state_actions.push(action);
     }
 
     /// Drain and return all accumulated serialized actions.
-    pub fn take_pending_serialized_actions(&mut self) -> Vec<SerializedAction> {
-        std::mem::take(&mut self.pending_serialized_actions)
+    pub fn take_pending_serialized_state_actions(&mut self) -> Vec<SerializedStateAction> {
+        std::mem::take(&mut self.pending_serialized_state_actions)
     }
 
     // =========================================================================

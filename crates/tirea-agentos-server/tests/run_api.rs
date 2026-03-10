@@ -5,9 +5,9 @@ use common::{get_json_text, post_sse, TerminatePlugin};
 use serde_json::json;
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
+use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder};
 use tirea_agentos::contracts::storage::ThreadReader;
 use tirea_agentos::contracts::RunRequest;
-use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder};
 use tirea_agentos::runtime::{AgentOs, RunStream};
 use tirea_agentos_server::service::AppState;
 

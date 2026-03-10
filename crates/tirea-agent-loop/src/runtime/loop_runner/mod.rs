@@ -916,7 +916,7 @@ pub(super) async fn run_step_prepare_phases(
         RunAction,
         Vec<std::sync::Arc<dyn tirea_contract::runtime::inference::InferenceRequestTransform>>,
         Vec<TrackedPatch>,
-        Vec<tirea_contract::SerializedAction>,
+        Vec<tirea_contract::SerializedStateAction>,
     ),
     AgentLoopError,
 > {
@@ -946,7 +946,7 @@ pub(super) struct PreparedStep {
     pub(super) filtered_tools: Vec<String>,
     pub(super) run_action: RunAction,
     pub(super) pending_patches: Vec<TrackedPatch>,
-    pub(super) serialized_actions: Vec<tirea_contract::SerializedAction>,
+    pub(super) serialized_state_actions: Vec<tirea_contract::SerializedStateAction>,
     pub(super) request_transforms:
         Vec<std::sync::Arc<dyn tirea_contract::runtime::inference::InferenceRequestTransform>>,
 }
@@ -963,7 +963,7 @@ pub(super) async fn prepare_step_execution(
         filtered_tools,
         run_action,
         pending_patches: pending,
-        serialized_actions: actions,
+        serialized_state_actions: actions,
         request_transforms: transforms,
     })
 }
@@ -1008,7 +1008,7 @@ pub(super) async fn complete_step_after_inference(
     )
     .await?;
     run_ctx.add_thread_patches(pending);
-    run_ctx.add_serialized_actions(actions);
+    run_ctx.add_serialized_state_actions(actions);
 
     let assistant = assistant_turn_message(result, step_meta, assistant_message_id);
     run_ctx.add_message(Arc::new(assistant));
@@ -1017,7 +1017,7 @@ pub(super) async fn complete_step_after_inference(
         plugin_runtime::emit_phase_block(Phase::StepEnd, run_ctx, tool_descriptors, agent, |_| {})
             .await?;
     run_ctx.add_thread_patches(pending);
-    run_ctx.add_serialized_actions(actions);
+    run_ctx.add_serialized_state_actions(actions);
     Ok(run_action)
 }
 
@@ -2018,7 +2018,7 @@ pub async fn run_loop_with_context(
         }
     };
     run_ctx.add_thread_patches(pending);
-    run_ctx.add_serialized_actions(actions);
+    run_ctx.add_serialized_state_actions(actions);
     if let Err(error) = commit_run_start_and_drain_replay(
         &mut run_ctx,
         &initial_tools,

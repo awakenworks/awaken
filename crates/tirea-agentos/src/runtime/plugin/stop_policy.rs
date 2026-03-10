@@ -947,8 +947,7 @@ mod tests {
             stop_reason: None,
         };
 
-        let stats =
-            derive_stats_from_messages_with_response(&messages[run_start..], &response);
+        let stats = derive_stats_from_messages_with_response(&messages[run_start..], &response);
         assert_eq!(stats.step, 1);
         assert_eq!(stats.total_tool_call_count, 1);
     }
@@ -1073,8 +1072,8 @@ mod tests {
 
     #[test]
     fn content_match_fires_on_substring() {
-        let r = eval_policy!(ContentMatch("DONE".into()), { last_text: "work is DONE now" })
-            .unwrap();
+        let r =
+            eval_policy!(ContentMatch("DONE".into()), { last_text: "work is DONE now" }).unwrap();
         assert_eq!(r.code, "content_matched");
         assert_eq!(r.detail.as_deref(), Some("DONE"));
     }
@@ -1117,9 +1116,7 @@ mod tests {
     #[test]
     fn stop_on_tool_no_match() {
         let calls = [ToolCall::new("c1", "echo", json!({}))];
-        assert!(
-            eval_policy!(StopOnTool("finish".into()), { last_tool_calls: &calls }).is_none()
-        );
+        assert!(eval_policy!(StopOnTool("finish".into()), { last_tool_calls: &calls }).is_none());
     }
 
     #[test]

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::contracts::runtime::tool_call::Tool;
 use crate::composition::ToolRegistry;
+use crate::contracts::runtime::tool_call::Tool;
 
 pub use tirea_extension_mcp::*;
 

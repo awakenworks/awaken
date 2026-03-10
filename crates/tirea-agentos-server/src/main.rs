@@ -5,9 +5,11 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
-use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder, ModelDefinition, ToolExecutionMode};
 use tirea_agentos::composition::StopConditionSpec;
+use tirea_agentos::composition::{
+    AgentDefinition, AgentOsBuilder, ModelDefinition, ToolExecutionMode,
+};
+use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::runtime::AgentOs;
 use tirea_agentos_server::nats::NatsConfig;
 use tirea_agentos_server::service::AppState;

@@ -6,7 +6,7 @@ use crate::runtime::phase::{
     BeforeToolExecuteAction, LifecycleAction,
 };
 use crate::runtime::state::StateScopeRegistry;
-use crate::runtime::state::{ActionDeserializerRegistry, ScopeContext, StateScope, StateSpec};
+use crate::runtime::state::{ScopeContext, StateActionDeserializerRegistry, StateScope, StateSpec};
 use crate::runtime::tool_call::{ToolCallResume, ToolResult};
 use crate::thread::Message;
 use crate::RunConfig;
@@ -206,8 +206,9 @@ pub trait AgentBehavior: Send + Sync {
     /// Register state scopes with the registry.
     fn register_state_scopes(&self, _registry: &mut StateScopeRegistry) {}
 
-    /// Register action deserializers for crash-recovery pending writes.
-    fn register_action_deserializers(&self, _registry: &mut ActionDeserializerRegistry) {}
+    /// Register state-action deserializers for persisted intent-log replay and recovery.
+    fn register_state_action_deserializers(&self, _registry: &mut StateActionDeserializerRegistry) {
+    }
 
     async fn run_start(&self, _ctx: &ReadOnlyContext<'_>) -> ActionSet<LifecycleAction> {
         ActionSet::empty()

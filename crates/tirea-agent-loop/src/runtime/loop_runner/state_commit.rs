@@ -74,7 +74,7 @@ pub(super) async fn commit_pending_delta(
         reason,
         delta.messages,
         delta.patches,
-        delta.actions,
+        delta.state_actions,
         snapshot,
     );
 

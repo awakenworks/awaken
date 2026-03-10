@@ -483,7 +483,7 @@ impl TaskStore {
             }
         }
         let state_action = AnyStateAction::new::<TaskState>(action);
-        let serialized = vec![state_action.to_serialized_action()];
+        let serialized = vec![state_action.to_serialized_state_action()];
         let patches = reduce_state_actions(
             vec![state_action],
             &snapshot,

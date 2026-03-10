@@ -1,6 +1,6 @@
 use crate::runtime::activity::ActivityManager;
 use crate::runtime::run::delta::RunDelta;
-use crate::runtime::state::SerializedAction;
+use crate::runtime::state::SerializedStateAction;
 use crate::runtime::suspended_calls_from_state;
 use crate::runtime::tool_call::SuspendedCall;
 use crate::runtime::tool_call::ToolCallContext;
@@ -27,7 +27,7 @@ pub struct RunContext {
     thread_base: Value,
     messages: DeltaTracked<Arc<Message>>,
     thread_patches: DeltaTracked<TrackedPatch>,
-    serialized_actions: DeltaTracked<SerializedAction>,
+    serialized_state_actions: DeltaTracked<SerializedStateAction>,
     pub run_config: RunConfig,
     doc: DocCell,
     version: Option<u64>,
@@ -71,7 +71,7 @@ impl RunContext {
             thread_base: state,
             messages: DeltaTracked::new(messages),
             thread_patches: DeltaTracked::empty(),
-            serialized_actions: DeltaTracked::empty(),
+            serialized_state_actions: DeltaTracked::empty(),
             run_config,
             doc,
             version: None,
@@ -171,12 +171,12 @@ impl RunContext {
     }
 
     // =========================================================================
-    // Serialized Actions (intent log)
+    // Serialized State Actions (intent log)
     // =========================================================================
 
-    /// Add serialized actions captured during tool/phase execution.
-    pub fn add_serialized_actions(&mut self, actions: Vec<SerializedAction>) {
-        self.serialized_actions.extend(actions);
+    /// Add serialized state actions captured during tool/phase execution.
+    pub fn add_serialized_state_actions(&mut self, state_actions: Vec<SerializedStateAction>) {
+        self.serialized_state_actions.extend(state_actions);
     }
 
     // =========================================================================
@@ -222,21 +222,21 @@ impl RunContext {
     // Delta output
     // =========================================================================
 
-    /// Extract the incremental delta (new messages + patches + actions) since
+    /// Extract the incremental delta (new messages + patches + serialized state actions) since
     /// the last `take_delta()` call.
     pub fn take_delta(&mut self) -> RunDelta {
         RunDelta {
             messages: self.messages.take_delta(),
             patches: self.thread_patches.take_delta(),
-            actions: self.serialized_actions.take_delta(),
+            state_actions: self.serialized_state_actions.take_delta(),
         }
     }
 
-    /// Whether there are un-consumed messages, patches, or actions.
+    /// Whether there are un-consumed messages, patches, or serialized state actions.
     pub fn has_delta(&self) -> bool {
         self.messages.has_delta()
             || self.thread_patches.has_delta()
-            || self.serialized_actions.has_delta()
+            || self.serialized_state_actions.has_delta()
     }
 
     // =========================================================================

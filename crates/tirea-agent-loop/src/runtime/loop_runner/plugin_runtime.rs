@@ -132,7 +132,7 @@ async fn reduce_and_emit(
     }
     // Capture serialized forms before reduce consumes the actions.
     for action in &state_actions {
-        step.emit_serialized_action(action.to_serialized_action());
+        step.emit_serialized_state_action(action.to_serialized_state_action());
     }
     let scope_ctx = match phase {
         Phase::BeforeToolExecute | Phase::AfterToolExecute => step
@@ -208,10 +208,10 @@ fn take_step_pending_patches(step: &mut StepContext<'_>) -> Vec<TrackedPatch> {
     std::mem::take(&mut step.pending_patches)
 }
 
-fn take_step_pending_serialized_actions(
+fn take_step_pending_serialized_state_actions(
     step: &mut StepContext<'_>,
-) -> Vec<tirea_contract::SerializedAction> {
-    step.take_pending_serialized_actions()
+) -> Vec<tirea_contract::SerializedStateAction> {
+    step.take_pending_serialized_state_actions()
 }
 
 /// Multi-phase block dispatch.
@@ -222,7 +222,14 @@ pub(super) async fn run_phase_block<R, Setup, Extract>(
     phases: &[Phase],
     setup: Setup,
     extract: Extract,
-) -> Result<(R, Vec<TrackedPatch>, Vec<tirea_contract::SerializedAction>), AgentLoopError>
+) -> Result<
+    (
+        R,
+        Vec<TrackedPatch>,
+        Vec<tirea_contract::SerializedStateAction>,
+    ),
+    AgentLoopError,
+>
 where
     Setup: FnOnce(&mut StepContext<'_>),
     Extract: FnOnce(&mut StepContext<'_>) -> R,
@@ -255,7 +262,7 @@ where
     }
     let output = extract(&mut step);
     let pending = take_step_pending_patches(&mut step);
-    let actions = take_step_pending_serialized_actions(&mut step);
+    let actions = take_step_pending_serialized_state_actions(&mut step);
     Ok((output, pending, actions))
 }
 
@@ -266,7 +273,13 @@ pub(super) async fn emit_phase_block<Setup>(
     tool_descriptors: &[ToolDescriptor],
     agent: &dyn super::Agent,
     setup: Setup,
-) -> Result<(Vec<TrackedPatch>, Vec<tirea_contract::SerializedAction>), AgentLoopError>
+) -> Result<
+    (
+        Vec<TrackedPatch>,
+        Vec<tirea_contract::SerializedStateAction>,
+    ),
+    AgentLoopError,
+>
 where
     Setup: FnOnce(&mut StepContext<'_>),
 {
@@ -301,12 +314,12 @@ pub(super) async fn emit_cleanup_phases(
     )
     .await?;
     run_ctx.add_thread_patches(pending);
-    run_ctx.add_serialized_actions(actions);
+    run_ctx.add_serialized_state_actions(actions);
 
     let (pending, actions) =
         emit_phase_block(Phase::StepEnd, run_ctx, tool_descriptors, agent, |_| {}).await?;
     run_ctx.add_thread_patches(pending);
-    run_ctx.add_serialized_actions(actions);
+    run_ctx.add_serialized_state_actions(actions);
     Ok(())
 }
 
@@ -348,11 +361,11 @@ pub(super) async fn emit_run_end_phase(
         }
         (
             take_step_pending_patches(&mut step),
-            take_step_pending_serialized_actions(&mut step),
+            take_step_pending_serialized_state_actions(&mut step),
         )
     };
     run_ctx.add_thread_patches(pending);
-    run_ctx.add_serialized_actions(actions);
+    run_ctx.add_serialized_state_actions(actions);
 }
 
 /// Tool-level phase dispatch.
@@ -415,7 +428,7 @@ where
     let pending = take_step_pending_patches(&mut step);
     // Note: behavior_run_phase_block is only used in tool_exec.rs public APIs
     // where RunContext is not available. Serialized actions are dropped here.
-    let _actions = take_step_pending_serialized_actions(&mut step);
+    let _actions = take_step_pending_serialized_state_actions(&mut step);
     Ok((output, pending))
 }
 
