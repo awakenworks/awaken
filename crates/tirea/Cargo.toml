@@ -5,6 +5,8 @@ edition = "2021"
 description = "Unified umbrella crate for the tirea agent framework"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
+keywords = ["agent", "llm", "ai", "framework"]
+categories = ["asynchronous"]
 
 [dependencies]
 # Always included: core contract types + state

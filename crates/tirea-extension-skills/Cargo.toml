@@ -2,9 +2,11 @@
 name = "tirea-extension-skills"
 version.workspace = true
 edition = "2021"
-description = "Skills extension for tirea"
+description = "Skill discovery, activation, and resource loading for tirea agent tool extensibility"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
+keywords = ["agent", "llm", "skills", "tools"]
+categories = ["asynchronous"]
 
 [dependencies]
 tirea-contract.workspace = true

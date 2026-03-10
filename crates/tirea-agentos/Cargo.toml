@@ -2,9 +2,11 @@
 name = "tirea-agentos"
 version.workspace = true
 edition = "2021"
-description = "AgentOS orchestration layer for tirea"
+description = "Plugin orchestration, sub-agent management, and lifecycle composition for tirea AgentOS"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
+keywords = ["agent", "llm", "orchestration", "plugin"]
+categories = ["asynchronous"]
 
 [dependencies]
 tirea-state.workspace = true

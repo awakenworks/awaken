@@ -2,9 +2,11 @@
 name = "tirea-extension-mcp"
 version.workspace = true
 edition = "2021"
-description = "MCP extension for tirea"
+description = "Model Context Protocol (MCP) client integration for external tool servers"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
+keywords = ["agent", "llm", "mcp", "tools"]
+categories = ["asynchronous"]
 
 [dependencies]
 tirea-contract.workspace = true

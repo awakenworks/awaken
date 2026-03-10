@@ -2,9 +2,11 @@
 name = "tirea-agent-loop"
 version.workspace = true
 edition = "2021"
-description = "Core agent execution loop and runtime for tirea"
+description = "LLM inference engine, tool dispatch, and streaming execution loop for tirea"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
+keywords = ["agent", "llm", "inference", "tool-calling"]
+categories = ["asynchronous"]
 
 [dependencies]
 tirea-state.workspace = true

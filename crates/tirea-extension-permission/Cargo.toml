@@ -2,9 +2,11 @@
 name = "tirea-extension-permission"
 version.workspace = true
 edition = "2021"
-description = "Permission extension for tirea"
+description = "Tool-level permission policies and user-approval gating for tirea agents"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
+keywords = ["agent", "llm", "permission", "policy"]
+categories = ["asynchronous"]
 
 [dependencies]
 tirea-state = { workspace = true, features = ["derive"] }

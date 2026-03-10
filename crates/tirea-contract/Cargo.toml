@@ -5,6 +5,8 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
 description = "Shared agent contracts: runtime, extension SPI, and composition registries"
+keywords = ["agent", "llm", "contract", "spi"]
+categories = ["asynchronous"]
 
 [dependencies]
 tirea-state = { workspace = true, features = ["derive"] }

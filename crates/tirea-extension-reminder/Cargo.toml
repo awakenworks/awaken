@@ -2,9 +2,11 @@
 name = "tirea-extension-reminder"
 version.workspace = true
 edition = "2021"
-description = "Reminder extension for tirea"
+description = "System-reminder injection for persistent cross-turn context in tirea agents"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
+keywords = ["agent", "llm", "reminder", "context"]
+categories = ["asynchronous"]
 
 [dependencies]
 tirea-state = { workspace = true, features = ["derive"] }

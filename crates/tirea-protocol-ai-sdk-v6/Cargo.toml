@@ -4,7 +4,9 @@ version.workspace = true
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
-description = "AI SDK v6 protocol types and adapters for tirea"
+description = "Vercel AI SDK v6 UI Message Stream encoding and input adapters for tirea"
+keywords = ["agent", "llm", "ai-sdk", "protocol"]
+categories = ["asynchronous", "encoding"]
 
 [dependencies]
 tirea-contract.workspace = true

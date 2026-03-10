@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords = ["state", "json-patch", "immutable", "deterministic"]
+categories = ["data-structures"]
 
 [dependencies]
 serde.workspace = true

@@ -2,9 +2,11 @@
 name = "tirea-extension-observability"
 version.workspace = true
 edition = "2021"
-description = "Observability extension for tirea"
+description = "LLM inference and tool-call telemetry aligned with OpenTelemetry GenAI conventions"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
+keywords = ["agent", "llm", "opentelemetry", "observability"]
+categories = ["asynchronous"]
 
 [dependencies]
 tirea-state.workspace = true
