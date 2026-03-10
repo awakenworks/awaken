@@ -303,20 +303,20 @@ impl State for DebugFlags {
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 enum DebugFlagAction {
-    SetRunStartSideEffect,
-    SetBeforeInferenceEffect,
-    SetAfterToolEffect,
+    RunStart,
+    BeforeInference,
+    AfterTool,
 }
 
 impl StateSpec for DebugFlags {
     type Action = DebugFlagAction;
     fn reduce(&mut self, action: DebugFlagAction) {
         match action {
-            DebugFlagAction::SetRunStartSideEffect => self.run_start_side_effect = Some(true),
-            DebugFlagAction::SetBeforeInferenceEffect => {
+            DebugFlagAction::RunStart => self.run_start_side_effect = Some(true),
+            DebugFlagAction::BeforeInference => {
                 self.before_inference_effect = Some(true);
             }
-            DebugFlagAction::SetAfterToolEffect => self.after_tool_effect = Some(true),
+            DebugFlagAction::AfterTool => self.after_tool_effect = Some(true),
         }
     }
 }
@@ -2423,7 +2423,7 @@ async fn test_tool_execute_effect_state_actions_become_pending_patches() {
                 json!({"ok": true}),
             ))
             .with_action(AnyStateAction::new::<DebugFlags>(
-                DebugFlagAction::SetAfterToolEffect,
+                DebugFlagAction::AfterTool,
             )))
         }
     }
@@ -4825,12 +4825,11 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
     let denied_tool_msg = final_thread
         .messages
         .iter()
-        .filter(|m| {
+        .find(|m| {
             m.role == crate::contracts::thread::Role::Tool
                 && m.tool_call_id.as_deref() == Some("call_1")
                 && m.content.contains("denied")
         })
-        .next()
         .expect("denied flow should append a tool error message for call_1");
     assert!(denied_tool_msg.content.contains("denied"));
 
@@ -8099,7 +8098,7 @@ impl RunStartSideEffectPlugin {
             return ActionSet::empty();
         }
         ActionSet::single(LifecycleAction::State(AnyStateAction::new::<DebugFlags>(
-            DebugFlagAction::SetRunStartSideEffect,
+            DebugFlagAction::RunStart,
         )))
     }
 }
@@ -9551,14 +9550,14 @@ fn test_parallel_tools_conflicting_state_actions_return_error() {
             "action_a".to_string(),
             Arc::new(ActionStateTool {
                 id: "action_a",
-                action: DebugFlagAction::SetRunStartSideEffect,
+                action: DebugFlagAction::RunStart,
             }) as Arc<dyn Tool>,
         );
         tools.insert(
             "action_b".to_string(),
             Arc::new(ActionStateTool {
                 id: "action_b",
-                action: DebugFlagAction::SetBeforeInferenceEffect,
+                action: DebugFlagAction::BeforeInference,
             }) as Arc<dyn Tool>,
         );
 

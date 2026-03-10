@@ -839,7 +839,7 @@ mod tests {
                         response.status,
                         status_text(response.status),
                         response.content_type,
-                        payload.as_bytes().len()
+                        payload.len()
                     );
                     let _ = stream.write_all(head.as_bytes()).await;
                     let _ = stream.write_all(payload.as_bytes()).await;
@@ -900,7 +900,7 @@ mod tests {
             spawn_http_server(Arc::new(|_| HttpResponseSpec::text(500, "upstream error"))).await;
         let cfg = McpServerConnectionConfig::http("http_error_status", endpoint);
         let transport = ProgressAwareHttpTransport::connect(&cfg).expect("connect transport");
-        let err = transport.list_tools().await.err().expect("error");
+        let err = transport.list_tools().await.expect_err("error");
         server.abort();
         assert!(matches!(err, McpTransportError::TransportError(_)));
         assert!(err.to_string().contains("HTTP error"));
@@ -912,7 +912,7 @@ mod tests {
             spawn_http_server(Arc::new(|_| HttpResponseSpec::text(200, "not-json"))).await;
         let cfg = McpServerConnectionConfig::http("http_invalid_json", endpoint);
         let transport = ProgressAwareHttpTransport::connect(&cfg).expect("connect transport");
-        let err = transport.list_tools().await.err().expect("error");
+        let err = transport.list_tools().await.expect_err("error");
         server.abort();
         assert!(matches!(err, McpTransportError::TransportError(_)));
         assert!(err.to_string().contains("Failed to parse JSON response"));
@@ -930,7 +930,7 @@ mod tests {
         .await;
         let cfg = McpServerConnectionConfig::http("http_rpc_error", endpoint);
         let transport = ProgressAwareHttpTransport::connect(&cfg).expect("connect transport");
-        let err = transport.list_tools().await.err().expect("error");
+        let err = transport.list_tools().await.expect_err("error");
         server.abort();
         assert!(matches!(err, McpTransportError::ServerError(_)));
         assert!(err.to_string().contains("rpc failed"));
@@ -954,8 +954,7 @@ mod tests {
         let err = transport
             .call_tool("echo", json!({"message":"x"}), None)
             .await
-            .err()
-            .expect("server error");
+            .expect_err("server error");
         server.abort();
         assert!(matches!(err, McpTransportError::ServerError(_)));
         assert!(err.to_string().contains("tool failed"));
@@ -1131,9 +1130,7 @@ mod tests {
             "id": 2,
             "result": {"content": [{"type": "text", "text": "ok"}]}
         });
-        let err = decode_http_response_payload(body, 1, None)
-            .err()
-            .expect("error");
+        let err = decode_http_response_payload(body, 1, None).expect_err("error");
         assert!(matches!(err, McpTransportError::ProtocolError(_)));
     }
 

@@ -57,7 +57,7 @@ mod tests {
             ctx = ctx.with_llm_response(response);
         }
 
-        if let Some(ref gate) = step.gate.as_ref() {
+        if let Some(gate) = step.gate.as_ref() {
             ctx = ctx.with_tool_info(gate.name.as_str(), gate.id.as_str(), Some(&gate.args));
             if let Some(ref result) = gate.result {
                 ctx = ctx.with_tool_result(result);

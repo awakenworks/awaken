@@ -1991,9 +1991,7 @@ async fn test_agui_pending_approval_resumes_and_replays_tool_call() {
         rebuilt
             .get("__tool_call_scope")
             .and_then(|v| v.as_object())
-            .map_or(true, |scopes| scopes
-                .values()
-                .all(|s| s.get("suspended_call").is_none())),
+            .is_none_or(|scopes| scopes.values().all(|s| s.get("suspended_call").is_none())),
         "suspended_interaction must be cleared after approval replay"
     );
 }
@@ -2050,9 +2048,7 @@ async fn test_agui_pending_denial_clears_pending_without_replay() {
         rebuilt
             .get("__tool_call_scope")
             .and_then(|v| v.as_object())
-            .map_or(true, |scopes| scopes
-                .values()
-                .all(|s| s.get("suspended_call").is_none())),
+            .is_none_or(|scopes| scopes.values().all(|s| s.get("suspended_call").is_none())),
         "suspended_interaction must be cleared after denial"
     );
 }
@@ -2125,9 +2121,7 @@ async fn test_ai_sdk_permission_approval_replays_backend_tool_call() {
         rebuilt
             .get("__tool_call_scope")
             .and_then(|v| v.as_object())
-            .map_or(true, |scopes| scopes
-                .values()
-                .all(|s| s.get("suspended_call").is_none())),
+            .is_none_or(|scopes| scopes.values().all(|s| s.get("suspended_call").is_none())),
         "suspended_interaction must be cleared after approval replay"
     );
 }
@@ -2197,9 +2191,7 @@ async fn test_ai_sdk_permission_denial_emits_output_denied_without_replay() {
         rebuilt
             .get("__tool_call_scope")
             .and_then(|v| v.as_object())
-            .map_or(true, |scopes| scopes
-                .values()
-                .all(|s| s.get("suspended_call").is_none())),
+            .is_none_or(|scopes| scopes.values().all(|s| s.get("suspended_call").is_none())),
         "suspended_interaction must be cleared after denial"
     );
 }
@@ -2458,9 +2450,7 @@ async fn test_ai_sdk_batch_approval_mode_replays_only_after_all_pending_decision
         second_state
             .get("__tool_call_scope")
             .and_then(|v| v.as_object())
-            .map_or(true, |scopes| scopes
-                .values()
-                .all(|s| s.get("suspended_call").is_none())),
+            .is_none_or(|scopes| scopes.values().all(|s| s.get("suspended_call").is_none())),
         "suspended calls must be cleared after full batch approval replay"
     );
 }
@@ -2530,9 +2520,7 @@ async fn test_ai_sdk_ask_output_available_replays_with_frontend_payload() {
         rebuilt
             .get("__tool_call_scope")
             .and_then(|v| v.as_object())
-            .map_or(true, |scopes| scopes
-                .values()
-                .all(|s| s.get("suspended_call").is_none())),
+            .is_none_or(|scopes| scopes.values().all(|s| s.get("suspended_call").is_none())),
         "suspended_interaction must be cleared after ask replay"
     );
 }

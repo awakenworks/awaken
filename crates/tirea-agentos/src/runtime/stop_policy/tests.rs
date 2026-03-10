@@ -129,7 +129,7 @@ fn consecutive_errors_reset_on_no_tool_round() {
 fn tool_call_history_caps_at_twenty() {
     let mut messages: Vec<Arc<Message>> = Vec::new();
     for i in 0..25 {
-        let call = ToolCall::new(&format!("c{i}"), &format!("tool_{i}"), json!({}));
+        let call = ToolCall::new(format!("c{i}"), format!("tool_{i}"), json!({}));
         messages.push(Arc::new(Message::assistant_with_tool_calls(
             format!("r{i}"),
             vec![call.clone()],
@@ -137,7 +137,7 @@ fn tool_call_history_caps_at_twenty() {
         messages.push(Arc::new(Message::tool(
             &call.id,
             serde_json::to_string(&ToolResult::success(
-                &format!("tool_{i}"),
+                format!("tool_{i}"),
                 json!({"ok": true}),
             ))
             .unwrap(),
@@ -294,7 +294,7 @@ fn stats_should_only_count_current_run_messages() {
     // Simulate a thread with 5 prior assistant turns from previous runs.
     let mut prior_messages: Vec<Arc<Message>> = Vec::new();
     for i in 0..5 {
-        let call = ToolCall::new(&format!("old-{i}"), "echo", json!({}));
+        let call = ToolCall::new(format!("old-{i}"), "echo", json!({}));
         prior_messages.push(Arc::new(Message::user(format!("u{i}"))));
         prior_messages.push(Arc::new(Message::assistant_with_tool_calls(
             format!("prior-{i}"),
@@ -334,7 +334,7 @@ fn consecutive_errors_do_not_leak_across_runs() {
     // Prior run: 3 rounds all failing.
     let mut messages: Vec<Arc<Message>> = Vec::new();
     for i in 0..3 {
-        let call = ToolCall::new(&format!("fail-{i}"), "broken", json!({}));
+        let call = ToolCall::new(format!("fail-{i}"), "broken", json!({}));
         messages.push(Arc::new(Message::user(format!("u{i}"))));
         messages.push(Arc::new(Message::assistant_with_tool_calls(
             format!("a{i}"),
@@ -372,7 +372,7 @@ fn tool_call_history_does_not_leak_across_runs() {
     // Prior run: 3 rounds calling the same tool "echo".
     let mut messages: Vec<Arc<Message>> = Vec::new();
     for i in 0..3 {
-        let call = ToolCall::new(&format!("old-{i}"), "echo", json!({}));
+        let call = ToolCall::new(format!("old-{i}"), "echo", json!({}));
         messages.push(Arc::new(Message::user(format!("u{i}"))));
         messages.push(Arc::new(Message::assistant_with_tool_calls(
             format!("a{i}"),
@@ -408,7 +408,7 @@ fn tool_call_history_does_not_leak_across_runs() {
 fn total_tool_call_count_does_not_leak_across_runs() {
     let mut messages: Vec<Arc<Message>> = Vec::new();
     for i in 0..4 {
-        let call = ToolCall::new(&format!("old-{i}"), "echo", json!({}));
+        let call = ToolCall::new(format!("old-{i}"), "echo", json!({}));
         messages.push(Arc::new(Message::user(format!("u{i}"))));
         messages.push(Arc::new(Message::assistant_with_tool_calls(
             format!("a{i}"),

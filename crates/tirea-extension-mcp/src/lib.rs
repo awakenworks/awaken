@@ -1026,7 +1026,7 @@ mod tests {
                         response.status,
                         http_status_text(response.status),
                         response.content_type,
-                        payload.as_bytes().len()
+                        payload.len()
                     );
                     let _ = stream.write_all(head.as_bytes()).await;
                     let _ = stream.write_all(payload.as_bytes()).await;
@@ -1361,7 +1361,7 @@ mod tests {
             .unwrap();
 
         fake.fail_next_list("temporary outage");
-        let _ = manager.refresh().await.err().expect("refresh should fail");
+        let _ = manager.refresh().await.expect_err("refresh should fail");
 
         let failed_health = manager.refresh_health();
         assert_eq!(failed_health.consecutive_failures, 1);
@@ -1625,7 +1625,7 @@ mod tests {
         );
 
         let desc = tool.descriptor();
-        assert!(desc.metadata.get(MCP_META_UI_RESOURCE_URI).is_none());
+        assert!(!desc.metadata.contains_key(MCP_META_UI_RESOURCE_URI));
     }
 
     #[tokio::test]
@@ -1686,7 +1686,7 @@ mod tests {
         let result = tool.execute(json!({}), &ctx).await.unwrap();
 
         assert!(result.is_success());
-        assert!(result.metadata.get(MCP_META_UI_CONTENT).is_none());
+        assert!(!result.metadata.contains_key(MCP_META_UI_CONTENT));
     }
 
     #[test]

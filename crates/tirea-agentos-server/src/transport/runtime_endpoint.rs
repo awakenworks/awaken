@@ -187,13 +187,12 @@ mod tests {
                 }
             });
 
-        let run = RunStream {
+        RunStream {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
             decision_tx,
             events: stream,
-        };
-        run
+        }
     }
 
     fn fake_starter(events: Vec<AgentEvent>) -> RunStarter {

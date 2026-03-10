@@ -226,7 +226,7 @@ async fn spawn_http_server(
                     response.status,
                     http_status_text(response.status),
                     response.content_type,
-                    payload.as_bytes().len()
+                    payload.len()
                 );
                 let _ = stream.write_all(head.as_bytes()).await;
                 let _ = stream.write_all(payload.as_bytes()).await;

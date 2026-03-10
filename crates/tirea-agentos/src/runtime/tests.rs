@@ -1091,8 +1091,7 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
             .agent
             .behavior
             .behavior_ids()
-            .iter()
-            .any(|id| *id == "stop_policy"),
+            .contains(&"stop_policy"),
         "resolved agent should carry stop policy via behavior"
     );
 
@@ -1413,12 +1412,7 @@ async fn resolve_wires_plugins_from_registry() {
         .unwrap();
 
     let resolved = os.resolve("a1").unwrap();
-    assert!(resolved
-        .agent
-        .behavior
-        .behavior_ids()
-        .iter()
-        .any(|id| *id == "p1"));
+    assert!(resolved.agent.behavior.behavior_ids().contains(&"p1"));
 
     let doc = tirea_state::DocCell::new(json!({}));
     let run_policy = crate::contracts::RunPolicy::new();
@@ -3375,9 +3369,9 @@ async fn prepare_run_scope_appends_plugins() {
         .unwrap();
 
     let behavior_ids = prepared.agent.behavior().behavior_ids();
-    assert!(behavior_ids.iter().any(|id| *id == "run_scoped"));
+    assert!(behavior_ids.contains(&"run_scoped"));
     // System plugins should still be present
-    assert!(behavior_ids.iter().any(|id| *id == "agent_tools"));
+    assert!(behavior_ids.contains(&"agent_tools"));
 }
 
 #[tokio::test]
@@ -3591,8 +3585,7 @@ async fn resolve_wires_stop_conditions_from_registry() {
             .agent
             .behavior
             .behavior_ids()
-            .iter()
-            .any(|id| *id == "stop_policy"),
+            .contains(&"stop_policy"),
         "stop policies should be handled by stop_policy behavior"
     );
 }

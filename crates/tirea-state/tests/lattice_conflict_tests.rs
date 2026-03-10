@@ -126,7 +126,7 @@ async fn test_concurrent_flag_enable() {
 #[tokio::test]
 async fn test_set_vs_lattice_merge_still_conflicts() {
     let manager = StateManager::new(json!({
-        "counter": serde_json::to_value(&GCounter::new()).unwrap(),
+        "counter": serde_json::to_value(GCounter::new()).unwrap(),
     }));
 
     manager
@@ -140,7 +140,7 @@ async fn test_set_vs_lattice_merge_still_conflicts() {
         make_patch(
             vec![Op::set(
                 Path::root().key("counter"),
-                serde_json::to_value(&GCounter::new()).unwrap(),
+                serde_json::to_value(GCounter::new()).unwrap(),
             )],
             "setter",
         ),

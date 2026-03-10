@@ -50,7 +50,7 @@ pub trait Action: Send + 'static {
 mod tests {
     use super::*;
 
-    struct DummyAction(String);
+    struct DummyAction;
 
     impl Action for DummyAction {
         fn label(&self) -> &'static str {
@@ -72,19 +72,19 @@ mod tests {
 
     #[test]
     fn action_label() {
-        let action = DummyAction("test".into());
+        let action = DummyAction;
         assert_eq!(action.label(), "dummy");
     }
 
     #[test]
     fn action_validate_ok() {
-        let action = DummyAction("test".into());
+        let action = DummyAction;
         assert!(action.validate(Phase::BeforeInference).is_ok());
     }
 
     #[test]
     fn action_validate_err() {
-        let action = DummyAction("test".into());
+        let action = DummyAction;
         assert!(action.validate(Phase::RunStart).is_err());
     }
 }

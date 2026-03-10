@@ -87,7 +87,7 @@ mod tests {
         let merger = registry.get(&path!("counter")).unwrap();
 
         // Merge into None (missing field)
-        let delta = serde_json::to_value(&GCounter::new()).unwrap();
+        let delta = serde_json::to_value(GCounter::new()).unwrap();
         let result = merger.merge(None, &delta).unwrap();
         assert_eq!(result, delta);
     }

@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+// Shared integration-test helpers are compiled into every test target, but each
+// target intentionally uses only the subset it needs.
+
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};

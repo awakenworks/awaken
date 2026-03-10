@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 #[test]
 fn lattice_compile_errors() {
     let t = trybuild::TestCases::new();

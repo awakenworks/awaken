@@ -7137,7 +7137,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
         .and_then(|a| a.get("calls"))
         .and_then(|v| v.as_object());
     assert!(
-        pending_after.map_or(true, |calls| calls.is_empty()),
+        pending_after.is_none_or(|calls| calls.is_empty()),
         "suspended_interaction should be cleared after approval, got: {:?}",
         pending_after
     );

@@ -101,27 +101,27 @@ mod tests {
     fn estimate_tokens_ascii() {
         // "Hello world" = 11 chars → ~3 tokens
         let tokens = estimate_tokens("Hello world");
-        assert!(tokens >= 2 && tokens <= 5, "got {tokens}");
+        assert!((2..=5).contains(&tokens), "got {tokens}");
     }
 
     #[test]
     fn estimate_tokens_cjk() {
         // "你好世界" = 4 CJK chars → ~3 tokens
         let tokens = estimate_tokens("你好世界");
-        assert!(tokens >= 2 && tokens <= 5, "got {tokens}");
+        assert!((2..=5).contains(&tokens), "got {tokens}");
     }
 
     #[test]
     fn estimate_tokens_mixed() {
         let tokens = estimate_tokens("Hello 你好 world 世界");
-        assert!(tokens >= 4 && tokens <= 10, "got {tokens}");
+        assert!((4..=10).contains(&tokens), "got {tokens}");
     }
 
     #[test]
     fn estimate_tokens_code_block() {
         let code = "fn main() {\n    let x = compute(42);\n    return x;\n}";
         let tokens = estimate_tokens(code);
-        assert!(tokens >= 8 && tokens <= 20, "got {tokens}");
+        assert!((8..=20).contains(&tokens), "got {tokens}");
     }
 
     #[test]

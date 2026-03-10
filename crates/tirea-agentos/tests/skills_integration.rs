@@ -249,7 +249,7 @@ async fn test_load_reference_returns_content_in_tool_result() {
     assert!(
         result.data["content"]
             .as_str()
-            .map_or(false, |s| !s.is_empty()),
+            .is_some_and(|s| !s.is_empty()),
         "expected non-empty content in tool result"
     );
 }
@@ -316,7 +316,7 @@ async fn test_load_asset_returns_metadata_in_tool_result() {
     assert!(
         result.data["content"]
             .as_str()
-            .map_or(false, |s| !s.is_empty()),
+            .is_some_and(|s| !s.is_empty()),
         "expected non-empty content in tool result"
     );
 }

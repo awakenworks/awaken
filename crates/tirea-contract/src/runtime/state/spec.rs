@@ -299,15 +299,9 @@ mod tests {
 
     // -- Manual State + StateSpec impl for testing --
 
-    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
     struct Counter {
         value: i64,
-    }
-
-    impl Default for Counter {
-        fn default() -> Self {
-            Self { value: 0 }
-        }
     }
 
     struct CounterRef;

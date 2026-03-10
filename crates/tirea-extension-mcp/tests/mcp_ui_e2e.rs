@@ -115,7 +115,7 @@ async fn tool_without_ui_has_no_ui_metadata() {
 
     let descriptor = tool.descriptor();
     assert!(
-        descriptor.metadata.get("mcp.ui.resourceUri").is_none(),
+        !descriptor.metadata.contains_key("mcp.ui.resourceUri"),
         "descriptor should not have mcp.ui.resourceUri"
     );
 
@@ -124,8 +124,8 @@ async fn tool_without_ui_has_no_ui_metadata() {
     let result = tool.execute(json!({}), &ctx).await.unwrap();
 
     assert!(result.is_success());
-    assert!(result.metadata.get("mcp.ui.content").is_none());
-    assert!(result.metadata.get("mcp.ui.mimeType").is_none());
+    assert!(!result.metadata.contains_key("mcp.ui.content"));
+    assert!(!result.metadata.contains_key("mcp.ui.mimeType"));
 }
 
 #[tokio::test]
@@ -153,7 +153,7 @@ async fn ui_resource_fetch_failure_does_not_break_tool_result() {
         "tool result should succeed even when UI resource fetch fails"
     );
     assert!(
-        result.metadata.get("mcp.ui.content").is_none(),
+        !result.metadata.contains_key("mcp.ui.content"),
         "no UI content when fetch fails"
     );
 }
@@ -180,13 +180,11 @@ async fn mixed_tools_with_and_without_ui() {
     assert!(ui_tool
         .descriptor()
         .metadata
-        .get("mcp.ui.resourceUri")
-        .is_some());
-    assert!(no_ui_tool
+        .contains_key("mcp.ui.resourceUri"));
+    assert!(!no_ui_tool
         .descriptor()
         .metadata
-        .get("mcp.ui.resourceUri")
-        .is_none());
+        .contains_key("mcp.ui.resourceUri"));
 
     let fix = tirea_contract::testing::TestFixture::new();
 
@@ -199,5 +197,5 @@ async fn mixed_tools_with_and_without_ui() {
 
     let ctx2 = fix.ctx_with("no-ui-exec", "test");
     let no_ui_result = no_ui_tool.execute(json!({}), &ctx2).await.unwrap();
-    assert!(no_ui_result.metadata.get("mcp.ui.content").is_none());
+    assert!(!no_ui_result.metadata.contains_key("mcp.ui.content"));
 }

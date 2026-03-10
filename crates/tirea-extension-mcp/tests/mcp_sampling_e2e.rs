@@ -149,13 +149,16 @@ mod duplex_sampling {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
     use tokio::sync::{mpsc, oneshot};
 
+    type PendingRequestMap =
+        Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, McpTransportError>>>>>;
+
     struct WriteRequest {
         line: String,
     }
 
     pub struct DuplexTransport {
         write_tx: mpsc::Sender<WriteRequest>,
-        pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, McpTransportError>>>>>,
+        pending: PendingRequestMap,
         next_id: AtomicI64,
     }
 
@@ -165,9 +168,7 @@ mod duplex_sampling {
             sampling_handler: Option<Arc<dyn SamplingHandler>>,
         ) -> Result<Self, McpTransportError> {
             let (reader_half, writer_half) = tokio::io::split(stream);
-            let pending: Arc<
-                Mutex<HashMap<i64, oneshot::Sender<Result<Value, McpTransportError>>>>,
-            > = Arc::new(Mutex::new(HashMap::new()));
+            let pending: PendingRequestMap = Arc::new(Mutex::new(HashMap::new()));
 
             let (write_tx, mut write_rx) = mpsc::channel::<WriteRequest>(256);
 
