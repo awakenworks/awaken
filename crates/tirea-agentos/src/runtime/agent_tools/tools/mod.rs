@@ -57,22 +57,6 @@ pub(super) fn scope_run_id(scope: Option<&tirea_contract::RunConfig>) -> Option<
     scope_string(scope, SCOPE_RUN_ID_KEY)
 }
 
-pub(super) fn required_bool(args: &Value, key: &str, default: bool) -> bool {
-    args.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
-}
-
-pub(super) fn optional_string(args: &Value, key: &str) -> Option<String> {
-    args.get(key)
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(str::to_string)
-}
-
-pub(super) fn required_string(args: &Value, key: &str) -> Result<String, ToolArgError> {
-    optional_string(args, key)
-        .ok_or_else(|| ToolArgError::new("invalid_arguments", format!("missing '{key}'")))
-}
 
 pub(super) fn parse_caller_messages(
     scope: Option<&tirea_contract::RunConfig>,

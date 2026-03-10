@@ -3,6 +3,31 @@ use crate::runtime::background_tasks::{
     BackgroundTaskManager, NewTaskSpec, SpawnParams, TaskResult as BgTaskResult, TaskStatus,
     TaskStore, TaskStoreError,
 };
+use schemars::JsonSchema;
+use serde::Deserialize;
+
+/// Arguments for the agent run tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AgentRunArgs {
+    /// Target agent id (required for new runs).
+    pub agent_id: Option<String>,
+    /// Input for the target agent.
+    pub prompt: Option<String>,
+    /// Existing run id to resume or inspect.
+    pub run_id: Option<String>,
+    /// Whether to fork caller state/messages into the new run.
+    #[serde(default)]
+    pub fork_context: bool,
+    /// true: run in background; false: wait for completion.
+    #[serde(default)]
+    pub background: bool,
+}
+
+/// Normalize optional string: trim whitespace and treat empty as None.
+fn normalize_opt(s: Option<String>) -> Option<String> {
+    s.map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
 
 /// Task type used when registering sub-agent background runs with [`BackgroundTaskManager`].
 pub(crate) const AGENT_RUN_TASK_TYPE: &str = "agent_run";
@@ -287,34 +312,29 @@ impl AgentRunTool {
 }
 
 #[async_trait]
-impl Tool for AgentRunTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new(
-            AGENT_RUN_TOOL_ID,
-            "Agent Run",
-            "Run or resume a registry agent; can run in background",
-        )
-        .with_parameters(json!({
-            "type": "object",
-            "properties": {
-                "agent_id": { "type": "string", "description": "Target agent id (required for new runs)" },
-                "prompt": { "type": "string", "description": "Input for the target agent" },
-                "run_id": { "type": "string", "description": "Existing run id to resume or inspect" },
-                "fork_context": { "type": "boolean", "description": "Whether to fork caller state/messages into the new run" },
-                "background": { "type": "boolean", "description": "true: run in background; false: wait for completion" }
-            }
-        }))
+impl crate::contracts::runtime::tool_call::TypedTool for AgentRunTool {
+    type Args = AgentRunArgs;
+
+    fn tool_id(&self) -> &str {
+        AGENT_RUN_TOOL_ID
+    }
+    fn name(&self) -> &str {
+        "Agent Run"
+    }
+    fn description(&self) -> &str {
+        "Run or resume a registry agent; can run in background"
     }
 
     async fn execute(
         &self,
-        args: Value,
+        args: AgentRunArgs,
         ctx: &ToolCallContext<'_>,
-    ) -> Result<ToolResult, crate::contracts::runtime::tool_call::ToolError> {
+    ) -> Result<ToolResult, ToolError> {
         let tool_name = AGENT_RUN_TOOL_ID;
-        let run_id = optional_string(&args, "run_id");
-        let background = required_bool(&args, "background", false);
-        let fork_context = required_bool(&args, "fork_context", false);
+        let run_id = normalize_opt(args.run_id);
+        let prompt = normalize_opt(args.prompt);
+        let background = args.background;
+        let fork_context = args.fork_context;
 
         let scope = ctx.run_config();
         let owner_thread_id = scope_string(Some(scope), SCOPE_CALLER_SESSION_ID_KEY);
@@ -370,7 +390,7 @@ impl Tool for AgentRunTool {
                         }
 
                         let mut messages = Vec::new();
-                        if let Some(prompt) = optional_string(&args, "prompt") {
+                        if let Some(prompt) = prompt {
                             messages.push(Message::user(prompt));
                         }
 
@@ -476,7 +496,7 @@ impl Tool for AgentRunTool {
                     }
 
                     let mut messages = Vec::new();
-                    if let Some(prompt) = optional_string(&args, "prompt") {
+                    if let Some(prompt) = prompt {
                         messages.push(Message::user(prompt));
                     }
 
@@ -502,13 +522,16 @@ impl Tool for AgentRunTool {
         }
 
         // ── New run ────────────────────────────────────────────────
-        let target_agent_id = match required_string(&args, "agent_id") {
-            Ok(v) => v,
-            Err(err) => return Ok(err.into_tool_result(tool_name)),
+        let target_agent_id = normalize_opt(args.agent_id);
+        let Some(target_agent_id) = target_agent_id else {
+            return Ok(ToolArgError::new("invalid_arguments", "missing 'agent_id'")
+                .into_tool_result(tool_name));
         };
-        let prompt = match required_string(&args, "prompt") {
-            Ok(v) => v,
-            Err(err) => return Ok(err.into_tool_result(tool_name)),
+        let Some(prompt) = prompt else {
+            return Ok(
+                ToolArgError::new("invalid_arguments", "missing 'prompt'")
+                    .into_tool_result(tool_name),
+            );
         };
 
         if let Err(error) =

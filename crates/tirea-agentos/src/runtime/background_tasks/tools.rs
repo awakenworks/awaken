@@ -5,11 +5,11 @@
 
 use super::manager::BackgroundTaskManager;
 use super::{TaskState, TaskStatus, TaskStore, TaskSummary};
-use crate::contracts::runtime::tool_call::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
-};
+use crate::contracts::runtime::tool_call::{ToolCallContext, ToolError, ToolResult};
 use crate::contracts::storage::ThreadStore;
 use async_trait::async_trait;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,18 +17,6 @@ use std::sync::Arc;
 pub const TASK_STATUS_TOOL_ID: &str = "task_status";
 pub const TASK_CANCEL_TOOL_ID: &str = "task_cancel";
 pub const TASK_OUTPUT_TOOL_ID: &str = "task_output";
-
-#[allow(clippy::result_large_err)]
-fn required_string_for<'a>(
-    args: &'a Value,
-    key: &str,
-    tool_name: &str,
-) -> Result<&'a str, ToolResult> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| ToolResult::error(tool_name, format!("Missing required parameter: {key}")))
-}
 
 fn owner_thread_id(ctx: &ToolCallContext<'_>) -> Option<String> {
     ctx.run_config()
@@ -113,29 +101,30 @@ impl TaskStatusTool {
     }
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TaskStatusArgs {
+    /// Task ID to query. Omit to list all tasks.
+    task_id: Option<String>,
+}
+
 #[async_trait]
-impl Tool for TaskStatusTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new(
-            TASK_STATUS_TOOL_ID,
-            "Task Status",
-            "Check the status and result of background tasks. \
-             Provide task_id to query a specific task, or omit to list all tasks.",
-        )
-        .with_parameters(json!({
-            "type": "object",
-            "properties": {
-                "task_id": {
-                    "type": "string",
-                    "description": "Task ID to query. Omit to list all tasks."
-                }
-            }
-        }))
+impl crate::contracts::runtime::tool_call::TypedTool for TaskStatusTool {
+    type Args = TaskStatusArgs;
+
+    fn tool_id(&self) -> &str {
+        TASK_STATUS_TOOL_ID
+    }
+    fn name(&self) -> &str {
+        "Task Status"
+    }
+    fn description(&self) -> &str {
+        "Check the status and result of background tasks. \
+         Provide task_id to query a specific task, or omit to list all tasks."
     }
 
     async fn execute(
         &self,
-        args: Value,
+        args: TaskStatusArgs,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         let Some(thread_id) = owner_thread_id(ctx) else {
@@ -145,7 +134,7 @@ impl Tool for TaskStatusTool {
             ));
         };
 
-        let task_id = args.get("task_id").and_then(Value::as_str);
+        let task_id = args.task_id.as_deref().filter(|s| !s.trim().is_empty());
 
         if let Some(task_id) = task_id {
             match self.query_one(&thread_id, task_id).await {
@@ -199,36 +188,40 @@ impl TaskCancelTool {
     }
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TaskCancelArgs {
+    /// The task ID to cancel.
+    task_id: String,
+}
+
 #[async_trait]
-impl Tool for TaskCancelTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new(
-            TASK_CANCEL_TOOL_ID,
-            "Task Cancel",
-            "Cancel a running background task by task_id. \
-             Descendant tasks are cancelled automatically.",
-        )
-        .with_parameters(json!({
-            "type": "object",
-            "properties": {
-                "task_id": {
-                    "type": "string",
-                    "description": "The task ID to cancel"
-                }
-            },
-            "required": ["task_id"]
-        }))
+impl crate::contracts::runtime::tool_call::TypedTool for TaskCancelTool {
+    type Args = TaskCancelArgs;
+
+    fn tool_id(&self) -> &str {
+        TASK_CANCEL_TOOL_ID
+    }
+    fn name(&self) -> &str {
+        "Task Cancel"
+    }
+    fn description(&self) -> &str {
+        "Cancel a running background task by task_id. \
+         Descendant tasks are cancelled automatically."
+    }
+
+    fn validate(&self, args: &Self::Args) -> Result<(), String> {
+        if args.task_id.trim().is_empty() {
+            return Err("task_id cannot be empty".to_string());
+        }
+        Ok(())
     }
 
     async fn execute(
         &self,
-        args: Value,
+        args: TaskCancelArgs,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
-        let task_id = match required_string_for(&args, "task_id", TASK_CANCEL_TOOL_ID) {
-            Ok(v) => v,
-            Err(err) => return Ok(err),
-        };
+        let task_id = &args.task_id;
 
         let Some(thread_id) = owner_thread_id(ctx) else {
             return Ok(ToolResult::error(
@@ -301,41 +294,43 @@ impl TaskOutputTool {
     }
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TaskOutputArgs {
+    /// The task ID to read output from.
+    task_id: String,
+}
+
 #[async_trait]
-impl Tool for TaskOutputTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new(
-            TASK_OUTPUT_TOOL_ID,
-            "Task Output",
-            "Read the output of a background task. \
-             For agent runs, returns the last assistant message. \
-             For other tasks, returns the task result.",
-        )
-        .with_parameters(json!({
-            "type": "object",
-            "properties": {
-                "task_id": {
-                    "type": "string",
-                    "description": "The task ID to read output from"
-                }
-            },
-            "required": ["task_id"]
-        }))
+impl crate::contracts::runtime::tool_call::TypedTool for TaskOutputTool {
+    type Args = TaskOutputArgs;
+
+    fn tool_id(&self) -> &str {
+        TASK_OUTPUT_TOOL_ID
+    }
+    fn name(&self) -> &str {
+        "Task Output"
+    }
+    fn description(&self) -> &str {
+        "Read the output of a background task. \
+         For agent runs, returns the last assistant message. \
+         For other tasks, returns the task result."
+    }
+
+    fn validate(&self, args: &Self::Args) -> Result<(), String> {
+        if args.task_id.trim().is_empty() {
+            return Err("task_id cannot be empty".to_string());
+        }
+        Ok(())
     }
 
     async fn execute(
         &self,
-        args: Value,
+        args: TaskOutputArgs,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
-        let task_id = match required_string_for(&args, "task_id", TASK_OUTPUT_TOOL_ID) {
-            Ok(v) => v,
-            Err(err) => return Ok(err),
-        };
+        let task_id = &args.task_id;
 
-        let thread_id = owner_thread_id(ctx);
-
-        let Some(thread_id) = thread_id else {
+        let Some(thread_id) = owner_thread_id(ctx) else {
             return Ok(ToolResult::error(
                 TASK_OUTPUT_TOOL_ID,
                 "Missing caller thread context",
@@ -414,6 +409,7 @@ impl TaskOutputTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::runtime::tool_call::Tool;
     use crate::contracts::storage::ThreadStore;
     use crate::contracts::RunConfig;
     use crate::runtime::background_tasks::SpawnParams;
@@ -437,9 +433,10 @@ mod tests {
         let tool = TaskStatusTool::new(mgr);
         let desc = tool.descriptor();
         assert_eq!(desc.id, TASK_STATUS_TOOL_ID);
-        // task_id is not in "required".
+        // task_id is not in "required" — it's Option<String>.
         let required = desc.parameters.get("required");
         assert!(required.is_none() || required.unwrap().as_array().unwrap().is_empty());
+        assert!(desc.parameters["properties"].get("task_id").is_some());
     }
 
     #[test]
@@ -450,7 +447,6 @@ mod tests {
         assert_eq!(desc.id, TASK_CANCEL_TOOL_ID);
         let required = desc.parameters["required"].as_array().unwrap();
         assert!(required.contains(&json!("task_id")));
-        assert!(desc.parameters["properties"].get("tree").is_none());
     }
 
     // -----------------------------------------------------------------------
@@ -677,13 +673,8 @@ mod tests {
         let mgr = Arc::new(BackgroundTaskManager::new());
         let tool = TaskCancelTool::new(mgr);
         let fix = fixture_with_thread("thread-1");
-        let result = tool.execute(json!({}), &fix.ctx()).await.unwrap();
-        assert!(!result.is_success());
-        assert!(result
-            .message
-            .as_deref()
-            .unwrap_or("")
-            .contains("Missing required parameter"));
+        let err = tool.execute(json!({}), &fix.ctx()).await.unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArguments(_)));
     }
 
     #[tokio::test]
@@ -912,13 +903,8 @@ mod tests {
         let mgr = Arc::new(BackgroundTaskManager::new());
         let tool = TaskOutputTool::new(mgr, None);
         let fix = fixture_with_thread("thread-1");
-        let result = tool.execute(json!({}), &fix.ctx()).await.unwrap();
-        assert!(!result.is_success());
-        assert!(result
-            .message
-            .as_deref()
-            .unwrap_or("")
-            .contains("Missing required parameter"));
+        let err = tool.execute(json!({}), &fix.ctx()).await.unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArguments(_)));
     }
 
     #[tokio::test]

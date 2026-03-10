@@ -2,7 +2,7 @@ use super::policy::{is_scope_allowed, SCOPE_ALLOWED_AGENTS_KEY, SCOPE_EXCLUDED_A
 use super::AgentOs;
 use crate::composition::AgentRegistry;
 use crate::contracts::runtime::tool_call::{
-    Tool, ToolDescriptor, ToolResult, TOOL_SCOPE_PARENT_TOOL_CALL_ID_KEY,
+    ToolError, ToolResult, TOOL_SCOPE_PARENT_TOOL_CALL_ID_KEY,
 };
 use crate::contracts::thread::{Message, Role, ToolCall};
 use crate::contracts::{AgentEvent, Suspension};
