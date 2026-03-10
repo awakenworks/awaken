@@ -28,11 +28,12 @@ pub use tools::{
     TaskCancelTool, TaskOutputTool, TaskStatusTool, TASK_CANCEL_TOOL_ID, TASK_OUTPUT_TOOL_ID,
     TASK_STATUS_TOOL_ID,
 };
-pub(crate) use types::legacy_tasks_from_doc;
+pub(crate) use types::{derived_task_view_from_doc, legacy_tasks_from_doc};
 #[allow(unused_imports)]
 pub use types::{
     new_task_id, task_thread_id, BackgroundTask, BackgroundTaskAction, BackgroundTaskState,
-    TaskAction, TaskId, TaskResult, TaskResultRef, TaskState, TaskStatus, TaskSummary,
-    TASK_THREAD_KIND_METADATA_KEY, TASK_THREAD_KIND_METADATA_VALUE, TASK_THREAD_PREFIX,
+    BackgroundTaskView, BackgroundTaskViewAction, BackgroundTaskViewState, TaskAction, TaskId,
+    TaskResult, TaskResultRef, TaskState, TaskStatus, TaskSummary, TASK_THREAD_KIND_METADATA_KEY,
+    TASK_THREAD_KIND_METADATA_VALUE, TASK_THREAD_PREFIX,
 };
 pub use wrapper::{BackgroundCapable, BackgroundExecutable};

@@ -16,11 +16,11 @@ mod tests;
 
 pub use background_tasks::{
     BackgroundCapable, BackgroundExecutable, BackgroundTask, BackgroundTaskAction,
-    BackgroundTaskManager, BackgroundTaskState, BackgroundTasksPlugin, NewTaskSpec, TaskAction,
-    TaskCancelTool, TaskCompletionNotifier, TaskId, TaskOutputTool, TaskPersistenceNotifier,
-    TaskResult, TaskResultRef, TaskState, TaskStatus, TaskStatusTool, TaskStore, TaskStoreError,
-    TaskSummary, BACKGROUND_TASKS_PLUGIN_ID, TASK_CANCEL_TOOL_ID, TASK_OUTPUT_TOOL_ID,
-    TASK_STATUS_TOOL_ID,
+    BackgroundTaskManager, BackgroundTaskState, BackgroundTaskView, BackgroundTaskViewAction,
+    BackgroundTaskViewState, BackgroundTasksPlugin, NewTaskSpec, TaskAction, TaskCancelTool,
+    TaskCompletionNotifier, TaskId, TaskOutputTool, TaskPersistenceNotifier, TaskResult,
+    TaskResultRef, TaskState, TaskStatus, TaskStatusTool, TaskStore, TaskStoreError, TaskSummary,
+    BACKGROUND_TASKS_PLUGIN_ID, TASK_CANCEL_TOOL_ID, TASK_OUTPUT_TOOL_ID, TASK_STATUS_TOOL_ID,
 };
 pub use behavior::compose_behaviors;
 pub use errors::{AgentOsResolveError, AgentOsRunError};

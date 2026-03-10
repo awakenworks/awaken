@@ -231,9 +231,9 @@ impl AgentOs {
             Arc::new(TaskCancelTool::new(mgr.clone()).with_task_store(task_store.clone()));
         let output_tool: Arc<dyn Tool> = Arc::new(
             TaskOutputTool::new(mgr.clone(), self.agent_state_store.clone())
-                .with_task_store(task_store),
+                .with_task_store(task_store.clone()),
         );
-        let plugin = BackgroundTasksPlugin::new(mgr);
+        let plugin = BackgroundTasksPlugin::new(mgr).with_task_store(task_store);
 
         let bundle: Arc<dyn RegistryBundle> = Arc::new(
             ToolBehaviorBundle::new(BACKGROUND_TASKS_PLUGIN_ID)

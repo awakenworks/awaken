@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use tirea_state::State;
+use tirea_state::{get_at_path, parse_path, State};
 
 /// Unique identifier for a background task.
 pub type TaskId = String;
@@ -127,6 +127,73 @@ pub struct TaskSummary {
         skip_serializing_if = "is_null_or_empty_object"
     )]
     pub metadata: Value,
+}
+
+/// Lightweight derived projection for prompt injection and UI summaries on the
+/// owner thread. This is a cache, not the source of truth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackgroundTaskView {
+    pub task_type: String,
+    pub description: String,
+    pub status: TaskStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<TaskId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+}
+
+impl BackgroundTaskView {
+    pub fn from_summary(summary: &TaskSummary) -> Self {
+        Self {
+            task_type: summary.task_type.clone(),
+            description: summary.description.clone(),
+            status: summary.status,
+            parent_task_id: summary.parent_task_id.clone(),
+            agent_id: summary
+                .metadata
+                .get("agent_id")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+        }
+    }
+}
+
+/// Lightweight cached task view stored on the owner thread for prompt
+/// injection. The canonical task state remains in the task thread.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[tirea(
+    path = "__derived.background_tasks",
+    action = "BackgroundTaskViewAction",
+    scope = "thread"
+)]
+pub struct BackgroundTaskViewState {
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[tirea(default = "std::collections::HashMap::new()")]
+    pub tasks: HashMap<String, BackgroundTaskView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synced_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum BackgroundTaskViewAction {
+    Replace {
+        tasks: HashMap<String, BackgroundTaskView>,
+        synced_at_ms: u64,
+    },
+}
+
+impl BackgroundTaskViewState {
+    fn reduce(&mut self, action: BackgroundTaskViewAction) {
+        match action {
+            BackgroundTaskViewAction::Replace {
+                tasks,
+                synced_at_ms,
+            } => {
+                self.tasks = tasks;
+                self.synced_at_ms = Some(synced_at_ms);
+            }
+        }
+    }
 }
 
 /// Durable task state stored inside a dedicated task thread (`task:<task_id>`).
@@ -361,5 +428,11 @@ pub(crate) fn legacy_tasks_from_doc(doc: &Value) -> HashMap<String, BackgroundTa
     doc.get(BackgroundTaskState::PATH)
         .and_then(|v| BackgroundTaskState::from_value(v).ok())
         .map(|state| state.tasks)
+        .unwrap_or_default()
+}
+
+pub(crate) fn derived_task_view_from_doc(doc: &Value) -> BackgroundTaskViewState {
+    get_at_path(doc, &parse_path(BackgroundTaskViewState::PATH))
+        .and_then(|value| BackgroundTaskViewState::from_value(value).ok())
         .unwrap_or_default()
 }

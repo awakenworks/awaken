@@ -1383,12 +1383,19 @@ async fn integration_background_tasks_plugin_includes_all_task_types() {
     );
 
     let actions = plugin.after_tool_execute(&ctx).await;
-    assert_eq!(actions.len(), 1);
-
-    let reminder = match actions.into_iter().next().unwrap() {
-        crate::contracts::runtime::phase::AfterToolExecuteAction::AddSystemReminder(s) => s,
-        _ => panic!("unexpected action variant"),
-    };
+    let mut reminder = None;
+    for action in actions {
+        match action {
+            crate::contracts::runtime::phase::AfterToolExecuteAction::AddSystemReminder(s) => {
+                reminder = Some(s);
+            }
+            crate::contracts::runtime::phase::AfterToolExecuteAction::State(_) => {}
+            crate::contracts::runtime::phase::AfterToolExecuteAction::AddUserMessage(_) => {
+                panic!("unexpected user message action")
+            }
+        }
+    }
+    let reminder = reminder.expect("background tasks reminder should be emitted");
     // All task types should now appear in the unified reminder.
     assert!(
         reminder.contains("build project"),
