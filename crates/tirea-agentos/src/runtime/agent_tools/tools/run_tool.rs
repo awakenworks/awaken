@@ -1,7 +1,7 @@
 use super::*;
 use crate::runtime::background_tasks::{
-    BackgroundTaskManager, NewTaskSpec, TaskResult as BgTaskResult, TaskStatus, TaskStore,
-    TaskStoreError,
+    BackgroundTaskManager, NewTaskSpec, SpawnParams, TaskResult as BgTaskResult, TaskStatus,
+    TaskStore, TaskStoreError,
 };
 
 /// Task type used when registering sub-agent background runs with [`BackgroundTaskManager`].
@@ -167,13 +167,15 @@ impl AgentRunTool {
 
             self.bg_manager
                 .spawn_with_id(
-                    run_id.clone(),
-                    &owner_thread_id,
-                    AGENT_RUN_TASK_TYPE,
-                    &description,
+                    SpawnParams {
+                        task_id: run_id.clone(),
+                        owner_thread_id,
+                        task_type: AGENT_RUN_TASK_TYPE.to_string(),
+                        description,
+                        parent_task_id: parent_run_id.clone(),
+                        metadata,
+                    },
                     token.clone(),
-                    parent_run_id.as_deref(),
-                    metadata,
                     move |_cancel| async move {
                         let completion = execute_sub_agent(
                             os,

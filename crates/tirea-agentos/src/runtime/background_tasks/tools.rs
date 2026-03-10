@@ -18,6 +18,7 @@ pub const TASK_STATUS_TOOL_ID: &str = "task_status";
 pub const TASK_CANCEL_TOOL_ID: &str = "task_cancel";
 pub const TASK_OUTPUT_TOOL_ID: &str = "task_output";
 
+#[allow(clippy::result_large_err)]
 fn required_string_for<'a>(
     args: &'a Value,
     key: &str,
@@ -415,6 +416,7 @@ mod tests {
     use super::*;
     use crate::contracts::storage::ThreadStore;
     use crate::contracts::RunConfig;
+    use crate::runtime::background_tasks::SpawnParams;
     use tirea_contract::testing::TestFixture;
 
     const THREAD_ID_KEY: &str = "__agent_tool_caller_thread_id";
@@ -716,13 +718,15 @@ mod tests {
         let child_token = crate::loop_runtime::loop_runner::RunCancellationToken::new();
 
         mgr.spawn_with_id(
-            "root".to_string(),
-            "thread-1",
-            "agent_run",
-            "agent:root",
+            SpawnParams {
+                task_id: "root".to_string(),
+                owner_thread_id: "thread-1".to_string(),
+                task_type: "agent_run".to_string(),
+                description: "agent:root".to_string(),
+                parent_task_id: None,
+                metadata: json!({}),
+            },
             root_token,
-            None,
-            json!({}),
             |cancel| async move {
                 cancel.cancelled().await;
                 super::super::types::TaskResult::Cancelled
@@ -731,13 +735,15 @@ mod tests {
         .await;
 
         mgr.spawn_with_id(
-            "child".to_string(),
-            "thread-1",
-            "agent_run",
-            "agent:child",
+            SpawnParams {
+                task_id: "child".to_string(),
+                owner_thread_id: "thread-1".to_string(),
+                task_type: "agent_run".to_string(),
+                description: "agent:child".to_string(),
+                parent_task_id: Some("root".to_string()),
+                metadata: json!({}),
+            },
             child_token,
-            Some("root"),
-            json!({}),
             |cancel| async move {
                 cancel.cancelled().await;
                 super::super::types::TaskResult::Cancelled
@@ -795,13 +801,15 @@ mod tests {
             .unwrap();
 
         mgr.spawn_with_id(
-            "task-1".to_string(),
-            "thread-1",
-            "shell",
-            "long task",
+            SpawnParams {
+                task_id: "task-1".to_string(),
+                owner_thread_id: "thread-1".to_string(),
+                task_type: "shell".to_string(),
+                description: "long task".to_string(),
+                parent_task_id: None,
+                metadata: json!({}),
+            },
             crate::loop_runtime::loop_runner::RunCancellationToken::new(),
-            None,
-            json!({}),
             |cancel| async move {
                 cancel.cancelled().await;
                 super::super::types::TaskResult::Cancelled

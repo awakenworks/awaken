@@ -31,8 +31,8 @@ pub(crate) use types::derived_task_view_from_doc;
 #[allow(unused_imports)]
 pub use types::{
     new_task_id, task_thread_id, BackgroundTaskView, BackgroundTaskViewAction,
-    BackgroundTaskViewState, TaskAction, TaskId, TaskResult, TaskResultRef, TaskState, TaskStatus,
-    TaskSummary, TASK_THREAD_KIND_METADATA_KEY, TASK_THREAD_KIND_METADATA_VALUE,
+    BackgroundTaskViewState, SpawnParams, TaskAction, TaskId, TaskResult, TaskResultRef, TaskState,
+    TaskStatus, TaskSummary, TASK_THREAD_KIND_METADATA_KEY, TASK_THREAD_KIND_METADATA_VALUE,
     TASK_THREAD_PREFIX,
 };
 pub use wrapper::{BackgroundCapable, BackgroundExecutable};

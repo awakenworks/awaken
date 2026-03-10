@@ -97,17 +97,15 @@ impl BackgroundTaskManager {
         F: FnOnce(RunCancellationToken) -> Fut + Send + 'static,
         Fut: Future<Output = TaskResult> + Send,
     {
-        self.spawn_impl(
-            new_task_id(),
-            owner_thread_id,
-            task_type,
-            description,
-            None,
-            None,
-            Value::Object(serde_json::Map::new()),
-            task,
-        )
-        .await
+        let params = SpawnParams {
+            task_id: new_task_id(),
+            owner_thread_id: owner_thread_id.to_string(),
+            task_type: task_type.to_string(),
+            description: description.to_string(),
+            parent_task_id: None,
+            metadata: Value::Object(serde_json::Map::new()),
+        };
+        self.spawn_impl(params, None, task).await
     }
 
     /// Spawn a background task with a caller-supplied ID and cancellation token.
@@ -116,48 +114,36 @@ impl BackgroundTaskManager {
     /// and/or a cancellation token that is shared with other subsystems.
     pub async fn spawn_with_id<F, Fut>(
         &self,
-        task_id: TaskId,
-        owner_thread_id: &str,
-        task_type: &str,
-        description: &str,
+        params: SpawnParams,
         cancel_token: RunCancellationToken,
-        parent_task_id: Option<&str>,
-        metadata: Value,
         task: F,
     ) -> TaskId
     where
         F: FnOnce(RunCancellationToken) -> Fut + Send + 'static,
         Fut: Future<Output = TaskResult> + Send,
     {
-        self.spawn_impl(
-            task_id,
-            owner_thread_id,
-            task_type,
-            description,
-            Some(cancel_token),
-            parent_task_id.map(str::to_string),
-            metadata,
-            task,
-        )
-        .await
+        self.spawn_impl(params, Some(cancel_token), task).await
     }
 
     async fn spawn_impl<F, Fut>(
         &self,
-        task_id: TaskId,
-        owner_thread_id: &str,
-        task_type: &str,
-        description: &str,
+        params: SpawnParams,
         external_cancel_token: Option<RunCancellationToken>,
-        parent_task_id: Option<String>,
-        metadata: Value,
         task: F,
     ) -> TaskId
     where
         F: FnOnce(RunCancellationToken) -> Fut + Send + 'static,
         Fut: Future<Output = TaskResult> + Send,
     {
-        let cancel_token = external_cancel_token.unwrap_or_else(RunCancellationToken::new);
+        let SpawnParams {
+            task_id,
+            owner_thread_id,
+            task_type,
+            description,
+            parent_task_id,
+            metadata,
+        } = params;
+        let cancel_token = external_cancel_token.unwrap_or_default();
         let now = now_ms();
 
         let epoch = {
@@ -167,9 +153,9 @@ impl BackgroundTaskManager {
                 task_id.clone(),
                 TaskHandle {
                     epoch,
-                    owner_thread_id: owner_thread_id.to_string(),
-                    task_type: task_type.to_string(),
-                    description: description.to_string(),
+                    owner_thread_id,
+                    task_type,
+                    description,
                     status: TaskStatus::Running,
                     error: None,
                     result: None,
@@ -1030,13 +1016,15 @@ mod tests {
         let token = RunCancellationToken::new();
         let tid = mgr
             .spawn_with_id(
-                "my-custom-id".to_string(),
-                "thread-1",
-                "agent_run",
-                "agent:worker",
+                SpawnParams {
+                    task_id: "my-custom-id".to_string(),
+                    owner_thread_id: "thread-1".to_string(),
+                    task_type: "agent_run".to_string(),
+                    description: "agent:worker".to_string(),
+                    parent_task_id: None,
+                    metadata: serde_json::json!({}),
+                },
                 token,
-                None,
-                serde_json::json!({}),
                 |_cancel: RunCancellationToken| async { TaskResult::Success(Value::Null) },
             )
             .await;
@@ -1057,13 +1045,15 @@ mod tests {
         let token_clone = token.clone();
 
         mgr.spawn_with_id(
-            "cancel-test".to_string(),
-            "thread-1",
-            "shell",
-            "long task",
+            SpawnParams {
+                task_id: "cancel-test".to_string(),
+                owner_thread_id: "thread-1".to_string(),
+                task_type: "shell".to_string(),
+                description: "long task".to_string(),
+                parent_task_id: None,
+                metadata: serde_json::json!({}),
+            },
             token,
-            None,
-            serde_json::json!({}),
             |cancel: RunCancellationToken| async move {
                 cancel.cancelled().await;
                 TaskResult::Cancelled
@@ -1091,13 +1081,15 @@ mod tests {
         let token = RunCancellationToken::new();
 
         mgr.spawn_with_id(
-            "mgr-cancel".to_string(),
-            "thread-1",
-            "agent_run",
-            "agent:worker",
+            SpawnParams {
+                task_id: "mgr-cancel".to_string(),
+                owner_thread_id: "thread-1".to_string(),
+                task_type: "agent_run".to_string(),
+                description: "agent:worker".to_string(),
+                parent_task_id: None,
+                metadata: serde_json::json!({}),
+            },
             token,
-            None,
-            serde_json::json!({}),
             |cancel: RunCancellationToken| async move {
                 cancel.cancelled().await;
                 TaskResult::Cancelled
@@ -1132,13 +1124,15 @@ mod tests {
 
         let mgr = BackgroundTaskManager::with_task_store(Some(task_store.clone()));
         mgr.spawn_with_id(
-            "persisted-task".to_string(),
-            "thread-1",
-            "shell",
-            "echo hi",
+            SpawnParams {
+                task_id: "persisted-task".to_string(),
+                owner_thread_id: "thread-1".to_string(),
+                task_type: "shell".to_string(),
+                description: "echo hi".to_string(),
+                parent_task_id: None,
+                metadata: serde_json::json!({}),
+            },
             RunCancellationToken::new(),
-            None,
-            serde_json::json!({}),
             |_cancel: RunCancellationToken| async {
                 TaskResult::Success(serde_json::json!({ "stdout": "hi" }))
             },
@@ -1179,13 +1173,15 @@ mod tests {
 
         let mgr = BackgroundTaskManager::with_task_store(Some(task_store));
         mgr.spawn_with_id(
-            "flaky-task".to_string(),
-            "thread-1",
-            "shell",
-            "echo hi",
+            SpawnParams {
+                task_id: "flaky-task".to_string(),
+                owner_thread_id: "thread-1".to_string(),
+                task_type: "shell".to_string(),
+                description: "echo hi".to_string(),
+                parent_task_id: None,
+                metadata: serde_json::json!({}),
+            },
             RunCancellationToken::new(),
-            None,
-            serde_json::json!({}),
             |_cancel: RunCancellationToken| async { TaskResult::Success(Value::Null) },
         )
         .await;
@@ -1222,13 +1218,15 @@ mod tests {
 
         let mgr = BackgroundTaskManager::with_task_store(Some(task_store.clone()));
         mgr.spawn_with_id(
-            "retry-task".to_string(),
-            "thread-1",
-            "shell",
-            "echo hi",
+            SpawnParams {
+                task_id: "retry-task".to_string(),
+                owner_thread_id: "thread-1".to_string(),
+                task_type: "shell".to_string(),
+                description: "echo hi".to_string(),
+                parent_task_id: None,
+                metadata: serde_json::json!({}),
+            },
             RunCancellationToken::new(),
-            None,
-            serde_json::json!({}),
             |_cancel: RunCancellationToken| async {
                 TaskResult::Success(serde_json::json!({ "stdout": "done" }))
             },

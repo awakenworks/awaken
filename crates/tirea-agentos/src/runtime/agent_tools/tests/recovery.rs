@@ -2,7 +2,7 @@ use super::*;
 use crate::contracts::runtime::phase::StepContext;
 use crate::contracts::storage::ThreadStore;
 use crate::loop_runtime::loop_runner::RunCancellationToken;
-use crate::runtime::background_tasks::{NewTaskSpec, TaskResult, TaskStatus, TaskStore};
+use crate::runtime::background_tasks::{NewTaskSpec, SpawnParams, TaskResult, TaskStatus, TaskStore};
 
 fn recovery_task_store() -> Arc<TaskStore> {
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
@@ -493,13 +493,15 @@ async fn recovery_plugin_only_marks_orphans_when_some_have_live_handles() {
     let token = RunCancellationToken::new();
     bg_mgr
         .spawn_with_id(
-            "run-1".to_string(),
-            "owner-1",
-            "agent_run",
-            "agent:worker-a",
+            SpawnParams {
+                task_id: "run-1".to_string(),
+                owner_thread_id: "owner-1".to_string(),
+                task_type: "agent_run".to_string(),
+                description: "agent:worker-a".to_string(),
+                parent_task_id: None,
+                metadata: json!({"agent_id": "worker-a", "thread_id": "sub-agent-run-1"}),
+            },
             token.clone(),
-            None,
-            json!({"agent_id": "worker-a", "thread_id": "sub-agent-run-1"}),
             |cancel| async move {
                 cancel.cancelled().await;
                 TaskResult::Cancelled
@@ -550,13 +552,15 @@ async fn recovery_plugin_no_action_when_all_running_have_live_handles() {
     let token1 = RunCancellationToken::new();
     bg_mgr
         .spawn_with_id(
-            "run-1".to_string(),
-            "owner-1",
-            "agent_run",
-            "agent:worker-a",
+            SpawnParams {
+                task_id: "run-1".to_string(),
+                owner_thread_id: "owner-1".to_string(),
+                task_type: "agent_run".to_string(),
+                description: "agent:worker-a".to_string(),
+                parent_task_id: None,
+                metadata: json!({"agent_id": "worker-a", "thread_id": "sub-agent-run-1"}),
+            },
             token1.clone(),
-            None,
-            json!({"agent_id": "worker-a", "thread_id": "sub-agent-run-1"}),
             |cancel| async move {
                 cancel.cancelled().await;
                 TaskResult::Cancelled
@@ -566,13 +570,15 @@ async fn recovery_plugin_no_action_when_all_running_have_live_handles() {
     let token2 = RunCancellationToken::new();
     bg_mgr
         .spawn_with_id(
-            "run-2".to_string(),
-            "owner-1",
-            "agent_run",
-            "agent:worker-b",
+            SpawnParams {
+                task_id: "run-2".to_string(),
+                owner_thread_id: "owner-1".to_string(),
+                task_type: "agent_run".to_string(),
+                description: "agent:worker-b".to_string(),
+                parent_task_id: None,
+                metadata: json!({"agent_id": "worker-b", "thread_id": "sub-agent-run-2"}),
+            },
             token2.clone(),
-            None,
-            json!({"agent_id": "worker-b", "thread_id": "sub-agent-run-2"}),
             |cancel| async move {
                 cancel.cancelled().await;
                 TaskResult::Cancelled

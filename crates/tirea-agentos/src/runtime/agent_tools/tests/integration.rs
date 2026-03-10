@@ -1349,7 +1349,7 @@ async fn integration_background_stop_cancels_in_both_systems() {
 #[tokio::test]
 async fn integration_background_tasks_plugin_includes_all_task_types() {
     use crate::contracts::runtime::behavior::AgentBehavior;
-    use crate::runtime::background_tasks::BackgroundTasksPlugin;
+    use crate::runtime::background_tasks::{BackgroundTasksPlugin, SpawnParams};
 
     let bg_mgr = Arc::new(BackgroundTaskManager::new());
 
@@ -1365,13 +1365,15 @@ async fn integration_background_tasks_plugin_includes_all_task_types() {
     let token = crate::loop_runtime::loop_runner::RunCancellationToken::new();
     bg_mgr
         .spawn_with_id(
-            "agent-run-123".to_string(),
-            "thread-1",
-            "agent_run",
-            "agent:worker",
+            SpawnParams {
+                task_id: "agent-run-123".to_string(),
+                owner_thread_id: "thread-1".to_string(),
+                task_type: "agent_run".to_string(),
+                description: "agent:worker".to_string(),
+                parent_task_id: None,
+                metadata: serde_json::json!({}),
+            },
             token.clone(),
-            None,
-            serde_json::json!({}),
             |cancel: crate::loop_runtime::loop_runner::RunCancellationToken| async move {
                 cancel.cancelled().await;
                 crate::runtime::background_tasks::TaskResult::Cancelled

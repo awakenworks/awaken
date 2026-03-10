@@ -140,13 +140,15 @@ impl<T: BackgroundExecutable + 'static> Tool for BackgroundCapable<T> {
         let task_id = self
             .manager
             .spawn_with_id(
-                task_id,
-                &owner_thread_id,
-                &tool_name,
-                &description,
+                SpawnParams {
+                    task_id,
+                    owner_thread_id,
+                    task_type: tool_name.clone(),
+                    description,
+                    parent_task_id: None,
+                    metadata: Value::Object(serde_json::Map::new()),
+                },
                 RunCancellationToken::new(),
-                None,
-                Value::Object(serde_json::Map::new()),
                 move |cancel_token| async move {
                     inner.execute_background(clean_args, cancel_token).await
                 },

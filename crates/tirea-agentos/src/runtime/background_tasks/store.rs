@@ -122,7 +122,7 @@ impl TaskStore {
         self.append_task_action(
             &thread_id,
             task_id.as_str(),
-            TaskAction::Register { task: task.clone() },
+            TaskAction::Register { task: Box::new(task.clone()) },
             Some(Message::internal_system(format!(
                 "background task {} registered as running",
                 task.id
@@ -212,7 +212,7 @@ impl TaskStore {
         .await?;
         self.load_task(task_id)
             .await?
-            .ok_or_else(|| TaskStoreError::MissingTaskState(thread_id))
+            .ok_or(TaskStoreError::MissingTaskState(thread_id))
     }
 
     pub async fn mark_cancel_requested(&self, task_id: &str) -> Result<(), TaskStoreError> {

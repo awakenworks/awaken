@@ -29,6 +29,22 @@ fn default_metadata() -> Value {
     Value::Object(serde_json::Map::new())
 }
 
+/// Parameters for spawning a background task.
+pub struct SpawnParams {
+    /// Unique task identifier.
+    pub task_id: TaskId,
+    /// Thread that owns this task.
+    pub owner_thread_id: String,
+    /// Task type label (e.g. "agent_run").
+    pub task_type: String,
+    /// Human-readable description.
+    pub description: String,
+    /// Optional parent task for hierarchical tracking.
+    pub parent_task_id: Option<String>,
+    /// Arbitrary metadata attached to the task.
+    pub metadata: Value,
+}
+
 fn is_null_or_empty_object(v: &Value) -> bool {
     v.is_null() || v.as_object().is_some_and(|m| m.is_empty())
 }
@@ -260,7 +276,7 @@ impl TaskState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TaskAction {
     Register {
-        task: TaskState,
+        task: Box<TaskState>,
     },
     StartAttempt {
         attempt: u32,
@@ -287,7 +303,7 @@ impl TaskState {
     fn reduce(&mut self, action: TaskAction) {
         match action {
             TaskAction::Register { task } => {
-                *self = task;
+                *self = *task;
             }
             TaskAction::StartAttempt {
                 attempt,
