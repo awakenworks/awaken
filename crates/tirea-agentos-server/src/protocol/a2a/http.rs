@@ -7,7 +7,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tirea_agentos::contracts::thread::Message;
+use tirea_agentos::contracts::thread::{Message, Role, Visibility};
 use tirea_agentos::contracts::{RunOrigin, RunRequest, ToolCallDecision};
 
 use crate::service::{
@@ -226,6 +226,38 @@ struct A2aMessageSendPayload {
     decisions: Vec<ToolCallDecision>,
 }
 
+fn latest_public_assistant_output(
+    thread: &tirea_agentos::contracts::thread::Thread,
+) -> Option<String> {
+    thread
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.visibility == Visibility::All && message.role == Role::Assistant)
+        .map(|message| message.content.trim().to_string())
+        .filter(|content| !content.is_empty())
+}
+
+fn public_history(thread: &tirea_agentos::contracts::thread::Thread) -> Vec<Value> {
+    thread
+        .messages
+        .iter()
+        .filter(|message| message.visibility == Visibility::All)
+        .filter_map(|message| match message.role {
+            Role::User | Role::Assistant | Role::System => Some(json!({
+                "role": match message.role {
+                    Role::User => "user",
+                    Role::Assistant => "assistant",
+                    Role::System => "system",
+                    Role::Tool => unreachable!("tool messages are filtered out"),
+                },
+                "content": message.content,
+            })),
+            Role::Tool => None,
+        })
+        .collect()
+}
+
 impl A2aMessageSendPayload {
     fn to_messages(&self) -> Vec<Message> {
         let mut out = Vec::new();
@@ -377,6 +409,25 @@ async fn get_task(
     else {
         return Err(ApiError::RunNotFound(task_id));
     };
+    let thread = st
+        .read_store
+        .load(&record.thread_id)
+        .await
+        .map_err(|err| ApiError::Internal(err.to_string()))?;
+    let latest_output = thread
+        .as_ref()
+        .and_then(|head| latest_public_assistant_output(&head.thread));
+    let history = thread
+        .as_ref()
+        .map(|head| public_history(&head.thread))
+        .unwrap_or_default();
+    let artifacts = latest_output
+        .as_ref()
+        .map(|content| vec![json!({ "content": content })])
+        .unwrap_or_default();
+    let message = latest_output
+        .as_ref()
+        .map(|content| json!({ "role": "assistant", "content": content }));
 
     Ok(match task {
         BackgroundTaskLookup::Run(record) => Json(json!({
@@ -388,6 +439,9 @@ async fn get_task(
             "terminationDetail": record.termination_detail,
             "createdAt": record.created_at,
             "updatedAt": record.updated_at,
+            "message": message,
+            "artifacts": artifacts,
+            "history": history,
         })),
         BackgroundTaskLookup::Mailbox(entry) => Json(json!({
             "taskId": task_id,

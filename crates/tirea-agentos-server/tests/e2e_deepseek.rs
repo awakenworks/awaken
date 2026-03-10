@@ -11,8 +11,7 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_agentos::composition::AgentDefinition;
-use tirea_agentos::composition::AgentOsBuilder;
+use tirea_agentos::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
 use tirea_agentos::contracts::runtime::tool_call::Tool;
 use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader, ThreadStore};
 use tirea_agentos_server::service::{AppState, MailboxService};
@@ -86,7 +85,7 @@ If runtime context entries are provided, treat them as authoritative facts and a
     };
 
     AgentOsBuilder::new()
-        .with_agent("deepseek", def)
+        .with_agent_spec(AgentDefinitionSpec::local_with_id("deepseek", def))
         .with_agent_state_store(write_store)
         .build()
         .expect("failed to build AgentOs")
@@ -112,7 +111,7 @@ fn make_tool_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::runtime::Ag
 
     AgentOsBuilder::new()
         .with_tools(tools)
-        .with_agent("calc", def)
+        .with_agent_spec(AgentDefinitionSpec::local_with_id("calc", def))
         .with_agent_state_store(write_store)
         .build()
         .expect("failed to build AgentOs with calculator")
@@ -129,7 +128,7 @@ fn make_multiturn_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::runtim
     };
 
     AgentOsBuilder::new()
-        .with_agent("chat", def)
+        .with_agent_spec(AgentDefinitionSpec::local_with_id("chat", def))
         .with_agent_state_store(write_store)
         .build()
         .expect("failed to build AgentOs for multi-turn")
@@ -558,7 +557,7 @@ async fn e2e_ai_sdk_finish_max_rounds_with_deepseek() {
     let os = Arc::new(
         AgentOsBuilder::new()
             .with_tools(tools)
-            .with_agent("limited", def)
+            .with_agent_spec(AgentDefinitionSpec::local_with_id("limited", def))
             .with_agent_state_store(storage.clone())
             .build()
             .expect("failed to build limited AgentOs"),
@@ -925,7 +924,7 @@ async fn e2e_ag_ui_run_finished_max_rounds_with_deepseek() {
     let os = Arc::new(
         AgentOsBuilder::new()
             .with_tools(tools)
-            .with_agent("limited", def)
+            .with_agent_spec(AgentDefinitionSpec::local_with_id("limited", def))
             .with_agent_state_store(storage.clone())
             .build()
             .expect("failed to build limited AgentOs"),

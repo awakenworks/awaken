@@ -2,7 +2,7 @@ use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use serde_json::json;
 use std::sync::Arc;
-use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder};
+use tirea_agentos::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
 use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader, ThreadStore};
 use tirea_agentos::runtime::AgentOs;
 use tirea_agentos_server::service::{AppState, MailboxService};
@@ -28,7 +28,7 @@ fn make_os(write_store: Arc<dyn ThreadStore>) -> AgentOs {
                 "terminate_behavior_requested_explicit",
             )),
         )
-        .with_agent("test", def)
+        .with_agent_spec(AgentDefinitionSpec::local_with_id("test", def))
         .with_agent_state_store(write_store)
         .build()
         .unwrap()

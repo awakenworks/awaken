@@ -22,8 +22,9 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tirea_agentos::composition::AgentDefinition;
-use tirea_agentos::composition::{AgentOsBuilder, ModelDefinition};
+use tirea_agentos::composition::{
+    AgentDefinition, AgentDefinitionSpec, AgentOsBuilder, ModelDefinition,
+};
 use tirea_agentos::contracts::runtime::tool_call::Tool;
 use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader, ThreadStore};
 use tirea_agentos::runtime::AgentOs;
@@ -130,7 +131,7 @@ fn make_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::runtime::AgentOs
             "deepseek",
             ModelDefinition::new("tz", "openai::tensorzero::function_name::agent_chat"),
         )
-        .with_agent("deepseek", def)
+        .with_agent_spec(AgentDefinitionSpec::local_with_id("deepseek", def))
         .with_agent_state_store(write_store)
         .build()
         .expect("failed to build AgentOs with TensorZero")
@@ -436,7 +437,7 @@ fn make_tool_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::runtime::Ag
             ModelDefinition::new("tz", "openai::tensorzero::function_name::agent_chat"),
         )
         .with_tools(tools)
-        .with_agent("calc", def)
+        .with_agent_spec(AgentDefinitionSpec::local_with_id("calc", def))
         .with_agent_state_store(write_store)
         .build()
         .expect("failed to build AgentOs with TensorZero + calculator")
@@ -655,7 +656,7 @@ async fn e2e_tensorzero_ai_sdk_finish_max_rounds() {
                 ModelDefinition::new("tz", "openai::tensorzero::function_name::agent_chat"),
             )
             .with_tools(tools)
-            .with_agent("limited", def)
+            .with_agent_spec(AgentDefinitionSpec::local_with_id("limited", def))
             .with_agent_state_store(storage.clone())
             .build()
             .expect("failed to build limited AgentOs"),
@@ -884,7 +885,7 @@ async fn e2e_tensorzero_ag_ui_run_finished_max_rounds() {
                 ModelDefinition::new("tz", "openai::tensorzero::function_name::agent_chat"),
             )
             .with_tools(tools)
-            .with_agent("limited", def)
+            .with_agent_spec(AgentDefinitionSpec::local_with_id("limited", def))
             .with_agent_state_store(storage.clone())
             .build()
             .expect("failed to build limited AgentOs"),

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tirea_agentos::composition::StopConditionSpec;
 use tirea_agentos::composition::{
-    tool_map_from_arc, AgentDefinition, AgentOsBuilder, ToolExecutionMode, ToolRegistry,
+    AgentDefinition, AgentDefinitionSpec, AgentOsBuilder, ToolExecutionMode, ToolRegistry,
 };
 use tirea_agentos::contracts::runtime::behavior::AgentBehavior;
 use tirea_agentos::contracts::runtime::tool_call::Tool;
@@ -31,6 +31,7 @@ use crate::starter_backend::tools::{
     AppendNoteTool, AskUserQuestionTool, FailingTool, FinishTool, GetStockPriceTool,
     GetWeatherTool, ProgressDemoTool, ServerInfoTool, SetBackgroundColorTool,
 };
+use crate::tool_map_from_arc;
 use crate::travel::tools::{
     AddTripTool, DeleteTripTool, SearchPlacesTool, SelectTripTool, UpdateTripTool,
 };
@@ -250,9 +251,8 @@ Deterministic compatibility directives:\n\
     };
 
     let file_store = Arc::new(FileStore::new(args.storage_dir));
-    let default_agent_id = default_agent.id.clone();
     let mut builder = AgentOsBuilder::new()
-        .with_agent(&default_agent_id, default_agent)
+        .with_agent_spec(AgentDefinitionSpec::local(default_agent))
         .with_tools(tool_map)
         .with_agent_state_store(file_store.clone() as Arc<dyn ThreadStore>);
     if let Some(registry) = mcp_tool_registry {
@@ -260,16 +260,16 @@ Deterministic compatibility directives:\n\
     }
 
     if default_id != "permission" {
-        builder = builder.with_agent("permission", permission_agent);
+        builder = builder.with_agent_spec(AgentDefinitionSpec::local(permission_agent));
     }
     if default_id != "stopper" {
-        builder = builder.with_agent("stopper", stopper_agent);
+        builder = builder.with_agent_spec(AgentDefinitionSpec::local(stopper_agent));
     }
     if default_id != "travel" {
-        builder = builder.with_agent("travel", travel_agent);
+        builder = builder.with_agent_spec(AgentDefinitionSpec::local(travel_agent));
     }
     if default_id != "research" {
-        builder = builder.with_agent("research", research_agent);
+        builder = builder.with_agent_spec(AgentDefinitionSpec::local(research_agent));
     }
     if default_id != "a2ui" {
         builder = builder.with_agent("a2ui", a2ui_agent);

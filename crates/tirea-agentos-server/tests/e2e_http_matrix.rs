@@ -2,7 +2,7 @@ use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use serde_json::json;
 use std::sync::Arc;
-use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder};
+use tirea_agentos::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
 use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader};
 use tirea_agentos::runtime::AgentOs;
 use tirea_agentos_server::service::{AppState, MailboxService};
@@ -31,7 +31,7 @@ fn make_os(store: Arc<MemoryStore>) -> tirea_agentos::runtime::AgentOs {
                 "terminate_behavior_requested_e2e_http_matrix",
             )),
         )
-        .with_agent("test", def)
+        .with_agent_spec(AgentDefinitionSpec::local_with_id("test", def))
         .with_agent_state_store(store)
         .build()
         .expect("failed to build AgentOs")

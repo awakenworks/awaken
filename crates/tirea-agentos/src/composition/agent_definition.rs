@@ -1,5 +1,6 @@
 use super::stop_condition::StopConditionSpec;
-use crate::runtime::loop_runner::LlmRetryPolicy;
+use super::AgentDescriptor;
+use crate::loop_runtime::loop_runner::LlmRetryPolicy;
 use genai::chat::ChatOptions;
 
 /// Tool execution strategy mode exposed by AgentDefinition.
@@ -19,6 +20,12 @@ pub enum ToolExecutionMode {
 pub struct AgentDefinition {
     /// Unique identifier for this agent.
     pub id: String,
+    /// Human-readable display name used in discovery surfaces.
+    #[allow(dead_code)]
+    pub name: Option<String>,
+    /// Short description exposed to callers/models when this agent is discoverable.
+    #[allow(dead_code)]
+    pub description: Option<String>,
     /// Model identifier (e.g., "gpt-4", "claude-3-opus").
     pub model: String,
     /// System prompt for the LLM.
@@ -59,6 +66,8 @@ impl Default for AgentDefinition {
     fn default() -> Self {
         Self {
             id: "default".to_string(),
+            name: None,
+            description: None,
             model: "gpt-4o-mini".to_string(),
             system_prompt: String::new(),
             max_rounds: 10,
@@ -88,6 +97,8 @@ impl std::fmt::Debug for AgentDefinition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentDefinition")
             .field("id", &self.id)
+            .field("name", &self.name)
+            .field("description", &self.description)
             .field("model", &self.model)
             .field(
                 "system_prompt",
@@ -113,6 +124,35 @@ impl std::fmt::Debug for AgentDefinition {
 
 impl AgentDefinition {
     tirea_contract::impl_shared_agent_builder_methods!();
+
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        self.name.as_deref().unwrap_or(&self.id)
+    }
+
+    #[must_use]
+    pub fn display_description(&self) -> &str {
+        self.description.as_deref().unwrap_or("")
+    }
+
+    #[must_use]
+    pub fn descriptor(&self) -> AgentDescriptor {
+        AgentDescriptor::new(self.id.clone())
+            .with_name(self.display_name())
+            .with_description(self.display_description())
+    }
 
     #[must_use]
     pub fn with_stop_condition_spec(mut self, spec: StopConditionSpec) -> Self {

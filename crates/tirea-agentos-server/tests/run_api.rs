@@ -5,7 +5,7 @@ use common::{get_json_text, post_sse, SlowTerminatePlugin, TerminatePlugin};
 use serde_json::json;
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
-use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder};
+use tirea_agentos::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
 use tirea_agentos::contracts::storage::{MailboxStore, MailboxWriter, ThreadReader};
 use tirea_agentos::contracts::RunRequest;
 use tirea_agentos::runtime::{AgentOs, RunStream};
@@ -44,7 +44,7 @@ fn make_os(store: Arc<MemoryStore>) -> Arc<AgentOs> {
                 "terminate_behavior_requested_test",
                 Arc::new(TerminatePlugin::new("terminate_behavior_requested_test")),
             )
-            .with_agent("test", def)
+            .with_agent_spec(AgentDefinitionSpec::local_with_id("test", def))
             .with_agent_state_store(store)
             .build()
             .expect("build AgentOs"),

@@ -35,4 +35,5 @@ pub use types::{
     TaskStatus, TaskSummary, TASK_THREAD_KIND_METADATA_KEY, TASK_THREAD_KIND_METADATA_VALUE,
     TASK_THREAD_PREFIX,
 };
+#[allow(unused_imports)]
 pub use wrapper::{BackgroundCapable, BackgroundExecutable, BackgroundExecutionContext};

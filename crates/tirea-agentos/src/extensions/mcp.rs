@@ -34,7 +34,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tokio::sync::mpsc;
 
-    use crate::composition::AgentDefinition;
+    use crate::composition::{AgentDefinition, AgentDefinitionSpec};
     use crate::runtime::AgentOs;
 
     #[derive(Debug, Clone)]
@@ -101,7 +101,10 @@ mod tests {
         let registry = Arc::new(manager.registry()) as Arc<dyn ToolRegistry>;
 
         let os = AgentOs::builder()
-            .with_agent("assistant", AgentDefinition::new("gpt-4o-mini"))
+            .with_agent_spec(AgentDefinitionSpec::local_with_id(
+                "assistant",
+                AgentDefinition::new("gpt-4o-mini"),
+            ))
             .with_tool_registry(registry)
             .build()
             .expect("build agent os");

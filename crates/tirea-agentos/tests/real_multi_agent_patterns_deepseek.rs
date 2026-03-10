@@ -17,7 +17,7 @@ use futures::StreamExt;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
-use tirea_agentos::composition::{AgentDefinition, ToolExecutionMode};
+use tirea_agentos::composition::{AgentDefinition, AgentDefinitionSpec, ToolExecutionMode};
 use tirea_agentos::runtime::AgentOs;
 use tirea_contract::thread::Message;
 use tirea_contract::{AgentEvent, RunOrigin, RunRequest};
@@ -142,29 +142,19 @@ async fn pattern_coordinator_routes_to_specialist() {
     require_deepseek_key();
     with_retries("coordinator", || async {
         let os = AgentOs::builder()
-            .with_agent(
+            .with_agent_spec(AgentDefinitionSpec::local_with_id(
                 "billing",
                 AgentDefinition::new("deepseek-chat")
                     .with_system_prompt("You are a billing specialist. Reply in Chinese. Always mention '账单' in your answer.")
-                    .with_excluded_tools(vec![
-                        "agent_run".to_string(),
-                        "task_status".to_string(),
-                        "task_cancel".to_string(),
-                        "task_output".to_string(),
-                    ]),
-            )
-            .with_agent(
+                    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+            ))
+            .with_agent_spec(AgentDefinitionSpec::local_with_id(
                 "support",
                 AgentDefinition::new("deepseek-chat")
                     .with_system_prompt("You are a technical support specialist. Reply in Chinese. Always mention '技术' in your answer.")
-                    .with_excluded_tools(vec![
-                        "agent_run".to_string(),
-                        "task_status".to_string(),
-                        "task_cancel".to_string(),
-                        "task_output".to_string(),
-                    ]),
-            )
-            .with_agent(
+                    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+            ))
+            .with_agent_spec(AgentDefinitionSpec::local_with_id(
                 "orchestrator",
                 AgentDefinition::new("deepseek-chat")
                     .with_max_rounds(6)
@@ -175,7 +165,7 @@ async fn pattern_coordinator_routes_to_specialist() {
                         Use agent_run with background=false. Then return the specialist's answer to the user.",
                     )
                     .with_allowed_agents(vec!["billing".to_string(), "support".to_string()]),
-            )
+            ))
             .with_agent_state_store(Arc::new(tirea_store_adapters::MemoryStore::new()))
             .build()
             .unwrap();
@@ -208,29 +198,19 @@ async fn pattern_sequential_pipeline() {
     require_deepseek_key();
     with_retries("sequential", || async {
         let os = AgentOs::builder()
-            .with_agent(
+            .with_agent_spec(AgentDefinitionSpec::local_with_id(
                 "translator",
                 AgentDefinition::new("deepseek-chat")
                     .with_system_prompt("You are a translator. Translate the given Chinese text to English. Output only the English translation.")
-                    .with_excluded_tools(vec![
-                        "agent_run".to_string(),
-                        "task_status".to_string(),
-                        "task_cancel".to_string(),
-                        "task_output".to_string(),
-                    ]),
-            )
-            .with_agent(
+                    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+            ))
+            .with_agent_spec(AgentDefinitionSpec::local_with_id(
                 "summarizer",
                 AgentDefinition::new("deepseek-chat")
                     .with_system_prompt("You are a summarizer. Summarize the given English text into one short sentence. Output only the summary.")
-                    .with_excluded_tools(vec![
-                        "agent_run".to_string(),
-                        "task_status".to_string(),
-                        "task_cancel".to_string(),
-                        "task_output".to_string(),
-                    ]),
-            )
-            .with_agent(
+                    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+            ))
+            .with_agent_spec(AgentDefinitionSpec::local_with_id(
                 "orchestrator",
                 AgentDefinition::new("deepseek-chat")
                     .with_max_rounds(8)
@@ -241,7 +221,7 @@ async fn pattern_sequential_pipeline() {
                         Return the final English summary to the user. Do not skip any step.",
                     )
                     .with_allowed_agents(vec!["translator".to_string(), "summarizer".to_string()]),
-            )
+            ))
             .with_agent_state_store(Arc::new(tirea_store_adapters::MemoryStore::new()))
             .build()
             .unwrap();
@@ -281,40 +261,25 @@ async fn pattern_parallel_fan_out_gather() {
     require_deepseek_key();
     with_retries("parallel", || async {
         let os = AgentOs::builder()
-            .with_agent(
+            .with_agent_spec(AgentDefinitionSpec::local_with_id(
                 "security_reviewer",
                 AgentDefinition::new("deepseek-chat")
                     .with_system_prompt("You are a security reviewer. Analyze the code for security issues. Reply with a short security report (2-3 sentences).")
-                    .with_excluded_tools(vec![
-                        "agent_run".to_string(),
-                        "task_status".to_string(),
-                        "task_cancel".to_string(),
-                        "task_output".to_string(),
-                    ]),
-            )
-            .with_agent(
+                    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+            ))
+            .with_agent_spec(AgentDefinitionSpec::local_with_id(
                 "style_reviewer",
                 AgentDefinition::new("deepseek-chat")
                     .with_system_prompt("You are a code style reviewer. Check the code for style and readability. Reply with a short style report (2-3 sentences).")
-                    .with_excluded_tools(vec![
-                        "agent_run".to_string(),
-                        "task_status".to_string(),
-                        "task_cancel".to_string(),
-                        "task_output".to_string(),
-                    ]),
-            )
-            .with_agent(
+                    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+            ))
+            .with_agent_spec(AgentDefinitionSpec::local_with_id(
                 "perf_reviewer",
                 AgentDefinition::new("deepseek-chat")
                     .with_system_prompt("You are a performance reviewer. Analyze the code for performance issues. Reply with a short performance report (2-3 sentences).")
-                    .with_excluded_tools(vec![
-                        "agent_run".to_string(),
-                        "task_status".to_string(),
-                        "task_cancel".to_string(),
-                        "task_output".to_string(),
-                    ]),
-            )
-            .with_agent(
+                    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+            ))
+            .with_agent_spec(AgentDefinitionSpec::local_with_id(
                 "orchestrator",
                 AgentDefinition::new("deepseek-chat")
                     .with_max_rounds(10)
@@ -335,7 +300,7 @@ async fn pattern_parallel_fan_out_gather() {
                         "style_reviewer".to_string(),
                         "perf_reviewer".to_string(),
                     ]),
-            )
+            ))
             .with_agent_state_store(Arc::new(tirea_store_adapters::MemoryStore::new()))
             .build()
             .unwrap();
@@ -382,29 +347,19 @@ async fn pattern_hierarchical_decomposition() {
     require_deepseek_key();
     with_retries("hierarchical", || async {
         let os = AgentOs::builder()
-            .with_agent(
+            .with_agent_spec(AgentDefinitionSpec::local_with_id(
                 "fact_finder",
                 AgentDefinition::new("deepseek-chat")
                     .with_system_prompt("You are a fact finder. When asked about a topic, provide 3 key facts. Be concise.")
-                    .with_excluded_tools(vec![
-                        "agent_run".to_string(),
-                        "task_status".to_string(),
-                        "task_cancel".to_string(),
-                        "task_output".to_string(),
-                    ]),
-            )
-            .with_agent(
+                    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+            ))
+            .with_agent_spec(AgentDefinitionSpec::local_with_id(
                 "summarizer",
                 AgentDefinition::new("deepseek-chat")
                     .with_system_prompt("You are a summarizer. Condense the given facts into one paragraph.")
-                    .with_excluded_tools(vec![
-                        "agent_run".to_string(),
-                        "task_status".to_string(),
-                        "task_cancel".to_string(),
-                        "task_output".to_string(),
-                    ]),
-            )
-            .with_agent(
+                    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+            ))
+            .with_agent_spec(AgentDefinitionSpec::local_with_id(
                 "researcher",
                 AgentDefinition::new("deepseek-chat")
                     .with_max_rounds(8)
@@ -415,8 +370,8 @@ async fn pattern_hierarchical_decomposition() {
                         Return the summarized research.",
                     )
                     .with_allowed_agents(vec!["fact_finder".to_string(), "summarizer".to_string()]),
-            )
-            .with_agent(
+            ))
+            .with_agent_spec(AgentDefinitionSpec::local_with_id(
                 "report_writer",
                 AgentDefinition::new("deepseek-chat")
                     .with_max_rounds(8)
@@ -427,7 +382,7 @@ async fn pattern_hierarchical_decomposition() {
                         Return the final report.",
                     )
                     .with_allowed_agents(vec!["researcher".to_string()]),
-            )
+            ))
             .with_agent_state_store(Arc::new(tirea_store_adapters::MemoryStore::new()))
             .build()
             .unwrap();
@@ -470,7 +425,7 @@ async fn pattern_generator_critic() {
     require_deepseek_key();
     with_retries("gen-critic", || async {
         let os = AgentOs::builder()
-            .with_agent(
+            .with_agent_spec(AgentDefinitionSpec::local_with_id(
                 "critic",
                 AgentDefinition::new("deepseek-chat")
                     .with_system_prompt(
@@ -479,14 +434,9 @@ async fn pattern_generator_critic() {
                         If invalid, output exactly: FAIL followed by a brief reason.\n\
                         Output only PASS or FAIL with reason, nothing else.",
                     )
-                    .with_excluded_tools(vec![
-                        "agent_run".to_string(),
-                        "task_status".to_string(),
-                        "task_cancel".to_string(),
-                        "task_output".to_string(),
-                    ]),
-            )
-            .with_agent(
+                    .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+            ))
+            .with_agent_spec(AgentDefinitionSpec::local_with_id(
                 "generator",
                 AgentDefinition::new("deepseek-chat")
                     .with_max_rounds(20)
@@ -500,7 +450,7 @@ async fn pattern_generator_critic() {
                         Always call the critic before finishing. Do not skip the review step.",
                     )
                     .with_allowed_agents(vec!["critic".to_string()]),
-            )
+            ))
             .with_agent_state_store(Arc::new(tirea_store_adapters::MemoryStore::new()))
             .build()
             .unwrap();

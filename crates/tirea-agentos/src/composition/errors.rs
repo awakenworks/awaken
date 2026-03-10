@@ -1,5 +1,6 @@
 use super::{
     bundle::BundleComposeError,
+    delegation::AgentCatalogError,
     registry::{
         AgentRegistryError, BehaviorRegistryError, ModelRegistryError, ProviderRegistryError,
         StopPolicyRegistryError, ToolRegistryError,
@@ -76,6 +77,9 @@ pub enum AgentOsBuildError {
 
     #[error(transparent)]
     Models(#[from] ModelRegistryError),
+
+    #[error(transparent)]
+    AgentCatalog(#[from] AgentCatalogError),
 
     #[cfg(feature = "skills")]
     #[error(transparent)]

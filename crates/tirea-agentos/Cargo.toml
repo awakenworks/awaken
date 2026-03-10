@@ -28,6 +28,7 @@ genai.workspace = true
 futures = "0.3"
 uuid = { version = "1", features = ["v4", "v7"] }
 bytes = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tracing = "0.1"
 json-patch = "3"
 
@@ -58,6 +59,7 @@ phoenix-test-helpers = { path = "../../e2e/phoenix/test-helpers" }
 criterion.workspace = true
 trybuild.workspace = true
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio"] }
 
 [lints]
 workspace = true

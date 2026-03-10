@@ -6,8 +6,8 @@ use futures::Stream;
 use genai::Client;
 
 use crate::composition::{
-    AgentRegistry, AgentToolsConfig, BehaviorRegistry, ModelRegistry, ProviderRegistry,
-    RegistrySet, StopPolicyRegistry, SystemWiring, ToolRegistry,
+    AgentCatalog, AgentRegistry, AgentToolsConfig, BehaviorRegistry, ModelRegistry,
+    ProviderRegistry, RegistrySet, StopPolicyRegistry, SystemWiring, ToolRegistry,
 };
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::RunIdentity;
@@ -17,7 +17,7 @@ use crate::contracts::{AgentEvent, RunContext, ToolCallDecision};
 use crate::extensions::skills::SkillRegistry;
 use crate::runtime::loop_runner::{Agent, RunCancellationToken, StateCommitError, StateCommitter};
 
-use super::background_tasks::{BackgroundTaskManager, TaskStore};
+use super::agent_tools::SubAgentHandleTable;
 use super::thread_run;
 
 /// Result of [`AgentOs::run_stream`]: an event stream plus metadata.
@@ -99,6 +99,7 @@ impl PreparedRun {
 pub struct AgentOs {
     pub(crate) default_client: Client,
     pub(crate) agents: Arc<dyn AgentRegistry>,
+    pub(crate) agent_catalog: Arc<dyn AgentCatalog>,
     pub(crate) base_tools: Arc<dyn ToolRegistry>,
     pub(crate) behaviors: Arc<dyn BehaviorRegistry>,
     pub(crate) providers: Arc<dyn ProviderRegistry>,
@@ -107,7 +108,7 @@ pub struct AgentOs {
     #[cfg(feature = "skills")]
     pub(crate) skills_registry: Option<Arc<dyn SkillRegistry>>,
     pub(crate) system_wirings: Vec<Arc<dyn SystemWiring>>,
-    pub(crate) background_task_manager: Arc<BackgroundTaskManager>,
+    pub(crate) sub_agent_handles: Arc<SubAgentHandleTable>,
     pub(crate) active_runs: Arc<thread_run::ActiveThreadRunRegistry>,
     pub(crate) agent_tools: AgentToolsConfig,
     pub(crate) agent_state_store: Option<Arc<dyn ThreadStore>>,
@@ -118,20 +119,15 @@ pub(crate) struct RuntimeServices {
     pub system_wirings: Vec<Arc<dyn SystemWiring>>,
     pub agent_tools: AgentToolsConfig,
     pub agent_state_store: Option<Arc<dyn ThreadStore>>,
+    pub agent_catalog: Arc<dyn AgentCatalog>,
 }
 
 impl AgentOs {
     pub(crate) fn from_registry_set(registries: RegistrySet, services: RuntimeServices) -> Self {
-        let background_task_manager =
-            if let Some(agent_state_store) = services.agent_state_store.clone() {
-                let task_store = Arc::new(TaskStore::new(agent_state_store));
-                Arc::new(BackgroundTaskManager::with_task_store(Some(task_store)))
-            } else {
-                Arc::new(BackgroundTaskManager::new())
-            };
         Self {
             default_client: services.default_client,
             agents: registries.agents,
+            agent_catalog: services.agent_catalog,
             base_tools: registries.tools,
             behaviors: registries.behaviors,
             providers: registries.providers,
@@ -140,7 +136,7 @@ impl AgentOs {
             #[cfg(feature = "skills")]
             skills_registry: registries.skills,
             system_wirings: services.system_wirings,
-            background_task_manager,
+            sub_agent_handles: Arc::new(SubAgentHandleTable::new()),
             active_runs: Arc::new(thread_run::ActiveThreadRunRegistry::default()),
             agent_tools: services.agent_tools,
             agent_state_store: services.agent_state_store,

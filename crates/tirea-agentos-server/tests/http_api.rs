@@ -8,8 +8,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tirea_agentos::composition::AgentDefinition;
-use tirea_agentos::composition::AgentOsBuilder;
+use tirea_agentos::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
 use tirea_agentos::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_agentos::contracts::storage::{
     Committed, MailboxEntryOrigin, MailboxStore, MailboxWriter, RunOrigin, ThreadHead,
@@ -49,7 +48,7 @@ fn make_os_with_storage_and_tools(
             Arc::new(TerminatePlugin::new("terminate_behavior_requested_test")),
         )
         .with_tools(tools)
-        .with_agent("test", def)
+        .with_agent_spec(AgentDefinitionSpec::local_with_id("test", def))
         .with_agent_state_store(write_store)
         .build()
         .unwrap()
@@ -72,7 +71,7 @@ fn make_os_with_slow_terminate_behavior_requested_plugin(
                 std::time::Duration::from_millis(250),
             )),
         )
-        .with_agent("test", def)
+        .with_agent_spec(AgentDefinitionSpec::local_with_id("test", def))
         .with_agent_state_store(write_store)
         .build()
         .unwrap()

@@ -8,7 +8,7 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::ImageExt;
 use testcontainers_modules::nats::Nats;
 use testcontainers_modules::postgres::Postgres;
-use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder};
+use tirea_agentos::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
 use tirea_agentos::contracts::storage::MailboxStore;
 use tirea_agentos::contracts::storage::{
     ThreadReader, ThreadStore, ThreadWriter, VersionPrecondition,
@@ -42,7 +42,7 @@ fn make_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::runtime::AgentOs
                 "terminate_behavior_requested_e2e_nats_postgres",
             )),
         )
-        .with_agent("test", def)
+        .with_agent_spec(AgentDefinitionSpec::local_with_id("test", def))
         .with_agent_state_store(write_store)
         .build()
         .expect("failed to build AgentOs")
@@ -338,7 +338,7 @@ async fn e2e_nats_buffered_postgres_recover_replays_pending_deltas() {
             tirea_agentos::contracts::thread::Message::assistant("mid"),
         )],
         patches: vec![],
-        state_actions: vec![],
+        actions: vec![],
         snapshot: None,
     };
     storage
@@ -355,7 +355,7 @@ async fn e2e_nats_buffered_postgres_recover_replays_pending_deltas() {
             tirea_agentos::contracts::thread::Message::assistant("tail"),
         )],
         patches: vec![],
-        state_actions: vec![],
+        actions: vec![],
         snapshot: None,
     };
     storage
@@ -545,7 +545,7 @@ async fn e2e_nats_buffered_postgres_recover_deduplicates_duplicate_message_ids()
         reason: tirea_agentos::contracts::thread::CheckpointReason::AssistantTurnCommitted,
         messages: vec![duplicate_msg.clone()],
         patches: vec![],
-        state_actions: vec![],
+        actions: vec![],
         snapshot: None,
     };
     storage
@@ -619,7 +619,7 @@ async fn e2e_nats_buffered_postgres_flush_retry_after_transient_save_failure() {
             tirea_agentos::contracts::thread::Message::assistant("mid"),
         )],
         patches: vec![],
-        state_actions: vec![],
+        actions: vec![],
         snapshot: None,
     };
     storage
@@ -636,7 +636,7 @@ async fn e2e_nats_buffered_postgres_flush_retry_after_transient_save_failure() {
             tirea_agentos::contracts::thread::Message::assistant("tail"),
         )],
         patches: vec![],
-        state_actions: vec![],
+        actions: vec![],
         snapshot: None,
     };
     let flush_err = storage

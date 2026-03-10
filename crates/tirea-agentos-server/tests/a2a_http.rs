@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use common::{compose_http_app, get_json_text, post_sse, TerminatePlugin};
 use serde_json::{json, Value};
 use std::sync::{Arc, OnceLock};
-use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder};
+use tirea_agentos::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
 use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader};
 use tirea_agentos::contracts::RunRequest;
 use tirea_agentos::runtime::{AgentOs, RunStream};
@@ -78,7 +78,8 @@ fn make_os(store: Arc<MemoryStore>, agent_ids: &[&str]) -> Arc<AgentOs> {
             behavior_ids: vec!["terminate_behavior_requested_test".into()],
             ..Default::default()
         };
-        builder = builder.with_agent(*agent_id, definition);
+        builder =
+            builder.with_agent_spec(AgentDefinitionSpec::local_with_id(*agent_id, definition));
     }
     Arc::new(builder.build().expect("build AgentOs"))
 }

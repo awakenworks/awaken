@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use std::sync::Arc;
-use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder};
+use tirea_agentos::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
 use tirea_agentos::contracts::storage::ThreadReader;
 use tirea_agentos::contracts::RunRequest;
 use tirea_agentos::runtime::AgentOs;
@@ -26,7 +26,7 @@ fn make_os(store: Arc<MemoryStore>) -> AgentOs {
                 "terminate_behavior_requested_cross_crate_matrix",
             )),
         )
-        .with_agent("test", def)
+        .with_agent_spec(AgentDefinitionSpec::local_with_id("test", def))
         .with_agent_state_store(store)
         .build()
         .expect("failed to build AgentOs")

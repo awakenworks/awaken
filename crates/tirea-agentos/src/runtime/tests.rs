@@ -446,10 +446,10 @@ fn build_errors_if_agent_references_reserved_skills_plugin_id() {
             ..SkillsConfig::default()
         })
         .with_registered_behavior("skills", Arc::new(FakeSkillsPlugin))
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_behavior_id("skills"),
-        )
+        ))
         .build()
         .unwrap_err();
 
@@ -474,10 +474,10 @@ impl AgentBehavior for FakeAgentToolsPlugin {
 fn build_errors_if_agent_references_reserved_agent_tools_plugin_id() {
     let err = AgentOs::builder()
         .with_registered_behavior("agent_tools", Arc::new(FakeAgentToolsPlugin))
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_behavior_id("agent_tools"),
-        )
+        ))
         .build()
         .unwrap_err();
 
@@ -502,10 +502,10 @@ impl AgentBehavior for FakeAgentRecoveryPlugin {
 fn build_errors_if_agent_references_reserved_agent_recovery_plugin_id() {
     let err = AgentOs::builder()
         .with_registered_behavior("agent_recovery", Arc::new(FakeAgentRecoveryPlugin))
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_behavior_id("agent_recovery"),
-        )
+        ))
         .build()
         .unwrap_err();
 
@@ -553,7 +553,10 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
             enabled: true,
             ..SkillsConfig::default()
         })
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .with_tools(HashMap::from([(
             "base_tool".to_string(),
             Arc::new(BaseTool) as Arc<dyn Tool>,
@@ -648,7 +651,10 @@ fn resolve_freezes_tool_snapshot_per_run_boundary() {
     dynamic_registry.replace(&["mcp__s1__echo"]);
 
     let os = AgentOs::builder()
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .with_tool_registry(dynamic_registry.clone() as Arc<dyn ToolRegistry>)
         .build()
         .expect("build agent os");
@@ -718,7 +724,10 @@ async fn resolve_freezes_agent_snapshot_per_run_boundary() {
     dynamic_agents.replace_ids(&["worker_a"]);
 
     let os = AgentOs::builder()
-        .with_agent("root", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "root",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .with_agent_registry(dynamic_agents.clone() as Arc<dyn AgentRegistry>)
         .build()
         .expect("build agent os");
@@ -881,7 +890,10 @@ async fn resolve_freezes_skill_snapshot_per_run_boundary() {
     dynamic_skills.replace_ids(&["s1"]);
 
     let os = AgentOs::builder()
-        .with_agent("root", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "root",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .with_skill_registry(dynamic_skills.clone() as Arc<dyn SkillRegistry>)
         .with_skills_config(SkillsConfig {
             enabled: true,
@@ -954,7 +966,10 @@ fn build_skill_registry_refresh_interval_starts_periodic_refresh() {
     assert!(!manager.periodic_refresh_running());
 
     let _os = AgentOs::builder()
-        .with_agent("root", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "root",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .with_skill_registry(Arc::new(manager.clone()) as Arc<dyn SkillRegistry>)
         .with_skill_registry_refresh_interval(Duration::from_millis(20))
         .with_skills_config(SkillsConfig {
@@ -1006,10 +1021,10 @@ async fn run_and_run_stream_work_without_llm_when_terminate_behavior_requested()
             "terminate_behavior_requested",
             Arc::new(TerminateBehaviorRequestedPlugin),
         )
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_behavior_id("terminate_behavior_requested"),
-        )
+        ))
         .with_agent_state_store(Arc::new(tirea_store_adapters::MemoryStore::new()))
         .build()
         .unwrap();
@@ -1062,10 +1077,10 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
 
     let os = AgentOs::builder()
         .with_stop_policy("always", Arc::new(AlwaysStopPolicy))
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_stop_condition_id("always"),
-        )
+        ))
         .with_agent_state_store(Arc::new(tirea_store_adapters::MemoryStore::new()))
         .build()
         .unwrap();
@@ -1153,13 +1168,13 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
 #[test]
 fn resolve_sets_typed_scope_policy() {
     let os = AgentOs::builder()
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini")
                 .with_allowed_skills(vec!["s1".to_string()])
                 .with_allowed_agents(vec!["worker".to_string()])
                 .with_allowed_tools(vec!["echo".to_string()]),
-        )
+        ))
         .build()
         .unwrap();
     let resolved = os.resolve("a1").unwrap();
@@ -1207,7 +1222,10 @@ async fn resolve_errors_on_skills_tool_id_conflict() {
             enabled: true,
             ..SkillsConfig::default()
         })
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .with_tools(HashMap::from([(
             "skill".to_string(),
             Arc::new(ConflictingTool) as Arc<dyn Tool>,
@@ -1226,7 +1244,10 @@ async fn resolve_errors_on_skills_tool_id_conflict() {
 #[tokio::test]
 async fn resolve_wires_agent_tools_by_default() {
     let os = AgentOs::builder()
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .build()
         .unwrap();
 
@@ -1262,7 +1283,10 @@ async fn resolve_errors_on_agent_tools_tool_id_conflict() {
     }
 
     let os = AgentOs::builder()
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .with_tools(HashMap::from([(
             "agent_run".to_string(),
             Arc::new(ConflictingRunTool) as Arc<dyn Tool>,
@@ -1299,7 +1323,10 @@ fn build_errors_on_duplicate_skill_id_across_skill_registries() {
     let duplicate_registry = InMemorySkillRegistry::from_skills(skills.clone());
 
     let err = AgentOs::builder()
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .with_skills(skills)
         .with_skill_registry(Arc::new(duplicate_registry) as Arc<dyn SkillRegistry>)
         .with_skills_config(SkillsConfig {
@@ -1327,7 +1354,10 @@ async fn resolve_errors_if_models_registry_present_but_model_missing() {
             ModelDefinition::new("p1", "gpt-4o-mini")
                 .with_chat_options(genai::chat::ChatOptions::default().with_capture_usage(true)),
         )
-        .with_agent("a1", AgentDefinition::new("missing_model_ref"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("missing_model_ref"),
+        ))
         .build()
         .unwrap();
 
@@ -1340,7 +1370,10 @@ async fn resolve_rewrites_model_when_registry_present() {
     let os = AgentOs::builder()
         .with_provider("p1", Client::default())
         .with_model("m1", ModelDefinition::new("p1", "gpt-4o-mini"))
-        .with_agent("a1", AgentDefinition::new("m1"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("m1"),
+        ))
         .build()
         .unwrap();
 
@@ -1372,10 +1405,10 @@ impl AgentBehavior for TestPlugin {
 async fn resolve_wires_plugins_from_registry() {
     let os = AgentOs::builder()
         .with_registered_behavior("p1", Arc::new(TestPlugin("p1")))
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_behavior_id("p1"),
-        )
+        ))
         .build()
         .unwrap();
 
@@ -1412,12 +1445,12 @@ async fn resolve_wires_plugins_in_order() {
     let os = AgentOs::builder()
         .with_registered_behavior("policy1", Arc::new(TestPlugin("policy1")))
         .with_registered_behavior("p1", Arc::new(TestPlugin("p1")))
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini")
                 .with_behavior_id("policy1")
                 .with_behavior_id("p1"),
-        )
+        ))
         .build()
         .unwrap();
 
@@ -1444,12 +1477,12 @@ async fn resolve_wires_skills_before_plugins() {
         })
         .with_registered_behavior("policy1", Arc::new(TestPlugin("policy1")))
         .with_registered_behavior("p1", Arc::new(TestPlugin("p1")))
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini")
                 .with_behavior_id("policy1")
                 .with_behavior_id("p1"),
-        )
+        ))
         .build()
         .unwrap();
 
@@ -1475,10 +1508,10 @@ async fn resolve_wires_skills_before_plugins() {
 #[test]
 fn build_errors_if_builder_agent_references_missing_plugin() {
     let err = AgentOs::builder()
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_behavior_id("p1"),
-        )
+        ))
         .build()
         .unwrap_err();
     assert!(matches!(
@@ -1492,12 +1525,12 @@ fn build_errors_if_builder_agent_references_missing_plugin() {
 fn build_errors_on_duplicate_plugin_id_in_agent() {
     let err = AgentOs::builder()
         .with_registered_behavior("p1", Arc::new(TestPlugin("p1")))
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini")
                 .with_behavior_id("p1")
                 .with_behavior_id("p1"),
-        )
+        ))
         .build()
         .unwrap_err();
 
@@ -1512,12 +1545,12 @@ fn build_errors_on_duplicate_plugin_id_in_agent() {
 fn build_errors_on_duplicate_plugin_ref_in_builder_agent() {
     let err = AgentOs::builder()
         .with_registered_behavior("p1", Arc::new(TestPlugin("p1")))
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini")
                 .with_behavior_id("p1")
                 .with_behavior_id("p1"),
-        )
+        ))
         .build()
         .unwrap_err();
     assert!(matches!(
@@ -1539,10 +1572,10 @@ fn build_errors_on_reserved_plugin_id_in_builder_agent() {
             enabled: true,
             ..SkillsConfig::default()
         })
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_behavior_id("skills"),
-        )
+        ))
         .build()
         .unwrap_err();
     assert!(matches!(
@@ -1585,10 +1618,10 @@ fn resolve_errors_on_reserved_plugin_id() {
 #[test]
 fn build_errors_on_reserved_plugin_id_agent_tools_in_builder_agent() {
     let err = AgentOs::builder()
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_behavior_id("agent_tools"),
-        )
+        ))
         .build()
         .unwrap_err();
     assert!(matches!(
@@ -1628,10 +1661,10 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
             "terminate_behavior_requested",
             Arc::new(TerminateBehaviorRequestedPlugin),
         )
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_behavior_id("terminate_behavior_requested"),
-        )
+        ))
         .build()
         .unwrap();
 
@@ -1700,10 +1733,10 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
             "terminate_behavior_requested",
             Arc::new(TerminateBehaviorRequestedPlugin),
         )
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_behavior_id("terminate_behavior_requested"),
-        )
+        ))
         .build()
         .unwrap();
 
@@ -1762,10 +1795,10 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
             "terminate_behavior_requested",
             Arc::new(TerminateBehaviorRequestedPlugin),
         )
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_behavior_id("terminate_behavior_requested"),
-        )
+        ))
         .build()
         .unwrap();
 
@@ -1827,10 +1860,10 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
             "terminate_behavior_requested",
             Arc::new(TerminateBehaviorRequestedPlugin),
         )
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_behavior_id("terminate_behavior_requested"),
-        )
+        ))
         .build()
         .unwrap();
 
@@ -1890,7 +1923,10 @@ async fn prepare_run_sets_parent_thread_id_for_existing_thread_without_lineage()
 
     let os = AgentOs::builder()
         .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .build()
         .unwrap();
 
@@ -1933,7 +1969,10 @@ async fn prepare_run_rejects_parent_thread_id_mismatch_for_existing_thread() {
 
     let os = AgentOs::builder()
         .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .build()
         .unwrap();
 
@@ -1997,10 +2036,10 @@ async fn execute_prepared_runs_stream() {
             "terminate_behavior_requested",
             Arc::new(TerminateBehaviorRequestedPlugin),
         )
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_behavior_id("terminate_behavior_requested"),
-        )
+        ))
         .build()
         .unwrap();
 
@@ -2103,7 +2142,7 @@ fn make_decision_test_os_with_mode(
             "decision_terminate_behavior_requested",
             Arc::new(DecisionTerminatePlugin),
         )
-        .with_agent("a1", def)
+        .with_agent_spec(AgentDefinitionSpec::local_with_id("a1", def))
         .build()
         .unwrap()
 }
@@ -2989,10 +3028,10 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
             "terminate_with_run_end_patch",
             Arc::new(TerminateWithRunEndPatchPlugin),
         )
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_behavior_id("terminate_with_run_end_patch"),
-        )
+        ))
         .build()
         .unwrap();
 
@@ -3079,10 +3118,10 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_pre_checkpoint_s
             "terminate_with_run_end_patch",
             Arc::new(TerminateWithRunEndPatchPlugin),
         )
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_behavior_id("terminate_with_run_end_patch"),
-        )
+        ))
         .build()
         .unwrap();
 
@@ -3138,10 +3177,10 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_pre_checkpoint_s
 #[test]
 fn build_errors_on_reserved_plugin_id_agent_recovery_in_builder_agent() {
     let err = AgentOs::builder()
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_behavior_id("agent_recovery"),
-        )
+        ))
         .build()
         .unwrap_err();
     assert!(matches!(
@@ -3190,7 +3229,10 @@ async fn prepare_run_scope_tool_registry_adds_new_tool() {
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
     let os = AgentOs::builder()
         .with_agent_state_store(storage)
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .build()
         .unwrap();
 
@@ -3246,7 +3288,10 @@ async fn prepare_run_scope_tool_registry_omits_shadowed() {
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
     let os = AgentOs::builder()
         .with_agent_state_store(storage)
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .build()
         .unwrap();
 
@@ -3296,7 +3341,10 @@ async fn prepare_run_scope_appends_plugins() {
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
     let os = AgentOs::builder()
         .with_agent_state_store(storage)
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .build()
         .unwrap();
 
@@ -3347,7 +3395,10 @@ async fn prepare_run_scope_rejects_duplicate_plugin_id() {
     let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
     let os = AgentOs::builder()
         .with_agent_state_store(storage)
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .build()
         .unwrap();
 
@@ -3445,10 +3496,10 @@ fn builder_fails_fast_on_bundle_registry_conflict() {
 #[test]
 fn build_errors_if_agent_references_missing_stop_condition() {
     let err = AgentOs::builder()
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_stop_condition_id("missing_sc"),
-        )
+        ))
         .build()
         .unwrap_err();
     assert!(matches!(
@@ -3477,12 +3528,12 @@ fn build_errors_on_duplicate_stop_condition_ref_in_builder_agent() {
 
     let err = AgentOs::builder()
         .with_stop_policy("sc1", Arc::new(MockStop))
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini")
                 .with_stop_condition_id("sc1")
                 .with_stop_condition_id("sc1"),
-        )
+        ))
         .build()
         .unwrap_err();
     assert!(matches!(
@@ -3495,10 +3546,10 @@ fn build_errors_on_duplicate_stop_condition_ref_in_builder_agent() {
 #[test]
 fn build_errors_on_empty_stop_condition_ref_in_builder_agent() {
     let err = AgentOs::builder()
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_stop_condition_id(""),
-        )
+        ))
         .build()
         .unwrap_err();
     assert!(matches!(
@@ -3527,10 +3578,10 @@ async fn resolve_wires_stop_conditions_from_registry() {
 
     let os = AgentOs::builder()
         .with_stop_policy("sc1", Arc::new(TestStopPolicy))
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_stop_condition_id("sc1"),
-        )
+        ))
         .build()
         .unwrap();
 
@@ -3617,10 +3668,10 @@ async fn prepare_run_cleans_up_run_scoped_state_between_consecutive_runs() {
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
         .with_stop_policy("always", Arc::new(AlwaysStopPolicy))
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_stop_condition_id("always"),
-        )
+        ))
         .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .build()
         .unwrap();
@@ -3957,7 +4008,10 @@ async fn custom_system_wiring_contributes_tools_and_behaviors() {
     let wiring = FakeSystemWiring::new("ext1", "ext1_tool", "ext1_behavior");
     let os = AgentOs::builder()
         .with_system_wiring(Arc::new(wiring))
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .build()
         .unwrap();
 
@@ -4013,10 +4067,10 @@ fn custom_system_wiring_reserved_ids_rejected_at_build() {
         FakeSystemWiring::new("ext1", "ext1_tool", "ext1_behavior").with_reserved(RESERVED);
     let err = AgentOs::builder()
         .with_system_wiring(Arc::new(wiring))
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_behavior_id("my_reserved"),
-        )
+        ))
         .build()
         .unwrap_err();
 
@@ -4034,7 +4088,10 @@ fn custom_system_wiring_reserved_ids_rejected_at_build() {
 async fn custom_system_wiring_error_propagates() {
     let os = AgentOs::builder()
         .with_system_wiring(Arc::new(FailingSystemWiring))
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .build()
         .unwrap();
 
@@ -4055,7 +4112,10 @@ async fn multiple_system_wirings_merge_tools_and_behaviors() {
     let os = AgentOs::builder()
         .with_system_wiring(Arc::new(w1))
         .with_system_wiring(Arc::new(w2))
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .build()
         .unwrap();
 
@@ -4073,10 +4133,10 @@ async fn system_wirings_run_before_user_behaviors() {
     let os = AgentOs::builder()
         .with_system_wiring(Arc::new(w))
         .with_registered_behavior("user_b", Arc::new(TestPlugin("user_b")))
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_behavior_id("user_b"),
-        )
+        ))
         .build()
         .unwrap();
 
@@ -4095,7 +4155,10 @@ async fn system_wiring_tool_conflict_with_user_tool_returns_bundle_error() {
     let w = FakeSystemWiring::new("ext1", "conflicting", "ext1_behavior");
     let os = AgentOs::builder()
         .with_system_wiring(Arc::new(w))
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .with_tools(HashMap::from([(
             "conflicting".to_string(),
             Arc::new(StubTool("conflicting"))
@@ -4123,7 +4186,10 @@ async fn cross_wiring_tool_conflict_detected() {
     let os = AgentOs::builder()
         .with_system_wiring(Arc::new(w1))
         .with_system_wiring(Arc::new(w2))
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
         .build()
         .unwrap();
 

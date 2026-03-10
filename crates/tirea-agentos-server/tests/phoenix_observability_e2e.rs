@@ -8,8 +8,9 @@ use phoenix_test_helpers::{
 };
 use serde_json::json;
 use std::sync::Arc;
-use tirea_agentos::composition::AgentDefinition;
-use tirea_agentos::composition::{AgentOsBuilder, ModelDefinition};
+use tirea_agentos::composition::{
+    AgentDefinition, AgentDefinitionSpec, AgentOsBuilder, ModelDefinition,
+};
 use tirea_agentos::contracts::storage::{MailboxStore, ThreadStore};
 use tirea_agentos::extensions::observability::{InMemorySink, LLMMetryPlugin};
 use tirea_agentos::runtime::AgentOs;
@@ -53,7 +54,7 @@ fn make_os(
             configured_model,
             ModelDefinition::new(observed_provider, wire_model),
         )
-        .with_agent("test", def)
+        .with_agent_spec(AgentDefinitionSpec::local_with_id("test", def))
         .with_agent_state_store(write_store)
         .build()
         .expect("failed to build AgentOs")

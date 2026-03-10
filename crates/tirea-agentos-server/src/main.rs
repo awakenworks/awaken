@@ -1,13 +1,12 @@
 use async_trait::async_trait;
 use clap::Parser;
-use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tirea_agentos::composition::StopConditionSpec;
 use tirea_agentos::composition::{
-    AgentDefinition, AgentOsBuilder, ModelDefinition, ToolExecutionMode,
+    AgentConfig, AgentConfigEntry, AgentConfigError, AgentOsBuilder, LocalAgentConfig,
+    ModelDefinition, ToolExecutionModeConfig,
 };
 use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader, ThreadStore};
 use tirea_agentos::runtime::AgentOs;
@@ -39,47 +38,10 @@ struct Args {
     /// When set, all model calls are routed through TensorZero for observability.
     #[arg(long, env = "TENSORZERO_URL")]
     tensorzero_url: Option<String>,
-}
 
-#[derive(Debug, Deserialize)]
-struct Config {
-    agents: Vec<AgentConfigFile>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AgentConfigFile {
-    id: String,
-    model: Option<String>,
-    #[serde(default)]
-    system_prompt: String,
-    max_rounds: Option<usize>,
-    #[serde(default)]
-    tool_execution_mode: ToolExecutionModeConfig,
-    #[serde(default)]
-    behavior_ids: Vec<String>,
-    #[serde(default)]
-    stop_condition_specs: Vec<StopConditionSpec>,
-}
-
-#[derive(Debug, Deserialize, Clone, Copy, Default)]
-#[serde(rename_all = "snake_case")]
-enum ToolExecutionModeConfig {
-    Sequential,
-    ParallelBatchApproval,
-    #[default]
-    ParallelStreaming,
-}
-
-impl From<ToolExecutionModeConfig> for ToolExecutionMode {
-    fn from(value: ToolExecutionModeConfig) -> Self {
-        match value {
-            ToolExecutionModeConfig::Sequential => ToolExecutionMode::Sequential,
-            ToolExecutionModeConfig::ParallelBatchApproval => {
-                ToolExecutionMode::ParallelBatchApproval
-            }
-            ToolExecutionModeConfig::ParallelStreaming => ToolExecutionMode::ParallelStreaming,
-        }
-    }
+    /// Print the canonical AGENTOS_CONFIG JSON Schema and exit.
+    #[arg(long)]
+    print_agent_config_schema: bool,
 }
 
 /// Simple backend tool that returns server information.
@@ -200,7 +162,7 @@ impl Tool for FinishTool {
 }
 
 fn build_os(
-    cfg: Option<Config>,
+    cfg: Option<AgentConfig>,
     tensorzero_url: Option<String>,
     write_store: Arc<dyn ThreadStore>,
 ) -> AgentOs {
@@ -221,15 +183,17 @@ fn build_os(
 
     let agents = match cfg {
         Some(c) => c.agents,
-        None => vec![AgentConfigFile {
+        None => vec![AgentConfigEntry::LegacyLocal(LocalAgentConfig {
             id: "default".to_string(),
+            name: None,
+            description: None,
             model: None,
             system_prompt: String::new(),
             max_rounds: None,
             tool_execution_mode: ToolExecutionModeConfig::ParallelStreaming,
             behavior_ids: Vec::new(),
             stop_condition_specs: Vec::new(),
-        }],
+        })],
     };
 
     if agents.is_empty() {
@@ -251,25 +215,10 @@ fn build_os(
         eprintln!("TensorZero provider registered at {tz_url}");
     }
 
-    for a in agents {
-        let mut def = AgentDefinition {
-            id: a.id.clone(),
-            system_prompt: a.system_prompt,
-            ..Default::default()
-        };
-        if let Some(model) = &a.model {
-            def.model = model.clone();
-        }
-        if let Some(max_rounds) = a.max_rounds {
-            def.max_rounds = max_rounds;
-        }
-        def.tool_execution_mode = a.tool_execution_mode.into();
-        def.behavior_ids = a.behavior_ids;
-        def.stop_condition_specs = a.stop_condition_specs;
-
-        // Map each agent's model through TensorZero when configured.
+    for agent in agents {
+        // Map each local agent's model through TensorZero when configured.
         if tensorzero_url.is_some() {
-            if let Some(model) = &a.model {
+            if let Some(model) = agent.local_model() {
                 builder = builder.with_model(
                     model,
                     ModelDefinition::new("tz", "openai::tensorzero::function_name::agent_chat"),
@@ -278,7 +227,14 @@ fn build_os(
             }
         }
 
-        builder = builder.with_agent(a.id, def);
+        let spec = match agent.into_spec() {
+            Ok(spec) => spec,
+            Err(err) => {
+                report_agent_config_error(err);
+                std::process::exit(2);
+            }
+        };
+        builder = builder.with_agent_spec(spec);
     }
 
     match builder.build() {
@@ -290,9 +246,30 @@ fn build_os(
     }
 }
 
+fn report_agent_config_error(err: AgentConfigError) {
+    eprintln!("invalid agent config: {err}");
+}
+
+fn render_agent_config_schema() -> Result<String, serde_json::Error> {
+    serde_json::to_string_pretty(&AgentConfig::json_schema())
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+
+    if args.print_agent_config_schema {
+        match render_agent_config_schema() {
+            Ok(schema) => {
+                println!("{schema}");
+                return;
+            }
+            Err(err) => {
+                eprintln!("failed to serialize agent config schema: {err}");
+                std::process::exit(2);
+            }
+        }
+    }
 
     let cfg = match args.config.as_ref() {
         Some(path) => {
@@ -303,10 +280,10 @@ async fn main() {
                     std::process::exit(2);
                 }
             };
-            let parsed = match serde_json::from_str::<Config>(&raw) {
+            let parsed = match AgentConfig::from_json_str(&raw) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("failed to parse config (JSON): {e}");
+                    report_agent_config_error(e);
                     std::process::exit(2);
                 }
             };
@@ -390,4 +367,43 @@ async fn main() {
         })
         .await
         .expect("http server crashed");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tirea_store_adapters::MemoryStore;
+
+    #[test]
+    fn render_agent_config_schema_outputs_agents_object() {
+        let schema = render_agent_config_schema().expect("schema should serialize");
+        let schema_json: Value =
+            serde_json::from_str(&schema).expect("schema should be valid JSON");
+        assert_eq!(schema_json["type"], json!("object"));
+        assert!(schema_json["properties"]["agents"].is_object());
+    }
+
+    #[test]
+    fn build_os_accepts_remote_a2a_agents_from_config() {
+        let os = build_os(
+            Some(AgentConfig {
+                agents: serde_json::from_value(json!([
+                    {
+                        "kind": "a2a",
+                        "id": "researcher",
+                        "name": "Researcher",
+                        "description": "Remote research agent",
+                        "endpoint": "https://example.test/v1/a2a",
+                        "remote_agent_id": "remote-researcher",
+                        "poll_interval_ms": 80
+                    }
+                ]))
+                .expect("config agents should parse"),
+            }),
+            None,
+            Arc::new(MemoryStore::new()),
+        );
+
+        assert!(os.agent("researcher").is_none());
+    }
 }

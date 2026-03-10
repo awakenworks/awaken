@@ -4,7 +4,7 @@ use futures::StreamExt;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
-use tirea_agentos::composition::AgentDefinition;
+use tirea_agentos::composition::{AgentDefinition, AgentDefinitionSpec};
 use tirea_agentos::runtime::AgentOs;
 use tirea_contract::thread::Message;
 use tirea_contract::{AgentEvent, RunOrigin, RunRequest};
@@ -35,33 +35,23 @@ async fn deepseek_real_multi_subagent_smoke() {
 
 async fn run_multi_subagent() -> Result<(), String> {
     let os = AgentOs::builder()
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "writer",
             AgentDefinition::new("deepseek-chat")
                 .with_system_prompt(
                     "You are writer agent. Reply with exactly one short Chinese sentence only.",
                 )
-                .with_excluded_tools(vec![
-                    "agent_run".to_string(),
-                    "task_status".to_string(),
-                    "task_cancel".to_string(),
-                    "task_output".to_string(),
-                ]),
-        )
-        .with_agent(
+                .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+        ))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "reviewer",
             AgentDefinition::new("deepseek-chat")
                 .with_system_prompt(
                     "You are reviewer agent. Reply with exactly one short Chinese review sentence only.",
                 )
-                .with_excluded_tools(vec![
-                    "agent_run".to_string(),
-                    "task_status".to_string(),
-                    "task_cancel".to_string(),
-                    "task_output".to_string(),
-                ]),
-        )
-        .with_agent(
+                .with_excluded_tools(vec!["agent_run".to_string(), "agent_stop".to_string()]),
+        ))
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "orchestrator",
             AgentDefinition::new("deepseek-chat")
                 .with_max_rounds(6)
@@ -73,7 +63,7 @@ You must complete this workflow:\n\
 3) then answer in Chinese, summarizing both outputs in 2 short sentences.\n\
 Do not skip tool calls.",
                 ),
-        )
+        ))
         .with_agent_state_store(Arc::new(tirea_store_adapters::MemoryStore::new()))
         .build()
         .unwrap();

@@ -13,8 +13,7 @@ use serde_json::json;
 use std::sync::Arc;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::nats::Nats;
-use tirea_agentos::composition::AgentDefinition;
-use tirea_agentos::composition::AgentOsBuilder;
+use tirea_agentos::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
 use tirea_agentos::contracts::storage::{MailboxReader, MailboxStore, ThreadReader, ThreadStore};
 use tirea_agentos_server::nats::NatsConfig;
 use tirea_agentos_server::protocol;
@@ -38,7 +37,7 @@ fn make_os(storage: Arc<dyn ThreadStore>) -> tirea_agentos::runtime::AgentOs {
             "terminate_behavior_requested_test",
             Arc::new(TerminatePlugin::new("terminate_behavior_requested_test")),
         )
-        .with_agent("test", def)
+        .with_agent_spec(AgentDefinitionSpec::local_with_id("test", def))
         .with_agent_state_store(storage)
         .build()
         .unwrap()

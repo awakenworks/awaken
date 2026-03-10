@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tirea_agentos::composition::{
-    tool_map_from_arc, AgentDefinition, AgentOsBuilder, ModelDefinition,
+    AgentDefinition, AgentDefinitionSpec, AgentOsBuilder, ModelDefinition,
 };
 use tirea_agentos::contracts::runtime::behavior::AgentBehavior;
 use tirea_agentos::contracts::runtime::tool_call::Tool;
@@ -24,6 +24,16 @@ use tirea_agentos_server::http::{self, AppState};
 use tirea_agentos_server::protocol;
 use tirea_agentos_server::service::MailboxService;
 use tirea_store_adapters::FileStore;
+
+pub(crate) fn tool_map_from_arc<I>(tools: I) -> HashMap<String, Arc<dyn Tool>>
+where
+    I: IntoIterator<Item = Arc<dyn Tool>>,
+{
+    tools
+        .into_iter()
+        .map(|tool| (tool.descriptor().id, tool))
+        .collect()
+}
 
 #[derive(Debug, Parser)]
 pub struct Args {
@@ -46,12 +56,11 @@ pub async fn serve(
     tools: Vec<Arc<dyn Tool>>,
     plugins: Vec<(String, Arc<dyn AgentBehavior>)>,
 ) {
-    let agent_id = agent_def.id.clone();
     let model_id = agent_def.model.clone();
     let tool_map: HashMap<String, Arc<dyn Tool>> = tool_map_from_arc(tools);
 
     let mut builder = AgentOsBuilder::new()
-        .with_agent(&agent_id, agent_def)
+        .with_agent_spec(AgentDefinitionSpec::local(agent_def))
         .with_tools(tool_map);
 
     // When TensorZero URL is provided, route model calls through TensorZero gateway.

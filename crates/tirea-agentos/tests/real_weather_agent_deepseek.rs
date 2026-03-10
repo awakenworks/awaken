@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
-use tirea_agentos::composition::AgentDefinition;
+use tirea_agentos::composition::{AgentDefinition, AgentDefinitionSpec};
 use tirea_agentos::runtime::AgentOs;
 use tirea_contract::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_contract::thread::Message;
@@ -188,7 +188,7 @@ async fn run_weather_agent() -> Result<(), String> {
             "get_weather".to_string(),
             std::sync::Arc::new(OpenMeteoWeatherTool::new()) as std::sync::Arc<dyn Tool>,
         )]))
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "weather",
             AgentDefinition::new("deepseek-chat").with_system_prompt(
                 "You are a weather assistant.\n\
@@ -197,7 +197,7 @@ Rules:\n\
 - Use the tool result as the source of truth.\n\
 - Answer in 2-4 short sentences.\n",
             ),
-        )
+        ))
         .with_agent_state_store(Arc::new(tirea_store_adapters::MemoryStore::new()))
         .build()
         .unwrap();

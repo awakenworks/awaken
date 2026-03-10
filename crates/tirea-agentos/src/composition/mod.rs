@@ -2,19 +2,28 @@ mod agent_definition;
 mod builder;
 mod bundle;
 mod config;
+mod delegation;
 mod errors;
 pub mod registry;
 mod stop_condition;
 mod wiring;
 
-pub use crate::runtime::loop_runner::{tool_map, tool_map_from_arc};
 pub use agent_definition::{AgentDefinition, ToolExecutionMode};
 pub use builder::AgentOsBuilder;
 pub use bundle::ToolBehaviorBundle;
 pub use bundle::{
     BundleComposeError, BundleComposer, BundleRegistryAccumulator, BundleRegistryKind,
 };
-pub use config::{AgentToolsConfig, SkillsConfig};
+pub use config::{
+    A2aAgentConfig, AgentConfig, AgentConfigEntry, AgentConfigError, AgentToolsConfig,
+    LocalAgentConfig, RemoteAuthConfig, SkillsConfig, TaggedAgentConfigEntry,
+    ToolExecutionModeConfig,
+};
+pub use delegation::{
+    A2aAgentBinding, AgentBinding, AgentCatalog, AgentCatalogError, AgentDefinitionSpec,
+    AgentDescriptor, CompositeAgentCatalog, HostedAgentCatalog, InMemoryAgentCatalog,
+    RemoteAgentBinding, RemoteAgentDefinition, RemoteSecurityConfig, ResolvedAgent,
+};
 pub use errors::{AgentOsBuildError, AgentOsWiringError};
 pub use registry::RegistrySet;
 pub use registry::{

@@ -3,8 +3,7 @@ use axum::http::{Request, StatusCode};
 use futures::StreamExt;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tirea_agentos::composition::AgentDefinition;
-use tirea_agentos::composition::AgentOsBuilder;
+use tirea_agentos::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
 use tirea_agentos::contracts::storage::MailboxStore;
 use tirea_agentos::contracts::{AgentEvent, RunRequest};
 use tirea_agentos::runtime::{AgentOs, RunStream};
@@ -32,7 +31,7 @@ fn make_os_from_store(store: Arc<MemoryStore>) -> AgentOs {
             "terminate_behavior_requested_parity",
             Arc::new(TerminatePlugin::new("terminate_behavior_requested_parity")),
         )
-        .with_agent("test", def)
+        .with_agent_spec(AgentDefinitionSpec::local_with_id("test", def))
         .with_agent_state_store(store)
         .build()
         .unwrap()
