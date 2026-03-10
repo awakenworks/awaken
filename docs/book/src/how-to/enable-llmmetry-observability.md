@@ -36,6 +36,7 @@ impl MetricsSink for LoggingSink {
 ```rust,ignore
 use std::sync::Arc;
 use genai::chat::ChatOptions;
+use tirea::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
 use tirea::extensions::observability::LLMMetryPlugin;
 
 let chat_options = ChatOptions::default().with_temperature(0.7);
@@ -46,10 +47,10 @@ let llmmetry = LLMMetryPlugin::new(LoggingSink)
 
 let os = AgentOsBuilder::new()
     .with_registered_behavior("llmmetry", Arc::new(llmmetry))
-    .with_agent(
+    .with_agent_spec(AgentDefinitionSpec::local_with_id(
         "assistant",
         AgentDefinition::new("deepseek-chat").with_behavior_id("llmmetry"),
-    )
+    ))
     .build()?;
 ```
 

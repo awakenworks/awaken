@@ -44,10 +44,14 @@ eprintln!("recovered {} buffered deltas", recovered);
 
 ```rust,ignore
 use tirea::contracts::storage::ThreadReader;
+use tirea::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
 
 let os = AgentOsBuilder::new()
     .with_agent_state_store(buffered.clone())
-    .with_agent("assistant", AgentDefinition::new("deepseek-chat"))
+    .with_agent_spec(AgentDefinitionSpec::local_with_id(
+        "assistant",
+        AgentDefinition::new("deepseek-chat"),
+    ))
     .build()?;
 
 let read_store: Arc<dyn ThreadReader> = postgres.clone();

@@ -1100,7 +1100,7 @@ fn make_a2ui_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::AgentOs {
 
     AgentOsBuilder::new()
         .with_tools(tools)
-        .with_agent("a2ui", def)
+        .with_agent_spec(AgentDefinitionSpec::local_with_id("a2ui", def))
         .with_registered_behavior(
             "a2ui",
             Arc::new(A2uiPlugin::with_catalog_id(A2UI_CATALOG)) as Arc<dyn AgentBehavior>,

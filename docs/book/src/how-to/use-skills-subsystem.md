@@ -21,7 +21,7 @@ let skills = FsSkill::into_arc_skills(discovered.skills);
 2. Enable skills mode in builder.
 
 ```rust,ignore
-use tirea::composition::{AgentDefinition, AgentOsBuilder, SkillsConfig};
+use tirea::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder, SkillsConfig};
 
 let os = AgentOsBuilder::new()
     .with_skills(skills)
@@ -30,7 +30,10 @@ let os = AgentOsBuilder::new()
         advertise_catalog: true,
         ..SkillsConfig::default()
     })
-    .with_agent("assistant", AgentDefinition::new("deepseek-chat"))
+    .with_agent_spec(AgentDefinitionSpec::local_with_id(
+        "assistant",
+        AgentDefinition::new("deepseek-chat"),
+    ))
     .build()?;
 ```
 

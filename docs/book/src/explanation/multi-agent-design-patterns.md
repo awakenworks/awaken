@@ -4,7 +4,7 @@ This page describes common multi-agent patterns and how they map to Tirea primit
 
 All patterns below are implemented with the same building blocks:
 
-- `agent_run` / `task_status` / `task_cancel` / `task_output` orchestration tools
+- `agent_run` / `agent_stop` / `agent_output` delegation tools
 - `AgentDefinition` with `allowed_agents` / `excluded_agents`
 - `SuspendTicket` for human-in-the-loop gating
 - System prompt engineering for control flow
@@ -17,7 +17,7 @@ Tirea does not require dedicated workflow agent types. The LLM-driven loop plus 
 |---|---|---|
 | [Coordinator](#coordinator) | `agent_run` + prompt routing | No (LLM decides) |
 | [Sequential Pipeline](#sequential-pipeline) | Chained `agent_run` calls | No (LLM relays) |
-| [Parallel Fan-Out/Gather](#parallel-fan-outgather) | Parallel `agent_run` + `task_output` | No (best-effort) |
+| [Parallel Fan-Out/Gather](#parallel-fan-outgather) | Parallel `agent_run` + `agent_output` | No (best-effort) |
 | [Hierarchical Decomposition](#hierarchical-decomposition) | Nested `agent_run` | No |
 | [Generator-Critic](#generator-critic) | Generator as main agent, critic as child via `agent_run` | No |
 | [Iterative Refinement](#iterative-refinement) | Same as Generator-Critic with additional refiner child | No |
@@ -39,18 +39,18 @@ User -> [Orchestrator] -> intent analysis
 
 ```rust,ignore
 let os = AgentOs::builder()
-    .with_agent("billing", AgentDefinition::new("deepseek-chat")
+    .with_agent_spec(AgentDefinitionSpec::local_with_id("billing", AgentDefinition::new("deepseek-chat")
         .with_system_prompt("You are a billing specialist.")
-        .with_excluded_tools(vec!["agent_run", "task_status", "task_cancel", "task_output"]))
-    .with_agent("support", AgentDefinition::new("deepseek-chat")
+        .with_excluded_tools(vec!["agent_run", "agent_stop"])))
+    .with_agent_spec(AgentDefinitionSpec::local_with_id("support", AgentDefinition::new("deepseek-chat")
         .with_system_prompt("You are a technical support specialist.")
-        .with_excluded_tools(vec!["agent_run", "task_status", "task_cancel", "task_output"]))
-    .with_agent("orchestrator", AgentDefinition::new("deepseek-chat")
+        .with_excluded_tools(vec!["agent_run", "agent_stop"])))
+    .with_agent_spec(AgentDefinitionSpec::local_with_id("orchestrator", AgentDefinition::new("deepseek-chat")
         .with_system_prompt("Route user requests to the appropriate specialist:
 - billing: payment, invoice, subscription issues
 - support: technical problems, bugs, errors
-Use agent_run to delegate. Use task_output to read results.")
-        .with_allowed_agents(vec!["billing", "support"]))
+Use agent_run to delegate. Use agent_output to read results.")
+        .with_allowed_agents(vec!["billing", "support"])))
     .build()?;
 ```
 
@@ -75,13 +75,13 @@ Multiple agents execute in order, each transforming the output of the previous s
 The orchestrator prompt drives the sequence:
 
 ```rust,ignore
-.with_agent("orchestrator", AgentDefinition::new("deepseek-chat")
+.with_agent_spec(AgentDefinitionSpec::local_with_id("orchestrator", AgentDefinition::new("deepseek-chat")
     .with_system_prompt("Process the document through three stages in order:
-1. Call agent_run(\"parser\") with the raw input. Read output with task_output.
-2. Call agent_run(\"extractor\") with the parsed text. Read output with task_output.
-3. Call agent_run(\"summarizer\") with the extracted data. Read output with task_output.
+1. Call agent_run(\"parser\") with the raw input. Read output with agent_output.
+2. Call agent_run(\"extractor\") with the parsed text. Read output with agent_output.
+3. Call agent_run(\"summarizer\") with the extracted data. Read output with agent_output.
 Return the final summary to the user.")
-    .with_allowed_agents(vec!["parser", "extractor", "summarizer"]))
+    .with_allowed_agents(vec!["parser", "extractor", "summarizer"])))
 ```
 
 ### Limitations
@@ -109,7 +109,7 @@ Independent tasks run concurrently, then a synthesizer combines results.
 The orchestrator prompt instructs the LLM to issue multiple `agent_run` tool calls in a single step. When the agent's tool execution mode supports parallel execution, the runtime runs them concurrently and returns all results before the next LLM turn.
 
 ```rust,ignore
-.with_agent("orchestrator", AgentDefinition::new("deepseek-chat")
+.with_agent_spec(AgentDefinitionSpec::local_with_id("orchestrator", AgentDefinition::new("deepseek-chat")
     .with_system_prompt("Review the submitted code:
 1. Launch all three reviewers in parallel by calling agent_run for each in the same response:
    - agent_run(\"security_auditor\")
@@ -122,7 +122,7 @@ IMPORTANT: call all three agent_run tools at the same time, not one after anothe
     .with_allowed_agents(vec![
         "security_auditor", "style_checker", "perf_analyst", "synthesizer"
     ])
-    .with_tool_execution_mode(ToolExecutionMode::ParallelBatchApproval))
+    .with_tool_execution_mode(ToolExecutionMode::ParallelBatchApproval)))
 ```
 
 The key is prompting the LLM to emit multiple tool calls in one response. Most capable models respect this instruction and produce parallel `agent_run` calls that the runtime executes concurrently.
@@ -159,12 +159,12 @@ A parent agent breaks complex tasks into subtasks and delegates recursively.
 Middle-layer agents also have delegation tools:
 
 ```rust,ignore
-.with_agent("researcher", AgentDefinition::new("deepseek-chat")
+.with_agent_spec(AgentDefinitionSpec::local_with_id("researcher", AgentDefinition::new("deepseek-chat")
     .with_system_prompt("Research the given topic. Use web_search for facts, summarizer for condensing.")
-    .with_allowed_agents(vec!["web_search", "summarizer"]))
-.with_agent("report_writer", AgentDefinition::new("deepseek-chat")
+    .with_allowed_agents(vec!["web_search", "summarizer"])))
+.with_agent_spec(AgentDefinitionSpec::local_with_id("report_writer", AgentDefinition::new("deepseek-chat")
     .with_system_prompt("Write a report. Delegate research to the researcher agent, formatting to the formatter agent.")
-    .with_allowed_agents(vec!["researcher", "formatter"]))
+    .with_allowed_agents(vec!["researcher", "formatter"])))
 ```
 
 ### Key decisions
@@ -190,11 +190,11 @@ This is better than an orchestrator-mediated approach because the generator reta
 ### Setup
 
 ```rust,ignore
-.with_agent("critic", AgentDefinition::new("deepseek-chat")
+.with_agent_spec(AgentDefinitionSpec::local_with_id("critic", AgentDefinition::new("deepseek-chat")
     .with_system_prompt("Validate the SQL query. Output exactly PASS if correct. \
         Otherwise output FAIL followed by specific errors.")
-    .with_excluded_tools(vec!["agent_run", "task_status", "task_cancel", "task_output"]))
-.with_agent("generator", AgentDefinition::new("deepseek-chat")
+    .with_excluded_tools(vec!["agent_run", "agent_stop"])))
+.with_agent_spec(AgentDefinitionSpec::local_with_id("generator", AgentDefinition::new("deepseek-chat")
     .with_system_prompt("You are a SQL query writer with a built-in review process:
 1. Write a SQL query for the user's requirement.
 2. Call agent_run for agent_id=critic with your query, background=false.
@@ -203,7 +203,7 @@ This is better than an orchestrator-mediated approach because the generator reta
 5. Return the final validated SQL.
 Always call the critic before finishing.")
     .with_allowed_agents(vec!["critic"])
-    .with_max_rounds(20))
+    .with_max_rounds(20)))
 ```
 
 ### Key decisions

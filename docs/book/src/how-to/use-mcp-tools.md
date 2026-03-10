@@ -37,6 +37,7 @@ let mcp_tools = manager.registry().snapshot();
 ```rust,ignore
 use std::collections::HashMap;
 use std::sync::Arc;
+use tirea::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
 use tirea::contracts::runtime::tool_call::Tool;
 
 let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
@@ -46,7 +47,10 @@ tools.extend(mcp_tools);
 
 let os = AgentOsBuilder::new()
     .with_tools(tools)
-    .with_agent("assistant", AgentDefinition::new("deepseek-chat"))
+    .with_agent_spec(AgentDefinitionSpec::local_with_id(
+        "assistant",
+        AgentDefinition::new("deepseek-chat"),
+    ))
     .build()?;
 ```
 

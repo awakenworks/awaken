@@ -10,8 +10,8 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
-use tirea_agent_loop::runtime::loop_runner::{LlmEventStream, LlmExecutor};
 use tirea_agentos::composition::{AgentDefinition, AgentDefinitionSpec};
+use tirea_agentos::runtime::loop_runner::{LlmEventStream, LlmExecutor};
 use tirea_agentos::runtime::AgentOs;
 use tirea_contract::runtime::tool_call::{
     Tool, ToolCallProgressState, ToolCallProgressStatus, ToolCallProgressUpdate, ToolDescriptor,

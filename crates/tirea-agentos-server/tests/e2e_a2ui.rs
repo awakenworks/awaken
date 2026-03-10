@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use tirea_agentos::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
 use tirea_agentos::contracts::io::RunRequest;
 use tirea_agentos::contracts::runtime::tool_call::Tool;
 use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader, ThreadStore};
@@ -146,13 +147,17 @@ impl LlmExecutor for A2uiMockLlm {
 
 const A2UI_CATALOG: &str = "https://a2ui.org/specification/v0_9/basic_catalog.json";
 
+fn test_mailbox_svc(os: &Arc<AgentOs>, store: Arc<dyn MailboxStore>) -> Arc<MailboxService> {
+    Arc::new(MailboxService::new(os.clone(), store, "test"))
+}
+
 fn build_a2ui_os(store: Arc<MemoryStore>) -> AgentOs {
     let tool: Arc<dyn Tool> = Arc::new(A2uiRenderTool::new());
     let mut tools = HashMap::new();
     tools.insert("render_a2ui".to_string(), tool);
 
     AgentOsBuilder::new()
-        .with_agent(
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
             "a2ui",
             AgentDefinition {
                 id: "a2ui".to_string(),
@@ -162,7 +167,7 @@ fn build_a2ui_os(store: Arc<MemoryStore>) -> AgentOs {
                 behavior_ids: vec!["a2ui".to_string()],
                 ..Default::default()
             },
-        )
+        ))
         .with_tools(tools)
         .with_registered_behavior(
             "a2ui",
@@ -263,16 +268,8 @@ async fn e2e_a2ui_agui_http_tool_call_result() {
     // For the HTTP test, we verify that the A2UI agent is reachable and the tool is registered.
 
     let os = Arc::new(os);
-    let mailbox_svc = Arc::new(MailboxService::new(
-        os.clone(),
-        store.clone() as Arc<dyn MailboxStore>,
-        "test",
-    ));
-    let app = compose_http_app(AppState::new(
-        os,
-        store.clone() as Arc<dyn ThreadReader>,
-        mailbox_svc,
-    ));
+    let mailbox_svc = test_mailbox_svc(&os, store.clone());
+    let app = compose_http_app(AppState::new(os, store.clone(), mailbox_svc));
 
     // AG-UI request — without a real/mock LLM the agent will fail at inference,
     // but we can verify the route accepts the request and the agent is found.
@@ -303,16 +300,8 @@ async fn e2e_a2ui_ai_sdk_http_route() {
     let os = build_a2ui_os(store.clone());
 
     let os = Arc::new(os);
-    let mailbox_svc = Arc::new(MailboxService::new(
-        os.clone(),
-        store.clone() as Arc<dyn MailboxStore>,
-        "test",
-    ));
-    let app = compose_http_app(AppState::new(
-        os,
-        store.clone() as Arc<dyn ThreadReader>,
-        mailbox_svc,
-    ));
+    let mailbox_svc = test_mailbox_svc(&os, store.clone());
+    let app = compose_http_app(AppState::new(os, store.clone(), mailbox_svc));
 
     let payload = json!({
         "id": "a2ui-aisdk-test",

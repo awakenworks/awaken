@@ -272,7 +272,7 @@ Deterministic compatibility directives:\n\
         builder = builder.with_agent_spec(AgentDefinitionSpec::local(research_agent));
     }
     if default_id != "a2ui" {
-        builder = builder.with_agent("a2ui", a2ui_agent);
+        builder = builder.with_agent_spec(AgentDefinitionSpec::local(a2ui_agent));
     }
 
     let plugins: Vec<(String, Arc<dyn AgentBehavior>)> = vec![

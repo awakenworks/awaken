@@ -19,13 +19,13 @@ Use this when you need a production integration path with tool registry, persist
 2. Define agent behavior.
 
 ```rust,ignore
-.with_agent(
+.with_agent_spec(AgentDefinitionSpec::local_with_id(
     "assistant",
-    AgentDefinition::with_id("assistant", "gpt-4o-mini")
+    AgentDefinition::new("gpt-4o-mini")
         .with_system_prompt("You are a helpful assistant.")
         .with_max_rounds(10)
         .with_allowed_tools(vec!["search".to_string(), "summarize".to_string()]),
-)
+))
 ```
 
 3. Wire persistence.
@@ -75,7 +75,7 @@ Once you have:
 ```rust,ignore
 let os = AgentOsBuilder::new()
     .with_tools(...)
-    .with_agent(...)
+    .with_agent_spec(...)
     .build()?;
 ```
 

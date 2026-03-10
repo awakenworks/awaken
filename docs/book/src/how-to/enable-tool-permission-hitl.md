@@ -13,18 +13,19 @@ Use this when tool calls must be `allow` / `deny` / `ask` with human approval.
 
 ```rust,ignore
 use std::sync::Arc;
+use tirea::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
 use tirea::extensions::permission::{PermissionPlugin, ToolPolicyPlugin};
 
 let os = AgentOsBuilder::new()
     .with_registered_behavior("tool_policy", Arc::new(ToolPolicyPlugin))
     .with_registered_behavior("permission", Arc::new(PermissionPlugin))
-    .with_agent(
+    .with_agent_spec(AgentDefinitionSpec::local_with_id(
         "assistant",
         AgentDefinition::new("deepseek-chat").with_behavior_ids(vec![
             "tool_policy".to_string(),
             "permission".to_string(),
         ]),
-    )
+    ))
     .build()?;
 ```
 

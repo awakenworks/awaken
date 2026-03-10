@@ -35,7 +35,10 @@ store.ensure_table().await?;
 ```rust,ignore
 let os = AgentOsBuilder::new()
     .with_tools(tool_map([MyTool]))
-    .with_agent("assistant", AgentDefinition::with_id("assistant", "gpt-4o-mini"))
+    .with_agent_spec(AgentDefinitionSpec::local_with_id(
+        "assistant",
+        AgentDefinition::new("gpt-4o-mini"),
+    ))
     .with_agent_state_store(store.clone())
     .build()?;
 ```

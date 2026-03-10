@@ -95,9 +95,7 @@ fn validate_single(index: usize, msg: &Value) -> Option<A2uiValidationError> {
 
     // surfaceId is required on all message types
     match body.get("surfaceId").and_then(Value::as_str) {
-        Some(s) if s.is_empty() => {
-            return err(&format!("\"{type_key}.surfaceId\" must not be empty"))
-        }
+        Some("") => return err(&format!("\"{type_key}.surfaceId\" must not be empty")),
         Some(_) => {}
         None => return err(&format!("\"{type_key}.surfaceId\" is required")),
     }

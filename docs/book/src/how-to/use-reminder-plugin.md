@@ -13,6 +13,7 @@ Use this when reminders should be injected into inference context from persisted
 
 ```rust,ignore
 use std::sync::Arc;
+use tirea::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
 use tirea::extensions::reminder::ReminderPlugin;
 
 let os = AgentOsBuilder::new()
@@ -20,10 +21,10 @@ let os = AgentOsBuilder::new()
         "reminder",
         Arc::new(ReminderPlugin::new().with_clear_after_llm_request(true)),
     )
-    .with_agent(
+    .with_agent_spec(AgentDefinitionSpec::local_with_id(
         "assistant",
         AgentDefinition::new("deepseek-chat").with_behavior_id("reminder"),
-    )
+    ))
     .build()?;
 ```
 

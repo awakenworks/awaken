@@ -3785,7 +3785,7 @@ async fn prepare_run_cleans_up_tool_call_scope_between_consecutive_runs() {
             _options: Option<&genai::chat::ChatOptions>,
         ) -> genai::Result<crate::runtime::loop_runner::LlmEventStream> {
             let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
-            if idx % 2 == 0 {
+            if idx.is_multiple_of(2) {
                 let tool_call = genai::chat::ToolCall {
                     call_id: "call_repeat".to_string(),
                     fn_name: "echo".to_string(),

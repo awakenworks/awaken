@@ -111,9 +111,34 @@ Response for decision forwarding (`202`):
   "terminationCode": null,
   "terminationDetail": null,
   "createdAt": 1760000000000,
-  "updatedAt": 1760000005000
+  "updatedAt": 1760000005000,
+  "message": {
+    "role": "assistant",
+    "content": "final assistant reply"
+  },
+  "artifacts": [
+    {
+      "content": "final assistant reply"
+    }
+  ],
+  "history": [
+    {
+      "role": "user",
+      "content": "hello from a2a"
+    },
+    {
+      "role": "assistant",
+      "content": "final assistant reply"
+    }
+  ]
 }
 ```
+
+Notes:
+
+- `message` is the latest public assistant output when one exists; otherwise it is `null`.
+- `artifacts` contains the latest public assistant output normalized as text artifacts.
+- `history` contains public `user` / `assistant` / `system` thread messages in order.
 
 ## Task Cancel
 

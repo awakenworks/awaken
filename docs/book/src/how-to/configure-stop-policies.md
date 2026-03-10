@@ -18,8 +18,7 @@ Use this when a run must terminate on explicit loop, budget, timeout, or domain-
 1. Add declarative stop specs on the agent definition.
 
 ```rust,ignore
-use tirea::composition::AgentDefinition;
-use tirea::composition::StopConditionSpec;
+use tirea::composition::{AgentDefinition, AgentDefinitionSpec, StopConditionSpec};
 
 let agent = AgentDefinition::new("deepseek-chat")
     .with_stop_condition_specs(vec![
@@ -58,10 +57,10 @@ impl StopPolicy for AlwaysStop {
 
 let os = AgentOsBuilder::new()
     .with_stop_policy("always", Arc::new(AlwaysStop))
-    .with_agent(
+    .with_agent_spec(AgentDefinitionSpec::local_with_id(
         "assistant",
         AgentDefinition::new("deepseek-chat").with_stop_condition_id("always"),
-    )
+    ))
     .build()?;
 ```
 

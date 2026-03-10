@@ -12,13 +12,22 @@ From `tirea-agentos-server` CLI (`crates/tirea-agentos-server/src/main.rs`):
 
 Run records are stored under `${AGENTOS_STORAGE_DIR}/runs` when using the default file run store.
 
+To print the canonical JSON Schema for `AGENTOS_CONFIG`:
+
+```bash
+cargo run -p tirea-agentos-server -- --print-agent-config-schema
+```
+
 ## `AGENTOS_CONFIG` JSON Shape
 
 ```json
 {
   "agents": [
     {
+      "kind": "local",
       "id": "assistant",
+      "name": "Assistant",
+      "description": "Primary hosted assistant",
       "model": "gpt-4o-mini",
       "system_prompt": "You are a helpful assistant.",
       "max_rounds": 10,
@@ -32,15 +41,53 @@ Run records are stored under `${AGENTOS_STORAGE_DIR}/runs` when using the defaul
 }
 ```
 
-Agent file fields:
+You can also register remote A2A agents:
+
+```json
+{
+  "agents": [
+    {
+      "kind": "a2a",
+      "id": "researcher",
+      "name": "Researcher",
+      "description": "Remote research agent",
+      "endpoint": "https://example.test/v1/a2a",
+      "remote_agent_id": "remote-researcher",
+      "poll_interval_ms": 250,
+      "auth": {
+        "kind": "bearer_token",
+        "token": "secret"
+      }
+    }
+  ]
+}
+```
+
+Local agent file fields:
 
 - `id` (required)
+- `name` (optional, defaults to `id`)
+- `description` (optional, default empty string)
 - `model` (optional, defaults to `AgentDefinition::default().model`)
 - `system_prompt` (optional, default empty string)
 - `max_rounds` (optional)
 - `tool_execution_mode` (optional, default `parallel_streaming`)
 - `behavior_ids` (optional, default `[]`)
 - `stop_condition_specs` (optional, default `[]`)
+
+Remote A2A agent file fields:
+
+- `id` (required)
+- `name` (optional, defaults to `id`)
+- `description` (optional, default empty string)
+- `endpoint` (required, A2A base URL)
+- `remote_agent_id` (optional, defaults to `id`)
+- `poll_interval_ms` (optional, clamped to the runtime minimum)
+- `auth` (optional)
+  - `{ "kind": "bearer_token", "token": "..." }`
+  - `{ "kind": "header", "name": "X-Api-Key", "value": "..." }`
+
+Legacy local entries without `"kind": "local"` are still accepted.
 
 `tool_execution_mode` values:
 

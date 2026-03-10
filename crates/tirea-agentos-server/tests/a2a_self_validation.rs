@@ -8,7 +8,6 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tirea_agent_loop::runtime::loop_runner::LlmExecutor;
 use tirea_agentos::composition::{
     A2aAgentBinding, AgentDefinition, AgentDefinitionSpec, AgentOsBuilder,
 };
@@ -16,6 +15,7 @@ use tirea_agentos::contracts::runtime::tool_call::ToolStatus;
 use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader};
 use tirea_agentos::contracts::thread::{Message, Role};
 use tirea_agentos::contracts::{AgentBehavior, AgentEvent, RunRequest};
+use tirea_agentos::runtime::loop_runner::{LlmEventStream, LlmExecutor};
 use tirea_agentos::runtime::AgentOs;
 use tirea_agentos_server::service::{AppState, MailboxService};
 use tirea_contract::storage::RunOrigin;
@@ -88,7 +88,7 @@ impl LlmExecutor for ToolCallMockLlm {
         _model: &str,
         _chat_req: genai::chat::ChatRequest,
         _options: Option<&genai::chat::ChatOptions>,
-    ) -> genai::Result<tirea_agent_loop::runtime::loop_runner::LlmEventStream> {
+    ) -> genai::Result<LlmEventStream> {
         let call_index = self.call_count.fetch_add(1, Ordering::SeqCst);
 
         if call_index == 0 {

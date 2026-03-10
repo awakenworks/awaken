@@ -505,8 +505,8 @@ mod tests {
 
     #[test]
     fn parent_tool_call_id_seed_is_trimmed() {
-        let trimmed = Some("  call_parent_1  ")
-            .as_deref()
+        let seed = Some("  call_parent_1  ");
+        let trimmed = seed
             .map(str::trim)
             .filter(|id| !id.is_empty())
             .map(ToOwned::to_owned);
@@ -515,8 +515,8 @@ mod tests {
 
     #[test]
     fn blank_parent_tool_call_id_seed_is_none() {
-        let trimmed = Some("   ")
-            .as_deref()
+        let seed = Some("   ");
+        let trimmed = seed
             .map(str::trim)
             .filter(|id| !id.is_empty())
             .map(ToOwned::to_owned);

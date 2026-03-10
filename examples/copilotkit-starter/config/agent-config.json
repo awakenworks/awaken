@@ -1,6 +1,7 @@
 {
   "agents": [
     {
+      "kind": "local",
       "id": "default",
       "model": "deepseek-chat",
       "system_prompt": "You are a helpful assistant. Keep answers concise and actionable.",

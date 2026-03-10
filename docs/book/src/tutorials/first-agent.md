@@ -31,7 +31,7 @@ export DEEPSEEK_API_KEY=<your-key>
 use futures::StreamExt;
 use serde_json::{json, Value};
 use tirea::contracts::{AgentEvent, Message, RunOrigin, RunRequest, ToolCallContext};
-use tirea::composition::{tool_map, AgentDefinition, AgentOsBuilder};
+use tirea::composition::{tool_map, AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
 use tirea::prelude::*;
 
 struct EchoTool;
@@ -59,15 +59,15 @@ impl Tool for EchoTool {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let os = AgentOsBuilder::new()
-        .with_tools(tool_map([EchoTool]))
-        .with_agent(
-            "assistant",
-            AgentDefinition::with_id("assistant", "gpt-4o-mini")
-                .with_system_prompt("You are a helpful assistant.")
-                .with_allowed_tools(vec!["echo".to_string()]),
-        )
-        .build()?;
+let os = AgentOsBuilder::new()
+    .with_tools(tool_map([EchoTool]))
+    .with_agent_spec(AgentDefinitionSpec::local_with_id(
+        "assistant",
+        AgentDefinition::new("gpt-4o-mini")
+            .with_system_prompt("You are a helpful assistant.")
+            .with_allowed_tools(vec!["echo".to_string()]),
+    ))
+    .build()?;
 
     let run = os
         .run_stream(RunRequest {
@@ -126,7 +126,7 @@ The object you actually use is:
 ```rust,ignore
 let os = AgentOsBuilder::new()
     .with_tools(tool_map([EchoTool]))
-    .with_agent(...)
+    .with_agent_spec(...)
     .build()?;
 ```
 
@@ -177,12 +177,12 @@ use tirea_agentos_server::{http, protocol};
 
 let agent_os = AgentOsBuilder::new()
     .with_tools(tool_map([EchoTool]))
-    .with_agent(
+    .with_agent_spec(AgentDefinitionSpec::local_with_id(
         "assistant",
-        AgentDefinition::with_id("assistant", "gpt-4o-mini")
+        AgentDefinition::new("gpt-4o-mini")
             .with_system_prompt("You are a helpful assistant.")
             .with_allowed_tools(vec!["echo".to_string()]),
-    )
+    ))
     .build()?;
 
 let app = axum::Router::new()

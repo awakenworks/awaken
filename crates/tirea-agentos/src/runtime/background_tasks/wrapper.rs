@@ -86,6 +86,7 @@ pub trait BackgroundExecutable: Tool {
     /// Tools can use this to perform the same semantic checks they enforce in
     /// foreground mode and to inject hidden, precomputed execution inputs that
     /// can safely cross the spawn boundary.
+    #[allow(clippy::result_large_err)]
     fn prepare_background(
         &self,
         _args: &mut Value,

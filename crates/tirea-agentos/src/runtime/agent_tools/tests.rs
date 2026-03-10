@@ -4701,7 +4701,7 @@ impl std::fmt::Debug for ToolCallMockLlm {
 }
 
 #[async_trait]
-impl crate::loop_runtime::loop_runner::LlmExecutor for ToolCallMockLlm {
+impl crate::runtime::loop_runner::LlmExecutor for ToolCallMockLlm {
     async fn exec_chat_response(
         &self,
         _model: &str,
@@ -4716,7 +4716,7 @@ impl crate::loop_runtime::loop_runner::LlmExecutor for ToolCallMockLlm {
         _model: &str,
         _chat_req: genai::chat::ChatRequest,
         _options: Option<&genai::chat::ChatOptions>,
-    ) -> genai::Result<crate::loop_runtime::loop_runner::LlmEventStream> {
+    ) -> genai::Result<crate::runtime::loop_runner::LlmEventStream> {
         use genai::chat::{ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk};
 
         let n = self
@@ -4858,7 +4858,7 @@ async fn integration_sub_agent_executes_tool_via_mock_llm() {
             "echo",
             json!({"input": "hello world"}),
         ))
-            as Arc<dyn crate::loop_runtime::loop_runner::LlmExecutor>);
+            as Arc<dyn crate::runtime::loop_runner::LlmExecutor>);
 
     let child_thread_id = "sub-agent-tool-test";
     let prepared = os
@@ -4984,7 +4984,7 @@ async fn integration_sub_agent_tool_invocation_counted() {
     resolved.agent = resolved
         .agent
         .with_llm_executor(Arc::new(ToolCallMockLlm::new("count", json!({})))
-            as Arc<dyn crate::loop_runtime::loop_runner::LlmExecutor>);
+            as Arc<dyn crate::runtime::loop_runner::LlmExecutor>);
 
     let prepared = os
         .prepare_run(
@@ -5264,7 +5264,7 @@ async fn integration_agent_output_reads_tool_result_from_sub_agent() {
         .agent
         .with_llm_executor(
             Arc::new(ToolCallMockLlm::new("echo", json!({"input": "test data"})))
-                as Arc<dyn crate::loop_runtime::loop_runner::LlmExecutor>,
+                as Arc<dyn crate::runtime::loop_runner::LlmExecutor>,
         );
 
     let child_thread_id = "sub-agent-output-test";
