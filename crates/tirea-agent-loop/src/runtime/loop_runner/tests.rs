@@ -165,8 +165,22 @@ fn compose_test_behaviors(behaviors: Vec<Arc<dyn AgentBehavior>>) -> Arc<dyn Age
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[tirea(action = "TestCounterAction")]
 struct TestCounterState {
     counter: i64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+enum TestCounterAction {
+    SetCounter(i64),
+}
+
+impl TestCounterState {
+    fn reduce(&mut self, action: TestCounterAction) {
+        match action {
+            TestCounterAction::SetCounter(counter) => self.counter = counter,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
@@ -1623,6 +1637,27 @@ impl Tool for CounterTool {
             json!({ "new_value": new_value }),
         ))
     }
+
+    async fn execute_effect(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
+        let amount = args["amount"].as_i64().unwrap_or(1);
+        let current = ctx
+            .snapshot_of::<TestCounterState>()
+            .unwrap_or_default()
+            .counter;
+        let new_value = current + amount;
+
+        Ok(ToolExecutionEffect::new(ToolResult::success(
+            "counter",
+            json!({ "new_value": new_value }),
+        ))
+        .with_action(AnyStateAction::new::<TestCounterState>(
+            TestCounterAction::SetCounter(new_value),
+        )))
+    }
 }
 
 #[test]
@@ -2295,7 +2330,20 @@ async fn test_tool_execute_effect_direct_context_writes_denied_by_default_policy
         result.execution.result.data["error"]["code"],
         json!("tool_context_state_write_not_allowed")
     );
-    assert!(result.execution.patch.is_none());
+    let mut final_state = state.clone();
+    if let Some(patch) = result.execution.patch.as_ref() {
+        final_state = tirea_state::apply_patch(&final_state, patch.patch())
+            .expect("execution patch should apply");
+    }
+    for pending in &result.pending_patches {
+        final_state = tirea_state::apply_patch(&final_state, pending.patch())
+            .expect("pending patch should apply");
+    }
+    assert_eq!(final_state["label"], Value::Null);
+    assert_eq!(
+        final_state["__tool_call_scope"]["call_1"]["tool_call_state"]["status"],
+        json!("failed")
+    );
 }
 
 #[tokio::test]
@@ -10692,6 +10740,19 @@ fn test_parallel_tools_disjoint_paths_both_visible() {
                 state.set_counter(111).expect("failed to set counter");
                 Ok(ToolResult::success("alpha", json!({"ok": true})))
             }
+            async fn execute_effect(
+                &self,
+                _args: Value,
+                _ctx: &ToolCallContext<'_>,
+            ) -> Result<ToolExecutionEffect, ToolError> {
+                Ok(
+                    ToolExecutionEffect::new(ToolResult::success("alpha", json!({"ok": true})))
+                        .with_action(AnyStateAction::new_at::<TestCounterState>(
+                            "alpha",
+                            TestCounterAction::SetCounter(111),
+                        )),
+                )
+            }
         }
         struct BetaTool;
         #[async_trait]
@@ -10707,6 +10768,19 @@ fn test_parallel_tools_disjoint_paths_both_visible() {
                 let state = ctx.state::<TestCounterState>("beta");
                 state.set_counter(222).expect("failed to set counter");
                 Ok(ToolResult::success("beta", json!({"ok": true})))
+            }
+            async fn execute_effect(
+                &self,
+                _args: Value,
+                _ctx: &ToolCallContext<'_>,
+            ) -> Result<ToolExecutionEffect, ToolError> {
+                Ok(
+                    ToolExecutionEffect::new(ToolResult::success("beta", json!({"ok": true})))
+                        .with_action(AnyStateAction::new_at::<TestCounterState>(
+                            "beta",
+                            TestCounterAction::SetCounter(222),
+                        )),
+                )
             }
         }
 

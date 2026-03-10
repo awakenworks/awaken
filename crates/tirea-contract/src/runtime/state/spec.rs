@@ -27,7 +27,7 @@ pub enum AnyStateAction {
         state_type_id: TypeId,
         state_type_name: &'static str,
         scope: StateScope,
-        base_path: &'static str,
+        base_path: String,
         /// When set, overrides the `ScopeContext` call_id for path resolution.
         /// Used by recovery/framework-internal scenarios that must target a
         /// specific call_id without a live `ScopeContext`.
@@ -65,7 +65,24 @@ impl AnyStateAction {
             "ToolCall-scoped state must use new_for_call(); got new() for {}",
             std::any::type_name::<S>(),
         );
-        Self::build::<S>(action, S::SCOPE, None)
+        Self::build::<S>(action, S::SCOPE, S::PATH.to_owned(), None)
+    }
+
+    /// Create a type-erased action targeting an explicit thread/run base path.
+    ///
+    /// This is the preferred way to use typed reducers with dynamically chosen
+    /// state paths while still avoiding raw patch actions.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `S::SCOPE` is `ToolCall`.
+    pub fn new_at<S: StateSpec>(path: impl Into<String>, action: S::Action) -> Self {
+        assert!(
+            S::SCOPE != StateScope::ToolCall,
+            "ToolCall-scoped state must use new_for_call() / new_for_call_at(); got new_at() for {}",
+            std::any::type_name::<S>(),
+        );
+        Self::build::<S>(action, S::SCOPE, path.into(), None)
     }
 
     /// Create a type-erased action targeting a specific tool call scope.
@@ -83,19 +100,44 @@ impl AnyStateAction {
             std::any::type_name::<S>(),
             S::SCOPE,
         );
-        Self::build::<S>(action, StateScope::ToolCall, Some(call_id.into()))
+        Self::build::<S>(
+            action,
+            StateScope::ToolCall,
+            S::PATH.to_owned(),
+            Some(call_id.into()),
+        )
+    }
+
+    /// Create a type-erased tool-call-scoped action targeting an explicit path.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `S::SCOPE` is not `ToolCall`.
+    pub fn new_for_call_at<S: StateSpec>(
+        path: impl Into<String>,
+        action: S::Action,
+        call_id: impl Into<String>,
+    ) -> Self {
+        assert!(
+            S::SCOPE == StateScope::ToolCall,
+            "new_for_call_at() requires ToolCall-scoped state; {} has scope {:?}",
+            std::any::type_name::<S>(),
+            S::SCOPE,
+        );
+        Self::build::<S>(
+            action,
+            StateScope::ToolCall,
+            path.into(),
+            Some(call_id.into()),
+        )
     }
 
     fn build<S: StateSpec>(
         action: S::Action,
         scope: StateScope,
+        base_path: String,
         call_id_override: Option<String>,
     ) -> Self {
-        assert!(
-            !S::PATH.is_empty(),
-            "StateSpec type has no bound path; cannot create AnyStateAction"
-        );
-
         let serialized_payload =
             serde_json::to_value(&action).expect("StateSpec::Action must be serializable");
 
@@ -103,7 +145,7 @@ impl AnyStateAction {
             state_type_id: TypeId::of::<S>(),
             state_type_name: std::any::type_name::<S>(),
             scope,
-            base_path: S::PATH,
+            base_path,
             call_id_override,
             reduce_fn: Self::make_reduce_fn::<S>(action),
             register_lattice: S::register_lattice,
@@ -200,6 +242,11 @@ impl AnyStateAction {
         }
     }
 
+    /// Whether this action bypasses the typed reducer pipeline and carries a raw patch.
+    pub fn is_raw_patch(&self) -> bool {
+        matches!(self, Self::Patch(_))
+    }
+
     /// If this is a raw `Patch` action, return the tracked patch directly.
     ///
     /// Used by runtime internals to preserve source metadata for pre-built
@@ -265,9 +312,9 @@ pub fn reduce_state_actions(
                 // then fall back to the ambient scope_ctx.
                 let actual_path = if let Some(ref cid) = call_id_override {
                     let override_ctx = ScopeContext::for_call(cid.as_str());
-                    override_ctx.resolve_path(scope, base_path)
+                    override_ctx.resolve_path(scope, base_path.as_str())
                 } else {
-                    scope_ctx.resolve_path(scope, base_path)
+                    scope_ctx.resolve_path(scope, base_path.as_str())
                 };
                 let patch = reduce_fn(&rolling_snapshot, &actual_path)?;
                 if patch.is_empty() {
@@ -552,9 +599,20 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "no bound path")]
-    fn any_state_action_panics_on_empty_path() {
-        let _ = AnyStateAction::new::<Unbound>(());
+    fn any_state_action_allows_root_path() {
+        let tracked = reduce_state_actions(
+            vec![AnyStateAction::new_at::<Counter>(
+                "",
+                CounterAction::Increment(1),
+            )],
+            &Value::Null,
+            "test",
+            &ScopeContext::run(),
+        )
+        .expect("root path action should reduce");
+        assert_eq!(tracked.len(), 1);
+        let result = apply_patch(&Value::Null, tracked[0].patch()).expect("patch should apply");
+        assert_eq!(result["value"], 1);
     }
 
     #[test]

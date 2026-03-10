@@ -58,7 +58,7 @@ impl AnyStateAction {
                 ..
             } => Some(SerializedAction {
                 state_type_name: (*state_type_name).to_owned(),
-                base_path: (*base_path).to_owned(),
+                base_path: base_path.clone(),
                 scope: *scope,
                 call_id_override: call_id_override.clone(),
                 payload: serialized_payload.clone(),
@@ -127,10 +127,13 @@ impl ActionDeserializerRegistry {
                         }
                     })?;
                 match entry.scope {
-                    StateScope::Thread | StateScope::Run => Ok(AnyStateAction::new::<S>(action)),
+                    StateScope::Thread | StateScope::Run => {
+                        Ok(AnyStateAction::new_at::<S>(entry.base_path.clone(), action))
+                    }
                     StateScope::ToolCall => {
                         let call_id = entry.call_id_override.as_deref().unwrap_or("");
-                        Ok(AnyStateAction::new_for_call::<S>(
+                        Ok(AnyStateAction::new_for_call_at::<S>(
+                            entry.base_path.clone(),
                             action,
                             call_id.to_owned(),
                         ))

@@ -9,30 +9,40 @@ use serde_json::{json, Value};
 use tirea_agent_loop::engine::convert;
 use tirea_agent_loop::runtime::activity::ActivityHub;
 use tirea_agent_loop::runtime::loop_runner::AgentLoopError;
-use tirea_agentos::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_agentos::contracts::runtime::tool_call::{
+    Tool, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult,
+};
 use tirea_agentos::contracts::thread::Role as ThreadRole;
 use tirea_agentos::contracts::thread::Thread as ConversationAgentState;
+use tirea_agentos::contracts::AnyStateAction;
 use tirea_agentos::contracts::SuspensionResponse;
 use tirea_agentos::contracts::ToolCallContext;
 use tirea_agentos::extensions::reminder::SystemReminder;
+use tirea_contract::runtime::state::StateSpec;
 use tirea_contract::testing::TestFixture;
 use tirea_protocol_ag_ui::{interaction_to_ag_ui_events, Role, ToolExecutionLocation};
-use tirea_state::State;
 use tirea_state::StateManager;
+use tirea_state::{DocCell, PatchSink, Path, State, TireaError, TireaResult};
 
 // ============================================================================
 // Test state types
 // ============================================================================
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, State, Default)]
+#[tirea(action = "CounterAction")]
 struct CounterState {
+    #[serde(default)]
     value: i64,
+    #[serde(default)]
     label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, State, Default)]
+#[tirea(action = "TaskAction")]
 struct TaskState {
+    #[serde(default)]
     items: Vec<String>,
+    #[serde(default)]
     count: i64,
 }
 
@@ -40,6 +50,186 @@ struct TaskState {
 struct ProgressState {
     progress: f64,
     status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, State, Default)]
+#[tirea(action = "CallCounterAction", scope = "tool_call")]
+struct CallCounterState {
+    #[serde(default)]
+    value: i64,
+    #[serde(default)]
+    label: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+enum CounterAction {
+    SetValue(i64),
+}
+
+impl CounterState {
+    fn reduce(&mut self, action: CounterAction) {
+        match action {
+            CounterAction::SetValue(value) => self.value = value,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+enum TaskAction {
+    AddItem(String),
+    SetCount(i64),
+}
+
+impl TaskState {
+    fn reduce(&mut self, action: TaskAction) {
+        match action {
+            TaskAction::AddItem(item) => self.items.push(item),
+            TaskAction::SetCount(count) => self.count = count,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+enum CallCounterAction {
+    SetValue(i64),
+    SetLabel(String),
+}
+
+impl CallCounterState {
+    fn reduce(&mut self, action: CallCounterAction) {
+        match action {
+            CallCounterAction::SetValue(value) => self.value = value,
+            CallCounterAction::SetLabel(label) => self.label = label,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+struct CounterEffectState {
+    #[serde(default)]
+    value: i64,
+    #[serde(default)]
+    label: String,
+}
+
+struct CounterEffectRef;
+
+impl State for CounterEffectState {
+    type Ref<'a> = CounterEffectRef;
+    const PATH: &'static str = "";
+
+    fn state_ref<'a>(_: &'a DocCell, _: Path, _: PatchSink<'a>) -> Self::Ref<'a> {
+        CounterEffectRef
+    }
+
+    fn from_value(value: &Value) -> TireaResult<Self> {
+        if value.is_null() {
+            return Ok(Self::default());
+        }
+        if let Some(current) = value.as_i64() {
+            return Ok(Self {
+                value: current,
+                ..Self::default()
+            });
+        }
+        serde_json::from_value(value.clone()).map_err(TireaError::Serialization)
+    }
+
+    fn to_value(&self) -> TireaResult<Value> {
+        serde_json::to_value(self).map_err(TireaError::Serialization)
+    }
+}
+
+impl StateSpec for CounterEffectState {
+    type Action = CounterAction;
+
+    fn reduce(&mut self, action: CounterAction) {
+        match action {
+            CounterAction::SetValue(value) => self.value = value,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+struct TaskEffectState {
+    #[serde(default)]
+    items: Vec<String>,
+    #[serde(default)]
+    count: i64,
+}
+
+struct TaskEffectRef;
+
+impl State for TaskEffectState {
+    type Ref<'a> = TaskEffectRef;
+    const PATH: &'static str = "";
+
+    fn state_ref<'a>(_: &'a DocCell, _: Path, _: PatchSink<'a>) -> Self::Ref<'a> {
+        TaskEffectRef
+    }
+
+    fn from_value(value: &Value) -> TireaResult<Self> {
+        if value.is_null() {
+            return Ok(Self::default());
+        }
+        serde_json::from_value(value.clone()).map_err(TireaError::Serialization)
+    }
+
+    fn to_value(&self) -> TireaResult<Value> {
+        serde_json::to_value(self).map_err(TireaError::Serialization)
+    }
+}
+
+impl StateSpec for TaskEffectState {
+    type Action = TaskAction;
+
+    fn reduce(&mut self, action: TaskAction) {
+        match action {
+            TaskAction::AddItem(item) => self.items.push(item),
+            TaskAction::SetCount(count) => self.count = count,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+struct CallCounterEffectState {
+    #[serde(default)]
+    value: i64,
+    #[serde(default)]
+    label: String,
+}
+
+struct CallCounterEffectRef;
+
+impl State for CallCounterEffectState {
+    type Ref<'a> = CallCounterEffectRef;
+    const PATH: &'static str = "";
+
+    fn state_ref<'a>(_: &'a DocCell, _: Path, _: PatchSink<'a>) -> Self::Ref<'a> {
+        CallCounterEffectRef
+    }
+
+    fn from_value(value: &Value) -> TireaResult<Self> {
+        if value.is_null() {
+            return Ok(Self::default());
+        }
+        serde_json::from_value(value.clone()).map_err(TireaError::Serialization)
+    }
+
+    fn to_value(&self) -> TireaResult<Value> {
+        serde_json::to_value(self).map_err(TireaError::Serialization)
+    }
+}
+
+impl StateSpec for CallCounterEffectState {
+    type Action = CallCounterAction;
+
+    fn reduce(&mut self, action: CallCounterAction) {
+        match action {
+            CallCounterAction::SetValue(value) => self.value = value,
+            CallCounterAction::SetLabel(label) => self.label = label,
+        }
+    }
 }
 
 // ============================================================================
@@ -85,6 +275,30 @@ impl Tool for IncrementTool {
             json!({"new_value": current + 1}),
         ))
     }
+
+    async fn execute_effect(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
+        let path = args["path"]
+            .as_str()
+            .ok_or_else(|| ToolError::InvalidArguments("path is required".to_string()))?;
+
+        let counter = ctx
+            .snapshot_at::<CounterEffectState>(path)
+            .unwrap_or_default();
+        let current = counter.value;
+
+        Ok(ToolExecutionEffect::new(ToolResult::success(
+            "increment",
+            json!({"new_value": current + 1}),
+        ))
+        .with_action(AnyStateAction::new_at::<CounterEffectState>(
+            path,
+            CounterAction::SetValue(current + 1),
+        )))
+    }
 }
 
 struct AddTaskTool;
@@ -118,6 +332,34 @@ impl Tool for AddTaskTool {
             json!({"count": current_count + 1}),
         ))
     }
+
+    async fn execute_effect(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
+        let item = args["item"]
+            .as_str()
+            .ok_or_else(|| ToolError::InvalidArguments("item is required".to_string()))?;
+
+        let current_count = ctx
+            .snapshot_at::<TaskEffectState>("tasks")
+            .unwrap_or_default()
+            .count;
+
+        Ok(ToolExecutionEffect::new(ToolResult::success(
+            "add_task",
+            json!({"count": current_count + 1}),
+        ))
+        .with_action(AnyStateAction::new_at::<TaskEffectState>(
+            "tasks",
+            TaskAction::AddItem(item.to_string()),
+        ))
+        .with_action(AnyStateAction::new_at::<TaskEffectState>(
+            "tasks",
+            TaskAction::SetCount(current_count + 1),
+        )))
+    }
 }
 
 struct UpdateCallStateTool;
@@ -136,7 +378,7 @@ impl Tool for UpdateCallStateTool {
         let label = args["label"].as_str().unwrap_or("updated");
 
         // Use call_state() for per-call state
-        let call_state = ctx.call_state::<CounterState>();
+        let call_state = ctx.call_state::<CallCounterState>();
         let step = call_state.value().unwrap_or(0);
         call_state
             .set_value(step + 1)
@@ -149,6 +391,31 @@ impl Tool for UpdateCallStateTool {
             "update_call",
             json!({"step": step + 1}),
         ))
+    }
+
+    async fn execute_effect(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
+        let label = args["label"].as_str().unwrap_or("updated");
+        let call_state = ctx
+            .snapshot_of::<CallCounterEffectState>()
+            .unwrap_or_default();
+        let step = call_state.value;
+
+        Ok(ToolExecutionEffect::new(ToolResult::success(
+            "update_call",
+            json!({"step": step + 1}),
+        ))
+        .with_action(AnyStateAction::new_for_call::<CallCounterEffectState>(
+            CallCounterAction::SetValue(step + 1),
+            ctx.call_id(),
+        ))
+        .with_action(AnyStateAction::new_for_call::<CallCounterEffectState>(
+            CallCounterAction::SetLabel(label.to_string()),
+            ctx.call_id(),
+        )))
     }
 }
 
@@ -547,13 +814,13 @@ async fn test_tool_reminder_integration() {
 
 use std::sync::Arc;
 use tempfile::TempDir;
+use tirea_agent_loop::runtime::loop_runner::{
+    execute_tools, tool_map, BaseAgent, SequentialToolExecutor,
+};
 use tirea_agent_loop::runtime::streaming::StreamCollector;
 use tirea_agentos::contracts::runtime::StreamResult;
 use tirea_agentos::contracts::storage::{ThreadReader, ThreadWriter};
 use tirea_agentos::contracts::thread::Message;
-use tirea_agent_loop::runtime::loop_runner::{
-    execute_tools, tool_map, BaseAgent, SequentialToolExecutor,
-};
 use tirea_state::{path, Op, Patch, TrackedPatch};
 use tirea_store_adapters::{FileStore, MemoryStore};
 type Thread = ConversationAgentState;
@@ -1784,10 +2051,7 @@ async fn test_session_resilient_to_tool_errors() {
     // Add all results as messages
     let mut thread = thread;
     for (i, result) in tool_results.iter().enumerate() {
-        thread = thread.with_message(convert::tool_response(
-            format!("call_{}", i),
-            result,
-        ));
+        thread = thread.with_message(convert::tool_response(format!("call_{}", i), result));
     }
 
     // Thread should have all messages regardless of success/error
@@ -2462,8 +2726,64 @@ fn test_storage_error_variants() {
 struct NestedStateTool;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, State, Default)]
+#[tirea(action = "NestedStateAction")]
 struct NestedState {
+    #[serde(default)]
     value: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+enum NestedStateAction {
+    SetValue(i64),
+}
+
+impl NestedState {
+    fn reduce(&mut self, action: NestedStateAction) {
+        match action {
+            NestedStateAction::SetValue(value) => self.value = value,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+struct NestedEffectState {
+    #[serde(default)]
+    value: i64,
+}
+
+struct NestedEffectRef;
+
+impl State for NestedEffectState {
+    type Ref<'a> = NestedEffectRef;
+    const PATH: &'static str = "";
+
+    fn state_ref<'a>(_: &'a DocCell, _: Path, _: PatchSink<'a>) -> Self::Ref<'a> {
+        NestedEffectRef
+    }
+
+    fn from_value(value: &Value) -> TireaResult<Self> {
+        if value.is_null() {
+            return Ok(Self::default());
+        }
+        if let Some(current) = value.as_i64() {
+            return Ok(Self { value: current });
+        }
+        serde_json::from_value(value.clone()).map_err(TireaError::Serialization)
+    }
+
+    fn to_value(&self) -> TireaResult<Value> {
+        serde_json::to_value(self).map_err(TireaError::Serialization)
+    }
+}
+
+impl StateSpec for NestedEffectState {
+    type Action = NestedStateAction;
+
+    fn reduce(&mut self, action: NestedStateAction) {
+        match action {
+            NestedStateAction::SetValue(value) => self.value = value,
+        }
+    }
 }
 
 #[async_trait]
@@ -2488,6 +2808,25 @@ impl Tool for NestedStateTool {
             "nested_state",
             json!({"new_value": current + 10}),
         ))
+    }
+
+    async fn execute_effect(
+        &self,
+        _args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
+        let current = ctx
+            .snapshot_at::<NestedEffectState>("deeply.nested")
+            .unwrap_or_default()
+            .value;
+        Ok(ToolExecutionEffect::new(ToolResult::success(
+            "nested_state",
+            json!({"new_value": current + 10}),
+        ))
+        .with_action(AnyStateAction::new_at::<NestedEffectState>(
+            "deeply.nested",
+            NestedStateAction::SetValue(current + 10),
+        )))
     }
 }
 

@@ -1512,8 +1512,8 @@ async fn drain_resuming_tool_calls_and_replay(
     }
 
     // No explicit clear_suspended_call needed: terminal-outcome tool calls
-    // have their entire `__tool_call_scope.<call_id>` subtree deleted by
-    // automatic scope cleanup in execute_single_tool_with_phases_impl.
+    // clear `__tool_call_scope.<call_id>.suspended_call` automatically in
+    // execute_single_tool_with_phases_impl while preserving tool_call_state.
 
     if state_changed {
         let snapshot = run_ctx

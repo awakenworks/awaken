@@ -129,7 +129,7 @@ fn persist_tool_call_status(
     call: &ToolCall,
     status: ToolCallStatus,
     suspended_call: Option<&SuspendedCall>,
-) -> Result<(), AgentLoopError> {
+) -> Result<crate::contracts::runtime::ToolCallState, AgentLoopError> {
     let current_state = step.ctx().tool_call_state_for(&call.id).map_err(|e| {
         AgentLoopError::StateError(format!(
             "failed to read tool call state for '{}' before setting {:?}: {e}",
@@ -191,13 +191,15 @@ fn persist_tool_call_status(
     };
 
     step.ctx()
-        .set_tool_call_state_for(&call.id, runtime_state)
+        .set_tool_call_state_for(&call.id, runtime_state.clone())
         .map_err(|e| {
             AgentLoopError::StateError(format!(
                 "failed to persist tool call state for '{}' as {:?}: {e}",
                 call.id, status
             ))
-        })
+        })?;
+
+    Ok(runtime_state)
 }
 
 fn map_tool_executor_error(err: AgentLoopError, thread_id: &str) -> ToolExecutorError {
@@ -1053,6 +1055,12 @@ async fn execute_single_tool_with_phases_impl(
             other_actions.push(action);
         }
     }
+    if tool_state_actions.iter().any(AnyStateAction::is_raw_patch) {
+        return Err(AgentLoopError::StateError(
+            "raw patch state actions are disabled in tool execution; emit typed state actions instead"
+                .to_string(),
+        ));
+    }
 
     // Apply non-state tool-emitted actions (validated against AfterToolExecute) before plugin hooks.
     for action in &other_actions {
@@ -1073,38 +1081,40 @@ async fn execute_single_tool_with_phases_impl(
     )
     .await?;
 
-    match outcome {
-        ToolCallOutcome::Suspended => {
-            persist_tool_call_status(
-                &step,
-                call,
-                ToolCallStatus::Suspended,
-                suspended_call.as_ref(),
-            )?;
-        }
-        ToolCallOutcome::Succeeded => {
-            persist_tool_call_status(&step, call, ToolCallStatus::Succeeded, None)?;
-        }
-        ToolCallOutcome::Failed => {
-            persist_tool_call_status(&step, call, ToolCallStatus::Failed, None)?;
-        }
+    let terminal_tool_call_state = match outcome {
+        ToolCallOutcome::Suspended => Some(persist_tool_call_status(
+            &step,
+            call,
+            ToolCallStatus::Suspended,
+            suspended_call.as_ref(),
+        )?),
+        ToolCallOutcome::Succeeded => Some(persist_tool_call_status(
+            &step,
+            call,
+            ToolCallStatus::Succeeded,
+            None,
+        )?),
+        ToolCallOutcome::Failed => Some(persist_tool_call_status(
+            &step,
+            call,
+            ToolCallStatus::Failed,
+            None,
+        )?),
+    };
+
+    if let Some(tool_call_state) = terminal_tool_call_state {
+        tool_state_actions.push(tool_call_state.into_state_action());
     }
 
-    // Conditional cleanup: terminal outcomes delete the entire scoped subtree.
-    // Suspended outcomes preserve it so tool_call_state survives for resume.
+    // Conditional cleanup: terminal outcomes clear only suspended-call metadata.
+    // The durable tool_call_state remains for audit and replay decisions.
     if !matches!(outcome, ToolCallOutcome::Suspended) {
-        let cleanup_path = format!("__tool_call_scope.{}", call.id);
+        let cleanup_path = format!("__tool_call_scope.{}.suspended_call", call.id);
         let cleanup_patch = Patch::with_ops(vec![tirea_state::Op::delete(
             tirea_state::parse_path(&cleanup_path),
         )]);
         let tracked = TrackedPatch::new(cleanup_patch).with_source("framework:scope_cleanup");
         step.emit_patch(tracked);
-    }
-
-    // Flush plugin state ops into pending patches
-    let plugin_patch = step.ctx().take_patch();
-    if !plugin_patch.patch().is_empty() {
-        step.emit_patch(plugin_patch);
     }
 
     let phase_patch_actions = std::mem::take(&mut step.pending_patches)

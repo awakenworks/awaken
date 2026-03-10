@@ -1,13 +1,12 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use tirea_agentos::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolError, ToolResult};
+use tirea_agentos::contracts::runtime::tool_call::{
+    Tool, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult,
+};
+use tirea_agentos::contracts::AnyStateAction;
 use tirea_agentos::contracts::ToolCallContext;
 
-use super::state::{LogEntry, ResearchState, Resource};
-
-fn state_write_error(action: &str, err: impl std::fmt::Display) -> ToolError {
-    ToolError::ExecutionFailed(format!("failed to {action}: {err}"))
-}
+use super::state::{LogEntry, ResearchAction, ResearchState, Resource};
 
 /// Search the web for information on a research topic.
 ///
@@ -39,24 +38,28 @@ impl Tool for SearchTool {
         args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
+        Ok(<Self as Tool>::execute_effect(self, args, ctx)
+            .await?
+            .result)
+    }
+
+    async fn execute_effect(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
         let query = args["query"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'query'".into()))?;
 
-        let state = ctx.state::<ResearchState>("");
-
-        // Log search start
-        let mut logs = state.logs().unwrap_or_default();
+        let state = ctx.snapshot_of::<ResearchState>().unwrap_or_default();
+        let mut logs = state.logs;
         logs.push(LogEntry {
             message: format!("Searching for: {query}"),
             level: "info".into(),
             step: "search".into(),
         });
-        state
-            .set_logs(logs.clone())
-            .map_err(|e| state_write_error("persist logs", e))?;
 
-        // Mock search results
         let results = mock_search_results(query);
 
         logs.push(LogEntry {
@@ -64,17 +67,17 @@ impl Tool for SearchTool {
             level: "info".into(),
             step: "search".into(),
         });
-        state
-            .set_logs(logs)
-            .map_err(|e| state_write_error("persist logs", e))?;
 
-        Ok(ToolResult::success(
+        Ok(ToolExecutionEffect::new(ToolResult::success(
             "search",
             json!({
                 "query": query,
                 "results": results,
             }),
         ))
+        .with_action(AnyStateAction::new::<ResearchState>(
+            ResearchAction::SetLogs(logs),
+        )))
     }
 }
 
@@ -106,29 +109,38 @@ impl Tool for WriteReportTool {
         args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
+        Ok(<Self as Tool>::execute_effect(self, args, ctx)
+            .await?
+            .result)
+    }
+
+    async fn execute_effect(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
         let report = args["report"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'report'".into()))?;
 
-        let state = ctx.state::<ResearchState>("");
-        state
-            .set_report(report.to_string())
-            .map_err(|e| state_write_error("persist report", e))?;
-
-        let mut logs = state.logs().unwrap_or_default();
+        let state = ctx.snapshot_of::<ResearchState>().unwrap_or_default();
+        let mut logs = state.logs;
         logs.push(LogEntry {
             message: format!("Report updated ({} chars)", report.len()),
             level: "info".into(),
             step: "write_report".into(),
         });
-        state
-            .set_logs(logs)
-            .map_err(|e| state_write_error("persist logs", e))?;
 
-        Ok(ToolResult::success(
+        Ok(ToolExecutionEffect::new(ToolResult::success(
             "write_report",
             json!({ "length": report.len() }),
         ))
+        .with_action(AnyStateAction::new::<ResearchState>(
+            ResearchAction::SetReport(report.to_string()),
+        ))
+        .with_action(AnyStateAction::new::<ResearchState>(
+            ResearchAction::SetLogs(logs),
+        )))
     }
 }
 
@@ -160,29 +172,38 @@ impl Tool for SetQuestionTool {
         args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
+        Ok(<Self as Tool>::execute_effect(self, args, ctx)
+            .await?
+            .result)
+    }
+
+    async fn execute_effect(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
         let question = args["question"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'question'".into()))?;
 
-        let state = ctx.state::<ResearchState>("");
-        state
-            .set_research_question(question.to_string())
-            .map_err(|e| state_write_error("persist research_question", e))?;
-
-        let mut logs = state.logs().unwrap_or_default();
+        let state = ctx.snapshot_of::<ResearchState>().unwrap_or_default();
+        let mut logs = state.logs;
         logs.push(LogEntry {
             message: format!("Research question set: {question}"),
             level: "info".into(),
             step: "set_question".into(),
         });
-        state
-            .set_logs(logs)
-            .map_err(|e| state_write_error("persist logs", e))?;
 
-        Ok(ToolResult::success(
+        Ok(ToolExecutionEffect::new(ToolResult::success(
             "set_research_question",
             json!({ "question": question }),
         ))
+        .with_action(AnyStateAction::new::<ResearchState>(
+            ResearchAction::SetResearchQuestion(question.to_string()),
+        ))
+        .with_action(AnyStateAction::new::<ResearchState>(
+            ResearchAction::SetLogs(logs),
+        )))
     }
 }
 
@@ -217,6 +238,16 @@ impl Tool for DeleteResourcesTool {
         args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
+        Ok(<Self as Tool>::execute_effect(self, args, ctx)
+            .await?
+            .result)
+    }
+
+    async fn execute_effect(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
         let ids: Vec<&str> = args["resource_ids"]
             .as_array()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'resource_ids' array".into()))?
@@ -224,29 +255,29 @@ impl Tool for DeleteResourcesTool {
             .filter_map(|v| v.as_str())
             .collect();
 
-        let state = ctx.state::<ResearchState>("");
-        let mut resources = state.resources().unwrap_or_default();
+        let state = ctx.snapshot_of::<ResearchState>().unwrap_or_default();
+        let mut resources = state.resources;
         let before = resources.len();
         resources.retain(|r| !ids.contains(&r.id.as_str()));
         let deleted = before - resources.len();
-        state
-            .set_resources(resources)
-            .map_err(|e| state_write_error("persist resources", e))?;
 
-        let mut logs = state.logs().unwrap_or_default();
+        let mut logs = state.logs;
         logs.push(LogEntry {
             message: format!("Deleted {deleted} resources"),
             level: "info".into(),
             step: "delete_resources".into(),
         });
-        state
-            .set_logs(logs)
-            .map_err(|e| state_write_error("persist logs", e))?;
 
-        Ok(ToolResult::success(
+        Ok(ToolExecutionEffect::new(ToolResult::success(
             "delete_resources",
             json!({ "deleted": deleted }),
         ))
+        .with_action(AnyStateAction::new::<ResearchState>(
+            ResearchAction::SetResources(resources),
+        ))
+        .with_action(AnyStateAction::new::<ResearchState>(
+            ResearchAction::SetLogs(logs),
+        )))
     }
 }
 
@@ -288,12 +319,22 @@ impl Tool for ExtractResourcesTool {
         args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
+        Ok(<Self as Tool>::execute_effect(self, args, ctx)
+            .await?
+            .result)
+    }
+
+    async fn execute_effect(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
         let raw = args["resources"]
             .as_array()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'resources' array".into()))?;
 
-        let state = ctx.state::<ResearchState>("");
-        let mut resources = state.resources().unwrap_or_default();
+        let state = ctx.snapshot_of::<ResearchState>().unwrap_or_default();
+        let mut resources = state.resources;
 
         for item in raw {
             resources.push(Resource {
@@ -304,24 +345,23 @@ impl Tool for ExtractResourcesTool {
             });
         }
 
-        state
-            .set_resources(resources.clone())
-            .map_err(|e| state_write_error("persist resources", e))?;
-
-        let mut logs = state.logs().unwrap_or_default();
+        let mut logs = state.logs;
         logs.push(LogEntry {
             message: format!("Extracted {} resources", raw.len()),
             level: "info".into(),
             step: "extract_resources".into(),
         });
-        state
-            .set_logs(logs)
-            .map_err(|e| state_write_error("persist logs", e))?;
 
-        Ok(ToolResult::success(
+        Ok(ToolExecutionEffect::new(ToolResult::success(
             "extract_resources",
             json!({ "added": raw.len(), "total": resources.len() }),
         ))
+        .with_action(AnyStateAction::new::<ResearchState>(
+            ResearchAction::SetResources(resources),
+        ))
+        .with_action(AnyStateAction::new::<ResearchState>(
+            ResearchAction::SetLogs(logs),
+        )))
     }
 }
 

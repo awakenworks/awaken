@@ -2,10 +2,11 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use tirea_agentos::contracts::runtime::tool_call::{
     Tool, ToolCallContext, ToolCallProgressStatus, ToolCallProgressUpdate, ToolDescriptor,
-    ToolError, ToolResult,
+    ToolError, ToolExecutionEffect, ToolResult,
 };
+use tirea_agentos::contracts::AnyStateAction;
 
-use crate::starter_backend::state::StarterState;
+use crate::starter_backend::state::{StarterAction, StarterState};
 
 pub struct GetWeatherTool;
 
@@ -118,6 +119,16 @@ impl Tool for AppendNoteTool {
         args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
+        Ok(<Self as Tool>::execute_effect(self, args, ctx)
+            .await?
+            .result)
+    }
+
+    async fn execute_effect(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
         let note = args["note"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'note'".into()))?
@@ -128,20 +139,19 @@ impl Tool for AppendNoteTool {
             ));
         }
 
-        let state = ctx.state::<StarterState>("");
-        let mut notes = state.notes().unwrap_or_default();
+        let mut notes = ctx.snapshot_of::<StarterState>().unwrap_or_default().notes;
         notes.push(note.to_string());
-        state
-            .set_notes(notes.clone())
-            .map_err(|err| ToolError::Internal(format!("failed to persist notes: {err}")))?;
 
-        Ok(ToolResult::success(
+        Ok(ToolExecutionEffect::new(ToolResult::success(
             "append_note",
             json!({
                 "added": note,
                 "count": notes.len()
             }),
         ))
+        .with_action(AnyStateAction::new::<StarterState>(
+            StarterAction::SetNotes(notes),
+        )))
     }
 }
 

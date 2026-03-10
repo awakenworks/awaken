@@ -5,7 +5,6 @@
 use super::ToolCallContext;
 use crate::runtime::action::Action;
 use crate::runtime::phase::SuspendTicket;
-use crate::runtime::state::AnyStateAction;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -381,29 +380,17 @@ pub trait Tool: Send + Sync {
     /// Execute tool and return structured effects.
     ///
     /// The default implementation delegates to [`Tool::execute`] and wraps the
-    /// result. Any direct context patch (from `ctx.state_of()`) is converted
-    /// into an `AnyStateAction::Patch` action on the effect.
+    /// result without converting any context writes into state actions.
     ///
-    /// For tool authors, the preferred public state-mutation paths are:
-    ///
-    /// - direct typed writes through `ctx.state_of::<T>()` / `ctx.state::<T>(...)`
-    /// - explicit typed actions via `AnyStateAction::new...`
-    ///
-    /// `AnyStateAction::Patch` is the runtime's internal bridge for collecting
-    /// direct context writes into the same effect pipeline. Tools generally
-    /// should not construct raw patch actions themselves.
+    /// Tools that mutate persisted state should override this method and emit
+    /// explicit typed actions via `AnyStateAction::new...`.
     async fn execute_effect(
         &self,
         args: Value,
-        ctx: &ToolCallContext<'_>,
+        _ctx: &ToolCallContext<'_>,
     ) -> Result<ToolExecutionEffect, ToolError> {
-        let result = self.execute(args, ctx).await?;
-        let effect = ToolExecutionEffect::from(result);
-        let direct_patch = ctx.take_patch();
-        if !direct_patch.patch().is_empty() {
-            return Ok(effect.with_action(AnyStateAction::Patch(direct_patch)));
-        }
-        Ok(effect)
+        let result = self.execute(args, _ctx).await?;
+        Ok(ToolExecutionEffect::from(result))
     }
 }
 
@@ -1228,7 +1215,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_default_execute_effect_promotes_context_writes_into_state_actions() {
+    async fn test_default_execute_effect_leaves_context_writes_in_context() {
         let tool = ContextWriteDefaultTool;
         let fixture = crate::testing::TestFixture::new();
         let ctx = fixture.ctx_with("call_1", "test");
@@ -1239,12 +1226,8 @@ mod tests {
 
         assert!(effect.result.is_success());
         let (_, actions) = effect.into_parts();
-        assert_eq!(actions.len(), 1);
-        let boxed = actions.into_iter().next().unwrap();
-        assert!(boxed.is_state_action());
-        let sa = boxed.into_state_action().unwrap();
-        assert!(matches!(sa, AnyStateAction::Patch(_)));
-        assert!(ctx.take_patch().patch().is_empty());
+        assert!(actions.is_empty());
+        assert!(!ctx.take_patch().patch().is_empty());
     }
 
     #[derive(Debug, Clone, Default, Serialize, Deserialize)]

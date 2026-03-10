@@ -255,10 +255,6 @@ where
     for phase in phases {
         emit_agent_phase(*phase, &mut step, agent.behavior(), &doc).await?;
     }
-    let ctx_patch = step.ctx().take_patch();
-    if !ctx_patch.patch().is_empty() {
-        step.emit_patch(ctx_patch);
-    }
     let output = extract(&mut step);
     let pending = take_step_pending_patches(&mut step);
     let actions = take_step_pending_serialized_actions(&mut step);
@@ -352,10 +348,6 @@ pub(super) async fn emit_run_end_phase(
         if let Err(e) = emit_agent_phase(Phase::RunEnd, &mut step, agent.behavior(), &doc).await {
             tracing::warn!(error = %e, "RunEnd phase validation failed");
         }
-        let ctx_patch = step.ctx().take_patch();
-        if !ctx_patch.patch().is_empty() {
-            step.emit_patch(ctx_patch);
-        }
         (
             take_step_pending_patches(&mut step),
             take_step_pending_serialized_actions(&mut step),
@@ -420,10 +412,6 @@ where
     setup(&mut step);
     for phase in phases {
         emit_agent_phase(*phase, &mut step, behavior, &doc).await?;
-    }
-    let ctx_patch = step.ctx().take_patch();
-    if !ctx_patch.patch().is_empty() {
-        step.emit_patch(ctx_patch);
     }
     let output = extract(&mut step);
     let pending = take_step_pending_patches(&mut step);

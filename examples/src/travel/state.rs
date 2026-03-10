@@ -34,8 +34,33 @@ pub struct SearchProgress {
 ///
 /// Corresponds to CopilotKit's `CopilotKitState` with travel-specific fields.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[tirea(action = "TravelAction")]
 pub struct TravelState {
+    #[serde(default)]
     pub selected_trip_id: Option<String>,
+    #[serde(default)]
     pub trips: Vec<Trip>,
+    #[serde(default)]
     pub search_progress: Vec<SearchProgress>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TravelAction {
+    SetSelectedTripId(Option<String>),
+    SetTrips(Vec<Trip>),
+    SetSearchProgress(Vec<SearchProgress>),
+}
+
+impl TravelState {
+    pub fn reduce(&mut self, action: TravelAction) {
+        match action {
+            TravelAction::SetSelectedTripId(selected_trip_id) => {
+                self.selected_trip_id = selected_trip_id;
+            }
+            TravelAction::SetTrips(trips) => self.trips = trips,
+            TravelAction::SetSearchProgress(search_progress) => {
+                self.search_progress = search_progress;
+            }
+        }
+    }
 }

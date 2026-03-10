@@ -14,6 +14,7 @@ use tirea_contract::RunConfig;
 use tirea_state::{apply_patch, DocCell, Patch, TrackedPatch};
 
 const DIRECT_STATE_WRITE_DENIED_ERROR_CODE: &str = "tool_context_state_write_not_allowed";
+const RAW_PATCH_STATE_ACTION_DENIED_ERROR_CODE: &str = "tool_raw_patch_state_action_not_allowed";
 
 pub(crate) fn merge_context_patch_into_effect(
     call: &ToolCall,
@@ -30,6 +31,20 @@ pub(crate) fn merge_context_patch_into_effect(
         DIRECT_STATE_WRITE_DENIED_ERROR_CODE,
         "direct ToolCallContext state writes are disabled; emit ToolExecutionEffect actions instead",
     )))
+}
+
+fn reject_raw_patch_state_actions(
+    call: &ToolCall,
+    state_actions: &[AnyStateAction],
+) -> Result<(), Box<ToolResult>> {
+    if state_actions.iter().any(AnyStateAction::is_raw_patch) {
+        return Err(Box::new(ToolResult::error_with_code(
+            &call.name,
+            RAW_PATCH_STATE_ACTION_DENIED_ERROR_CODE,
+            "raw patch state actions are disabled; emit typed ToolExecutionEffect state actions instead",
+        )));
+    }
+    Ok(())
 }
 
 /// Execute a single tool call.
@@ -128,6 +143,13 @@ pub async fn execute_single_tool_with_scope_and_behavior(
             }
         })
         .collect();
+    if let Err(result) = reject_raw_patch_state_actions(call, &state_actions) {
+        return ToolExecution {
+            call: call.clone(),
+            result: *result,
+            patch: None,
+        };
+    }
 
     let tool_scope_ctx = ScopeContext::for_call(&call.id);
     let action_patches = match reduce_state_actions(
@@ -342,6 +364,45 @@ mod tests {
         }
     }
 
+    struct RawPatchEffectTool;
+
+    #[async_trait]
+    impl Tool for RawPatchEffectTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new(
+                "raw_patch_effect",
+                "RawPatchEffect",
+                "returns a raw patch state action",
+            )
+        }
+
+        async fn execute(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("raw_patch_effect", json!({"ok": true})))
+        }
+
+        async fn execute_effect(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<crate::contracts::runtime::ToolExecutionEffect, ToolError> {
+            let patch = TrackedPatch::new(Patch::with_ops(vec![tirea_state::Op::set(
+                tirea_state::path!("fixture", "label"),
+                json!("raw_patch"),
+            )]));
+            Ok(
+                crate::contracts::runtime::ToolExecutionEffect::new(ToolResult::success(
+                    "raw_patch_effect",
+                    json!({"ok": true}),
+                ))
+                .with_action(AnyStateAction::Patch(patch)),
+            )
+        }
+    }
+
     #[tokio::test]
     async fn test_execute_single_tool_not_found() {
         let call = ToolCall::new("call_1", "nonexistent", json!({}));
@@ -390,6 +451,22 @@ mod tests {
         assert_eq!(
             exec.result.data["error"]["code"],
             json!("tool_context_state_write_not_allowed")
+        );
+        assert!(exec.patch.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_execute_single_tool_rejects_raw_patch_state_actions() {
+        let tool = RawPatchEffectTool;
+        let call = ToolCall::new("call_1", "raw_patch_effect", json!({}));
+        let state = json!({});
+
+        let exec = execute_single_tool(Some(&tool), &call, &state).await;
+
+        assert!(exec.result.is_error());
+        assert_eq!(
+            exec.result.data["error"]["code"],
+            json!(RAW_PATCH_STATE_ACTION_DENIED_ERROR_CODE)
         );
         assert!(exec.patch.is_none());
     }

@@ -27,7 +27,7 @@ dependencies = [
 
 [[package]]
 name = "ai-sdk-starter-agent"
-version = "0.3.0-alpha.1"
+version = "0.3.0-alpha.2"
 dependencies = [
  "clap",
  "tirea-examples",
@@ -831,7 +831,7 @@ dependencies = [
 
 [[package]]
 name = "copilotkit-starter-agent"
-version = "0.3.0-alpha.1"
+version = "0.3.0-alpha.2"
 dependencies = [
  "clap",
  "tirea-examples",
@@ -2882,7 +2882,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phoenix-test-helpers"
-version = "0.3.0-alpha.1"
+version = "0.3.0-alpha.2"
 dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
@@ -4561,7 +4561,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tirea"
-version = "0.3.0-alpha.1"
+version = "0.3.0-alpha.2"
 dependencies = [
  "async-trait",
  "criterion",
@@ -4581,7 +4581,7 @@ dependencies = [
 
 [[package]]
 name = "tirea-agent-loop"
-version = "0.3.0-alpha.1"
+version = "0.3.0-alpha.2"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -4615,7 +4615,7 @@ dependencies = [
 
 [[package]]
 name = "tirea-agentos"
-version = "0.3.0-alpha.1"
+version = "0.3.0-alpha.2"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4642,7 +4642,7 @@ dependencies = [
 
 [[package]]
 name = "tirea-agentos-server"
-version = "0.3.0-alpha.1"
+version = "0.3.0-alpha.2"
 dependencies = [
  "async-nats",
  "async-stream",
@@ -4677,7 +4677,7 @@ dependencies = [
 
 [[package]]
 name = "tirea-contract"
-version = "0.3.0-alpha.1"
+version = "0.3.0-alpha.2"
 dependencies = [
  "async-trait",
  "futures",
@@ -4695,7 +4695,7 @@ dependencies = [
 
 [[package]]
 name = "tirea-examples"
-version = "0.3.0-alpha.1"
+version = "0.3.0-alpha.2"
 dependencies = [
  "async-trait",
  "axum 0.7.9",
@@ -4720,7 +4720,7 @@ dependencies = [
 
 [[package]]
 name = "tirea-extension-mcp"
-version = "0.3.0-alpha.1"
+version = "0.3.0-alpha.2"
 dependencies = [
  "async-trait",
  "model-context-protocol",
@@ -4735,7 +4735,7 @@ dependencies = [
 
 [[package]]
 name = "tirea-extension-observability"
-version = "0.3.0-alpha.1"
+version = "0.3.0-alpha.2"
 dependencies = [
  "async-trait",
  "futures",
@@ -4754,7 +4754,7 @@ dependencies = [
 
 [[package]]
 name = "tirea-extension-permission"
-version = "0.3.0-alpha.1"
+version = "0.3.0-alpha.2"
 dependencies = [
  "async-trait",
  "serde",
@@ -4766,7 +4766,7 @@ dependencies = [
 
 [[package]]
 name = "tirea-extension-reminder"
-version = "0.3.0-alpha.1"
+version = "0.3.0-alpha.2"
 dependencies = [
  "async-trait",
  "serde",
@@ -4778,7 +4778,7 @@ dependencies = [
 
 [[package]]
 name = "tirea-extension-skills"
-version = "0.3.0-alpha.1"
+version = "0.3.0-alpha.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -4798,7 +4798,7 @@ dependencies = [
 
 [[package]]
 name = "tirea-protocol-ag-ui"
-version = "0.3.0-alpha.1"
+version = "0.3.0-alpha.2"
 dependencies = [
  "async-trait",
  "futures",
@@ -4820,7 +4820,7 @@ dependencies = [
 
 [[package]]
 name = "tirea-protocol-ai-sdk-v6"
-version = "0.3.0-alpha.1"
+version = "0.3.0-alpha.2"
 dependencies = [
  "async-trait",
  "futures",
@@ -4837,7 +4837,7 @@ dependencies = [
 
 [[package]]
 name = "tirea-state"
-version = "0.3.0-alpha.1"
+version = "0.3.0-alpha.2"
 dependencies = [
  "criterion",
  "serde",
@@ -4849,7 +4849,7 @@ dependencies = [
 
 [[package]]
 name = "tirea-state-derive"
-version = "0.3.0-alpha.1"
+version = "0.3.0-alpha.2"
 dependencies = [
  "darling 0.20.11",
  "proc-macro2",
@@ -4862,7 +4862,7 @@ dependencies = [
 
 [[package]]
 name = "tirea-store-adapters"
-version = "0.3.0-alpha.1"
+version = "0.3.0-alpha.2"
 dependencies = [
  "async-nats",
  "async-trait",

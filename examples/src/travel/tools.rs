@@ -3,15 +3,12 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tirea_agentos::contracts::runtime::tool_call::{
-    Tool, ToolDescriptor, ToolError, ToolResult, TypedTool,
+    Tool, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult,
 };
+use tirea_agentos::contracts::AnyStateAction;
 use tirea_agentos::contracts::ToolCallContext;
 
-use super::state::{Place, SearchProgress, TravelState, Trip};
-
-fn state_write_error(action: &str, err: impl std::fmt::Display) -> ToolError {
-    ToolError::ExecutionFailed(format!("failed to {action}: {err}"))
-}
+use super::state::{Place, SearchProgress, TravelAction, TravelState, Trip};
 
 /// Add one or more trips to the travel plan.
 ///
@@ -49,12 +46,21 @@ impl Tool for AddTripTool {
         args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
+        Ok(<Self as Tool>::execute_effect(self, args, ctx)
+            .await?
+            .result)
+    }
+
+    async fn execute_effect(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
         let raw_trips = args["trips"]
             .as_array()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'trips' array".into()))?;
 
-        let state = ctx.state::<TravelState>("");
-        let mut current = state.trips().unwrap_or_default();
+        let mut current = ctx.snapshot_of::<TravelState>().unwrap_or_default().trips;
 
         for raw in raw_trips {
             let trip = Trip {
@@ -66,14 +72,13 @@ impl Tool for AddTripTool {
             current.push(trip);
         }
 
-        state
-            .set_trips(current.clone())
-            .map_err(|e| state_write_error("persist trips", e))?;
-
-        Ok(ToolResult::success(
+        Ok(ToolExecutionEffect::new(ToolResult::success(
             "add_trips",
             json!({ "added": raw_trips.len(), "total": current.len() }),
         ))
+        .with_action(AnyStateAction::new::<TravelState>(TravelAction::SetTrips(
+            current,
+        ))))
     }
 }
 
@@ -114,12 +119,21 @@ impl Tool for UpdateTripTool {
         args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
+        Ok(<Self as Tool>::execute_effect(self, args, ctx)
+            .await?
+            .result)
+    }
+
+    async fn execute_effect(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
         let updates = args["trips"]
             .as_array()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'trips' array".into()))?;
 
-        let state = ctx.state::<TravelState>("");
-        let mut current = state.trips().unwrap_or_default();
+        let mut current = ctx.snapshot_of::<TravelState>().unwrap_or_default().trips;
         let mut updated_count = 0usize;
 
         for upd in updates {
@@ -138,14 +152,13 @@ impl Tool for UpdateTripTool {
             }
         }
 
-        state
-            .set_trips(current)
-            .map_err(|e| state_write_error("persist trips", e))?;
-
-        Ok(ToolResult::success(
+        Ok(ToolExecutionEffect::new(ToolResult::success(
             "update_trips",
             json!({ "updated": updated_count }),
         ))
+        .with_action(AnyStateAction::new::<TravelState>(TravelAction::SetTrips(
+            current,
+        ))))
     }
 }
 
@@ -178,6 +191,16 @@ impl Tool for DeleteTripTool {
         args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
+        Ok(<Self as Tool>::execute_effect(self, args, ctx)
+            .await?
+            .result)
+    }
+
+    async fn execute_effect(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
         let ids: Vec<&str> = args["trip_ids"]
             .as_array()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'trip_ids' array".into()))?
@@ -185,28 +208,26 @@ impl Tool for DeleteTripTool {
             .filter_map(|v| v.as_str())
             .collect();
 
-        let state = ctx.state::<TravelState>("");
-        let mut current = state.trips().unwrap_or_default();
+        let state = ctx.snapshot_of::<TravelState>().unwrap_or_default();
+        let mut current = state.trips;
         let before = current.len();
         current.retain(|t| !ids.contains(&t.id.as_str()));
         let deleted = before - current.len();
-        state
-            .set_trips(current)
-            .map_err(|e| state_write_error("persist trips", e))?;
 
-        // Clear selection if the selected trip was deleted
-        if let Ok(Some(ref sel)) = state.selected_trip_id() {
-            if ids.contains(&sel.as_str()) {
-                state
-                    .set_selected_trip_id(None)
-                    .map_err(|e| state_write_error("clear selected_trip_id", e))?;
-            }
-        }
+        let next_selected = state
+            .selected_trip_id
+            .filter(|sel| !ids.contains(&sel.as_str()));
 
-        Ok(ToolResult::success(
+        Ok(ToolExecutionEffect::new(ToolResult::success(
             "delete_trips",
             json!({ "deleted": deleted }),
         ))
+        .with_action(AnyStateAction::new::<TravelState>(TravelAction::SetTrips(
+            current,
+        )))
+        .with_action(AnyStateAction::new::<TravelState>(
+            TravelAction::SetSelectedTripId(next_selected),
+        )))
     }
 }
 
@@ -221,33 +242,49 @@ pub struct SelectTripArgs {
 pub struct SelectTripTool;
 
 #[async_trait]
-impl TypedTool for SelectTripTool {
-    type Args = SelectTripArgs;
-
-    fn tool_id(&self) -> &str {
-        "select_trip"
-    }
-    fn name(&self) -> &str {
-        "Select Trip"
-    }
-    fn description(&self) -> &str {
-        "Select a trip as the currently active trip"
+impl Tool for SelectTripTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(
+            "select_trip",
+            "Select Trip",
+            "Select a trip as the currently active trip",
+        )
+        .with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "trip_id": {
+                    "type": "string",
+                    "description": "ID of the trip to select"
+                }
+            },
+            "required": ["trip_id"]
+        }))
     }
 
     async fn execute(
         &self,
-        args: SelectTripArgs,
+        args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
-        let state = ctx.state::<TravelState>("");
-        state
-            .set_selected_trip_id(Some(args.trip_id.clone()))
-            .map_err(|e| state_write_error("set selected_trip_id", e))?;
+        Ok(<Self as Tool>::execute_effect(self, args, ctx)
+            .await?
+            .result)
+    }
 
-        Ok(ToolResult::success(
+    async fn execute_effect(
+        &self,
+        args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
+        let args: SelectTripArgs =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        Ok(ToolExecutionEffect::new(ToolResult::success(
             "select_trip",
             json!({ "selected": args.trip_id }),
         ))
+        .with_action(AnyStateAction::new::<TravelState>(
+            TravelAction::SetSelectedTripId(Some(args.trip_id)),
+        )))
     }
 }
 
@@ -290,6 +327,16 @@ impl Tool for SearchPlacesTool {
         args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
+        Ok(<Self as Tool>::execute_effect(self, args, ctx)
+            .await?
+            .result)
+    }
+
+    async fn execute_effect(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, ToolError> {
         let destination = args["destination"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'destination'".into()))?;
@@ -298,39 +345,17 @@ impl Tool for SearchPlacesTool {
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'trip_id'".into()))?;
         let category = args["category"].as_str().unwrap_or("attraction");
 
-        let state = ctx.state::<TravelState>("");
+        let state = ctx.snapshot_of::<TravelState>().unwrap_or_default();
+        let query = format!("{} {}", category, destination);
 
-        // Emit search progress
-        state
-            .set_search_progress(vec![SearchProgress {
-                query: format!("{} {}", category, destination),
-                status: "searching".into(),
-                results_count: 0,
-            }])
-            .map_err(|e| state_write_error("set search progress", e))?;
-
-        // Mock places based on destination
         let places = mock_places(destination, category);
 
-        // Add places to the specified trip
-        let mut trips = state.trips().unwrap_or_default();
+        let mut trips = state.trips;
         if let Some(trip) = trips.iter_mut().find(|t| t.id == trip_id) {
             trip.places.extend(places.clone());
         }
-        state
-            .set_trips(trips)
-            .map_err(|e| state_write_error("persist trips", e))?;
 
-        // Update search progress to complete
-        state
-            .set_search_progress(vec![SearchProgress {
-                query: format!("{} {}", category, destination),
-                status: "complete".into(),
-                results_count: places.len(),
-            }])
-            .map_err(|e| state_write_error("set search progress", e))?;
-
-        Ok(ToolResult::success(
+        Ok(ToolExecutionEffect::new(ToolResult::success(
             "search_for_places",
             json!({
                 "destination": destination,
@@ -339,6 +364,16 @@ impl Tool for SearchPlacesTool {
                 "places": places,
             }),
         ))
+        .with_action(AnyStateAction::new::<TravelState>(TravelAction::SetTrips(
+            trips,
+        )))
+        .with_action(AnyStateAction::new::<TravelState>(
+            TravelAction::SetSearchProgress(vec![SearchProgress {
+                query,
+                status: "complete".into(),
+                results_count: places.len(),
+            }]),
+        )))
     }
 }
 
