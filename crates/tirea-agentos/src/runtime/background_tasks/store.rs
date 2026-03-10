@@ -513,7 +513,7 @@ impl super::manager::TaskCompletionNotifier for TaskPersistenceNotifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::storage::ThreadReader;
+    use crate::contracts::storage::{ThreadReader, ThreadStore, ThreadWriter};
 
     #[tokio::test]
     async fn create_task_persists_task_thread_state() {
@@ -552,5 +552,175 @@ mod tests {
             .expect("thread load should succeed")
             .expect("task thread should exist");
         assert_eq!(head.thread.parent_thread_id.as_deref(), Some("owner-1"));
+    }
+
+    #[tokio::test]
+    async fn list_tasks_for_owner_ignores_non_task_children() {
+        let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
+        let store = TaskStore::new(storage.clone() as Arc<dyn ThreadStore>);
+
+        storage
+            .create(&Thread::new("child-thread").with_parent_thread_id("owner-1"))
+            .await
+            .expect("non-task child thread should persist");
+
+        store
+            .create_task(NewTaskSpec {
+                task_id: "task-1".to_string(),
+                owner_thread_id: "owner-1".to_string(),
+                task_type: "shell".to_string(),
+                description: "owner one".to_string(),
+                parent_task_id: None,
+                supports_resume: false,
+                metadata: json!({}),
+            })
+            .await
+            .expect("owner task should persist");
+        store
+            .create_task(NewTaskSpec {
+                task_id: "task-2".to_string(),
+                owner_thread_id: "owner-2".to_string(),
+                task_type: "shell".to_string(),
+                description: "owner two".to_string(),
+                parent_task_id: None,
+                supports_resume: false,
+                metadata: json!({}),
+            })
+            .await
+            .expect("other owner task should persist");
+
+        let tasks = store
+            .list_tasks_for_owner("owner-1")
+            .await
+            .expect("list should succeed");
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, "task-1");
+    }
+
+    #[tokio::test]
+    async fn mark_cancel_requested_persists_timestamp() {
+        let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
+        let store = TaskStore::new(storage as Arc<dyn ThreadStore>);
+
+        let task = store
+            .create_task(NewTaskSpec {
+                task_id: "task-1".to_string(),
+                owner_thread_id: "owner-1".to_string(),
+                task_type: "shell".to_string(),
+                description: "cancel me".to_string(),
+                parent_task_id: None,
+                supports_resume: false,
+                metadata: json!({}),
+            })
+            .await
+            .expect("task should persist");
+
+        store
+            .mark_cancel_requested("task-1")
+            .await
+            .expect("cancel request should persist");
+
+        let loaded = store
+            .load_task("task-1")
+            .await
+            .expect("load should succeed")
+            .expect("task should exist");
+        assert!(loaded.cancel_requested_at_ms.is_some());
+        assert!(loaded.updated_at_ms >= task.updated_at_ms);
+    }
+
+    #[tokio::test]
+    async fn persist_summary_for_agent_run_captures_output_ref() {
+        let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
+        let store = TaskStore::new(storage.clone() as Arc<dyn ThreadStore>);
+
+        storage
+            .create(
+                &Thread::new("exec-1")
+                    .with_message(Message::assistant("draft").with_id("msg-1".to_string()))
+                    .with_message(Message::assistant("final").with_id("msg-2".to_string())),
+            )
+            .await
+            .expect("execution thread should persist");
+
+        let task = store
+            .create_task(NewTaskSpec {
+                task_id: "task-1".to_string(),
+                owner_thread_id: "owner-1".to_string(),
+                task_type: "agent_run".to_string(),
+                description: "delegate".to_string(),
+                parent_task_id: None,
+                supports_resume: true,
+                metadata: json!({"thread_id":"exec-1","agent_id":"writer"}),
+            })
+            .await
+            .expect("task should persist");
+
+        let mut summary = task.summary();
+        summary.status = TaskStatus::Completed;
+        summary.completed_at_ms = Some(task.created_at_ms + 1);
+
+        store
+            .persist_summary(&summary)
+            .await
+            .expect("summary should persist");
+
+        let loaded = store
+            .load_task("task-1")
+            .await
+            .expect("load should succeed")
+            .expect("task should exist");
+        assert_eq!(loaded.status, TaskStatus::Completed);
+        assert_eq!(
+            loaded.result_ref,
+            Some(TaskResultRef::ThreadMessage {
+                thread_id: "exec-1".to_string(),
+                message_id: Some("msg-2".to_string()),
+            })
+        );
+        assert_eq!(
+            store
+                .load_output_text(&loaded)
+                .await
+                .expect("output should load")
+                .as_deref(),
+            Some("final")
+        );
+    }
+
+    #[tokio::test]
+    async fn descendant_ids_for_owner_returns_only_owner_subtree() {
+        let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
+        let store = TaskStore::new(storage as Arc<dyn ThreadStore>);
+
+        for (task_id, owner, parent) in [
+            ("root", "owner-1", None),
+            ("child", "owner-1", Some("root")),
+            ("grandchild", "owner-1", Some("child")),
+            ("other-root", "owner-2", None),
+            ("other-child", "owner-2", Some("root")),
+        ] {
+            store
+                .create_task(NewTaskSpec {
+                    task_id: task_id.to_string(),
+                    owner_thread_id: owner.to_string(),
+                    task_type: "agent_run".to_string(),
+                    description: task_id.to_string(),
+                    parent_task_id: parent.map(str::to_string),
+                    supports_resume: true,
+                    metadata: json!({}),
+                })
+                .await
+                .expect("task should persist");
+        }
+
+        let mut descendants = store
+            .descendant_ids_for_owner("owner-1", "root")
+            .await
+            .expect("descendants should load");
+        descendants.sort();
+
+        assert_eq!(descendants, vec!["child", "grandchild", "root"]);
     }
 }

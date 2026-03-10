@@ -574,6 +574,81 @@ mod tests {
         assert!(result.is_success());
     }
 
+    #[tokio::test]
+    async fn status_tool_reads_persisted_task_without_live_manager() {
+        let mgr = Arc::new(BackgroundTaskManager::new());
+        let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
+        let task_store = Arc::new(TaskStore::new(storage as Arc<dyn ThreadStore>));
+        task_store
+            .create_task(super::super::NewTaskSpec {
+                task_id: "task-1".to_string(),
+                owner_thread_id: "thread-1".to_string(),
+                task_type: "shell".to_string(),
+                description: "persisted only".to_string(),
+                parent_task_id: None,
+                supports_resume: false,
+                metadata: json!({}),
+            })
+            .await
+            .unwrap();
+        task_store
+            .persist_foreground_result(
+                "task-1",
+                TaskStatus::Completed,
+                None,
+                Some(json!({"stdout":"done"})),
+            )
+            .await
+            .unwrap();
+
+        let tool = TaskStatusTool::new(mgr).with_task_store(Some(task_store));
+        let fix = fixture_with_thread("thread-1");
+        let result = tool
+            .execute(json!({"task_id": "task-1"}), &fix.ctx())
+            .await
+            .unwrap();
+
+        assert!(result.is_success());
+        assert_eq!(result.data["status"], "completed");
+        assert_eq!(result.data["result"]["stdout"], "done");
+    }
+
+    #[tokio::test]
+    async fn status_tool_does_not_read_cached_derived_view() {
+        let mgr = Arc::new(BackgroundTaskManager::new());
+        let tool = TaskStatusTool::new(mgr);
+        let mut fix = TestFixture::new_with_state(json!({
+            "__derived": {
+                "background_tasks": {
+                    "tasks": {
+                        "ghost": {
+                            "task_type": "shell",
+                            "description": "ghost task",
+                            "status": "running"
+                        }
+                    },
+                    "synced_at_ms": 1
+                }
+            }
+        }));
+        fix.run_config = {
+            let mut rc = RunConfig::new();
+            rc.set(THREAD_ID_KEY, "thread-1").unwrap();
+            rc
+        };
+
+        let result = tool
+            .execute(json!({"task_id": "ghost"}), &fix.ctx())
+            .await
+            .unwrap();
+        assert!(!result.is_success());
+        assert!(result
+            .message
+            .as_deref()
+            .unwrap_or("")
+            .contains("Unknown task_id"));
+    }
+
     // -----------------------------------------------------------------------
     // TaskCancelTool execute() tests
     // -----------------------------------------------------------------------
@@ -699,6 +774,55 @@ mod tests {
             mgr.get("thread-1", "child").await.unwrap().status,
             super::super::types::TaskStatus::Cancelled
         );
+    }
+
+    #[tokio::test]
+    async fn cancel_tool_marks_cancel_requested_in_task_store() {
+        let mgr = Arc::new(BackgroundTaskManager::new());
+        let storage = Arc::new(tirea_store_adapters::MemoryStore::new());
+        let task_store = Arc::new(TaskStore::new(storage as Arc<dyn ThreadStore>));
+        task_store
+            .create_task(super::super::NewTaskSpec {
+                task_id: "task-1".to_string(),
+                owner_thread_id: "thread-1".to_string(),
+                task_type: "shell".to_string(),
+                description: "long task".to_string(),
+                parent_task_id: None,
+                supports_resume: false,
+                metadata: json!({}),
+            })
+            .await
+            .unwrap();
+
+        mgr.spawn_with_id(
+            "task-1".to_string(),
+            "thread-1",
+            "shell",
+            "long task",
+            crate::loop_runtime::loop_runner::RunCancellationToken::new(),
+            None,
+            json!({}),
+            |cancel| async move {
+                cancel.cancelled().await;
+                super::super::types::TaskResult::Cancelled
+            },
+        )
+        .await;
+
+        let tool = TaskCancelTool::new(mgr).with_task_store(Some(task_store.clone()));
+        let fix = fixture_with_thread("thread-1");
+        let result = tool
+            .execute(json!({"task_id": "task-1"}), &fix.ctx())
+            .await
+            .unwrap();
+        assert!(result.is_success());
+
+        let task = task_store
+            .load_task("task-1")
+            .await
+            .unwrap()
+            .expect("task should exist");
+        assert!(task.cancel_requested_at_ms.is_some());
     }
 
     #[tokio::test]
@@ -875,6 +999,42 @@ mod tests {
         let fix = fixture_with_thread("thread-1");
         let result = tool
             .execute(json!({"task_id": "run-1"}), &fix.ctx())
+            .await
+            .unwrap();
+        assert!(!result.is_success());
+        assert!(result
+            .message
+            .as_deref()
+            .unwrap_or("")
+            .contains("Unknown task_id"));
+    }
+
+    #[tokio::test]
+    async fn output_tool_does_not_read_cached_derived_view() {
+        let mgr = Arc::new(BackgroundTaskManager::new());
+        let tool = TaskOutputTool::new(mgr, None);
+        let mut fix = TestFixture::new_with_state(json!({
+            "__derived": {
+                "background_tasks": {
+                    "tasks": {
+                        "ghost": {
+                            "task_type": "shell",
+                            "description": "ghost task",
+                            "status": "running"
+                        }
+                    },
+                    "synced_at_ms": 1
+                }
+            }
+        }));
+        fix.run_config = {
+            let mut rc = RunConfig::new();
+            rc.set(THREAD_ID_KEY, "thread-1").unwrap();
+            rc
+        };
+
+        let result = tool
+            .execute(json!({"task_id": "ghost"}), &fix.ctx())
             .await
             .unwrap();
         assert!(!result.is_success());

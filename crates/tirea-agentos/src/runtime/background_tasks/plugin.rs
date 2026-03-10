@@ -323,6 +323,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_start_replaces_stale_derived_view_with_store_snapshot() {
+        let mgr = Arc::new(BackgroundTaskManager::new());
+        let thread_store = Arc::new(tirea_store_adapters::MemoryStore::new());
+        let task_store = Arc::new(TaskStore::new(thread_store as Arc<dyn ThreadStore>));
+        task_store
+            .create_task(super::super::NewTaskSpec {
+                task_id: "task-fresh".to_string(),
+                owner_thread_id: "thread-1".to_string(),
+                task_type: "shell".to_string(),
+                description: "fresh task".to_string(),
+                parent_task_id: None,
+                supports_resume: false,
+                metadata: json!({}),
+            })
+            .await
+            .expect("task should persist");
+
+        let plugin = BackgroundTasksPlugin::new(mgr).with_task_store(Some(task_store));
+        let doc = DocCell::new(json!({
+            "__derived": {
+                "background_tasks": {
+                    "tasks": {
+                        "stale-task": {
+                            "task_type": "shell",
+                            "description": "stale task",
+                            "status": "running"
+                        }
+                    },
+                    "synced_at_ms": 1
+                }
+            }
+        }));
+        let rc = RunConfig::new();
+        let ctx = make_ctx(Phase::RunStart, "thread-1", &rc, &doc);
+
+        let actions = plugin.run_start(&ctx).await;
+        apply_state_actions(&doc, lifecycle_state_actions(actions));
+
+        let derived = derived_view(&doc);
+        assert!(!derived.tasks.contains_key("stale-task"));
+        assert!(derived.tasks.contains_key("task-fresh"));
+    }
+
+    #[tokio::test]
     async fn before_inference_uses_cached_view() {
         let mgr = Arc::new(BackgroundTaskManager::new());
         let plugin = BackgroundTasksPlugin::new(mgr);
