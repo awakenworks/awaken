@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use crate::transport::runtime_endpoint::RunStarter;
 
 use super::ApiError;
-use super::{enqueue_background_run, AgentReceiver, MailboxDispatcher};
+use super::{enqueue_background_run, AgentReceiver, EnqueueOptions, MailboxDispatcher};
 
 pub async fn current_run_id_for_thread(
     os: &Arc<AgentOs>,
@@ -232,9 +232,10 @@ pub async fn start_background_run(
     agent_id: &str,
     run_request: RunRequest,
     protocol_label: &'static str,
+    options: EnqueueOptions,
 ) -> Result<(String, String, String), ApiError> {
     let (thread_id, run_id, entry_id) =
-        enqueue_background_run(os, mailbox_store, agent_id, run_request).await?;
+        enqueue_background_run(os, mailbox_store, agent_id, run_request, options).await?;
     let receiver = Arc::new(AgentReceiver::new(os.clone()));
     MailboxDispatcher::new(mailbox_store.clone(), receiver)
         .with_consumer_id(format!("{protocol_label}-inline"))

@@ -5,7 +5,7 @@ use tirea_agentos::runtime::AgentOs;
 use tirea_protocol_ag_ui::{AgUiProtocolEncoder, Event, RunAgentInput};
 
 use super::runtime::apply_agui_extensions;
-use crate::service::start_streaming_run_via_mailbox;
+use crate::service::{start_streaming_run_via_mailbox, EnqueueOptions};
 use crate::transport::nats::NatsTransport;
 use crate::transport::NatsProtocolError;
 
@@ -75,6 +75,7 @@ async fn handle_message(
         &agent_id,
         run_request,
         "agui-nats-inline",
+        EnqueueOptions::default(),
     )
     .await
     {

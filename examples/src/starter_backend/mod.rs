@@ -13,10 +13,11 @@ use tirea_agentos::composition::{
 };
 use tirea_agentos::contracts::runtime::behavior::AgentBehavior;
 use tirea_agentos::contracts::runtime::tool_call::Tool;
-use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
+use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader, ThreadStore};
 use tirea_agentos::extensions::permission::{PermissionPlugin, ToolPolicyPlugin};
 use tirea_agentos_server::http::{self, AppState};
 use tirea_agentos_server::protocol;
+use tirea_agentos_server::service::{AgentReceiver, MailboxDispatcher};
 use tirea_extension_a2ui::{A2uiPlugin, A2uiRenderTool};
 use tirea_extension_mcp::McpToolRegistryManager;
 use tirea_store_adapters::FileStore;
@@ -293,7 +294,16 @@ Deterministic compatibility directives:\n\
     }
 
     let os = builder.build().expect("failed to build AgentOs");
-    let read_store: Arc<dyn ThreadReader> = file_store;
+    let os = Arc::new(os);
+    let read_store: Arc<dyn ThreadReader> = file_store.clone();
+    let mailbox_store: Arc<dyn MailboxStore> = file_store;
+
+    let receiver = Arc::new(AgentReceiver::new(os.clone()));
+    tokio::spawn(
+        MailboxDispatcher::new(mailbox_store.clone(), receiver)
+            .with_consumer_id("starter-backend-mailbox")
+            .run_forever(),
+    );
 
     let mut app = axum::Router::new()
         .merge(http::health_routes())
@@ -303,11 +313,7 @@ Deterministic compatibility directives:\n\
         .nest("/v1/ag-ui", protocol::ag_ui::http::routes())
         .nest("/v1/ai-sdk", protocol::ai_sdk_v6::http::routes())
         .nest("/v1/a2a", protocol::a2a::http::routes())
-        .with_state(AppState {
-            os: Arc::new(os),
-            read_store,
-            mailbox_store: None,
-        });
+        .with_state(AppState::new(os, read_store).with_mailbox_store(mailbox_store));
 
     if config.enable_cors {
         let cors = CorsLayer::new()

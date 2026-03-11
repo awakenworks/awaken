@@ -13,7 +13,8 @@ use tirea_agentos::contracts::{RunOrigin, RunRequest, ToolCallDecision};
 use crate::service::{
     check_run_liveness, load_background_task, normalize_optional_id, require_mailbox_store,
     resolve_thread_id_from_run, start_background_run, try_cancel_active_or_queued_run_by_id,
-    try_forward_decisions_to_active_run_by_id, ApiError, AppState, BackgroundTaskLookup, RunLookup,
+    try_forward_decisions_to_active_run_by_id, ApiError, AppState, BackgroundTaskLookup,
+    EnqueueOptions, RunLookup,
 };
 
 const WELL_KNOWN_AGENT_CARD_PATH: &str = "/.well-known/agent-card.json";
@@ -333,7 +334,15 @@ async fn message_send(
 
     let mailbox_store = require_mailbox_store(&st)?;
     let (context_id, _run_id, task_id) =
-        start_background_run(&st.os, &mailbox_store, &agent_id, run_request, "a2a").await?;
+        start_background_run(
+            &st.os,
+            &mailbox_store,
+            &agent_id,
+            run_request,
+            "a2a",
+            EnqueueOptions::default(),
+        )
+        .await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({
