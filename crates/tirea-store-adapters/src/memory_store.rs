@@ -137,9 +137,10 @@ impl MailboxWriter for MemoryStore {
         claimable_ids.sort_by(|left, right| {
             let left_entry = mailbox.get(left).expect("mailbox entry should exist");
             let right_entry = mailbox.get(right).expect("mailbox entry should exist");
-            left_entry
-                .available_at
-                .cmp(&right_entry.available_at)
+            right_entry
+                .priority
+                .cmp(&left_entry.priority)
+                .then_with(|| left_entry.available_at.cmp(&right_entry.available_at))
                 .then_with(|| left_entry.created_at.cmp(&right_entry.created_at))
                 .then_with(|| left.cmp(right))
         });

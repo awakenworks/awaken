@@ -35,6 +35,15 @@ pub struct MailboxEntry {
     pub request: RunRequest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dedupe_key: Option<String>,
+    /// Envelope-level message type tag for routing and priority dispatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Identity of the sender (agent_id or run_id) for audit and reply routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_id: Option<String>,
+    /// Dispatch priority (higher = dispatched first). Default 0.
+    #[serde(default)]
+    pub priority: u8,
     pub available_at: u64,
     pub attempt_count: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]

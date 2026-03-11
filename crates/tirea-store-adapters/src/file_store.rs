@@ -223,8 +223,10 @@ impl MailboxWriter for FileStore {
     ) -> Result<Vec<MailboxEntry>, MailboxStoreError> {
         let mut entries = self.load_all_mailbox_entries().await?;
         entries.sort_by(|left, right| {
-            left.available_at
-                .cmp(&right.available_at)
+            right
+                .priority
+                .cmp(&left.priority)
+                .then_with(|| left.available_at.cmp(&right.available_at))
                 .then_with(|| left.created_at.cmp(&right.created_at))
                 .then_with(|| left.entry_id.cmp(&right.entry_id))
         });
@@ -232,8 +234,23 @@ impl MailboxWriter for FileStore {
         for mut entry in entries
             .into_iter()
             .filter(|entry| entry.is_claimable(now))
-            .take(limit)
         {
+            // Reconcile: supersede stale-generation entries that survived a
+            // partial interrupt (FileStore interrupt is not atomic).
+            if let Some(ts) = self.load_mailbox_thread_state_inner(&entry.thread_id).await? {
+                if entry.generation < ts.current_generation {
+                    entry.status = tirea_contract::MailboxEntryStatus::Superseded;
+                    entry.last_error =
+                        Some("superseded by interrupt (reconciled on claim)".to_string());
+                    entry.claim_token = None;
+                    entry.claimed_by = None;
+                    entry.lease_until = None;
+                    entry.updated_at = now;
+                    self.save_mailbox_entry(&entry).await?;
+                    continue;
+                }
+            }
+
             entry.status = tirea_contract::MailboxEntryStatus::Claimed;
             entry.claim_token = Some(uuid::Uuid::now_v7().simple().to_string());
             entry.claimed_by = Some(consumer_id.to_string());
@@ -242,6 +259,9 @@ impl MailboxWriter for FileStore {
             entry.updated_at = now;
             self.save_mailbox_entry(&entry).await?;
             claimed.push(entry);
+            if claimed.len() >= limit {
+                break;
+            }
         }
         Ok(claimed)
     }
@@ -830,6 +850,9 @@ mod tests {
                 source_mailbox_entry_id: None,
             },
             dedupe_key: None,
+            kind: None,
+            sender_id: None,
+            priority: 0,
             available_at: 1,
             attempt_count: 0,
             last_error: None,

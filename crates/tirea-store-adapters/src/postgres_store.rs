@@ -121,7 +121,7 @@ impl PostgresStore {
                 self.runs_table, self.runs_table
             ),
             format!(
-                "CREATE TABLE IF NOT EXISTS {} (entry_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, run_id TEXT NOT NULL UNIQUE, agent_id TEXT NOT NULL, generation BIGINT NOT NULL DEFAULT 0, status TEXT NOT NULL, request JSONB NOT NULL, dedupe_key TEXT, available_at BIGINT NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 0, last_error TEXT, claim_token TEXT, claimed_by TEXT, lease_until BIGINT, accepted_run_id TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS {} (entry_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, run_id TEXT NOT NULL UNIQUE, agent_id TEXT NOT NULL, generation BIGINT NOT NULL DEFAULT 0, status TEXT NOT NULL, request JSONB NOT NULL, dedupe_key TEXT, kind TEXT, sender_id TEXT, priority SMALLINT NOT NULL DEFAULT 0, available_at BIGINT NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 0, last_error TEXT, claim_token TEXT, claimed_by TEXT, lease_until BIGINT, accepted_run_id TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)",
                 self.mailbox_table
             ),
             format!(
@@ -142,6 +142,19 @@ impl PostgresStore {
             ),
             format!(
                 "ALTER TABLE {} ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 0",
+                self.mailbox_table
+            ),
+            // Migration: add envelope metadata columns to mailbox entries.
+            format!(
+                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS kind TEXT",
+                self.mailbox_table
+            ),
+            format!(
+                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS sender_id TEXT",
+                self.mailbox_table
+            ),
+            format!(
+                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS priority SMALLINT NOT NULL DEFAULT 0",
                 self.mailbox_table
             ),
             // Migration: add agent_id column to existing tables.
@@ -300,6 +313,7 @@ impl MailboxReader for PostgresStore {
     ) -> Result<Option<MailboxEntry>, MailboxStoreError> {
         let sql = format!(
             "SELECT entry_id, thread_id, run_id, agent_id, generation, status, request, dedupe_key, \
+             kind, sender_id, priority, \
              available_at, attempt_count, last_error, claim_token, claimed_by, lease_until, \
              accepted_run_id, created_at, updated_at FROM {} WHERE entry_id = $1",
             self.mailbox_table
@@ -318,6 +332,7 @@ impl MailboxReader for PostgresStore {
     ) -> Result<Option<MailboxEntry>, MailboxStoreError> {
         let sql = format!(
             "SELECT entry_id, thread_id, run_id, agent_id, generation, status, request, dedupe_key, \
+             kind, sender_id, priority, \
              available_at, attempt_count, last_error, claim_token, claimed_by, lease_until, \
              accepted_run_id, created_at, updated_at FROM {} WHERE run_id = $1",
             self.mailbox_table
@@ -368,6 +383,7 @@ impl MailboxReader for PostgresStore {
         let status_filter = query.status.map(Self::encode_mailbox_status);
         let sql = format!(
             "SELECT entry_id, thread_id, run_id, agent_id, generation, status, request, dedupe_key, \
+             kind, sender_id, priority, \
              available_at, attempt_count, last_error, claim_token, claimed_by, lease_until, \
              accepted_run_id, created_at, updated_at FROM {}",
             self.mailbox_table
@@ -493,9 +509,10 @@ impl MailboxWriter for PostgresStore {
             .map_err(|e| MailboxStoreError::Serialization(e.to_string()))?;
         sqlx::query(&format!(
             "INSERT INTO {} (entry_id, thread_id, run_id, agent_id, generation, status, request, dedupe_key, \
+             kind, sender_id, priority, \
              available_at, attempt_count, last_error, claim_token, claimed_by, lease_until, \
              accepted_run_id, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)",
             self.mailbox_table
         ))
         .bind(&entry.entry_id)
@@ -508,6 +525,9 @@ impl MailboxWriter for PostgresStore {
         .bind(Self::encode_mailbox_status(entry.status))
         .bind(request)
         .bind(entry.dedupe_key.as_deref())
+        .bind(entry.kind.as_deref())
+        .bind(entry.sender_id.as_deref())
+        .bind(i16::from(entry.priority))
         .bind(i64::try_from(entry.available_at).map_err(|_| {
             MailboxStoreError::Backend("available_at too large for postgres BIGINT".to_string())
         })?)
@@ -601,11 +621,12 @@ impl MailboxWriter for PostgresStore {
         })?;
         let rows: Vec<MailboxRow> = sqlx::query_as(&format!(
             "SELECT entry_id, thread_id, run_id, agent_id, generation, status, request, dedupe_key, \
+             kind, sender_id, priority, \
              available_at, attempt_count, last_error, claim_token, claimed_by, lease_until, \
              accepted_run_id, created_at, updated_at FROM {} \
              WHERE (status = 'queued' AND available_at <= $1) \
                 OR (status = 'claimed' AND lease_until IS NOT NULL AND lease_until <= $1) \
-             ORDER BY available_at ASC, created_at ASC, entry_id ASC \
+             ORDER BY priority DESC, available_at ASC, created_at ASC, entry_id ASC \
              FOR UPDATE SKIP LOCKED LIMIT $2",
             self.mailbox_table
         ))
@@ -663,6 +684,7 @@ impl MailboxWriter for PostgresStore {
         })?;
         let row = sqlx::query_as::<_, MailboxRow>(&format!(
             "SELECT entry_id, thread_id, run_id, agent_id, generation, status, request, dedupe_key, \
+             kind, sender_id, priority, \
              available_at, attempt_count, last_error, claim_token, claimed_by, lease_until, \
              accepted_run_id, created_at, updated_at FROM {} \
              WHERE run_id = $1 AND (status = 'queued' OR (status = 'claimed' AND lease_until IS NOT NULL AND lease_until <= $2)) \
@@ -869,7 +891,8 @@ impl MailboxWriter for PostgresStore {
             MailboxStoreError::Backend("updated_at too large for postgres BIGINT".to_string())
         })?;
         let returning_cols = "entry_id, thread_id, run_id, agent_id, generation, status, request, \
-             dedupe_key, available_at, attempt_count, last_error, claim_token, claimed_by, \
+             dedupe_key, kind, sender_id, priority, \
+             available_at, attempt_count, last_error, claim_token, claimed_by, \
              lease_until, accepted_run_id, created_at, updated_at";
 
         let rows: Vec<MailboxRow> = match exclude_run_id {
@@ -958,6 +981,7 @@ impl MailboxWriter for PostgresStore {
              WHERE thread_id = $4 AND generation < $5 \
              AND status NOT IN ('accepted', 'superseded', 'cancelled', 'dead_letter') \
              RETURNING entry_id, thread_id, run_id, agent_id, generation, status, request, dedupe_key, \
+             kind, sender_id, priority, \
              available_at, attempt_count, last_error, claim_token, claimed_by, lease_until, \
              accepted_run_id, created_at, updated_at",
             self.mailbox_table
@@ -1604,6 +1628,9 @@ struct MailboxRow {
     status: String,
     request: serde_json::Value,
     dedupe_key: Option<String>,
+    kind: Option<String>,
+    sender_id: Option<String>,
+    priority: i16,
     available_at: i64,
     attempt_count: i32,
     last_error: Option<String>,
@@ -1629,6 +1656,9 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for MailboxRow {
             status: row.try_get("status")?,
             request: row.try_get("request")?,
             dedupe_key: row.try_get("dedupe_key")?,
+            kind: row.try_get("kind")?,
+            sender_id: row.try_get("sender_id")?,
+            priority: row.try_get("priority")?,
             available_at: row.try_get("available_at")?,
             attempt_count: row.try_get("attempt_count")?,
             last_error: row.try_get("last_error")?,
@@ -1694,6 +1724,9 @@ impl PostgresStore {
             status: Self::decode_mailbox_status(&row.status)?,
             request,
             dedupe_key: row.dedupe_key,
+            kind: row.kind,
+            sender_id: row.sender_id,
+            priority: u8::try_from(row.priority).unwrap_or(0),
             available_at: Self::from_db_timestamp(row.available_at, "available_at")
                 .map_err(|e| MailboxStoreError::Backend(e.to_string()))?,
             attempt_count: u32::try_from(row.attempt_count).map_err(|_| {
