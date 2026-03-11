@@ -17,8 +17,8 @@ This page uses the low-level `Tool` trait so you can see the full mechanics. For
 async-trait = "0.1"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
-tirea = "0.3.0-alpha.4"
-tirea-state-derive = "0.3.0-alpha.4"
+tirea = "0.3.0"
+tirea-state-derive = "0.3.0"
 ```
 
 ## 1. Define Typed State
