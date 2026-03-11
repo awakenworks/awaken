@@ -232,20 +232,47 @@ impl crate::contracts::runtime::tool_call::TypedTool for TaskCancelTool {
 
         match self.manager.cancel_tree(&thread_id, task_id).await {
             Ok(cancelled) => {
+                let mut persistence_failures = Vec::new();
                 if let Some(store) = &self.task_store {
                     for summary in &cancelled {
-                        let _ = store.mark_cancel_requested(&summary.task_id).await;
+                        if let Err(error) = store.mark_cancel_requested(&summary.task_id).await {
+                            tracing::warn!(
+                                root_task_id = %task_id,
+                                cancelled_task_id = %summary.task_id,
+                                owner_thread_id = %thread_id,
+                                error = %error,
+                                "failed to persist background task cancellation marker"
+                            );
+                            persistence_failures.push((summary.task_id.clone(), error.to_string()));
+                        }
                     }
                 }
                 let ids: Vec<&str> = cancelled.iter().map(|s| s.task_id.as_str()).collect();
-                Ok(ToolResult::success(
-                    TASK_CANCEL_TOOL_ID,
-                    json!({
+                let mut data = json!({
+                    "task_id": task_id,
+                    "cancelled": true,
+                    "cancelled_ids": ids,
+                    "cancelled_count": cancelled.len(),
+                });
+                if persistence_failures.is_empty() {
+                    return Ok(ToolResult::success(TASK_CANCEL_TOOL_ID, data));
+                }
+
+                data["persistence_warning"] = json!({
+                    "failed_count": persistence_failures.len(),
+                    "failures": persistence_failures.iter().map(|(task_id, error)| json!({
                         "task_id": task_id,
-                        "cancelled": true,
-                        "cancelled_ids": ids,
-                        "cancelled_count": cancelled.len(),
-                    }),
+                        "error": error,
+                    })).collect::<Vec<_>>(),
+                });
+
+                Ok(ToolResult::warning(
+                    TASK_CANCEL_TOOL_ID,
+                    data,
+                    format!(
+                        "Cancellation requested, but failed to persist cancellation markers for {} task(s).",
+                        persistence_failures.len()
+                    ),
                 ))
             }
             Err(e) => Ok(ToolResult::error(TASK_CANCEL_TOOL_ID, e)),
@@ -410,9 +437,16 @@ impl TaskOutputTool {
 mod tests {
     use super::*;
     use crate::contracts::runtime::tool_call::Tool;
-    use crate::contracts::storage::ThreadStore;
+    use crate::contracts::storage::{
+        Committed, MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, ThreadHead,
+        ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore, ThreadStoreError, ThreadWriter,
+        VersionPrecondition,
+    };
+    use crate::contracts::thread::{Thread, ThreadChangeSet};
     use crate::contracts::RunConfig;
     use crate::runtime::background_tasks::SpawnParams;
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tirea_contract::testing::TestFixture;
 
     const THREAD_ID_KEY: &str = "__agent_tool_caller_thread_id";
@@ -425,6 +459,89 @@ mod tests {
             rc
         };
         fix
+    }
+
+    struct FailingCancelMarkStore {
+        inner: Arc<tirea_store_adapters::MemoryStore>,
+        fail_task_appends: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ThreadReader for FailingCancelMarkStore {
+        async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
+            self.inner.load(thread_id).await
+        }
+
+        async fn list_threads(
+            &self,
+            query: &ThreadListQuery,
+        ) -> Result<ThreadListPage, ThreadStoreError> {
+            self.inner.list_threads(query).await
+        }
+
+        async fn load_messages(
+            &self,
+            thread_id: &str,
+            query: &MessageQuery,
+        ) -> Result<MessagePage, ThreadStoreError> {
+            self.inner.load_messages(thread_id, query).await
+        }
+
+        async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, ThreadStoreError> {
+            self.inner.load_run(run_id).await
+        }
+
+        async fn list_runs(&self, query: &RunQuery) -> Result<RunPage, ThreadStoreError> {
+            self.inner.list_runs(query).await
+        }
+
+        async fn active_run_for_thread(
+            &self,
+            thread_id: &str,
+        ) -> Result<Option<RunRecord>, ThreadStoreError> {
+            self.inner.active_run_for_thread(thread_id).await
+        }
+    }
+
+    #[async_trait]
+    impl ThreadWriter for FailingCancelMarkStore {
+        async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError> {
+            self.inner.create(thread).await
+        }
+
+        async fn append(
+            &self,
+            thread_id: &str,
+            delta: &ThreadChangeSet,
+            precondition: VersionPrecondition,
+        ) -> Result<Committed, ThreadStoreError> {
+            if thread_id.starts_with(super::super::TASK_THREAD_PREFIX)
+                && self
+                    .fail_task_appends
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                        if remaining > 0 {
+                            Some(remaining - 1)
+                        } else {
+                            None
+                        }
+                    })
+                    .is_ok()
+            {
+                return Err(ThreadStoreError::Io(std::io::Error::other(
+                    "injected cancel mark persistence failure",
+                )));
+            }
+
+            self.inner.append(thread_id, delta, precondition).await
+        }
+
+        async fn delete(&self, thread_id: &str) -> Result<(), ThreadStoreError> {
+            self.inner.delete(thread_id).await
+        }
+
+        async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
+            self.inner.save(thread).await
+        }
     }
 
     #[test]
@@ -822,6 +939,84 @@ mod tests {
             .unwrap()
             .expect("task should exist");
         assert!(task.cancel_requested_at_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn cancel_tool_returns_warning_when_cancel_mark_persistence_fails() {
+        let mgr = Arc::new(BackgroundTaskManager::new());
+        let storage = Arc::new(FailingCancelMarkStore {
+            inner: Arc::new(tirea_store_adapters::MemoryStore::new()),
+            fail_task_appends: AtomicUsize::new(0),
+        });
+        let task_store = Arc::new(TaskStore::new(storage.clone() as Arc<dyn ThreadStore>));
+        task_store
+            .create_task(super::super::NewTaskSpec {
+                task_id: "task-1".to_string(),
+                owner_thread_id: "thread-1".to_string(),
+                task_type: "shell".to_string(),
+                description: "long task".to_string(),
+                parent_task_id: None,
+                supports_resume: false,
+                metadata: json!({}),
+            })
+            .await
+            .unwrap();
+
+        mgr.spawn_with_id(
+            SpawnParams {
+                task_id: "task-1".to_string(),
+                owner_thread_id: "thread-1".to_string(),
+                task_type: "shell".to_string(),
+                description: "long task".to_string(),
+                parent_task_id: None,
+                metadata: json!({}),
+            },
+            crate::loop_runtime::loop_runner::RunCancellationToken::new(),
+            |cancel| async move {
+                cancel.cancelled().await;
+                super::super::types::TaskResult::Cancelled
+            },
+        )
+        .await;
+
+        storage.fail_task_appends.store(1, Ordering::SeqCst);
+
+        let tool = TaskCancelTool::new(mgr.clone()).with_task_store(Some(task_store.clone()));
+        let fix = fixture_with_thread("thread-1");
+        let result = tool
+            .execute(json!({"task_id": "task-1"}), &fix.ctx())
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            result.status,
+            crate::contracts::runtime::tool_call::ToolStatus::Warning
+        ));
+        assert_eq!(result.data["cancelled"], json!(true));
+        assert_eq!(result.data["persistence_warning"]["failed_count"], json!(1));
+        assert_eq!(
+            result.data["persistence_warning"]["failures"][0]["task_id"],
+            json!("task-1")
+        );
+        assert!(result
+            .message
+            .as_deref()
+            .unwrap_or("")
+            .contains("failed to persist cancellation markers"));
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let summary = mgr.get("thread-1", "task-1").await.unwrap();
+        assert_eq!(summary.status, super::super::types::TaskStatus::Cancelled);
+
+        let task = task_store
+            .load_task("task-1")
+            .await
+            .unwrap()
+            .expect("task should exist");
+        assert!(
+            task.cancel_requested_at_ms.is_none(),
+            "failed durable mark should not mutate persisted cancel_requested timestamp"
+        );
     }
 
     #[tokio::test]

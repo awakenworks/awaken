@@ -4637,6 +4637,7 @@ dependencies = [
  "tirea-state",
  "tirea-store-adapters",
  "tokio",
+ "tracing",
  "uuid",
 ]
 
