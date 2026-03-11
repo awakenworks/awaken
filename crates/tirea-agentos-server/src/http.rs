@@ -16,8 +16,9 @@ use tirea_contract::{AgentEvent, Identity};
 
 use crate::service::{
     check_run_liveness, load_run_record, normalize_optional_id, parse_message_query,
-    require_agent_state_store, start_background_run, start_http_run, try_cancel_active_run_by_id,
-    try_forward_decisions_to_active_run_by_id, ApiError, MessageQueryParams, RunLookup,
+    require_agent_state_store, require_mailbox_store, start_background_run, start_http_run,
+    try_cancel_active_or_queued_run_by_id, try_forward_decisions_to_active_run_by_id, ApiError,
+    MessageQueryParams, RunLookup,
 };
 use crate::transport::http_run::{wire_http_sse_relay, HttpSseRelayConfig};
 use crate::transport::http_sse::{sse_body_stream, sse_response};
@@ -530,8 +531,9 @@ async fn push_run_inputs(
         initial_decisions: decisions,
     };
 
+    let mailbox_store = require_mailbox_store(&st)?;
     let (thread_id, _run_id) =
-        start_background_run(&st.os, &agent_id, run_request, "run_api").await?;
+        start_background_run(&st.os, &mailbox_store, &agent_id, run_request, "run_api").await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({
@@ -547,7 +549,11 @@ async fn cancel_run(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    if try_cancel_active_run_by_id(&st.os, &id).await? {
+    let mailbox_store = require_mailbox_store(&st)?;
+    if try_cancel_active_or_queued_run_by_id(&st.os, &mailbox_store, &id)
+        .await?
+        .is_some()
+    {
         return Ok((
             StatusCode::ACCEPTED,
             Json(json!({

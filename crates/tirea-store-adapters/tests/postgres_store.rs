@@ -13,11 +13,12 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::ImageExt;
 use testcontainers_modules::postgres::Postgres;
 use tirea_contract::storage::{
-    RunOrigin, RunQuery, RunReader, RunRecord, RunStatus, RunWriter, ThreadReader,
-    ThreadStoreError, ThreadWriter, VersionPrecondition,
+    MailboxEntry, MailboxEntryStatus, MailboxReader, MailboxWriter, RunOrigin, RunQuery, RunReader,
+    RunRecord, RunStatus, RunWriter, ThreadReader, ThreadStoreError, ThreadWriter,
+    VersionPrecondition,
 };
 use tirea_contract::thread::ThreadChangeSet;
-use tirea_contract::{CheckpointReason, Message, MessageQuery, Thread, ToolCall};
+use tirea_contract::{CheckpointReason, Message, MessageQuery, RunRequest, Thread, ToolCall};
 use tirea_store_adapters::PostgresStore;
 
 async fn start_postgres() -> Option<(testcontainers::ContainerAsync<Postgres>, String)> {
@@ -56,6 +57,38 @@ async fn make_store_without_ensure(database_url: &str) -> PostgresStore {
         .await
         .expect("failed to connect to Postgres");
     PostgresStore::new(pool)
+}
+
+fn mailbox_entry(run_id: &str, thread_id: &str) -> MailboxEntry {
+    MailboxEntry {
+        entry_id: format!("entry-{run_id}"),
+        thread_id: thread_id.to_string(),
+        run_id: run_id.to_string(),
+        agent_id: "agent".to_string(),
+        status: MailboxEntryStatus::Queued,
+        request: RunRequest {
+            agent_id: "agent".to_string(),
+            thread_id: Some(thread_id.to_string()),
+            run_id: Some(run_id.to_string()),
+            parent_run_id: None,
+            parent_thread_id: None,
+            resource_id: None,
+            origin: RunOrigin::default(),
+            state: None,
+            messages: vec![Message::user("hello")],
+            initial_decisions: vec![],
+        },
+        dedupe_key: None,
+        available_at: 1,
+        attempt_count: 0,
+        last_error: None,
+        claim_token: None,
+        claimed_by: None,
+        lease_until: None,
+        accepted_run_id: None,
+        created_at: 1,
+        updated_at: 1,
+    }
 }
 
 // ========================================================================
@@ -197,6 +230,38 @@ async fn test_ensure_table_creates_thread_filter_indexes() {
 }
 
 #[tokio::test]
+async fn test_mailbox_roundtrip_and_cancellation() {
+    let Some((_container, url)) = start_postgres().await else {
+        return;
+    };
+    let store = make_store(&url).await;
+    let entry = mailbox_entry("run-pg-mailbox", "thread-pg-mailbox");
+
+    store.enqueue_mailbox_entry(&entry).await.unwrap();
+
+    let claimed = store
+        .claim_mailbox_entries(10, "worker-pg", 10, 5_000)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].status, MailboxEntryStatus::Claimed);
+
+    let cancelled = store
+        .cancel_mailbox_entry_by_run_id("run-pg-mailbox", 20)
+        .await
+        .unwrap()
+        .expect("claimed mailbox entry should still be cancellable");
+    assert_eq!(cancelled.status, MailboxEntryStatus::Cancelled);
+
+    let loaded = store
+        .load_mailbox_entry_by_run_id("run-pg-mailbox")
+        .await
+        .unwrap()
+        .expect("mailbox entry should still be queryable");
+    assert_eq!(loaded.status, MailboxEntryStatus::Cancelled);
+}
+
+#[tokio::test]
 async fn test_run_projection_roundtrip_and_filters() {
     let Some((_container, url)) = start_postgres().await else {
         return;
@@ -332,7 +397,7 @@ async fn test_load_current_run_returns_none_when_all_terminal() {
 }
 
 #[tokio::test]
-async fn test_load_current_run_picks_latest_among_multiple_active() {
+async fn test_upsert_run_rejects_multiple_active_runs_for_same_thread() {
     let Some((_container, url)) = start_postgres().await else {
         return;
     };

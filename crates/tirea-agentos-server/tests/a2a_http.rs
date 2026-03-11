@@ -92,10 +92,7 @@ fn make_app_and_os_with_agents(agent_ids: &[&str]) -> (axum::Router, Arc<AgentOs
     let read_store: Arc<dyn ThreadReader> = store.clone();
     let os = make_os(store, agent_ids);
     (
-        compose_http_app(AppState {
-            os: os.clone(),
-            read_store,
-        }),
+        compose_http_app(AppState::new(os.clone(), read_store).with_mailbox_store(shared_store())),
         os,
     )
 }
@@ -334,6 +331,50 @@ async fn a2a_message_send_starts_task_and_get_task() {
     let payload: Value = serde_json::from_str(&body).expect("valid task response");
     assert_eq!(payload["taskId"].as_str(), Some(task_id.as_str()));
     assert_eq!(payload["contextId"].as_str(), Some(context_id.as_str()));
+}
+
+#[tokio::test]
+async fn a2a_cancel_path_cancels_queued_mailbox_task() {
+    let (app, os) = make_app_and_os_with_agents(&["alpha", "beta"]);
+    let active_run_id = format!("active-a2a-{}", Uuid::new_v4().simple());
+    let thread_id = format!("queued-a2a-thread-{}", Uuid::new_v4().simple());
+    let _active_run = start_active_run(&os, "alpha", &thread_id, &active_run_id).await;
+
+    let (status, body) = post_sse(
+        app.clone(),
+        "/v1/a2a/agents/alpha/message:send",
+        json!({
+            "contextId": thread_id,
+            "input": "queue this while another run is active"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "unexpected response: {body}");
+    let payload: Value = serde_json::from_str(&body).expect("valid send response");
+    let queued_task_id = payload["taskId"]
+        .as_str()
+        .expect("queued taskId should exist")
+        .to_string();
+
+    let get_uri = format!("/v1/a2a/agents/alpha/tasks/{queued_task_id}");
+    let (status, body) = get_json_text(app.clone(), &get_uri).await;
+    assert_eq!(status, StatusCode::OK);
+    let payload: Value = serde_json::from_str(&body).expect("valid task response");
+    assert_eq!(payload["taskId"].as_str(), Some(queued_task_id.as_str()));
+    assert_eq!(payload["status"].as_str(), Some("queued"));
+
+    let cancel_uri = format!("/v1/a2a/agents/alpha/tasks/{queued_task_id}:cancel");
+    let (status, body) = post_sse(app.clone(), &cancel_uri, json!({})).await;
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "unexpected cancel response: {body}"
+    );
+
+    let (status, body) = get_json_text(app, &get_uri).await;
+    assert_eq!(status, StatusCode::OK);
+    let payload: Value = serde_json::from_str(&body).expect("valid task response");
+    assert_eq!(payload["status"].as_str(), Some("cancelled"));
 }
 
 #[tokio::test]

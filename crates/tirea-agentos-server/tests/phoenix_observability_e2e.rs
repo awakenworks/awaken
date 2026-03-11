@@ -118,10 +118,7 @@ async fn e2e_agentos_server_exports_llm_observability_to_phoenix() {
         &observed_model,
         provider_name,
     ));
-    let app = compose_http_app(AppState {
-        os,
-        read_store: storage.clone(),
-    });
+    let app = compose_http_app(AppState::new(os, storage.clone()));
 
     let payload = ai_sdk_messages_payload(
         &format!("phoenix-server-session-{now_ms}"),
@@ -219,10 +216,7 @@ async fn e2e_agentos_server_exports_llm_error_observability_to_phoenix() {
         &observed_model,
         provider_name,
     ));
-    let app = compose_http_app(AppState {
-        os,
-        read_store: storage.clone(),
-    });
+    let app = compose_http_app(AppState::new(os, storage.clone()));
 
     let payload = ai_sdk_messages_payload(
         &format!("phoenix-server-session-err-{now_ms}"),

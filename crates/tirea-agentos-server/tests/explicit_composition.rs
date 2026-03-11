@@ -40,7 +40,7 @@ fn explicit_http_app(os: Arc<AgentOs>, read_store: Arc<MemoryStore>) -> axum::Ro
         .merge(http::thread_routes())
         .nest("/v1/ag-ui", protocol::ag_ui::http::routes())
         .nest("/v1/ai-sdk", protocol::ai_sdk_v6::http::routes())
-        .with_state(AppState { os, read_store })
+        .with_state(AppState::new(os, read_store))
 }
 
 #[tokio::test]

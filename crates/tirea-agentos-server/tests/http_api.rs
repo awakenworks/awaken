@@ -237,10 +237,7 @@ async fn test_sessions_query_endpoints() {
         Thread::new("s1").with_message(tirea_agentos::contracts::thread::Message::user("hello"));
     storage.save(&thread).await.unwrap();
 
-    let app = compose_http_app(AppState {
-        os,
-        read_store: storage,
-    });
+    let app = compose_http_app(AppState::new(os, storage));
 
     let resp = app
         .clone()
@@ -283,10 +280,7 @@ async fn test_sessions_query_endpoints() {
 async fn test_ai_sdk_sse_and_persists_session() {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os_with_storage(storage.clone()));
-    let app = compose_http_app(AppState {
-        os: os.clone(),
-        read_store: storage.clone(),
-    });
+    let app = compose_http_app(AppState::new(os.clone(), storage.clone()));
 
     let payload = json!({
         "id": "t1",
@@ -335,10 +329,7 @@ async fn test_ai_sdk_sse_and_persists_session() {
 async fn test_ai_sdk_sse_accepts_messages_request_shape() {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os_with_storage(storage.clone()));
-    let app = compose_http_app(AppState {
-        os: os.clone(),
-        read_store: storage.clone(),
-    });
+    let app = compose_http_app(AppState::new(os.clone(), storage.clone()));
 
     let payload = json!({
         "id": "t-messages-shape",
@@ -371,10 +362,7 @@ async fn test_ai_sdk_sse_accepts_messages_request_shape() {
 async fn test_ai_sdk_sse_messages_request_uses_id_when_session_id_missing() {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os_with_storage(storage.clone()));
-    let app = compose_http_app(AppState {
-        os: os.clone(),
-        read_store: storage.clone(),
-    });
+    let app = compose_http_app(AppState::new(os.clone(), storage.clone()));
 
     let payload = json!({
         "id": "t-id-only",
@@ -442,10 +430,7 @@ async fn test_ai_sdk_sse_messages_request_requires_thread_identifier() {
 async fn test_ai_sdk_sse_accepts_messages_content_array_shape() {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os_with_storage(storage.clone()));
-    let app = compose_http_app(AppState {
-        os: os.clone(),
-        read_store: storage.clone(),
-    });
+    let app = compose_http_app(AppState::new(os.clone(), storage.clone()));
 
     let payload = json!({
         "id": "t-content-array",
@@ -481,10 +466,7 @@ async fn test_ai_sdk_sse_accepts_messages_content_array_shape() {
 async fn test_ai_sdk_sse_sets_expected_headers_and_done_trailer() {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os_with_storage(storage.clone()));
-    let app = compose_http_app(AppState {
-        os,
-        read_store: storage,
-    });
+    let app = compose_http_app(AppState::new(os, storage));
 
     let payload = json!({
         "id": "t-headers",
@@ -530,10 +512,7 @@ async fn test_ai_sdk_sse_sets_expected_headers_and_done_trailer() {
 async fn test_ai_sdk_sse_run_info_omits_run_id_field() {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os_with_storage(storage.clone()));
-    let app = compose_http_app(AppState {
-        os: os.clone(),
-        read_store: storage.clone(),
-    });
+    let app = compose_http_app(AppState::new(os.clone(), storage.clone()));
 
     let payload = json!({
         "id": "t-v7",
@@ -581,10 +560,7 @@ async fn test_ai_sdk_sse_run_info_omits_run_id_field() {
 async fn test_agui_sse_and_persists_session() {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os_with_storage(storage.clone()));
-    let app = compose_http_app(AppState {
-        os: os.clone(),
-        read_store: storage.clone(),
-    });
+    let app = compose_http_app(AppState::new(os.clone(), storage.clone()));
 
     let payload = json!({
         "threadId": "th1",
@@ -629,10 +605,7 @@ async fn test_agui_sse_and_persists_session() {
 async fn test_industry_common_persistence_saves_user_message_before_run_completes_ai_sdk() {
     let storage = Arc::new(RecordingStorage::default());
     let os = Arc::new(make_os_with_storage(storage.clone()));
-    let app = compose_http_app(AppState {
-        os,
-        read_store: storage.clone(),
-    });
+    let app = compose_http_app(AppState::new(os, storage.clone()));
 
     let payload = json!({
         "id": "t2",
@@ -671,10 +644,7 @@ async fn test_industry_common_persistence_saves_user_message_before_run_complete
 async fn test_industry_common_persistence_saves_inbound_request_messages_agui() {
     let storage = Arc::new(RecordingStorage::default());
     let os = Arc::new(make_os_with_storage(storage.clone()));
-    let app = compose_http_app(AppState {
-        os,
-        read_store: storage.clone(),
-    });
+    let app = compose_http_app(AppState::new(os, storage.clone()));
 
     let payload = json!({
         "threadId": "th2",
@@ -716,10 +686,7 @@ async fn test_industry_common_persistence_saves_inbound_request_messages_agui() 
 async fn test_agui_sse_idless_user_message_not_duplicated_by_internal_reapply() {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os_with_storage(storage.clone()));
-    let app = compose_http_app(AppState {
-        os: os.clone(),
-        read_store: storage.clone(),
-    });
+    let app = compose_http_app(AppState::new(os.clone(), storage.clone()));
 
     let payload = json!({
         "threadId": "th-idless-once",
@@ -821,7 +788,7 @@ async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, Value) {
 }
 
 fn make_app(os: Arc<AgentOs>, read_store: Arc<dyn ThreadReader>) -> axum::Router {
-    compose_http_app(AppState { os, read_store })
+    compose_http_app(AppState::new(os, read_store))
 }
 
 // ============================================================================
@@ -1864,10 +1831,7 @@ async fn test_agui_pending_approval_resumes_and_replays_tool_call() {
     let tools: HashMap<String, Arc<dyn Tool>> =
         HashMap::from([("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>)]);
     let os = Arc::new(make_os_with_storage_and_tools(storage.clone(), tools));
-    let app = compose_http_app(AppState {
-        os,
-        read_store: storage.clone(),
-    });
+    let app = compose_http_app(AppState::new(os, storage.clone()));
 
     let payload = json!({
         "threadId": "th-approve",
@@ -1925,10 +1889,7 @@ async fn test_agui_pending_denial_clears_pending_without_replay() {
     let tools: HashMap<String, Arc<dyn Tool>> =
         HashMap::from([("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>)]);
     let os = Arc::new(make_os_with_storage_and_tools(storage.clone(), tools));
-    let app = compose_http_app(AppState {
-        os,
-        read_store: storage.clone(),
-    });
+    let app = compose_http_app(AppState::new(os, storage.clone()));
 
     let payload = json!({
         "threadId": "th-deny",
@@ -1989,10 +1950,7 @@ async fn test_ai_sdk_permission_approval_replays_backend_tool_call() {
     let tools: HashMap<String, Arc<dyn Tool>> =
         HashMap::from([("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>)]);
     let os = Arc::new(make_os_with_storage_and_tools(storage.clone(), tools));
-    let app = compose_http_app(AppState {
-        os,
-        read_store: storage.clone(),
-    });
+    let app = compose_http_app(AppState::new(os, storage.clone()));
 
     let payload = json!({
         "id": "th-ai-approve",
@@ -2066,10 +2024,7 @@ async fn test_ai_sdk_permission_denial_emits_output_denied_without_replay() {
     let tools: HashMap<String, Arc<dyn Tool>> =
         HashMap::from([("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>)]);
     let os = Arc::new(make_os_with_storage_and_tools(storage.clone(), tools));
-    let app = compose_http_app(AppState {
-        os,
-        read_store: storage.clone(),
-    });
+    let app = compose_http_app(AppState::new(os, storage.clone()));
 
     let payload = json!({
         "id": "th-ai-deny",
@@ -2140,10 +2095,7 @@ async fn test_ai_sdk_tool_approval_response_part_replays_backend_tool_call() {
     let tools: HashMap<String, Arc<dyn Tool>> =
         HashMap::from([("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>)]);
     let os = Arc::new(make_os_with_storage_and_tools(storage.clone(), tools));
-    let app = compose_http_app(AppState {
-        os,
-        read_store: storage.clone(),
-    });
+    let app = compose_http_app(AppState::new(os, storage.clone()));
 
     let payload = json!({
         "id": "th-ai-approve-part",
@@ -2203,10 +2155,7 @@ async fn test_ai_sdk_tool_approval_response_part_denial_emits_output_denied() {
     let tools: HashMap<String, Arc<dyn Tool>> =
         HashMap::from([("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>)]);
     let os = Arc::new(make_os_with_storage_and_tools(storage.clone(), tools));
-    let app = compose_http_app(AppState {
-        os,
-        read_store: storage.clone(),
-    });
+    let app = compose_http_app(AppState::new(os, storage.clone()));
 
     let payload = json!({
         "id": "th-ai-deny-part",
@@ -2267,10 +2216,7 @@ async fn test_ai_sdk_batch_approval_mode_replays_only_after_all_pending_decision
     let tools: HashMap<String, Arc<dyn Tool>> =
         HashMap::from([("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>)]);
     let os = Arc::new(make_os_with_storage_and_tools(storage.clone(), tools));
-    let app = compose_http_app(AppState {
-        os,
-        read_store: storage.clone(),
-    });
+    let app = compose_http_app(AppState::new(os, storage.clone()));
 
     // First decision only approves fc_perm_1. Batch approval mode should NOT
     // replay call_1 yet because call_2 remains undecided.
@@ -2409,10 +2355,7 @@ async fn test_ai_sdk_ask_output_available_replays_with_frontend_payload() {
         Arc::new(AskUserQuestionEchoTool) as Arc<dyn Tool>,
     )]);
     let os = Arc::new(make_os_with_storage_and_tools(storage.clone(), tools));
-    let app = compose_http_app(AppState {
-        os,
-        read_store: storage.clone(),
-    });
+    let app = compose_http_app(AppState::new(os, storage.clone()));
 
     let payload = json!({
         "id": "th-ai-ask",

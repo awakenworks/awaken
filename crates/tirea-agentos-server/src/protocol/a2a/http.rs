@@ -11,9 +11,9 @@ use tirea_agentos::contracts::thread::Message;
 use tirea_agentos::contracts::{RunOrigin, RunRequest, ToolCallDecision};
 
 use crate::service::{
-    check_run_liveness, load_run_record, normalize_optional_id, resolve_thread_id_from_run,
-    start_background_run, try_cancel_active_run_by_id, try_forward_decisions_to_active_run_by_id,
-    ApiError, AppState, RunLookup,
+    check_run_liveness, load_background_task, normalize_optional_id, require_mailbox_store,
+    resolve_thread_id_from_run, start_background_run, try_cancel_active_or_queued_run_by_id,
+    try_forward_decisions_to_active_run_by_id, ApiError, AppState, BackgroundTaskLookup, RunLookup,
 };
 
 const WELL_KNOWN_AGENT_CARD_PATH: &str = "/.well-known/agent-card.json";
@@ -330,7 +330,9 @@ async fn message_send(
         initial_decisions: decisions,
     };
 
-    let (context_id, task_id) = start_background_run(&st.os, &agent_id, run_request, "a2a").await?;
+    let mailbox_store = require_mailbox_store(&st)?;
+    let (context_id, task_id) =
+        start_background_run(&st.os, &mailbox_store, &agent_id, run_request, "a2a").await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({
@@ -360,20 +362,32 @@ async fn get_task(
             "task_id is required in task path".to_string(),
         ));
     }
-    let Some(record) = load_run_record(st.read_store.as_ref(), &task_id).await? else {
+    let mailbox_store = require_mailbox_store(&st)?;
+    let Some(task) =
+        load_background_task(st.read_store.as_ref(), mailbox_store.as_ref(), &task_id).await?
+    else {
         return Err(ApiError::RunNotFound(task_id));
     };
 
-    Ok(Json(json!({
-        "taskId": record.run_id,
-        "contextId": record.thread_id,
-        "status": record.status,
-        "origin": record.origin,
-        "terminationCode": record.termination_code,
-        "terminationDetail": record.termination_detail,
-        "createdAt": record.created_at,
-        "updatedAt": record.updated_at,
-    }))
+    Ok(match task {
+        BackgroundTaskLookup::Run(record) => Json(json!({
+            "taskId": record.run_id,
+            "contextId": record.thread_id,
+            "status": record.status,
+            "origin": record.origin,
+            "terminationCode": record.termination_code,
+            "terminationDetail": record.termination_detail,
+            "createdAt": record.created_at,
+            "updatedAt": record.updated_at,
+        })),
+        BackgroundTaskLookup::Mailbox(entry) => Json(json!({
+            "taskId": entry.run_id,
+            "contextId": entry.thread_id,
+            "status": entry.status,
+            "createdAt": entry.created_at,
+            "updatedAt": entry.updated_at,
+        })),
+    }
     .into_response())
 }
 
@@ -397,7 +411,11 @@ async fn cancel_task(
         ));
     }
 
-    if try_cancel_active_run_by_id(&st.os, &task_id).await? {
+    let mailbox_store = require_mailbox_store(&st)?;
+    if try_cancel_active_or_queued_run_by_id(&st.os, &mailbox_store, &task_id)
+        .await?
+        .is_some()
+    {
         return Ok((
             StatusCode::ACCEPTED,
             Json(json!({
@@ -409,9 +427,15 @@ async fn cancel_task(
     }
 
     Err(
-        match check_run_liveness(st.read_store.as_ref(), &task_id).await? {
-            RunLookup::ExistsButInactive => ApiError::BadRequest("task is not active".to_string()),
-            RunLookup::NotFound => ApiError::RunNotFound(task_id),
+        match load_background_task(st.read_store.as_ref(), mailbox_store.as_ref(), &task_id).await?
+        {
+            Some(_) => ApiError::BadRequest("task is not active".to_string()),
+            None => match check_run_liveness(st.read_store.as_ref(), &task_id).await? {
+                RunLookup::ExistsButInactive => {
+                    ApiError::BadRequest("task is not active".to_string())
+                }
+                RunLookup::NotFound => ApiError::RunNotFound(task_id),
+            },
         },
     )
 }

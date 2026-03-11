@@ -4,8 +4,10 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tirea_contract::storage::{
-    paginate_runs_in_memory, Committed, RunPage, RunQuery, RunRecord, ThreadHead, ThreadListPage,
-    ThreadListQuery, ThreadReader, ThreadStoreError, ThreadWriter, VersionPrecondition,
+    paginate_mailbox_entries, paginate_runs_in_memory, Committed, MailboxEntry, MailboxPage,
+    MailboxQuery, MailboxReader, MailboxStoreError, MailboxWriter, RunPage, RunQuery, RunRecord,
+    ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStoreError, ThreadWriter,
+    VersionPrecondition,
 };
 use tirea_contract::{Thread, ThreadChangeSet, Version};
 
@@ -35,6 +37,253 @@ impl FileStore {
 
     fn validate_thread_id(thread_id: &str) -> Result<(), ThreadStoreError> {
         file_utils::validate_fs_id(thread_id, "thread id").map_err(ThreadStoreError::InvalidId)
+    }
+
+    fn mailbox_dir(&self) -> PathBuf {
+        self.base_path.join("_mailbox")
+    }
+
+    fn mailbox_path(&self, entry_id: &str) -> Result<PathBuf, MailboxStoreError> {
+        file_utils::validate_fs_id(entry_id, "mailbox entry id")
+            .map_err(MailboxStoreError::Backend)?;
+        Ok(self.mailbox_dir().join(format!("{entry_id}.json")))
+    }
+
+    async fn save_mailbox_entry(&self, entry: &MailboxEntry) -> Result<(), MailboxStoreError> {
+        let payload = serde_json::to_string_pretty(entry)
+            .map_err(|e| MailboxStoreError::Serialization(e.to_string()))?;
+        let filename = format!("{}.json", entry.entry_id);
+        file_utils::atomic_json_write(&self.mailbox_dir(), &filename, &payload)
+            .await
+            .map_err(MailboxStoreError::Io)
+    }
+
+    async fn load_all_mailbox_entries(&self) -> Result<Vec<MailboxEntry>, MailboxStoreError> {
+        let dir = self.mailbox_dir();
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut entries = tokio::fs::read_dir(&dir)
+            .await
+            .map_err(MailboxStoreError::Io)?;
+        let mut mailbox_entries = Vec::new();
+        while let Some(entry) = entries.next_entry().await.map_err(MailboxStoreError::Io)? {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "json") {
+                continue;
+            }
+            let content = tokio::fs::read_to_string(path)
+                .await
+                .map_err(MailboxStoreError::Io)?;
+            let mailbox_entry: MailboxEntry = serde_json::from_str(&content)
+                .map_err(|e| MailboxStoreError::Serialization(e.to_string()))?;
+            mailbox_entries.push(mailbox_entry);
+        }
+        Ok(mailbox_entries)
+    }
+}
+
+#[async_trait]
+impl MailboxReader for FileStore {
+    async fn load_mailbox_entry(
+        &self,
+        entry_id: &str,
+    ) -> Result<Option<MailboxEntry>, MailboxStoreError> {
+        let path = self.mailbox_path(entry_id)?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = tokio::fs::read_to_string(path)
+            .await
+            .map_err(MailboxStoreError::Io)?;
+        let entry: MailboxEntry = serde_json::from_str(&content)
+            .map_err(|e| MailboxStoreError::Serialization(e.to_string()))?;
+        Ok(Some(entry))
+    }
+
+    async fn load_mailbox_entry_by_run_id(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<MailboxEntry>, MailboxStoreError> {
+        let entries = self.load_all_mailbox_entries().await?;
+        Ok(entries.into_iter().find(|entry| entry.run_id == run_id))
+    }
+
+    async fn list_mailbox_entries(
+        &self,
+        query: &MailboxQuery,
+    ) -> Result<MailboxPage, MailboxStoreError> {
+        let entries = self.load_all_mailbox_entries().await?;
+        Ok(paginate_mailbox_entries(&entries, query))
+    }
+}
+
+#[async_trait]
+impl MailboxWriter for FileStore {
+    async fn enqueue_mailbox_entry(&self, entry: &MailboxEntry) -> Result<(), MailboxStoreError> {
+        let path = self.mailbox_path(&entry.entry_id)?;
+        if path.exists() {
+            return Err(MailboxStoreError::AlreadyExists(entry.entry_id.clone()));
+        }
+        if self
+            .load_mailbox_entry_by_run_id(&entry.run_id)
+            .await?
+            .is_some()
+        {
+            return Err(MailboxStoreError::AlreadyExists(entry.run_id.clone()));
+        }
+        self.save_mailbox_entry(entry).await
+    }
+
+    async fn claim_mailbox_entries(
+        &self,
+        limit: usize,
+        consumer_id: &str,
+        now: u64,
+        lease_duration_ms: u64,
+    ) -> Result<Vec<MailboxEntry>, MailboxStoreError> {
+        let mut entries = self.load_all_mailbox_entries().await?;
+        entries.sort_by(|left, right| {
+            left.available_at
+                .cmp(&right.available_at)
+                .then_with(|| left.created_at.cmp(&right.created_at))
+                .then_with(|| left.entry_id.cmp(&right.entry_id))
+        });
+        let mut claimed = Vec::new();
+        for mut entry in entries
+            .into_iter()
+            .filter(|entry| entry.is_claimable(now))
+            .take(limit)
+        {
+            entry.status = tirea_contract::MailboxEntryStatus::Claimed;
+            entry.claim_token = Some(uuid::Uuid::now_v7().simple().to_string());
+            entry.claimed_by = Some(consumer_id.to_string());
+            entry.lease_until = Some(now.saturating_add(lease_duration_ms));
+            entry.attempt_count = entry.attempt_count.saturating_add(1);
+            entry.updated_at = now;
+            self.save_mailbox_entry(&entry).await?;
+            claimed.push(entry);
+        }
+        Ok(claimed)
+    }
+
+    async fn ack_mailbox_entry(
+        &self,
+        entry_id: &str,
+        claim_token: &str,
+        accepted_run_id: &str,
+        now: u64,
+    ) -> Result<(), MailboxStoreError> {
+        let mut entry = self
+            .load_mailbox_entry(entry_id)
+            .await?
+            .ok_or_else(|| MailboxStoreError::NotFound(entry_id.to_string()))?;
+        if entry.claim_token.as_deref() != Some(claim_token) {
+            return Err(MailboxStoreError::ClaimConflict(entry_id.to_string()));
+        }
+        entry.status = tirea_contract::MailboxEntryStatus::Accepted;
+        entry.accepted_run_id = Some(accepted_run_id.to_string());
+        entry.claim_token = None;
+        entry.claimed_by = None;
+        entry.lease_until = None;
+        entry.updated_at = now;
+        self.save_mailbox_entry(&entry).await
+    }
+
+    async fn nack_mailbox_entry(
+        &self,
+        entry_id: &str,
+        claim_token: &str,
+        retry_at: u64,
+        error: &str,
+        now: u64,
+    ) -> Result<(), MailboxStoreError> {
+        let mut entry = self
+            .load_mailbox_entry(entry_id)
+            .await?
+            .ok_or_else(|| MailboxStoreError::NotFound(entry_id.to_string()))?;
+        if entry.claim_token.as_deref() != Some(claim_token) {
+            return Err(MailboxStoreError::ClaimConflict(entry_id.to_string()));
+        }
+        entry.status = tirea_contract::MailboxEntryStatus::Queued;
+        entry.available_at = retry_at;
+        entry.last_error = Some(error.to_string());
+        entry.claim_token = None;
+        entry.claimed_by = None;
+        entry.lease_until = None;
+        entry.updated_at = now;
+        self.save_mailbox_entry(&entry).await
+    }
+
+    async fn dead_letter_mailbox_entry(
+        &self,
+        entry_id: &str,
+        claim_token: &str,
+        error: &str,
+        now: u64,
+    ) -> Result<(), MailboxStoreError> {
+        let mut entry = self
+            .load_mailbox_entry(entry_id)
+            .await?
+            .ok_or_else(|| MailboxStoreError::NotFound(entry_id.to_string()))?;
+        if entry.claim_token.as_deref() != Some(claim_token) {
+            return Err(MailboxStoreError::ClaimConflict(entry_id.to_string()));
+        }
+        entry.status = tirea_contract::MailboxEntryStatus::DeadLetter;
+        entry.last_error = Some(error.to_string());
+        entry.claim_token = None;
+        entry.claimed_by = None;
+        entry.lease_until = None;
+        entry.updated_at = now;
+        self.save_mailbox_entry(&entry).await
+    }
+
+    async fn cancel_mailbox_entry_by_run_id(
+        &self,
+        run_id: &str,
+        now: u64,
+    ) -> Result<Option<MailboxEntry>, MailboxStoreError> {
+        let Some(mut entry) = self.load_mailbox_entry_by_run_id(run_id).await? else {
+            return Ok(None);
+        };
+        if entry.status.is_terminal() {
+            return Ok(Some(entry));
+        }
+        entry.status = tirea_contract::MailboxEntryStatus::Cancelled;
+        entry.last_error = Some("cancelled".to_string());
+        entry.claim_token = None;
+        entry.claimed_by = None;
+        entry.lease_until = None;
+        entry.updated_at = now;
+        self.save_mailbox_entry(&entry).await?;
+        Ok(Some(entry))
+    }
+
+    async fn cancel_pending_mailbox_for_thread(
+        &self,
+        thread_id: &str,
+        now: u64,
+        exclude_run_id: Option<&str>,
+    ) -> Result<Vec<MailboxEntry>, MailboxStoreError> {
+        let entries = self.load_all_mailbox_entries().await?;
+        let mut cancelled = Vec::new();
+        for mut entry in entries {
+            if entry.thread_id != thread_id || entry.status.is_terminal() {
+                continue;
+            }
+            if exclude_run_id.is_some_and(|run_id| entry.run_id == run_id) {
+                continue;
+            }
+            entry.status = tirea_contract::MailboxEntryStatus::Cancelled;
+            entry.last_error = Some("cancelled".to_string());
+            entry.claim_token = None;
+            entry.claimed_by = None;
+            entry.lease_until = None;
+            entry.updated_at = now;
+            self.save_mailbox_entry(&entry).await?;
+            cancelled.push(entry);
+        }
+        Ok(cancelled)
     }
 }
 
@@ -347,7 +596,10 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
     use tirea_contract::{
-        storage::ThreadReader, CheckpointReason, Message, MessageQuery, ThreadWriter,
+        storage::{
+            MailboxEntry, MailboxEntryStatus, MailboxReader, MailboxWriter, RunOrigin, ThreadReader,
+        },
+        CheckpointReason, Message, MessageQuery, RunRequest, ThreadWriter,
     };
     use tirea_state::{path, Op, Patch, TrackedPatch};
 
@@ -357,6 +609,38 @@ mod tests {
             thread = thread.with_message(Message::user(format!("msg-{i}")));
         }
         thread
+    }
+
+    fn mailbox_entry(run_id: &str, thread_id: &str) -> MailboxEntry {
+        MailboxEntry {
+            entry_id: format!("entry-{run_id}"),
+            thread_id: thread_id.to_string(),
+            run_id: run_id.to_string(),
+            agent_id: "agent".to_string(),
+            status: MailboxEntryStatus::Queued,
+            request: RunRequest {
+                agent_id: "agent".to_string(),
+                thread_id: Some(thread_id.to_string()),
+                run_id: Some(run_id.to_string()),
+                parent_run_id: None,
+                parent_thread_id: None,
+                resource_id: None,
+                origin: RunOrigin::default(),
+                state: None,
+                messages: vec![Message::user("hello")],
+                initial_decisions: vec![],
+            },
+            dedupe_key: None,
+            available_at: 1,
+            attempt_count: 0,
+            last_error: None,
+            claim_token: None,
+            claimed_by: None,
+            lease_until: None,
+            accepted_run_id: None,
+            created_at: 1,
+            updated_at: 1,
+        }
     }
 
     #[tokio::test]
@@ -616,5 +900,34 @@ mod tests {
         assert!(storage.thread_path("foo\\bar").is_err());
         assert!(storage.thread_path("").is_err());
         assert!(storage.thread_path("foo\0bar").is_err());
+    }
+
+    #[tokio::test]
+    async fn file_storage_mailbox_claim_and_cancel_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = FileStore::new(temp_dir.path());
+        let entry = mailbox_entry("run-file-mailbox", "thread-file-mailbox");
+        storage.enqueue_mailbox_entry(&entry).await.unwrap();
+
+        let claimed = storage
+            .claim_mailbox_entries(1, "worker-file", 10, 5_000)
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].status, MailboxEntryStatus::Claimed);
+
+        let cancelled = storage
+            .cancel_mailbox_entry_by_run_id("run-file-mailbox", 20)
+            .await
+            .unwrap()
+            .expect("queued entry should be cancellable");
+        assert_eq!(cancelled.status, MailboxEntryStatus::Cancelled);
+
+        let loaded = storage
+            .load_mailbox_entry(&entry.entry_id)
+            .await
+            .unwrap()
+            .expect("mailbox entry should persist");
+        assert_eq!(loaded.status, MailboxEntryStatus::Cancelled);
     }
 }

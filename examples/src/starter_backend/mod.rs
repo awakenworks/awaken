@@ -306,6 +306,7 @@ Deterministic compatibility directives:\n\
         .with_state(AppState {
             os: Arc::new(os),
             read_store,
+            mailbox_store: None,
         });
 
     if config.enable_cors {

@@ -52,10 +52,7 @@ fn make_app_with_os() -> (axum::Router, Arc<AgentOs>) {
     let thread_store = shared_store();
     let read_store: Arc<dyn ThreadReader> = thread_store.clone();
     let os = make_os(thread_store);
-    let state = AppState {
-        os: os.clone(),
-        read_store,
-    };
+    let state = AppState::new(os.clone(), read_store).with_mailbox_store(shared_store());
     // Explicitly opt in to run projection routes (not part of the default public API).
     let app = axum::Router::new()
         .merge(tirea_agentos_server::http::run_routes())

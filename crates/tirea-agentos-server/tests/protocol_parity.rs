@@ -46,10 +46,7 @@ fn make_http_app() -> (axum::Router, Arc<MemoryStore>, Arc<AgentOs>) {
     let os = Arc::new(make_os_from_store(store.clone()));
     let read_store: Arc<dyn ThreadReader> = store.clone();
     (
-        compose_http_app(AppState {
-            os: os.clone(),
-            read_store,
-        }),
+        compose_http_app(AppState::new(os.clone(), read_store)),
         store,
         os,
     )

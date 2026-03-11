@@ -84,6 +84,7 @@ pub async fn serve(
     let state = AppState {
         os: Arc::new(os),
         read_store,
+        mailbox_store: None,
     };
     let app = axum::Router::new()
         .merge(http::health_routes())

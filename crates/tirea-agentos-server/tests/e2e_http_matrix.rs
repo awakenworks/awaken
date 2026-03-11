@@ -100,10 +100,7 @@ async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Valu
 async fn e2e_http_matrix_96() {
     let store = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(store.clone()));
-    let app = compose_http_app(AppState {
-        os,
-        read_store: store.clone(),
-    });
+    let app = compose_http_app(AppState::new(os, store.clone()));
 
     let content_cases = [
         "hello",
@@ -207,10 +204,7 @@ async fn e2e_http_matrix_96() {
 async fn e2e_http_concurrent_48_all_persisted() {
     let store = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(store.clone()));
-    let app = compose_http_app(AppState {
-        os,
-        read_store: store.clone(),
-    });
+    let app = compose_http_app(AppState::new(os, store.clone()));
 
     let mut handles = Vec::new();
 
@@ -281,10 +275,7 @@ async fn e2e_http_concurrent_48_all_persisted() {
 async fn e2e_http_multiturn_history_endpoints_are_consistent() {
     let store = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(store.clone()));
-    let app = compose_http_app(AppState {
-        os,
-        read_store: store.clone(),
-    });
+    let app = compose_http_app(AppState::new(os, store.clone()));
 
     let first_payload = ai_sdk_messages_payload(
         "history-e2e-thread",
@@ -338,10 +329,7 @@ async fn e2e_http_multiturn_history_endpoints_are_consistent() {
 async fn e2e_http_ai_sdk_large_payload_roundtrip() {
     let store = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(store.clone()));
-    let app = compose_http_app(AppState {
-        os,
-        read_store: store.clone(),
-    });
+    let app = compose_http_app(AppState::new(os, store.clone()));
 
     let large_input = "x".repeat(256 * 1024);
     let payload = ai_sdk_messages_payload(
@@ -373,10 +361,7 @@ async fn e2e_http_ai_sdk_large_payload_roundtrip() {
 async fn e2e_http_mixed_large_payload_concurrency_64() {
     let store = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(store.clone()));
-    let app = compose_http_app(AppState {
-        os,
-        read_store: store.clone(),
-    });
+    let app = compose_http_app(AppState::new(os, store.clone()));
 
     let total = 64usize;
     let mut handles = Vec::with_capacity(total);

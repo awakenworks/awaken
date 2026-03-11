@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use tirea_contract::storage::{
-    paginate_runs_in_memory, RunPage, RunQuery, RunReader, RunRecord, RunStoreError, RunWriter,
-    ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStoreError, ThreadSync,
-    ThreadWriter, VersionPrecondition,
+    paginate_mailbox_entries, paginate_runs_in_memory, MailboxEntry, MailboxPage, MailboxQuery,
+    MailboxReader, MailboxStoreError, MailboxWriter, RunPage, RunQuery, RunReader, RunRecord,
+    RunStoreError, RunWriter, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader,
+    ThreadStoreError, ThreadSync, ThreadWriter, VersionPrecondition,
 };
 use tirea_contract::{Committed, Thread, ThreadChangeSet, Version};
 
@@ -23,12 +24,216 @@ struct MemoryEntry {
 pub struct MemoryStore {
     entries: tokio::sync::RwLock<std::collections::HashMap<String, MemoryEntry>>,
     runs: tokio::sync::RwLock<std::collections::HashMap<String, RunRecord>>,
+    mailbox: tokio::sync::RwLock<std::collections::HashMap<String, MailboxEntry>>,
 }
 
 impl MemoryStore {
     /// Create a new in-memory storage.
     pub fn new() -> Self {
         Self::default()
+    }
+}
+
+#[async_trait]
+impl MailboxReader for MemoryStore {
+    async fn load_mailbox_entry(
+        &self,
+        entry_id: &str,
+    ) -> Result<Option<MailboxEntry>, MailboxStoreError> {
+        Ok(self.mailbox.read().await.get(entry_id).cloned())
+    }
+
+    async fn load_mailbox_entry_by_run_id(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<MailboxEntry>, MailboxStoreError> {
+        let mailbox = self.mailbox.read().await;
+        Ok(mailbox
+            .values()
+            .find(|entry| entry.run_id == run_id)
+            .cloned())
+    }
+
+    async fn list_mailbox_entries(
+        &self,
+        query: &MailboxQuery,
+    ) -> Result<MailboxPage, MailboxStoreError> {
+        let mailbox = self.mailbox.read().await;
+        let entries: Vec<MailboxEntry> = mailbox.values().cloned().collect();
+        Ok(paginate_mailbox_entries(&entries, query))
+    }
+}
+
+#[async_trait]
+impl MailboxWriter for MemoryStore {
+    async fn enqueue_mailbox_entry(&self, entry: &MailboxEntry) -> Result<(), MailboxStoreError> {
+        let mut mailbox = self.mailbox.write().await;
+        if mailbox.contains_key(&entry.entry_id)
+            || mailbox
+                .values()
+                .any(|existing| existing.run_id == entry.run_id)
+        {
+            return Err(MailboxStoreError::AlreadyExists(entry.entry_id.clone()));
+        }
+        mailbox.insert(entry.entry_id.clone(), entry.clone());
+        Ok(())
+    }
+
+    async fn claim_mailbox_entries(
+        &self,
+        limit: usize,
+        consumer_id: &str,
+        now: u64,
+        lease_duration_ms: u64,
+    ) -> Result<Vec<MailboxEntry>, MailboxStoreError> {
+        let mut mailbox = self.mailbox.write().await;
+        let mut claimable_ids: Vec<String> = mailbox
+            .values()
+            .filter(|entry| entry.is_claimable(now))
+            .map(|entry| entry.entry_id.clone())
+            .collect();
+        claimable_ids.sort_by(|left, right| {
+            let left_entry = mailbox.get(left).expect("mailbox entry should exist");
+            let right_entry = mailbox.get(right).expect("mailbox entry should exist");
+            left_entry
+                .available_at
+                .cmp(&right_entry.available_at)
+                .then_with(|| left_entry.created_at.cmp(&right_entry.created_at))
+                .then_with(|| left.cmp(right))
+        });
+
+        let mut claimed = Vec::new();
+        for entry_id in claimable_ids.into_iter().take(limit) {
+            let Some(entry) = mailbox.get_mut(&entry_id) else {
+                continue;
+            };
+            entry.status = tirea_contract::MailboxEntryStatus::Claimed;
+            entry.claim_token = Some(uuid::Uuid::now_v7().simple().to_string());
+            entry.claimed_by = Some(consumer_id.to_string());
+            entry.lease_until = Some(now.saturating_add(lease_duration_ms));
+            entry.attempt_count = entry.attempt_count.saturating_add(1);
+            entry.updated_at = now;
+            claimed.push(entry.clone());
+        }
+        Ok(claimed)
+    }
+
+    async fn ack_mailbox_entry(
+        &self,
+        entry_id: &str,
+        claim_token: &str,
+        accepted_run_id: &str,
+        now: u64,
+    ) -> Result<(), MailboxStoreError> {
+        let mut mailbox = self.mailbox.write().await;
+        let entry = mailbox
+            .get_mut(entry_id)
+            .ok_or_else(|| MailboxStoreError::NotFound(entry_id.to_string()))?;
+        if entry.claim_token.as_deref() != Some(claim_token) {
+            return Err(MailboxStoreError::ClaimConflict(entry_id.to_string()));
+        }
+        entry.status = tirea_contract::MailboxEntryStatus::Accepted;
+        entry.accepted_run_id = Some(accepted_run_id.to_string());
+        entry.claim_token = None;
+        entry.claimed_by = None;
+        entry.lease_until = None;
+        entry.updated_at = now;
+        Ok(())
+    }
+
+    async fn nack_mailbox_entry(
+        &self,
+        entry_id: &str,
+        claim_token: &str,
+        retry_at: u64,
+        error: &str,
+        now: u64,
+    ) -> Result<(), MailboxStoreError> {
+        let mut mailbox = self.mailbox.write().await;
+        let entry = mailbox
+            .get_mut(entry_id)
+            .ok_or_else(|| MailboxStoreError::NotFound(entry_id.to_string()))?;
+        if entry.claim_token.as_deref() != Some(claim_token) {
+            return Err(MailboxStoreError::ClaimConflict(entry_id.to_string()));
+        }
+        entry.status = tirea_contract::MailboxEntryStatus::Queued;
+        entry.available_at = retry_at;
+        entry.last_error = Some(error.to_string());
+        entry.claim_token = None;
+        entry.claimed_by = None;
+        entry.lease_until = None;
+        entry.updated_at = now;
+        Ok(())
+    }
+
+    async fn dead_letter_mailbox_entry(
+        &self,
+        entry_id: &str,
+        claim_token: &str,
+        error: &str,
+        now: u64,
+    ) -> Result<(), MailboxStoreError> {
+        let mut mailbox = self.mailbox.write().await;
+        let entry = mailbox
+            .get_mut(entry_id)
+            .ok_or_else(|| MailboxStoreError::NotFound(entry_id.to_string()))?;
+        if entry.claim_token.as_deref() != Some(claim_token) {
+            return Err(MailboxStoreError::ClaimConflict(entry_id.to_string()));
+        }
+        entry.status = tirea_contract::MailboxEntryStatus::DeadLetter;
+        entry.last_error = Some(error.to_string());
+        entry.claim_token = None;
+        entry.claimed_by = None;
+        entry.lease_until = None;
+        entry.updated_at = now;
+        Ok(())
+    }
+
+    async fn cancel_mailbox_entry_by_run_id(
+        &self,
+        run_id: &str,
+        now: u64,
+    ) -> Result<Option<MailboxEntry>, MailboxStoreError> {
+        let mut mailbox = self.mailbox.write().await;
+        let Some(entry) = mailbox.values_mut().find(|entry| entry.run_id == run_id) else {
+            return Ok(None);
+        };
+        if entry.status.is_terminal() {
+            return Ok(Some(entry.clone()));
+        }
+        entry.status = tirea_contract::MailboxEntryStatus::Cancelled;
+        entry.last_error = Some("cancelled".to_string());
+        entry.claim_token = None;
+        entry.claimed_by = None;
+        entry.lease_until = None;
+        entry.updated_at = now;
+        Ok(Some(entry.clone()))
+    }
+
+    async fn cancel_pending_mailbox_for_thread(
+        &self,
+        thread_id: &str,
+        now: u64,
+        exclude_run_id: Option<&str>,
+    ) -> Result<Vec<MailboxEntry>, MailboxStoreError> {
+        let mut mailbox = self.mailbox.write().await;
+        let mut cancelled = Vec::new();
+        for entry in mailbox.values_mut() {
+            if entry.thread_id != thread_id || entry.status.is_terminal() {
+                continue;
+            }
+            if exclude_run_id.is_some_and(|run_id| entry.run_id == run_id) {
+                continue;
+            }
+            entry.status = tirea_contract::MailboxEntryStatus::Cancelled;
+            entry.last_error = Some("cancelled".to_string());
+            entry.claim_token = None;
+            entry.claimed_by = None;
+            entry.lease_until = None;
+            entry.updated_at = now;
+            cancelled.push(entry.clone());
+        }
+        Ok(cancelled)
     }
 }
 

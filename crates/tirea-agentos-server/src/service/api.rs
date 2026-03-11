@@ -2,13 +2,30 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use std::sync::Arc;
-use tirea_agentos::contracts::storage::ThreadReader;
+use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader};
 use tirea_agentos::runtime::{AgentOs, AgentOsRunError};
 
 #[derive(Clone)]
 pub struct AppState {
     pub os: Arc<AgentOs>,
     pub read_store: Arc<dyn ThreadReader>,
+    pub mailbox_store: Option<Arc<dyn MailboxStore>>,
+}
+
+impl AppState {
+    pub fn new(os: Arc<AgentOs>, read_store: Arc<dyn ThreadReader>) -> Self {
+        Self {
+            os,
+            read_store,
+            mailbox_store: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_mailbox_store(mut self, mailbox_store: Arc<dyn MailboxStore>) -> Self {
+        self.mailbox_store = Some(mailbox_store);
+        self
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

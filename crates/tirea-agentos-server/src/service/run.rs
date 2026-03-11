@@ -1,17 +1,16 @@
-use bytes::Bytes;
 use std::sync::Arc;
-use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
+use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader, ThreadStore};
 use tirea_agentos::contracts::RunRequest;
 use tirea_agentos::contracts::ToolCallDecision;
 use tirea_agentos::runtime::{AgentOs, AgentOsRunError, ForwardedDecision, ResolvedRun};
 use tirea_contract::storage::RunRecord;
-use tirea_contract::{AgentEvent, Identity, RuntimeInput};
+use tirea_contract::RuntimeInput;
 use tokio::sync::mpsc;
 
-use crate::transport::http_run::{wire_http_sse_relay, HttpSseRelayConfig};
 use crate::transport::runtime_endpoint::RunStarter;
 
 use super::ApiError;
+use super::{enqueue_background_run, MailboxDispatcher};
 
 pub async fn current_run_id_for_thread(
     os: &Arc<AgentOs>,
@@ -233,42 +232,17 @@ pub async fn check_run_liveness(
 /// the run API and the A2A gateway.
 pub async fn start_background_run(
     os: &Arc<AgentOs>,
+    mailbox_store: &Arc<dyn MailboxStore>,
     agent_id: &str,
     run_request: RunRequest,
     protocol_label: &'static str,
 ) -> Result<(String, String), ApiError> {
-    let resolved = os.resolve(agent_id).map_err(AgentOsRunError::from)?;
-    let prepared = start_http_run(os, resolved, run_request, agent_id).await?;
-    let run_id = prepared.run_id.clone();
-    let thread_id = prepared.thread_id.clone();
-
-    let encoder = Identity::<AgentEvent>::default();
-    let mut sse_rx = wire_http_sse_relay(
-        prepared.starter,
-        encoder,
-        prepared.ingress_rx,
-        HttpSseRelayConfig {
-            thread_id: thread_id.clone(),
-            fanout: None,
-            resumable_downstream: false,
-            protocol_label,
-            on_relay_done: move |_sse_tx| async move {},
-            error_formatter: |msg| {
-                let error = serde_json::json!({
-                    "type": "error",
-                    "message": msg,
-                    "code": "RELAY_ERROR",
-                });
-                let payload = serde_json::to_string(&error).unwrap_or_else(|_| {
-                    "{\"type\":\"error\",\"message\":\"relay error\",\"code\":\"RELAY_ERROR\"}"
-                        .to_string()
-                });
-                Bytes::from(format!("data: {payload}\n\n"))
-            },
-        },
-    );
-    tokio::spawn(async move { while sse_rx.recv().await.is_some() {} });
-
+    let (thread_id, run_id) =
+        enqueue_background_run(os, mailbox_store, agent_id, run_request).await?;
+    MailboxDispatcher::new(os.clone(), mailbox_store.clone())
+        .with_consumer_id(format!("{protocol_label}-inline"))
+        .dispatch_ready_once()
+        .await?;
     Ok((thread_id, run_id))
 }
 

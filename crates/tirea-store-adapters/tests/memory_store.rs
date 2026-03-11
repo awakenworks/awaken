@@ -2,15 +2,48 @@ use serde_json::json;
 use std::sync::Arc;
 use tirea_contract::runtime::state::SerializedStateAction;
 use tirea_contract::storage::{
-    ThreadReader, ThreadStore, ThreadStoreError, ThreadSync, ThreadWriter, VersionPrecondition,
+    MailboxEntry, MailboxEntryStatus, MailboxReader, MailboxWriter, RunOrigin, ThreadReader,
+    ThreadStore, ThreadStoreError, ThreadSync, ThreadWriter, VersionPrecondition,
 };
 use tirea_contract::thread::ThreadChangeSet;
 use tirea_contract::{
-    CheckpointReason, Message, MessageMetadata, MessageQuery, Role, StateScope, Thread,
+    CheckpointReason, Message, MessageMetadata, MessageQuery, Role, RunRequest, StateScope, Thread,
     ThreadListQuery, ToolCall,
 };
 use tirea_state::{path, Op, Patch, TrackedPatch};
 use tirea_store_adapters::MemoryStore;
+
+fn mailbox_entry(run_id: &str, thread_id: &str) -> MailboxEntry {
+    MailboxEntry {
+        entry_id: format!("entry-{run_id}"),
+        thread_id: thread_id.to_string(),
+        run_id: run_id.to_string(),
+        agent_id: "agent".to_string(),
+        status: MailboxEntryStatus::Queued,
+        request: RunRequest {
+            agent_id: "agent".to_string(),
+            thread_id: Some(thread_id.to_string()),
+            run_id: Some(run_id.to_string()),
+            parent_run_id: None,
+            parent_thread_id: None,
+            resource_id: None,
+            origin: RunOrigin::default(),
+            state: None,
+            messages: vec![Message::user("hello")],
+            initial_decisions: vec![],
+        },
+        dedupe_key: None,
+        available_at: 1,
+        attempt_count: 0,
+        last_error: None,
+        claim_token: None,
+        claimed_by: None,
+        lease_until: None,
+        accepted_run_id: None,
+        created_at: 1,
+        updated_at: 1,
+    }
+}
 
 #[tokio::test]
 async fn test_memory_storage_save_load() {
@@ -1215,4 +1248,75 @@ async fn frontend_state_replaces_existing_thread_state_in_user_message_delta() {
     assert_eq!(head.thread.rebuild_state().unwrap(), frontend_state);
     // User message was also persisted
     assert!(head.thread.messages.iter().any(|m| m.role == Role::User));
+}
+
+#[tokio::test]
+async fn mailbox_enqueue_claim_and_ack_roundtrip() {
+    let store = MemoryStore::new();
+    let entry = mailbox_entry("run-mailbox-1", "thread-mailbox-1");
+
+    store.enqueue_mailbox_entry(&entry).await.unwrap();
+
+    let claimed = store
+        .claim_mailbox_entries(10, "worker-a", 10, 5_000)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].status, MailboxEntryStatus::Claimed);
+    assert_eq!(claimed[0].claimed_by.as_deref(), Some("worker-a"));
+
+    let claim_token = claimed[0]
+        .claim_token
+        .clone()
+        .expect("claim token should be set");
+    store
+        .ack_mailbox_entry(&claimed[0].entry_id, &claim_token, &claimed[0].run_id, 20)
+        .await
+        .unwrap();
+
+    let loaded = store
+        .load_mailbox_entry_by_run_id(&claimed[0].run_id)
+        .await
+        .unwrap()
+        .expect("entry should still be queryable");
+    assert_eq!(loaded.status, MailboxEntryStatus::Accepted);
+    assert_eq!(
+        loaded.accepted_run_id.as_deref(),
+        Some(claimed[0].run_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn mailbox_cancel_pending_entries_by_thread_respects_exclusion() {
+    let store = MemoryStore::new();
+    let keep = mailbox_entry("run-keep", "thread-cancel");
+    let cancel = mailbox_entry("run-cancel", "thread-cancel");
+    let other_thread = mailbox_entry("run-other", "thread-other");
+
+    store.enqueue_mailbox_entry(&keep).await.unwrap();
+    store.enqueue_mailbox_entry(&cancel).await.unwrap();
+    store.enqueue_mailbox_entry(&other_thread).await.unwrap();
+
+    let cancelled = store
+        .cancel_pending_mailbox_for_thread("thread-cancel", 50, Some("run-keep"))
+        .await
+        .unwrap();
+
+    assert_eq!(cancelled.len(), 1);
+    assert_eq!(cancelled[0].run_id, "run-cancel");
+    assert_eq!(cancelled[0].status, MailboxEntryStatus::Cancelled);
+
+    let kept = store
+        .load_mailbox_entry_by_run_id("run-keep")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept.status, MailboxEntryStatus::Queued);
+
+    let other = store
+        .load_mailbox_entry_by_run_id("run-other")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(other.status, MailboxEntryStatus::Queued);
 }

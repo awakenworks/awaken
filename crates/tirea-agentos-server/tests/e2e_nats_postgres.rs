@@ -254,7 +254,7 @@ async fn e2e_http_ai_sdk_persists_through_nats_buffered_postgres() {
 
     let os = Arc::new(make_os(write_store));
     let read_store: Arc<dyn ThreadReader> = postgres_store.clone();
-    let app = compose_http_app(AppState { os, read_store });
+    let app = compose_http_app(AppState::new(os, read_store));
 
     let payload =
         ai_sdk_messages_payload("np-e2e-thread", "hello np", Some("np-run-1".to_string()));
@@ -411,7 +411,7 @@ async fn e2e_http_same_thread_concurrent_runs_preserve_all_user_messages() {
 
     let os = Arc::new(make_os(write_store));
     let read_store: Arc<dyn ThreadReader> = postgres_store.clone();
-    let app = compose_http_app(AppState { os, read_store });
+    let app = compose_http_app(AppState::new(os, read_store));
 
     let total = 8usize;
     let mut handles = Vec::with_capacity(total);
