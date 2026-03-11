@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader, ThreadStore};
+use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
 use tirea_agentos::contracts::RunRequest;
 use tirea_agentos::contracts::ToolCallDecision;
 use tirea_agentos::runtime::{AgentOs, AgentOsRunError, ForwardedDecision, ResolvedRun};
@@ -9,8 +9,9 @@ use tokio::sync::mpsc;
 
 use crate::transport::runtime_endpoint::RunStarter;
 
+use super::mailbox_service::MailboxService;
 use super::ApiError;
-use super::{enqueue_background_run, AgentReceiver, EnqueueOptions, MailboxDispatcher};
+use super::EnqueueOptions;
 
 pub async fn current_run_id_for_thread(
     os: &Arc<AgentOs>,
@@ -227,21 +228,12 @@ pub async fn check_run_liveness(
 
 /// Returns `(thread_id, run_id, entry_id)`.
 pub async fn start_background_run(
-    os: &Arc<AgentOs>,
-    mailbox_store: &Arc<dyn MailboxStore>,
+    mailbox_service: &Arc<MailboxService>,
     agent_id: &str,
     run_request: RunRequest,
-    protocol_label: &'static str,
     options: EnqueueOptions,
 ) -> Result<(String, String, String), ApiError> {
-    let (thread_id, run_id, entry_id) =
-        enqueue_background_run(os, mailbox_store, agent_id, run_request, options).await?;
-    let receiver = Arc::new(AgentReceiver::new(os.clone()));
-    MailboxDispatcher::new(mailbox_store.clone(), receiver)
-        .with_consumer_id(format!("{protocol_label}-inline"))
-        .dispatch_ready_once()
-        .await?;
-    Ok((thread_id, run_id, entry_id))
+    mailbox_service.submit(agent_id, run_request, options).await
 }
 
 /// Truncate a stored thread so it includes messages up to and including `message_id`.

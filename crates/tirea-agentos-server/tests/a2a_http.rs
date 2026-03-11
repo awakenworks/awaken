@@ -8,10 +8,10 @@ use common::{compose_http_app, get_json_text, post_sse, TerminatePlugin};
 use serde_json::{json, Value};
 use std::sync::{Arc, OnceLock};
 use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder};
-use tirea_agentos::contracts::storage::ThreadReader;
+use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader};
 use tirea_agentos::contracts::RunRequest;
 use tirea_agentos::runtime::{AgentOs, RunStream};
-use tirea_agentos_server::service::AppState;
+use tirea_agentos_server::service::{AppState, MailboxService};
 use tirea_contract::storage::{RunOrigin, RunRecord, RunStatus, RunWriter};
 use tirea_contract::ToolCallDecision;
 use tirea_store_adapters::MemoryStore;
@@ -83,6 +83,10 @@ fn make_os(store: Arc<MemoryStore>, agent_ids: &[&str]) -> Arc<AgentOs> {
     Arc::new(builder.build().expect("build AgentOs"))
 }
 
+fn test_mailbox_svc(os: &Arc<AgentOs>, store: Arc<dyn MailboxStore>) -> Arc<MailboxService> {
+    Arc::new(MailboxService::new(os.clone(), store, "test"))
+}
+
 fn make_app_with_agents(agent_ids: &[&str]) -> axum::Router {
     make_app_and_os_with_agents(agent_ids).0
 }
@@ -90,9 +94,10 @@ fn make_app_with_agents(agent_ids: &[&str]) -> axum::Router {
 fn make_app_and_os_with_agents(agent_ids: &[&str]) -> (axum::Router, Arc<AgentOs>) {
     let store = shared_store();
     let read_store: Arc<dyn ThreadReader> = store.clone();
-    let os = make_os(store, agent_ids);
+    let os = make_os(store.clone(), agent_ids);
+    let mailbox_svc = test_mailbox_svc(&os, store);
     (
-        compose_http_app(AppState::new(os.clone(), read_store).with_mailbox_store(shared_store())),
+        compose_http_app(AppState::new(os.clone(), read_store, mailbox_svc)),
         os,
     )
 }

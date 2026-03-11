@@ -3,14 +3,19 @@ use axum::http::{Request, StatusCode};
 use serde_json::json;
 use std::sync::Arc;
 use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder};
-use tirea_agentos::contracts::storage::ThreadReader;
-use tirea_agentos_server::service::AppState;
+use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader};
+use tirea_agentos::runtime::AgentOs;
+use tirea_agentos_server::service::{AppState, MailboxService};
 use tirea_store_adapters::MemoryStore;
 use tower::ServiceExt;
 
 mod common;
 
 use common::{compose_http_app, TerminatePlugin};
+
+fn test_mailbox_svc(os: &Arc<AgentOs>, store: Arc<dyn MailboxStore>) -> Arc<MailboxService> {
+    Arc::new(MailboxService::new(os.clone(), store, "test"))
+}
 
 fn make_os(store: Arc<MemoryStore>) -> tirea_agentos::runtime::AgentOs {
     let def = AgentDefinition {
@@ -100,7 +105,8 @@ async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Valu
 async fn e2e_http_matrix_96() {
     let store = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(store.clone()));
-    let app = compose_http_app(AppState::new(os, store.clone()));
+    let mailbox_svc = test_mailbox_svc(&os, store.clone());
+    let app = compose_http_app(AppState::new(os, store.clone(), mailbox_svc));
 
     let content_cases = [
         "hello",
@@ -204,7 +210,8 @@ async fn e2e_http_matrix_96() {
 async fn e2e_http_concurrent_48_all_persisted() {
     let store = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(store.clone()));
-    let app = compose_http_app(AppState::new(os, store.clone()));
+    let mailbox_svc = test_mailbox_svc(&os, store.clone());
+    let app = compose_http_app(AppState::new(os, store.clone(), mailbox_svc));
 
     let mut handles = Vec::new();
 
@@ -275,7 +282,8 @@ async fn e2e_http_concurrent_48_all_persisted() {
 async fn e2e_http_multiturn_history_endpoints_are_consistent() {
     let store = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(store.clone()));
-    let app = compose_http_app(AppState::new(os, store.clone()));
+    let mailbox_svc = test_mailbox_svc(&os, store.clone());
+    let app = compose_http_app(AppState::new(os, store.clone(), mailbox_svc));
 
     let first_payload = ai_sdk_messages_payload(
         "history-e2e-thread",
@@ -329,7 +337,8 @@ async fn e2e_http_multiturn_history_endpoints_are_consistent() {
 async fn e2e_http_ai_sdk_large_payload_roundtrip() {
     let store = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(store.clone()));
-    let app = compose_http_app(AppState::new(os, store.clone()));
+    let mailbox_svc = test_mailbox_svc(&os, store.clone());
+    let app = compose_http_app(AppState::new(os, store.clone(), mailbox_svc));
 
     let large_input = "x".repeat(256 * 1024);
     let payload = ai_sdk_messages_payload(
@@ -361,7 +370,8 @@ async fn e2e_http_ai_sdk_large_payload_roundtrip() {
 async fn e2e_http_mixed_large_payload_concurrency_64() {
     let store = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(store.clone()));
-    let app = compose_http_app(AppState::new(os, store.clone()));
+    let mailbox_svc = test_mailbox_svc(&os, store.clone());
+    let app = compose_http_app(AppState::new(os, store.clone(), mailbox_svc));
 
     let total = 64usize;
     let mut handles = Vec::with_capacity(total);

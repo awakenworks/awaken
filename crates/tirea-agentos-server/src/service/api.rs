@@ -5,26 +5,30 @@ use std::sync::Arc;
 use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader};
 use tirea_agentos::runtime::{AgentOs, AgentOsRunError};
 
+use super::mailbox_service::MailboxService;
+
 #[derive(Clone)]
 pub struct AppState {
     pub os: Arc<AgentOs>,
     pub read_store: Arc<dyn ThreadReader>,
-    pub mailbox_store: Option<Arc<dyn MailboxStore>>,
+    pub mailbox_service: Arc<MailboxService>,
 }
 
 impl AppState {
-    pub fn new(os: Arc<AgentOs>, read_store: Arc<dyn ThreadReader>) -> Self {
+    pub fn new(
+        os: Arc<AgentOs>,
+        read_store: Arc<dyn ThreadReader>,
+        mailbox_service: Arc<MailboxService>,
+    ) -> Self {
         Self {
             os,
             read_store,
-            mailbox_store: None,
+            mailbox_service,
         }
     }
 
-    #[must_use]
-    pub fn with_mailbox_store(mut self, mailbox_store: Arc<dyn MailboxStore>) -> Self {
-        self.mailbox_store = Some(mailbox_store);
-        self
+    pub fn mailbox_store(&self) -> &Arc<dyn MailboxStore> {
+        self.mailbox_service.mailbox_store()
     }
 }
 

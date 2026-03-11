@@ -6,10 +6,10 @@ use serde_json::json;
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder};
-use tirea_agentos::contracts::storage::{MailboxWriter, ThreadReader};
+use tirea_agentos::contracts::storage::{MailboxStore, MailboxWriter, ThreadReader};
 use tirea_agentos::contracts::RunRequest;
 use tirea_agentos::runtime::{AgentOs, RunStream};
-use tirea_agentos_server::service::AppState;
+use tirea_agentos_server::service::{AppState, MailboxService};
 
 const TEST_AGENT_ID: &str = "test";
 use tirea_contract::storage::{
@@ -51,11 +51,16 @@ fn make_os(store: Arc<MemoryStore>) -> Arc<AgentOs> {
     )
 }
 
+fn test_mailbox_svc(os: &Arc<AgentOs>, store: Arc<dyn MailboxStore>) -> Arc<MailboxService> {
+    Arc::new(MailboxService::new(os.clone(), store, "test"))
+}
+
 fn make_app_with_os() -> (axum::Router, Arc<AgentOs>) {
     let thread_store = shared_store();
     let read_store: Arc<dyn ThreadReader> = thread_store.clone();
     let os = make_os(thread_store);
-    let state = AppState::new(os.clone(), read_store).with_mailbox_store(shared_store());
+    let mailbox_svc = test_mailbox_svc(&os, shared_store());
+    let state = AppState::new(os.clone(), read_store, mailbox_svc);
     // Explicitly opt in to run projection routes (not part of the default public API).
     let app = axum::Router::new()
         .merge(tirea_agentos_server::http::run_routes())
@@ -94,11 +99,12 @@ fn make_slow_interrupt_app() -> (axum::Router, Arc<AgentOs>, Arc<MemoryStore>) {
             .expect("build AgentOs"),
     );
     let read_store: Arc<dyn ThreadReader> = store.clone();
+    let mailbox_svc = test_mailbox_svc(&os, store.clone());
     let app = axum::Router::new()
         .merge(tirea_agentos_server::http::run_routes())
         .merge(tirea_agentos_server::http::thread_routes())
         .merge(tirea_agentos_server::http::health_routes())
-        .with_state(AppState::new(os.clone(), read_store).with_mailbox_store(store.clone()));
+        .with_state(AppState::new(os.clone(), read_store, mailbox_svc));
     (app, os, store)
 }
 

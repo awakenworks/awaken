@@ -8,7 +8,8 @@ use tirea_agentos::composition::AgentOsBuilder;
 use tirea_agentos::contracts::{AgentEvent, RunRequest};
 use tirea_agentos::runtime::{AgentOs, RunStream};
 use tirea_agentos_server::protocol::ag_ui::apply_agui_extensions;
-use tirea_agentos_server::service::AppState;
+use tirea_agentos::contracts::storage::MailboxStore;
+use tirea_agentos_server::service::{AppState, MailboxService};
 use tirea_contract::{Message as CoreMessage, RunOrigin, ThreadReader, ThreadWriter};
 use tirea_protocol_ag_ui::{Message, RunAgentInput};
 use tirea_protocol_ai_sdk_v6::AiSdkV6RunRequest;
@@ -41,12 +42,17 @@ fn make_os() -> AgentOs {
     make_os_from_store(Arc::new(MemoryStore::new()))
 }
 
+fn test_mailbox_svc(os: &Arc<AgentOs>, store: Arc<dyn MailboxStore>) -> Arc<MailboxService> {
+    Arc::new(MailboxService::new(os.clone(), store, "test"))
+}
+
 fn make_http_app() -> (axum::Router, Arc<MemoryStore>, Arc<AgentOs>) {
     let store = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os_from_store(store.clone()));
     let read_store: Arc<dyn ThreadReader> = store.clone();
+    let mailbox_svc = test_mailbox_svc(&os, store.clone());
     (
-        compose_http_app(AppState::new(os.clone(), read_store)),
+        compose_http_app(AppState::new(os.clone(), read_store, mailbox_svc)),
         store,
         os,
     )

@@ -1,15 +1,15 @@
 mod api;
 mod mailbox;
+mod mailbox_service;
 mod messages;
 mod run;
 
 pub use api::{normalize_optional_id, ApiError, AppState};
 pub use mailbox::{
-    cancel_pending_for_mailbox, enqueue_background_run, interrupt_thread, load_background_task,
-    require_mailbox_store, start_streaming_run_via_mailbox, try_cancel_active_or_queued_run_by_id,
-    AgentReceiver, BackgroundTaskLookup, CancelBackgroundRunResult, EnqueueOptions,
-    MailboxDispatcher, ThreadInterruptResult,
+    cancel_pending_for_mailbox, load_background_task, try_cancel_active_or_queued_run_by_id,
+    BackgroundTaskLookup, CancelBackgroundRunResult, EnqueueOptions,
 };
+pub use mailbox_service::{ControlResult, ControlSignal, MailboxService};
 pub use messages::{
     encode_message_page, load_message_page, parse_message_query, EncodedMessagePage,
     MessageQueryParams,

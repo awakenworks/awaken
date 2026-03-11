@@ -22,7 +22,7 @@ use tirea_agentos::contracts::runtime::tool_call::Tool;
 use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader, ThreadStore};
 use tirea_agentos_server::http::{self, AppState};
 use tirea_agentos_server::protocol;
-use tirea_agentos_server::service::{AgentReceiver, MailboxDispatcher};
+use tirea_agentos_server::service::MailboxService;
 use tirea_store_adapters::FileStore;
 
 #[derive(Debug, Parser)]
@@ -84,14 +84,15 @@ pub async fn serve(
     let read_store: Arc<dyn ThreadReader> = file_store.clone();
     let mailbox_store: Arc<dyn MailboxStore> = file_store;
 
-    let receiver = Arc::new(AgentReceiver::new(os.clone()));
-    tokio::spawn(
-        MailboxDispatcher::new(mailbox_store.clone(), receiver)
-            .with_consumer_id("example-mailbox")
-            .run_forever(),
-    );
+    let mailbox_svc = Arc::new(MailboxService::new(
+        os.clone(),
+        mailbox_store,
+        "example-mailbox",
+    ));
+    let _ = mailbox_svc.recover().await;
+    tokio::spawn(mailbox_svc.clone().run_sweep_forever());
 
-    let state = AppState::new(os, read_store).with_mailbox_store(mailbox_store);
+    let state = AppState::new(os, read_store, mailbox_svc);
     let app = axum::Router::new()
         .merge(http::health_routes())
         .merge(http::thread_routes())

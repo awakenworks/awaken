@@ -3,9 +3,9 @@ use axum::http::{Request, StatusCode};
 use serde_json::json;
 use std::sync::Arc;
 use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder};
-use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
+use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader, ThreadStore};
 use tirea_agentos::runtime::AgentOs;
-use tirea_agentos_server::service::AppState;
+use tirea_agentos_server::service::{AppState, MailboxService};
 use tirea_agentos_server::{http, protocol};
 use tirea_store_adapters::MemoryStore;
 use tower::ServiceExt;
@@ -35,12 +35,14 @@ fn make_os(write_store: Arc<dyn ThreadStore>) -> AgentOs {
 }
 
 fn explicit_http_app(os: Arc<AgentOs>, read_store: Arc<MemoryStore>) -> axum::Router {
+    let mailbox_store: Arc<dyn MailboxStore> = read_store.clone();
+    let mailbox_svc = Arc::new(MailboxService::new(os.clone(), mailbox_store, "test"));
     axum::Router::new()
         .merge(http::health_routes())
         .merge(http::thread_routes())
         .nest("/v1/ag-ui", protocol::ag_ui::http::routes())
         .nest("/v1/ai-sdk", protocol::ai_sdk_v6::http::routes())
-        .with_state(AppState::new(os, read_store))
+        .with_state(AppState::new(os, read_store, mailbox_svc))
 }
 
 #[tokio::test]

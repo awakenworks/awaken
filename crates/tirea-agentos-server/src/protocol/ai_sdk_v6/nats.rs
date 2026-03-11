@@ -1,11 +1,10 @@
 use serde::Deserialize;
 use std::sync::Arc;
-use tirea_agentos::contracts::storage::MailboxStore;
 use tirea_agentos::runtime::AgentOs;
 use tirea_protocol_ai_sdk_v6::{AiSdkEncoder, AiSdkV6RunRequest, UIStreamEvent};
 
 use super::runtime::apply_ai_sdk_extensions;
-use crate::service::{start_streaming_run_via_mailbox, EnqueueOptions};
+use crate::service::{EnqueueOptions, MailboxService};
 use crate::transport::nats::NatsTransport;
 use crate::transport::NatsProtocolError;
 
@@ -13,14 +12,14 @@ use crate::transport::NatsProtocolError;
 pub async fn serve(
     transport: NatsTransport,
     os: Arc<AgentOs>,
-    mailbox_store: Arc<dyn MailboxStore>,
+    mailbox_service: Arc<MailboxService>,
     subject: String,
 ) -> Result<(), NatsProtocolError> {
     transport
         .serve(&subject, "aisdk", move |transport, msg| {
             let os = os.clone();
-            let mailbox_store = mailbox_store.clone();
-            async move { handle_message(transport, os, mailbox_store, msg).await }
+            let mailbox_service = mailbox_service.clone();
+            async move { handle_message(transport, os, mailbox_service, msg).await }
         })
         .await
 }
@@ -28,7 +27,7 @@ pub async fn serve(
 async fn handle_message(
     transport: NatsTransport,
     os: Arc<AgentOs>,
-    mailbox_store: Arc<dyn MailboxStore>,
+    mailbox_service: Arc<MailboxService>,
     msg: async_nats::Message,
 ) -> Result<(), NatsProtocolError> {
     #[derive(Debug, Deserialize)]
@@ -74,15 +73,9 @@ async fn handle_message(
     let mut run_request = req_for_runtime.into_runtime_run_request(agent_id.clone());
     run_request.run_id = req.run_id;
 
-    let run = match start_streaming_run_via_mailbox(
-        &os,
-        &mailbox_store,
-        &agent_id,
-        run_request,
-        "aisdk-nats-inline",
-        EnqueueOptions::default(),
-    )
-    .await
+    let run = match mailbox_service
+        .submit_streaming(&agent_id, run_request, EnqueueOptions::default())
+        .await
     {
         Ok(run) => run,
         Err(err) => {

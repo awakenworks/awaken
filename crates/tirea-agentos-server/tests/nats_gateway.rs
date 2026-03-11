@@ -15,10 +15,11 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::nats::Nats;
 use tirea_agentos::composition::AgentDefinition;
 use tirea_agentos::composition::AgentOsBuilder;
-use tirea_agentos::contracts::storage::{MailboxReader, ThreadReader, ThreadStore};
+use tirea_agentos::contracts::storage::{MailboxReader, MailboxStore, ThreadReader, ThreadStore};
 use tirea_contract::storage::{MailboxEntryStatus, MailboxQuery};
 use tirea_agentos_server::nats::NatsConfig;
 use tirea_agentos_server::protocol;
+use tirea_agentos_server::service::MailboxService;
 use tirea_store_adapters::MemoryStore;
 
 mod common;
@@ -95,12 +96,15 @@ async fn spawn_protocol_services(
         .connect()
         .await
         .expect("failed to connect protocol service to NATS");
+    let mailbox_svc: Arc<MailboxService> = Arc::new(MailboxService::new(
+        os.clone(),
+        mailbox_store.clone() as Arc<dyn MailboxStore>,
+        "test",
+    ));
     let os_for_agui = os.clone();
     let os_for_aisdk = os.clone();
-    let mailbox_for_agui: Arc<dyn tirea_agentos::contracts::storage::MailboxStore> =
-        mailbox_store.clone();
-    let mailbox_for_aisdk: Arc<dyn tirea_agentos::contracts::storage::MailboxStore> =
-        mailbox_store.clone();
+    let mailbox_for_agui = mailbox_svc.clone();
+    let mailbox_for_aisdk = mailbox_svc;
     let agui_transport = transport.clone();
     let agui_subject = nats_config.ag_ui_subject.clone();
     let aisdk_subject = nats_config.ai_sdk_subject;

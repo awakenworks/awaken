@@ -12,13 +12,18 @@ use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder};
 use tirea_agentos::contracts::storage::{
     ThreadReader, ThreadStore, ThreadWriter, VersionPrecondition,
 };
-use tirea_agentos_server::service::AppState;
+use tirea_agentos::contracts::storage::MailboxStore;
+use tirea_agentos_server::service::{AppState, MailboxService};
 use tirea_store_adapters::{NatsBufferedThreadWriter, PostgresStore};
 use tower::ServiceExt;
 
 mod common;
 
 use common::{compose_http_app, TerminatePlugin};
+
+fn test_mailbox_svc(os: &Arc<tirea_agentos::runtime::AgentOs>, store: Arc<dyn MailboxStore>) -> Arc<MailboxService> {
+    Arc::new(MailboxService::new(os.clone(), store, "test"))
+}
 
 fn make_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::runtime::AgentOs {
     let def = AgentDefinition {
@@ -254,7 +259,8 @@ async fn e2e_http_ai_sdk_persists_through_nats_buffered_postgres() {
 
     let os = Arc::new(make_os(write_store));
     let read_store: Arc<dyn ThreadReader> = postgres_store.clone();
-    let app = compose_http_app(AppState::new(os, read_store));
+    let mailbox_svc = test_mailbox_svc(&os, postgres_store.clone());
+    let app = compose_http_app(AppState::new(os, read_store, mailbox_svc));
 
     let payload =
         ai_sdk_messages_payload("np-e2e-thread", "hello np", Some("np-run-1".to_string()));
@@ -411,7 +417,8 @@ async fn e2e_http_same_thread_concurrent_runs_preserve_all_user_messages() {
 
     let os = Arc::new(make_os(write_store));
     let read_store: Arc<dyn ThreadReader> = postgres_store.clone();
-    let app = compose_http_app(AppState::new(os, read_store));
+    let mailbox_svc = test_mailbox_svc(&os, postgres_store.clone());
+    let app = compose_http_app(AppState::new(os, read_store, mailbox_svc));
 
     let total = 8usize;
     let mut handles = Vec::with_capacity(total);

@@ -14,8 +14,8 @@ use std::sync::Arc;
 use tirea_agentos::composition::AgentDefinition;
 use tirea_agentos::composition::AgentOsBuilder;
 use tirea_agentos::contracts::runtime::tool_call::Tool;
-use tirea_agentos::contracts::storage::{ThreadReader, ThreadStore};
-use tirea_agentos_server::service::AppState;
+use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader, ThreadStore};
+use tirea_agentos_server::service::{AppState, MailboxService};
 use tirea_store_adapters::MemoryStore;
 use tower::ServiceExt;
 
@@ -30,6 +30,13 @@ use tirea_extension_a2ui::{A2uiPlugin, A2uiRenderTool};
 
 fn has_deepseek_key() -> bool {
     std::env::var("DEEPSEEK_API_KEY").is_ok()
+}
+
+fn test_mailbox_svc(
+    os: &Arc<tirea_agentos::runtime::AgentOs>,
+    store: Arc<dyn MailboxStore>,
+) -> Arc<MailboxService> {
+    Arc::new(MailboxService::new(os.clone(), store, "test"))
 }
 
 fn is_transient_upstream_stream_error(status: StatusCode, body: &str) -> bool {
@@ -142,7 +149,8 @@ async fn e2e_ai_sdk_sse_with_deepseek() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
-    let app = compose_http_app(AppState::new(os, storage.clone()));
+    let svc = test_mailbox_svc(&os, storage.clone());
+    let app = compose_http_app(AppState::new(os, storage.clone(), svc));
 
     let payload = ai_sdk_messages_payload(
         "e2e-sdk",
@@ -197,7 +205,8 @@ async fn e2e_ag_ui_sse_with_deepseek() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
-    let app = compose_http_app(AppState::new(os, storage.clone()));
+    let svc = test_mailbox_svc(&os, storage.clone());
+    let app = compose_http_app(AppState::new(os, storage.clone(), svc));
 
     let payload = json!({
         "threadId": "e2e-agui",
@@ -250,7 +259,8 @@ async fn e2e_ai_sdk_client_disconnect_cancels_inflight_stream() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
-    let app = compose_http_app(AppState::new(os, storage.clone()));
+    let svc = test_mailbox_svc(&os, storage.clone());
+    let app = compose_http_app(AppState::new(os, storage.clone(), svc));
 
     let payload = ai_sdk_messages_payload(
         "e2e-sdk-cancel",
@@ -335,7 +345,8 @@ async fn e2e_ai_sdk_tool_call_with_deepseek() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_tool_os(storage.clone()));
-    let app = compose_http_app(AppState::new(os, storage.clone()));
+    let svc = test_mailbox_svc(&os, storage.clone());
+    let app = compose_http_app(AppState::new(os, storage.clone(), svc));
 
     let payload = ai_sdk_messages_payload(
         "e2e-sdk-tool",
@@ -387,7 +398,8 @@ async fn e2e_ag_ui_tool_call_with_deepseek() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_tool_os(storage.clone()));
-    let app = compose_http_app(AppState::new(os, storage.clone()));
+    let svc = test_mailbox_svc(&os, storage.clone());
+    let app = compose_http_app(AppState::new(os, storage.clone(), svc));
 
     let payload = json!({
         "threadId": "e2e-agui-tool",
@@ -455,7 +467,8 @@ async fn e2e_ai_sdk_multiturn_with_deepseek() {
     let os = Arc::new(make_multiturn_os(storage.clone()));
 
     // Turn 1: ask the agent to remember a number.
-    let app1 = compose_http_app(AppState::new(os.clone(), storage.clone()));
+    let svc = test_mailbox_svc(&os, storage.clone());
+    let app1 = compose_http_app(AppState::new(os.clone(), storage.clone(), svc));
 
     let (status, text1) = post_sse_with_retry(
         app1,
@@ -487,7 +500,8 @@ async fn e2e_ai_sdk_multiturn_with_deepseek() {
     );
 
     // Turn 2: AI SDK client sends full message history.
-    let app2 = compose_http_app(AppState::new(os.clone(), storage.clone()));
+    let svc = test_mailbox_svc(&os, storage.clone());
+    let app2 = compose_http_app(AppState::new(os.clone(), storage.clone(), svc));
 
     let (status, text2) = post_sse_with_retry(
         app2,
@@ -550,7 +564,8 @@ async fn e2e_ai_sdk_finish_max_rounds_with_deepseek() {
             .expect("failed to build limited AgentOs"),
     );
 
-    let app = compose_http_app(AppState::new(os, storage.clone()));
+    let svc = test_mailbox_svc(&os, storage.clone());
+    let app = compose_http_app(AppState::new(os, storage.clone(), svc));
 
     let (status, text) = post_sse_with_retry(
         app,
@@ -607,7 +622,8 @@ async fn e2e_ai_sdk_multistep_tool_with_deepseek() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_tool_os(storage.clone()));
-    let app = compose_http_app(AppState::new(os, storage.clone()));
+    let svc = test_mailbox_svc(&os, storage.clone());
+    let app = compose_http_app(AppState::new(os, storage.clone(), svc));
 
     let (status, text) = post_sse_with_retry(
         app,
@@ -694,7 +710,8 @@ async fn e2e_ag_ui_multiturn_with_deepseek() {
     let os = Arc::new(make_multiturn_os(storage.clone()));
 
     // Turn 1.
-    let app1 = compose_http_app(AppState::new(os.clone(), storage.clone()));
+    let svc = test_mailbox_svc(&os, storage.clone());
+    let app1 = compose_http_app(AppState::new(os.clone(), storage.clone(), svc));
 
     let (status, text1) = post_sse_with_retry(
         app1,
@@ -720,7 +737,8 @@ async fn e2e_ag_ui_multiturn_with_deepseek() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Turn 2: AG-UI sends full message history from client.
-    let app2 = compose_http_app(AppState::new(os.clone(), storage.clone()));
+    let svc = test_mailbox_svc(&os, storage.clone());
+    let app2 = compose_http_app(AppState::new(os.clone(), storage.clone(), svc));
 
     let (status, text2) = post_sse_with_retry(
         app2,
@@ -763,7 +781,8 @@ async fn e2e_ag_ui_frontend_tools_with_deepseek() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
-    let app = compose_http_app(AppState::new(os, storage.clone()));
+    let svc = test_mailbox_svc(&os, storage.clone());
+    let app = compose_http_app(AppState::new(os, storage.clone(), svc));
 
     // Provide a frontend tool definition — simulating CopilotKit's useCopilotAction.
     let payload = json!({
@@ -836,7 +855,8 @@ async fn e2e_ag_ui_context_readable_with_deepseek() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
-    let app = compose_http_app(AppState::new(os, storage.clone()));
+    let svc = test_mailbox_svc(&os, storage.clone());
+    let app = compose_http_app(AppState::new(os, storage.clone(), svc));
 
     // Provide context entries — simulating CopilotKit's useCopilotReadable.
     let payload = json!({
@@ -911,7 +931,8 @@ async fn e2e_ag_ui_run_finished_max_rounds_with_deepseek() {
             .expect("failed to build limited AgentOs"),
     );
 
-    let app = compose_http_app(AppState::new(os, storage.clone()));
+    let svc = test_mailbox_svc(&os, storage.clone());
+    let app = compose_http_app(AppState::new(os, storage.clone(), svc));
 
     let payload = json!({
         "threadId": "e2e-agui-error",
@@ -963,7 +984,8 @@ async fn e2e_ag_ui_multistep_tool_with_deepseek() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_tool_os(storage.clone()));
-    let app = compose_http_app(AppState::new(os, storage.clone()));
+    let svc = test_mailbox_svc(&os, storage.clone());
+    let app = compose_http_app(AppState::new(os, storage.clone(), svc));
 
     // Ask a question that requires a tool call, then a text response — two steps.
     let payload = json!({

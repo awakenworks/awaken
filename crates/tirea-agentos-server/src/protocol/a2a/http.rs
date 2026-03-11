@@ -11,8 +11,8 @@ use tirea_agentos::contracts::thread::Message;
 use tirea_agentos::contracts::{RunOrigin, RunRequest, ToolCallDecision};
 
 use crate::service::{
-    check_run_liveness, load_background_task, normalize_optional_id, require_mailbox_store,
-    resolve_thread_id_from_run, start_background_run, try_cancel_active_or_queued_run_by_id,
+    check_run_liveness, load_background_task, normalize_optional_id, resolve_thread_id_from_run,
+    start_background_run, try_cancel_active_or_queued_run_by_id,
     try_forward_decisions_to_active_run_by_id, ApiError, AppState, BackgroundTaskLookup,
     EnqueueOptions, RunLookup,
 };
@@ -332,14 +332,11 @@ async fn message_send(
         source_mailbox_entry_id: None,
     };
 
-    let mailbox_store = require_mailbox_store(&st)?;
     let (context_id, _run_id, task_id) =
         start_background_run(
-            &st.os,
-            &mailbox_store,
+            &st.mailbox_service,
             &agent_id,
             run_request,
-            "a2a",
             EnqueueOptions::default(),
         )
         .await?;
@@ -372,9 +369,8 @@ async fn get_task(
             "task_id is required in task path".to_string(),
         ));
     }
-    let mailbox_store = require_mailbox_store(&st)?;
     let Some(task) =
-        load_background_task(st.read_store.as_ref(), mailbox_store.as_ref(), &task_id).await?
+        load_background_task(st.read_store.as_ref(), st.mailbox_store().as_ref(), &task_id).await?
     else {
         return Err(ApiError::RunNotFound(task_id));
     };
@@ -421,8 +417,7 @@ async fn cancel_task(
         ));
     }
 
-    let mailbox_store = require_mailbox_store(&st)?;
-    if try_cancel_active_or_queued_run_by_id(&st.os, &mailbox_store, &task_id)
+    if try_cancel_active_or_queued_run_by_id(&st.os, st.mailbox_store(), &task_id)
         .await?
         .is_some()
     {
@@ -437,7 +432,8 @@ async fn cancel_task(
     }
 
     Err(
-        match load_background_task(st.read_store.as_ref(), mailbox_store.as_ref(), &task_id).await?
+        match load_background_task(st.read_store.as_ref(), st.mailbox_store().as_ref(), &task_id)
+            .await?
         {
             Some(_) => ApiError::BadRequest("task is not active".to_string()),
             None => match check_run_liveness(st.read_store.as_ref(), &task_id).await? {

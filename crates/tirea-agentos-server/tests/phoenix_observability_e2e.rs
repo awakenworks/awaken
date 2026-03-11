@@ -10,15 +10,19 @@ use serde_json::json;
 use std::sync::Arc;
 use tirea_agentos::composition::AgentDefinition;
 use tirea_agentos::composition::{AgentOsBuilder, ModelDefinition};
-use tirea_agentos::contracts::storage::ThreadStore;
+use tirea_agentos::contracts::storage::{MailboxStore, ThreadStore};
 use tirea_agentos::extensions::observability::{InMemorySink, LLMMetryPlugin};
 use tirea_agentos::runtime::AgentOs;
-use tirea_agentos_server::service::AppState;
+use tirea_agentos_server::service::{AppState, MailboxService};
 use tower::ServiceExt;
 
 mod common;
 
 use common::compose_http_app;
+
+fn test_mailbox_svc(os: &Arc<AgentOs>, store: Arc<dyn MailboxStore>) -> Arc<MailboxService> {
+    Arc::new(MailboxService::new(os.clone(), store, "test"))
+}
 
 fn make_os(
     write_store: Arc<dyn ThreadStore>,
@@ -118,7 +122,8 @@ async fn e2e_agentos_server_exports_llm_observability_to_phoenix() {
         &observed_model,
         provider_name,
     ));
-    let app = compose_http_app(AppState::new(os, storage.clone()));
+    let mailbox_svc = test_mailbox_svc(&os, storage.clone());
+    let app = compose_http_app(AppState::new(os, storage.clone(), mailbox_svc));
 
     let payload = ai_sdk_messages_payload(
         &format!("phoenix-server-session-{now_ms}"),
@@ -216,7 +221,8 @@ async fn e2e_agentos_server_exports_llm_error_observability_to_phoenix() {
         &observed_model,
         provider_name,
     ));
-    let app = compose_http_app(AppState::new(os, storage.clone()));
+    let mailbox_svc = test_mailbox_svc(&os, storage.clone());
+    let app = compose_http_app(AppState::new(os, storage.clone(), mailbox_svc));
 
     let payload = ai_sdk_messages_payload(
         &format!("phoenix-server-session-err-{now_ms}"),

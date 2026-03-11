@@ -1,3 +1,6 @@
+// Some items (MailboxDispatcher, AgentReceiver, etc.) are only used by #[cfg(test)] tests.
+#![allow(dead_code)]
+
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -15,15 +18,15 @@ use tirea_contract::storage::{MailboxReceiver, ReceiveOutcome, RunRecord};
 use super::ApiError;
 
 const DEFAULT_MAILBOX_POLL_INTERVAL_MS: u64 = 100;
-const DEFAULT_MAILBOX_LEASE_MS: u64 = 30_000;
+pub(crate) const DEFAULT_MAILBOX_LEASE_MS: u64 = 30_000;
 const DEFAULT_MAILBOX_RETRY_MS: u64 = 250;
 const DEFAULT_MAILBOX_BATCH_SIZE: usize = 16;
 const DEFAULT_MAILBOX_MAX_ATTEMPTS: u32 = 10;
 const DEFAULT_MAILBOX_GC_INTERVAL_SECS: u64 = 60;
 const DEFAULT_MAILBOX_GC_TTL_MS: u64 = 24 * 60 * 60 * 1000; // 24 hours
-const INLINE_MAILBOX_AVAILABLE_AT: u64 = i64::MAX as u64;
+pub(crate) const INLINE_MAILBOX_AVAILABLE_AT: u64 = i64::MAX as u64;
 
-fn now_unix_millis() -> u64 {
+pub(crate) fn now_unix_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -31,7 +34,7 @@ fn now_unix_millis() -> u64 {
         .min(u128::from(u64::MAX)) as u64
 }
 
-fn new_id() -> String {
+pub(crate) fn new_id() -> String {
     uuid::Uuid::now_v7().simple().to_string()
 }
 
@@ -39,7 +42,7 @@ fn new_id() -> String {
 // Agent-specific helpers
 // ---------------------------------------------------------------------------
 
-fn normalize_background_run_request(agent_id: &str, mut request: RunRequest) -> RunRequest {
+pub(crate) fn normalize_background_run_request(agent_id: &str, mut request: RunRequest) -> RunRequest {
     request.agent_id = agent_id.to_string();
     if request.thread_id.is_none() {
         request.thread_id = Some(new_id());
@@ -61,7 +64,7 @@ pub struct EnqueueOptions {
     pub dedupe_key: Option<String>,
 }
 
-fn mailbox_entry_from_request(
+pub(crate) fn mailbox_entry_from_request(
     request: &RunRequest,
     generation: u64,
     options: &EnqueueOptions,
@@ -93,19 +96,19 @@ fn mailbox_entry_from_request(
     }
 }
 
-fn mailbox_error(err: MailboxStoreError) -> ApiError {
+pub(crate) fn mailbox_error(err: MailboxStoreError) -> ApiError {
     ApiError::Internal(err.to_string())
 }
 
-fn is_generation_mismatch(err: &MailboxStoreError) -> bool {
+pub(crate) fn is_generation_mismatch(err: &MailboxStoreError) -> bool {
     matches!(err, MailboxStoreError::GenerationMismatch { .. })
 }
 
-fn is_permanent_dispatch_error(err: &AgentOsRunError) -> bool {
+pub(crate) fn is_permanent_dispatch_error(err: &AgentOsRunError) -> bool {
     matches!(err, AgentOsRunError::Resolve(_))
 }
 
-async fn drain_background_run(mut run: RunStream) {
+pub(crate) async fn drain_background_run(mut run: RunStream) {
     while run.events.next().await.is_some() {}
 }
 
@@ -113,7 +116,7 @@ async fn drain_background_run(mut run: RunStream) {
 // Entry lifecycle helpers
 // ---------------------------------------------------------------------------
 
-async fn ack_claimed_entry(
+pub(crate) async fn ack_claimed_entry(
     mailbox_store: &Arc<dyn MailboxStore>,
     entry_id: &str,
     claim_token: &str,
@@ -128,7 +131,7 @@ async fn ack_claimed_entry(
     }
 }
 
-async fn nack_claimed_entry(
+pub(crate) async fn nack_claimed_entry(
     mailbox_store: &Arc<dyn MailboxStore>,
     entry_id: &str,
     claim_token: &str,
@@ -152,7 +155,7 @@ async fn nack_claimed_entry(
     }
 }
 
-async fn dead_letter_claimed_entry(
+pub(crate) async fn dead_letter_claimed_entry(
     mailbox_store: &Arc<dyn MailboxStore>,
     entry_id: &str,
     claim_token: &str,
@@ -232,7 +235,7 @@ impl MailboxReceiver for AgentReceiver {
 // Agent-specific inline run start (for streaming/synchronous runs)
 // ---------------------------------------------------------------------------
 
-enum MailboxRunStartError {
+pub(crate) enum MailboxRunStartError {
     Busy(String),
     Superseded(String),
     Permanent(String),
@@ -240,7 +243,7 @@ enum MailboxRunStartError {
     Internal(ApiError),
 }
 
-async fn start_agent_run_for_entry(
+pub(crate) async fn start_agent_run_for_entry(
     os: &Arc<AgentOs>,
     mailbox_store: &Arc<dyn MailboxStore>,
     entry: &MailboxEntry,
@@ -328,7 +331,7 @@ async fn start_agent_run_for_entry(
 // ---------------------------------------------------------------------------
 
 /// Enqueue a mailbox entry from a RunRequest. Returns (mailbox_id, entry_id, run_id).
-async fn enqueue_mailbox_run(
+pub(crate) async fn enqueue_mailbox_run(
     os: &Arc<AgentOs>,
     mailbox_store: &Arc<dyn MailboxStore>,
     agent_id: &str,
@@ -370,12 +373,6 @@ async fn enqueue_mailbox_run(
     )))
 }
 
-pub fn require_mailbox_store(state: &super::AppState) -> Result<Arc<dyn MailboxStore>, ApiError> {
-    state
-        .mailbox_store
-        .clone()
-        .ok_or_else(|| ApiError::Internal("mailbox store not configured".to_string()))
-}
 
 /// Enqueue a background run. Returns (thread_id, run_id, entry_id).
 pub async fn enqueue_background_run(

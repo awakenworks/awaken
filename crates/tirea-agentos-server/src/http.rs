@@ -18,9 +18,9 @@ use tirea_contract::{AgentEvent, Identity};
 
 use crate::service::{
     check_run_liveness, load_run_record, normalize_optional_id, parse_message_query,
-    require_agent_state_store, require_mailbox_store, start_background_run, start_http_run,
+    require_agent_state_store, start_background_run, start_http_run,
     try_cancel_active_or_queued_run_by_id, try_forward_decisions_to_active_run_by_id, ApiError,
-    EnqueueOptions, MessageQueryParams, RunLookup, ThreadInterruptResult,
+    EnqueueOptions, MessageQueryParams, RunLookup,
 };
 use crate::transport::http_run::{wire_http_sse_relay, HttpSseRelayConfig};
 use crate::transport::http_sse::{sse_body_stream, sse_response};
@@ -235,14 +235,13 @@ async fn interrupt_thread(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let mailbox_store = require_mailbox_store(&st)?;
-    let ThreadInterruptResult {
-        cancelled_run_id,
-        generation,
-        superseded_entries,
-    } = crate::service::interrupt_thread(&st.os, st.read_store.as_ref(), &mailbox_store, &id)
+    let result = st
+        .mailbox_service
+        .control(&id, crate::service::ControlSignal::Interrupt)
         .await?;
-    let superseded_entry_ids: Vec<String> = superseded_entries
+
+    let superseded_entry_ids: Vec<String> = result
+        .superseded_entries
         .iter()
         .map(|entry| entry.entry_id.clone())
         .collect();
@@ -251,9 +250,9 @@ async fn interrupt_thread(
         Json(json!({
             "status": "interrupt_requested",
             "thread_id": id,
-            "generation": generation,
-            "cancelled_run_id": cancelled_run_id,
-            "superseded_pending_count": superseded_entries.len(),
+            "generation": result.generation.unwrap_or(0),
+            "cancelled_run_id": result.cancelled_run_id,
+            "superseded_pending_count": result.superseded_entries.len(),
             "superseded_pending_entry_ids": superseded_entry_ids,
         })),
     )
@@ -291,14 +290,13 @@ async fn list_thread_mailbox(
     Path(id): Path<String>,
     Query(params): Query<MailboxListParams>,
 ) -> Result<Json<MailboxPage>, ApiError> {
-    let mailbox_store = require_mailbox_store(&st)?;
     let query = MailboxQuery {
         mailbox_id: Some(id),
         status: params.status.as_deref().and_then(parse_mailbox_status),
         offset: params.offset.unwrap_or(0),
         limit: params.limit.clamp(1, 200),
     };
-    mailbox_store
+    st.mailbox_store()
         .list_mailbox_entries(&query)
         .await
         .map(Json)
@@ -613,14 +611,11 @@ async fn push_run_inputs(
         source_mailbox_entry_id: None,
     };
 
-    let mailbox_store = require_mailbox_store(&st)?;
     let (thread_id, _run_id, _entry_id) =
         start_background_run(
-            &st.os,
-            &mailbox_store,
+            &st.mailbox_service,
             &agent_id,
             run_request,
-            "run_api",
             EnqueueOptions::default(),
         )
         .await?;
@@ -639,8 +634,7 @@ async fn cancel_run(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let mailbox_store = require_mailbox_store(&st)?;
-    if try_cancel_active_or_queued_run_by_id(&st.os, &mailbox_store, &id)
+    if try_cancel_active_or_queued_run_by_id(&st.os, st.mailbox_store(), &id)
         .await?
         .is_some()
     {
