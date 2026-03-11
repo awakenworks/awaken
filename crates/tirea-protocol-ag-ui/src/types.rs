@@ -333,6 +333,7 @@ impl RunAgentInput {
             state: self.state,
             messages: convert_agui_messages(&self.messages),
             initial_decisions,
+            source_mailbox_entry_id: None,
         }
     }
 

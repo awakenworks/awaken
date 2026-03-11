@@ -339,6 +339,7 @@ impl AgentOs {
                 parent_thread_id: parent_thread_id.clone(),
                 termination_code: None,
                 termination_detail: None,
+                source_mailbox_entry_id: request.source_mailbox_entry_id.clone(),
             });
         }
         let committed = agent_state_store

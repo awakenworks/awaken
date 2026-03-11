@@ -90,6 +90,7 @@ Do not skip tool calls.",
             state: None,
             messages: vec![Message::user("按流程执行，最后给我结果。")],
             initial_decisions: vec![],
+            source_mailbox_entry_id: None,
         })
         .await
         .map_err(|e| format!("run start failed: {e}"))?;

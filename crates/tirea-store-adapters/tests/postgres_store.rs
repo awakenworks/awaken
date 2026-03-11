@@ -78,6 +78,7 @@ fn mailbox_entry(run_id: &str, thread_id: &str) -> MailboxEntry {
             state: None,
             messages: vec![Message::user("hello")],
             initial_decisions: vec![],
+            source_mailbox_entry_id: None,
         },
         dedupe_key: None,
         available_at: 1,

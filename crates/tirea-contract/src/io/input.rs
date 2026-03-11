@@ -29,6 +29,9 @@ pub struct RunRequest {
     /// Decisions to enqueue before loop start.
     #[serde(default)]
     pub initial_decisions: Vec<ToolCallDecision>,
+    /// Mailbox entry that triggered this run (set by mailbox dispatcher).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_mailbox_entry_id: Option<String>,
 }
 
 /// Unified upstream message type for the runtime endpoint.

@@ -328,6 +328,7 @@ async fn message_send(
         state: None,
         messages,
         initial_decisions: decisions,
+        source_mailbox_entry_id: None,
     };
 
     let mailbox_store = require_mailbox_store(&st)?;

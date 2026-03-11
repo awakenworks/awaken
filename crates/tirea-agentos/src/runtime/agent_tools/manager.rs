@@ -51,6 +51,7 @@ pub(super) async fn execute_sub_agent(
         state: initial_state,
         messages,
         initial_decisions: Vec::new(),
+        source_mailbox_entry_id: None,
     };
 
     let mut resolved = match os.resolve(&run_request.agent_id) {

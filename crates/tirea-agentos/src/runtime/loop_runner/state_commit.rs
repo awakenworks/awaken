@@ -93,6 +93,7 @@ pub(super) async fn commit_pending_delta(
             parent_thread_id,
             termination_code,
             termination_detail,
+            source_mailbox_entry_id: None,
         });
     }
 

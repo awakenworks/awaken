@@ -44,6 +44,8 @@ pub struct RunRecord {
     pub termination_detail: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_mailbox_entry_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
 }
@@ -70,6 +72,7 @@ impl RunRecord {
             termination_detail: None,
             created_at: now_ms,
             updated_at: now_ms,
+            source_mailbox_entry_id: None,
             metadata: None,
         }
     }

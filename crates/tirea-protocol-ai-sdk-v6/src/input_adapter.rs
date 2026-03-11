@@ -175,6 +175,7 @@ impl AiSdkV6RunRequest {
             state: None,
             messages,
             initial_decisions,
+            source_mailbox_entry_id: None,
         }
     }
 }

@@ -1026,6 +1026,7 @@ async fn run_and_run_stream_work_without_llm_when_terminate_behavior_requested()
             state: Some(json!({})),
             messages: vec![],
             initial_decisions: vec![],
+            source_mailbox_entry_id: None,
         })
         .await
         .unwrap();
@@ -1654,6 +1655,7 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
         state: Some(json!({"counter": 42, "new_field": true})),
         messages: vec![crate::contracts::thread::Message::user("hello")],
         initial_decisions: vec![],
+        source_mailbox_entry_id: None,
     };
 
     let run_stream = os.run_stream(request).await.unwrap();
@@ -1717,6 +1719,7 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
         state: Some(json!({"initial": true})),
         messages: vec![crate::contracts::thread::Message::user("hello")],
         initial_decisions: vec![],
+        source_mailbox_entry_id: None,
     };
 
     let run_stream = os.run_stream(request).await.unwrap();
@@ -1782,6 +1785,7 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
         state: None,
         messages: vec![crate::contracts::thread::Message::user("hello")],
         initial_decisions: vec![],
+        source_mailbox_entry_id: None,
     };
 
     let run_stream = os.run_stream(request).await.unwrap();
@@ -1844,6 +1848,7 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
                 state: Some(json!({"count": 1})),
                 messages: vec![crate::contracts::thread::Message::user("hello")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             resolved,
         )
@@ -1871,6 +1876,53 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
     let state = head.thread.rebuild_state().unwrap();
     assert_eq!(state["__run"]["id"], json!("run-prepare"));
     assert_eq!(state["__run"]["status"], json!("running"));
+}
+
+#[tokio::test]
+async fn prepare_run_returns_error_when_run_id_already_exists_in_run_config() {
+    use tirea_store_adapters::MemoryStore;
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = AgentOs::builder()
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
+        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .build()
+        .unwrap();
+
+    let mut resolved = os.resolve("a1").unwrap();
+    resolved
+        .run_config
+        .set("run_id", "preset-run-id")
+        .expect("preset run_id");
+
+    let err = match os
+        .prepare_run(
+            RunRequest {
+                agent_id: "a1".to_string(),
+                thread_id: Some("t-prepare-duplicate-run-id".to_string()),
+                run_id: Some("run-prepare".to_string()),
+                parent_run_id: None,
+                parent_thread_id: None,
+                resource_id: None,
+                origin: RunOrigin::default(),
+                state: None,
+                messages: vec![crate::contracts::thread::Message::user("hello")],
+                initial_decisions: vec![],
+                source_mailbox_entry_id: None,
+            },
+            resolved,
+        )
+        .await
+    {
+        Ok(_) => panic!("duplicate run_id in run_config should fail"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(
+        err,
+        AgentOsRunError::RunConfig(crate::contracts::RunConfigError::AlreadySet(ref key))
+            if key == "run_id"
+    ));
 }
 
 #[tokio::test]
@@ -1902,6 +1954,7 @@ async fn prepare_run_sets_parent_thread_id_for_existing_thread_without_lineage()
             state: None,
             messages: vec![crate::contracts::thread::Message::user("hello")],
             initial_decisions: vec![],
+            source_mailbox_entry_id: None,
         },
         resolved,
     )
@@ -1945,6 +1998,7 @@ async fn prepare_run_rejects_parent_thread_id_mismatch_for_existing_thread() {
                 state: None,
                 messages: vec![crate::contracts::thread::Message::user("hello")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             resolved,
         )
@@ -2011,6 +2065,7 @@ async fn execute_prepared_runs_stream() {
                 state: None,
                 messages: vec![crate::contracts::thread::Message::user("hello")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             resolved,
         )
@@ -2152,6 +2207,7 @@ async fn run_stream_exposes_decision_sender_and_replays_suspended_calls() {
             state: None,
             messages: vec![],
             initial_decisions: vec![],
+            source_mailbox_entry_id: None,
         })
         .await
         .unwrap();
@@ -2236,6 +2292,7 @@ async fn run_stream_replays_initial_decisions_without_submit_decision() {
                 crate::contracts::io::ResumeDecisionAction::Resume,
                 json!(true),
             )],
+            source_mailbox_entry_id: None,
         })
         .await
         .unwrap();
@@ -2281,6 +2338,7 @@ async fn run_stream_persists_run_lifecycle_done_status() {
             state: None,
             messages: vec![],
             initial_decisions: vec![],
+            source_mailbox_entry_id: None,
         })
         .await
         .unwrap();
@@ -2346,6 +2404,7 @@ async fn run_stream_persists_run_lifecycle_waiting_status_for_suspension() {
             state: None,
             messages: vec![],
             initial_decisions: vec![],
+            source_mailbox_entry_id: None,
         })
         .await
         .unwrap();
@@ -2415,6 +2474,7 @@ async fn run_stream_initial_decisions_denied_returns_tool_error_and_clears_suspe
                 crate::contracts::io::ResumeDecisionAction::Cancel,
                 json!(false),
             )],
+            source_mailbox_entry_id: None,
         })
         .await
         .unwrap();
@@ -2501,6 +2561,7 @@ async fn run_stream_initial_decisions_cancelled_returns_tool_error_and_clears_su
                 crate::contracts::io::ResumeDecisionAction::Cancel,
                 cancel_payload.clone(),
             )],
+            source_mailbox_entry_id: None,
         })
         .await
         .unwrap();
@@ -2601,6 +2662,7 @@ async fn run_stream_initial_decisions_partial_match_keeps_unresolved_suspended_c
                 crate::contracts::io::ResumeDecisionAction::Resume,
                 json!(true),
             )],
+            source_mailbox_entry_id: None,
         })
         .await
         .unwrap();
@@ -2710,6 +2772,7 @@ async fn run_stream_batch_approval_mode_waits_for_all_suspended_decisions_before
                 crate::contracts::io::ResumeDecisionAction::Resume,
                 json!(true),
             )],
+            source_mailbox_entry_id: None,
         })
         .await
         .unwrap();
@@ -2759,6 +2822,7 @@ async fn run_stream_batch_approval_mode_waits_for_all_suspended_decisions_before
                 crate::contracts::io::ResumeDecisionAction::Resume,
                 json!(true),
             )],
+            source_mailbox_entry_id: None,
         })
         .await
         .unwrap();
@@ -2845,6 +2909,7 @@ async fn run_stream_initial_decisions_ignore_unknown_target() {
                 crate::contracts::io::ResumeDecisionAction::Resume,
                 json!(true),
             )],
+            source_mailbox_entry_id: None,
         })
         .await
         .unwrap();
@@ -2928,6 +2993,7 @@ async fn run_stream_duplicate_initial_decisions_are_idempotent() {
             state: None,
             messages: vec![],
             initial_decisions: vec![decision.clone(), decision],
+            source_mailbox_entry_id: None,
         })
         .await
         .unwrap();
@@ -2988,6 +3054,7 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
         state: Some(json!({"base": 1})),
         messages: vec![crate::contracts::thread::Message::user("hello")],
         initial_decisions: vec![],
+        source_mailbox_entry_id: None,
     };
 
     let run_stream = os.run_stream(request).await.unwrap();
@@ -3077,6 +3144,7 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_pre_checkpoint_s
         state: None,
         messages: vec![],
         initial_decisions: vec![],
+        source_mailbox_entry_id: None,
     };
 
     let run_stream = os.run_stream(request).await.unwrap();
@@ -3191,6 +3259,7 @@ async fn prepare_run_scope_tool_registry_adds_new_tool() {
                 state: None,
                 messages: vec![Message::user("hello")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             resolved,
         )
@@ -3246,6 +3315,7 @@ async fn prepare_run_scope_tool_registry_omits_shadowed() {
                 state: None,
                 messages: vec![Message::user("hello")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             resolved,
         )
@@ -3296,6 +3366,7 @@ async fn prepare_run_scope_appends_plugins() {
                 state: None,
                 messages: vec![Message::user("hello")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             resolved,
         )
@@ -3346,6 +3417,7 @@ async fn prepare_run_scope_rejects_duplicate_plugin_id() {
                 state: None,
                 messages: vec![Message::user("hello")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             resolved,
         )
@@ -3620,6 +3692,7 @@ async fn prepare_run_cleans_up_run_scoped_state_between_consecutive_runs() {
                 state: None,
                 messages: vec![crate::contracts::thread::Message::user("go")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             resolved,
         )
@@ -3654,6 +3727,7 @@ async fn prepare_run_cleans_up_run_scoped_state_between_consecutive_runs() {
                 state: None,
                 messages: vec![crate::contracts::thread::Message::user("go again")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             resolved2,
         )
