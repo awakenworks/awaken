@@ -10,9 +10,12 @@
 | `tirea-state-derive` | Proc-macro for `#[derive(State)]` |
 | `tirea-contract` | Shared contracts: thread/events/tools/plugins/runtime/storage/protocol |
 | `tirea-agentos` | Agent runtime: inference engine, tool execution, orchestration, plugin composition |
+| `tirea-extension-*` | Plugins: permission, reminder, observability, skills, MCP |
+| `tirea-protocol-ag-ui` | AG-UI protocol adapters |
+| `tirea-protocol-ai-sdk-v6` | Vercel AI SDK v6 protocol adapters |
 | `tirea-store-adapters` | Storage adapters: memory/file/postgres/nats-buffered |
-| `tirea` | Umbrella crate that re-exports core modules |
 | `tirea-agentos-server` | HTTP/SSE/NATS gateway server |
+| `tirea` | Umbrella crate that re-exports core modules |
 
 ## Architecture
 
@@ -24,7 +27,7 @@
                          │
                          ▼
 ┌─────────────────────────────────────────────────────┐
-│  AgentOs + Agent Loop                                │
+│  AgentOs                                             │
 │  - Prepare run, execute phases, emit events          │
 └─────────────────────────────────────────────────────┘
                          │

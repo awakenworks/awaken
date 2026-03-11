@@ -1,9 +1,9 @@
 # Architecture
 
-Tirea runtime is organized as four layers:
+Tirea runtime is organized as three layers:
 
 ```text
-Application -> AgentOs -> Agent Loop -> Thread/State Engine
+Application -> AgentOs (orchestration + execution engine) -> Thread/State Engine
 ```
 
 ## 1. Application Layer
@@ -16,19 +16,18 @@ Primary call path:
 - Submit `RunRequest`
 - Consume streamed `AgentEvent`
 
-## 2. AgentOs (Orchestration)
+## 2. AgentOs (Orchestration + Execution)
 
-`AgentOs` handles pre-run orchestration:
+`AgentOs` handles both pre-run orchestration and loop execution:
 
+**Orchestration** (`composition/`, `runtime/`):
 - Resolve agent/model/plugin wiring
 - Load or create thread
 - Deduplicate incoming messages
 - Persist pre-run checkpoint
 - Construct `RunContext`
 
-This keeps run setup deterministic and testable.
-
-## 3. Agent Loop (Execution)
+**Execution engine** (`engine/`, `runtime/loop_runner/`):
 
 Loop is phase-driven:
 
