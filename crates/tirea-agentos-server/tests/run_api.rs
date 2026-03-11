@@ -121,6 +121,7 @@ fn mailbox_entry(run_id: &str, thread_id: &str) -> MailboxEntry {
             state: None,
             messages: vec![],
             initial_decisions: vec![],
+            source_mailbox_entry_id: None,
         },
         dedupe_key: None,
         available_at: now_unix_millis(),
@@ -153,6 +154,7 @@ async fn start_active_run(
         state: None,
         messages: vec![],
         initial_decisions: vec![],
+        source_mailbox_entry_id: None,
     };
     os.start_active_run_with_persistence(agent_id, request, resolved, true, false)
         .await

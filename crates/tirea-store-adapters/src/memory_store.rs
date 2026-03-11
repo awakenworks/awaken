@@ -456,6 +456,11 @@ impl ThreadWriter for MemoryStore {
                 record
                     .termination_detail
                     .clone_from(&meta.termination_detail);
+                if record.source_mailbox_entry_id.is_none() {
+                    record
+                        .source_mailbox_entry_id
+                        .clone_from(&meta.source_mailbox_entry_id);
+                }
                 record.updated_at = now;
             } else if let Some(record) = runs.get_mut(&delta.run_id) {
                 record.updated_at = now;

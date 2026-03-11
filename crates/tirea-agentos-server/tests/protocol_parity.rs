@@ -70,6 +70,7 @@ async fn start_active_run(
         state: None,
         messages: vec![],
         initial_decisions: vec![],
+        source_mailbox_entry_id: None,
     };
     os.start_active_run_with_persistence(agent_id, request, resolved, false, false)
         .await

@@ -211,9 +211,12 @@ async fn start_run_for_claimed_entry(
         .resolve(&entry.agent_id)
         .map_err(|err| MailboxRunStartError::Permanent(err.to_string()))?;
 
+    let mut request = entry.request.clone();
+    request.source_mailbox_entry_id = Some(entry.entry_id.clone());
+
     os.start_active_run_with_persistence(
         &entry.agent_id,
-        entry.request.clone(),
+        request,
         resolved,
         persist_run,
         !persist_run,
@@ -754,6 +757,7 @@ mod tests {
                 state: None,
                 messages: vec![],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
         )
         .await
@@ -808,6 +812,7 @@ mod tests {
                 state: None,
                 messages: vec![],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
         )
         .await

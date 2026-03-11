@@ -216,6 +216,7 @@ Rules:\n\
                 "What's the current weather in San Francisco? Use the tool.",
             )],
             initial_decisions: vec![],
+            source_mailbox_entry_id: None,
         })
         .await
         .map_err(|e| format!("run start failed: {e}"))?;

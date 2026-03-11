@@ -725,6 +725,11 @@ impl FileStore {
             record
                 .termination_detail
                 .clone_from(&meta.termination_detail);
+            if record.source_mailbox_entry_id.is_none() {
+                record
+                    .source_mailbox_entry_id
+                    .clone_from(&meta.source_mailbox_entry_id);
+            }
             record.updated_at = now;
             self.save_run_record(&record).await?;
         } else if let Some(mut record) = self.load_run_record(&delta.run_id).await? {
@@ -822,6 +827,7 @@ mod tests {
                 state: None,
                 messages: vec![Message::user("hello")],
                 initial_decisions: vec![],
+                source_mailbox_entry_id: None,
             },
             dedupe_key: None,
             available_at: 1,

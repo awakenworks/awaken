@@ -38,6 +38,8 @@ pub struct RunMeta {
     pub termination_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub termination_detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_mailbox_entry_id: Option<String>,
 }
 
 /// An incremental change to a thread produced by a single step.

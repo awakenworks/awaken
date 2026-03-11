@@ -89,7 +89,7 @@ impl PostgresStore {
                 self.table, self.table
             ),
             format!(
-                "CREATE TABLE IF NOT EXISTS {} (run_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, agent_id TEXT NOT NULL DEFAULT '', parent_run_id TEXT, parent_thread_id TEXT, origin TEXT NOT NULL, status TEXT NOT NULL, termination_code TEXT, termination_detail TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, metadata JSONB)",
+                "CREATE TABLE IF NOT EXISTS {} (run_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, agent_id TEXT NOT NULL DEFAULT '', parent_run_id TEXT, parent_thread_id TEXT, origin TEXT NOT NULL, status TEXT NOT NULL, termination_code TEXT, termination_detail TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, source_mailbox_entry_id TEXT, metadata JSONB)",
                 self.runs_table
             ),
             format!(
@@ -1590,6 +1590,7 @@ type RunRowTuple = (
     Option<String>,
     i64,
     i64,
+    Option<String>,
     Option<serde_json::Value>,
 );
 
@@ -1656,6 +1657,7 @@ impl PostgresStore {
             termination_detail,
             created_at,
             updated_at,
+            source_mailbox_entry_id,
             metadata,
         ) = row;
         Ok(RunRecord {
@@ -1670,6 +1672,7 @@ impl PostgresStore {
             termination_detail,
             created_at: Self::from_db_timestamp(created_at, "created_at")?,
             updated_at: Self::from_db_timestamp(updated_at, "updated_at")?,
+            source_mailbox_entry_id,
             metadata,
         })
     }
@@ -1725,7 +1728,7 @@ impl RunReader for PostgresStore {
         self.ensure_run_schema_ready().await?;
 
         let sql = format!(
-            "SELECT run_id, thread_id, agent_id, parent_run_id, parent_thread_id, origin, status, termination_code, termination_detail, created_at, updated_at, metadata FROM {} WHERE run_id = $1",
+            "SELECT run_id, thread_id, agent_id, parent_run_id, parent_thread_id, origin, status, termination_code, termination_detail, created_at, updated_at, source_mailbox_entry_id, metadata FROM {} WHERE run_id = $1",
             self.runs_table
         );
         let row = sqlx::query_as::<_, RunRowTuple>(&sql)
@@ -1810,7 +1813,7 @@ impl RunReader for PostgresStore {
             .map_err(Self::run_sql_err)?;
 
         let mut data_qb = QueryBuilder::<Postgres>::new(format!(
-            "SELECT run_id, thread_id, agent_id, parent_run_id, parent_thread_id, origin, status, termination_code, termination_detail, created_at, updated_at, metadata FROM {}",
+            "SELECT run_id, thread_id, agent_id, parent_run_id, parent_thread_id, origin, status, termination_code, termination_detail, created_at, updated_at, source_mailbox_entry_id, metadata FROM {}",
             self.runs_table
         ));
         let mut has_where = false;
@@ -1913,7 +1916,7 @@ impl RunReader for PostgresStore {
 
         let sql = format!(
             "SELECT run_id, thread_id, agent_id, parent_run_id, parent_thread_id, origin, status, \
-             termination_code, termination_detail, created_at, updated_at, metadata \
+             termination_code, termination_detail, created_at, updated_at, source_mailbox_entry_id, metadata \
              FROM {} WHERE thread_id = $1 AND status != $2 \
              ORDER BY created_at DESC, updated_at DESC, run_id DESC LIMIT 1",
             self.runs_table
@@ -1937,7 +1940,15 @@ impl RunWriter for PostgresStore {
         let created_at = Self::to_db_timestamp(record.created_at, "created_at")?;
         let updated_at = Self::to_db_timestamp(record.updated_at, "updated_at")?;
         let sql = format!(
-            "INSERT INTO {} (run_id, thread_id, agent_id, parent_run_id, parent_thread_id, origin, status, termination_code, termination_detail, created_at, updated_at, metadata) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (run_id) DO UPDATE SET thread_id = EXCLUDED.thread_id, agent_id = EXCLUDED.agent_id, parent_run_id = EXCLUDED.parent_run_id, parent_thread_id = EXCLUDED.parent_thread_id, origin = EXCLUDED.origin, status = EXCLUDED.status, termination_code = EXCLUDED.termination_code, termination_detail = EXCLUDED.termination_detail, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at, metadata = EXCLUDED.metadata",
+            "INSERT INTO {} (run_id, thread_id, agent_id, parent_run_id, parent_thread_id, origin, status, \
+             termination_code, termination_detail, created_at, updated_at, source_mailbox_entry_id, metadata) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
+             ON CONFLICT (run_id) DO UPDATE SET thread_id = EXCLUDED.thread_id, agent_id = EXCLUDED.agent_id, \
+             parent_run_id = EXCLUDED.parent_run_id, parent_thread_id = EXCLUDED.parent_thread_id, \
+             origin = EXCLUDED.origin, status = EXCLUDED.status, termination_code = EXCLUDED.termination_code, \
+             termination_detail = EXCLUDED.termination_detail, created_at = EXCLUDED.created_at, \
+             updated_at = EXCLUDED.updated_at, source_mailbox_entry_id = EXCLUDED.source_mailbox_entry_id, \
+             metadata = EXCLUDED.metadata",
             self.runs_table
         );
         sqlx::query(&sql)
@@ -1952,6 +1963,7 @@ impl RunWriter for PostgresStore {
             .bind(record.termination_detail.as_deref())
             .bind(created_at)
             .bind(updated_at)
+            .bind(record.source_mailbox_entry_id.as_deref())
             .bind(&record.metadata)
             .execute(&self.pool)
             .await

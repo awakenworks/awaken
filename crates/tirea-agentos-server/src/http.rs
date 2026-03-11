@@ -438,6 +438,7 @@ impl CreateRunPayload {
                 state: self.state,
                 messages: self.messages,
                 initial_decisions: self.initial_decisions,
+                source_mailbox_entry_id: None,
             },
         ))
     }
@@ -560,6 +561,7 @@ async fn push_run_inputs(
         state: payload.state,
         messages: payload.messages,
         initial_decisions: decisions,
+        source_mailbox_entry_id: None,
     };
 
     let mailbox_store = require_mailbox_store(&st)?;
