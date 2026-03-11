@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tirea_contract::storage::{
     paginate_mailbox_entries, paginate_runs_in_memory, Committed, MailboxEntry, MailboxPage,
-    MailboxQuery, MailboxReader, MailboxStoreError, MailboxThreadInterrupt, MailboxThreadState,
+    MailboxQuery, MailboxReader, MailboxStoreError, MailboxInterrupt, MailboxState,
     MailboxWriter, RunPage, RunQuery, RunRecord, ThreadHead, ThreadListPage, ThreadListQuery,
     ThreadReader, ThreadStoreError, ThreadWriter, VersionPrecondition,
 };
@@ -53,10 +53,10 @@ impl FileStore {
         Ok(self.mailbox_dir().join(format!("{entry_id}.json")))
     }
 
-    fn mailbox_thread_state_path(&self, thread_id: &str) -> Result<PathBuf, MailboxStoreError> {
-        file_utils::validate_fs_id(thread_id, "mailbox thread id")
+    fn mailbox_state_path(&self, mailbox_id: &str) -> Result<PathBuf, MailboxStoreError> {
+        file_utils::validate_fs_id(mailbox_id, "mailbox id")
             .map_err(MailboxStoreError::Backend)?;
-        Ok(self.mailbox_threads_dir().join(format!("{thread_id}.json")))
+        Ok(self.mailbox_threads_dir().join(format!("{mailbox_id}.json")))
     }
 
     async fn save_mailbox_entry(&self, entry: &MailboxEntry) -> Result<(), MailboxStoreError> {
@@ -68,23 +68,23 @@ impl FileStore {
             .map_err(MailboxStoreError::Io)
     }
 
-    async fn save_mailbox_thread_state(
+    async fn save_mailbox_state(
         &self,
-        state: &MailboxThreadState,
+        state: &MailboxState,
     ) -> Result<(), MailboxStoreError> {
         let payload = serde_json::to_string_pretty(state)
             .map_err(|e| MailboxStoreError::Serialization(e.to_string()))?;
-        let filename = format!("{}.json", state.thread_id);
+        let filename = format!("{}.json", state.mailbox_id);
         file_utils::atomic_json_write(&self.mailbox_threads_dir(), &filename, &payload)
             .await
             .map_err(MailboxStoreError::Io)
     }
 
-    async fn load_mailbox_thread_state_inner(
+    async fn load_mailbox_state_inner(
         &self,
-        thread_id: &str,
-    ) -> Result<Option<MailboxThreadState>, MailboxStoreError> {
-        let path = self.mailbox_thread_state_path(thread_id)?;
+        mailbox_id: &str,
+    ) -> Result<Option<MailboxState>, MailboxStoreError> {
+        let path = self.mailbox_state_path(mailbox_id)?;
         if !path.exists() {
             return Ok(None);
         }
@@ -139,19 +139,11 @@ impl MailboxReader for FileStore {
         Ok(Some(entry))
     }
 
-    async fn load_mailbox_entry_by_run_id(
+    async fn load_mailbox_state(
         &self,
-        run_id: &str,
-    ) -> Result<Option<MailboxEntry>, MailboxStoreError> {
-        let entries = self.load_all_mailbox_entries().await?;
-        Ok(entries.into_iter().find(|entry| entry.run_id == run_id))
-    }
-
-    async fn load_mailbox_thread_state(
-        &self,
-        thread_id: &str,
-    ) -> Result<Option<MailboxThreadState>, MailboxStoreError> {
-        self.load_mailbox_thread_state_inner(thread_id).await
+        mailbox_id: &str,
+    ) -> Result<Option<MailboxState>, MailboxStoreError> {
+        self.load_mailbox_state_inner(mailbox_id).await
     }
 
     async fn list_mailbox_entries(
@@ -170,52 +162,46 @@ impl MailboxWriter for FileStore {
         if path.exists() {
             return Err(MailboxStoreError::AlreadyExists(entry.entry_id.clone()));
         }
-        if self
-            .load_mailbox_entry_by_run_id(&entry.run_id)
+        let mailbox_state = self
+            .load_mailbox_state_inner(&entry.mailbox_id)
             .await?
-            .is_some()
-        {
-            return Err(MailboxStoreError::AlreadyExists(entry.run_id.clone()));
-        }
-        let thread_state = self
-            .load_mailbox_thread_state_inner(&entry.thread_id)
-            .await?
-            .unwrap_or(MailboxThreadState {
-                thread_id: entry.thread_id.clone(),
+            .unwrap_or(MailboxState {
+                mailbox_id: entry.mailbox_id.clone(),
                 current_generation: entry.generation,
                 updated_at: entry.updated_at,
             });
-        if thread_state.current_generation != entry.generation {
+        if mailbox_state.current_generation != entry.generation {
             return Err(MailboxStoreError::GenerationMismatch {
-                thread_id: entry.thread_id.clone(),
-                expected: thread_state.current_generation,
+                mailbox_id: entry.mailbox_id.clone(),
+                expected: mailbox_state.current_generation,
                 actual: entry.generation,
             });
         }
-        self.save_mailbox_thread_state(&thread_state).await?;
+        self.save_mailbox_state(&mailbox_state).await?;
         self.save_mailbox_entry(entry).await
     }
 
-    async fn ensure_mailbox_thread_state(
+    async fn ensure_mailbox_state(
         &self,
-        thread_id: &str,
+        mailbox_id: &str,
         now: u64,
-    ) -> Result<MailboxThreadState, MailboxStoreError> {
+    ) -> Result<MailboxState, MailboxStoreError> {
         let mut state = self
-            .load_mailbox_thread_state_inner(thread_id)
+            .load_mailbox_state_inner(mailbox_id)
             .await?
-            .unwrap_or(MailboxThreadState {
-                thread_id: thread_id.to_string(),
+            .unwrap_or(MailboxState {
+                mailbox_id: mailbox_id.to_string(),
                 current_generation: 0,
                 updated_at: now,
             });
         state.updated_at = now;
-        self.save_mailbox_thread_state(&state).await?;
+        self.save_mailbox_state(&state).await?;
         Ok(state)
     }
 
     async fn claim_mailbox_entries(
         &self,
+        mailbox_id: Option<&str>,
         limit: usize,
         consumer_id: &str,
         now: u64,
@@ -234,10 +220,11 @@ impl MailboxWriter for FileStore {
         for mut entry in entries
             .into_iter()
             .filter(|entry| entry.is_claimable(now))
+            .filter(|entry| mailbox_id.is_none_or(|id| entry.mailbox_id == id))
         {
             // Reconcile: supersede stale-generation entries that survived a
             // partial interrupt (FileStore interrupt is not atomic).
-            if let Some(ts) = self.load_mailbox_thread_state_inner(&entry.thread_id).await? {
+            if let Some(ts) = self.load_mailbox_state_inner(&entry.mailbox_id).await? {
                 if entry.generation < ts.current_generation {
                     entry.status = tirea_contract::MailboxEntryStatus::Superseded;
                     entry.last_error =
@@ -266,14 +253,14 @@ impl MailboxWriter for FileStore {
         Ok(claimed)
     }
 
-    async fn claim_mailbox_entry_by_run_id(
+    async fn claim_mailbox_entry(
         &self,
-        run_id: &str,
+        entry_id: &str,
         consumer_id: &str,
         now: u64,
         lease_duration_ms: u64,
     ) -> Result<Option<MailboxEntry>, MailboxStoreError> {
-        let Some(mut entry) = self.load_mailbox_entry_by_run_id(run_id).await? else {
+        let Some(mut entry) = self.load_mailbox_entry(entry_id).await? else {
             return Ok(None);
         };
         if entry.status.is_terminal() {
@@ -299,7 +286,6 @@ impl MailboxWriter for FileStore {
         &self,
         entry_id: &str,
         claim_token: &str,
-        accepted_run_id: &str,
         now: u64,
     ) -> Result<(), MailboxStoreError> {
         let mut entry = self
@@ -310,7 +296,6 @@ impl MailboxWriter for FileStore {
             return Err(MailboxStoreError::ClaimConflict(entry_id.to_string()));
         }
         entry.status = tirea_contract::MailboxEntryStatus::Accepted;
-        entry.accepted_run_id = Some(accepted_run_id.to_string());
         entry.claim_token = None;
         entry.claimed_by = None;
         entry.lease_until = None;
@@ -366,12 +351,12 @@ impl MailboxWriter for FileStore {
         self.save_mailbox_entry(&entry).await
     }
 
-    async fn cancel_mailbox_entry_by_run_id(
+    async fn cancel_mailbox_entry(
         &self,
-        run_id: &str,
+        entry_id: &str,
         now: u64,
     ) -> Result<Option<MailboxEntry>, MailboxStoreError> {
-        let Some(mut entry) = self.load_mailbox_entry_by_run_id(run_id).await? else {
+        let Some(mut entry) = self.load_mailbox_entry(entry_id).await? else {
             return Ok(None);
         };
         if entry.status.is_terminal() {
@@ -409,19 +394,19 @@ impl MailboxWriter for FileStore {
         Ok(Some(entry))
     }
 
-    async fn cancel_pending_mailbox_for_thread(
+    async fn cancel_pending_for_mailbox(
         &self,
-        thread_id: &str,
+        mailbox_id: &str,
         now: u64,
-        exclude_run_id: Option<&str>,
+        exclude_entry_id: Option<&str>,
     ) -> Result<Vec<MailboxEntry>, MailboxStoreError> {
         let entries = self.load_all_mailbox_entries().await?;
         let mut cancelled = Vec::new();
         for mut entry in entries {
-            if entry.thread_id != thread_id || entry.status.is_terminal() {
+            if entry.mailbox_id != mailbox_id || entry.status.is_terminal() {
                 continue;
             }
-            if exclude_run_id.is_some_and(|run_id| entry.run_id == run_id) {
+            if exclude_entry_id.is_some_and(|eid| entry.entry_id == eid) {
                 continue;
             }
             entry.status = tirea_contract::MailboxEntryStatus::Cancelled;
@@ -436,27 +421,27 @@ impl MailboxWriter for FileStore {
         Ok(cancelled)
     }
 
-    async fn interrupt_mailbox_thread(
+    async fn interrupt_mailbox(
         &self,
-        thread_id: &str,
+        mailbox_id: &str,
         now: u64,
-    ) -> Result<MailboxThreadInterrupt, MailboxStoreError> {
+    ) -> Result<MailboxInterrupt, MailboxStoreError> {
         let mut state = self
-            .load_mailbox_thread_state_inner(thread_id)
+            .load_mailbox_state_inner(mailbox_id)
             .await?
-            .unwrap_or(MailboxThreadState {
-                thread_id: thread_id.to_string(),
+            .unwrap_or(MailboxState {
+                mailbox_id: mailbox_id.to_string(),
                 current_generation: 0,
                 updated_at: now,
             });
         state.current_generation = state.current_generation.saturating_add(1);
         state.updated_at = now;
-        self.save_mailbox_thread_state(&state).await?;
+        self.save_mailbox_state(&state).await?;
 
         let entries = self.load_all_mailbox_entries().await?;
         let mut superseded = Vec::new();
         for mut entry in entries {
-            if entry.thread_id != thread_id || entry.status.is_terminal() {
+            if entry.mailbox_id != mailbox_id || entry.status.is_terminal() {
                 continue;
             }
             if entry.generation >= state.current_generation {
@@ -472,8 +457,8 @@ impl MailboxWriter for FileStore {
             superseded.push(entry);
         }
 
-        Ok(MailboxThreadInterrupt {
-            thread_state: state,
+        Ok(MailboxInterrupt {
+            mailbox_state: state,
             superseded_entries: superseded,
         })
     }
@@ -813,10 +798,11 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
     use tirea_contract::{
+        testing::MailboxEntryBuilder,
         storage::{
-            MailboxEntry, MailboxEntryStatus, MailboxReader, MailboxWriter, RunOrigin, ThreadReader,
+            MailboxEntryStatus, MailboxReader, MailboxWriter, ThreadReader,
         },
-        CheckpointReason, Message, MessageQuery, RunRequest, ThreadWriter,
+        CheckpointReason, Message, MessageQuery, ThreadWriter,
     };
     use tirea_state::{path, Op, Patch, TrackedPatch};
 
@@ -826,43 +812,6 @@ mod tests {
             thread = thread.with_message(Message::user(format!("msg-{i}")));
         }
         thread
-    }
-
-    fn mailbox_entry(run_id: &str, thread_id: &str) -> MailboxEntry {
-        MailboxEntry {
-            entry_id: format!("entry-{run_id}"),
-            thread_id: thread_id.to_string(),
-            run_id: run_id.to_string(),
-            agent_id: "agent".to_string(),
-            generation: 0,
-            status: MailboxEntryStatus::Queued,
-            request: RunRequest {
-                agent_id: "agent".to_string(),
-                thread_id: Some(thread_id.to_string()),
-                run_id: Some(run_id.to_string()),
-                parent_run_id: None,
-                parent_thread_id: None,
-                resource_id: None,
-                origin: RunOrigin::default(),
-                state: None,
-                messages: vec![Message::user("hello")],
-                initial_decisions: vec![],
-                source_mailbox_entry_id: None,
-            },
-            dedupe_key: None,
-            kind: None,
-            sender_id: None,
-            priority: 0,
-            available_at: 1,
-            attempt_count: 0,
-            last_error: None,
-            claim_token: None,
-            claimed_by: None,
-            lease_until: None,
-            accepted_run_id: None,
-            created_at: 1,
-            updated_at: 1,
-        }
     }
 
     #[tokio::test]
@@ -1128,18 +1077,20 @@ mod tests {
     async fn file_storage_mailbox_claim_and_cancel_roundtrip() {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStore::new(temp_dir.path());
-        let entry = mailbox_entry("run-file-mailbox", "thread-file-mailbox");
+        let entry = MailboxEntryBuilder::queued("entry-file-mailbox", "mailbox-file-mailbox")
+            .with_payload(json!({"message": "hello"}))
+            .build();
         storage.enqueue_mailbox_entry(&entry).await.unwrap();
 
         let claimed = storage
-            .claim_mailbox_entries(1, "worker-file", 10, 5_000)
+            .claim_mailbox_entries(None, 1, "worker-file", 10, 5_000)
             .await
             .unwrap();
         assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].status, MailboxEntryStatus::Claimed);
 
         let cancelled = storage
-            .cancel_mailbox_entry_by_run_id("run-file-mailbox", 20)
+            .cancel_mailbox_entry("entry-file-mailbox", 20)
             .await
             .unwrap()
             .expect("queued entry should be cancellable");
@@ -1154,21 +1105,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn file_storage_mailbox_claim_by_run_id_ignores_available_at() {
+    async fn file_storage_mailbox_claim_by_entry_id_ignores_available_at() {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStore::new(temp_dir.path());
-        let mut entry = mailbox_entry("run-file-inline", "thread-file-inline");
-        entry.available_at = i64::MAX as u64;
+        let entry = MailboxEntryBuilder::queued("entry-file-inline", "mailbox-file-inline")
+            .with_payload(json!({"message": "hello"}))
+            .with_available_at(i64::MAX as u64)
+            .build();
         storage.enqueue_mailbox_entry(&entry).await.unwrap();
 
         let claimed = storage
-            .claim_mailbox_entries(1, "worker-file-batch", 10, 5_000)
+            .claim_mailbox_entries(None, 1, "worker-file-batch", 10, 5_000)
             .await
             .unwrap();
         assert!(claimed.is_empty());
 
         let targeted = storage
-            .claim_mailbox_entry_by_run_id("run-file-inline", "worker-file-inline", 10, 5_000)
+            .claim_mailbox_entry("entry-file-inline", "worker-file-inline", 10, 5_000)
             .await
             .unwrap()
             .expect("inline claim should succeed");
@@ -1180,36 +1133,42 @@ mod tests {
     async fn file_storage_mailbox_interrupt_bumps_generation_and_supersedes_entries() {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStore::new(temp_dir.path());
-        let old_a = mailbox_entry("run-file-old-a", "thread-file-interrupt");
-        let old_b = mailbox_entry("run-file-old-b", "thread-file-interrupt");
+        let old_a = MailboxEntryBuilder::queued("entry-file-old-a", "mailbox-file-interrupt")
+            .with_payload(json!({"message": "hello"}))
+            .build();
+        let old_b = MailboxEntryBuilder::queued("entry-file-old-b", "mailbox-file-interrupt")
+            .with_payload(json!({"message": "hello"}))
+            .build();
         storage.enqueue_mailbox_entry(&old_a).await.unwrap();
         storage.enqueue_mailbox_entry(&old_b).await.unwrap();
 
         let interrupted = storage
-            .interrupt_mailbox_thread("thread-file-interrupt", 50)
+            .interrupt_mailbox("mailbox-file-interrupt", 50)
             .await
             .unwrap();
-        assert_eq!(interrupted.thread_state.current_generation, 1);
+        assert_eq!(interrupted.mailbox_state.current_generation, 1);
         assert_eq!(interrupted.superseded_entries.len(), 2);
 
         let superseded = storage
-            .load_mailbox_entry_by_run_id("run-file-old-a")
+            .load_mailbox_entry("entry-file-old-a")
             .await
             .unwrap()
             .expect("superseded entry should exist");
         assert_eq!(superseded.status, MailboxEntryStatus::Superseded);
 
         let next_generation = storage
-            .ensure_mailbox_thread_state("thread-file-interrupt", 60)
+            .ensure_mailbox_state("mailbox-file-interrupt", 60)
             .await
             .unwrap()
             .current_generation;
-        let mut fresh = mailbox_entry("run-file-fresh", "thread-file-interrupt");
-        fresh.generation = next_generation;
+        let fresh = MailboxEntryBuilder::queued("entry-file-fresh", "mailbox-file-interrupt")
+            .with_payload(json!({"message": "hello"}))
+            .with_generation(next_generation)
+            .build();
         storage.enqueue_mailbox_entry(&fresh).await.unwrap();
 
         let fresh_loaded = storage
-            .load_mailbox_entry_by_run_id("run-file-fresh")
+            .load_mailbox_entry("entry-file-fresh")
             .await
             .unwrap()
             .expect("fresh entry should exist");

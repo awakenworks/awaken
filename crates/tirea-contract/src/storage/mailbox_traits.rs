@@ -1,9 +1,6 @@
 use async_trait::async_trait;
 
-use super::{
-    MailboxEntry, MailboxPage, MailboxQuery, MailboxStoreError, MailboxThreadInterrupt,
-    MailboxThreadState,
-};
+use super::{MailboxEntry, MailboxInterrupt, MailboxPage, MailboxQuery, MailboxState, MailboxStoreError};
 
 #[async_trait]
 pub trait MailboxReader: Send + Sync {
@@ -12,15 +9,10 @@ pub trait MailboxReader: Send + Sync {
         entry_id: &str,
     ) -> Result<Option<MailboxEntry>, MailboxStoreError>;
 
-    async fn load_mailbox_entry_by_run_id(
+    async fn load_mailbox_state(
         &self,
-        run_id: &str,
-    ) -> Result<Option<MailboxEntry>, MailboxStoreError>;
-
-    async fn load_mailbox_thread_state(
-        &self,
-        thread_id: &str,
-    ) -> Result<Option<MailboxThreadState>, MailboxStoreError>;
+        mailbox_id: &str,
+    ) -> Result<Option<MailboxState>, MailboxStoreError>;
 
     async fn list_mailbox_entries(
         &self,
@@ -32,23 +24,24 @@ pub trait MailboxReader: Send + Sync {
 pub trait MailboxWriter: MailboxReader {
     async fn enqueue_mailbox_entry(&self, entry: &MailboxEntry) -> Result<(), MailboxStoreError>;
 
-    async fn ensure_mailbox_thread_state(
+    async fn ensure_mailbox_state(
         &self,
-        thread_id: &str,
+        mailbox_id: &str,
         now: u64,
-    ) -> Result<MailboxThreadState, MailboxStoreError>;
+    ) -> Result<MailboxState, MailboxStoreError>;
 
     async fn claim_mailbox_entries(
         &self,
+        mailbox_id: Option<&str>,
         limit: usize,
         consumer_id: &str,
         now: u64,
         lease_duration_ms: u64,
     ) -> Result<Vec<MailboxEntry>, MailboxStoreError>;
 
-    async fn claim_mailbox_entry_by_run_id(
+    async fn claim_mailbox_entry(
         &self,
-        run_id: &str,
+        entry_id: &str,
         consumer_id: &str,
         now: u64,
         lease_duration_ms: u64,
@@ -58,7 +51,6 @@ pub trait MailboxWriter: MailboxReader {
         &self,
         entry_id: &str,
         claim_token: &str,
-        accepted_run_id: &str,
         now: u64,
     ) -> Result<(), MailboxStoreError>;
 
@@ -79,9 +71,9 @@ pub trait MailboxWriter: MailboxReader {
         now: u64,
     ) -> Result<(), MailboxStoreError>;
 
-    async fn cancel_mailbox_entry_by_run_id(
+    async fn cancel_mailbox_entry(
         &self,
-        run_id: &str,
+        entry_id: &str,
         now: u64,
     ) -> Result<Option<MailboxEntry>, MailboxStoreError>;
 
@@ -92,18 +84,18 @@ pub trait MailboxWriter: MailboxReader {
         reason: &str,
     ) -> Result<Option<MailboxEntry>, MailboxStoreError>;
 
-    async fn cancel_pending_mailbox_for_thread(
+    async fn cancel_pending_for_mailbox(
         &self,
-        thread_id: &str,
+        mailbox_id: &str,
         now: u64,
-        exclude_run_id: Option<&str>,
+        exclude_entry_id: Option<&str>,
     ) -> Result<Vec<MailboxEntry>, MailboxStoreError>;
 
-    async fn interrupt_mailbox_thread(
+    async fn interrupt_mailbox(
         &self,
-        thread_id: &str,
+        mailbox_id: &str,
         now: u64,
-    ) -> Result<MailboxThreadInterrupt, MailboxStoreError>;
+    ) -> Result<MailboxInterrupt, MailboxStoreError>;
 
     /// Delete terminal entries older than `older_than` (unix millis). Returns count deleted.
     async fn purge_terminal_mailbox_entries(

@@ -16,6 +16,7 @@ use testcontainers_modules::nats::Nats;
 use tirea_agentos::composition::AgentDefinition;
 use tirea_agentos::composition::AgentOsBuilder;
 use tirea_agentos::contracts::storage::{MailboxReader, ThreadReader, ThreadStore};
+use tirea_contract::storage::{MailboxEntryStatus, MailboxQuery};
 use tirea_agentos_server::nats::NatsConfig;
 use tirea_agentos_server::protocol;
 use tirea_store_adapters::MemoryStore;
@@ -382,16 +383,25 @@ async fn test_nats_aisdk_mailbox_entry_is_accepted() {
         }
     }
 
-    let mailbox = MailboxReader::load_mailbox_entry_by_run_id(storage.as_ref(), run_id)
-        .await
-        .expect("load mailbox entry")
-        .expect("mailbox entry should exist");
-    assert_eq!(
-        mailbox.status,
-        tirea_contract::storage::MailboxEntryStatus::Accepted
+    // The mailbox_id is the session/thread id ("nats-sdk-mailbox").
+    // Look up the entry via list_mailbox_entries filtered by mailbox_id + Accepted status.
+    let page = MailboxReader::list_mailbox_entries(
+        storage.as_ref(),
+        &MailboxQuery {
+            mailbox_id: Some("nats-sdk-mailbox".to_string()),
+            status: Some(MailboxEntryStatus::Accepted),
+            limit: 10,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("list mailbox entries");
+    assert!(
+        !page.items.is_empty(),
+        "expected at least one accepted mailbox entry for nats-sdk-mailbox"
     );
-    assert_eq!(mailbox.run_id, run_id);
-    assert!(mailbox.accepted_run_id.is_some());
+    let mailbox = &page.items[0];
+    assert_eq!(mailbox.status, MailboxEntryStatus::Accepted);
 }
 
 // ============================================================================

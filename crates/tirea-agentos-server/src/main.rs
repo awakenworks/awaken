@@ -12,7 +12,7 @@ use tirea_agentos::composition::{
 use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader, ThreadStore};
 use tirea_agentos::runtime::AgentOs;
 use tirea_agentos_server::nats::NatsConfig;
-use tirea_agentos_server::service::{AppState, MailboxDispatcher};
+use tirea_agentos_server::service::{AgentReceiver, AppState, MailboxDispatcher};
 use tirea_agentos_server::{http, protocol};
 use tirea_contract::runtime::tool_call::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use tirea_contract::runtime::tool_call::ToolCallContext;
@@ -320,8 +320,9 @@ async fn main() {
     let read_store: Arc<dyn ThreadReader> = file_store.clone();
     let mailbox_store: Arc<dyn MailboxStore> = file_store.clone();
     let os = Arc::new(build_os(cfg, args.tensorzero_url, write_store));
+    let receiver = Arc::new(AgentReceiver::new(os.clone()));
     tokio::spawn(
-        MailboxDispatcher::new(os.clone(), mailbox_store.clone())
+        MailboxDispatcher::new(mailbox_store.clone(), receiver)
             .with_consumer_id("http-server-mailbox")
             .run_forever(),
     );

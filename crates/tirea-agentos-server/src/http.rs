@@ -238,9 +238,9 @@ async fn interrupt_thread(
         superseded_entries,
     } = crate::service::interrupt_thread(&st.os, st.read_store.as_ref(), &mailbox_store, &id)
         .await?;
-    let superseded_run_ids: Vec<String> = superseded_entries
+    let superseded_entry_ids: Vec<String> = superseded_entries
         .iter()
-        .map(|entry| entry.run_id.clone())
+        .map(|entry| entry.entry_id.clone())
         .collect();
     Ok((
         StatusCode::ACCEPTED,
@@ -250,7 +250,7 @@ async fn interrupt_thread(
             "generation": generation,
             "cancelled_run_id": cancelled_run_id,
             "superseded_pending_count": superseded_entries.len(),
-            "superseded_pending_run_ids": superseded_run_ids,
+            "superseded_pending_entry_ids": superseded_entry_ids,
         })),
     )
         .into_response())
@@ -565,7 +565,7 @@ async fn push_run_inputs(
     };
 
     let mailbox_store = require_mailbox_store(&st)?;
-    let (thread_id, _run_id) =
+    let (thread_id, _run_id, _entry_id) =
         start_background_run(&st.os, &mailbox_store, &agent_id, run_request, "run_api").await?;
     Ok((
         StatusCode::ACCEPTED,

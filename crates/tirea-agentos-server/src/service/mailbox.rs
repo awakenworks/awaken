@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use tirea_agentos::contracts::storage::{
@@ -9,7 +10,7 @@ use tirea_agentos::contracts::storage::{
 };
 use tirea_agentos::contracts::RunRequest;
 use tirea_agentos::{AgentOs, AgentOsRunError, RunStream};
-use tirea_contract::storage::RunRecord;
+use tirea_contract::storage::{MailboxReceiver, ReceiveOutcome, RunRecord};
 
 use super::ApiError;
 
@@ -34,6 +35,10 @@ fn new_id() -> String {
     uuid::Uuid::now_v7().simple().to_string()
 }
 
+// ---------------------------------------------------------------------------
+// Agent-specific helpers
+// ---------------------------------------------------------------------------
+
 fn normalize_background_run_request(agent_id: &str, mut request: RunRequest) -> RunRequest {
     request.agent_id = agent_id.to_string();
     if request.thread_id.is_none() {
@@ -46,37 +51,32 @@ fn normalize_background_run_request(agent_id: &str, mut request: RunRequest) -> 
 }
 
 fn mailbox_entry_from_request(
-    request: RunRequest,
+    request: &RunRequest,
     generation: u64,
     dedupe_key: Option<String>,
     available_at: u64,
 ) -> MailboxEntry {
     let now = now_unix_millis();
+    let mailbox_id = request
+        .thread_id
+        .clone()
+        .expect("background mailbox request should have thread_id");
+    let payload = serde_json::to_value(request).expect("RunRequest should be serializable");
     MailboxEntry {
         entry_id: new_id(),
-        thread_id: request
-            .thread_id
-            .clone()
-            .expect("background mailbox request should have thread_id"),
-        run_id: request
-            .run_id
-            .clone()
-            .expect("background mailbox request should have run_id"),
-        agent_id: request.agent_id.clone(),
+        mailbox_id,
+        sender_id: None,
+        payload,
+        priority: 0,
+        dedupe_key,
         generation,
         status: MailboxEntryStatus::Queued,
-        request,
-        dedupe_key,
-        kind: None,
-        sender_id: None,
-        priority: 0,
         available_at,
         attempt_count: 0,
         last_error: None,
         claim_token: None,
         claimed_by: None,
         lease_until: None,
-        accepted_run_id: None,
         created_at: now,
         updated_at: now,
     }
@@ -94,18 +94,21 @@ fn is_permanent_dispatch_error(err: &AgentOsRunError) -> bool {
     matches!(err, AgentOsRunError::Resolve(_))
 }
 
-async fn drain_background_run(mut run: tirea_agentos::RunStream) {
+async fn drain_background_run(mut run: RunStream) {
     while run.events.next().await.is_some() {}
 }
+
+// ---------------------------------------------------------------------------
+// Entry lifecycle helpers
+// ---------------------------------------------------------------------------
 
 async fn ack_claimed_entry(
     mailbox_store: &Arc<dyn MailboxStore>,
     entry_id: &str,
     claim_token: &str,
-    accepted_run_id: &str,
 ) -> Result<(), ApiError> {
     match mailbox_store
-        .ack_mailbox_entry(entry_id, claim_token, accepted_run_id, now_unix_millis())
+        .ack_mailbox_entry(entry_id, claim_token, now_unix_millis())
         .await
     {
         Ok(()) => Ok(()),
@@ -154,6 +157,70 @@ async fn dead_letter_claimed_entry(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Agent receiver (implements MailboxReceiver for agent runs)
+// ---------------------------------------------------------------------------
+
+pub struct AgentReceiver {
+    os: Arc<AgentOs>,
+}
+
+impl AgentReceiver {
+    pub fn new(os: Arc<AgentOs>) -> Self {
+        Self { os }
+    }
+}
+
+#[async_trait]
+impl MailboxReceiver for AgentReceiver {
+    async fn receive(&self, entry: &MailboxEntry) -> ReceiveOutcome {
+        let mut request: RunRequest = match serde_json::from_value(entry.payload.clone()) {
+            Ok(r) => r,
+            Err(e) => return ReceiveOutcome::Reject(format!("invalid payload: {e}")),
+        };
+
+        request.source_mailbox_entry_id = Some(entry.entry_id.clone());
+
+        let agent_id = request.agent_id.clone();
+        let thread_id = request
+            .thread_id
+            .clone()
+            .unwrap_or_else(|| entry.mailbox_id.clone());
+
+        match self
+            .os
+            .current_run_id_for_thread(&agent_id, &thread_id)
+            .await
+        {
+            Ok(Some(_)) => return ReceiveOutcome::Retry("thread has active run".into()),
+            Ok(None) => {}
+            Err(e) => return ReceiveOutcome::Retry(e.to_string()),
+        }
+
+        let resolved = match self.os.resolve(&agent_id) {
+            Ok(r) => r,
+            Err(e) => return ReceiveOutcome::Reject(e.to_string()),
+        };
+
+        match self
+            .os
+            .start_active_run_with_persistence(&agent_id, request, resolved, true, false)
+            .await
+        {
+            Ok(run) => {
+                tokio::spawn(drain_background_run(run));
+                ReceiveOutcome::Accepted
+            }
+            Err(e) if is_permanent_dispatch_error(&e) => ReceiveOutcome::Reject(e.to_string()),
+            Err(e) => ReceiveOutcome::Retry(e.to_string()),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Agent-specific inline run start (for streaming/synchronous runs)
+// ---------------------------------------------------------------------------
+
 enum MailboxRunStartError {
     Busy(String),
     Superseded(String),
@@ -162,31 +229,33 @@ enum MailboxRunStartError {
     Internal(ApiError),
 }
 
-async fn start_run_for_claimed_entry(
+async fn start_agent_run_for_entry(
     os: &Arc<AgentOs>,
     mailbox_store: &Arc<dyn MailboxStore>,
     entry: &MailboxEntry,
     persist_run: bool,
 ) -> Result<RunStream, MailboxRunStartError> {
-    if let Some(current_entry) = mailbox_store
+    // Verify entry still claimed with our token
+    if let Some(current) = mailbox_store
         .load_mailbox_entry(&entry.entry_id)
         .await
         .map_err(mailbox_error)
         .map_err(MailboxRunStartError::Internal)?
     {
-        if current_entry.status != MailboxEntryStatus::Claimed
-            || current_entry.claim_token != entry.claim_token
+        if current.status != MailboxEntryStatus::Claimed
+            || current.claim_token != entry.claim_token
         {
             return Err(MailboxRunStartError::Superseded(
-                current_entry
+                current
                     .last_error
                     .unwrap_or_else(|| "mailbox entry is no longer active".to_string()),
             ));
         }
     }
 
+    // Check generation
     if mailbox_store
-        .load_mailbox_thread_state(&entry.thread_id)
+        .load_mailbox_state(&entry.mailbox_id)
         .await
         .map_err(mailbox_error)
         .map_err(MailboxRunStartError::Internal)?
@@ -197,28 +266,37 @@ async fn start_run_for_claimed_entry(
         ));
     }
 
+    // Deserialize payload
+    let mut request: RunRequest = serde_json::from_value(entry.payload.clone())
+        .map_err(|e| MailboxRunStartError::Permanent(format!("invalid payload: {e}")))?;
+    request.source_mailbox_entry_id = Some(entry.entry_id.clone());
+
+    let agent_id = request.agent_id.clone();
+    let thread_id = request
+        .thread_id
+        .clone()
+        .unwrap_or_else(|| entry.mailbox_id.clone());
+
+    // Check for active run on thread
     match os
-        .current_run_id_for_thread(&entry.agent_id, &entry.thread_id)
+        .current_run_id_for_thread(&agent_id, &thread_id)
         .await
     {
-        Ok(Some(run_id)) if run_id != entry.run_id => {
+        Ok(Some(_)) => {
             return Err(MailboxRunStartError::Busy(
                 "thread already has an active run".to_string(),
             ));
         }
-        Ok(_) => {}
+        Ok(None) => {}
         Err(err) => return Err(MailboxRunStartError::Internal(ApiError::from(err))),
     }
 
     let resolved = os
-        .resolve(&entry.agent_id)
+        .resolve(&agent_id)
         .map_err(|err| MailboxRunStartError::Permanent(err.to_string()))?;
 
-    let mut request = entry.request.clone();
-    request.source_mailbox_entry_id = Some(entry.entry_id.clone());
-
     os.start_active_run_with_persistence(
-        &entry.agent_id,
+        &agent_id,
         request,
         resolved,
         persist_run,
@@ -234,17 +312,22 @@ async fn start_run_for_claimed_entry(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Enqueue / background run
+// ---------------------------------------------------------------------------
+
+/// Enqueue a mailbox entry from a RunRequest. Returns (mailbox_id, entry_id, run_id).
 async fn enqueue_mailbox_run(
     os: &Arc<AgentOs>,
     mailbox_store: &Arc<dyn MailboxStore>,
     agent_id: &str,
     request: RunRequest,
     available_at: u64,
-) -> Result<(String, String), ApiError> {
+) -> Result<(String, String, String), ApiError> {
     os.resolve(agent_id).map_err(AgentOsRunError::from)?;
 
     let request = normalize_background_run_request(agent_id, request);
-    let thread_id = request
+    let mailbox_id = request
         .thread_id
         .clone()
         .expect("normalized mailbox run request should have thread_id");
@@ -255,38 +338,23 @@ async fn enqueue_mailbox_run(
 
     for _ in 0..2 {
         let now = now_unix_millis();
-        let thread_state = mailbox_store
-            .ensure_mailbox_thread_state(&thread_id, now)
+        let state = mailbox_store
+            .ensure_mailbox_state(&mailbox_id, now)
             .await
             .map_err(mailbox_error)?;
-        let entry = mailbox_entry_from_request(
-            request.clone(),
-            thread_state.current_generation,
-            None,
-            available_at,
-        );
+        let entry =
+            mailbox_entry_from_request(&request, state.current_generation, None, available_at);
+        let entry_id = entry.entry_id.clone();
 
         match mailbox_store.enqueue_mailbox_entry(&entry).await {
-            Ok(()) => return Ok((thread_id.clone(), run_id.clone())),
-            Err(MailboxStoreError::AlreadyExists(_)) => {
-                let existing = mailbox_store
-                    .load_mailbox_entry_by_run_id(&run_id)
-                    .await
-                    .map_err(mailbox_error)?
-                    .ok_or_else(|| {
-                        ApiError::Internal(format!(
-                            "mailbox enqueue reported duplicate run '{run_id}' but no entry exists"
-                        ))
-                    })?;
-                return Ok((existing.thread_id, existing.run_id));
-            }
+            Ok(()) => return Ok((mailbox_id, entry_id, run_id)),
             Err(err) if is_generation_mismatch(&err) => continue,
             Err(err) => return Err(mailbox_error(err)),
         }
     }
 
     Err(ApiError::Internal(format!(
-        "mailbox enqueue raced with interrupt for thread '{thread_id}'"
+        "mailbox enqueue raced with interrupt for mailbox '{mailbox_id}'"
     )))
 }
 
@@ -297,13 +365,16 @@ pub fn require_mailbox_store(state: &super::AppState) -> Result<Arc<dyn MailboxS
         .ok_or_else(|| ApiError::Internal("mailbox store not configured".to_string()))
 }
 
+/// Enqueue a background run. Returns (thread_id, run_id, entry_id).
 pub async fn enqueue_background_run(
     os: &Arc<AgentOs>,
     mailbox_store: &Arc<dyn MailboxStore>,
     agent_id: &str,
     request: RunRequest,
-) -> Result<(String, String), ApiError> {
-    enqueue_mailbox_run(os, mailbox_store, agent_id, request, now_unix_millis()).await
+) -> Result<(String, String, String), ApiError> {
+    let (mailbox_id, entry_id, run_id) =
+        enqueue_mailbox_run(os, mailbox_store, agent_id, request, now_unix_millis()).await?;
+    Ok((mailbox_id, run_id, entry_id))
 }
 
 pub async fn start_streaming_run_via_mailbox(
@@ -313,7 +384,7 @@ pub async fn start_streaming_run_via_mailbox(
     request: RunRequest,
     consumer_id: &str,
 ) -> Result<RunStream, ApiError> {
-    let (_thread_id, run_id) = enqueue_mailbox_run(
+    let (_mailbox_id, entry_id, _run_id) = enqueue_mailbox_run(
         os,
         mailbox_store,
         agent_id,
@@ -323,8 +394,8 @@ pub async fn start_streaming_run_via_mailbox(
     .await?;
 
     let Some(entry) = mailbox_store
-        .claim_mailbox_entry_by_run_id(
-            &run_id,
+        .claim_mailbox_entry(
+            &entry_id,
             consumer_id,
             now_unix_millis(),
             DEFAULT_MAILBOX_LEASE_MS,
@@ -333,7 +404,7 @@ pub async fn start_streaming_run_via_mailbox(
         .map_err(mailbox_error)?
     else {
         let existing = mailbox_store
-            .load_mailbox_entry_by_run_id(&run_id)
+            .load_mailbox_entry(&entry_id)
             .await
             .map_err(mailbox_error)?;
         return Err(match existing {
@@ -351,9 +422,9 @@ pub async fn start_streaming_run_via_mailbox(
                     .last_error
                     .unwrap_or_else(|| "mailbox entry moved to dead letter".to_string()),
             ),
-            Some(_) => ApiError::BadRequest("run is already claimed".to_string()),
+            Some(_) => ApiError::BadRequest("entry is already claimed".to_string()),
             None => ApiError::Internal(format!(
-                "mailbox entry for run '{run_id}' disappeared before inline dispatch"
+                "mailbox entry '{entry_id}' disappeared before inline dispatch"
             )),
         });
     };
@@ -365,16 +436,9 @@ pub async fn start_streaming_run_via_mailbox(
         ))
     })?;
 
-    match start_run_for_claimed_entry(os, mailbox_store, &entry, false).await {
+    match start_agent_run_for_entry(os, mailbox_store, &entry, false).await {
         Ok(run) => {
-            let accepted_run_id = run.run_id.clone();
-            ack_claimed_entry(
-                mailbox_store,
-                &entry.entry_id,
-                &claim_token,
-                &accepted_run_id,
-            )
-            .await?;
+            ack_claimed_entry(mailbox_store, &entry.entry_id, &claim_token).await?;
             Ok(run)
         }
         Err(MailboxRunStartError::Superseded(error)) => {
@@ -386,7 +450,7 @@ pub async fn start_streaming_run_via_mailbox(
         }
         Err(MailboxRunStartError::Busy(error)) => {
             mailbox_store
-                .cancel_mailbox_entry_by_run_id(&entry.run_id, now_unix_millis())
+                .cancel_mailbox_entry(&entry.entry_id, now_unix_millis())
                 .await
                 .map_err(mailbox_error)?;
             Err(ApiError::BadRequest(error))
@@ -409,13 +473,17 @@ pub async fn start_streaming_run_via_mailbox(
     }
 }
 
-pub async fn cancel_pending_mailbox_for_thread(
+// ---------------------------------------------------------------------------
+// Thread / mailbox lifecycle
+// ---------------------------------------------------------------------------
+
+pub async fn cancel_pending_for_mailbox(
     mailbox_store: &Arc<dyn MailboxStore>,
-    thread_id: &str,
-    exclude_run_id: Option<&str>,
+    mailbox_id: &str,
+    exclude_entry_id: Option<&str>,
 ) -> Result<Vec<MailboxEntry>, ApiError> {
     mailbox_store
-        .cancel_pending_mailbox_for_thread(thread_id, now_unix_millis(), exclude_run_id)
+        .cancel_pending_for_mailbox(mailbox_id, now_unix_millis(), exclude_entry_id)
         .await
         .map_err(mailbox_error)
 }
@@ -433,7 +501,7 @@ pub async fn interrupt_thread(
     thread_id: &str,
 ) -> Result<ThreadInterruptResult, ApiError> {
     let interrupted = mailbox_store
-        .interrupt_mailbox_thread(thread_id, now_unix_millis())
+        .interrupt_mailbox(thread_id, now_unix_millis())
         .await
         .map_err(mailbox_error)?;
     let cancelled_run_id = os.cancel_active_run_by_thread(thread_id).await;
@@ -447,7 +515,7 @@ pub async fn interrupt_thread(
         if !thread_exists {
             let mailbox_page = mailbox_store
                 .list_mailbox_entries(&MailboxQuery {
-                    thread_id: Some(thread_id.to_string()),
+                    mailbox_id: Some(thread_id.to_string()),
                     limit: 1,
                     ..Default::default()
                 })
@@ -461,34 +529,62 @@ pub async fn interrupt_thread(
 
     Ok(ThreadInterruptResult {
         cancelled_run_id,
-        generation: interrupted.thread_state.current_generation,
+        generation: interrupted.mailbox_state.current_generation,
         superseded_entries: interrupted.superseded_entries,
     })
 }
 
+// ---------------------------------------------------------------------------
+// Background task lookup / cancel
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
 pub enum BackgroundTaskLookup {
     Run(RunRecord),
     Mailbox(MailboxEntry),
 }
 
+/// Look up a background task by run_id (RunStore) or entry_id (MailboxStore).
+///
+/// If the entry has been accepted, tries to find the corresponding RunRecord
+/// by extracting the run_id from the payload.
 pub async fn load_background_task(
     read_store: &dyn ThreadReader,
     mailbox_store: &dyn MailboxReader,
-    run_id: &str,
+    id: &str,
 ) -> Result<Option<BackgroundTaskLookup>, ApiError> {
+    // Try run store first (id interpreted as run_id).
     if let Some(record) = read_store
-        .load_run(run_id)
+        .load_run(id)
         .await
         .map_err(|err| ApiError::Internal(err.to_string()))?
     {
         return Ok(Some(BackgroundTaskLookup::Run(record)));
     }
 
-    mailbox_store
-        .load_mailbox_entry_by_run_id(run_id)
+    // Try mailbox store (id interpreted as entry_id).
+    let Some(entry) = mailbox_store
+        .load_mailbox_entry(id)
         .await
-        .map(|maybe| maybe.map(BackgroundTaskLookup::Mailbox))
-        .map_err(mailbox_error)
+        .map_err(mailbox_error)?
+    else {
+        return Ok(None);
+    };
+
+    // If the entry was accepted, look up the RunRecord via run_id from payload.
+    if entry.status == MailboxEntryStatus::Accepted {
+        if let Some(run_id) = entry.payload.get("run_id").and_then(|v| v.as_str()) {
+            if let Some(record) = read_store
+                .load_run(run_id)
+                .await
+                .map_err(|err| ApiError::Internal(err.to_string()))?
+            {
+                return Ok(Some(BackgroundTaskLookup::Run(record)));
+            }
+        }
+    }
+
+    Ok(Some(BackgroundTaskLookup::Mailbox(entry)))
 }
 
 pub enum CancelBackgroundRunResult {
@@ -496,17 +592,25 @@ pub enum CancelBackgroundRunResult {
     Pending,
 }
 
+/// Cancel by run_id (active run) or entry_id (queued mailbox entry).
+///
+/// If `id` is a run_id, cancels the active run directly.
+/// If `id` is an entry_id for a queued entry, cancels the mailbox entry.
+/// If `id` is an entry_id for an accepted entry, extracts the run_id from
+/// the payload and cancels the active run.
 pub async fn try_cancel_active_or_queued_run_by_id(
     os: &Arc<AgentOs>,
     mailbox_store: &Arc<dyn MailboxStore>,
-    run_id: &str,
+    id: &str,
 ) -> Result<Option<CancelBackgroundRunResult>, ApiError> {
-    if os.cancel_active_run_by_id(run_id).await {
+    // Try cancelling active run directly (id interpreted as run_id).
+    if os.cancel_active_run_by_id(id).await {
         return Ok(Some(CancelBackgroundRunResult::Active));
     }
 
+    // Try cancelling a queued mailbox entry (id interpreted as entry_id).
     let cancelled = mailbox_store
-        .cancel_mailbox_entry_by_run_id(run_id, now_unix_millis())
+        .cancel_mailbox_entry(id, now_unix_millis())
         .await
         .map_err(mailbox_error)?;
     if cancelled
@@ -515,13 +619,42 @@ pub async fn try_cancel_active_or_queued_run_by_id(
     {
         return Ok(Some(CancelBackgroundRunResult::Pending));
     }
+
+    // If the entry exists but is already accepted, try extracting run_id from
+    // the payload to cancel the active run.
+    let entry = match cancelled {
+        Some(e) => Some(e),
+        None => mailbox_store
+            .load_mailbox_entry(id)
+            .await
+            .map_err(mailbox_error)?,
+    };
+    if let Some(entry) = entry {
+        if entry.status == MailboxEntryStatus::Accepted {
+            if let Some(run_id) = entry
+                .payload
+                .get("run_id")
+                .and_then(|v| v.as_str())
+                .filter(|rid| *rid != id)
+            {
+                if os.cancel_active_run_by_id(run_id).await {
+                    return Ok(Some(CancelBackgroundRunResult::Active));
+                }
+            }
+        }
+    }
+
     Ok(None)
 }
 
+// ---------------------------------------------------------------------------
+// Generic mailbox dispatcher
+// ---------------------------------------------------------------------------
+
 #[derive(Clone)]
 pub struct MailboxDispatcher {
-    os: Arc<AgentOs>,
     mailbox_store: Arc<dyn MailboxStore>,
+    receiver: Arc<dyn MailboxReceiver>,
     consumer_id: String,
     poll_interval: Duration,
     lease_duration_ms: u64,
@@ -531,10 +664,13 @@ pub struct MailboxDispatcher {
 }
 
 impl MailboxDispatcher {
-    pub fn new(os: Arc<AgentOs>, mailbox_store: Arc<dyn MailboxStore>) -> Self {
+    pub fn new(
+        mailbox_store: Arc<dyn MailboxStore>,
+        receiver: Arc<dyn MailboxReceiver>,
+    ) -> Self {
         Self {
-            os,
             mailbox_store,
+            receiver,
             consumer_id: format!("mailbox-{}", new_id()),
             poll_interval: Duration::from_millis(DEFAULT_MAILBOX_POLL_INTERVAL_MS),
             lease_duration_ms: DEFAULT_MAILBOX_LEASE_MS,
@@ -550,10 +686,7 @@ impl MailboxDispatcher {
         self
     }
 
-    async fn dispatch_claimed_entry(
-        &self,
-        entry: MailboxEntry,
-    ) -> Result<Option<RunStream>, ApiError> {
+    async fn dispatch_claimed_entry(&self, entry: MailboxEntry) -> Result<(), ApiError> {
         let claim_token = entry.claim_token.clone().ok_or_else(|| {
             ApiError::Internal(format!(
                 "mailbox entry '{}' was claimed without claim_token",
@@ -562,73 +695,69 @@ impl MailboxDispatcher {
         })?;
 
         let entry_id = entry.entry_id.as_str();
-        let run_id = entry.run_id.as_str();
 
-        match start_run_for_claimed_entry(&self.os, &self.mailbox_store, &entry, true).await {
-            Ok(run) => {
-                let accepted_run_id = run.run_id.clone();
-                ack_claimed_entry(
-                    &self.mailbox_store,
-                    entry_id,
-                    &claim_token,
-                    &accepted_run_id,
-                )
-                .await?;
-                tracing::debug!(entry_id, run_id, "mailbox entry accepted");
-                Ok(Some(run))
+        // Check if superseded since claim (generation mismatch)
+        if self
+            .mailbox_store
+            .load_mailbox_state(&entry.mailbox_id)
+            .await
+            .map_err(mailbox_error)?
+            .is_some_and(|state| state.current_generation != entry.generation)
+        {
+            let _ = self
+                .mailbox_store
+                .supersede_mailbox_entry(entry_id, now_unix_millis(), "superseded by interrupt")
+                .await;
+            tracing::debug!(entry_id, "mailbox entry superseded by generation mismatch");
+            return Ok(());
+        }
+
+        match self.receiver.receive(&entry).await {
+            ReceiveOutcome::Accepted => {
+                ack_claimed_entry(&self.mailbox_store, entry_id, &claim_token).await?;
+                tracing::debug!(entry_id, "mailbox entry accepted");
             }
-            Err(MailboxRunStartError::Superseded(error)) => {
-                let _ = self
-                    .mailbox_store
-                    .supersede_mailbox_entry(entry_id, now_unix_millis(), &error)
-                    .await
-                    .map_err(mailbox_error)?;
-                tracing::debug!(entry_id, run_id, %error, "mailbox entry superseded");
-                Ok(None)
-            }
-            Err(MailboxRunStartError::Busy(error))
-            | Err(MailboxRunStartError::Retryable(error)) => {
+            ReceiveOutcome::Retry(reason) => {
                 if entry.attempt_count >= self.max_attempts {
                     dead_letter_claimed_entry(
                         &self.mailbox_store,
                         entry_id,
                         &claim_token,
-                        &format!("max attempts ({}) exceeded: {error}", self.max_attempts),
+                        &format!("max attempts ({}) exceeded: {reason}", self.max_attempts),
                     )
                     .await?;
-                    tracing::warn!(entry_id, run_id, attempts = entry.attempt_count, "mailbox entry dead-lettered after max attempts");
+                    tracing::warn!(entry_id, attempts = entry.attempt_count, "mailbox entry dead-lettered after max attempts");
                 } else {
                     nack_claimed_entry(
                         &self.mailbox_store,
                         entry_id,
                         &claim_token,
                         self.retry_delay_ms,
-                        &error,
+                        &reason,
                     )
                     .await?;
-                    tracing::debug!(entry_id, run_id, attempts = entry.attempt_count, %error, "mailbox entry nacked for retry");
+                    tracing::debug!(entry_id, attempts = entry.attempt_count, %reason, "mailbox entry nacked for retry");
                 }
-                Ok(None)
             }
-            Err(MailboxRunStartError::Permanent(error)) => {
+            ReceiveOutcome::Reject(reason) => {
                 dead_letter_claimed_entry(
                     &self.mailbox_store,
                     entry_id,
                     &claim_token,
-                    &error,
+                    &reason,
                 )
                 .await?;
-                tracing::warn!(entry_id, run_id, %error, "mailbox entry dead-lettered (permanent)");
-                Ok(None)
+                tracing::warn!(entry_id, %reason, "mailbox entry rejected");
             }
-            Err(MailboxRunStartError::Internal(error)) => Err(error),
         }
+        Ok(())
     }
 
     pub async fn dispatch_ready_once(&self) -> Result<usize, ApiError> {
         let claimed = self
             .mailbox_store
             .claim_mailbox_entries(
+                None,
                 self.batch_size,
                 &self.consumer_id,
                 now_unix_millis(),
@@ -649,15 +778,10 @@ impl MailboxDispatcher {
 
         let mut first_error: Option<ApiError> = None;
         while let Some(result) = futures.next().await {
-            match result {
-                Ok(Some(run)) => {
-                    tokio::spawn(drain_background_run(run));
-                }
-                Ok(None) => {}
-                Err(err) if first_error.is_none() => {
+            if let Err(err) = result {
+                if first_error.is_none() {
                     first_error = Some(err);
                 }
-                Err(_) => {}
             }
         }
 
@@ -691,16 +815,20 @@ impl MailboxDispatcher {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use std::sync::Arc;
+    use tirea_agentos::composition::{AgentDefinition, AgentOsBuilder};
     use tirea_agentos::contracts::runtime::behavior::ReadOnlyContext;
     use tirea_agentos::contracts::runtime::phase::{ActionSet, BeforeInferenceAction};
     use tirea_agentos::contracts::{AgentBehavior, TerminationReason};
-    use tirea_agentos::{AgentDefinition, AgentOsBuilder};
-    use tirea_contract::storage::{MailboxReader, RunReader, ThreadReader};
+    use tirea_contract::storage::{MailboxReader, MailboxWriter, RunReader, ThreadReader};
+    use tirea_contract::testing::MailboxEntryBuilder;
     use tirea_store_adapters::MemoryStore;
 
     struct TerminatePlugin;
@@ -745,7 +873,7 @@ mod tests {
         let mailbox_store: Arc<dyn MailboxStore> = store.clone();
         let os = make_os(store.clone());
 
-        let (thread_id, run_id) = enqueue_background_run(
+        let (thread_id, run_id, _entry_id) = enqueue_background_run(
             &os,
             &mailbox_store,
             "test",
@@ -768,18 +896,24 @@ mod tests {
         assert_eq!(thread_id, "mailbox-thread");
         assert_eq!(run_id, "mailbox-run");
 
-        MailboxDispatcher::new(os.clone(), mailbox_store.clone())
+        let receiver: Arc<dyn MailboxReceiver> = Arc::new(AgentReceiver::new(os.clone()));
+        MailboxDispatcher::new(mailbox_store.clone(), receiver)
             .with_consumer_id("test-dispatcher")
             .dispatch_ready_once()
             .await
             .expect("dispatch mailbox run");
 
-        let mailbox_entry =
-            MailboxReader::load_mailbox_entry_by_run_id(mailbox_store.as_ref(), &run_id)
-                .await
-                .expect("load mailbox entry")
-                .expect("mailbox entry should exist");
-        assert_eq!(mailbox_entry.status, MailboxEntryStatus::Accepted);
+        // The entry should be accepted
+        let page = mailbox_store
+            .list_mailbox_entries(&MailboxQuery {
+                mailbox_id: Some("mailbox-thread".to_string()),
+                status: Some(MailboxEntryStatus::Accepted),
+                ..Default::default()
+            })
+            .await
+            .expect("list mailbox entries");
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].status, MailboxEntryStatus::Accepted);
 
         let run_record = RunReader::load_run(store.as_ref(), &run_id)
             .await
@@ -800,7 +934,7 @@ mod tests {
         let mailbox_store: Arc<dyn MailboxStore> = store.clone();
         let os = make_os(store.clone());
 
-        let (_thread_id, run_id) = enqueue_background_run(
+        let (_thread_id, _run_id, _entry_id) = enqueue_background_run(
             &os,
             &mailbox_store,
             "test",
@@ -822,33 +956,729 @@ mod tests {
         .expect("enqueue background run");
 
         let claimed = mailbox_store
-            .claim_mailbox_entries(1, "test-dispatcher", now_unix_millis(), 5_000)
+            .claim_mailbox_entries(
+                None,
+                1,
+                "test-dispatcher",
+                now_unix_millis(),
+                5_000,
+            )
             .await
             .expect("claim mailbox entry");
         assert_eq!(claimed.len(), 1);
 
         mailbox_store
-            .interrupt_mailbox_thread("mailbox-supersede-thread", now_unix_millis())
+            .interrupt_mailbox("mailbox-supersede-thread", now_unix_millis())
             .await
-            .expect("interrupt mailbox thread");
+            .expect("interrupt mailbox");
 
-        let dispatcher = MailboxDispatcher::new(os.clone(), mailbox_store.clone())
+        let receiver: Arc<dyn MailboxReceiver> = Arc::new(AgentReceiver::new(os.clone()));
+        let dispatcher = MailboxDispatcher::new(mailbox_store.clone(), receiver)
             .with_consumer_id("test-dispatcher");
-        let started = dispatcher
+        dispatcher
             .dispatch_claimed_entry(claimed.into_iter().next().expect("claimed entry"))
             .await
             .expect("dispatch after supersede");
-        assert!(started.is_none());
 
-        let mailbox_entry =
-            MailboxReader::load_mailbox_entry_by_run_id(mailbox_store.as_ref(), &run_id)
-                .await
-                .expect("load mailbox entry")
-                .expect("mailbox entry should exist");
-        assert_eq!(mailbox_entry.status, MailboxEntryStatus::Superseded);
-        assert!(RunReader::load_run(store.as_ref(), &run_id)
+        // The entry should be superseded
+        let page = mailbox_store
+            .list_mailbox_entries(&MailboxQuery {
+                mailbox_id: Some("mailbox-supersede-thread".to_string()),
+                ..Default::default()
+            })
             .await
-            .expect("load run record")
-            .is_none());
+            .expect("list mailbox entries");
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].status, MailboxEntryStatus::Superseded);
+    }
+
+    // -----------------------------------------------------------------------
+    // AgentReceiver tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn agent_receiver_rejects_invalid_payload() {
+        let store = Arc::new(MemoryStore::new());
+        let os = make_os(store.clone());
+        let receiver = AgentReceiver::new(os);
+
+        let entry = MailboxEntryBuilder::queued("entry-bad-json", "mailbox-bad")
+            .with_payload(serde_json::json!("not a valid RunRequest"))
+            .claimed("token", "test", u64::MAX)
+            .build();
+
+        match receiver.receive(&entry).await {
+            ReceiveOutcome::Reject(reason) => {
+                assert!(reason.contains("invalid payload"), "got: {reason}");
+            }
+            other => panic!("expected Reject, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_receiver_rejects_unknown_agent() {
+        let store = Arc::new(MemoryStore::new());
+        let os = make_os(store.clone());
+        let receiver = AgentReceiver::new(os);
+
+        let request = RunRequest {
+            agent_id: "nonexistent-agent".to_string(),
+            thread_id: Some("thread-unknown".to_string()),
+            run_id: Some("run-unknown".to_string()),
+            parent_run_id: None,
+            parent_thread_id: None,
+            resource_id: None,
+            origin: Default::default(),
+            state: None,
+            messages: vec![],
+            initial_decisions: vec![],
+            source_mailbox_entry_id: None,
+        };
+
+        let entry = MailboxEntryBuilder::queued("entry-unknown-agent", "mailbox-unknown")
+            .with_payload(serde_json::to_value(&request).unwrap())
+            .claimed("token", "test", u64::MAX)
+            .build();
+
+        match receiver.receive(&entry).await {
+            ReceiveOutcome::Reject(reason) => {
+                assert!(
+                    reason.contains("nonexistent-agent") || reason.contains("not found")
+                        || reason.contains("resolve"),
+                    "expected resolve error, got: {reason}"
+                );
+            }
+            other => panic!("expected Reject for unknown agent, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_receiver_accepts_valid_request() {
+        let store = Arc::new(MemoryStore::new());
+        let os = make_os(store.clone());
+        let receiver = AgentReceiver::new(os);
+
+        let request = RunRequest {
+            agent_id: "test".to_string(),
+            thread_id: Some("thread-valid".to_string()),
+            run_id: Some("run-valid".to_string()),
+            parent_run_id: None,
+            parent_thread_id: None,
+            resource_id: None,
+            origin: Default::default(),
+            state: None,
+            messages: vec![],
+            initial_decisions: vec![],
+            source_mailbox_entry_id: None,
+        };
+
+        let entry = MailboxEntryBuilder::queued("entry-valid", "thread-valid")
+            .with_payload(serde_json::to_value(&request).unwrap())
+            .claimed("token", "test", u64::MAX)
+            .build();
+
+        match receiver.receive(&entry).await {
+            ReceiveOutcome::Accepted => {} // success
+            other => panic!("expected Accepted, got {other:?}"),
+        }
+
+        // Give the spawned drain task a moment to finish
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Run should be persisted
+        let run = RunReader::load_run(store.as_ref(), "run-valid")
+            .await
+            .expect("load run")
+            .expect("run should be persisted");
+        assert_eq!(run.thread_id, "thread-valid");
+    }
+
+    // -----------------------------------------------------------------------
+    // MailboxDispatcher with mock receiver
+    // -----------------------------------------------------------------------
+
+    struct MockReceiver {
+        outcome: std::sync::Mutex<Option<ReceiveOutcome>>,
+    }
+
+    impl MockReceiver {
+        fn always(outcome: ReceiveOutcome) -> Self {
+            Self {
+                outcome: std::sync::Mutex::new(Some(outcome)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl MailboxReceiver for MockReceiver {
+        async fn receive(&self, _entry: &MailboxEntry) -> ReceiveOutcome {
+            self.outcome
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or(ReceiveOutcome::Accepted)
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatcher_reject_outcome_dead_letters_entry() {
+        let store = Arc::new(MemoryStore::new());
+        let mailbox_store: Arc<dyn MailboxStore> = store.clone();
+
+        store
+            .ensure_mailbox_state("mbx-reject", 1)
+            .await
+            .unwrap();
+        let entry = MailboxEntryBuilder::queued("entry-reject", "mbx-reject")
+            .with_payload(serde_json::json!({"test": true}))
+            .build();
+        store.enqueue_mailbox_entry(&entry).await.unwrap();
+
+        let receiver: Arc<dyn MailboxReceiver> =
+            Arc::new(MockReceiver::always(ReceiveOutcome::Reject(
+                "bad message".to_string(),
+            )));
+        MailboxDispatcher::new(mailbox_store.clone(), receiver)
+            .with_consumer_id("test-dispatcher")
+            .dispatch_ready_once()
+            .await
+            .expect("dispatch should succeed");
+
+        let loaded = store
+            .load_mailbox_entry("entry-reject")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.status, MailboxEntryStatus::DeadLetter);
+        assert_eq!(loaded.last_error.as_deref(), Some("bad message"));
+    }
+
+    #[tokio::test]
+    async fn dispatcher_retry_outcome_nacks_entry_for_retry() {
+        let store = Arc::new(MemoryStore::new());
+        let mailbox_store: Arc<dyn MailboxStore> = store.clone();
+
+        store
+            .ensure_mailbox_state("mbx-retry", 1)
+            .await
+            .unwrap();
+        let entry = MailboxEntryBuilder::queued("entry-retry", "mbx-retry")
+            .with_payload(serde_json::json!({"test": true}))
+            .build();
+        store.enqueue_mailbox_entry(&entry).await.unwrap();
+
+        let receiver: Arc<dyn MailboxReceiver> =
+            Arc::new(MockReceiver::always(ReceiveOutcome::Retry(
+                "try later".to_string(),
+            )));
+        MailboxDispatcher::new(mailbox_store.clone(), receiver)
+            .with_consumer_id("test-dispatcher")
+            .dispatch_ready_once()
+            .await
+            .expect("dispatch should succeed");
+
+        let loaded = store
+            .load_mailbox_entry("entry-retry")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.status, MailboxEntryStatus::Queued);
+        assert_eq!(loaded.last_error.as_deref(), Some("try later"));
+        assert_eq!(loaded.attempt_count, 1);
+    }
+
+    #[tokio::test]
+    async fn dispatcher_retry_at_max_attempts_dead_letters() {
+        let store = Arc::new(MemoryStore::new());
+        let mailbox_store: Arc<dyn MailboxStore> = store.clone();
+
+        store
+            .ensure_mailbox_state("mbx-max", 1)
+            .await
+            .unwrap();
+        let entry = MailboxEntryBuilder::queued("entry-max", "mbx-max")
+            .with_payload(serde_json::json!({"test": true}))
+            .with_attempt_count(10)
+            .build(); // Already at max (DEFAULT_MAILBOX_MAX_ATTEMPTS = 10)
+        store.enqueue_mailbox_entry(&entry).await.unwrap();
+
+        let receiver: Arc<dyn MailboxReceiver> =
+            Arc::new(MockReceiver::always(ReceiveOutcome::Retry(
+                "still failing".to_string(),
+            )));
+        let dispatcher = MailboxDispatcher::new(mailbox_store.clone(), receiver)
+            .with_consumer_id("test-dispatcher");
+        dispatcher
+            .dispatch_ready_once()
+            .await
+            .expect("dispatch should succeed");
+
+        let loaded = store
+            .load_mailbox_entry("entry-max")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.status, MailboxEntryStatus::DeadLetter);
+        assert!(
+            loaded
+                .last_error
+                .as_deref()
+                .unwrap()
+                .contains("max attempts"),
+            "error should mention max attempts: {:?}",
+            loaded.last_error
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatcher_generation_mismatch_supersedes_entry() {
+        let store = Arc::new(MemoryStore::new());
+        let mailbox_store: Arc<dyn MailboxStore> = store.clone();
+
+        store
+            .ensure_mailbox_state("mbx-genm", 1)
+            .await
+            .unwrap();
+        let entry = MailboxEntryBuilder::queued("entry-genm", "mbx-genm")
+            .with_payload(serde_json::json!({"test": true}))
+            .build();
+        store.enqueue_mailbox_entry(&entry).await.unwrap();
+
+        // Claim the entry
+        let claimed = store
+            .claim_mailbox_entries(None, 1, "test-dispatcher", now_unix_millis(), 30_000)
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        let claimed_entry = claimed.into_iter().next().unwrap();
+
+        // Interrupt the mailbox to bump generation
+        store
+            .interrupt_mailbox("mbx-genm", now_unix_millis())
+            .await
+            .unwrap();
+
+        // Dispatch the claimed entry — dispatcher should detect generation mismatch
+        let receiver: Arc<dyn MailboxReceiver> =
+            Arc::new(MockReceiver::always(ReceiveOutcome::Accepted));
+        let dispatcher = MailboxDispatcher::new(mailbox_store.clone(), receiver)
+            .with_consumer_id("test-dispatcher");
+        dispatcher
+            .dispatch_claimed_entry(claimed_entry)
+            .await
+            .expect("dispatch should succeed");
+
+        let loaded = store
+            .load_mailbox_entry("entry-genm")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.status, MailboxEntryStatus::Superseded);
+    }
+
+    #[tokio::test]
+    async fn dispatcher_accept_outcome_acks_entry() {
+        let store = Arc::new(MemoryStore::new());
+        let mailbox_store: Arc<dyn MailboxStore> = store.clone();
+
+        store.ensure_mailbox_state("mbx-ack", 1).await.unwrap();
+        let entry = MailboxEntryBuilder::queued("entry-ack", "mbx-ack")
+            .with_payload(serde_json::json!({"test": true}))
+            .build();
+        store.enqueue_mailbox_entry(&entry).await.unwrap();
+
+        let receiver: Arc<dyn MailboxReceiver> =
+            Arc::new(MockReceiver::always(ReceiveOutcome::Accepted));
+        MailboxDispatcher::new(mailbox_store.clone(), receiver)
+            .with_consumer_id("test-dispatcher")
+            .dispatch_ready_once()
+            .await
+            .expect("dispatch should succeed");
+
+        let loaded = store
+            .load_mailbox_entry("entry-ack")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.status, MailboxEntryStatus::Accepted);
+    }
+
+    #[tokio::test]
+    async fn dispatcher_empty_mailbox_returns_zero() {
+        let store = Arc::new(MemoryStore::new());
+        let mailbox_store: Arc<dyn MailboxStore> = store.clone();
+
+        let receiver: Arc<dyn MailboxReceiver> =
+            Arc::new(MockReceiver::always(ReceiveOutcome::Accepted));
+        let count = MailboxDispatcher::new(mailbox_store, receiver)
+            .with_consumer_id("test-dispatcher")
+            .dispatch_ready_once()
+            .await
+            .expect("dispatch should succeed");
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn dispatcher_processes_multiple_entries_in_batch() {
+        let store = Arc::new(MemoryStore::new());
+        let mailbox_store: Arc<dyn MailboxStore> = store.clone();
+
+        store.ensure_mailbox_state("mbx-batch", 1).await.unwrap();
+        for i in 0..5 {
+            let entry = MailboxEntryBuilder::queued(format!("entry-batch-{i}"), "mbx-batch")
+                .with_payload(serde_json::json!({"test": true}))
+                .build();
+            store.enqueue_mailbox_entry(&entry).await.unwrap();
+        }
+
+        let receiver: Arc<dyn MailboxReceiver> =
+            Arc::new(MockReceiver::always(ReceiveOutcome::Accepted));
+        let count = MailboxDispatcher::new(mailbox_store.clone(), receiver)
+            .with_consumer_id("test-dispatcher")
+            .dispatch_ready_once()
+            .await
+            .expect("dispatch should succeed");
+        assert_eq!(count, 5);
+
+        let page = mailbox_store
+            .list_mailbox_entries(&MailboxQuery {
+                mailbox_id: Some("mbx-batch".to_string()),
+                status: Some(MailboxEntryStatus::Accepted),
+                limit: 100,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.total, 5);
+    }
+
+    // -----------------------------------------------------------------------
+    // Service function tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn enqueue_background_run_returns_three_tuple() {
+        let store = Arc::new(MemoryStore::new());
+        let mailbox_store: Arc<dyn MailboxStore> = store.clone();
+        let os = make_os(store.clone());
+
+        let (thread_id, run_id, entry_id) = enqueue_background_run(
+            &os,
+            &mailbox_store,
+            "test",
+            RunRequest {
+                agent_id: "test".to_string(),
+                thread_id: Some("thread-3tuple".to_string()),
+                run_id: Some("run-3tuple".to_string()),
+                parent_run_id: None,
+                parent_thread_id: None,
+                resource_id: None,
+                origin: Default::default(),
+                state: None,
+                messages: vec![],
+                initial_decisions: vec![],
+                source_mailbox_entry_id: None,
+            },
+        )
+        .await
+        .expect("enqueue");
+
+        assert_eq!(thread_id, "thread-3tuple");
+        assert_eq!(run_id, "run-3tuple");
+        assert!(!entry_id.is_empty());
+
+        // Verify the entry exists in the store
+        let entry = mailbox_store
+            .load_mailbox_entry(&entry_id)
+            .await
+            .unwrap()
+            .expect("entry should exist");
+        assert_eq!(entry.mailbox_id, "thread-3tuple");
+        assert_eq!(entry.status, MailboxEntryStatus::Queued);
+
+        // Verify payload contains run_id
+        assert_eq!(
+            entry.payload.get("run_id").and_then(|v| v.as_str()),
+            Some("run-3tuple")
+        );
+    }
+
+    #[tokio::test]
+    async fn enqueue_background_run_rejects_unknown_agent() {
+        let store = Arc::new(MemoryStore::new());
+        let mailbox_store: Arc<dyn MailboxStore> = store.clone();
+        let os = make_os(store.clone());
+
+        let result = enqueue_background_run(
+            &os,
+            &mailbox_store,
+            "nonexistent",
+            RunRequest {
+                agent_id: "nonexistent".to_string(),
+                thread_id: Some("thread-no-agent".to_string()),
+                run_id: Some("run-no-agent".to_string()),
+                parent_run_id: None,
+                parent_thread_id: None,
+                resource_id: None,
+                origin: Default::default(),
+                state: None,
+                messages: vec![],
+                initial_decisions: vec![],
+                source_mailbox_entry_id: None,
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn load_background_task_finds_by_entry_id() {
+        let store = Arc::new(MemoryStore::new());
+        let mailbox_store: Arc<dyn MailboxStore> = store.clone();
+        let os = make_os(store.clone());
+
+        let (_thread_id, _run_id, entry_id) = enqueue_background_run(
+            &os,
+            &mailbox_store,
+            "test",
+            RunRequest {
+                agent_id: "test".to_string(),
+                thread_id: Some("thread-lookup".to_string()),
+                run_id: Some("run-lookup".to_string()),
+                parent_run_id: None,
+                parent_thread_id: None,
+                resource_id: None,
+                origin: Default::default(),
+                state: None,
+                messages: vec![],
+                initial_decisions: vec![],
+                source_mailbox_entry_id: None,
+            },
+        )
+        .await
+        .expect("enqueue");
+
+        // Lookup by entry_id returns mailbox entry (queued, no run record yet)
+        let task = load_background_task(store.as_ref(), store.as_ref(), &entry_id)
+            .await
+            .expect("load background task");
+        assert!(matches!(task, Some(BackgroundTaskLookup::Mailbox(_))));
+    }
+
+    #[tokio::test]
+    async fn load_background_task_cross_references_accepted_entry() {
+        let store = Arc::new(MemoryStore::new());
+        let mailbox_store: Arc<dyn MailboxStore> = store.clone();
+        let os = make_os(store.clone());
+
+        let (thread_id, run_id, entry_id) = enqueue_background_run(
+            &os,
+            &mailbox_store,
+            "test",
+            RunRequest {
+                agent_id: "test".to_string(),
+                thread_id: Some("thread-xref".to_string()),
+                run_id: Some("run-xref".to_string()),
+                parent_run_id: None,
+                parent_thread_id: None,
+                resource_id: None,
+                origin: Default::default(),
+                state: None,
+                messages: vec![],
+                initial_decisions: vec![],
+                source_mailbox_entry_id: None,
+            },
+        )
+        .await
+        .expect("enqueue");
+
+        // Dispatch to accept and create run record
+        let receiver: Arc<dyn MailboxReceiver> = Arc::new(AgentReceiver::new(os.clone()));
+        MailboxDispatcher::new(mailbox_store.clone(), receiver)
+            .with_consumer_id("test-xref")
+            .dispatch_ready_once()
+            .await
+            .expect("dispatch");
+
+        // Give drain task time to finish
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Look up by entry_id — should cross-reference to RunRecord
+        let task = load_background_task(store.as_ref(), store.as_ref(), &entry_id)
+            .await
+            .expect("load background task");
+        match task {
+            Some(BackgroundTaskLookup::Run(record)) => {
+                assert_eq!(record.run_id, run_id);
+                assert_eq!(record.thread_id, thread_id);
+            }
+            other => panic!("expected Run variant, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn load_background_task_returns_none_for_unknown_id() {
+        let store = Arc::new(MemoryStore::new());
+        let task = load_background_task(store.as_ref(), store.as_ref(), "nonexistent")
+            .await
+            .expect("load background task");
+        assert!(task.is_none());
+    }
+
+    #[tokio::test]
+    async fn try_cancel_queued_entry_by_entry_id() {
+        let store = Arc::new(MemoryStore::new());
+        let mailbox_store: Arc<dyn MailboxStore> = store.clone();
+        let os = make_os(store.clone());
+
+        let (_thread_id, _run_id, entry_id) = enqueue_background_run(
+            &os,
+            &mailbox_store,
+            "test",
+            RunRequest {
+                agent_id: "test".to_string(),
+                thread_id: Some("thread-cancel-q".to_string()),
+                run_id: Some("run-cancel-q".to_string()),
+                parent_run_id: None,
+                parent_thread_id: None,
+                resource_id: None,
+                origin: Default::default(),
+                state: None,
+                messages: vec![],
+                initial_decisions: vec![],
+                source_mailbox_entry_id: None,
+            },
+        )
+        .await
+        .expect("enqueue");
+
+        let result =
+            try_cancel_active_or_queued_run_by_id(&os, &mailbox_store, &entry_id).await;
+        assert!(matches!(
+            result,
+            Ok(Some(CancelBackgroundRunResult::Pending))
+        ));
+
+        let entry = store
+            .load_mailbox_entry(&entry_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.status, MailboxEntryStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn try_cancel_returns_none_for_unknown_id() {
+        let store = Arc::new(MemoryStore::new());
+        let mailbox_store: Arc<dyn MailboxStore> = store.clone();
+        let os = make_os(store.clone());
+
+        let result =
+            try_cancel_active_or_queued_run_by_id(&os, &mailbox_store, "nonexistent").await;
+        assert!(matches!(result, Ok(None)));
+    }
+
+    #[tokio::test]
+    async fn cancel_pending_for_mailbox_excludes_specified_entry() {
+        let store = Arc::new(MemoryStore::new());
+        let mailbox_store: Arc<dyn MailboxStore> = store.clone();
+        let os = make_os(store.clone());
+
+        let (_t1, _r1, entry1) = enqueue_background_run(
+            &os,
+            &mailbox_store,
+            "test",
+            RunRequest {
+                agent_id: "test".to_string(),
+                thread_id: Some("thread-cancel-pen".to_string()),
+                run_id: Some("run-cancel-pen-1".to_string()),
+                parent_run_id: None,
+                parent_thread_id: None,
+                resource_id: None,
+                origin: Default::default(),
+                state: None,
+                messages: vec![],
+                initial_decisions: vec![],
+                source_mailbox_entry_id: None,
+            },
+        )
+        .await
+        .expect("enqueue 1");
+
+        let (_t2, _r2, entry2) = enqueue_background_run(
+            &os,
+            &mailbox_store,
+            "test",
+            RunRequest {
+                agent_id: "test".to_string(),
+                thread_id: Some("thread-cancel-pen".to_string()),
+                run_id: Some("run-cancel-pen-2".to_string()),
+                parent_run_id: None,
+                parent_thread_id: None,
+                resource_id: None,
+                origin: Default::default(),
+                state: None,
+                messages: vec![],
+                initial_decisions: vec![],
+                source_mailbox_entry_id: None,
+            },
+        )
+        .await
+        .expect("enqueue 2");
+
+        // Cancel all pending except entry1
+        let cancelled = cancel_pending_for_mailbox(
+            &mailbox_store,
+            "thread-cancel-pen",
+            Some(&entry1),
+        )
+        .await
+        .expect("cancel pending");
+        assert_eq!(cancelled.len(), 1);
+        assert_eq!(cancelled[0].entry_id, entry2);
+
+        // entry1 still queued
+        let e1 = store.load_mailbox_entry(&entry1).await.unwrap().unwrap();
+        assert_eq!(e1.status, MailboxEntryStatus::Queued);
+
+        // entry2 cancelled
+        let e2 = store.load_mailbox_entry(&entry2).await.unwrap().unwrap();
+        assert_eq!(e2.status, MailboxEntryStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn enqueue_generates_ids_when_not_provided() {
+        let store = Arc::new(MemoryStore::new());
+        let mailbox_store: Arc<dyn MailboxStore> = store.clone();
+        let os = make_os(store.clone());
+
+        let (thread_id, run_id, entry_id) = enqueue_background_run(
+            &os,
+            &mailbox_store,
+            "test",
+            RunRequest {
+                agent_id: "test".to_string(),
+                thread_id: None,
+                run_id: None,
+                parent_run_id: None,
+                parent_thread_id: None,
+                resource_id: None,
+                origin: Default::default(),
+                state: None,
+                messages: vec![],
+                initial_decisions: vec![],
+                source_mailbox_entry_id: None,
+            },
+        )
+        .await
+        .expect("enqueue");
+
+        assert!(!thread_id.is_empty());
+        assert!(!run_id.is_empty());
+        assert!(!entry_id.is_empty());
+        // All three should be distinct
+        assert_ne!(thread_id, run_id);
+        assert_ne!(run_id, entry_id);
     }
 }
