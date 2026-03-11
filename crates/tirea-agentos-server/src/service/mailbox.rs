@@ -50,10 +50,21 @@ fn normalize_background_run_request(agent_id: &str, mut request: RunRequest) -> 
     request
 }
 
+/// Optional envelope fields for enqueued mailbox entries.
+#[derive(Debug, Clone, Default)]
+pub struct EnqueueOptions {
+    /// Identity of the sender for audit and reply routing.
+    pub sender_id: Option<String>,
+    /// Dispatch priority (higher = dispatched first). Default 0.
+    pub priority: u8,
+    /// Deduplication key — rejected if another entry with the same key exists in the mailbox.
+    pub dedupe_key: Option<String>,
+}
+
 fn mailbox_entry_from_request(
     request: &RunRequest,
     generation: u64,
-    dedupe_key: Option<String>,
+    options: &EnqueueOptions,
     available_at: u64,
 ) -> MailboxEntry {
     let now = now_unix_millis();
@@ -65,10 +76,10 @@ fn mailbox_entry_from_request(
     MailboxEntry {
         entry_id: new_id(),
         mailbox_id,
-        sender_id: None,
+        sender_id: options.sender_id.clone(),
         payload,
-        priority: 0,
-        dedupe_key,
+        priority: options.priority,
+        dedupe_key: options.dedupe_key.clone(),
         generation,
         status: MailboxEntryStatus::Queued,
         available_at,
@@ -323,6 +334,7 @@ async fn enqueue_mailbox_run(
     agent_id: &str,
     request: RunRequest,
     available_at: u64,
+    options: EnqueueOptions,
 ) -> Result<(String, String, String), ApiError> {
     os.resolve(agent_id).map_err(AgentOsRunError::from)?;
 
@@ -343,7 +355,7 @@ async fn enqueue_mailbox_run(
             .await
             .map_err(mailbox_error)?;
         let entry =
-            mailbox_entry_from_request(&request, state.current_generation, None, available_at);
+            mailbox_entry_from_request(&request, state.current_generation, &options, available_at);
         let entry_id = entry.entry_id.clone();
 
         match mailbox_store.enqueue_mailbox_entry(&entry).await {
@@ -371,9 +383,11 @@ pub async fn enqueue_background_run(
     mailbox_store: &Arc<dyn MailboxStore>,
     agent_id: &str,
     request: RunRequest,
+    options: EnqueueOptions,
 ) -> Result<(String, String, String), ApiError> {
     let (mailbox_id, entry_id, run_id) =
-        enqueue_mailbox_run(os, mailbox_store, agent_id, request, now_unix_millis()).await?;
+        enqueue_mailbox_run(os, mailbox_store, agent_id, request, now_unix_millis(), options)
+            .await?;
     Ok((mailbox_id, run_id, entry_id))
 }
 
@@ -383,6 +397,7 @@ pub async fn start_streaming_run_via_mailbox(
     agent_id: &str,
     request: RunRequest,
     consumer_id: &str,
+    options: EnqueueOptions,
 ) -> Result<RunStream, ApiError> {
     let (_mailbox_id, entry_id, _run_id) = enqueue_mailbox_run(
         os,
@@ -390,6 +405,7 @@ pub async fn start_streaming_run_via_mailbox(
         agent_id,
         request,
         INLINE_MAILBOX_AVAILABLE_AT,
+        options,
     )
     .await?;
 
@@ -890,6 +906,7 @@ mod tests {
                 initial_decisions: vec![],
                 source_mailbox_entry_id: None,
             },
+            EnqueueOptions::default(),
         )
         .await
         .expect("enqueue background run");
@@ -951,6 +968,7 @@ mod tests {
                 initial_decisions: vec![],
                 source_mailbox_entry_id: None,
             },
+            EnqueueOptions::default(),
         )
         .await
         .expect("enqueue background run");
@@ -1379,6 +1397,7 @@ mod tests {
                 initial_decisions: vec![],
                 source_mailbox_entry_id: None,
             },
+            EnqueueOptions::default(),
         )
         .await
         .expect("enqueue");
@@ -1426,6 +1445,7 @@ mod tests {
                 initial_decisions: vec![],
                 source_mailbox_entry_id: None,
             },
+            EnqueueOptions::default(),
         )
         .await;
 
@@ -1455,6 +1475,7 @@ mod tests {
                 initial_decisions: vec![],
                 source_mailbox_entry_id: None,
             },
+            EnqueueOptions::default(),
         )
         .await
         .expect("enqueue");
@@ -1489,6 +1510,7 @@ mod tests {
                 initial_decisions: vec![],
                 source_mailbox_entry_id: None,
             },
+            EnqueueOptions::default(),
         )
         .await
         .expect("enqueue");
@@ -1549,6 +1571,7 @@ mod tests {
                 initial_decisions: vec![],
                 source_mailbox_entry_id: None,
             },
+            EnqueueOptions::default(),
         )
         .await
         .expect("enqueue");
@@ -1602,6 +1625,7 @@ mod tests {
                 initial_decisions: vec![],
                 source_mailbox_entry_id: None,
             },
+            EnqueueOptions::default(),
         )
         .await
         .expect("enqueue 1");
@@ -1623,6 +1647,7 @@ mod tests {
                 initial_decisions: vec![],
                 source_mailbox_entry_id: None,
             },
+            EnqueueOptions::default(),
         )
         .await
         .expect("enqueue 2");
@@ -1670,6 +1695,7 @@ mod tests {
                 initial_decisions: vec![],
                 source_mailbox_entry_id: None,
             },
+            EnqueueOptions::default(),
         )
         .await
         .expect("enqueue");

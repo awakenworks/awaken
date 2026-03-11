@@ -7,18 +7,20 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::Value;
-use tirea_agentos::contracts::storage::{ThreadListPage, ThreadListQuery};
+use tirea_agentos::contracts::storage::{
+    MailboxEntryStatus, MailboxQuery, ThreadListPage, ThreadListQuery,
+};
 use tirea_agentos::contracts::thread::Message;
 use tirea_agentos::contracts::{RunRequest, ToolCallDecision};
 use tirea_agentos::runtime::AgentOsRunError;
-use tirea_contract::storage::{RunOrigin, RunPage, RunQuery, RunRecord, RunStatus};
+use tirea_contract::storage::{MailboxPage, RunOrigin, RunPage, RunQuery, RunRecord, RunStatus};
 use tirea_contract::{AgentEvent, Identity};
 
 use crate::service::{
     check_run_liveness, load_run_record, normalize_optional_id, parse_message_query,
     require_agent_state_store, require_mailbox_store, start_background_run, start_http_run,
     try_cancel_active_or_queued_run_by_id, try_forward_decisions_to_active_run_by_id, ApiError,
-    MessageQueryParams, RunLookup, ThreadInterruptResult,
+    EnqueueOptions, MessageQueryParams, RunLookup, ThreadInterruptResult,
 };
 use crate::transport::http_run::{wire_http_sse_relay, HttpSseRelayConfig};
 use crate::transport::http_sse::{sse_body_stream, sse_response};
@@ -32,6 +34,7 @@ const THREAD_PATH: &str = "/v1/threads/:id";
 const THREAD_INTERRUPT_PATH: &str = "/v1/threads/:id/interrupt";
 const THREAD_METADATA_PATH: &str = "/v1/threads/:id/metadata";
 const THREAD_MESSAGES_PATH: &str = "/v1/threads/:id/messages";
+const THREAD_MAILBOX_PATH: &str = "/v1/threads/:id/mailbox";
 const RUNS_PATH: &str = "/v1/runs";
 const RUN_PATH: &str = "/v1/runs/:id";
 const RUN_INPUTS_PATH: &str = "/v1/runs/:id/inputs";
@@ -52,6 +55,7 @@ pub fn thread_routes() -> Router<AppState> {
         .route(THREAD_INTERRUPT_PATH, post(interrupt_thread))
         .route(THREAD_METADATA_PATH, patch(patch_thread_metadata))
         .route(THREAD_MESSAGES_PATH, get(get_thread_messages))
+        .route(THREAD_MAILBOX_PATH, get(list_thread_mailbox))
 }
 
 /// Build run projection query routes (opt-in, not included in the default public router).
@@ -254,6 +258,51 @@ async fn interrupt_thread(
         })),
     )
         .into_response())
+}
+
+fn default_mailbox_limit() -> usize {
+    50
+}
+
+#[derive(Debug, Deserialize)]
+struct MailboxListParams {
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default = "default_mailbox_limit")]
+    limit: usize,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+fn parse_mailbox_status(raw: &str) -> Option<MailboxEntryStatus> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "queued" => Some(MailboxEntryStatus::Queued),
+        "claimed" => Some(MailboxEntryStatus::Claimed),
+        "accepted" => Some(MailboxEntryStatus::Accepted),
+        "superseded" => Some(MailboxEntryStatus::Superseded),
+        "cancelled" => Some(MailboxEntryStatus::Cancelled),
+        "dead_letter" | "deadletter" => Some(MailboxEntryStatus::DeadLetter),
+        _ => None,
+    }
+}
+
+async fn list_thread_mailbox(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<MailboxListParams>,
+) -> Result<Json<MailboxPage>, ApiError> {
+    let mailbox_store = require_mailbox_store(&st)?;
+    let query = MailboxQuery {
+        mailbox_id: Some(id),
+        status: params.status.as_deref().and_then(parse_mailbox_status),
+        offset: params.offset.unwrap_or(0),
+        limit: params.limit.clamp(1, 200),
+    };
+    mailbox_store
+        .list_mailbox_entries(&query)
+        .await
+        .map(Json)
+        .map_err(|e| ApiError::Internal(e.to_string()))
 }
 
 #[derive(Debug, Serialize)]
@@ -566,7 +615,15 @@ async fn push_run_inputs(
 
     let mailbox_store = require_mailbox_store(&st)?;
     let (thread_id, _run_id, _entry_id) =
-        start_background_run(&st.os, &mailbox_store, &agent_id, run_request, "run_api").await?;
+        start_background_run(
+            &st.os,
+            &mailbox_store,
+            &agent_id,
+            run_request,
+            "run_api",
+            EnqueueOptions::default(),
+        )
+        .await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({

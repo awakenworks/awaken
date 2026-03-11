@@ -5,7 +5,7 @@ use tirea_agentos::runtime::AgentOs;
 use tirea_protocol_ai_sdk_v6::{AiSdkEncoder, AiSdkV6RunRequest, UIStreamEvent};
 
 use super::runtime::apply_ai_sdk_extensions;
-use crate::service::start_streaming_run_via_mailbox;
+use crate::service::{start_streaming_run_via_mailbox, EnqueueOptions};
 use crate::transport::nats::NatsTransport;
 use crate::transport::NatsProtocolError;
 
@@ -80,6 +80,7 @@ async fn handle_message(
         &agent_id,
         run_request,
         "aisdk-nats-inline",
+        EnqueueOptions::default(),
     )
     .await
     {

@@ -191,6 +191,7 @@ mod tests {
             state: None,
             messages: vec![],
             initial_decisions: vec![],
+            source_mailbox_entry_id: None,
         }
     }
 
