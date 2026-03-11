@@ -13,9 +13,9 @@ use tirea_agentos_server::service::AppState;
 
 const TEST_AGENT_ID: &str = "test";
 use tirea_contract::storage::{
-    MailboxEntry, MailboxEntryStatus, RunOrigin, RunQuery, RunReader, RunRecord, RunStatus,
-    RunWriter,
+    MailboxEntryStatus, RunOrigin, RunQuery, RunReader, RunRecord, RunStatus, RunWriter,
 };
+use tirea_contract::testing::MailboxEntryBuilder;
 use tirea_store_adapters::MemoryStore;
 use uuid::Uuid;
 
@@ -100,43 +100,6 @@ fn make_slow_interrupt_app() -> (axum::Router, Arc<AgentOs>, Arc<MemoryStore>) {
         .merge(tirea_agentos_server::http::health_routes())
         .with_state(AppState::new(os.clone(), read_store).with_mailbox_store(store.clone()));
     (app, os, store)
-}
-
-fn mailbox_entry(run_id: &str, thread_id: &str) -> MailboxEntry {
-    MailboxEntry {
-        entry_id: format!("entry-{run_id}"),
-        thread_id: thread_id.to_string(),
-        run_id: run_id.to_string(),
-        agent_id: TEST_AGENT_ID.to_string(),
-        generation: 0,
-        status: MailboxEntryStatus::Queued,
-        request: RunRequest {
-            agent_id: TEST_AGENT_ID.to_string(),
-            thread_id: Some(thread_id.to_string()),
-            run_id: Some(run_id.to_string()),
-            parent_run_id: None,
-            parent_thread_id: None,
-            resource_id: None,
-            origin: RunOrigin::User,
-            state: None,
-            messages: vec![],
-            initial_decisions: vec![],
-            source_mailbox_entry_id: None,
-        },
-        dedupe_key: None,
-        kind: None,
-        sender_id: None,
-        priority: 0,
-        available_at: now_unix_millis(),
-        attempt_count: 0,
-        last_error: None,
-        claim_token: None,
-        claimed_by: None,
-        lease_until: None,
-        accepted_run_id: None,
-        created_at: now_unix_millis(),
-        updated_at: now_unix_millis(),
-    }
 }
 
 async fn start_active_run(
@@ -321,8 +284,31 @@ async fn interrupt_thread_cancels_active_run_and_pending_mailbox_entries() {
     let queued_run_id = format!("run-queued-{}", Uuid::new_v4().simple());
 
     let _active_run = start_active_run(&os, TEST_AGENT_ID, &thread_id, &active_run_id).await;
+    let queued_entry_id = format!("entry-{queued_run_id}");
+    let queued_request = RunRequest {
+        agent_id: TEST_AGENT_ID.to_string(),
+        thread_id: Some(thread_id.clone()),
+        run_id: None,
+        parent_run_id: None,
+        parent_thread_id: None,
+        resource_id: None,
+        origin: RunOrigin::User,
+        state: None,
+        messages: vec![],
+        initial_decisions: vec![],
+        source_mailbox_entry_id: None,
+    };
+    let now = now_unix_millis();
     store
-        .enqueue_mailbox_entry(&mailbox_entry(&queued_run_id, &thread_id))
+        .enqueue_mailbox_entry(
+            &MailboxEntryBuilder::queued(&queued_entry_id, &thread_id)
+                .with_payload(
+                    serde_json::to_value(&queued_request).expect("serialize queued RunRequest"),
+                )
+                .with_available_at(now)
+                .with_timestamps(now, now)
+                .build(),
+        )
         .await
         .expect("enqueue queued mailbox entry");
 
@@ -339,20 +325,19 @@ async fn interrupt_thread_cancels_active_run_and_pending_mailbox_entries() {
     );
     assert_eq!(payload["generation"].as_u64(), Some(1));
     assert_eq!(payload["superseded_pending_count"].as_u64(), Some(1));
-    assert!(payload["superseded_pending_run_ids"]
+    assert!(payload["superseded_pending_entry_ids"]
         .as_array()
         .expect("cancelled pending ids should be present")
         .iter()
-        .any(|value| value.as_str() == Some(queued_run_id.as_str())));
+        .any(|value| value.as_str() == Some(queued_entry_id.as_str())));
 
-    let queued_entry =
-        tirea_agentos::contracts::storage::MailboxReader::load_mailbox_entry_by_run_id(
-            store.as_ref(),
-            &queued_run_id,
-        )
-        .await
-        .expect("load queued mailbox entry")
-        .expect("queued mailbox entry should exist");
+    let queued_entry = tirea_agentos::contracts::storage::MailboxReader::load_mailbox_entry(
+        store.as_ref(),
+        &queued_entry_id,
+    )
+    .await
+    .expect("load queued mailbox entry")
+    .expect("queued mailbox entry should exist");
     assert_eq!(queued_entry.status, MailboxEntryStatus::Superseded);
 }
 

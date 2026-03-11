@@ -13,12 +13,12 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::ImageExt;
 use testcontainers_modules::postgres::Postgres;
 use tirea_contract::storage::{
-    MailboxEntry, MailboxEntryStatus, MailboxReader, MailboxWriter, RunOrigin, RunQuery, RunReader,
-    RunRecord, RunStatus, RunWriter, ThreadReader, ThreadStoreError, ThreadWriter,
-    VersionPrecondition,
+    MailboxEntryStatus, MailboxReader, MailboxWriter, RunOrigin, RunQuery, RunReader, RunRecord,
+    RunStatus, RunWriter, ThreadReader, ThreadStoreError, ThreadWriter, VersionPrecondition,
 };
+use tirea_contract::testing::MailboxEntryBuilder;
 use tirea_contract::thread::ThreadChangeSet;
-use tirea_contract::{CheckpointReason, Message, MessageQuery, RunRequest, Thread, ToolCall};
+use tirea_contract::{CheckpointReason, Message, MessageQuery, Thread, ToolCall};
 use tirea_store_adapters::PostgresStore;
 
 async fn start_postgres() -> Option<(testcontainers::ContainerAsync<Postgres>, String)> {
@@ -59,42 +59,6 @@ async fn make_store_without_ensure(database_url: &str) -> PostgresStore {
     PostgresStore::new(pool)
 }
 
-fn mailbox_entry(run_id: &str, thread_id: &str) -> MailboxEntry {
-    MailboxEntry {
-        entry_id: format!("entry-{run_id}"),
-        thread_id: thread_id.to_string(),
-        run_id: run_id.to_string(),
-        agent_id: "agent".to_string(),
-        generation: 0,
-        status: MailboxEntryStatus::Queued,
-        request: RunRequest {
-            agent_id: "agent".to_string(),
-            thread_id: Some(thread_id.to_string()),
-            run_id: Some(run_id.to_string()),
-            parent_run_id: None,
-            parent_thread_id: None,
-            resource_id: None,
-            origin: RunOrigin::default(),
-            state: None,
-            messages: vec![Message::user("hello")],
-            initial_decisions: vec![],
-            source_mailbox_entry_id: None,
-        },
-        dedupe_key: None,
-        kind: None,
-        sender_id: None,
-        priority: 0,
-        available_at: 1,
-        attempt_count: 0,
-        last_error: None,
-        claim_token: None,
-        claimed_by: None,
-        lease_until: None,
-        accepted_run_id: None,
-        created_at: 1,
-        updated_at: 1,
-    }
-}
 
 // ========================================================================
 // Basic round-trip
@@ -240,26 +204,26 @@ async fn test_mailbox_roundtrip_and_cancellation() {
         return;
     };
     let store = make_store(&url).await;
-    let entry = mailbox_entry("run-pg-mailbox", "thread-pg-mailbox");
+    let entry = MailboxEntryBuilder::queued("entry-pg-mailbox", "mailbox-pg-mailbox").build();
 
     store.enqueue_mailbox_entry(&entry).await.unwrap();
 
     let claimed = store
-        .claim_mailbox_entries(10, "worker-pg", 10, 5_000)
+        .claim_mailbox_entries(None, 10, "worker-pg", 10, 5_000)
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
     assert_eq!(claimed[0].status, MailboxEntryStatus::Claimed);
 
     let cancelled = store
-        .cancel_mailbox_entry_by_run_id("run-pg-mailbox", 20)
+        .cancel_mailbox_entry("entry-pg-mailbox", 20)
         .await
         .unwrap()
         .expect("claimed mailbox entry should still be cancellable");
     assert_eq!(cancelled.status, MailboxEntryStatus::Cancelled);
 
     let loaded = store
-        .load_mailbox_entry_by_run_id("run-pg-mailbox")
+        .load_mailbox_entry("entry-pg-mailbox")
         .await
         .unwrap()
         .expect("mailbox entry should still be queryable");
@@ -273,18 +237,19 @@ async fn test_mailbox_claim_by_run_id_ignores_available_at_for_inline_dispatch()
     };
     let store = make_store(&url).await;
 
-    let mut entry = mailbox_entry("run-pg-inline", "thread-pg-inline");
-    entry.available_at = i64::MAX as u64;
+    let entry = MailboxEntryBuilder::queued("entry-pg-inline", "mailbox-pg-inline")
+        .with_available_at(i64::MAX as u64)
+        .build();
     store.enqueue_mailbox_entry(&entry).await.unwrap();
 
     let claimed = store
-        .claim_mailbox_entries(10, "worker-batch", 10, 5_000)
+        .claim_mailbox_entries(None, 10, "worker-batch", 10, 5_000)
         .await
         .unwrap();
     assert!(claimed.is_empty());
 
     let targeted = store
-        .claim_mailbox_entry_by_run_id("run-pg-inline", "worker-inline", 10, 5_000)
+        .claim_mailbox_entry("entry-pg-inline", "worker-inline", 10, 5_000)
         .await
         .unwrap()
         .expect("inline claim should succeed");
@@ -299,36 +264,37 @@ async fn test_mailbox_interrupt_bumps_generation_and_supersedes_pending_entries(
     };
     let store = make_store(&url).await;
 
-    let old_a = mailbox_entry("run-pg-old-a", "thread-pg-interrupt");
-    let old_b = mailbox_entry("run-pg-old-b", "thread-pg-interrupt");
+    let old_a = MailboxEntryBuilder::queued("entry-pg-old-a", "mailbox-pg-interrupt").build();
+    let old_b = MailboxEntryBuilder::queued("entry-pg-old-b", "mailbox-pg-interrupt").build();
     store.enqueue_mailbox_entry(&old_a).await.unwrap();
     store.enqueue_mailbox_entry(&old_b).await.unwrap();
 
     let interrupted = store
-        .interrupt_mailbox_thread("thread-pg-interrupt", 50)
+        .interrupt_mailbox("mailbox-pg-interrupt", 50)
         .await
         .unwrap();
-    assert_eq!(interrupted.thread_state.current_generation, 1);
+    assert_eq!(interrupted.mailbox_state.current_generation, 1);
     assert_eq!(interrupted.superseded_entries.len(), 2);
 
     let superseded = store
-        .load_mailbox_entry_by_run_id("run-pg-old-a")
+        .load_mailbox_entry("entry-pg-old-a")
         .await
         .unwrap()
         .expect("superseded entry should exist");
     assert_eq!(superseded.status, MailboxEntryStatus::Superseded);
 
     let next_generation = store
-        .ensure_mailbox_thread_state("thread-pg-interrupt", 60)
+        .ensure_mailbox_state("mailbox-pg-interrupt", 60)
         .await
         .unwrap()
         .current_generation;
-    let mut fresh = mailbox_entry("run-pg-fresh", "thread-pg-interrupt");
-    fresh.generation = next_generation;
+    let fresh = MailboxEntryBuilder::queued("entry-pg-fresh", "mailbox-pg-interrupt")
+        .with_generation(next_generation)
+        .build();
     store.enqueue_mailbox_entry(&fresh).await.unwrap();
 
     let fresh_loaded = store
-        .load_mailbox_entry_by_run_id("run-pg-fresh")
+        .load_mailbox_entry("entry-pg-fresh")
         .await
         .unwrap()
         .expect("fresh entry should exist");

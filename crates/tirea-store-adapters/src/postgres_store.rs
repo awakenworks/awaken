@@ -2,8 +2,8 @@ use async_trait::async_trait;
 #[cfg(feature = "postgres")]
 use sqlx::{Postgres, QueryBuilder};
 use tirea_contract::storage::{
-    paginate_mailbox_entries, Committed, MailboxEntry, MailboxPage, MailboxQuery, MailboxReader,
-    MailboxStoreError, MailboxThreadInterrupt, MailboxThreadState, MailboxWriter, MessagePage,
+    paginate_mailbox_entries, Committed, MailboxEntry, MailboxInterrupt, MailboxPage, MailboxQuery,
+    MailboxReader, MailboxState, MailboxStoreError, MailboxWriter, MessagePage,
     MessageQuery, MessageWithCursor, RunOrigin, RunPage, RunQuery, RunReader, RunRecord, RunStatus,
     RunStoreError, RunWriter, SortOrder, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader,
     ThreadStoreError, ThreadWriter, VersionPrecondition,
@@ -121,11 +121,11 @@ impl PostgresStore {
                 self.runs_table, self.runs_table
             ),
             format!(
-                "CREATE TABLE IF NOT EXISTS {} (entry_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, run_id TEXT NOT NULL UNIQUE, agent_id TEXT NOT NULL, generation BIGINT NOT NULL DEFAULT 0, status TEXT NOT NULL, request JSONB NOT NULL, dedupe_key TEXT, kind TEXT, sender_id TEXT, priority SMALLINT NOT NULL DEFAULT 0, available_at BIGINT NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 0, last_error TEXT, claim_token TEXT, claimed_by TEXT, lease_until BIGINT, accepted_run_id TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS {} (entry_id TEXT PRIMARY KEY, mailbox_id TEXT NOT NULL, sender_id TEXT, payload JSONB NOT NULL, priority SMALLINT NOT NULL DEFAULT 0, dedupe_key TEXT, generation BIGINT NOT NULL DEFAULT 0, status TEXT NOT NULL, available_at BIGINT NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 0, last_error TEXT, claim_token TEXT, claimed_by TEXT, lease_until BIGINT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)",
                 self.mailbox_table
             ),
             format!(
-                "CREATE TABLE IF NOT EXISTS {} (thread_id TEXT PRIMARY KEY, current_generation BIGINT NOT NULL DEFAULT 0, updated_at BIGINT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS {} (mailbox_id TEXT PRIMARY KEY, current_generation BIGINT NOT NULL DEFAULT 0, updated_at BIGINT NOT NULL)",
                 self.mailbox_threads_table
             ),
             format!(
@@ -133,29 +133,12 @@ impl PostgresStore {
                 self.mailbox_table, self.mailbox_table
             ),
             format!(
-                "CREATE INDEX IF NOT EXISTS idx_{}_thread_status ON {} (thread_id, status, created_at)",
+                "CREATE INDEX IF NOT EXISTS idx_{}_mailbox_status ON {} (mailbox_id, status, created_at)",
                 self.mailbox_table, self.mailbox_table
             ),
             format!(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_{}_thread_dedupe ON {} (thread_id, dedupe_key) WHERE dedupe_key IS NOT NULL",
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_{}_mailbox_dedupe ON {} (mailbox_id, dedupe_key) WHERE dedupe_key IS NOT NULL",
                 self.mailbox_table, self.mailbox_table
-            ),
-            format!(
-                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 0",
-                self.mailbox_table
-            ),
-            // Migration: add envelope metadata columns to mailbox entries.
-            format!(
-                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS kind TEXT",
-                self.mailbox_table
-            ),
-            format!(
-                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS sender_id TEXT",
-                self.mailbox_table
-            ),
-            format!(
-                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS priority SMALLINT NOT NULL DEFAULT 0",
-                self.mailbox_table
             ),
             // Migration: add agent_id column to existing tables.
             format!(
@@ -312,10 +295,9 @@ impl MailboxReader for PostgresStore {
         entry_id: &str,
     ) -> Result<Option<MailboxEntry>, MailboxStoreError> {
         let sql = format!(
-            "SELECT entry_id, thread_id, run_id, agent_id, generation, status, request, dedupe_key, \
-             kind, sender_id, priority, \
-             available_at, attempt_count, last_error, claim_token, claimed_by, lease_until, \
-             accepted_run_id, created_at, updated_at FROM {} WHERE entry_id = $1",
+            "SELECT entry_id, mailbox_id, sender_id, payload, priority, dedupe_key, \
+             generation, status, available_at, attempt_count, last_error, claim_token, \
+             claimed_by, lease_until, created_at, updated_at FROM {} WHERE entry_id = $1",
             self.mailbox_table
         );
         let row = sqlx::query_as::<_, MailboxRow>(&sql)
@@ -326,41 +308,22 @@ impl MailboxReader for PostgresStore {
         row.map(Self::mailbox_entry_from_row).transpose()
     }
 
-    async fn load_mailbox_entry_by_run_id(
+    async fn load_mailbox_state(
         &self,
-        run_id: &str,
-    ) -> Result<Option<MailboxEntry>, MailboxStoreError> {
-        let sql = format!(
-            "SELECT entry_id, thread_id, run_id, agent_id, generation, status, request, dedupe_key, \
-             kind, sender_id, priority, \
-             available_at, attempt_count, last_error, claim_token, claimed_by, lease_until, \
-             accepted_run_id, created_at, updated_at FROM {} WHERE run_id = $1",
-            self.mailbox_table
-        );
-        let row = sqlx::query_as::<_, MailboxRow>(&sql)
-            .bind(run_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(Self::mailbox_sql_err)?;
-        row.map(Self::mailbox_entry_from_row).transpose()
-    }
-
-    async fn load_mailbox_thread_state(
-        &self,
-        thread_id: &str,
-    ) -> Result<Option<MailboxThreadState>, MailboxStoreError> {
+        mailbox_id: &str,
+    ) -> Result<Option<MailboxState>, MailboxStoreError> {
         let row = sqlx::query_as::<_, (String, i64, i64)>(&format!(
-            "SELECT thread_id, current_generation, updated_at FROM {} WHERE thread_id = $1",
+            "SELECT mailbox_id, current_generation, updated_at FROM {} WHERE mailbox_id = $1",
             self.mailbox_threads_table
         ))
-        .bind(thread_id)
+        .bind(mailbox_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(Self::mailbox_sql_err)?;
 
-        row.map(|(thread_id, current_generation, updated_at)| {
-            Ok(MailboxThreadState {
-                thread_id,
+        row.map(|(mailbox_id, current_generation, updated_at)| {
+            Ok(MailboxState {
+                mailbox_id,
                 current_generation: u64::try_from(current_generation).map_err(|_| {
                     MailboxStoreError::Backend(format!(
                         "current_generation cannot be negative in postgres BIGINT: {current_generation}"
@@ -382,79 +345,39 @@ impl MailboxReader for PostgresStore {
     ) -> Result<MailboxPage, MailboxStoreError> {
         let status_filter = query.status.map(Self::encode_mailbox_status);
         let sql = format!(
-            "SELECT entry_id, thread_id, run_id, agent_id, generation, status, request, dedupe_key, \
-             kind, sender_id, priority, \
-             available_at, attempt_count, last_error, claim_token, claimed_by, lease_until, \
-             accepted_run_id, created_at, updated_at FROM {}",
+            "SELECT entry_id, mailbox_id, sender_id, payload, priority, dedupe_key, \
+             generation, status, available_at, attempt_count, last_error, claim_token, \
+             claimed_by, lease_until, created_at, updated_at FROM {}",
             self.mailbox_table
         );
 
-        let rows = match (
-            query.thread_id.as_deref(),
-            query.run_id.as_deref(),
-            status_filter,
-        ) {
-            (Some(thread_id), Some(run_id), Some(status)) => {
+        let rows = match (query.mailbox_id.as_deref(), status_filter) {
+            (Some(mailbox_id), Some(status)) => {
                 sqlx::query_as::<_, MailboxRow>(&format!(
-                    "{sql} WHERE thread_id = $1 AND run_id = $2 AND status = $3 \
+                    "{sql} WHERE mailbox_id = $1 AND status = $2 \
                      ORDER BY created_at ASC, entry_id ASC"
                 ))
-                .bind(thread_id)
-                .bind(run_id)
+                .bind(mailbox_id)
                 .bind(status)
                 .fetch_all(&self.pool)
                 .await
                 .map_err(Self::mailbox_sql_err)?
             }
-            (Some(thread_id), Some(run_id), None) => sqlx::query_as::<_, MailboxRow>(&format!(
-                "{sql} WHERE thread_id = $1 AND run_id = $2 \
-                     ORDER BY created_at ASC, entry_id ASC"
+            (Some(mailbox_id), None) => sqlx::query_as::<_, MailboxRow>(&format!(
+                "{sql} WHERE mailbox_id = $1 ORDER BY created_at ASC, entry_id ASC"
             ))
-            .bind(thread_id)
-            .bind(run_id)
+            .bind(mailbox_id)
             .fetch_all(&self.pool)
             .await
             .map_err(Self::mailbox_sql_err)?,
-            (Some(thread_id), None, Some(status)) => sqlx::query_as::<_, MailboxRow>(&format!(
-                "{sql} WHERE thread_id = $1 AND status = $2 \
-                     ORDER BY created_at ASC, entry_id ASC"
-            ))
-            .bind(thread_id)
-            .bind(status)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(Self::mailbox_sql_err)?,
-            (None, Some(run_id), Some(status)) => sqlx::query_as::<_, MailboxRow>(&format!(
-                "{sql} WHERE run_id = $1 AND status = $2 \
-                     ORDER BY created_at ASC, entry_id ASC"
-            ))
-            .bind(run_id)
-            .bind(status)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(Self::mailbox_sql_err)?,
-            (Some(thread_id), None, None) => sqlx::query_as::<_, MailboxRow>(&format!(
-                "{sql} WHERE thread_id = $1 ORDER BY created_at ASC, entry_id ASC"
-            ))
-            .bind(thread_id)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(Self::mailbox_sql_err)?,
-            (None, Some(run_id), None) => sqlx::query_as::<_, MailboxRow>(&format!(
-                "{sql} WHERE run_id = $1 ORDER BY created_at ASC, entry_id ASC"
-            ))
-            .bind(run_id)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(Self::mailbox_sql_err)?,
-            (None, None, Some(status)) => sqlx::query_as::<_, MailboxRow>(&format!(
+            (None, Some(status)) => sqlx::query_as::<_, MailboxRow>(&format!(
                 "{sql} WHERE status = $1 ORDER BY created_at ASC, entry_id ASC"
             ))
             .bind(status)
             .fetch_all(&self.pool)
             .await
             .map_err(Self::mailbox_sql_err)?,
-            (None, None, None) => sqlx::query_as::<_, MailboxRow>(&format!(
+            (None, None) => sqlx::query_as::<_, MailboxRow>(&format!(
                 "{sql} ORDER BY created_at ASC, entry_id ASC"
             ))
             .fetch_all(&self.pool)
@@ -480,12 +403,12 @@ impl MailboxWriter for PostgresStore {
         })?;
 
         let state_row = sqlx::query_as::<_, (i64,)>(&format!(
-            "INSERT INTO {} (thread_id, current_generation, updated_at) VALUES ($1, 0, $2) \
-             ON CONFLICT (thread_id) DO UPDATE SET updated_at = EXCLUDED.updated_at \
+            "INSERT INTO {} (mailbox_id, current_generation, updated_at) VALUES ($1, 0, $2) \
+             ON CONFLICT (mailbox_id) DO UPDATE SET updated_at = EXCLUDED.updated_at \
              RETURNING current_generation",
             self.mailbox_threads_table
         ))
-        .bind(&entry.thread_id)
+        .bind(&entry.mailbox_id)
         .bind(now_i64)
         .fetch_one(&mut *tx)
         .await
@@ -499,35 +422,29 @@ impl MailboxWriter for PostgresStore {
         })?;
         if current_generation != entry.generation {
             return Err(MailboxStoreError::GenerationMismatch {
-                thread_id: entry.thread_id.clone(),
+                mailbox_id: entry.mailbox_id.clone(),
                 expected: current_generation,
                 actual: entry.generation,
             });
         }
 
-        let request = serde_json::to_value(&entry.request)
-            .map_err(|e| MailboxStoreError::Serialization(e.to_string()))?;
         sqlx::query(&format!(
-            "INSERT INTO {} (entry_id, thread_id, run_id, agent_id, generation, status, request, dedupe_key, \
-             kind, sender_id, priority, \
-             available_at, attempt_count, last_error, claim_token, claimed_by, lease_until, \
-             accepted_run_id, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)",
+            "INSERT INTO {} (entry_id, mailbox_id, sender_id, payload, priority, dedupe_key, \
+             generation, status, available_at, attempt_count, last_error, claim_token, \
+             claimed_by, lease_until, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
             self.mailbox_table
         ))
         .bind(&entry.entry_id)
-        .bind(&entry.thread_id)
-        .bind(&entry.run_id)
-        .bind(&entry.agent_id)
+        .bind(&entry.mailbox_id)
+        .bind(entry.sender_id.as_deref())
+        .bind(&entry.payload)
+        .bind(i16::from(entry.priority))
+        .bind(entry.dedupe_key.as_deref())
         .bind(i64::try_from(entry.generation).map_err(|_| {
             MailboxStoreError::Backend("generation too large for postgres BIGINT".to_string())
         })?)
         .bind(Self::encode_mailbox_status(entry.status))
-        .bind(request)
-        .bind(entry.dedupe_key.as_deref())
-        .bind(entry.kind.as_deref())
-        .bind(entry.sender_id.as_deref())
-        .bind(i16::from(entry.priority))
         .bind(i64::try_from(entry.available_at).map_err(|_| {
             MailboxStoreError::Backend("available_at too large for postgres BIGINT".to_string())
         })?)
@@ -550,7 +467,6 @@ impl MailboxWriter for PostgresStore {
                     )
                 })?,
         )
-        .bind(entry.accepted_run_id.as_deref())
         .bind(i64::try_from(entry.created_at).map_err(|_| {
             MailboxStoreError::Backend("created_at too large for postgres BIGINT".to_string())
         })?)
@@ -570,27 +486,27 @@ impl MailboxWriter for PostgresStore {
         Ok(())
     }
 
-    async fn ensure_mailbox_thread_state(
+    async fn ensure_mailbox_state(
         &self,
-        thread_id: &str,
+        mailbox_id: &str,
         now: u64,
-    ) -> Result<MailboxThreadState, MailboxStoreError> {
+    ) -> Result<MailboxState, MailboxStoreError> {
         let now_i64 = i64::try_from(now).map_err(|_| {
             MailboxStoreError::Backend("updated_at too large for postgres BIGINT".to_string())
         })?;
         let row = sqlx::query_as::<_, (String, i64, i64)>(&format!(
-            "INSERT INTO {} (thread_id, current_generation, updated_at) VALUES ($1, 0, $2) \
-             ON CONFLICT (thread_id) DO UPDATE SET updated_at = EXCLUDED.updated_at \
-             RETURNING thread_id, current_generation, updated_at",
+            "INSERT INTO {} (mailbox_id, current_generation, updated_at) VALUES ($1, 0, $2) \
+             ON CONFLICT (mailbox_id) DO UPDATE SET updated_at = EXCLUDED.updated_at \
+             RETURNING mailbox_id, current_generation, updated_at",
             self.mailbox_threads_table
         ))
-        .bind(thread_id)
+        .bind(mailbox_id)
         .bind(now_i64)
         .fetch_one(&self.pool)
         .await
         .map_err(Self::mailbox_sql_err)?;
-        Ok(MailboxThreadState {
-            thread_id: row.0,
+        Ok(MailboxState {
+            mailbox_id: row.0,
             current_generation: u64::try_from(row.1).map_err(|_| {
                 MailboxStoreError::Backend(format!(
                     "current_generation cannot be negative in postgres BIGINT: {}",
@@ -608,6 +524,7 @@ impl MailboxWriter for PostgresStore {
 
     async fn claim_mailbox_entries(
         &self,
+        mailbox_id: Option<&str>,
         limit: usize,
         consumer_id: &str,
         now: u64,
@@ -619,22 +536,40 @@ impl MailboxWriter for PostgresStore {
         let now_i64 = i64::try_from(now).map_err(|_| {
             MailboxStoreError::Backend("now too large for postgres BIGINT".to_string())
         })?;
-        let rows: Vec<MailboxRow> = sqlx::query_as(&format!(
-            "SELECT entry_id, thread_id, run_id, agent_id, generation, status, request, dedupe_key, \
-             kind, sender_id, priority, \
-             available_at, attempt_count, last_error, claim_token, claimed_by, lease_until, \
-             accepted_run_id, created_at, updated_at FROM {} \
-             WHERE (status = 'queued' AND available_at <= $1) \
-                OR (status = 'claimed' AND lease_until IS NOT NULL AND lease_until <= $1) \
-             ORDER BY priority DESC, available_at ASC, created_at ASC, entry_id ASC \
-             FOR UPDATE SKIP LOCKED LIMIT $2",
-            self.mailbox_table
-        ))
-        .bind(now_i64)
-        .bind(limit)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(Self::mailbox_sql_err)?;
+        let rows: Vec<MailboxRow> = if let Some(mailbox_id) = mailbox_id {
+            sqlx::query_as(&format!(
+                "SELECT entry_id, mailbox_id, sender_id, payload, priority, dedupe_key, \
+                 generation, status, available_at, attempt_count, last_error, claim_token, \
+                 claimed_by, lease_until, created_at, updated_at FROM {} \
+                 WHERE mailbox_id = $3 AND ((status = 'queued' AND available_at <= $1) \
+                    OR (status = 'claimed' AND lease_until IS NOT NULL AND lease_until <= $1)) \
+                 ORDER BY priority DESC, available_at ASC, created_at ASC, entry_id ASC \
+                 FOR UPDATE SKIP LOCKED LIMIT $2",
+                self.mailbox_table
+            ))
+            .bind(now_i64)
+            .bind(limit)
+            .bind(mailbox_id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(Self::mailbox_sql_err)?
+        } else {
+            sqlx::query_as(&format!(
+                "SELECT entry_id, mailbox_id, sender_id, payload, priority, dedupe_key, \
+                 generation, status, available_at, attempt_count, last_error, claim_token, \
+                 claimed_by, lease_until, created_at, updated_at FROM {} \
+                 WHERE (status = 'queued' AND available_at <= $1) \
+                    OR (status = 'claimed' AND lease_until IS NOT NULL AND lease_until <= $1) \
+                 ORDER BY priority DESC, available_at ASC, created_at ASC, entry_id ASC \
+                 FOR UPDATE SKIP LOCKED LIMIT $2",
+                self.mailbox_table
+            ))
+            .bind(now_i64)
+            .bind(limit)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(Self::mailbox_sql_err)?
+        };
 
         let mut claimed = Vec::with_capacity(rows.len());
         for row in rows {
@@ -671,9 +606,9 @@ impl MailboxWriter for PostgresStore {
         Ok(claimed)
     }
 
-    async fn claim_mailbox_entry_by_run_id(
+    async fn claim_mailbox_entry(
         &self,
-        run_id: &str,
+        entry_id: &str,
         consumer_id: &str,
         now: u64,
         lease_duration_ms: u64,
@@ -683,15 +618,14 @@ impl MailboxWriter for PostgresStore {
             MailboxStoreError::Backend("now too large for postgres BIGINT".to_string())
         })?;
         let row = sqlx::query_as::<_, MailboxRow>(&format!(
-            "SELECT entry_id, thread_id, run_id, agent_id, generation, status, request, dedupe_key, \
-             kind, sender_id, priority, \
-             available_at, attempt_count, last_error, claim_token, claimed_by, lease_until, \
-             accepted_run_id, created_at, updated_at FROM {} \
-             WHERE run_id = $1 AND (status = 'queued' OR (status = 'claimed' AND lease_until IS NOT NULL AND lease_until <= $2)) \
+            "SELECT entry_id, mailbox_id, sender_id, payload, priority, dedupe_key, \
+             generation, status, available_at, attempt_count, last_error, claim_token, \
+             claimed_by, lease_until, created_at, updated_at FROM {} \
+             WHERE entry_id = $1 AND (status = 'queued' OR (status = 'claimed' AND lease_until IS NOT NULL AND lease_until <= $2)) \
              FOR UPDATE SKIP LOCKED",
             self.mailbox_table
         ))
-        .bind(run_id)
+        .bind(entry_id)
         .bind(now_i64)
         .fetch_optional(&mut *tx)
         .await
@@ -738,16 +672,14 @@ impl MailboxWriter for PostgresStore {
         &self,
         entry_id: &str,
         claim_token: &str,
-        accepted_run_id: &str,
         now: u64,
     ) -> Result<(), MailboxStoreError> {
         let updated = sqlx::query(&format!(
-            "UPDATE {} SET status = $1, accepted_run_id = $2, claim_token = NULL, claimed_by = NULL, \
-             lease_until = NULL, updated_at = $3 WHERE entry_id = $4 AND claim_token = $5",
+            "UPDATE {} SET status = $1, claim_token = NULL, claimed_by = NULL, \
+             lease_until = NULL, updated_at = $2 WHERE entry_id = $3 AND claim_token = $4",
             self.mailbox_table
         ))
         .bind(Self::encode_mailbox_status(tirea_contract::MailboxEntryStatus::Accepted))
-        .bind(accepted_run_id)
         .bind(i64::try_from(now).map_err(|_| {
             MailboxStoreError::Backend("updated_at too large for postgres BIGINT".to_string())
         })?)
@@ -824,15 +756,15 @@ impl MailboxWriter for PostgresStore {
         Ok(())
     }
 
-    async fn cancel_mailbox_entry_by_run_id(
+    async fn cancel_mailbox_entry(
         &self,
-        run_id: &str,
+        entry_id: &str,
         now: u64,
     ) -> Result<Option<MailboxEntry>, MailboxStoreError> {
         let updated = sqlx::query(&format!(
             "UPDATE {} SET status = $1, last_error = $2, claim_token = NULL, claimed_by = NULL, \
              lease_until = NULL, updated_at = $3 \
-             WHERE run_id = $4 AND status NOT IN ('accepted', 'superseded', 'cancelled', 'dead_letter')",
+             WHERE entry_id = $4 AND status NOT IN ('accepted', 'superseded', 'cancelled', 'dead_letter')",
             self.mailbox_table
         ))
         .bind(Self::encode_mailbox_status(
@@ -842,14 +774,14 @@ impl MailboxWriter for PostgresStore {
         .bind(i64::try_from(now).map_err(|_| {
             MailboxStoreError::Backend("updated_at too large for postgres BIGINT".to_string())
         })?)
-        .bind(run_id)
+        .bind(entry_id)
         .execute(&self.pool)
         .await
         .map_err(Self::mailbox_sql_err)?;
         if updated.rows_affected() == 0 {
-            return self.load_mailbox_entry_by_run_id(run_id).await;
+            return self.load_mailbox_entry(entry_id).await;
         }
-        self.load_mailbox_entry_by_run_id(run_id).await
+        self.load_mailbox_entry(entry_id).await
     }
 
     async fn supersede_mailbox_entry(
@@ -881,25 +813,24 @@ impl MailboxWriter for PostgresStore {
         self.load_mailbox_entry(entry_id).await
     }
 
-    async fn cancel_pending_mailbox_for_thread(
+    async fn cancel_pending_for_mailbox(
         &self,
-        thread_id: &str,
+        mailbox_id: &str,
         now: u64,
-        exclude_run_id: Option<&str>,
+        exclude_entry_id: Option<&str>,
     ) -> Result<Vec<MailboxEntry>, MailboxStoreError> {
         let now_i64 = i64::try_from(now).map_err(|_| {
             MailboxStoreError::Backend("updated_at too large for postgres BIGINT".to_string())
         })?;
-        let returning_cols = "entry_id, thread_id, run_id, agent_id, generation, status, request, \
-             dedupe_key, kind, sender_id, priority, \
-             available_at, attempt_count, last_error, claim_token, claimed_by, \
-             lease_until, accepted_run_id, created_at, updated_at";
+        let returning_cols = "entry_id, mailbox_id, sender_id, payload, priority, dedupe_key, \
+             generation, status, available_at, attempt_count, last_error, claim_token, \
+             claimed_by, lease_until, created_at, updated_at";
 
-        let rows: Vec<MailboxRow> = match exclude_run_id {
-            Some(run_id) => {
+        let rows: Vec<MailboxRow> = match exclude_entry_id {
+            Some(entry_id) => {
                 sqlx::query_as(&format!(
                     "UPDATE {} SET status = $1, last_error = $2, claim_token = NULL, claimed_by = NULL, \
-                     lease_until = NULL, updated_at = $3 WHERE thread_id = $4 AND run_id != $5 \
+                     lease_until = NULL, updated_at = $3 WHERE mailbox_id = $4 AND entry_id != $5 \
                      AND status NOT IN ('accepted', 'superseded', 'cancelled', 'dead_letter') \
                      RETURNING {returning_cols}",
                     self.mailbox_table
@@ -907,8 +838,8 @@ impl MailboxWriter for PostgresStore {
                 .bind(Self::encode_mailbox_status(tirea_contract::MailboxEntryStatus::Cancelled))
                 .bind("cancelled")
                 .bind(now_i64)
-                .bind(thread_id)
-                .bind(run_id)
+                .bind(mailbox_id)
+                .bind(entry_id)
                 .fetch_all(&self.pool)
                 .await
                 .map_err(Self::mailbox_sql_err)?
@@ -916,7 +847,7 @@ impl MailboxWriter for PostgresStore {
             None => {
                 sqlx::query_as(&format!(
                     "UPDATE {} SET status = $1, last_error = $2, claim_token = NULL, claimed_by = NULL, \
-                     lease_until = NULL, updated_at = $3 WHERE thread_id = $4 \
+                     lease_until = NULL, updated_at = $3 WHERE mailbox_id = $4 \
                      AND status NOT IN ('accepted', 'superseded', 'cancelled', 'dead_letter') \
                      RETURNING {returning_cols}",
                     self.mailbox_table
@@ -924,7 +855,7 @@ impl MailboxWriter for PostgresStore {
                 .bind(Self::encode_mailbox_status(tirea_contract::MailboxEntryStatus::Cancelled))
                 .bind("cancelled")
                 .bind(now_i64)
-                .bind(thread_id)
+                .bind(mailbox_id)
                 .fetch_all(&self.pool)
                 .await
                 .map_err(Self::mailbox_sql_err)?
@@ -938,29 +869,29 @@ impl MailboxWriter for PostgresStore {
         Ok(entries)
     }
 
-    async fn interrupt_mailbox_thread(
+    async fn interrupt_mailbox(
         &self,
-        thread_id: &str,
+        mailbox_id: &str,
         now: u64,
-    ) -> Result<MailboxThreadInterrupt, MailboxStoreError> {
+    ) -> Result<MailboxInterrupt, MailboxStoreError> {
         let mut tx = self.pool.begin().await.map_err(Self::mailbox_sql_err)?;
         let now_i64 = i64::try_from(now).map_err(|_| {
             MailboxStoreError::Backend("updated_at too large for postgres BIGINT".to_string())
         })?;
         let state_row = sqlx::query_as::<_, (String, i64, i64)>(&format!(
-            "INSERT INTO {} (thread_id, current_generation, updated_at) VALUES ($1, 1, $2) \
-             ON CONFLICT (thread_id) DO UPDATE SET current_generation = {}.current_generation + 1, updated_at = EXCLUDED.updated_at \
-             RETURNING thread_id, current_generation, updated_at",
+            "INSERT INTO {} (mailbox_id, current_generation, updated_at) VALUES ($1, 1, $2) \
+             ON CONFLICT (mailbox_id) DO UPDATE SET current_generation = {}.current_generation + 1, updated_at = EXCLUDED.updated_at \
+             RETURNING mailbox_id, current_generation, updated_at",
             self.mailbox_threads_table, self.mailbox_threads_table
         ))
-        .bind(thread_id)
+        .bind(mailbox_id)
         .bind(now_i64)
         .fetch_one(&mut *tx)
         .await
         .map_err(Self::mailbox_sql_err)?;
 
-        let thread_state = MailboxThreadState {
-            thread_id: state_row.0,
+        let mailbox_state = MailboxState {
+            mailbox_id: state_row.0,
             current_generation: u64::try_from(state_row.1).map_err(|_| {
                 MailboxStoreError::Backend(format!(
                     "current_generation cannot be negative in postgres BIGINT: {}",
@@ -978,12 +909,11 @@ impl MailboxWriter for PostgresStore {
         let rows = sqlx::query_as::<_, MailboxRow>(&format!(
             "UPDATE {} SET status = $1, last_error = $2, claim_token = NULL, claimed_by = NULL, \
              lease_until = NULL, updated_at = $3 \
-             WHERE thread_id = $4 AND generation < $5 \
+             WHERE mailbox_id = $4 AND generation < $5 \
              AND status NOT IN ('accepted', 'superseded', 'cancelled', 'dead_letter') \
-             RETURNING entry_id, thread_id, run_id, agent_id, generation, status, request, dedupe_key, \
-             kind, sender_id, priority, \
-             available_at, attempt_count, last_error, claim_token, claimed_by, lease_until, \
-             accepted_run_id, created_at, updated_at",
+             RETURNING entry_id, mailbox_id, sender_id, payload, priority, dedupe_key, \
+             generation, status, available_at, attempt_count, last_error, claim_token, \
+             claimed_by, lease_until, created_at, updated_at",
             self.mailbox_table
         ))
         .bind(Self::encode_mailbox_status(
@@ -991,8 +921,8 @@ impl MailboxWriter for PostgresStore {
         ))
         .bind("superseded by interrupt")
         .bind(now_i64)
-        .bind(thread_id)
-        .bind(i64::try_from(thread_state.current_generation).map_err(|_| {
+        .bind(mailbox_id)
+        .bind(i64::try_from(mailbox_state.current_generation).map_err(|_| {
             MailboxStoreError::Backend("generation too large for postgres BIGINT".to_string())
         })?)
         .fetch_all(&mut *tx)
@@ -1006,8 +936,8 @@ impl MailboxWriter for PostgresStore {
             superseded_entries.push(Self::mailbox_entry_from_row(row)?);
         }
 
-        Ok(MailboxThreadInterrupt {
-            thread_state,
+        Ok(MailboxInterrupt {
+            mailbox_state,
             superseded_entries,
         })
     }
@@ -1621,23 +1551,19 @@ type RunRowTuple = (
 #[cfg(feature = "postgres")]
 struct MailboxRow {
     entry_id: String,
-    thread_id: String,
-    run_id: String,
-    agent_id: String,
+    mailbox_id: String,
+    sender_id: Option<String>,
+    payload: serde_json::Value,
+    priority: i16,
+    dedupe_key: Option<String>,
     generation: i64,
     status: String,
-    request: serde_json::Value,
-    dedupe_key: Option<String>,
-    kind: Option<String>,
-    sender_id: Option<String>,
-    priority: i16,
     available_at: i64,
     attempt_count: i32,
     last_error: Option<String>,
     claim_token: Option<String>,
     claimed_by: Option<String>,
     lease_until: Option<i64>,
-    accepted_run_id: Option<String>,
     created_at: i64,
     updated_at: i64,
 }
@@ -1649,23 +1575,19 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for MailboxRow {
 
         Ok(Self {
             entry_id: row.try_get("entry_id")?,
-            thread_id: row.try_get("thread_id")?,
-            run_id: row.try_get("run_id")?,
-            agent_id: row.try_get("agent_id")?,
+            mailbox_id: row.try_get("mailbox_id")?,
+            sender_id: row.try_get("sender_id")?,
+            payload: row.try_get("payload")?,
+            priority: row.try_get("priority")?,
+            dedupe_key: row.try_get("dedupe_key")?,
             generation: row.try_get("generation")?,
             status: row.try_get("status")?,
-            request: row.try_get("request")?,
-            dedupe_key: row.try_get("dedupe_key")?,
-            kind: row.try_get("kind")?,
-            sender_id: row.try_get("sender_id")?,
-            priority: row.try_get("priority")?,
             available_at: row.try_get("available_at")?,
             attempt_count: row.try_get("attempt_count")?,
             last_error: row.try_get("last_error")?,
             claim_token: row.try_get("claim_token")?,
             claimed_by: row.try_get("claimed_by")?,
             lease_until: row.try_get("lease_until")?,
-            accepted_run_id: row.try_get("accepted_run_id")?,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
         })
@@ -1708,13 +1630,13 @@ impl PostgresStore {
     }
 
     fn mailbox_entry_from_row(row: MailboxRow) -> Result<MailboxEntry, MailboxStoreError> {
-        let request: tirea_contract::RunRequest = serde_json::from_value(row.request)
-            .map_err(|e| MailboxStoreError::Serialization(e.to_string()))?;
         Ok(MailboxEntry {
             entry_id: row.entry_id,
-            thread_id: row.thread_id,
-            run_id: row.run_id,
-            agent_id: row.agent_id,
+            mailbox_id: row.mailbox_id,
+            sender_id: row.sender_id,
+            payload: row.payload,
+            priority: u8::try_from(row.priority).unwrap_or(0),
+            dedupe_key: row.dedupe_key,
             generation: u64::try_from(row.generation).map_err(|_| {
                 MailboxStoreError::Backend(format!(
                     "generation cannot be negative in postgres BIGINT: {}",
@@ -1722,11 +1644,6 @@ impl PostgresStore {
                 ))
             })?,
             status: Self::decode_mailbox_status(&row.status)?,
-            request,
-            dedupe_key: row.dedupe_key,
-            kind: row.kind,
-            sender_id: row.sender_id,
-            priority: u8::try_from(row.priority).unwrap_or(0),
             available_at: Self::from_db_timestamp(row.available_at, "available_at")
                 .map_err(|e| MailboxStoreError::Backend(e.to_string()))?,
             attempt_count: u32::try_from(row.attempt_count).map_err(|_| {
@@ -1745,7 +1662,6 @@ impl PostgresStore {
                         .map_err(|e| MailboxStoreError::Backend(e.to_string()))
                 })
                 .transpose()?,
-            accepted_run_id: row.accepted_run_id,
             created_at: Self::from_db_timestamp(row.created_at, "created_at")
                 .map_err(|e| MailboxStoreError::Backend(e.to_string()))?,
             updated_at: Self::from_db_timestamp(row.updated_at, "updated_at")

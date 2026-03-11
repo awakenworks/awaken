@@ -332,7 +332,7 @@ async fn message_send(
     };
 
     let mailbox_store = require_mailbox_store(&st)?;
-    let (context_id, task_id) =
+    let (context_id, _run_id, task_id) =
         start_background_run(&st.os, &mailbox_store, &agent_id, run_request, "a2a").await?;
     Ok((
         StatusCode::ACCEPTED,
@@ -372,7 +372,7 @@ async fn get_task(
 
     Ok(match task {
         BackgroundTaskLookup::Run(record) => Json(json!({
-            "taskId": record.run_id,
+            "taskId": task_id,
             "contextId": record.thread_id,
             "status": record.status,
             "origin": record.origin,
@@ -382,8 +382,8 @@ async fn get_task(
             "updatedAt": record.updated_at,
         })),
         BackgroundTaskLookup::Mailbox(entry) => Json(json!({
-            "taskId": entry.run_id,
-            "contextId": entry.thread_id,
+            "taskId": task_id,
+            "contextId": entry.mailbox_id,
             "status": entry.status,
             "createdAt": entry.created_at,
             "updatedAt": entry.updated_at,

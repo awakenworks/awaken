@@ -1,8 +1,9 @@
-use crate::io::RunRequest;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 
-/// Durable status for a queued background run request.
+/// Durable status for a queued mailbox entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MailboxEntryStatus {
@@ -23,27 +24,24 @@ impl MailboxEntryStatus {
     }
 }
 
-/// A durable thread-scoped queued input waiting to become a run.
+/// A durable queued message in a mailbox.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MailboxEntry {
     pub entry_id: String,
-    pub thread_id: String,
-    pub run_id: String,
-    pub agent_id: String,
-    pub generation: u64,
-    pub status: MailboxEntryStatus,
-    pub request: RunRequest,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dedupe_key: Option<String>,
-    /// Envelope-level message type tag for routing and priority dispatch.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
-    /// Identity of the sender (agent_id or run_id) for audit and reply routing.
+    /// Target mailbox address.
+    pub mailbox_id: String,
+    /// Identity of the sender for audit and reply routing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender_id: Option<String>,
+    /// Opaque message payload — receiver interprets.
+    pub payload: Value,
     /// Dispatch priority (higher = dispatched first). Default 0.
     #[serde(default)]
     pub priority: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedupe_key: Option<String>,
+    pub generation: u64,
+    pub status: MailboxEntryStatus,
     pub available_at: u64,
     pub attempt_count: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -54,8 +52,6 @@ pub struct MailboxEntry {
     pub claimed_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease_until: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accepted_run_id: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -73,26 +69,25 @@ impl MailboxEntry {
     }
 }
 
-/// Durable thread-scoped mailbox control state.
+/// Durable mailbox-scoped control state (generation tracking).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MailboxThreadState {
-    pub thread_id: String,
+pub struct MailboxState {
+    pub mailbox_id: String,
     pub current_generation: u64,
     pub updated_at: u64,
 }
 
-/// Result of bumping thread mailbox generation and superseding older entries.
+/// Result of bumping mailbox generation and superseding older entries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MailboxThreadInterrupt {
-    pub thread_state: MailboxThreadState,
+pub struct MailboxInterrupt {
+    pub mailbox_state: MailboxState,
     pub superseded_entries: Vec<MailboxEntry>,
 }
 
-/// Query options for listing queued inputs.
+/// Query options for listing mailbox entries.
 #[derive(Debug, Clone, Default)]
 pub struct MailboxQuery {
-    pub thread_id: Option<String>,
-    pub run_id: Option<String>,
+    pub mailbox_id: Option<String>,
     pub status: Option<MailboxEntryStatus>,
     pub offset: usize,
     pub limit: usize,
@@ -109,12 +104,8 @@ pub struct MailboxPage {
 pub fn paginate_mailbox_entries(entries: &[MailboxEntry], query: &MailboxQuery) -> MailboxPage {
     let mut filtered: Vec<MailboxEntry> = entries
         .iter()
-        .filter(|entry| match query.thread_id.as_deref() {
-            Some(thread_id) => entry.thread_id == thread_id,
-            None => true,
-        })
-        .filter(|entry| match query.run_id.as_deref() {
-            Some(run_id) => entry.run_id == run_id,
+        .filter(|entry| match query.mailbox_id.as_deref() {
+            Some(mailbox_id) => entry.mailbox_id == mailbox_id,
             None => true,
         })
         .filter(|entry| match query.status {
@@ -145,6 +136,23 @@ pub fn paginate_mailbox_entries(entries: &[MailboxEntry], query: &MailboxQuery) 
     }
 }
 
+/// Outcome of a receiver processing a mailbox entry.
+#[derive(Debug, Clone)]
+pub enum ReceiveOutcome {
+    /// Message processed successfully.
+    Accepted,
+    /// Transient failure — retry later.
+    Retry(String),
+    /// Permanent failure — dead-letter.
+    Reject(String),
+}
+
+/// Pluggable consumer for mailbox entries.
+#[async_trait]
+pub trait MailboxReceiver: Send + Sync {
+    async fn receive(&self, entry: &MailboxEntry) -> ReceiveOutcome;
+}
+
 /// Mailbox persistence errors.
 #[derive(Debug, Error)]
 pub enum MailboxStoreError {
@@ -157,9 +165,9 @@ pub enum MailboxStoreError {
     #[error("mailbox claim token mismatch for entry: {0}")]
     ClaimConflict(String),
 
-    #[error("mailbox generation mismatch for thread '{thread_id}': expected {expected}, got {actual}")]
+    #[error("mailbox generation mismatch for mailbox '{mailbox_id}': expected {expected}, got {actual}")]
     GenerationMismatch {
-        thread_id: String,
+        mailbox_id: String,
         expected: u64,
         actual: u64,
     },

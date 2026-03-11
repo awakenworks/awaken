@@ -28,6 +28,7 @@ postgres = ["dep:sqlx"]
 nats = ["dep:async-nats"]
 
 [dev-dependencies]
+tirea-contract = { workspace = true, features = ["test-support"] }
 tirea-state.workspace = true
 tempfile = "3"
 async-trait = "0.1"

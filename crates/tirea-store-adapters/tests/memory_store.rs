@@ -2,53 +2,17 @@ use serde_json::json;
 use std::sync::Arc;
 use tirea_contract::runtime::state::SerializedStateAction;
 use tirea_contract::storage::{
-    MailboxEntry, MailboxEntryStatus, MailboxReader, MailboxWriter, RunOrigin, ThreadReader,
-    ThreadStore, ThreadStoreError, ThreadSync, ThreadWriter, VersionPrecondition,
+    MailboxEntryStatus, MailboxQuery, MailboxReader, MailboxStoreError, MailboxWriter,
+    ThreadReader, ThreadStore, ThreadStoreError, ThreadSync, ThreadWriter, VersionPrecondition,
 };
+use tirea_contract::testing::MailboxEntryBuilder;
 use tirea_contract::thread::ThreadChangeSet;
 use tirea_contract::{
-    CheckpointReason, Message, MessageMetadata, MessageQuery, Role, RunRequest, StateScope, Thread,
+    CheckpointReason, Message, MessageMetadata, MessageQuery, Role, StateScope, Thread,
     ThreadListQuery, ToolCall,
 };
 use tirea_state::{path, Op, Patch, TrackedPatch};
 use tirea_store_adapters::MemoryStore;
-
-fn mailbox_entry(run_id: &str, thread_id: &str) -> MailboxEntry {
-    MailboxEntry {
-        entry_id: format!("entry-{run_id}"),
-        thread_id: thread_id.to_string(),
-        run_id: run_id.to_string(),
-        agent_id: "agent".to_string(),
-        generation: 0,
-        status: MailboxEntryStatus::Queued,
-        request: RunRequest {
-            agent_id: "agent".to_string(),
-            thread_id: Some(thread_id.to_string()),
-            run_id: Some(run_id.to_string()),
-            parent_run_id: None,
-            parent_thread_id: None,
-            resource_id: None,
-            origin: RunOrigin::default(),
-            state: None,
-            messages: vec![Message::user("hello")],
-            initial_decisions: vec![],
-            source_mailbox_entry_id: None,
-        },
-        dedupe_key: None,
-        kind: None,
-        sender_id: None,
-        priority: 0,
-        available_at: 1,
-        attempt_count: 0,
-        last_error: None,
-        claim_token: None,
-        claimed_by: None,
-        lease_until: None,
-        accepted_run_id: None,
-        created_at: 1,
-        updated_at: 1,
-    }
-}
 
 #[tokio::test]
 async fn test_memory_storage_save_load() {
@@ -1258,12 +1222,12 @@ async fn frontend_state_replaces_existing_thread_state_in_user_message_delta() {
 #[tokio::test]
 async fn mailbox_enqueue_claim_and_ack_roundtrip() {
     let store = MemoryStore::new();
-    let entry = mailbox_entry("run-mailbox-1", "thread-mailbox-1");
+    let entry = MailboxEntryBuilder::queued("entry-mailbox-1", "mailbox-1").build();
 
     store.enqueue_mailbox_entry(&entry).await.unwrap();
 
     let claimed = store
-        .claim_mailbox_entries(10, "worker-a", 10, 5_000)
+        .claim_mailbox_entries(None, 10, "worker-a", 10, 5_000)
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
@@ -1275,51 +1239,47 @@ async fn mailbox_enqueue_claim_and_ack_roundtrip() {
         .clone()
         .expect("claim token should be set");
     store
-        .ack_mailbox_entry(&claimed[0].entry_id, &claim_token, &claimed[0].run_id, 20)
+        .ack_mailbox_entry(&claimed[0].entry_id, &claim_token, 20)
         .await
         .unwrap();
 
     let loaded = store
-        .load_mailbox_entry_by_run_id(&claimed[0].run_id)
+        .load_mailbox_entry(&claimed[0].entry_id)
         .await
         .unwrap()
         .expect("entry should still be queryable");
     assert_eq!(loaded.status, MailboxEntryStatus::Accepted);
-    assert_eq!(
-        loaded.accepted_run_id.as_deref(),
-        Some(claimed[0].run_id.as_str())
-    );
 }
 
 #[tokio::test]
-async fn mailbox_cancel_pending_entries_by_thread_respects_exclusion() {
+async fn mailbox_cancel_pending_entries_by_mailbox_respects_exclusion() {
     let store = MemoryStore::new();
-    let keep = mailbox_entry("run-keep", "thread-cancel");
-    let cancel = mailbox_entry("run-cancel", "thread-cancel");
-    let other_thread = mailbox_entry("run-other", "thread-other");
+    let keep = MailboxEntryBuilder::queued("entry-keep", "mailbox-cancel").build();
+    let cancel = MailboxEntryBuilder::queued("entry-cancel", "mailbox-cancel").build();
+    let other_mailbox = MailboxEntryBuilder::queued("entry-other", "mailbox-other").build();
 
     store.enqueue_mailbox_entry(&keep).await.unwrap();
     store.enqueue_mailbox_entry(&cancel).await.unwrap();
-    store.enqueue_mailbox_entry(&other_thread).await.unwrap();
+    store.enqueue_mailbox_entry(&other_mailbox).await.unwrap();
 
     let cancelled = store
-        .cancel_pending_mailbox_for_thread("thread-cancel", 50, Some("run-keep"))
+        .cancel_pending_for_mailbox("mailbox-cancel", 50, Some("entry-keep"))
         .await
         .unwrap();
 
     assert_eq!(cancelled.len(), 1);
-    assert_eq!(cancelled[0].run_id, "run-cancel");
+    assert_eq!(cancelled[0].entry_id, "entry-cancel");
     assert_eq!(cancelled[0].status, MailboxEntryStatus::Cancelled);
 
     let kept = store
-        .load_mailbox_entry_by_run_id("run-keep")
+        .load_mailbox_entry("entry-keep")
         .await
         .unwrap()
         .unwrap();
     assert_eq!(kept.status, MailboxEntryStatus::Queued);
 
     let other = store
-        .load_mailbox_entry_by_run_id("run-other")
+        .load_mailbox_entry("entry-other")
         .await
         .unwrap()
         .unwrap();
@@ -1327,20 +1287,21 @@ async fn mailbox_cancel_pending_entries_by_thread_respects_exclusion() {
 }
 
 #[tokio::test]
-async fn mailbox_claim_by_run_id_ignores_available_at_for_inline_dispatch() {
+async fn mailbox_claim_by_entry_id_ignores_available_at_for_inline_dispatch() {
     let store = MemoryStore::new();
-    let mut entry = mailbox_entry("run-inline", "thread-inline");
-    entry.available_at = i64::MAX as u64;
+    let entry = MailboxEntryBuilder::queued("entry-inline", "mailbox-inline")
+        .with_available_at(i64::MAX as u64)
+        .build();
     store.enqueue_mailbox_entry(&entry).await.unwrap();
 
     let claimed = store
-        .claim_mailbox_entries(10, "worker-batch", 10, 5_000)
+        .claim_mailbox_entries(None, 10, "worker-batch", 10, 5_000)
         .await
         .unwrap();
     assert!(claimed.is_empty());
 
     let targeted = store
-        .claim_mailbox_entry_by_run_id("run-inline", "worker-inline", 10, 5_000)
+        .claim_mailbox_entry("entry-inline", "worker-inline", 10, 5_000)
         .await
         .unwrap()
         .expect("inline claim should succeed");
@@ -1351,39 +1312,606 @@ async fn mailbox_claim_by_run_id_ignores_available_at_for_inline_dispatch() {
 #[tokio::test]
 async fn mailbox_interrupt_bumps_generation_and_supersedes_pending_entries() {
     let store = MemoryStore::new();
-    let old_a = mailbox_entry("run-old-a", "thread-interrupt");
-    let old_b = mailbox_entry("run-old-b", "thread-interrupt");
+    let old_a = MailboxEntryBuilder::queued("entry-old-a", "mailbox-interrupt").build();
+    let old_b = MailboxEntryBuilder::queued("entry-old-b", "mailbox-interrupt").build();
     store.enqueue_mailbox_entry(&old_a).await.unwrap();
     store.enqueue_mailbox_entry(&old_b).await.unwrap();
 
     let interrupted = store
-        .interrupt_mailbox_thread("thread-interrupt", 50)
+        .interrupt_mailbox("mailbox-interrupt", 50)
         .await
         .unwrap();
-    assert_eq!(interrupted.thread_state.current_generation, 1);
+    assert_eq!(interrupted.mailbox_state.current_generation, 1);
     assert_eq!(interrupted.superseded_entries.len(), 2);
 
     let superseded = store
-        .load_mailbox_entry_by_run_id("run-old-a")
+        .load_mailbox_entry("entry-old-a")
         .await
         .unwrap()
         .expect("superseded entry should exist");
     assert_eq!(superseded.status, MailboxEntryStatus::Superseded);
 
     let next_generation = store
-        .ensure_mailbox_thread_state("thread-interrupt", 60)
+        .ensure_mailbox_state("mailbox-interrupt", 60)
         .await
         .unwrap()
         .current_generation;
-    let mut fresh = mailbox_entry("run-fresh", "thread-interrupt");
-    fresh.generation = next_generation;
+    let fresh = MailboxEntryBuilder::queued("entry-fresh", "mailbox-interrupt")
+        .with_generation(next_generation)
+        .build();
     store.enqueue_mailbox_entry(&fresh).await.unwrap();
 
     let fresh_loaded = store
-        .load_mailbox_entry_by_run_id("run-fresh")
+        .load_mailbox_entry("entry-fresh")
         .await
         .unwrap()
         .expect("fresh entry should exist");
     assert_eq!(fresh_loaded.generation, 1);
     assert_eq!(fresh_loaded.status, MailboxEntryStatus::Queued);
+}
+
+// ---------------------------------------------------------------------------
+// nack: claimed → queued with retry_at and error
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mailbox_nack_returns_entry_to_queued_with_retry_at() {
+    let store = MemoryStore::new();
+    store.ensure_mailbox_state("mailbox-nack", 1).await.unwrap();
+    store
+        .enqueue_mailbox_entry(&MailboxEntryBuilder::queued("entry-nack", "mailbox-nack").build())
+        .await
+        .unwrap();
+
+    let claimed = store
+        .claim_mailbox_entries(None, 1, "consumer-1", 10, 5000)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    let token = claimed[0].claim_token.clone().unwrap();
+    assert_eq!(claimed[0].attempt_count, 1);
+
+    store
+        .nack_mailbox_entry("entry-nack", &token, 1000, "transient error", 10)
+        .await
+        .unwrap();
+
+    let entry = store
+        .load_mailbox_entry("entry-nack")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.status, MailboxEntryStatus::Queued);
+    assert_eq!(entry.available_at, 1000);
+    assert_eq!(entry.last_error.as_deref(), Some("transient error"));
+    assert!(entry.claim_token.is_none());
+    assert!(entry.claimed_by.is_none());
+
+    // Not claimable before retry_at
+    let before_retry = store
+        .claim_mailbox_entries(None, 1, "consumer-2", 500, 5000)
+        .await
+        .unwrap();
+    assert_eq!(before_retry.len(), 0);
+
+    // Claimable at retry_at
+    let at_retry = store
+        .claim_mailbox_entries(None, 1, "consumer-2", 1000, 5000)
+        .await
+        .unwrap();
+    assert_eq!(at_retry.len(), 1);
+    assert_eq!(at_retry[0].attempt_count, 2);
+}
+
+#[tokio::test]
+async fn mailbox_nack_with_wrong_token_returns_claim_conflict() {
+    let store = MemoryStore::new();
+    store
+        .ensure_mailbox_state("mailbox-nack-conflict", 1)
+        .await
+        .unwrap();
+    store
+        .enqueue_mailbox_entry(
+            &MailboxEntryBuilder::queued("entry-nc", "mailbox-nack-conflict").build(),
+        )
+        .await
+        .unwrap();
+
+    let claimed = store
+        .claim_mailbox_entries(None, 1, "consumer-1", 10, 5000)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+
+    let result = store
+        .nack_mailbox_entry("entry-nc", "wrong-token", 1000, "err", 10)
+        .await;
+    assert!(matches!(result, Err(MailboxStoreError::ClaimConflict(_))));
+}
+
+// ---------------------------------------------------------------------------
+// dead_letter: claimed → dead_letter with error
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mailbox_dead_letter_marks_entry_terminal() {
+    let store = MemoryStore::new();
+    store.ensure_mailbox_state("mailbox-dl", 1).await.unwrap();
+    store
+        .enqueue_mailbox_entry(&MailboxEntryBuilder::queued("entry-dl", "mailbox-dl").build())
+        .await
+        .unwrap();
+
+    let claimed = store
+        .claim_mailbox_entries(None, 1, "consumer-1", 10, 5000)
+        .await
+        .unwrap();
+    let token = claimed[0].claim_token.clone().unwrap();
+
+    store
+        .dead_letter_mailbox_entry("entry-dl", &token, "permanent failure", 10)
+        .await
+        .unwrap();
+
+    let entry = store.load_mailbox_entry("entry-dl").await.unwrap().unwrap();
+    assert_eq!(entry.status, MailboxEntryStatus::DeadLetter);
+    assert_eq!(entry.last_error.as_deref(), Some("permanent failure"));
+    assert!(entry.claim_token.is_none());
+    assert!(entry.status.is_terminal());
+}
+
+#[tokio::test]
+async fn mailbox_dead_letter_with_wrong_token_returns_claim_conflict() {
+    let store = MemoryStore::new();
+    store.ensure_mailbox_state("mailbox-dl2", 1).await.unwrap();
+    store
+        .enqueue_mailbox_entry(&MailboxEntryBuilder::queued("entry-dl2", "mailbox-dl2").build())
+        .await
+        .unwrap();
+
+    let claimed = store
+        .claim_mailbox_entries(None, 1, "consumer-1", 10, 5000)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+
+    let result = store
+        .dead_letter_mailbox_entry("entry-dl2", "wrong-token", "err", 10)
+        .await;
+    assert!(matches!(result, Err(MailboxStoreError::ClaimConflict(_))));
+}
+
+// ---------------------------------------------------------------------------
+// purge_terminal: GC for terminal entries
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mailbox_purge_terminal_removes_old_terminal_entries_only() {
+    let store = MemoryStore::new();
+    store
+        .ensure_mailbox_state("mailbox-purge", 1)
+        .await
+        .unwrap();
+
+    // Create entries with different terminal statuses and timestamps
+    let accepted = MailboxEntryBuilder::queued("entry-accepted", "mailbox-purge")
+        .with_status(MailboxEntryStatus::Accepted)
+        .with_updated_at(100)
+        .build();
+    store.enqueue_mailbox_entry(&accepted).await.unwrap();
+
+    let cancelled = MailboxEntryBuilder::queued("entry-cancelled", "mailbox-purge")
+        .with_status(MailboxEntryStatus::Cancelled)
+        .with_updated_at(200)
+        .build();
+    store.enqueue_mailbox_entry(&cancelled).await.unwrap();
+
+    let recent_dl = MailboxEntryBuilder::queued("entry-recent-dl", "mailbox-purge")
+        .with_status(MailboxEntryStatus::DeadLetter)
+        .with_updated_at(900)
+        .build();
+    store.enqueue_mailbox_entry(&recent_dl).await.unwrap();
+
+    let queued = MailboxEntryBuilder::queued("entry-queued", "mailbox-purge").build();
+    store.enqueue_mailbox_entry(&queued).await.unwrap();
+
+    // Purge with cutoff=500: should remove accepted(100), cancelled(200) but not recent_dl(900) or queued
+    let purged = store.purge_terminal_mailbox_entries(500).await.unwrap();
+    assert_eq!(purged, 2);
+
+    assert!(store
+        .load_mailbox_entry("entry-accepted")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .load_mailbox_entry("entry-cancelled")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .load_mailbox_entry("entry-recent-dl")
+        .await
+        .unwrap()
+        .is_some());
+    assert!(store
+        .load_mailbox_entry("entry-queued")
+        .await
+        .unwrap()
+        .is_some());
+}
+
+// ---------------------------------------------------------------------------
+// Duplicate entry_id rejection
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mailbox_enqueue_duplicate_entry_id_returns_already_exists() {
+    let store = MemoryStore::new();
+    store.ensure_mailbox_state("mailbox-dup", 1).await.unwrap();
+    store
+        .enqueue_mailbox_entry(&MailboxEntryBuilder::queued("entry-dup", "mailbox-dup").build())
+        .await
+        .unwrap();
+
+    let result = store
+        .enqueue_mailbox_entry(&MailboxEntryBuilder::queued("entry-dup", "mailbox-dup").build())
+        .await;
+    assert!(matches!(result, Err(MailboxStoreError::AlreadyExists(_))));
+}
+
+// ---------------------------------------------------------------------------
+// Generation mismatch on enqueue
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mailbox_enqueue_with_stale_generation_returns_mismatch() {
+    let store = MemoryStore::new();
+    store.ensure_mailbox_state("mailbox-gen", 1).await.unwrap();
+
+    // Bump generation via interrupt
+    store.interrupt_mailbox("mailbox-gen", 10).await.unwrap();
+
+    // Try to enqueue with generation 0 (stale)
+    let entry = MailboxEntryBuilder::queued("entry-stale", "mailbox-gen").build();
+    let result = store.enqueue_mailbox_entry(&entry).await;
+    assert!(matches!(
+        result,
+        Err(MailboxStoreError::GenerationMismatch { .. })
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// claim_mailbox_entries with mailbox_id filter
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mailbox_claim_entries_filters_by_mailbox_id() {
+    let store = MemoryStore::new();
+    store.ensure_mailbox_state("mailbox-a", 1).await.unwrap();
+    store.ensure_mailbox_state("mailbox-b", 1).await.unwrap();
+
+    store
+        .enqueue_mailbox_entry(&MailboxEntryBuilder::queued("entry-a1", "mailbox-a").build())
+        .await
+        .unwrap();
+    store
+        .enqueue_mailbox_entry(&MailboxEntryBuilder::queued("entry-b1", "mailbox-b").build())
+        .await
+        .unwrap();
+    store
+        .enqueue_mailbox_entry(&MailboxEntryBuilder::queued("entry-a2", "mailbox-a").build())
+        .await
+        .unwrap();
+
+    // Claim only from mailbox-a
+    let claimed_a = store
+        .claim_mailbox_entries(Some("mailbox-a"), 10, "consumer-1", 10, 5000)
+        .await
+        .unwrap();
+    assert_eq!(claimed_a.len(), 2);
+    assert!(claimed_a.iter().all(|e| e.mailbox_id == "mailbox-a"));
+
+    // Claim from mailbox-b
+    let claimed_b = store
+        .claim_mailbox_entries(Some("mailbox-b"), 10, "consumer-1", 10, 5000)
+        .await
+        .unwrap();
+    assert_eq!(claimed_b.len(), 1);
+    assert_eq!(claimed_b[0].mailbox_id, "mailbox-b");
+
+    // Claim all (no filter) — all already claimed, lease not expired
+    let claimed_all = store
+        .claim_mailbox_entries(None, 10, "consumer-2", 10, 5000)
+        .await
+        .unwrap();
+    assert_eq!(claimed_all.len(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Lease expiry: expired claimed entries are re-claimable
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mailbox_expired_lease_allows_reclaim() {
+    let store = MemoryStore::new();
+    store
+        .ensure_mailbox_state("mailbox-lease", 1)
+        .await
+        .unwrap();
+    store
+        .enqueue_mailbox_entry(&MailboxEntryBuilder::queued("entry-lease", "mailbox-lease").build())
+        .await
+        .unwrap();
+
+    // Claim with short lease (expires at now + 100 = 110)
+    let claimed = store
+        .claim_mailbox_entries(None, 1, "consumer-1", 10, 100)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].lease_until, Some(110));
+    let token1 = claimed[0].claim_token.clone().unwrap();
+
+    // Not claimable before lease expires
+    let no_claim = store
+        .claim_mailbox_entries(None, 1, "consumer-2", 50, 100)
+        .await
+        .unwrap();
+    assert_eq!(no_claim.len(), 0);
+
+    // Claimable after lease expires
+    let reclaimed = store
+        .claim_mailbox_entries(None, 1, "consumer-2", 120, 100)
+        .await
+        .unwrap();
+    assert_eq!(reclaimed.len(), 1);
+    let token2 = reclaimed[0].claim_token.clone().unwrap();
+    assert_ne!(token1, token2);
+    assert_eq!(reclaimed[0].claimed_by.as_deref(), Some("consumer-2"));
+    assert_eq!(reclaimed[0].attempt_count, 2);
+}
+
+// ---------------------------------------------------------------------------
+// supersede_mailbox_entry: single entry supersede
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mailbox_supersede_entry_marks_as_superseded() {
+    let store = MemoryStore::new();
+    store.ensure_mailbox_state("mailbox-sup", 1).await.unwrap();
+    store
+        .enqueue_mailbox_entry(&MailboxEntryBuilder::queued("entry-sup", "mailbox-sup").build())
+        .await
+        .unwrap();
+
+    let result = store
+        .supersede_mailbox_entry("entry-sup", 10, "replaced by newer")
+        .await
+        .unwrap();
+    assert!(result.is_some());
+    let entry = result.unwrap();
+    assert_eq!(entry.status, MailboxEntryStatus::Superseded);
+    assert_eq!(entry.last_error.as_deref(), Some("replaced by newer"));
+    assert!(entry.status.is_terminal());
+
+    // Superseding terminal entry returns it unchanged
+    let again = store
+        .supersede_mailbox_entry("entry-sup", 20, "another reason")
+        .await
+        .unwrap();
+    assert!(again.is_some());
+    assert_eq!(again.unwrap().status, MailboxEntryStatus::Superseded);
+}
+
+// ---------------------------------------------------------------------------
+// cancel_mailbox_entry: various statuses
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mailbox_cancel_entry_for_nonexistent_returns_none() {
+    let store = MemoryStore::new();
+    let result = store.cancel_mailbox_entry("nonexistent", 10).await.unwrap();
+    assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn mailbox_cancel_terminal_entry_returns_unchanged() {
+    let store = MemoryStore::new();
+    store.ensure_mailbox_state("mailbox-ct", 1).await.unwrap();
+    store
+        .enqueue_mailbox_entry(&MailboxEntryBuilder::queued("entry-ct", "mailbox-ct").build())
+        .await
+        .unwrap();
+
+    // Cancel it first
+    store.cancel_mailbox_entry("entry-ct", 10).await.unwrap();
+    // Cancel again — returns the already-cancelled entry
+    let result = store
+        .cancel_mailbox_entry("entry-ct", 20)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.status, MailboxEntryStatus::Cancelled);
+    assert_eq!(result.updated_at, 10); // not updated to 20
+}
+
+// ---------------------------------------------------------------------------
+// Priority ordering in claim
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mailbox_claim_respects_priority_ordering() {
+    let store = MemoryStore::new();
+    store.ensure_mailbox_state("mailbox-prio", 1).await.unwrap();
+
+    let low = MailboxEntryBuilder::queued("entry-low", "mailbox-prio")
+        .with_priority(0)
+        .with_created_at(1)
+        .build();
+    store.enqueue_mailbox_entry(&low).await.unwrap();
+
+    let high = MailboxEntryBuilder::queued("entry-high", "mailbox-prio")
+        .with_priority(10)
+        .with_created_at(2)
+        .build();
+    store.enqueue_mailbox_entry(&high).await.unwrap();
+
+    let medium = MailboxEntryBuilder::queued("entry-med", "mailbox-prio")
+        .with_priority(5)
+        .with_created_at(3)
+        .build();
+    store.enqueue_mailbox_entry(&medium).await.unwrap();
+
+    let claimed = store
+        .claim_mailbox_entries(None, 10, "consumer", 10, 5000)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 3);
+    assert_eq!(claimed[0].entry_id, "entry-high");
+    assert_eq!(claimed[1].entry_id, "entry-med");
+    assert_eq!(claimed[2].entry_id, "entry-low");
+}
+
+// ---------------------------------------------------------------------------
+// ensure_mailbox_state: idempotent creation
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mailbox_ensure_state_is_idempotent() {
+    let store = MemoryStore::new();
+    let state1 = store
+        .ensure_mailbox_state("mailbox-ensure", 10)
+        .await
+        .unwrap();
+    assert_eq!(state1.current_generation, 0);
+    assert_eq!(state1.updated_at, 10);
+
+    let state2 = store
+        .ensure_mailbox_state("mailbox-ensure", 20)
+        .await
+        .unwrap();
+    assert_eq!(state2.current_generation, 0);
+    assert_eq!(state2.updated_at, 20);
+}
+
+// ---------------------------------------------------------------------------
+// ack_mailbox_entry: token mismatch and not-found
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mailbox_ack_with_wrong_token_returns_claim_conflict() {
+    let store = MemoryStore::new();
+    store
+        .ensure_mailbox_state("mailbox-ack-c", 1)
+        .await
+        .unwrap();
+    store
+        .enqueue_mailbox_entry(&MailboxEntryBuilder::queued("entry-ack-c", "mailbox-ack-c").build())
+        .await
+        .unwrap();
+
+    let claimed = store
+        .claim_mailbox_entries(None, 1, "consumer", 10, 5000)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+
+    let result = store
+        .ack_mailbox_entry("entry-ack-c", "wrong-token", 10)
+        .await;
+    assert!(matches!(result, Err(MailboxStoreError::ClaimConflict(_))));
+}
+
+#[tokio::test]
+async fn mailbox_ack_nonexistent_entry_returns_not_found() {
+    let store = MemoryStore::new();
+    let result = store
+        .ack_mailbox_entry("nonexistent", "any-token", 10)
+        .await;
+    assert!(matches!(result, Err(MailboxStoreError::NotFound(_))));
+}
+
+// ---------------------------------------------------------------------------
+// list_mailbox_entries: pagination and filtering
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mailbox_list_entries_filters_and_paginates() {
+    let store = MemoryStore::new();
+    store.ensure_mailbox_state("mailbox-list", 1).await.unwrap();
+
+    for i in 0..5 {
+        let entry = MailboxEntryBuilder::queued(format!("entry-list-{i}"), "mailbox-list")
+            .with_created_at(i as u64 + 1)
+            .build();
+        store.enqueue_mailbox_entry(&entry).await.unwrap();
+    }
+
+    // Cancel one to create mixed statuses
+    store
+        .cancel_mailbox_entry("entry-list-2", 10)
+        .await
+        .unwrap();
+
+    // List all for this mailbox
+    let all = store
+        .list_mailbox_entries(&MailboxQuery {
+            mailbox_id: Some("mailbox-list".to_string()),
+            limit: 100,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(all.total, 5);
+
+    // List only queued
+    let queued = store
+        .list_mailbox_entries(&MailboxQuery {
+            mailbox_id: Some("mailbox-list".to_string()),
+            status: Some(MailboxEntryStatus::Queued),
+            limit: 100,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(queued.total, 4);
+
+    // List only cancelled
+    let cancelled = store
+        .list_mailbox_entries(&MailboxQuery {
+            mailbox_id: Some("mailbox-list".to_string()),
+            status: Some(MailboxEntryStatus::Cancelled),
+            limit: 100,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(cancelled.total, 1);
+
+    // Pagination: limit 2, offset 0
+    let page1 = store
+        .list_mailbox_entries(&MailboxQuery {
+            mailbox_id: Some("mailbox-list".to_string()),
+            limit: 2,
+            offset: 0,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page1.items.len(), 2);
+    assert!(page1.has_more);
+
+    // Pagination: limit 2, offset 4
+    let page_last = store
+        .list_mailbox_entries(&MailboxQuery {
+            mailbox_id: Some("mailbox-list".to_string()),
+            limit: 2,
+            offset: 4,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page_last.items.len(), 1);
+    assert!(!page_last.has_more);
 }

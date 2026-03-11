@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use crate::transport::runtime_endpoint::RunStarter;
 
 use super::ApiError;
-use super::{enqueue_background_run, MailboxDispatcher};
+use super::{enqueue_background_run, AgentReceiver, MailboxDispatcher};
 
 pub async fn current_run_id_for_thread(
     os: &Arc<AgentOs>,
@@ -225,25 +225,22 @@ pub async fn check_run_liveness(
     }
 }
 
-/// Resolve an agent, prepare a run, wire an SSE relay that is immediately
-/// drained in the background, and return `(thread_id, run_id)`.
-///
-/// This is the shared "fire-and-forget" background run launcher used by both
-/// the run API and the A2A gateway.
+/// Returns `(thread_id, run_id, entry_id)`.
 pub async fn start_background_run(
     os: &Arc<AgentOs>,
     mailbox_store: &Arc<dyn MailboxStore>,
     agent_id: &str,
     run_request: RunRequest,
     protocol_label: &'static str,
-) -> Result<(String, String), ApiError> {
-    let (thread_id, run_id) =
+) -> Result<(String, String, String), ApiError> {
+    let (thread_id, run_id, entry_id) =
         enqueue_background_run(os, mailbox_store, agent_id, run_request).await?;
-    MailboxDispatcher::new(os.clone(), mailbox_store.clone())
+    let receiver = Arc::new(AgentReceiver::new(os.clone()));
+    MailboxDispatcher::new(mailbox_store.clone(), receiver)
         .with_consumer_id(format!("{protocol_label}-inline"))
         .dispatch_ready_once()
         .await?;
-    Ok((thread_id, run_id))
+    Ok((thread_id, run_id, entry_id))
 }
 
 /// Truncate a stored thread so it includes messages up to and including `message_id`.
