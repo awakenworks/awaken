@@ -85,7 +85,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tirea_contract::runtime::phase::Phase;
-    use tirea_contract::RuntimeOptions;
+    use tirea_contract::RunPolicy;
     use tirea_state::DocCell;
 
     #[test]
@@ -121,7 +121,7 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_before_inference() {
         let plugin = ReminderPlugin::new();
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({ "reminders": { "items": ["Test reminder"] } }));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let actions = AgentBehavior::before_inference(&plugin, &ctx).await;
@@ -135,7 +135,7 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_generates_clear_action() {
         let plugin = ReminderPlugin::new();
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({ "reminders": { "items": ["Reminder A", "Reminder B"] } }));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let actions = AgentBehavior::before_inference(&plugin, &ctx).await;
@@ -155,7 +155,7 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_no_clear_when_disabled() {
         let plugin = ReminderPlugin::new().with_clear_after_llm_request(false);
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({ "reminders": { "items": ["Reminder"] } }));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let actions = AgentBehavior::before_inference(&plugin, &ctx).await;
@@ -174,7 +174,7 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_empty_reminders() {
         let plugin = ReminderPlugin::new();
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({ "reminders": { "items": [] } }));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let actions = AgentBehavior::before_inference(&plugin, &ctx).await;
@@ -184,7 +184,7 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_no_state() {
         let plugin = ReminderPlugin::new();
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let actions = AgentBehavior::before_inference(&plugin, &ctx).await;

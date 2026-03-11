@@ -5,7 +5,7 @@ use crate::contracts::runtime::phase::{ActionSet, BeforeInferenceAction};
 use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::runtime::state::{reduce_state_actions, ScopeContext};
 use crate::contracts::runtime::tool_call::{CallerContext, Tool, ToolStatus};
-use crate::contracts::runtime::RunExecutionContext;
+use crate::contracts::runtime::RunIdentity;
 use crate::contracts::storage::RunOrigin;
 use crate::contracts::AgentBehavior;
 use crate::runtime::background_tasks::BackgroundTaskManager;
@@ -34,7 +34,7 @@ where
             phase,
             step.thread_id(),
             step.messages(),
-            step.runtime_options(),
+            step.run_policy(),
             step.ctx().doc(),
         );
         match phase {
@@ -112,7 +112,9 @@ pub(super) fn apply_caller_context_with_state_run_and_messages(
     run_id: &str,
     messages: Vec<crate::contracts::thread::Message>,
 ) {
-    fix.execution_ctx = RunExecutionContext::new(
+    fix.run_identity = RunIdentity::new(
+        "owner-thread".to_string(),
+        None,
         run_id.to_string(),
         None,
         "caller".to_string(),

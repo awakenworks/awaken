@@ -1,14 +1,14 @@
 //! Execution context types for tools and plugins.
 //!
-//! `ToolCallContext` provides state access, run config, and identity for tool execution.
+//! `ToolCallContext` provides state access, run policy, and identity for tool execution.
 //! It replaces direct `&Thread` usage in tool signatures, keeping the persistent
 //! entity (`Thread`) invisible to tools and plugins.
 
 use crate::runtime::activity::ActivityManager;
-use crate::runtime::run::RunExecutionContext;
+use crate::runtime::run::RunIdentity;
 use crate::runtime::{ToolCallResume, ToolCallState};
 use crate::thread::Message;
-use crate::RuntimeOptions;
+use crate::RunPolicy;
 use futures::future::pending;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -22,11 +22,6 @@ use tokio_util::sync::CancellationToken;
 
 type PatchHook<'a> = Arc<dyn Fn(&Op) -> TireaResult<()> + Send + Sync + 'a>;
 const TOOL_PROGRESS_STREAM_PREFIX: &str = "tool_call:";
-/// Scope key injected by the framework for nested sub-runs.
-///
-/// When present, progress events emitted from the current tool call are linked
-/// to the parent tool-call node.
-pub const TOOL_SCOPE_PARENT_TOOL_CALL_ID_KEY: &str = "__agent_parent_tool_call_id";
 /// Activity type used for tool-call progress updates.
 pub const TOOL_CALL_PROGRESS_ACTIVITY_TYPE: &str = "tool-call-progress";
 /// Legacy public alias kept for backward compatibility.
@@ -221,7 +216,7 @@ impl ToolCallProgressSink for ActivityManagerProgressSink {
 
 /// Execution context for tool invocations.
 ///
-/// Provides typed state access (read/write), run config access, identity,
+/// Provides typed state access (read/write), run policy access, identity,
 /// message queuing, and activity tracking. Tools receive `&ToolCallContext`
 /// instead of `&Thread`.
 pub struct ToolCallContext<'a> {
@@ -229,8 +224,8 @@ pub struct ToolCallContext<'a> {
     ops: &'a Mutex<Vec<Op>>,
     call_id: String,
     source: String,
-    runtime_options: &'a RuntimeOptions,
-    execution_ctx: RunExecutionContext,
+    run_policy: &'a RunPolicy,
+    run_identity: RunIdentity,
     caller_context: CallerContext,
     pending_messages: &'a Mutex<Vec<Arc<Message>>>,
     activity_manager: Arc<dyn ActivityManager>,
@@ -258,7 +253,7 @@ impl<'a> ToolCallContext<'a> {
         ops: &'a Mutex<Vec<Op>>,
         call_id: impl Into<String>,
         source: impl Into<String>,
-        runtime_options: &'a RuntimeOptions,
+        run_policy: &'a RunPolicy,
         pending_messages: &'a Mutex<Vec<Arc<Message>>>,
         activity_manager: Arc<dyn ActivityManager>,
     ) -> Self {
@@ -269,8 +264,8 @@ impl<'a> ToolCallContext<'a> {
             ops,
             call_id: call_id.into(),
             source: source.into(),
-            runtime_options,
-            execution_ctx: RunExecutionContext::default(),
+            run_policy,
+            run_identity: RunIdentity::default(),
             caller_context: CallerContext::default(),
             pending_messages,
             activity_manager,
@@ -287,8 +282,8 @@ impl<'a> ToolCallContext<'a> {
     }
 
     #[must_use]
-    pub fn with_execution_context(mut self, execution_ctx: RunExecutionContext) -> Self {
-        self.execution_ctx = execution_ctx;
+    pub fn with_run_identity(mut self, run_identity: RunIdentity) -> Self {
+        self.run_identity = run_identity;
         self
     }
 
@@ -357,16 +352,16 @@ impl<'a> ToolCallContext<'a> {
     }
 
     // =========================================================================
-    // Run Config
+    // Run policy / identity
     // =========================================================================
 
-    /// Borrow the run config.
-    pub fn runtime_options(&self) -> &RuntimeOptions {
-        self.runtime_options
+    /// Borrow the run policy.
+    pub fn run_policy(&self) -> &RunPolicy {
+        self.run_policy
     }
 
-    pub fn execution_ctx(&self) -> &RunExecutionContext {
-        &self.execution_ctx
+    pub fn run_identity(&self) -> &RunIdentity {
+        &self.run_identity
     }
 
     pub fn caller_context(&self) -> &CallerContext {
@@ -551,13 +546,10 @@ impl<'a> ToolCallContext<'a> {
         Self::validate_progress_value("progress loaded", update.loaded)?;
         Self::validate_progress_value("progress total", update.total)?;
 
-        let run_id = self.execution_ctx.run_id_opt().map(ToOwned::to_owned);
-        let parent_run_id = self
-            .execution_ctx
-            .parent_run_id_opt()
-            .map(ToOwned::to_owned);
+        let run_id = self.run_identity.run_id_opt().map(ToOwned::to_owned);
+        let parent_run_id = self.run_identity.parent_run_id_opt().map(ToOwned::to_owned);
         let thread_id = self.caller_context.thread_id().map(ToOwned::to_owned);
-        let parent_call_id = self.execution_ctx.parent_tool_call_id_opt().and_then(|id| {
+        let parent_call_id = self.run_identity.parent_tool_call_id_opt().and_then(|id| {
             if id == self.call_id {
                 None
             } else {
@@ -720,7 +712,7 @@ mod tests {
     fn make_ctx<'a>(
         doc: &'a DocCell,
         ops: &'a Mutex<Vec<Op>>,
-        runtime_options: &'a RuntimeOptions,
+        run_policy: &'a RunPolicy,
         pending: &'a Mutex<Vec<Arc<Message>>>,
     ) -> ToolCallContext<'a> {
         ToolCallContext::new(
@@ -728,14 +720,16 @@ mod tests {
             ops,
             "call-1",
             "test",
-            runtime_options,
+            run_policy,
             pending,
             NoOpActivityManager::arc(),
         )
     }
 
-    fn execution_ctx(run_id: &str) -> RunExecutionContext {
-        RunExecutionContext::new(
+    fn run_identity(run_id: &str) -> RunIdentity {
+        RunIdentity::new(
+            "thread-child".to_string(),
+            None,
             run_id.to_string(),
             None,
             "agent".to_string(),
@@ -756,7 +750,7 @@ mod tests {
     fn test_identity() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RuntimeOptions::default();
+        let scope = RunPolicy::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
@@ -769,21 +763,18 @@ mod tests {
     fn test_typed_context_access() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let mut scope = RuntimeOptions::new();
-        scope
-            .set_parent_tool_call_id("call-parent")
-            .expect("set parent tool call id");
+        let scope = RunPolicy::new();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, &scope, &pending)
-            .with_execution_context(execution_ctx("run-1"))
+            .with_run_identity(run_identity("run-1").with_parent_tool_call_id("call-parent"))
             .with_caller_context(caller_context("thread-1"));
 
         assert_eq!(
-            ctx.runtime_options().parent_tool_call_id(),
+            ctx.run_identity().parent_tool_call_id_opt(),
             Some("call-parent")
         );
-        assert_eq!(ctx.execution_ctx().run_id_opt(), Some("run-1"));
+        assert_eq!(ctx.run_identity().run_id_opt(), Some("run-1"));
         assert_eq!(ctx.caller_context().thread_id(), Some("thread-1"));
         assert_eq!(ctx.caller_context().agent_id(), Some("caller"));
         assert_eq!(ctx.caller_context().messages().len(), 1);
@@ -793,7 +784,7 @@ mod tests {
     fn test_state_of_read_write() {
         let doc = DocCell::new(json!({"__test_fixture": {"label": null}}));
         let ops = Mutex::new(Vec::new());
-        let scope = RuntimeOptions::default();
+        let scope = RunPolicy::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
@@ -816,7 +807,7 @@ mod tests {
     fn test_write_through_read_cross_ref() {
         let doc = DocCell::new(json!({"__test_fixture": {"label": null}}));
         let ops = Mutex::new(Vec::new());
-        let scope = RuntimeOptions::default();
+        let scope = RunPolicy::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
@@ -835,7 +826,7 @@ mod tests {
     fn test_take_patch() {
         let doc = DocCell::new(json!({"__test_fixture": {"label": null}}));
         let ops = Mutex::new(Vec::new());
-        let scope = RuntimeOptions::default();
+        let scope = RunPolicy::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
@@ -858,7 +849,7 @@ mod tests {
     fn test_add_messages() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RuntimeOptions::default();
+        let scope = RunPolicy::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
@@ -873,7 +864,7 @@ mod tests {
     fn test_call_state() {
         let doc = DocCell::new(json!({"tool_calls": {}}));
         let ops = Mutex::new(Vec::new());
-        let scope = RuntimeOptions::default();
+        let scope = RunPolicy::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
@@ -889,7 +880,7 @@ mod tests {
     fn test_tool_call_state_roundtrip_and_resume_input() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RuntimeOptions::default();
+        let scope = RunPolicy::default();
         let pending = Mutex::new(Vec::new());
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
@@ -928,7 +919,7 @@ mod tests {
     fn test_clear_tool_call_state_for_removes_entry() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RuntimeOptions::default();
+        let scope = RunPolicy::default();
         let pending = Mutex::new(Vec::new());
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
@@ -960,7 +951,7 @@ mod tests {
     fn test_cancellation_token_absent_by_default() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RuntimeOptions::default();
+        let scope = RunPolicy::default();
         let pending = Mutex::new(Vec::new());
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
@@ -972,7 +963,7 @@ mod tests {
     async fn test_cancelled_waits_for_attached_token() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RuntimeOptions::default();
+        let scope = RunPolicy::default();
         let pending = Mutex::new(Vec::new());
         let token = CancellationToken::new();
 
@@ -1002,7 +993,7 @@ mod tests {
     async fn test_cancelled_without_token_never_resolves() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RuntimeOptions::default();
+        let scope = RunPolicy::default();
         let pending = Mutex::new(Vec::new());
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
@@ -1078,7 +1069,7 @@ mod tests {
     fn test_report_tool_call_progress_emits_tool_call_progress_activity() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RuntimeOptions::default();
+        let scope = RunPolicy::default();
         let pending = Mutex::new(Vec::new());
         let activity_manager = Arc::new(RecordingActivityManager::default());
 
@@ -1121,7 +1112,7 @@ mod tests {
     fn test_report_tool_call_progress_rejects_non_finite_values() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RuntimeOptions::default();
+        let scope = RunPolicy::default();
         let pending = Mutex::new(Vec::new());
         let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
@@ -1158,10 +1149,12 @@ mod tests {
     fn test_report_tool_call_progress_writes_lineage_and_metadata() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RuntimeOptions::new();
+        let scope = RunPolicy::new();
         let pending = Mutex::new(Vec::new());
         let activity_manager = Arc::new(RecordingActivityManager::default());
-        let execution_ctx = RunExecutionContext::new(
+        let run_identity = RunIdentity::new(
+            "thread-abc".to_string(),
+            None,
             "run-123".to_string(),
             Some("run-parent".to_string()),
             "agent".to_string(),
@@ -1184,7 +1177,7 @@ mod tests {
             &pending,
             activity_manager.clone(),
         )
-        .with_execution_context(execution_ctx)
+        .with_run_identity(run_identity)
         .with_caller_context(caller_context);
 
         ctx.report_tool_call_progress(ToolCallProgressUpdate {
@@ -1215,10 +1208,10 @@ mod tests {
     fn test_report_tool_call_progress_without_parent_tool_call_anchors_to_run_node() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RuntimeOptions::new();
+        let scope = RunPolicy::new();
         let pending = Mutex::new(Vec::new());
         let activity_manager = Arc::new(RecordingActivityManager::default());
-        let execution_ctx = execution_ctx("run-123");
+        let run_identity = run_identity("run-123");
         let ctx = ToolCallContext::new(
             &doc,
             &ops,
@@ -1228,7 +1221,7 @@ mod tests {
             &pending,
             activity_manager.clone(),
         )
-        .with_execution_context(execution_ctx);
+        .with_run_identity(run_identity);
 
         ctx.report_tool_call_progress(ToolCallProgressUpdate {
             status: ToolCallProgressStatus::Running,
@@ -1249,7 +1242,7 @@ mod tests {
     fn test_report_tool_call_progress_uses_injected_sink_instead_of_activity_manager() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RuntimeOptions::default();
+        let scope = RunPolicy::default();
         let pending = Mutex::new(Vec::new());
         let activity_manager = Arc::new(RecordingActivityManager::default());
         let sink = Arc::new(RecordingProgressSink::default());
@@ -1292,7 +1285,7 @@ mod tests {
     fn test_report_tool_call_progress_propagates_sink_error() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let scope = RuntimeOptions::default();
+        let scope = RunPolicy::default();
         let pending = Mutex::new(Vec::new());
         let ctx = ToolCallContext::new(
             &doc,

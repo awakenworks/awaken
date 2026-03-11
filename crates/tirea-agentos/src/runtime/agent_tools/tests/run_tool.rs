@@ -190,8 +190,7 @@ async fn agent_run_tool_rejects_disallowed_target_agent() {
     let tool = AgentRunTool::new(os);
     let mut fix = TestFixture::new();
     apply_caller_context(&mut fix);
-    fix.runtime_options
-        .policy_mut()
+    fix.run_policy
         .set_allowed_agents_if_absent(Some(&["worker".to_string()]));
     let result = tool
         .execute(
@@ -254,8 +253,7 @@ async fn background_agent_run_tool_rejects_disallowed_target_agent() {
     let wrapped = wrap_with_bg(os, bg_mgr, None);
     let mut fix = TestFixture::new();
     apply_caller_context(&mut fix);
-    fix.runtime_options
-        .policy_mut()
+    fix.run_policy
         .set_allowed_agents_if_absent(Some(&["worker".to_string()]));
 
     let result = wrapped
@@ -336,8 +334,7 @@ async fn background_agent_run_tool_rejects_excluded_agent_without_persisting_tas
     let task_store = TaskStore::new(storage as Arc<dyn ThreadStore>);
     let mut fix = TestFixture::new();
     apply_caller_context(&mut fix);
-    fix.runtime_options
-        .policy_mut()
+    fix.run_policy
         .set_excluded_agents_if_absent(Some(&["secret".to_string()]));
 
     let result = wrapped
@@ -952,8 +949,7 @@ async fn agent_run_tool_rejects_excluded_agent() {
     let run_tool = AgentRunTool::new(os);
     let mut fix = TestFixture::new();
     apply_caller_context(&mut fix);
-    fix.runtime_options
-        .policy_mut()
+    fix.run_policy
         .set_excluded_agents_if_absent(Some(&["secret".to_string()]));
 
     let result = run_tool

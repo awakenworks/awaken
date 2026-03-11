@@ -581,7 +581,7 @@ impl<T: BackgroundExecutable + 'static> Tool for BackgroundCapable<T> {
         let existing_task_id = self.inner.task_id_from_args(&clean_args);
 
         // Determine parent task_id from scope if available.
-        let parent_task_id: Option<String> = ctx.execution_ctx().run_id_opt().map(str::to_string);
+        let parent_task_id: Option<String> = ctx.run_identity().run_id_opt().map(str::to_string);
 
         if let Some(task_id) = existing_task_id {
             return self

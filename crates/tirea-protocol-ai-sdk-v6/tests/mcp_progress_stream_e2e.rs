@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tirea_agent_loop::contracts::thread::{Message, Thread};
-use tirea_agent_loop::contracts::{AgentEvent, RunContext, RuntimeOptions};
+use tirea_agent_loop::contracts::{AgentEvent, RunContext, RunPolicy};
 use tirea_agent_loop::runtime::loop_runner::{run_loop_stream, Agent, BaseAgent, LlmExecutor};
 use tirea_contract::runtime::tool_call::TOOL_CALL_PROGRESS_ACTIVITY_TYPE;
 use tirea_contract::Transcoder;
@@ -408,7 +408,7 @@ for raw in sys.stdin:
     let config = BaseAgent::new("mock").with_llm_executor(Arc::new(llm) as Arc<dyn LlmExecutor>);
 
     let thread = Thread::new("thread-mcp-progress").with_message(Message::user("run"));
-    let run_ctx = RunContext::from_thread(&thread, RuntimeOptions::default()).expect("run context");
+    let run_ctx = RunContext::from_thread(&thread, RunPolicy::default()).expect("run context");
     let agent_events = collect_agent_events(run_loop_stream(
         Arc::new(config) as Arc<dyn Agent>,
         registry.snapshot(),
@@ -515,7 +515,7 @@ async fn real_http_mcp_progress_notifications_flow_to_ui_data_events() {
     let config = BaseAgent::new("mock").with_llm_executor(Arc::new(llm) as Arc<dyn LlmExecutor>);
 
     let thread = Thread::new("thread-mcp-http-progress").with_message(Message::user("run"));
-    let run_ctx = RunContext::from_thread(&thread, RuntimeOptions::default()).expect("run context");
+    let run_ctx = RunContext::from_thread(&thread, RunPolicy::default()).expect("run context");
     let agent_events = collect_agent_events(run_loop_stream(
         Arc::new(config) as Arc<dyn Agent>,
         registry.snapshot(),

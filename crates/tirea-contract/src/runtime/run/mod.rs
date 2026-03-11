@@ -12,5 +12,5 @@ pub use lifecycle::{
     run_lifecycle_from_state, RunLifecycleAction, RunLifecycleState, RunStatus, StoppedReason,
     TerminationReason,
 };
-pub use options::{RunExecutionContext, RuntimeOptions, RuntimeOptionsError, ScopePolicy};
+pub use options::{RunIdentity, RunPolicy};
 pub use state::InferenceError;

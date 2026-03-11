@@ -86,11 +86,7 @@ impl SkillActivateTool {
             Err(r) => return Ok(ToolExecutionEffect::from(r)),
         };
         let meta = skill.meta();
-        if !is_scope_allowed(
-            Some(ctx.runtime_options().policy()),
-            &meta.id,
-            ScopeDomain::Skill,
-        ) {
+        if !is_scope_allowed(Some(ctx.run_policy()), &meta.id, ScopeDomain::Skill) {
             return Ok(ToolExecutionEffect::from(tool_error(
                 SKILL_ACTIVATE_TOOL_ID,
                 "forbidden_skill",
@@ -292,11 +288,7 @@ impl Tool for LoadSkillResourceTool {
             Err(r) => return Ok(r),
         };
         let meta = skill.meta();
-        if !is_scope_allowed(
-            Some(ctx.runtime_options().policy()),
-            &meta.id,
-            ScopeDomain::Skill,
-        ) {
+        if !is_scope_allowed(Some(ctx.run_policy()), &meta.id, ScopeDomain::Skill) {
             return Ok(tool_error(
                 tool_name,
                 "forbidden_skill",
@@ -444,11 +436,7 @@ impl Tool for SkillScriptTool {
             Err(r) => return Ok(r),
         };
         let meta = skill.meta();
-        if !is_scope_allowed(
-            Some(ctx.runtime_options().policy()),
-            &meta.id,
-            ScopeDomain::Skill,
-        ) {
+        if !is_scope_allowed(Some(ctx.run_policy()), &meta.id, ScopeDomain::Skill) {
             return Ok(tool_error(
                 SKILL_SCRIPT_TOOL_ID,
                 "forbidden_skill",

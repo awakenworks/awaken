@@ -4,7 +4,7 @@ use serde_json::json;
 use std::fs;
 use std::sync::Arc;
 use tempfile::TempDir;
-use tirea_agent_loop::engine::tool_execution::execute_single_tool_with_runtime_options_and_behavior;
+use tirea_agent_loop::engine::tool_execution::execute_single_tool_with_run_policy_and_behavior;
 use tirea_agentos::contracts::runtime::tool_call::ToolDescriptor;
 use tirea_agentos::contracts::thread::{Thread as ConversationAgentState, ToolCall};
 use tirea_agentos::contracts::AgentEvent;
@@ -50,7 +50,7 @@ async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
     let call = ToolCall::new("call_1", "skill", json!({"skill": "docx"}));
 
     let behavior = compose_behaviors("skills_test_router", vec![Arc::new(PermissionPlugin)]);
-    let exec = execute_single_tool_with_runtime_options_and_behavior(
+    let exec = execute_single_tool_with_run_policy_and_behavior(
         Some(tool.as_ref()),
         &call,
         &state,
@@ -167,7 +167,7 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
         tirea_agentos::contracts::runtime::phase::Phase::BeforeInference,
         step.thread_id(),
         step.messages(),
-        step.runtime_options(),
+        step.run_policy(),
         step.ctx().doc(),
     );
     use tirea_agentos::contracts::runtime::phase::BeforeInferenceAction;

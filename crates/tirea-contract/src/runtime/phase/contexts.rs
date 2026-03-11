@@ -1,10 +1,10 @@
 use crate::runtime::inference::{InferenceError, StreamResult};
-use crate::runtime::run::RunExecutionContext;
+use crate::runtime::run::RunIdentity;
 use crate::runtime::run::{RunAction, TerminationReason};
 use crate::runtime::tool_call::gate::{SuspendTicket, ToolCallAction};
 use crate::runtime::tool_call::{ToolCallResume, ToolResult};
 use crate::thread::Message;
-use crate::RuntimeOptions;
+use crate::RunPolicy;
 use serde_json::Value;
 use std::sync::Arc;
 use tirea_state::State;
@@ -17,8 +17,8 @@ pub trait PhaseContext {
     fn phase(&self) -> Phase;
     fn thread_id(&self) -> &str;
     fn messages(&self) -> &[Arc<Message>];
-    fn runtime_options(&self) -> &RuntimeOptions;
-    fn execution_ctx(&self) -> &RunExecutionContext;
+    fn run_policy(&self) -> &RunPolicy;
+    fn run_identity(&self) -> &RunIdentity;
     fn state_of<T: State>(&self) -> T::Ref<'_>;
     fn snapshot(&self) -> serde_json::Value;
 }
@@ -49,12 +49,12 @@ macro_rules! impl_phase_context {
                 self.step.messages()
             }
 
-            fn runtime_options(&self) -> &RuntimeOptions {
-                self.step.runtime_options()
+            fn run_policy(&self) -> &RunPolicy {
+                self.step.run_policy()
             }
 
-            fn execution_ctx(&self) -> &RunExecutionContext {
-                self.step.execution_ctx()
+            fn run_identity(&self) -> &RunIdentity {
+                self.step.run_identity()
             }
 
             fn state_of<T: State>(&self) -> T::Ref<'_> {

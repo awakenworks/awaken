@@ -19,7 +19,7 @@ use crate::composition::{
 use crate::contracts::runtime::behavior::{AgentBehavior, NoOpBehavior};
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::ToolExecutor;
-use crate::contracts::RuntimeOptions;
+use crate::contracts::RunPolicy;
 #[cfg(feature = "skills")]
 use crate::extensions::skills::{InMemorySkillRegistry, Skill, SkillRegistry};
 use crate::loop_runtime::loop_runner::{
@@ -386,15 +386,15 @@ impl AgentOs {
         }
     }
 
-    /// Resolve an agent's static wiring: config, tools, and run config.
+    /// Resolve an agent's static wiring: config, tools, and run policy.
     pub fn resolve(&self, agent_id: &str) -> Result<ResolvedRun, AgentOsResolveError> {
         let definition = self
             .agents
             .get(agent_id)
             .ok_or_else(|| AgentOsResolveError::AgentNotFound(agent_id.to_string()))?;
 
-        let mut runtime_options = RuntimeOptions::new();
-        set_runtime_policy_from_definition_if_absent(&mut runtime_options, &definition);
+        let mut run_policy = RunPolicy::new();
+        set_runtime_policy_from_definition_if_absent(&mut run_policy, &definition);
 
         let allowed_tools = definition.allowed_tools.clone();
         let excluded_tools = definition.excluded_tools.clone();
@@ -409,7 +409,8 @@ impl AgentOs {
         Ok(ResolvedRun {
             agent: cfg,
             tools,
-            runtime_options,
+            run_policy,
+            parent_tool_call_id: None,
         })
     }
 }

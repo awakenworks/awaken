@@ -1,4 +1,4 @@
-use super::{AgentLoopError, RunExecutionContext, StateCommitError, StateCommitter};
+use super::{AgentLoopError, RunIdentity, StateCommitError, StateCommitter};
 use crate::contracts::storage::{RunOrigin, VersionPrecondition};
 use crate::contracts::thread::CheckpointReason;
 use crate::contracts::{RunContext, RunMeta, TerminationReason, ThreadChangeSet};
@@ -42,7 +42,7 @@ pub(super) async fn commit_pending_delta(
     reason: CheckpointReason,
     force: bool,
     state_committer: Option<&Arc<dyn StateCommitter>>,
-    execution_ctx: &RunExecutionContext,
+    run_identity: &RunIdentity,
     termination: Option<&TerminationReason>,
 ) -> Result<(), AgentLoopError> {
     let Some(committer) = state_committer else {
@@ -69,8 +69,8 @@ pub(super) async fn commit_pending_delta(
     };
 
     let mut changeset = ThreadChangeSet::from_parts(
-        execution_ctx.run_id.clone(),
-        execution_ctx.parent_run_id.clone(),
+        run_identity.run_id.clone(),
+        run_identity.parent_run_id.clone(),
         reason,
         delta.messages,
         delta.patches,
@@ -82,8 +82,8 @@ pub(super) async fn commit_pending_delta(
     // materialize/maintain durable run mappings is decided by the outer
     // orchestration layer's StateCommitter policy.
     if let Some(termination) = termination {
-        let agent_id = execution_ctx.agent_id.clone();
-        let origin: RunOrigin = execution_ctx.origin;
+        let agent_id = run_identity.agent_id.clone();
+        let origin: RunOrigin = run_identity.origin;
         let parent_thread_id = None; // Already set on the initial changeset.
         let (status, termination_code, termination_detail) = map_termination(termination);
         changeset.run_meta = Some(RunMeta {
@@ -132,17 +132,17 @@ fn map_termination(
 }
 
 pub(super) struct PendingDeltaCommitContext<'a> {
-    execution_ctx: &'a RunExecutionContext,
+    run_identity: &'a RunIdentity,
     state_committer: Option<&'a Arc<dyn StateCommitter>>,
 }
 
 impl<'a> PendingDeltaCommitContext<'a> {
     pub(super) fn new(
-        execution_ctx: &'a RunExecutionContext,
+        run_identity: &'a RunIdentity,
         state_committer: Option<&'a Arc<dyn StateCommitter>>,
     ) -> Self {
         Self {
-            execution_ctx,
+            run_identity,
             state_committer,
         }
     }
@@ -158,7 +158,7 @@ impl<'a> PendingDeltaCommitContext<'a> {
             reason,
             force,
             self.state_committer,
-            self.execution_ctx,
+            self.run_identity,
             None,
         )
         .await
@@ -174,7 +174,7 @@ impl<'a> PendingDeltaCommitContext<'a> {
             CheckpointReason::RunFinished,
             true,
             self.state_committer,
-            self.execution_ctx,
+            self.run_identity,
             Some(termination),
         )
         .await

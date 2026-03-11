@@ -2475,7 +2475,7 @@ async fn test_activity_context_emits_snapshot_on_update() {
         &fix.ops,
         "call_1",
         "tool:test",
-        &fix.runtime_options,
+        &fix.run_policy,
         &fix.pending_messages,
         hub,
     );
@@ -2531,7 +2531,7 @@ async fn test_activity_context_snapshot_reused_across_contexts() {
         &fix.ops,
         "call_1",
         "tool:test",
-        &fix.runtime_options,
+        &fix.run_policy,
         &fix.pending_messages,
         hub.clone(),
     );
@@ -2546,7 +2546,7 @@ async fn test_activity_context_snapshot_reused_across_contexts() {
         &fix.ops,
         "call_2",
         "tool:test",
-        &fix.runtime_options,
+        &fix.run_policy,
         &fix.pending_messages,
         hub,
     );
@@ -2570,7 +2570,7 @@ async fn test_activity_context_multiple_streams_emit_separately() {
         &fix.ops,
         "call_1",
         "tool:test",
-        &fix.runtime_options,
+        &fix.run_policy,
         &fix.pending_messages,
         hub,
     );

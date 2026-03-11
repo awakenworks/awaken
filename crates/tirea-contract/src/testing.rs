@@ -8,7 +8,7 @@ use crate::runtime::phase::{
     ActionSet, AfterInferenceAction, AfterToolExecuteAction, BeforeInferenceAction,
     BeforeToolExecuteAction, LifecycleAction,
 };
-use crate::runtime::run::RunExecutionContext;
+use crate::runtime::run::RunIdentity;
 use crate::runtime::run::{RunAction, TerminationReason};
 use crate::runtime::tool_call::suspension::Suspension;
 use crate::runtime::tool_call::CallerContext;
@@ -17,7 +17,7 @@ use crate::runtime::{
     PendingToolCall, StepContext, SuspendTicket, ToolCallContext, ToolCallResumeMode,
 };
 use crate::thread::Message;
-use crate::RuntimeOptions;
+use crate::RunPolicy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -34,8 +34,8 @@ pub struct TestFixtureState {
 pub struct TestFixture {
     pub doc: DocCell,
     pub ops: Mutex<Vec<Op>>,
-    pub runtime_options: RuntimeOptions,
-    pub execution_ctx: RunExecutionContext,
+    pub run_policy: RunPolicy,
+    pub run_identity: RunIdentity,
     pub caller_context: CallerContext,
     pub pending_messages: Mutex<Vec<Arc<Message>>>,
     pub messages: Vec<Arc<Message>>,
@@ -46,8 +46,8 @@ impl TestFixture {
         Self {
             doc: DocCell::new(serde_json::json!({})),
             ops: Mutex::new(Vec::new()),
-            runtime_options: RuntimeOptions::default(),
-            execution_ctx: RunExecutionContext::default(),
+            run_policy: RunPolicy::default(),
+            run_identity: RunIdentity::default(),
             caller_context: CallerContext::default(),
             pending_messages: Mutex::new(Vec::new()),
             messages: Vec::new(),
@@ -67,11 +67,11 @@ impl TestFixture {
             &self.ops,
             "test",
             "test",
-            &self.runtime_options,
+            &self.run_policy,
             &self.pending_messages,
             NoOpActivityManager::arc(),
         )
-        .with_execution_context(self.execution_ctx.clone())
+        .with_run_identity(self.run_identity.clone())
         .with_caller_context(self.caller_context.clone())
     }
 
@@ -85,11 +85,11 @@ impl TestFixture {
             &self.ops,
             call_id,
             source,
-            &self.runtime_options,
+            &self.run_policy,
             &self.pending_messages,
             NoOpActivityManager::arc(),
         )
-        .with_execution_context(self.execution_ctx.clone())
+        .with_run_identity(self.run_identity.clone())
         .with_caller_context(self.caller_context.clone())
     }
 

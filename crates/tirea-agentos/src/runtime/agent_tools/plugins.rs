@@ -214,7 +214,7 @@ impl AgentToolsPlugin {
     pub(super) fn render_available_agents(
         &self,
         caller_agent: Option<&str>,
-        policy: Option<&tirea_contract::runtime::ScopePolicy>,
+        policy: Option<&tirea_contract::runtime::RunPolicy>,
     ) -> String {
         let mut ids = self.agents.ids();
         ids.sort();
@@ -282,9 +282,8 @@ impl AgentBehavior for AgentToolsPlugin {
         &self,
         ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<BeforeInferenceAction> {
-        let caller_agent = ctx.execution_ctx().agent_id_opt();
-        let rendered =
-            self.render_available_agents(caller_agent, Some(ctx.runtime_options().policy()));
+        let caller_agent = ctx.run_identity().agent_id_opt();
+        let rendered = self.render_available_agents(caller_agent, Some(ctx.run_policy()));
         if rendered.is_empty() {
             ActionSet::empty()
         } else {

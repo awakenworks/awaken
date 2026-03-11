@@ -1,4 +1,4 @@
-use crate::runtime::ScopePolicy;
+use crate::runtime::RunPolicy;
 
 /// Check whether an identifier is allowed by optional allow/deny lists.
 #[must_use]
@@ -16,7 +16,7 @@ pub fn is_id_allowed(id: &str, allowed: Option<&[String]>, excluded: Option<&[St
     true
 }
 
-/// Scope domains carried in [`ScopePolicy`].
+/// Scope domains carried in [`RunPolicy`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeDomain {
     Tool,
@@ -26,19 +26,19 @@ pub enum ScopeDomain {
 
 /// Check whether an identifier is allowed by the typed policy for a scope domain.
 #[must_use]
-pub fn is_scope_allowed(policy: Option<&ScopePolicy>, id: &str, domain: ScopeDomain) -> bool {
+pub fn is_scope_allowed(policy: Option<&RunPolicy>, id: &str, domain: ScopeDomain) -> bool {
     let (allowed, excluded) = match domain {
         ScopeDomain::Tool => (
-            policy.and_then(ScopePolicy::allowed_tools),
-            policy.and_then(ScopePolicy::excluded_tools),
+            policy.and_then(RunPolicy::allowed_tools),
+            policy.and_then(RunPolicy::excluded_tools),
         ),
         ScopeDomain::Skill => (
-            policy.and_then(ScopePolicy::allowed_skills),
-            policy.and_then(ScopePolicy::excluded_skills),
+            policy.and_then(RunPolicy::allowed_skills),
+            policy.and_then(RunPolicy::excluded_skills),
         ),
         ScopeDomain::Agent => (
-            policy.and_then(ScopePolicy::allowed_agents),
-            policy.and_then(ScopePolicy::excluded_agents),
+            policy.and_then(RunPolicy::allowed_agents),
+            policy.and_then(RunPolicy::excluded_agents),
         ),
     };
     is_id_allowed(id, allowed, excluded)
@@ -59,7 +59,7 @@ mod tests {
 
     #[test]
     fn is_scope_allowed_reads_tool_filters_from_policy() {
-        let mut policy = ScopePolicy::new();
+        let mut policy = RunPolicy::new();
         policy.set_allowed_tools_if_absent(Some(&["a".to_string(), "b".to_string()]));
         policy.set_excluded_tools_if_absent(Some(&["b".to_string()]));
 

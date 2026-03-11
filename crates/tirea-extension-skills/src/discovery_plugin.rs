@@ -49,7 +49,7 @@ impl SkillDiscoveryPlugin {
     fn render_catalog(
         &self,
         _active: &HashSet<String>,
-        policy: Option<&tirea_contract::runtime::ScopePolicy>,
+        policy: Option<&tirea_contract::runtime::RunPolicy>,
     ) -> String {
         let mut metas: Vec<SkillMeta> = self
             .registry
@@ -136,7 +136,7 @@ impl AgentBehavior for SkillDiscoveryPlugin {
             .map(|s| s.active.into_iter().collect())
             .unwrap_or_default();
 
-        let rendered = self.render_catalog(&active, Some(ctx.runtime_options().policy()));
+        let rendered = self.render_catalog(&active, Some(ctx.run_policy()));
         if rendered.is_empty() {
             return ActionSet::empty();
         }
@@ -154,7 +154,7 @@ mod tests {
     use std::io::Write;
     use tempfile::TempDir;
     use tirea_contract::runtime::phase::Phase;
-    use tirea_contract::RuntimeOptions;
+    use tirea_contract::RunPolicy;
     use tirea_state::DocCell;
 
     fn make_registry(skills: Vec<Arc<dyn Skill>>) -> Arc<dyn SkillRegistry> {
@@ -203,7 +203,7 @@ mod tests {
     async fn injects_catalog_with_usage() {
         let (_td, skills) = make_skills();
         let p = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(10, 8 * 1024);
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let actions = AgentBehavior::before_inference(&p, &ctx).await;
@@ -222,7 +222,7 @@ mod tests {
     async fn marks_active_skills() {
         let (_td, skills) = make_skills();
         let p = SkillDiscoveryPlugin::new(make_registry(skills));
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({
             "skills": {
                 "active": ["a"],
@@ -241,7 +241,7 @@ mod tests {
     #[tokio::test]
     async fn does_not_inject_when_skills_empty() {
         let p = SkillDiscoveryPlugin::new(make_registry(vec![]));
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let actions = AgentBehavior::before_inference(&p, &ctx).await;
@@ -264,7 +264,7 @@ mod tests {
 
         let skills = FsSkill::into_arc_skills(result.skills);
         let p = SkillDiscoveryPlugin::new(make_registry(skills));
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let actions = AgentBehavior::before_inference(&p, &ctx).await;
@@ -291,7 +291,7 @@ mod tests {
         let result = FsSkill::discover(root).unwrap();
         let skills = FsSkill::into_arc_skills(result.skills);
         let p = SkillDiscoveryPlugin::new(make_registry(skills));
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let actions = AgentBehavior::before_inference(&p, &ctx).await;
@@ -320,7 +320,7 @@ mod tests {
         let result = FsSkill::discover(root).unwrap();
         let skills = FsSkill::into_arc_skills(result.skills);
         let p = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(2, 8 * 1024);
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let actions = AgentBehavior::before_inference(&p, &ctx).await;
@@ -344,7 +344,7 @@ mod tests {
         let result = FsSkill::discover(root).unwrap();
         let skills = FsSkill::into_arc_skills(result.skills);
         let p = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(10, 256);
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let actions = AgentBehavior::before_inference(&p, &ctx).await;
@@ -357,10 +357,8 @@ mod tests {
     async fn filters_catalog_by_runtime_skill_policy() {
         let (_td, skills) = make_skills();
         let p = SkillDiscoveryPlugin::new(make_registry(skills));
-        let mut config = RuntimeOptions::new();
-        config
-            .policy_mut()
-            .set_allowed_skills_if_absent(Some(&["a-skill".to_string()]));
+        let mut config = RunPolicy::new();
+        config.set_allowed_skills_if_absent(Some(&["a-skill".to_string()]));
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let actions = AgentBehavior::before_inference(&p, &ctx).await;

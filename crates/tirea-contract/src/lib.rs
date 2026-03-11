@@ -117,11 +117,8 @@ pub mod storage;
 pub mod thread;
 pub mod transport;
 
-/// Per-run runtime configuration.
-pub type RuntimeOptions = runtime::RuntimeOptions;
-
-/// Error type for `RuntimeOptions` operations.
-pub type RuntimeOptionsError = runtime::RuntimeOptionsError;
+/// Per-run scope and execution policy.
+pub type RunPolicy = runtime::RunPolicy;
 
 // thread
 pub use thread::{
@@ -149,7 +146,6 @@ pub use runtime::{
     ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError, ToolGate,
     ToolProgressState, TOOL_CALL_PROGRESS_ACTIVITY_TYPE, TOOL_CALL_PROGRESS_SCHEMA,
     TOOL_CALL_PROGRESS_TYPE, TOOL_PROGRESS_ACTIVITY_TYPE, TOOL_PROGRESS_ACTIVITY_TYPE_LEGACY,
-    TOOL_SCOPE_PARENT_TOOL_CALL_ID_KEY,
 };
 
 // storage

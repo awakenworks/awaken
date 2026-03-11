@@ -28,7 +28,7 @@ mod tests {
     use tirea_contract::runtime::phase::Phase;
     use tirea_contract::runtime::phase::{ActionSet, BeforeToolExecuteAction};
     use tirea_contract::runtime::tool_call::ToolCallResume;
-    use tirea_contract::RuntimeOptions;
+    use tirea_contract::RunPolicy;
     use tirea_state::{DocCell, LatticeRegistry};
 
     fn has_block(actions: &ActionSet<BeforeToolExecuteAction>) -> bool {
@@ -114,7 +114,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_allow() {
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc =
             DocCell::new(json!({ "permissions": { "default_behavior": "allow", "tools": {} } }));
         let args = json!({});
@@ -133,7 +133,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_deny() {
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc =
             DocCell::new(json!({ "permissions": { "default_behavior": "deny", "tools": {} } }));
         let args = json!({});
@@ -151,7 +151,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_ask() {
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc =
             DocCell::new(json!({ "permissions": { "default_behavior": "ask", "tools": {} } }));
         let args = json!({"path": "a.txt"});
@@ -169,7 +169,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_ask_with_empty_call_id_blocks() {
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc =
             DocCell::new(json!({ "permissions": { "default_behavior": "ask", "tools": {} } }));
         let args = json!({"path": "a.txt"});
@@ -206,7 +206,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_tool_specific_allow() {
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({
             "permissions": { "default_behavior": "deny", "tools": { "allowed_tool": "allow" } }
         }));
@@ -225,7 +225,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_tool_specific_deny() {
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({
             "permissions": { "default_behavior": "allow", "tools": { "denied_tool": "deny" } }
         }));
@@ -244,7 +244,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_tool_specific_ask() {
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({
             "permissions": { "default_behavior": "allow", "tools": { "ask_tool": "ask" } }
         }));
@@ -263,7 +263,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_invalid_tool_behavior() {
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({
             "permissions": { "default_behavior": "allow", "tools": { "invalid_tool": "invalid_behavior" } }
         }));
@@ -283,7 +283,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_invalid_default_behavior() {
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(
             json!({ "permissions": { "default_behavior": "invalid_default", "tools": {} } }),
         );
@@ -302,7 +302,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_no_state() {
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({}));
         let args = json!({});
         let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
@@ -319,7 +319,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_tools_is_string_not_object() {
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({
             "permissions": { "default_behavior": "allow", "tools": "corrupted" }
         }));
@@ -339,7 +339,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_default_behavior_invalid_string() {
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(
             json!({ "permissions": { "default_behavior": "invalid_value", "tools": {} } }),
         );
@@ -358,7 +358,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_default_behavior_is_number() {
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({ "permissions": { "default_behavior": 42, "tools": {} } }));
         let args = json!({});
         let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
@@ -375,7 +375,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_tool_value_is_number() {
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({
             "permissions": { "default_behavior": "allow", "tools": { "my_tool": 123 } }
         }));
@@ -395,7 +395,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_permissions_is_array() {
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({ "permissions": [1, 2, 3] }));
         let args = json!({});
         let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
@@ -417,10 +417,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_policy_blocks_out_of_scope() {
-        let mut config = RuntimeOptions::new();
-        config
-            .policy_mut()
-            .set_allowed_tools_if_absent(Some(&["other_tool".to_string()]));
+        let mut config = RunPolicy::new();
+        config.set_allowed_tools_if_absent(Some(&["other_tool".to_string()]));
         let doc = DocCell::new(json!({}));
         let args = json!({});
         let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
@@ -437,10 +435,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_policy_allows_in_scope() {
-        let mut config = RuntimeOptions::new();
-        config
-            .policy_mut()
-            .set_allowed_tools_if_absent(Some(&["my_tool".to_string()]));
+        let mut config = RunPolicy::new();
+        config.set_allowed_tools_if_absent(Some(&["my_tool".to_string()]));
         let doc = DocCell::new(json!({}));
         let args = json!({});
         let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
@@ -457,7 +453,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_policy_no_filters_allows_all() {
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({}));
         let args = json!({});
         let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
@@ -474,10 +470,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_policy_excluded_tool_is_blocked() {
-        let mut config = RuntimeOptions::new();
-        config
-            .policy_mut()
-            .set_excluded_tools_if_absent(Some(&["excluded_tool".to_string()]));
+        let mut config = RunPolicy::new();
+        config.set_excluded_tools_if_absent(Some(&["excluded_tool".to_string()]));
         let doc = DocCell::new(json!({}));
         let args = json!({});
         let ctx = tirea_contract::runtime::behavior::ReadOnlyContext::new(
@@ -578,7 +572,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_resume_input_bypasses_ask() {
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc =
             DocCell::new(json!({ "permissions": { "default_behavior": "ask", "tools": {} } }));
         let args = json!({});

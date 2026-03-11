@@ -11,7 +11,7 @@ use crate::contracts::runtime::tool_call::{
     CallerContext, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult,
 };
 use crate::contracts::runtime::ActivityManager;
-use crate::contracts::runtime::RunExecutionContext;
+use crate::contracts::runtime::RunIdentity;
 use crate::contracts::runtime::{PendingToolCall, ToolCallResumeMode};
 use crate::contracts::storage::VersionPrecondition;
 use crate::contracts::thread::CheckpointReason;
@@ -45,8 +45,10 @@ fn get_suspended_call(state: &Value, call_id: &str) -> Option<Value> {
         .cloned()
 }
 
-fn test_execution_ctx(run_id: &str) -> RunExecutionContext {
-    RunExecutionContext::new(
+fn test_run_identity(run_id: &str) -> RunIdentity {
+    RunIdentity::new(
+        "test-thread".to_string(),
+        None,
         run_id.to_string(),
         None,
         "test-agent".to_string(),
@@ -54,12 +56,14 @@ fn test_execution_ctx(run_id: &str) -> RunExecutionContext {
     )
 }
 
-fn test_execution_ctx_with_parent(
+fn test_run_identity_with_parent(
     run_id: &str,
     parent_run_id: Option<&str>,
     parent_tool_call_id: Option<&str>,
-) -> RunExecutionContext {
-    let mut ctx = RunExecutionContext::new(
+) -> RunIdentity {
+    let mut ctx = RunIdentity::new(
+        "test-thread".to_string(),
+        None,
         run_id.to_string(),
         parent_run_id.map(ToOwned::to_owned),
         "test-agent".to_string(),
@@ -84,7 +88,7 @@ fn test_tool_phase_context<'a>(
     tool_descriptors: &'a [ToolDescriptor],
     agent_behavior: Option<&'a dyn AgentBehavior>,
     activity_manager: Arc<dyn ActivityManager>,
-    runtime_options: &'a tirea_contract::RuntimeOptions,
+    run_policy: &'a tirea_contract::RunPolicy,
     thread_id: &'a str,
     thread_messages: &'a [Arc<Message>],
     cancellation_token: Option<&'a RunCancellationToken>,
@@ -93,8 +97,8 @@ fn test_tool_phase_context<'a>(
         tool_descriptors,
         agent_behavior,
         activity_manager,
-        runtime_options,
-        execution_ctx: test_execution_ctx("test-run"),
+        run_policy,
+        run_identity: test_run_identity("test-run"),
         caller_context: test_caller_context(thread_id, thread_messages),
         thread_id,
         thread_messages,
@@ -103,10 +107,17 @@ fn test_tool_phase_context<'a>(
 }
 
 fn run_ctx_with_execution(thread: &Thread, run_id: &str) -> RunContext {
-    RunContext::from_thread_with_registry_and_execution(
+    RunContext::from_thread_with_registry_and_identity(
         thread,
-        tirea_contract::RuntimeOptions::default(),
-        test_execution_ctx(run_id),
+        tirea_contract::RunPolicy::default(),
+        RunIdentity::new(
+            thread.id.clone(),
+            thread.parent_thread_id.clone(),
+            run_id.to_string(),
+            None,
+            "test-agent".to_string(),
+            crate::contracts::RunOrigin::User,
+        ),
         Arc::new(tirea_state::LatticeRegistry::new()),
     )
     .expect("run context")
@@ -1600,12 +1611,12 @@ async fn test_activity_event_emitted_before_tool_completion() {
     let call = crate::contracts::thread::ToolCall::new("call_1", "activity_gate", json!({}));
     let descriptors = vec![tool.descriptor()];
     let state = json!({});
-    let runtime_options = tirea_contract::RuntimeOptions::default();
+    let run_policy = tirea_contract::RunPolicy::default();
     let phase_ctx = test_tool_phase_context(
         &descriptors,
         None,
         activity_manager,
-        &runtime_options,
+        &run_policy,
         "test",
         &[],
         None,
@@ -1676,7 +1687,7 @@ async fn test_parallel_tools_emit_activity_before_completion() {
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
     let state = json!({});
-    let runtime_options = tirea_contract::RuntimeOptions::default();
+    let run_policy = tirea_contract::RunPolicy::default();
 
     // Spawn the tool execution so it actually starts running while we await activity events.
     let tools_for_task = tools.clone();
@@ -1688,7 +1699,7 @@ async fn test_parallel_tools_emit_activity_before_completion() {
             &tool_descriptors_for_task,
             None,
             activity_manager,
-            &runtime_options,
+            &run_policy,
             "test",
             &[],
             None,
@@ -1757,14 +1768,14 @@ async fn test_parallel_tool_executor_honors_cancellation_token() {
     let token = CancellationToken::new();
     let token_for_task = token.clone();
     let ready_for_task = ready.clone();
-    let runtime_options = tirea_contract::RuntimeOptions::default();
+    let run_policy = tirea_contract::RunPolicy::default();
 
     let handle = tokio::spawn(async move {
         let phase_ctx = test_tool_phase_context(
             &tool_descriptors,
             None,
             tirea_contract::runtime::activity::NoOpActivityManager::arc(),
-            &runtime_options,
+            &run_policy,
             "cancel-test",
             &[],
             Some(&token_for_task),
@@ -2359,12 +2370,12 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
     let state = json!({ "plugin": { "allow_exec": true } });
     let tool_descriptors = vec![tool.descriptor()];
     let guarded_behavior: Arc<dyn AgentBehavior> = Arc::new(GuardedPlugin);
-    let runtime_options = tirea_contract::RuntimeOptions::default();
+    let run_policy = tirea_contract::RunPolicy::default();
     let phase_ctx = test_tool_phase_context(
         &tool_descriptors,
         Some(guarded_behavior.as_ref()),
         tirea_contract::runtime::activity::NoOpActivityManager::arc(),
-        &runtime_options,
+        &run_policy,
         "test",
         &[],
         None,
@@ -2421,12 +2432,12 @@ async fn test_tool_execute_effect_state_actions_become_pending_patches() {
     let call = crate::contracts::thread::ToolCall::new("call_1", "action_effect_tool", json!({}));
     let state = json!({});
     let tool_descriptors = vec![tool.descriptor()];
-    let runtime_options = tirea_contract::RuntimeOptions::default();
+    let run_policy = tirea_contract::RunPolicy::default();
     let phase_ctx = test_tool_phase_context(
         &tool_descriptors,
         None,
         tirea_contract::runtime::activity::NoOpActivityManager::arc(),
-        &runtime_options,
+        &run_policy,
         "test",
         &[],
         None,
@@ -2494,12 +2505,12 @@ async fn test_tool_execute_effect_direct_context_writes_denied_by_default_policy
         crate::contracts::thread::ToolCall::new("call_1", "direct_write_effect_tool", json!({}));
     let state = json!({});
     let tool_descriptors = vec![tool.descriptor()];
-    let runtime_options = tirea_contract::RuntimeOptions::default();
+    let run_policy = tirea_contract::RunPolicy::default();
     let phase_ctx = test_tool_phase_context(
         &tool_descriptors,
         None,
         tirea_contract::runtime::activity::NoOpActivityManager::arc(),
-        &runtime_options,
+        &run_policy,
         "test",
         &[],
         None,
@@ -2580,7 +2591,7 @@ async fn test_execute_single_tool_context_waits_for_run_cancellation() {
     let call = crate::contracts::thread::ToolCall::new("call_1", "cancel_probe", json!({}));
     let state = json!({});
     let tool_descriptors = vec![tool.descriptor()];
-    let runtime_options = tirea_contract::RuntimeOptions::default();
+    let run_policy = tirea_contract::RunPolicy::default();
     let token = CancellationToken::new();
     let token_for_task = token.clone();
     let ready_for_task = ready.clone();
@@ -2592,7 +2603,7 @@ async fn test_execute_single_tool_context_waits_for_run_cancellation() {
         &tool_descriptors,
         None,
         tirea_contract::runtime::activity::NoOpActivityManager::arc(),
-        &runtime_options,
+        &run_policy,
         "test",
         &[],
         Some(&token),
@@ -2631,9 +2642,9 @@ async fn test_plugin_sees_real_session_id_and_typed_context_in_tool_phase() {
             ctx: &ReadOnlyContext<'_>,
         ) -> ActionSet<BeforeToolExecuteAction> {
             assert_eq!(ctx.thread_id(), "real-thread-42");
-            assert_eq!(ctx.execution_ctx().run_id_opt(), Some("tool-phase-run"));
+            assert_eq!(ctx.run_identity().run_id_opt(), Some("tool-phase-run"));
             assert_eq!(
-                ctx.runtime_options().policy().allowed_tools(),
+                ctx.run_policy().allowed_tools(),
                 Some(&["echo".to_string()][..])
             );
             VERIFIED.store(true, Ordering::SeqCst);
@@ -2650,9 +2661,8 @@ async fn test_plugin_sees_real_session_id_and_typed_context_in_tool_phase() {
     let tool_descriptors = vec![tool.descriptor()];
     let session_check_behavior: Arc<dyn AgentBehavior> = Arc::new(SessionCheckPlugin);
 
-    let mut rt = tirea_contract::RuntimeOptions::new();
-    rt.policy_mut()
-        .set_allowed_tools_if_absent(Some(&["echo".to_string()]));
+    let mut rt = tirea_contract::RunPolicy::new();
+    rt.set_allowed_tools_if_absent(Some(&["echo".to_string()]));
     let mut phase_ctx = test_tool_phase_context(
         &tool_descriptors,
         Some(session_check_behavior.as_ref()),
@@ -2662,7 +2672,7 @@ async fn test_plugin_sees_real_session_id_and_typed_context_in_tool_phase() {
         &[],
         None,
     );
-    phase_ctx.execution_ctx = test_execution_ctx("tool-phase-run");
+    phase_ctx.run_identity = test_run_identity("tool-phase-run");
 
     let result = execute_single_tool_with_phases(Some(&tool), &call, &state, &phase_ctx)
         .await
@@ -2823,8 +2833,7 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
         phases: phases.clone(),
     }) as Arc<dyn AgentBehavior>);
     let thread = Thread::with_initial_state("test", json!({})).with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
@@ -2872,7 +2881,7 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
 
     let thread = Thread::with_initial_state("test", json!({}));
     let mut run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let tool_descriptors = vec![ToolDescriptor::new("echo", "Echo", "Echo")];
     let phases = Arc::new(Mutex::new(Vec::new()));
     let agent = BaseAgent::new("mock").with_behavior(Arc::new(CleanupBehavior {
@@ -3183,7 +3192,7 @@ fn test_invalid_args_are_returned_as_tool_error_before_pending_confirmation() {
 fn test_apply_tool_results_suspends_all_interactions() {
     let thread = Thread::new("test");
     let mut run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let mut first = tool_execution_result("call_1", None);
     first.outcome = crate::contracts::ToolCallOutcome::Suspended;
@@ -3249,7 +3258,7 @@ fn test_apply_tool_results_suspends_all_interactions() {
 fn test_apply_tool_results_appends_skill_instruction_as_user_message() {
     let thread = Thread::with_initial_state("test", json!({}));
     let mut run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let result = skill_activation_result("call_1", "docx", Some("## DOCX\nUse docx-js."));
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
@@ -3271,7 +3280,7 @@ fn test_apply_tool_results_appends_skill_instruction_as_user_message() {
 fn test_apply_tool_results_skill_instruction_user_message_attaches_metadata() {
     let thread = Thread::with_initial_state("test", json!({}));
     let mut run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let result = skill_activation_result("call_1", "docx", Some("Use docx-js."));
     let meta = MessageMetadata {
         run_id: Some("run-1".to_string()),
@@ -3292,7 +3301,7 @@ fn test_apply_tool_results_skill_instruction_user_message_attaches_metadata() {
 fn test_apply_tool_results_skill_without_instruction_does_not_append_user_message() {
     let thread = Thread::with_initial_state("test", json!({}));
     let mut run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let result = skill_activation_result("call_1", "docx", None);
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
@@ -3309,7 +3318,7 @@ fn test_apply_tool_results_skill_without_instruction_does_not_append_user_messag
 fn test_apply_tool_results_appends_user_messages_from_effect() {
     let thread = Thread::with_initial_state("test", json!({}));
     let mut run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let result = ToolExecutionResult {
         execution: crate::engine::tool_execution::ToolExecution {
             call: crate::contracts::thread::ToolCall::new("call_1", "any_tool", json!({})),
@@ -3348,7 +3357,7 @@ fn test_apply_tool_results_appends_user_messages_from_effect() {
 fn test_apply_tool_results_ignores_blank_user_messages() {
     let thread = Thread::with_initial_state("test", json!({}));
     let mut run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let result = ToolExecutionResult {
         execution: crate::engine::tool_execution::ToolExecution {
             call: crate::contracts::thread::ToolCall::new("call_1", "any_tool", json!({})),
@@ -3377,7 +3386,7 @@ fn test_apply_tool_results_ignores_blank_user_messages() {
 fn test_apply_tool_results_keeps_tool_and_appended_user_message_order_stable() {
     let thread = Thread::with_initial_state("test", json!({}));
     let mut run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let first = skill_activation_result("call_2", "beta", Some("Instruction B"));
     let second = skill_activation_result("call_1", "alpha", Some("Instruction A"));
 
@@ -3491,9 +3500,9 @@ fn test_execute_tools_with_config_basic() {
 }
 
 // Scope-based tool policy enforcement is tested via RunContext at the
-// orchestrator level (prepare_run / run_stream_with_context), where RuntimeOptions
+// orchestrator level (prepare_run / run_stream_with_context), where RunPolicy
 // is explicitly wired. The low-level execute_tools_with_config path uses
-// RuntimeOptions::default() and is not the right place to test scope filtering.
+// RunPolicy::default() and is not the right place to test scope filtering.
 
 #[test]
 fn test_execute_tools_with_config_attaches_scope_run_metadata() {
@@ -3846,7 +3855,7 @@ fn test_suspended_call_action_persists_all_entries() {
         "test",
         base_state,
         Vec::<Arc<Message>>::new(),
-        tirea_contract::RuntimeOptions::default(),
+        tirea_contract::RunPolicy::default(),
     );
     for patch in patches {
         run_ctx.add_thread_patch(patch);
@@ -3950,8 +3959,7 @@ async fn test_stream_terminate_behavior_requested_emits_run_end_phase() {
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools = HashMap::new();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
@@ -3996,8 +4004,7 @@ async fn test_stream_terminate_behavior_requested_emits_run_start_and_finish() {
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools = HashMap::new();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
@@ -4053,8 +4060,7 @@ async fn test_stream_run_start_resume_replay_emits_after_run_start() {
     .with_message(crate::contracts::thread::Message::user("hello"));
     let tools = HashMap::new();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let events = collect_stream_events(run_loop_stream(
         Arc::new(config),
         tools,
@@ -4108,8 +4114,7 @@ async fn test_stream_terminate_behavior_requested_with_pending_state_emits_pendi
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools = HashMap::new();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let events = collect_stream_events(run_loop_stream(
         Arc::new(config),
         tools,
@@ -4176,8 +4181,7 @@ async fn test_stream_run_action_with_suspended_only_state_emits_pending_events()
         .with_message(crate::contracts::thread::Message::user("hello"));
     let tools = HashMap::new();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let events = collect_stream_events(run_loop_stream(
         Arc::new(config),
         tools,
@@ -4247,8 +4251,7 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
         .with_message(crate::contracts::thread::Message::user("continue"));
     let tools = HashMap::new();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let events = collect_stream_events(run_loop_stream(
         Arc::new(config),
         tools,
@@ -4437,8 +4440,7 @@ async fn test_run_loop_permission_approval_replays_tool_and_updates_lifecycle_st
         ));
 
     let tools = tool_map([EchoTool]);
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
     assert_eq!(outcome.termination, TerminationReason::BehaviorRequested);
@@ -4537,8 +4539,7 @@ async fn test_stream_permission_approval_replay_commits_before_and_after_replay(
             "Tool 'echo' is awaiting approval. Execution paused.",
         ));
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let events = collect_stream_events(run_loop_stream(
         Arc::new(config),
         tool_map([EchoTool]),
@@ -4646,8 +4647,7 @@ async fn test_run_loop_run_start_replay_uses_tool_call_resume_state_without_mail
     ));
 
     let tools = tool_map([EchoTool]);
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
     assert_eq!(outcome.termination, TerminationReason::BehaviorRequested);
@@ -4719,8 +4719,7 @@ async fn test_run_loop_run_start_settles_orphan_resuming_state_without_suspended
     )
     .with_message(Message::user("continue"));
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
     assert_eq!(outcome.termination, TerminationReason::BehaviorRequested);
@@ -4888,8 +4887,7 @@ async fn test_run_loop_permission_denied_appends_tool_result_for_model_context()
             "call_1",
             "Tool 'echo' is awaiting approval. Execution paused.",
         ));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
     assert!(matches!(
@@ -4965,8 +4963,7 @@ async fn test_run_loop_permission_cancelled_appends_tool_result_for_model_contex
             "call_1",
             "Tool 'echo' is awaiting approval. Execution paused.",
         ));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
     assert!(matches!(
@@ -5012,8 +5009,7 @@ async fn test_run_loop_terminate_behavior_requested_emits_run_end_phase() {
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     // terminate_behavior_requested in run_loop terminates with BehaviorRequested (not NaturalEnd)
     assert!(matches!(
@@ -5075,8 +5071,7 @@ async fn test_legacy_resume_replay_nonstream_resolution_state_is_ignored() {
     .with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert!(matches!(
         outcome.termination,
@@ -5163,8 +5158,7 @@ async fn test_legacy_resume_replay_nonstream_queue_is_ignored() {
     let config = BaseAgent::new("mock")
         .with_behavior(Arc::new(LegacyResumeReplayRequeuePlugin) as Arc<dyn AgentBehavior>);
     let thread = Thread::new("test").with_message(Message::user("resume"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let outcome = run_loop(&config, tool_map([EchoTool]), run_ctx, None, None, None).await;
     assert_eq!(outcome.termination, TerminationReason::BehaviorRequested);
@@ -5269,8 +5263,7 @@ async fn test_run_loop_terminate_behavior_requested_with_suspended_state_returns
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert!(matches!(outcome.termination, TerminationReason::Suspended));
 
@@ -5337,8 +5330,7 @@ async fn test_run_loop_terminate_behavior_requested_with_suspended_only_state_re
         .with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert!(matches!(outcome.termination, TerminationReason::Suspended));
 }
@@ -5352,8 +5344,7 @@ async fn test_run_loop_auto_generated_run_id_is_rfc4122_uuid_v7() {
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     // terminate_behavior_requested in run_loop terminates with BehaviorRequested
     assert!(matches!(
@@ -5362,7 +5353,7 @@ async fn test_run_loop_auto_generated_run_id_is_rfc4122_uuid_v7() {
     ));
     let run_id = outcome
         .run_ctx
-        .execution_ctx()
+        .run_identity()
         .run_id_opt()
         .unwrap_or_else(|| panic!("run_loop must populate execution run_id"));
 
@@ -5390,8 +5381,7 @@ async fn test_run_loop_phase_sequence_on_terminate_behavior_requested() {
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     // terminate_behavior_requested in run_loop terminates with BehaviorRequested
     assert!(matches!(
@@ -5443,8 +5433,7 @@ async fn test_run_loop_step_start_run_action_mutation_is_type_safe() {
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert_eq!(
         outcome.termination,
@@ -5520,8 +5509,7 @@ async fn test_run_loop_step_start_prompt_context_mutation_is_type_safe() {
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert_eq!(
         outcome.termination,
@@ -5576,8 +5564,7 @@ async fn test_run_loop_multiple_prompt_context_behaviors_are_additive() {
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     // Both behaviors append system_context. The first also requests termination,
     // so the loop terminates before inference without hitting the LLM.
@@ -5763,8 +5750,7 @@ async fn test_stream_run_finish_has_matching_thread_id() {
         Thread::new("my-thread").with_message(crate::contracts::thread::Message::user("hello"));
     let tools = HashMap::new();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
@@ -5787,9 +5773,9 @@ async fn test_stream_run_finish_has_matching_thread_id() {
 
 #[test]
 fn test_run_execution_context_tracks_run_ids() {
-    let execution_ctx = test_execution_ctx_with_parent("my-run", Some("parent-run"), None);
-    assert_eq!(execution_ctx.run_id_opt(), Some("my-run"));
-    assert_eq!(execution_ctx.parent_run_id_opt(), Some("parent-run"));
+    let run_identity = test_run_identity_with_parent("my-run", Some("parent-run"), None);
+    assert_eq!(run_identity.run_id_opt(), Some("my-run"));
+    assert_eq!(run_identity.parent_run_id_opt(), Some("parent-run"));
 }
 
 // ========================================================================
@@ -5981,8 +5967,7 @@ async fn test_nonstream_uses_fallback_model_after_primary_failures() {
         })
         .with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
@@ -6024,8 +6009,7 @@ async fn test_nonstream_retry_budget_exhaustion_stops_additional_attempts() {
         })
         .with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
@@ -6046,8 +6030,7 @@ async fn test_nonstream_truncation_recovery_stitches_final_response() {
     ]));
     let config = BaseAgent::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
@@ -6166,8 +6149,7 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
     ))]));
     let config = config.with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
     assert!(matches!(outcome.termination, TerminationReason::Error(_)));
@@ -6232,8 +6214,7 @@ async fn test_nonstream_cancellation_token_during_inference() {
 
     let config = BaseAgent::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let handle = tokio::spawn(async move {
         run_loop(
@@ -6281,7 +6262,7 @@ fn test_loop_outcome_run_finish_projection_natural_end_has_result_payload() {
             "thread-1",
             json!({}),
             vec![],
-            crate::contracts::RuntimeOptions::default(),
+            crate::contracts::RunPolicy::default(),
         ),
         termination: TerminationReason::NaturalEnd,
         response: Some("final text".to_string()),
@@ -6314,7 +6295,7 @@ fn test_loop_outcome_run_finish_projection_non_natural_has_no_result_payload() {
             "thread-2",
             json!({}),
             vec![],
-            crate::contracts::RuntimeOptions::default(),
+            crate::contracts::RunPolicy::default(),
         ),
         termination: TerminationReason::Cancelled,
         response: Some("ignored".to_string()),
@@ -6344,8 +6325,7 @@ async fn test_nonstream_loop_outcome_collects_usage_and_stats() {
     )]));
     let config = BaseAgent::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("usage-stats").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
@@ -6382,8 +6362,7 @@ async fn test_nonstream_loop_outcome_llm_error_tracks_attempts_and_failure_kind(
         })
         .with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("error-stats").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
@@ -6421,8 +6400,7 @@ async fn test_nonstream_cancellation_token_during_tool_execution() {
     let config = BaseAgent::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let tools = tool_map([tool]);
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let handle = tokio::spawn(async move {
         run_loop(&config, tools, run_ctx, Some(token_for_run), None, None).await
@@ -6512,8 +6490,7 @@ async fn test_nonstream_parallel_tool_cancellation_appends_single_user_note() {
     let config = BaseAgent::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let tools = tool_map([tool_a, tool_b]);
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let handle = tokio::spawn(async move {
         run_loop(&config, tools, run_ctx, Some(token_for_run), None, None).await
@@ -6589,8 +6566,7 @@ async fn test_nonstream_inference_abort_message_persisted_and_visible_next_run()
     let config = BaseAgent::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let initial_thread = Thread::new("cancel-inference").with_message(Message::user("go"));
     let run_ctx =
-        RunContext::from_thread(&initial_thread, tirea_contract::RuntimeOptions::default())
-            .unwrap();
+        RunContext::from_thread(&initial_thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let handle = tokio::spawn(async move {
         run_loop(
@@ -6637,8 +6613,7 @@ async fn test_nonstream_inference_abort_message_persisted_and_visible_next_run()
         }) as Arc<dyn AgentBehavior>)
         .with_llm_executor(resume_provider as Arc<dyn LlmExecutor>);
     let resume_run_ctx =
-        RunContext::from_thread(&persisted_thread, tirea_contract::RuntimeOptions::default())
-            .unwrap();
+        RunContext::from_thread(&persisted_thread, tirea_contract::RunPolicy::default()).unwrap();
     let second_outcome = run_loop(
         &resume_config,
         HashMap::new(),
@@ -6712,8 +6687,7 @@ async fn test_nonstream_tool_abort_message_persisted_and_visible_next_run() {
     let tools = tool_map([tool]);
     let initial_thread = Thread::new("cancel-tool").with_message(Message::user("go"));
     let run_ctx =
-        RunContext::from_thread(&initial_thread, tirea_contract::RuntimeOptions::default())
-            .unwrap();
+        RunContext::from_thread(&initial_thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let handle = tokio::spawn(async move {
         run_loop(
@@ -6759,8 +6733,7 @@ async fn test_nonstream_tool_abort_message_persisted_and_visible_next_run() {
         }) as Arc<dyn AgentBehavior>)
         .with_llm_executor(resume_provider as Arc<dyn LlmExecutor>);
     let resume_run_ctx =
-        RunContext::from_thread(&persisted_thread, tirea_contract::RuntimeOptions::default())
-            .unwrap();
+        RunContext::from_thread(&persisted_thread, tirea_contract::RunPolicy::default()).unwrap();
     let second_outcome = run_loop(
         &resume_config,
         HashMap::new(),
@@ -6792,8 +6765,7 @@ async fn test_golden_run_loop_and_stream_natural_end_alignment() {
     ]));
     let nonstream_config =
         BaseAgent::new("mock").with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let nonstream_outcome =
         run_loop(&nonstream_config, tools.clone(), run_ctx, None, None, None).await;
@@ -6838,8 +6810,7 @@ async fn test_golden_run_loop_and_stream_cancelled_alignment() {
 
     let nonstream_config =
         BaseAgent::new("mock").with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let nonstream_outcome = run_loop(
         &nonstream_config,
@@ -6914,8 +6885,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
     let nonstream_config = config
         .clone()
         .with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let nonstream_outcome =
         run_loop(&nonstream_config, tools.clone(), run_ctx, None, None, None).await;
@@ -6988,7 +6958,7 @@ async fn test_golden_run_loop_and_stream_no_plugins_pending_state_alignment() {
     let nonstream_config =
         BaseAgent::new("mock").with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>);
     let nonstream_run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let nonstream_outcome = run_loop(
         &nonstream_config,
         tools.clone(),
@@ -7204,7 +7174,7 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
     let state_committer: Arc<dyn StateCommitter> =
         Arc::new(ChannelStateCommitter::new(checkpoint_tx));
     let first_run_ctx =
-        RunContext::from_thread(&seed_thread, tirea_contract::RuntimeOptions::default()).unwrap();
+        RunContext::from_thread(&seed_thread, tirea_contract::RunPolicy::default()).unwrap();
     let first_provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response(
         "unused",
     ))]));
@@ -7240,8 +7210,7 @@ async fn test_nonstream_replay_is_idempotent_across_reruns() {
         "unused",
     ))]));
     let second_run_ctx =
-        RunContext::from_thread(&persisted_thread, tirea_contract::RuntimeOptions::default())
-            .unwrap();
+        RunContext::from_thread(&persisted_thread, tirea_contract::RunPolicy::default()).unwrap();
     let second_outcome = run_loop(
         &replay_config(second_provider as Arc<dyn LlmExecutor>),
         tools,
@@ -7575,8 +7544,7 @@ async fn run_mock_stream(
     tools: HashMap<String, Arc<dyn Tool>>,
 ) -> Vec<AgentEvent> {
     let config = config.with_llm_executor(Arc::new(provider));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
     collect_stream_events(stream).await
 }
@@ -7647,8 +7615,7 @@ async fn test_stream_retries_startup_error_then_succeeds() {
     let tools = HashMap::new();
 
     let config = config.with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
@@ -7685,8 +7652,7 @@ async fn test_stream_midstream_retry_budget_exhaustion_stops_recovery() {
         })
         .with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let events = collect_stream_events(run_loop_stream(
         Arc::new(config),
         HashMap::new(),
@@ -7727,8 +7693,7 @@ async fn test_stream_uses_fallback_model_after_primary_failures() {
     let tools = HashMap::new();
 
     let config = config.with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
@@ -7776,8 +7741,7 @@ async fn test_stream_midstream_text_error_retries_with_continuation_context() {
         })
         .with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let events = collect_stream_events(run_loop_stream(
         Arc::new(config),
         HashMap::new(),
@@ -7839,8 +7803,7 @@ async fn test_stream_midstream_text_error_stitches_run_finish_response() {
         })
         .with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let events = collect_stream_events(run_loop_stream(
         Arc::new(config),
         HashMap::new(),
@@ -7917,8 +7880,7 @@ async fn test_stream_midstream_tool_call_error_restarts_step_without_continuatio
         .with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
     let tools = tool_map([EchoTool]);
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let events = collect_stream_events(run_loop_stream(
         Arc::new(config),
         tools,
@@ -7991,8 +7953,7 @@ async fn test_stream_midstream_repeated_errors_escalate_to_fallback_model() {
         })
         .with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let events = collect_stream_events(run_loop_stream(
         Arc::new(config),
         HashMap::new(),
@@ -8049,8 +8010,7 @@ async fn run_mock_stream_with_final_thread_with_context(
     let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
     let committer: Arc<dyn StateCommitter> = Arc::new(ChannelStateCommitter::new(checkpoint_tx));
     let config = config.with_llm_executor(Arc::new(provider));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(
         Arc::new(config),
         tools,
@@ -8185,7 +8145,7 @@ fn extract_inference_model(events: &[AgentEvent]) -> Option<String> {
 fn test_normalize_termination_for_suspended_calls_forces_waiting() {
     let mut run_ctx = RunContext::from_thread(
         &Thread::new("normalize-termination-suspended"),
-        tirea_contract::RuntimeOptions::default(),
+        tirea_contract::RunPolicy::default(),
     )
     .expect("create run context");
     let state = run_ctx.snapshot().expect("snapshot state");
@@ -8211,7 +8171,7 @@ fn test_normalize_termination_for_suspended_calls_forces_waiting() {
 fn test_normalize_termination_for_suspended_calls_keeps_cancelled() {
     let mut run_ctx = RunContext::from_thread(
         &Thread::new("normalize-termination-cancelled"),
-        tirea_contract::RuntimeOptions::default(),
+        tirea_contract::RunPolicy::default(),
     )
     .expect("create run context");
     let state = run_ctx.snapshot().expect("snapshot state");
@@ -8259,18 +8219,20 @@ fn test_sync_run_lifecycle_for_termination_persists_status_and_reason() {
     for (termination, expected_status, expected_reason) in cases {
         let run_ctx = RunContext::from_thread(
             &Thread::new("lifecycle-state"),
-            tirea_contract::RuntimeOptions::default(),
+            tirea_contract::RunPolicy::default(),
         )
         .expect("run ctx");
         let mut run_ctx = run_ctx;
-        let execution_ctx = RunExecutionContext::new(
+        let run_identity = RunIdentity::new(
+            "lifecycle-state".to_string(),
+            None,
             "run-lifecycle".to_string(),
             None,
             "test-agent".to_string(),
             crate::contracts::RunOrigin::default(),
         );
 
-        sync_run_lifecycle_for_termination(&mut run_ctx, &execution_ctx, &termination)
+        sync_run_lifecycle_for_termination(&mut run_ctx, &run_identity, &termination)
             .expect("sync lifecycle patch");
         let state = run_ctx.snapshot().expect("snapshot");
 
@@ -8362,8 +8324,7 @@ async fn test_stream_state_commit_failure_on_assistant_turn_emits_error_and_run_
     let config = BaseAgent::new("mock").with_llm_executor(Arc::new(MockStreamProvider::new(vec![
         MockResponse::text("done"),
     ])) as Arc<dyn LlmExecutor>);
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(
         Arc::new(config),
         HashMap::new(),
@@ -8403,8 +8364,7 @@ async fn test_nonstream_checkpoints_include_run_start_side_effects() {
                 as Arc<dyn LlmExecutor>,
         )
         .with_behavior(Arc::new(RunStartSideEffectPlugin) as Arc<dyn AgentBehavior>);
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(
         &config,
         HashMap::new(),
@@ -8435,8 +8395,7 @@ async fn test_nonstream_state_commit_failure_on_assistant_turn_returns_error() {
     let config = BaseAgent::new("mock").with_llm_executor(Arc::new(MockChatProvider::new(vec![Ok(
         text_chat_response("done"),
     )])) as Arc<dyn LlmExecutor>);
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(
         &config,
         HashMap::new(),
@@ -8471,8 +8430,7 @@ async fn test_stream_state_commit_failure_on_tool_results_emits_error_before_too
         MockResponse::text("tool").with_tool_call("call_1", "echo", json!({"message":"hi"})),
     ])) as Arc<dyn LlmExecutor>);
     let tools = tool_map([EchoTool]);
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(
         Arc::new(config),
         tools,
@@ -8518,8 +8476,7 @@ async fn test_stream_run_finished_commit_failure_emits_error_without_run_finish_
     let config = BaseAgent::new("mock").with_llm_executor(Arc::new(MockStreamProvider::new(vec![
         MockResponse::text("done"),
     ])) as Arc<dyn LlmExecutor>);
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(
         Arc::new(config),
         HashMap::new(),
@@ -8578,8 +8535,7 @@ async fn test_stream_error_termination_run_finished_commit_failure_emits_state_e
             stream_error_fallback_threshold: 2,
         })
         .with_llm_executor(provider as Arc<dyn LlmExecutor>);
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(
         Arc::new(config),
         HashMap::new(),
@@ -8691,8 +8647,7 @@ async fn test_stream_terminate_behavior_requested_force_commits_run_finished_del
     let config = BaseAgent::new("mock")
         .with_behavior(Arc::new(recorder) as Arc<dyn AgentBehavior>)
         .with_llm_executor(Arc::new(MockStreamProvider::new(vec![])) as Arc<dyn LlmExecutor>);
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(
         Arc::new(config),
         HashMap::new(),
@@ -8723,7 +8678,7 @@ async fn test_stream_replay_state_failure_emits_error() {
         "test",
         json!({}),
         vec![Arc::new(Message::user("resume"))],
-        crate::contracts::RuntimeOptions::default(),
+        crate::contracts::RunPolicy::default(),
     );
     run_ctx.add_thread_patch(broken_patch);
 
@@ -8985,7 +8940,7 @@ async fn test_stop_natural_end_no_tools() {
 fn test_apply_tool_results_rejects_conflicting_parallel_state_patches() {
     let thread = Thread::with_initial_state("test", json!({}));
     let mut run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let left = tool_execution_result(
         "call_a",
         Some(TrackedPatch::new(Patch::new().with_op(Op::set(
@@ -9020,7 +8975,7 @@ fn test_apply_tool_results_rejects_conflicting_parallel_state_patches() {
 fn test_apply_tool_results_accepts_disjoint_parallel_state_patches() {
     let thread = Thread::with_initial_state("test", json!({}));
     let mut run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let left = tool_execution_result(
         "call_a",
         Some(TrackedPatch::new(Patch::new().with_op(Op::set(
@@ -9202,8 +9157,7 @@ async fn test_stop_cancellation_token() {
     let tools = HashMap::new();
 
     let config = config.with_llm_executor(Arc::new(provider) as Arc<dyn LlmExecutor>);
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(Arc::new(config), tools, run_ctx, Some(token), None, None);
     let events = collect_stream_events(stream).await;
     assert_eq!(
@@ -9258,8 +9212,7 @@ async fn test_stop_cancellation_token_during_inference_stream() {
     let config = BaseAgent::new("mock")
         .with_llm_executor(Arc::new(HangingStreamProvider) as Arc<dyn LlmExecutor>);
     let run_ctx =
-        RunContext::from_thread(&initial_thread, tirea_contract::RuntimeOptions::default())
-            .unwrap();
+        RunContext::from_thread(&initial_thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(
         Arc::new(config),
         HashMap::new(),
@@ -9319,8 +9272,7 @@ async fn test_run_loop_with_context_cancellation_token() {
     let token = CancellationToken::new();
     token.cancel();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, Some(token), None, None).await;
 
     assert!(
@@ -10259,8 +10211,7 @@ async fn test_run_step_terminate_behavior_requested_returns_empty_result_without
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
     // terminate_behavior_requested in run_loop terminates with BehaviorRequested
@@ -10317,8 +10268,7 @@ async fn test_run_step_terminate_behavior_requested_with_suspended_state_returns
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert!(matches!(outcome.termination, TerminationReason::Suspended));
 
@@ -10486,8 +10436,7 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
     let config =
         config.with_llm_executor(Arc::new(FailingStartProvider::new(10)) as Arc<dyn LlmExecutor>);
     let run_ctx =
-        RunContext::from_thread(&initial_thread, tirea_contract::RuntimeOptions::default())
-            .unwrap();
+        RunContext::from_thread(&initial_thread, tirea_contract::RunPolicy::default()).unwrap();
     let events = collect_stream_events(run_loop_stream(
         Arc::new(config),
         HashMap::new(),
@@ -10571,8 +10520,7 @@ async fn test_stop_cancellation_token_during_tool_execution_stream() {
         .with_llm_executor(Arc::new(MockStreamProvider::new(responses)) as Arc<dyn LlmExecutor>);
     let tools = tool_map([tool]);
     let run_ctx =
-        RunContext::from_thread(&initial_thread, tirea_contract::RuntimeOptions::default())
-            .unwrap();
+        RunContext::from_thread(&initial_thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(
         Arc::new(config),
         tools,
@@ -11023,8 +10971,7 @@ async fn test_run_loop_patches_accumulate_across_steps() {
     let tools = tool_map([CounterTool]);
 
     let config = BaseAgent::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
     assert!(
@@ -11058,7 +11005,7 @@ async fn test_commit_pending_delta_noops_when_empty() {
     let committer: Arc<dyn StateCommitter> = Arc::new(state_commit::ChannelStateCommitter::new(tx));
 
     let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
-    let execution_ctx = test_execution_ctx("run-1");
+    let run_identity = test_run_identity("run-1");
 
     // No messages or patches added — delta is empty
     state_commit::commit_pending_delta(
@@ -11066,7 +11013,7 @@ async fn test_commit_pending_delta_noops_when_empty() {
         CheckpointReason::AssistantTurnCommitted,
         false, // not forced
         Some(&committer),
-        &execution_ctx,
+        &run_identity,
         None,
     )
     .await
@@ -11085,14 +11032,14 @@ async fn test_commit_pending_delta_force_persists_empty() {
     let committer: Arc<dyn StateCommitter> = Arc::new(state_commit::ChannelStateCommitter::new(tx));
 
     let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
-    let execution_ctx = test_execution_ctx("run-1");
+    let run_identity = test_run_identity("run-1");
 
     state_commit::commit_pending_delta(
         &mut run_ctx,
         CheckpointReason::RunFinished,
         true, // forced
         Some(&committer),
-        &execution_ctx,
+        &run_identity,
         None,
     )
     .await
@@ -11116,7 +11063,7 @@ async fn test_commit_pending_delta_version_advancement() {
     let committer: Arc<dyn StateCommitter> = Arc::new(state_commit::ChannelStateCommitter::new(tx));
 
     let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
-    let execution_ctx = test_execution_ctx("run-1");
+    let run_identity = test_run_identity("run-1");
     assert_eq!(run_ctx.version(), 0);
 
     // First commit
@@ -11126,7 +11073,7 @@ async fn test_commit_pending_delta_version_advancement() {
         CheckpointReason::UserMessage,
         false,
         Some(&committer),
-        &execution_ctx,
+        &run_identity,
         None,
     )
     .await
@@ -11145,7 +11092,7 @@ async fn test_commit_pending_delta_version_advancement() {
         CheckpointReason::AssistantTurnCommitted,
         false,
         Some(&committer),
-        &execution_ctx,
+        &run_identity,
         None,
     )
     .await
@@ -11192,7 +11139,7 @@ async fn test_commit_pending_delta_precondition_exactness() {
     });
 
     let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
-    let execution_ctx = test_execution_ctx("run-1");
+    let run_identity = test_run_identity("run-1");
     run_ctx.set_version(10, None);
 
     run_ctx.add_message(Arc::new(Message::user("hi")));
@@ -11201,7 +11148,7 @@ async fn test_commit_pending_delta_precondition_exactness() {
         CheckpointReason::UserMessage,
         false,
         Some(&committer),
-        &execution_ctx,
+        &run_identity,
         None,
     )
     .await
@@ -11235,7 +11182,7 @@ async fn test_commit_pending_delta_error_propagation() {
 
     let committer: Arc<dyn StateCommitter> = Arc::new(FailingCommitter);
     let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
-    let execution_ctx = test_execution_ctx("run-1");
+    let run_identity = test_run_identity("run-1");
     run_ctx.add_message(Arc::new(Message::user("hi")));
 
     let result = state_commit::commit_pending_delta(
@@ -11243,7 +11190,7 @@ async fn test_commit_pending_delta_error_propagation() {
         CheckpointReason::UserMessage,
         false,
         Some(&committer),
-        &execution_ctx,
+        &run_identity,
         None,
     )
     .await;
@@ -11262,7 +11209,7 @@ async fn test_commit_pending_delta_error_propagation() {
 #[tokio::test]
 async fn test_commit_pending_delta_no_committer() {
     let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
-    let execution_ctx = test_execution_ctx("run-1");
+    let run_identity = test_run_identity("run-1");
     run_ctx.add_message(Arc::new(Message::user("hi")));
 
     // None committer — should succeed silently
@@ -11271,7 +11218,7 @@ async fn test_commit_pending_delta_no_committer() {
         CheckpointReason::UserMessage,
         false,
         None,
-        &execution_ctx,
+        &run_identity,
         None,
     )
     .await
@@ -11292,7 +11239,7 @@ async fn test_consecutive_checkpoints_disjoint_deltas() {
     let committer: Arc<dyn StateCommitter> = Arc::new(state_commit::ChannelStateCommitter::new(tx));
 
     let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
-    let execution_ctx = test_execution_ctx("run-1");
+    let run_identity = test_run_identity("run-1");
 
     // Checkpoint 1: user message
     run_ctx.add_message(Arc::new(Message::user("hello")));
@@ -11301,7 +11248,7 @@ async fn test_consecutive_checkpoints_disjoint_deltas() {
         CheckpointReason::UserMessage,
         false,
         Some(&committer),
-        &execution_ctx,
+        &run_identity,
         None,
     )
     .await
@@ -11317,7 +11264,7 @@ async fn test_consecutive_checkpoints_disjoint_deltas() {
         CheckpointReason::AssistantTurnCommitted,
         false,
         Some(&committer),
-        &execution_ctx,
+        &run_identity,
         None,
     )
     .await
@@ -11333,7 +11280,7 @@ async fn test_consecutive_checkpoints_disjoint_deltas() {
         CheckpointReason::ToolResultsCommitted,
         false,
         Some(&committer),
-        &execution_ctx,
+        &run_identity,
         None,
     )
     .await
@@ -11367,7 +11314,7 @@ async fn test_run_end_checkpoint_captures_remaining() {
     let committer: Arc<dyn StateCommitter> = Arc::new(state_commit::ChannelStateCommitter::new(tx));
 
     let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
-    let execution_ctx = test_execution_ctx("run-1");
+    let run_identity = test_run_identity("run-1");
 
     // Add data without committing
     run_ctx.add_message(Arc::new(Message::user("hello")));
@@ -11382,7 +11329,7 @@ async fn test_run_end_checkpoint_captures_remaining() {
         CheckpointReason::RunFinished,
         true,
         Some(&committer),
-        &execution_ctx,
+        &run_identity,
         None,
     )
     .await
@@ -11404,7 +11351,7 @@ async fn test_all_deltas_consumed_final_checkpoint_empty() {
     let committer: Arc<dyn StateCommitter> = Arc::new(state_commit::ChannelStateCommitter::new(tx));
 
     let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
-    let execution_ctx = test_execution_ctx("run-1");
+    let run_identity = test_run_identity("run-1");
 
     // Add and commit
     run_ctx.add_message(Arc::new(Message::user("hi")));
@@ -11413,7 +11360,7 @@ async fn test_all_deltas_consumed_final_checkpoint_empty() {
         CheckpointReason::UserMessage,
         false,
         Some(&committer),
-        &execution_ctx,
+        &run_identity,
         None,
     )
     .await
@@ -11426,7 +11373,7 @@ async fn test_all_deltas_consumed_final_checkpoint_empty() {
         CheckpointReason::RunFinished,
         true,
         Some(&committer),
-        &execution_ctx,
+        &run_identity,
         None,
     )
     .await
@@ -11899,8 +11846,7 @@ async fn test_nonstream_mixed_pending_and_completed_tools_continues_loop() {
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()))
         .with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("run tools"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let outcome = run_loop(&config, tool_map([EchoTool]), run_ctx, None, None, None).await;
     assert_eq!(outcome.termination, TerminationReason::Suspended);
@@ -11969,8 +11915,7 @@ async fn test_nonstream_single_pending_tool_enters_waiting() {
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()))
         .with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("run tool"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let outcome = run_loop(&config, tool_map([EchoTool]), run_ctx, None, None, None).await;
     assert_eq!(outcome.termination, TerminationReason::Suspended);
@@ -12191,8 +12136,7 @@ async fn test_stream_mixed_pending_persists_interaction_state() {
     // Use run_loop_stream directly to inspect the final state via RunContext.
     let provider = MockStreamProvider::new(responses);
     let config = config.with_llm_executor(Arc::new(provider));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
@@ -12299,8 +12243,7 @@ async fn test_nonstream_run_start_added_pending_pauses_before_inference() {
         .with_behavior(Arc::new(RunStartPendingPlugin) as Arc<dyn AgentBehavior>)
         .with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
 
@@ -12395,8 +12338,7 @@ async fn test_nonstream_completed_tool_round_does_not_clear_existing_suspended_c
         Ok(text_chat_response("done")),
     ]));
     let config = BaseAgent::new("mock").with_llm_executor(provider as Arc<dyn LlmExecutor>);
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let outcome = run_loop(&config, tool_map([EchoTool]), run_ctx, None, None, None).await;
     assert_eq!(outcome.termination, TerminationReason::Suspended);
@@ -12531,8 +12473,7 @@ async fn test_run_loop_step_start_run_action_mutation_is_type_safe_v2() {
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
     assert_eq!(
         outcome.termination,
@@ -12607,8 +12548,7 @@ async fn test_run_loop_plugin_run_action_stops_loop() {
     let thread = Thread::new("test").with_message(crate::contracts::thread::Message::user("go"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let outcome = run_loop(&config, tools, run_ctx, None, None, None).await;
 
     assert_eq!(
@@ -12650,8 +12590,7 @@ async fn test_run_loop_applies_plugin_state_effect_patch_before_inference() {
     let config =
         BaseAgent::new("mock").with_behavior(Arc::new(StateEffectPlugin) as Arc<dyn AgentBehavior>);
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
     assert_eq!(outcome.termination, TerminationReason::BehaviorRequested);
@@ -12697,8 +12636,7 @@ async fn test_run_loop_applies_plugin_state_effect_patch_after_tool_execute() {
         .with_llm_executor(provider as Arc<dyn LlmExecutor>)
         .with_behavior(Arc::new(StateEffectToolPlugin) as Arc<dyn AgentBehavior>);
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let outcome = run_loop(&config, tool_map([EchoTool]), run_ctx, None, None, None).await;
     assert_eq!(outcome.termination, TerminationReason::NaturalEnd);
@@ -12733,8 +12671,7 @@ async fn test_run_loop_after_inference_run_action_stops_before_tool_execution() 
         .with_behavior(Arc::new(AfterInferenceTerminatePlugin) as Arc<dyn AgentBehavior>)
         .with_llm_executor(provider as Arc<dyn LlmExecutor>);
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let outcome = run_loop(&config, tool_map([EchoTool]), run_ctx, None, None, None).await;
 
@@ -12992,8 +12929,8 @@ async fn test_run_loop_decision_channel_rejects_illegal_terminal_to_resuming_tra
         "call_pending",
         "Tool 'echo' is awaiting approval. Execution paused.",
     ));
-    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default())
-        .expect("run ctx");
+    let run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).expect("run ctx");
     let config = BaseAgent::new("mock")
         .with_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>);
     let tools = tool_map([EchoTool]);
@@ -13069,7 +13006,7 @@ async fn test_stream_decision_channel_ignores_unknown_target_id() {
     let mut final_thread = Thread::with_initial_state("test", base_state)
         .with_patch(pending_patch)
         .with_message(Message::user("continue"));
-    let run_ctx = RunContext::from_thread(&final_thread, tirea_contract::RuntimeOptions::default())
+    let run_ctx = RunContext::from_thread(&final_thread, tirea_contract::RunPolicy::default())
         .expect("run ctx");
     let config = BaseAgent::new("mock")
         .with_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>);
@@ -13176,7 +13113,7 @@ async fn test_stream_decision_channel_rejects_illegal_terminal_to_resuming_trans
         "call_pending",
         "Tool 'echo' is awaiting approval. Execution paused.",
     ));
-    let run_ctx = RunContext::from_thread(&final_thread, tirea_contract::RuntimeOptions::default())
+    let run_ctx = RunContext::from_thread(&final_thread, tirea_contract::RunPolicy::default())
         .expect("run ctx");
     let config = BaseAgent::new("mock")
         .with_behavior(Arc::new(TerminateBehaviorRequestedPlugin) as Arc<dyn AgentBehavior>);
@@ -13352,8 +13289,8 @@ async fn test_run_loop_decision_channel_resolves_suspended_call() {
         .with_llm_executor(provider as Arc<dyn LlmExecutor>);
 
     let thread = Thread::new("test").with_message(Message::user("run"));
-    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default())
-        .expect("run ctx");
+    let run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).expect("run ctx");
     let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
     tools.insert("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>);
     tools.insert(
@@ -13450,8 +13387,7 @@ async fn test_run_loop_decision_channel_cancel_emits_single_tool_result_message(
             "call_pending",
             "Tool 'echo' is awaiting approval. Execution paused.",
         ));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let tools = tool_map([EchoTool]);
 
     let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -13610,8 +13546,8 @@ async fn test_run_loop_stream_decision_channel_emits_resolution_and_replay() {
         .with_llm_executor(Arc::new(provider));
 
     let thread = Thread::new("test").with_message(Message::user("run"));
-    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default())
-        .expect("run ctx");
+    let run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).expect("run ctx");
     let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
     tools.insert("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>);
     tools.insert(
@@ -13759,8 +13695,8 @@ async fn test_run_loop_decision_channel_buffers_early_response_for_all_suspended
         .with_llm_executor(provider as Arc<dyn LlmExecutor>);
 
     let thread = Thread::new("test").with_message(Message::user("run"));
-    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default())
-        .expect("run ctx");
+    let run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).expect("run ctx");
     let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
     tools.insert(
         "frontend_tool".to_string(),
@@ -13893,8 +13829,8 @@ async fn test_stream_decision_channel_buffers_early_response_for_all_suspended_t
         .with_llm_executor(Arc::new(provider));
 
     let thread = Thread::new("test").with_message(Message::user("run"));
-    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default())
-        .expect("run ctx");
+    let run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).expect("run ctx");
     let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
     tools.insert(
         "frontend_tool".to_string(),
@@ -13995,8 +13931,8 @@ async fn test_stream_decision_channel_drains_while_inference_stream_is_running()
     let thread = Thread::with_initial_state("test", base_state)
         .with_patch(pending_patch)
         .with_message(Message::user("resume"));
-    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default())
-        .expect("run ctx");
+    let run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).expect("run ctx");
     let config = BaseAgent::new("mock")
         .with_llm_executor(Arc::new(HangingStreamProvider) as Arc<dyn LlmExecutor>);
     let tools = tool_map([EchoTool]);
@@ -14128,8 +14064,8 @@ async fn test_run_loop_decision_channel_replay_original_tool_uses_tool_call_resu
             "Tool 'echo' is awaiting approval. Execution paused.",
         ))
         .with_message(Message::user("resume"));
-    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default())
-        .expect("run ctx");
+    let run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).expect("run ctx");
 
     let provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("done"))]));
     let config = BaseAgent::new("mock")
@@ -14217,8 +14153,7 @@ async fn test_stream_truncation_recovery_retries_then_succeeds() {
     let config = truncation_test_agent(provider);
 
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(Arc::new(config), HashMap::new(), run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
@@ -14253,8 +14188,7 @@ async fn test_stream_truncation_recovery_with_tool_calls_no_retry() {
     tools.insert("echo".to_string(), Arc::new(EchoTool));
 
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
@@ -14288,8 +14222,7 @@ async fn test_stream_truncation_recovery_exhausts_retries() {
     let config = truncation_test_agent(provider);
 
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(Arc::new(config), HashMap::new(), run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
@@ -14324,8 +14257,7 @@ async fn test_stream_truncation_recovery_injects_internal_continuation_message()
     let config = truncation_test_agent(provider);
 
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(Arc::new(config), HashMap::new(), run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
@@ -14364,8 +14296,7 @@ async fn test_stream_truncation_recovery_preserves_truncated_assistant_text() {
     let config = truncation_test_agent(provider);
 
     let thread = Thread::new("test").with_message(Message::user("Tell me about Rust"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(Arc::new(config), HashMap::new(), run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
@@ -14406,8 +14337,7 @@ async fn test_stream_no_truncation_recovery_on_normal_end() {
     let config = truncation_test_agent(provider);
 
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(Arc::new(config), HashMap::new(), run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 
@@ -14441,8 +14371,7 @@ async fn test_stream_multiple_truncation_retries_then_tool_call() {
     tools.insert("echo".to_string(), Arc::new(EchoTool));
 
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
     let events = collect_stream_events(stream).await;
 

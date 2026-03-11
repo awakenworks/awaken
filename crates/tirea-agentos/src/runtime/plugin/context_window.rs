@@ -118,7 +118,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tirea_contract::runtime::phase::Phase;
-    use tirea_contract::RuntimeOptions;
+    use tirea_contract::RunPolicy;
     use tirea_state::DocCell;
 
     #[test]
@@ -159,7 +159,7 @@ mod tests {
         });
 
         use tirea_contract::runtime::AgentBehavior;
-        let config = RuntimeOptions::new();
+        let config = RunPolicy::new();
         let doc = DocCell::new(json!({}));
         let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
         let actions = plugin.before_inference(&ctx).await;

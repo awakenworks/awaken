@@ -48,7 +48,7 @@ impl AgentRunTool {
         &self,
         target_agent_id: &str,
         caller_agent_id: Option<&str>,
-        policy: Option<&tirea_contract::runtime::ScopePolicy>,
+        policy: Option<&tirea_contract::runtime::RunPolicy>,
     ) -> Result<(), ToolArgError> {
         if is_target_agent_visible(
             self.os.agents_registry().as_ref(),
@@ -65,7 +65,7 @@ impl AgentRunTool {
         ))
     }
 
-    /// Resolve execution context from args.
+    /// Resolve sub-agent inputs from args.
     /// Returns (agent_id, messages, initial_state).
     ///
     /// `prompt` is required for new runs but optional for resume (`is_resume`)
@@ -75,7 +75,7 @@ impl AgentRunTool {
         &self,
         args: &AgentRunArgs,
         caller_messages: &[Arc<Message>],
-        policy: Option<&tirea_contract::runtime::ScopePolicy>,
+        policy: Option<&tirea_contract::runtime::RunPolicy>,
         caller_agent_id: Option<&str>,
         is_resume: bool,
     ) -> Result<(String, Vec<Message>, Option<Value>), ToolResult> {
@@ -192,7 +192,7 @@ impl BackgroundExecutable for AgentRunTool {
         let (agent_id, messages, initial_state) = self.resolve_execution_context(
             &parsed,
             ctx.caller_context().messages(),
-            Some(ctx.runtime_options().policy()),
+            Some(ctx.run_policy()),
             caller_agent_id.as_deref(),
             is_resume,
         )?;
@@ -315,7 +315,7 @@ impl AgentRunTool {
             .caller_context()
             .run_id()
             .map(str::to_string)
-            .or_else(|| ctx.execution_ctx().run_id_opt().map(str::to_string));
+            .or_else(|| ctx.run_identity().run_id_opt().map(str::to_string));
 
         // run_id is always set (injected by BackgroundCapable wrapper for new tasks).
         let run_id = normalize_opt(args.run_id.clone()).unwrap_or_default();
@@ -327,11 +327,11 @@ impl AgentRunTool {
             ));
         }
 
-        // Resolve execution context from args.
+        // Resolve sub-agent inputs from args.
         let (agent_id, messages, initial_state) = match self.resolve_execution_context(
             &args,
             ctx.caller_context().messages(),
-            Some(ctx.runtime_options().policy()),
+            Some(ctx.run_policy()),
             caller_agent_id.as_deref(),
             is_resume,
         ) {

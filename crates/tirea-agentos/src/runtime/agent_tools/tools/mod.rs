@@ -112,7 +112,7 @@ pub(super) fn is_target_agent_visible(
     registry: &dyn AgentRegistry,
     target: &str,
     caller: Option<&str>,
-    policy: Option<&tirea_contract::runtime::ScopePolicy>,
+    policy: Option<&tirea_contract::runtime::RunPolicy>,
 ) -> bool {
     if caller.is_some_and(|c| c == target) {
         return false;

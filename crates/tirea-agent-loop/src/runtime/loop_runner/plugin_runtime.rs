@@ -245,7 +245,7 @@ where
         &ops,
         "phase",
         "agent:phase",
-        &run_ctx.runtime_options,
+        run_ctx.run_policy(),
         &pending_messages,
         tirea_contract::runtime::activity::NoOpActivityManager::arc(),
     );
@@ -345,7 +345,7 @@ pub(super) async fn emit_run_end_phase(
             &ops,
             "phase",
             "agent:run_end",
-            &run_ctx.runtime_options,
+            run_ctx.run_policy(),
             &pending_messages,
             tirea_contract::runtime::activity::NoOpActivityManager::arc(),
         );
@@ -409,7 +409,7 @@ where
         &ops,
         "phase",
         "behavior:phase",
-        &run_ctx.runtime_options,
+        run_ctx.run_policy(),
         &pending_messages,
         tirea_contract::runtime::activity::NoOpActivityManager::arc(),
     );

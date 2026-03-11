@@ -24,9 +24,8 @@ pub use phase::{
     ToolCallAction,
 };
 pub use run::{
-    run_lifecycle_from_state, FlowControl, InferenceError, RunContext, RunDelta,
-    RunExecutionContext, RunLifecycleAction, RunLifecycleState, RunStatus, RuntimeOptions,
-    RuntimeOptionsError, ScopePolicy, StoppedReason, TerminationReason,
+    run_lifecycle_from_state, FlowControl, InferenceError, RunContext, RunDelta, RunIdentity,
+    RunLifecycleAction, RunLifecycleState, RunPolicy, RunStatus, StoppedReason, TerminationReason,
 };
 pub use state::{
     reduce_state_actions, AnyStateAction, ScopeContext, SerializedStateAction,
@@ -42,5 +41,5 @@ pub use tool_call::{
     ToolExecutionEffect, ToolExecutionRequest, ToolExecutionResult, ToolExecutor,
     ToolExecutorError, ToolGate, ToolProgressState, TOOL_CALL_PROGRESS_ACTIVITY_TYPE,
     TOOL_CALL_PROGRESS_SCHEMA, TOOL_CALL_PROGRESS_TYPE, TOOL_PROGRESS_ACTIVITY_TYPE,
-    TOOL_PROGRESS_ACTIVITY_TYPE_LEGACY, TOOL_SCOPE_PARENT_TOOL_CALL_ID_KEY,
+    TOOL_PROGRESS_ACTIVITY_TYPE_LEGACY,
 };

@@ -1,15 +1,8 @@
 use crate::storage::RunOrigin;
 
-/// Error type for typed run configuration mutations.
-#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
-pub enum RuntimeOptionsError {
-    #[error("run config field already set: {field}")]
-    AlreadySet { field: &'static str },
-}
-
-/// Strongly typed scope policy carried with a resolved run.
+/// Strongly typed scope and execution policy carried with a resolved run.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ScopePolicy {
+pub struct RunPolicy {
     allowed_tools: Option<Vec<String>>,
     excluded_tools: Option<Vec<String>>,
     allowed_skills: Option<Vec<String>>,
@@ -18,7 +11,7 @@ pub struct ScopePolicy {
     excluded_agents: Option<Vec<String>>,
 }
 
-impl ScopePolicy {
+impl RunPolicy {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -100,53 +93,11 @@ fn normalize_scope_values(values: Option<&[String]>) -> Option<Vec<String>> {
     }
 }
 
-/// Typed per-run configuration shared across runtime contexts.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RuntimeOptions {
-    policy: ScopePolicy,
-    parent_tool_call_id: Option<String>,
-}
-
-impl RuntimeOptions {
-    pub const PARENT_TOOL_CALL_ID_FIELD: &'static str = "parent_tool_call_id";
-
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn policy(&self) -> &ScopePolicy {
-        &self.policy
-    }
-
-    pub fn policy_mut(&mut self) -> &mut ScopePolicy {
-        &mut self.policy
-    }
-
-    pub fn parent_tool_call_id(&self) -> Option<&str> {
-        self.parent_tool_call_id.as_deref()
-    }
-
-    pub fn set_parent_tool_call_id(
-        &mut self,
-        value: impl Into<String>,
-    ) -> Result<(), RuntimeOptionsError> {
-        if self.parent_tool_call_id.is_some() {
-            return Err(RuntimeOptionsError::AlreadySet {
-                field: Self::PARENT_TOOL_CALL_ID_FIELD,
-            });
-        }
-        let value = value.into();
-        if !value.trim().is_empty() {
-            self.parent_tool_call_id = Some(value);
-        }
-        Ok(())
-    }
-}
-
 /// Strongly typed identity for the active run.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RunExecutionContext {
+pub struct RunIdentity {
+    pub thread_id: String,
+    pub parent_thread_id: Option<String>,
     pub run_id: String,
     pub parent_run_id: Option<String>,
     pub agent_id: String,
@@ -154,15 +105,27 @@ pub struct RunExecutionContext {
     pub parent_tool_call_id: Option<String>,
 }
 
-impl RunExecutionContext {
+impl RunIdentity {
     #[must_use]
-    pub const fn new(
+    pub fn for_thread(thread_id: impl Into<String>) -> Self {
+        Self {
+            thread_id: thread_id.into(),
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn new(
+        thread_id: String,
+        parent_thread_id: Option<String>,
         run_id: String,
         parent_run_id: Option<String>,
         agent_id: String,
         origin: RunOrigin,
     ) -> Self {
         Self {
+            thread_id,
+            parent_thread_id,
             run_id,
             parent_run_id,
             agent_id,
@@ -178,6 +141,22 @@ impl RunExecutionContext {
             self.parent_tool_call_id = Some(value);
         }
         self
+    }
+
+    pub fn thread_id_opt(&self) -> Option<&str> {
+        let thread_id = self.thread_id.trim();
+        if thread_id.is_empty() {
+            None
+        } else {
+            Some(thread_id)
+        }
+    }
+
+    pub fn parent_thread_id_opt(&self) -> Option<&str> {
+        self.parent_thread_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
     }
 
     pub fn run_id_opt(&self) -> Option<&str> {
@@ -218,26 +197,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scope_policy_normalizes_values() {
-        let mut policy = ScopePolicy::new();
+    fn run_policy_normalizes_values() {
+        let mut policy = RunPolicy::new();
         policy.set_allowed_tools_if_absent(Some(&[" a ".to_string(), "".to_string()]));
         assert_eq!(policy.allowed_tools(), Some(&["a".to_string()][..]));
     }
 
     #[test]
-    fn runtime_options_parent_tool_call_id_is_set_once() {
-        let mut config = RuntimeOptions::new();
-        config
-            .set_parent_tool_call_id("call-1")
-            .expect("first set should succeed");
-        let err = config
-            .set_parent_tool_call_id("call-2")
-            .expect_err("second set should fail");
-        assert_eq!(
-            err,
-            RuntimeOptionsError::AlreadySet {
-                field: RuntimeOptions::PARENT_TOOL_CALL_ID_FIELD,
-            }
-        );
+    fn run_identity_ignores_blank_parent_tool_call_id() {
+        let identity = RunIdentity::new(
+            "thread-1".to_string(),
+            None,
+            "run-1".to_string(),
+            None,
+            "agent-1".to_string(),
+            RunOrigin::Internal,
+        )
+        .with_parent_tool_call_id("   ");
+        assert!(identity.parent_tool_call_id_opt().is_none());
     }
 }

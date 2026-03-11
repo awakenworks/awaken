@@ -10,7 +10,7 @@ use crate::composition::{
     RegistrySet, StopPolicyRegistry, SystemWiring, ToolRegistry,
 };
 use crate::contracts::runtime::tool_call::Tool;
-use crate::contracts::runtime::RunExecutionContext;
+use crate::contracts::runtime::RunIdentity;
 use crate::contracts::storage::{ThreadStore, VersionPrecondition};
 use crate::contracts::{AgentEvent, RunContext, ToolCallDecision};
 #[cfg(feature = "skills")]
@@ -58,14 +58,9 @@ impl RunStream {
 /// This separates request preprocessing from stream execution so preprocessing
 /// can be unit-tested deterministically.
 pub struct PreparedRun {
-    /// Resolved thread ID (may have been auto-generated).
-    pub thread_id: String,
-    /// Resolved run ID (may have been auto-generated).
-    pub run_id: String,
     pub(crate) agent: Arc<dyn Agent>,
     pub(crate) tools: HashMap<String, Arc<dyn Tool>>,
     pub(crate) run_ctx: RunContext,
-    pub(crate) execution_ctx: RunExecutionContext,
     pub(crate) cancellation_token: Option<RunCancellationToken>,
     pub(crate) state_committer: Option<Arc<dyn StateCommitter>>,
     pub(crate) decision_tx: tokio::sync::mpsc::UnboundedSender<ToolCallDecision>,
@@ -73,6 +68,24 @@ pub struct PreparedRun {
 }
 
 impl PreparedRun {
+    /// Resolved thread ID (may have been auto-generated).
+    pub fn thread_id(&self) -> &str {
+        self.run_ctx.thread_id()
+    }
+
+    /// Resolved run ID (may have been auto-generated).
+    pub fn run_id(&self) -> &str {
+        self.run_ctx
+            .run_identity()
+            .run_id_opt()
+            .expect("prepared runs always carry a run id")
+    }
+
+    /// Strongly typed identity for the prepared run.
+    pub fn run_identity(&self) -> &RunIdentity {
+        self.run_ctx.run_identity()
+    }
+
     /// Attach a cooperative cancellation token for this prepared run.
     ///
     /// This keeps loop cancellation wiring outside protocol/UI layers:

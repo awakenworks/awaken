@@ -189,7 +189,7 @@ pub(super) fn run_stream(
     agent: Arc<dyn Agent>,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
-    execution_ctx: RunExecutionContext,
+    run_identity: RunIdentity,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
     decision_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ToolCallDecision>>,
@@ -210,11 +210,11 @@ pub(super) fn run_stream(
         let (activity_tx, mut activity_rx) = tokio::sync::mpsc::unbounded_channel();
         let activity_manager: Arc<dyn ActivityManager> = Arc::new(ActivityHub::new(activity_tx));
 
-        let run_id = execution_ctx.run_id.clone();
-        let parent_run_id = execution_ctx.parent_run_id.clone();
+        let run_id = run_identity.run_id.clone();
+        let parent_run_id = run_identity.parent_run_id.clone();
         let baseline_suspended_call_ids = suspended_call_ids(&run_ctx);
         let pending_delta_commit = PendingDeltaCommitContext::new(
-            &execution_ctx,
+            &run_identity,
             state_committer.as_ref(),
         );
         let mut emitter =
@@ -253,7 +253,7 @@ pub(super) fn run_stream(
                     &TerminationReason::Error(message.clone()),
                     &active_tool_descriptors,
                     agent.as_ref(),
-                    &execution_ctx,
+                    &run_identity,
                     &pending_delta_commit,
                 )
                 .await
@@ -293,7 +293,7 @@ pub(super) fn run_stream(
                     &final_termination,
                     &active_tool_descriptors,
                     agent.as_ref(),
-                    &execution_ctx,
+                    &run_identity,
                     &pending_delta_commit,
                 )
                 .await
@@ -968,8 +968,8 @@ pub(super) fn run_stream(
                         tool_descriptors: &tool_descriptors_for_exec,
                         agent_behavior: Some(agent.behavior()),
                         activity_manager: activity_manager.clone(),
-                        runtime_options: &tool_context.runtime_options,
-                        execution_ctx: tool_context.execution_ctx.clone(),
+                        run_policy: &tool_context.run_policy,
+                        run_identity: tool_context.run_identity.clone(),
                         caller_context: tool_context.caller_context.clone(),
                         thread_id: &sid_for_tools,
                         thread_messages: &thread_messages_for_tools,

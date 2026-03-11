@@ -250,8 +250,7 @@ async fn test_run_step_non_streaming_propagates_usage_and_exports_tokens_to_otel
         .with_behavior(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
     let usage = outcome.usage;
@@ -302,8 +301,7 @@ async fn test_run_step_llm_error_closes_inference_span_and_sets_error_type() {
         .with_behavior(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
     assert!(matches!(
@@ -367,8 +365,7 @@ async fn test_run_loop_stream_http_error_closes_inference_span() {
         .with_behavior(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let events: Vec<_> = run_loop_stream(
         Arc::new(config) as Arc<dyn Agent>,
@@ -444,8 +441,7 @@ async fn test_run_loop_stream_success_exports_tokens_to_otel() {
         .with_behavior(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let events: Vec<_> = run_loop_stream(
         Arc::new(config) as Arc<dyn Agent>,
@@ -534,8 +530,7 @@ async fn test_run_loop_stream_connection_refused_closes_inference_span() {
         .with_behavior(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let events: Vec<_> = run_loop_stream(
         Arc::new(config) as Arc<dyn Agent>,
@@ -651,8 +646,7 @@ async fn test_run_loop_stream_parse_error_closes_inference_span() {
         .with_behavior(plugin)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let events: Vec<_> = run_loop_stream(
         Arc::new(config) as Arc<dyn Agent>,
@@ -730,8 +724,7 @@ async fn test_run_loop_stream_sse_error_payload_is_not_silent_success() {
         .with_llm_retry_policy(no_retry_policy)
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
-    let run_ctx =
-        RunContext::from_thread(&thread, tirea_contract::RuntimeOptions::default()).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
 
     let events: Vec<_> = run_loop_stream(
         Arc::new(config) as Arc<dyn Agent>,

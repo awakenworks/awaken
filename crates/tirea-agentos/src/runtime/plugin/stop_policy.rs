@@ -357,7 +357,7 @@ impl AgentBehavior for StopPolicyPlugin {
             ctx.thread_id().to_string(),
             ctx.snapshot(),
             ctx.messages().to_vec(),
-            ctx.runtime_options().clone(),
+            ctx.run_policy().clone(),
         );
         let input = StopPolicyInput {
             run_ctx: &run_ctx,
@@ -961,7 +961,7 @@ mod tests {
     macro_rules! eval_policy {
         ($policy:expr, { $($field:ident : $val:expr),* $(,)? }) => {{
             let run_ctx = RunContext::new(
-                "t", json!({}), vec![], crate::contracts::RuntimeOptions::default(),
+                "t", json!({}), vec![], crate::contracts::RunPolicy::default(),
             );
             let empty_history = VecDeque::new();
             let no_tools: &[ToolCall] = &[];

@@ -1051,14 +1051,14 @@ mod tests {
         let activity_manager = Arc::new(RecordingActivityManager::default());
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let runtime_options = tirea_contract::RuntimeOptions::default();
+        let run_policy = tirea_contract::RunPolicy::default();
         let pending_messages: Mutex<Vec<Arc<Message>>> = Mutex::new(Vec::new());
         let ctx = ToolCallContext::new(
             &doc,
             &ops,
             "call-progress",
             "test",
-            &runtime_options,
+            &run_policy,
             &pending_messages,
             activity_manager.clone(),
         );
@@ -1094,14 +1094,14 @@ mod tests {
         let activity_manager = Arc::new(RecordingActivityManager::default());
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let runtime_options = tirea_contract::RuntimeOptions::default();
+        let run_policy = tirea_contract::RunPolicy::default();
         let pending_messages: Mutex<Vec<Arc<Message>>> = Mutex::new(Vec::new());
         let ctx = ToolCallContext::new(
             &doc,
             &ops,
             "call-progress-registry",
             "test",
-            &runtime_options,
+            &run_policy,
             &pending_messages,
             activity_manager.clone(),
         );
@@ -1241,14 +1241,14 @@ mod tests {
         let activity_manager = Arc::new(RecordingActivityManager::default());
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let runtime_options = tirea_contract::RuntimeOptions::default();
+        let run_policy = tirea_contract::RunPolicy::default();
         let pending_messages: Mutex<Vec<Arc<Message>>> = Mutex::new(Vec::new());
         let ctx = ToolCallContext::new(
             &doc,
             &ops,
             "call-http-progress",
             "test",
-            &runtime_options,
+            &run_policy,
             &pending_messages,
             activity_manager.clone(),
         );

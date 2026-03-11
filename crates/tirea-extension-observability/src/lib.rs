@@ -46,7 +46,7 @@ mod tests {
     ) {
         use tirea_contract::ReadOnlyContext;
 
-        let config = &fixture.runtime_options;
+        let config = &fixture.run_policy;
         let doc = &fixture.doc;
         let messages = step.messages();
         let thread_id = step.thread_id();

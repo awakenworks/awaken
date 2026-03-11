@@ -23,19 +23,6 @@ pub(super) struct SubAgentExecutionRequest {
     pub(super) cancellation_token: Option<RunCancellationToken>,
 }
 
-fn bind_parent_tool_call_runtime_options(
-    runtime_options: &mut crate::contracts::RuntimeOptions,
-    parent_tool_call_id: Option<&str>,
-) -> Result<(), crate::contracts::RuntimeOptionsError> {
-    let Some(parent_tool_call_id) = parent_tool_call_id
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-    else {
-        return Ok(());
-    };
-    runtime_options.set_parent_tool_call_id(parent_tool_call_id.to_string())
-}
-
 pub(super) async fn execute_sub_agent(
     os: AgentOs,
     request: SubAgentExecutionRequest,
@@ -75,15 +62,11 @@ pub(super) async fn execute_sub_agent(
             };
         }
     };
-    if let Err(e) = bind_parent_tool_call_runtime_options(
-        &mut resolved.runtime_options,
-        parent_tool_call_id.as_deref(),
-    ) {
-        return SubAgentCompletion {
-            status: SubAgentStatus::Failed,
-            error: Some(e.to_string()),
-        };
-    }
+    resolved.parent_tool_call_id = parent_tool_call_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(ToOwned::to_owned);
 
     let mut prepared = match os.prepare_run(run_request, resolved).await {
         Ok(p) => p,
@@ -214,19 +197,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bind_parent_tool_call_runtime_options_sets_parent_tool_call_id_when_present() {
-        let mut runtime_options = crate::contracts::RuntimeOptions::default();
-        bind_parent_tool_call_runtime_options(&mut runtime_options, Some("call_parent_1"))
-            .expect("set parent tool call id");
-        assert_eq!(runtime_options.parent_tool_call_id(), Some("call_parent_1"));
+    fn parent_tool_call_id_seed_is_trimmed() {
+        let trimmed = Some("  call_parent_1  ")
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(ToOwned::to_owned);
+        assert_eq!(trimmed.as_deref(), Some("call_parent_1"));
     }
 
     #[test]
-    fn bind_parent_tool_call_runtime_options_ignores_blank_values() {
-        let mut runtime_options = crate::contracts::RuntimeOptions::default();
-        bind_parent_tool_call_runtime_options(&mut runtime_options, Some("   "))
-            .expect("ignore blank id");
-        assert!(runtime_options.parent_tool_call_id().is_none());
+    fn blank_parent_tool_call_id_seed_is_none() {
+        let trimmed = Some("   ")
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(ToOwned::to_owned);
+        assert!(trimmed.is_none());
     }
 
     #[tokio::test]

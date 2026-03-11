@@ -1,11 +1,11 @@
 use crate::runtime::inference::{InferenceContext, LLMResponse, MessagingContext};
-use crate::runtime::run::RunExecutionContext;
+use crate::runtime::run::RunIdentity;
 use crate::runtime::run::{FlowControl, RunAction};
 use crate::runtime::state::{AnyStateAction, SerializedStateAction};
 use crate::runtime::tool_call::gate::ToolGate;
 use crate::runtime::tool_call::{ToolCallContext, ToolDescriptor, ToolResult};
 use crate::thread::Message;
-use crate::RuntimeOptions;
+use crate::RunPolicy;
 use serde_json::Value;
 use std::sync::Arc;
 use tirea_state::{State, TireaResult, TrackedPatch};
@@ -131,12 +131,12 @@ impl<'a> StepContext<'a> {
         self.ctx.state::<T>(path)
     }
 
-    pub fn runtime_options(&self) -> &RuntimeOptions {
-        self.ctx.runtime_options()
+    pub fn run_policy(&self) -> &RunPolicy {
+        self.ctx.run_policy()
     }
 
-    pub fn execution_ctx(&self) -> &RunExecutionContext {
-        self.ctx.execution_ctx()
+    pub fn run_identity(&self) -> &RunIdentity {
+        self.ctx.run_identity()
     }
 
     pub fn snapshot(&self) -> Value {

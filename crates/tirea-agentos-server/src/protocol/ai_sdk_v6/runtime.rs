@@ -22,13 +22,14 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
     use tirea_agent_loop::runtime::loop_runner::BaseAgent;
-    use tirea_contract::RuntimeOptions;
+    use tirea_contract::RunPolicy;
 
     fn empty_resolved() -> ResolvedRun {
         ResolvedRun {
             agent: BaseAgent::default(),
             tools: HashMap::new(),
-            runtime_options: RuntimeOptions::new(),
+            run_policy: RunPolicy::new(),
+            parent_tool_call_id: None,
         }
     }
 

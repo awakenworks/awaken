@@ -296,7 +296,8 @@ mod tests {
         ResolvedRun {
             agent: BaseAgent::default(),
             tools: HashMap::new(),
-            runtime_options: tirea_contract::RuntimeOptions::new(),
+            run_policy: tirea_contract::RunPolicy::new(),
+            parent_tool_call_id: None,
         }
     }
 
@@ -305,7 +306,7 @@ mod tests {
             phase,
             step.thread_id(),
             step.messages(),
-            step.runtime_options(),
+            step.run_policy(),
             step.ctx().doc(),
         );
         if let Some(gate) = step.gate.as_ref() {

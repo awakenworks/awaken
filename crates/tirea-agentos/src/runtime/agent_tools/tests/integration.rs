@@ -41,7 +41,9 @@ fn apply_integration_caller_scope(
     run_id: &str,
     messages: Vec<crate::contracts::thread::Message>,
 ) {
-    fix.execution_ctx = RunExecutionContext::new(
+    fix.run_identity = RunIdentity::new(
+        "parent-thread".to_string(),
+        None,
         run_id.to_string(),
         None,
         "caller".to_string(),
@@ -1486,7 +1488,7 @@ async fn integration_background_tasks_plugin_includes_all_task_types() {
     let plugin = BackgroundTasksPlugin::new(bg_mgr.clone());
 
     let doc = tirea_state::DocCell::new(json!({}));
-    let rc = crate::contracts::RuntimeOptions::new();
+    let rc = crate::contracts::RunPolicy::new();
     let ctx = crate::contracts::runtime::behavior::ReadOnlyContext::new(
         tirea_contract::runtime::phase::Phase::AfterToolExecute,
         "thread-1",

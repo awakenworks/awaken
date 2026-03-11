@@ -288,12 +288,12 @@ async fn wire_skills_inserts_tools_and_plugin() {
         }
     });
     let doc = tirea_state::DocCell::new(state);
-    let runtime_options = crate::contracts::RuntimeOptions::new();
+    let run_policy = crate::contracts::RunPolicy::new();
     let ctx = ReadOnlyContext::new(
         crate::contracts::runtime::phase::Phase::BeforeInference,
         "thread_1",
         &[],
-        &runtime_options,
+        &run_policy,
         &doc,
     );
     let actions = cfg.behavior.before_inference(&ctx).await;
@@ -1130,7 +1130,7 @@ async fn run_stream_stop_policy_plugin_terminates_without_passing_stop_condition
     );
     let thread = crate::contracts::thread::Thread::new("stop-plugin-thread")
         .with_message(crate::contracts::thread::Message::user("go"));
-    let run_ctx = crate::contracts::RunContext::from_thread(&thread, resolved.runtime_options)
+    let run_ctx = crate::contracts::RunContext::from_thread(&thread, resolved.run_policy)
         .expect("build run context");
     let outcome = run_loop(&config, resolved.tools, run_ctx, None, None, None).await;
     assert!(
@@ -1162,15 +1162,15 @@ fn resolve_sets_typed_scope_policy() {
         .unwrap();
     let resolved = os.resolve("a1").unwrap();
     assert_eq!(
-        resolved.runtime_options.policy().allowed_skills(),
+        resolved.run_policy.allowed_skills(),
         Some(&["s1".to_string()][..])
     );
     assert_eq!(
-        resolved.runtime_options.policy().allowed_agents(),
+        resolved.run_policy.allowed_agents(),
         Some(&["worker".to_string()][..])
     );
     assert_eq!(
-        resolved.runtime_options.policy().allowed_tools(),
+        resolved.run_policy.allowed_tools(),
         Some(&["echo".to_string()][..])
     );
 }
@@ -1386,12 +1386,12 @@ async fn resolve_wires_plugins_from_registry() {
         .any(|id| *id == "p1"));
 
     let doc = tirea_state::DocCell::new(json!({}));
-    let runtime_options = crate::contracts::RuntimeOptions::new();
+    let run_policy = crate::contracts::RunPolicy::new();
     let ctx = ReadOnlyContext::new(
         crate::contracts::runtime::phase::Phase::BeforeInference,
         "thread_1",
         &[],
-        &runtime_options,
+        &run_policy,
         &doc,
     );
     let actions = resolved.agent.behavior.before_inference(&ctx).await;
@@ -1849,14 +1849,14 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
         .await
         .unwrap();
 
-    assert_eq!(prepared.thread_id, "t-prepare");
-    assert_eq!(prepared.run_id, "run-prepare");
+    assert_eq!(prepared.thread_id(), "t-prepare");
+    assert_eq!(prepared.run_id(), "run-prepare");
     assert_eq!(
-        prepared.run_ctx.execution_ctx().run_id_opt(),
+        prepared.run_ctx.run_identity().run_id_opt(),
         Some("run-prepare")
     );
     assert_eq!(
-        prepared.run_ctx.execution_ctx().parent_run_id_opt(),
+        prepared.run_ctx.run_identity().parent_run_id_opt(),
         Some("run-parent")
     );
 

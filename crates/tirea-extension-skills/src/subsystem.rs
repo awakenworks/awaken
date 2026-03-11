@@ -335,13 +335,13 @@ mod tests {
         let plugin: Arc<dyn AgentBehavior> = Arc::new(sys.discovery_plugin());
         let state = thread.rebuild_state().unwrap();
         let fix = tirea_contract::testing::TestFixture::new_with_state(state);
-        let runtime_options = tirea_contract::RuntimeOptions::default();
+        let run_policy = tirea_contract::RunPolicy::default();
         let fixture_ctx = fix.ctx();
         let ctx = ReadOnlyContext::new(
             Phase::BeforeInference,
             &thread.id,
             &thread.messages,
-            &runtime_options,
+            &run_policy,
             fixture_ctx.doc(),
         );
         let actions = plugin.before_inference(&ctx).await;

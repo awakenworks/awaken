@@ -10,7 +10,7 @@ use futures::future::join_all;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tirea_contract::RuntimeOptions;
+use tirea_contract::RunPolicy;
 use tirea_state::{apply_patch, DocCell, Patch, TrackedPatch};
 
 const DIRECT_STATE_WRITE_DENIED_ERROR_CODE: &str = "tool_context_state_write_not_allowed";
@@ -49,26 +49,25 @@ pub async fn execute_single_tool(
     call: &ToolCall,
     state: &Value,
 ) -> ToolExecution {
-    execute_single_tool_with_runtime_options_and_behavior(tool, call, state, None, None).await
+    execute_single_tool_with_run_policy_and_behavior(tool, call, state, None, None).await
 }
 
-/// Execute a single tool call with optional runtime options.
-pub async fn execute_single_tool_with_runtime_options(
+/// Execute a single tool call with optional run policy.
+pub async fn execute_single_tool_with_run_policy(
     tool: Option<&dyn Tool>,
     call: &ToolCall,
     state: &Value,
-    runtime_options: Option<&RuntimeOptions>,
+    run_policy: Option<&RunPolicy>,
 ) -> ToolExecution {
-    execute_single_tool_with_runtime_options_and_behavior(tool, call, state, runtime_options, None)
-        .await
+    execute_single_tool_with_run_policy_and_behavior(tool, call, state, run_policy, None).await
 }
 
-/// Execute a single tool call with optional runtime options and behavior router.
-pub async fn execute_single_tool_with_runtime_options_and_behavior(
+/// Execute a single tool call with optional run policy and behavior router.
+pub async fn execute_single_tool_with_run_policy_and_behavior(
     tool: Option<&dyn Tool>,
     call: &ToolCall,
     state: &Value,
-    runtime_options: Option<&RuntimeOptions>,
+    run_policy: Option<&RunPolicy>,
     _behavior: Option<&dyn AgentBehavior>,
 ) -> ToolExecution {
     let Some(tool) = tool else {
@@ -82,15 +81,15 @@ pub async fn execute_single_tool_with_runtime_options_and_behavior(
     // Create context for this tool call
     let doc = DocCell::new(state.clone());
     let ops = Mutex::new(Vec::new());
-    let default_runtime_options = RuntimeOptions::default();
-    let runtime_options = runtime_options.unwrap_or(&default_runtime_options);
+    let default_run_policy = RunPolicy::default();
+    let run_policy = run_policy.unwrap_or(&default_run_policy);
     let pending_messages = Mutex::new(Vec::new());
     let ctx = ToolCallContext::new(
         &doc,
         &ops,
         &call.id,
         format!("tool:{}", call.name),
-        runtime_options,
+        run_policy,
         &pending_messages,
         tirea_contract::runtime::activity::NoOpActivityManager::arc(),
     );
@@ -383,11 +382,10 @@ mod tests {
         let tool = DirectWriteEffectTool;
         let call = ToolCall::new("call_1", "direct_write_effect", json!({}));
         let state = json!({});
-        let scope = RuntimeOptions::default();
+        let scope = RunPolicy::default();
 
         let exec =
-            execute_single_tool_with_runtime_options(Some(&tool), &call, &state, Some(&scope))
-                .await;
+            execute_single_tool_with_run_policy(Some(&tool), &call, &state, Some(&scope)).await;
         assert!(exec.result.is_error());
         assert_eq!(
             exec.result.data["error"]["code"],
@@ -463,17 +461,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_single_tool_with_runtime_options_reads_typed_runtime_options() {
-        /// Tool that reads typed runtime options and returns them.
-        struct RuntimeOptionsReaderTool;
+    async fn test_execute_single_tool_with_default_run_identity_has_no_parent_tool_call() {
+        /// Tool that reads the default run identity and returns parent lineage.
+        struct RunIdentityReaderTool;
 
         #[async_trait]
-        impl Tool for RuntimeOptionsReaderTool {
+        impl Tool for RunIdentityReaderTool {
             fn descriptor(&self) -> ToolDescriptor {
                 ToolDescriptor::new(
-                    "runtime_options_reader",
-                    "RuntimeOptionsReader",
-                    "Reads runtime options",
+                    "run_identity_reader",
+                    "RunIdentityReader",
+                    "Reads run identity",
                 )
             }
 
@@ -483,48 +481,37 @@ mod tests {
                 ctx: &ToolCallContext<'_>,
             ) -> Result<ToolResult, ToolError> {
                 let parent_tool_call_id = ctx
-                    .runtime_options()
-                    .parent_tool_call_id()
+                    .run_identity()
+                    .parent_tool_call_id_opt()
                     .unwrap_or("none");
                 Ok(ToolResult::success(
-                    "runtime_options_reader",
+                    "run_identity_reader",
                     json!({"parent_tool_call_id": parent_tool_call_id}),
                 ))
             }
         }
 
-        let mut runtime_options = RuntimeOptions::new();
-        runtime_options
-            .set_parent_tool_call_id("call-parent")
-            .expect("set parent tool call id");
-
-        let tool = RuntimeOptionsReaderTool;
-        let call = ToolCall::new("call_1", "runtime_options_reader", json!({}));
+        let tool = RunIdentityReaderTool;
+        let call = ToolCall::new("call_1", "run_identity_reader", json!({}));
         let state = json!({});
 
-        let exec = execute_single_tool_with_runtime_options(
-            Some(&tool),
-            &call,
-            &state,
-            Some(&runtime_options),
-        )
-        .await;
+        let exec = execute_single_tool_with_run_policy(Some(&tool), &call, &state, None).await;
 
         assert!(exec.result.is_success());
-        assert_eq!(exec.result.data["parent_tool_call_id"], "call-parent");
+        assert_eq!(exec.result.data["parent_tool_call_id"], "none");
     }
 
     #[tokio::test]
-    async fn test_execute_single_tool_with_runtime_options_none() {
-        /// Tool that checks typed runtime-option defaults when none are supplied.
-        struct RuntimeOptionsCheckerTool;
+    async fn test_execute_single_tool_with_run_policy_none() {
+        /// Tool that checks typed run-policy defaults when none are supplied.
+        struct RunPolicyCheckerTool;
 
         #[async_trait]
-        impl Tool for RuntimeOptionsCheckerTool {
+        impl Tool for RunPolicyCheckerTool {
             fn descriptor(&self) -> ToolDescriptor {
                 ToolDescriptor::new(
-                    "runtime_options_checker",
-                    "RuntimeOptionsChecker",
+                    "run_policy_checker",
+                    "RunPolicyChecker",
                     "Checks runtime option presence",
                 )
             }
@@ -535,40 +522,36 @@ mod tests {
                 ctx: &ToolCallContext<'_>,
             ) -> Result<ToolResult, ToolError> {
                 Ok(ToolResult::success(
-                    "runtime_options_checker",
+                    "run_policy_checker",
                     json!({
-                        "has_runtime_options": true,
-                        "has_parent_tool_call_id": ctx.runtime_options().parent_tool_call_id().is_some()
+                        "has_run_policy": true,
+                        "has_parent_tool_call_id": ctx.run_identity().parent_tool_call_id_opt().is_some()
                     }),
                 ))
             }
         }
 
-        let tool = RuntimeOptionsCheckerTool;
-        let call = ToolCall::new("call_1", "runtime_options_checker", json!({}));
+        let tool = RunPolicyCheckerTool;
+        let call = ToolCall::new("call_1", "run_policy_checker", json!({}));
         let state = json!({});
 
-        // Without explicit runtime options, ToolCallContext still provides defaults.
-        let exec = execute_single_tool_with_runtime_options(Some(&tool), &call, &state, None).await;
-        assert_eq!(exec.result.data["has_runtime_options"], true);
+        // Without explicit run policy, ToolCallContext still provides defaults.
+        let exec = execute_single_tool_with_run_policy(Some(&tool), &call, &state, None).await;
+        assert_eq!(exec.result.data["has_run_policy"], true);
         assert_eq!(exec.result.data["has_parent_tool_call_id"], false);
 
-        // With explicit empty runtime options.
-        let runtime_options = RuntimeOptions::new();
-        let exec = execute_single_tool_with_runtime_options(
-            Some(&tool),
-            &call,
-            &state,
-            Some(&runtime_options),
-        )
-        .await;
-        assert_eq!(exec.result.data["has_runtime_options"], true);
+        // With explicit empty run policy.
+        let run_policy = RunPolicy::new();
+        let exec =
+            execute_single_tool_with_run_policy(Some(&tool), &call, &state, Some(&run_policy))
+                .await;
+        assert_eq!(exec.result.data["has_run_policy"], true);
         assert_eq!(exec.result.data["has_parent_tool_call_id"], false);
     }
 
     #[tokio::test]
-    async fn test_execute_with_runtime_option_policy() {
-        /// Tool that reads typed policy values from runtime options.
+    async fn test_execute_with_run_policy() {
+        /// Tool that reads typed policy values from the run policy.
         struct SensitiveReaderTool;
 
         #[async_trait]
@@ -583,8 +566,7 @@ mod tests {
                 ctx: &ToolCallContext<'_>,
             ) -> Result<ToolResult, ToolError> {
                 let allowed_tools = ctx
-                    .runtime_options()
-                    .policy()
+                    .run_policy()
                     .allowed_tools()
                     .map(|items| items.to_vec())
                     .unwrap_or_default();
@@ -595,22 +577,17 @@ mod tests {
             }
         }
 
-        let mut runtime_options = RuntimeOptions::new();
-        runtime_options
-            .policy_mut()
+        let mut run_policy = RunPolicy::new();
+        run_policy
             .set_allowed_tools_if_absent(Some(&["sensitive".to_string(), "echo".to_string()]));
 
         let tool = SensitiveReaderTool;
         let call = ToolCall::new("call_1", "sensitive", json!({}));
         let state = json!({});
 
-        let exec = execute_single_tool_with_runtime_options(
-            Some(&tool),
-            &call,
-            &state,
-            Some(&runtime_options),
-        )
-        .await;
+        let exec =
+            execute_single_tool_with_run_policy(Some(&tool), &call, &state, Some(&run_policy))
+                .await;
 
         assert!(exec.result.is_success());
         assert_eq!(
