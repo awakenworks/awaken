@@ -44,18 +44,21 @@ impl ContextWindowPlugin {
                 max_output_tokens: 16_384,
                 min_recent_messages: 10,
                 enable_prompt_cache: true,
+                autocompact_threshold: None,
             },
             m if m.contains("gpt-4o") => ContextWindowPolicy {
                 max_context_tokens: 128_000,
                 max_output_tokens: 16_384,
                 min_recent_messages: 10,
                 enable_prompt_cache: false,
+                autocompact_threshold: None,
             },
             m if m.contains("gpt-4") => ContextWindowPolicy {
                 max_context_tokens: 128_000,
                 max_output_tokens: 4_096,
                 min_recent_messages: 10,
                 enable_prompt_cache: false,
+                autocompact_threshold: None,
             },
             _ => ContextWindowPolicy::default(),
         };
@@ -156,6 +159,7 @@ mod tests {
             max_output_tokens: 8_192,
             min_recent_messages: 5,
             enable_prompt_cache: false,
+            autocompact_threshold: None,
         });
 
         use tirea_contract::runtime::AgentBehavior;
@@ -193,6 +197,7 @@ mod tests {
                 max_output_tokens: 50,
                 min_recent_messages: 1,
                 enable_prompt_cache: false,
+                autocompact_threshold: None,
             },
         };
         let transform_with_tools = ContextWindowTransform {
@@ -242,6 +247,7 @@ mod tests {
                 max_output_tokens: 10,
                 min_recent_messages: 1,
                 enable_prompt_cache: true,
+                autocompact_threshold: None,
             },
         };
 

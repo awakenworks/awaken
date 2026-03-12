@@ -18,6 +18,10 @@ pub struct ContextWindowPolicy {
     pub min_recent_messages: usize,
     /// Whether to enable prompt caching (Anthropic `cache_control: ephemeral`).
     pub enable_prompt_cache: bool,
+    /// Token count threshold that triggers auto-compaction. `None` disables.
+    /// Used by ContextManagerPlugin to decide when to compact history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autocompact_threshold: Option<usize>,
 }
 
 impl Default for ContextWindowPolicy {
@@ -27,6 +31,7 @@ impl Default for ContextWindowPolicy {
             max_output_tokens: 16_384,
             min_recent_messages: 10,
             enable_prompt_cache: true,
+            autocompact_threshold: None,
         }
     }
 }
