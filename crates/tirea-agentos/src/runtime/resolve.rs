@@ -8,6 +8,8 @@ use super::background_tasks::{
 };
 #[cfg(feature = "skills")]
 pub(crate) use super::plugin::skills_wiring::SkillsSystemWiring;
+use super::plugin::context_manager::{ContextManagerPlugin, CONTEXT_MANAGER_PLUGIN_ID};
+use super::plugin::context_window::{ContextWindowPlugin, CONTEXT_WINDOW_PLUGIN_ID};
 use super::plugin::stop_policy::{StopPolicyPlugin, STOP_POLICY_PLUGIN_ID};
 use super::policy::{filter_tools_in_place, set_runtime_policy_from_definition_if_absent};
 use super::{behavior::CompositeBehavior, AgentOs, AgentOsResolveError, StopPolicy};
@@ -28,6 +30,7 @@ use crate::runtime::loop_runner::{
 use genai::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tirea_contract::runtime::inference::ContextWindowPolicy;
 use tirea_contract::runtime::state::{StateActionDeserializerRegistry, StateScopeRegistry};
 use tirea_state::LatticeRegistry;
 
@@ -82,6 +85,8 @@ impl AgentOs {
             AGENT_TOOLS_PLUGIN_ID,
             AGENT_RECOVERY_PLUGIN_ID,
             BACKGROUND_TASKS_PLUGIN_ID,
+            CONTEXT_MANAGER_PLUGIN_ID,
+            CONTEXT_WINDOW_PLUGIN_ID,
             STOP_POLICY_PLUGIN_ID,
         ];
         for wiring in system_wirings {
@@ -300,6 +305,11 @@ impl AgentOs {
             .with_global(system_plugins)
             .with_agent_default(resolved_plugins)
             .into_plugins()?;
+
+        // Context management plugins (context manager before context window so
+        // boundary-based compression runs before budget truncation).
+        all_plugins.push(Arc::new(ContextManagerPlugin::new()));
+        all_plugins.push(Arc::new(ContextWindowPlugin::new(ContextWindowPolicy::default())));
 
         // Resolve stop conditions from stop_condition_ids
         let stop_conditions =

@@ -574,12 +574,14 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
     assert!(resolved.tools.contains_key("task_cancel"));
     assert!(resolved.tools.contains_key("task_output"));
     let behavior_ids = resolved.agent.behavior.behavior_ids();
-    assert_eq!(behavior_ids.len(), 5);
+    assert_eq!(behavior_ids.len(), 7);
     assert_eq!(behavior_ids[0], "skills_discovery");
     assert_eq!(behavior_ids[1], "agent_tools");
     assert_eq!(behavior_ids[2], "agent_recovery");
     assert_eq!(behavior_ids[3], "background_tasks");
-    assert_eq!(behavior_ids[4], "stop_policy");
+    assert_eq!(behavior_ids[4], "context_manager");
+    assert_eq!(behavior_ids[5], "context_window");
+    assert_eq!(behavior_ids[6], "stop_policy");
 }
 
 #[test]
@@ -4116,7 +4118,9 @@ fn reserved_behavior_ids_without_wirings() {
     assert!(ids.contains(&"agent_recovery"));
     assert!(ids.contains(&"background_tasks"));
     assert!(ids.contains(&"stop_policy"));
-    assert_eq!(ids.len(), 4, "only internal reserved ids: {ids:?}");
+    assert!(ids.contains(&"context_manager"));
+    assert!(ids.contains(&"context_window"));
+    assert_eq!(ids.len(), 6, "only internal reserved ids: {ids:?}");
 }
 
 #[test]
@@ -4133,5 +4137,7 @@ fn reserved_behavior_ids_aggregates_from_wirings() {
     assert!(ids.contains(&"ext1_reserved_a"));
     assert!(ids.contains(&"ext1_reserved_b"));
     assert!(ids.contains(&"ext2_reserved"));
-    assert_eq!(ids.len(), 7, "should aggregate all reserved ids: {ids:?}");
+    assert!(ids.contains(&"context_manager"));
+    assert!(ids.contains(&"context_window"));
+    assert_eq!(ids.len(), 9, "should aggregate all reserved ids: {ids:?}");
 }
