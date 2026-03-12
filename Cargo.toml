@@ -47,7 +47,7 @@ tirea-examples = { version = "0.3.0", path = "examples" }
 phoenix-test-helpers = { version = "0.3.0", path = "e2e/phoenix/test-helpers" }
 
 # LLM client
-genai = "0.6.0-beta.4"
+genai = "0.6.0-beta.5"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -77,6 +77,3 @@ missing_docs = "warn"
 
 [workspace.lints.clippy]
 all = "warn"
-
-[patch.crates-io]
-genai = { git = "https://github.com/tirea-ai/rust-genai.git", branch = "tirea/gemini-fixes" }
