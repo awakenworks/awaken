@@ -3,6 +3,21 @@ use crate::runtime::tool_call::ToolDescriptor;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+/// Auto-compaction strategy used by [`ContextManagerPlugin`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextCompactionMode {
+    /// Replace an older prefix with a summary while preserving a recent raw suffix.
+    #[default]
+    KeepRecentRawSuffix,
+    /// Replace all messages through the latest safe frontier with a summary.
+    CompactToSafeFrontier,
+}
+
+const fn default_compaction_raw_suffix_messages() -> usize {
+    2
+}
+
 /// Context window management policy.
 ///
 /// Pure data struct used by [`ContextWindowPlugin`] to configure the
@@ -22,6 +37,13 @@ pub struct ContextWindowPolicy {
     /// Used by ContextManagerPlugin to decide when to compact history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autocompact_threshold: Option<usize>,
+    /// Auto-compaction strategy to use when `autocompact_threshold` is reached.
+    #[serde(default)]
+    pub compaction_mode: ContextCompactionMode,
+    /// Number of recent raw messages to preserve in
+    /// [`ContextCompactionMode::KeepRecentRawSuffix`] mode.
+    #[serde(default = "default_compaction_raw_suffix_messages")]
+    pub compaction_raw_suffix_messages: usize,
 }
 
 impl Default for ContextWindowPolicy {
@@ -32,6 +54,8 @@ impl Default for ContextWindowPolicy {
             min_recent_messages: 10,
             enable_prompt_cache: true,
             autocompact_threshold: None,
+            compaction_mode: ContextCompactionMode::KeepRecentRawSuffix,
+            compaction_raw_suffix_messages: default_compaction_raw_suffix_messages(),
         }
     }
 }

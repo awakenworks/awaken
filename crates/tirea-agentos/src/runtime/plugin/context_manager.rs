@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tirea_contract::runtime::behavior::ReadOnlyContext;
 use tirea_contract::runtime::inference::{
-    ContextWindowPolicy, InferenceRequestTransform, InferenceTransformOutput,
+    ContextCompactionMode, ContextWindowPolicy, InferenceRequestTransform, InferenceTransformOutput,
 };
 use tirea_contract::runtime::phase::{ActionSet, AfterToolExecuteAction, BeforeInferenceAction};
 use tirea_contract::runtime::state::{AnyStateAction, StateScope};
@@ -37,7 +37,6 @@ const SUMMARY_MESSAGE_OPEN: &str = "<conversation-summary>";
 const SUMMARY_MESSAGE_CLOSE: &str = "</conversation-summary>";
 const SUMMARY_RESPONSE_MAX_TOKENS: u32 = 1024;
 const MIN_COMPACTION_GAIN_TOKENS: usize = 1024;
-const MIN_RAW_SUFFIX_MESSAGES: usize = 2;
 const DEFAULT_ARTIFACT_COMPACT_THRESHOLD_TOKENS: usize = 2048;
 const ARTIFACT_PREVIEW_MAX_CHARS: usize = 1600;
 const ARTIFACT_PREVIEW_MAX_LINES: usize = 24;
@@ -521,12 +520,16 @@ fn unsummarized_start_index(
         .map(|idx| idx + 1)
 }
 
-fn protected_tail_start(messages: &[Arc<Message>], start_index: usize) -> usize {
+fn protected_tail_start(
+    messages: &[Arc<Message>],
+    start_index: usize,
+    raw_suffix_messages: usize,
+) -> usize {
     if start_index >= messages.len() {
         return messages.len();
     }
 
-    let min_tail_start = messages.len().saturating_sub(MIN_RAW_SUFFIX_MESSAGES);
+    let min_tail_start = messages.len().saturating_sub(raw_suffix_messages);
     let last_user_index = messages
         .iter()
         .enumerate()
@@ -539,15 +542,31 @@ fn protected_tail_start(messages: &[Arc<Message>], start_index: usize) -> usize 
     candidate.max(start_index)
 }
 
+fn compaction_search_end(
+    messages: &[Arc<Message>],
+    start_index: usize,
+    mode: ContextCompactionMode,
+    raw_suffix_messages: usize,
+) -> usize {
+    match mode {
+        ContextCompactionMode::KeepRecentRawSuffix => {
+            protected_tail_start(messages, start_index, raw_suffix_messages)
+        }
+        ContextCompactionMode::CompactToSafeFrontier => messages.len(),
+    }
+}
+
 fn find_compaction_plan(
     messages: &[Arc<Message>],
     state: &ContextManagerState,
     tool_states: &HashMap<String, ToolCallState>,
     suspended_calls: &HashMap<String, SuspendedCall>,
+    mode: ContextCompactionMode,
+    raw_suffix_messages: usize,
 ) -> Option<CompactionPlan> {
     let start_index = unsummarized_start_index(messages, state)?;
-    let protected_tail = protected_tail_start(messages, start_index);
-    if protected_tail <= start_index {
+    let search_end = compaction_search_end(messages, start_index, mode, raw_suffix_messages);
+    if search_end <= start_index {
         return None;
     }
 
@@ -558,7 +577,7 @@ fn find_compaction_plan(
         .iter()
         .enumerate()
         .skip(start_index)
-        .take(protected_tail - start_index)
+        .take(search_end - start_index)
     {
         if let Some(calls) = &message.tool_calls {
             for call in calls {
@@ -821,7 +840,14 @@ impl ContextManagerPlugin {
         let snapshot = ctx.snapshot();
         let tool_states = tool_call_states_from_state(&snapshot);
         let suspended_calls = suspended_calls_from_state(&snapshot);
-        let plan = find_compaction_plan(ctx.messages(), state, &tool_states, &suspended_calls)?;
+        let plan = find_compaction_plan(
+            ctx.messages(),
+            state,
+            &tool_states,
+            &suspended_calls,
+            self.policy.compaction_mode,
+            self.policy.compaction_raw_suffix_messages,
+        )?;
         if plan.covered_token_count < MIN_COMPACTION_GAIN_TOKENS {
             return None;
         }
@@ -1157,6 +1183,32 @@ mod tests {
     }
 
     #[test]
+    fn transform_frontier_boundary_can_replace_all_history() {
+        let state = ContextManagerState {
+            boundaries: vec![CompactBoundary {
+                covers_through_message_id: "msg-2".into(),
+                summary: "User asked about weather, assistant replied sunny.".into(),
+                original_token_count: 50,
+                created_at_ms: 1000,
+            }],
+            artifact_refs: vec![],
+        };
+        let transform = ContextAssemblyTransform::new(state);
+
+        let messages = vec![
+            make_msg_with_id(Role::System, "You are helpful.", "sys-1"),
+            make_msg_with_id(Role::User, "What is the weather?", "msg-1"),
+            make_msg_with_id(Role::Assistant, "It is sunny today.", "msg-2"),
+        ];
+
+        let output = transform.transform(messages, &[]);
+        assert_eq!(output.messages.len(), 2);
+        assert_eq!(output.messages[0].content, "You are helpful.");
+        assert!(output.messages[1].content.contains(SUMMARY_MESSAGE_OPEN));
+        assert!(output.messages[1].content.contains("sunny"));
+    }
+
+    #[test]
     fn transform_only_preserves_leading_system_messages() {
         let state = ContextManagerState {
             boundaries: vec![CompactBoundary {
@@ -1287,10 +1339,33 @@ mod tests {
             &ContextManagerState::default(),
             &HashMap::new(),
             &HashMap::new(),
+            ContextCompactionMode::KeepRecentRawSuffix,
+            2,
         )
         .expect("should find boundary before current user");
 
         assert_eq!(plan.boundary_message_id, "msg-1");
+    }
+
+    #[test]
+    fn planner_compacts_through_latest_safe_frontier() {
+        let messages = vec![
+            Arc::new(make_msg_with_id(Role::User, "old", "msg-1")),
+            Arc::new(make_msg_with_id(Role::Assistant, "old reply", "msg-2")),
+            Arc::new(make_msg_with_id(Role::User, "current request", "msg-3")),
+        ];
+
+        let plan = find_compaction_plan(
+            &messages,
+            &ContextManagerState::default(),
+            &HashMap::new(),
+            &HashMap::new(),
+            ContextCompactionMode::CompactToSafeFrontier,
+            2,
+        )
+        .expect("frontier mode should compact through the latest safe message");
+
+        assert_eq!(plan.boundary_message_id, "msg-3");
     }
 
     #[test]
@@ -1313,8 +1388,37 @@ mod tests {
             &ContextManagerState::default(),
             &HashMap::new(),
             &HashMap::new(),
+            ContextCompactionMode::KeepRecentRawSuffix,
+            2,
         )
         .expect("older closed prefix should still be compactable");
+        assert_eq!(plan.boundary_message_id, "msg-1");
+    }
+
+    #[test]
+    fn planner_frontier_mode_stops_before_open_tool_round() {
+        let messages = vec![
+            Arc::new(make_msg_with_id(Role::User, "start", "msg-1")),
+            Arc::new(assistant_with_tool_calls(
+                "msg-2",
+                vec![tirea_contract::thread::ToolCall::new(
+                    "call-1",
+                    "search",
+                    json!({"q": "rust"}),
+                )],
+            )),
+            Arc::new(make_msg_with_id(Role::User, "later user", "msg-3")),
+        ];
+
+        let plan = find_compaction_plan(
+            &messages,
+            &ContextManagerState::default(),
+            &HashMap::new(),
+            &HashMap::new(),
+            ContextCompactionMode::CompactToSafeFrontier,
+            2,
+        )
+        .expect("frontier mode should stop at the latest safe boundary");
         assert_eq!(plan.boundary_message_id, "msg-1");
     }
 
@@ -1381,6 +1485,7 @@ mod tests {
             min_recent_messages: 4,
             enable_prompt_cache: false,
             autocompact_threshold: Some(30),
+            ..ContextWindowPolicy::default()
         })
         .with_summarizer(summarizer.clone());
 
@@ -1414,6 +1519,54 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert!(calls[0].transcript.contains("old request"));
         assert!(!calls[0].transcript.contains("current request"));
+    }
+
+    #[tokio::test]
+    async fn plugin_before_inference_frontier_mode_compacts_current_frontier() {
+        use tirea_contract::runtime::AgentBehavior;
+
+        let summarizer = Arc::new(TestSummarizer::new("frontier summary"));
+        let plugin = ContextManagerPlugin::new(ContextWindowPolicy {
+            max_context_tokens: 4_000,
+            max_output_tokens: 512,
+            min_recent_messages: 4,
+            enable_prompt_cache: false,
+            autocompact_threshold: Some(30),
+            compaction_mode: ContextCompactionMode::CompactToSafeFrontier,
+            ..ContextWindowPolicy::default()
+        })
+        .with_summarizer(summarizer.clone());
+
+        let messages: Vec<Arc<Message>> = vec![
+            Arc::new(make_msg_with_id(
+                Role::User,
+                &"old request with enough content to exceed the threshold ".repeat(120),
+                "msg-1",
+            )),
+            Arc::new(make_msg_with_id(
+                Role::Assistant,
+                &"old reply with enough content to exceed the threshold ".repeat(120),
+                "msg-2",
+            )),
+            Arc::new(make_msg_with_id(Role::User, "current request", "msg-3")),
+        ];
+        let config = RunPolicy::new();
+        let doc = DocCell::new(json!({}));
+        let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &messages, &config, &doc);
+
+        let actions = plugin.before_inference(&ctx).await.into_vec();
+        assert_eq!(actions.len(), 3);
+        assert!(matches!(actions[0], BeforeInferenceAction::State(_)));
+        assert!(matches!(actions[1], BeforeInferenceAction::State(_)));
+        assert!(matches!(
+            actions[2],
+            BeforeInferenceAction::AddRequestTransform(_)
+        ));
+
+        let calls = summarizer.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].transcript.contains("old request"));
+        assert!(calls[0].transcript.contains("current request"));
     }
 
     #[tokio::test]

@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tirea_contract::runtime::behavior::ReadOnlyContext;
 use tirea_contract::runtime::inference::{
-    ContextWindowPolicy, InferenceRequestTransform, InferenceTransformOutput,
+    ContextCompactionMode, ContextWindowPolicy, InferenceRequestTransform, InferenceTransformOutput,
 };
 use tirea_contract::runtime::phase::{ActionSet, BeforeInferenceAction};
 use tirea_contract::runtime::tool_call::ToolDescriptor;
@@ -54,23 +54,26 @@ pub(crate) fn policy_for_model(model: &str) -> ContextWindowPolicy {
         m if m.contains("claude") => ContextWindowPolicy {
             max_context_tokens: 200_000,
             max_output_tokens: 16_384,
-            min_recent_messages: 10,
             enable_prompt_cache: true,
             autocompact_threshold: Some(auto_compact_threshold(200_000, 16_384)),
+            compaction_mode: ContextCompactionMode::KeepRecentRawSuffix,
+            ..ContextWindowPolicy::default()
         },
         m if m.contains("gpt-4o") => ContextWindowPolicy {
             max_context_tokens: 128_000,
             max_output_tokens: 16_384,
-            min_recent_messages: 10,
             enable_prompt_cache: false,
             autocompact_threshold: Some(auto_compact_threshold(128_000, 16_384)),
+            compaction_mode: ContextCompactionMode::KeepRecentRawSuffix,
+            ..ContextWindowPolicy::default()
         },
         m if m.contains("gpt-4") => ContextWindowPolicy {
             max_context_tokens: 128_000,
             max_output_tokens: 4_096,
-            min_recent_messages: 10,
             enable_prompt_cache: false,
             autocompact_threshold: Some(auto_compact_threshold(128_000, 4_096)),
+            compaction_mode: ContextCompactionMode::KeepRecentRawSuffix,
+            ..ContextWindowPolicy::default()
         },
         _ => ContextWindowPolicy::default(),
     }
@@ -170,6 +173,7 @@ mod tests {
             min_recent_messages: 5,
             enable_prompt_cache: false,
             autocompact_threshold: None,
+            ..ContextWindowPolicy::default()
         });
 
         use tirea_contract::runtime::AgentBehavior;
@@ -208,6 +212,7 @@ mod tests {
                 min_recent_messages: 1,
                 enable_prompt_cache: false,
                 autocompact_threshold: None,
+                ..ContextWindowPolicy::default()
             },
         };
         let transform_with_tools = ContextWindowTransform {
@@ -258,6 +263,7 @@ mod tests {
                 min_recent_messages: 1,
                 enable_prompt_cache: true,
                 autocompact_threshold: None,
+                ..ContextWindowPolicy::default()
             },
         };
 
