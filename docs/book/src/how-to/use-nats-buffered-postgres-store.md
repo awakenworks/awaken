@@ -67,7 +67,7 @@ let read_store: Arc<dyn ThreadReader> = postgres.clone();
 
 ## Common Errors
 
-- Forgetting `ensure_table()` before traffic.
+- Skipping `ensure_table()` when you expect startup-time validation of database permissions or schema creation.
 - Running without JetStream enabled on NATS server.
 - Expecting query endpoints to include not-yet-flushed in-run deltas.
 

@@ -51,6 +51,13 @@ async fn make_store(database_url: &str) -> PostgresStore {
     store
 }
 
+async fn make_store_without_ensure(database_url: &str) -> PostgresStore {
+    let pool = sqlx::PgPool::connect(database_url)
+        .await
+        .expect("failed to connect to Postgres");
+    PostgresStore::new(pool)
+}
+
 // ========================================================================
 // Basic round-trip
 // ========================================================================
@@ -69,6 +76,67 @@ async fn test_save_load_roundtrip() {
     assert_eq!(loaded.id, "t1");
     assert_eq!(loaded.message_count(), 1);
     assert_eq!(loaded.messages[0].content, "hello");
+}
+
+#[tokio::test]
+async fn test_auto_initializes_schema_on_first_thread_access() {
+    let Some((_container, url)) = start_postgres().await else {
+        return;
+    };
+    let store = make_store_without_ensure(&url).await;
+
+    let missing = store.load_thread("missing-thread").await.unwrap();
+    assert!(missing.is_none(), "read access should bootstrap schema");
+
+    let thread = Thread::new("auto-init-thread").with_message(Message::user("hello"));
+    store
+        .save(&thread)
+        .await
+        .expect("save should auto-create tables");
+
+    let loaded = store
+        .load_thread("auto-init-thread")
+        .await
+        .expect("load persisted thread")
+        .expect("thread should exist");
+    assert_eq!(loaded.id, "auto-init-thread");
+    assert_eq!(loaded.message_count(), 1);
+}
+
+#[tokio::test]
+async fn test_auto_initializes_schema_on_first_run_access() {
+    let Some((_container, url)) = start_postgres().await else {
+        return;
+    };
+    let store = make_store_without_ensure(&url).await;
+
+    let mut run = RunRecord::new(
+        "run-auto-init",
+        "thread-auto-init",
+        "",
+        RunOrigin::AgUi,
+        RunStatus::Running,
+        100,
+    );
+    run.updated_at = 120;
+
+    store
+        .upsert_run(&run)
+        .await
+        .expect("run writes should auto-create tables");
+
+    let loaded = tirea_contract::storage::RunReader::load_run(&store, "run-auto-init")
+        .await
+        .expect("load run")
+        .expect("run should exist");
+    assert_eq!(loaded.thread_id, "thread-auto-init");
+
+    let current = store
+        .load_current_run("thread-auto-init")
+        .await
+        .expect("load current run")
+        .expect("current run should exist");
+    assert_eq!(current.run_id, "run-auto-init");
 }
 
 #[tokio::test]

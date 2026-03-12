@@ -14,6 +14,7 @@ pub struct PostgresStore {
     table: String,
     messages_table: String,
     runs_table: String,
+    schema_ready: tokio::sync::Mutex<bool>,
 }
 
 #[cfg(feature = "postgres")]
@@ -28,6 +29,7 @@ impl PostgresStore {
             table: "agent_sessions".to_string(),
             messages_table: "agent_messages".to_string(),
             runs_table: "agent_runs".to_string(),
+            schema_ready: tokio::sync::Mutex::new(false),
         }
     }
 
@@ -43,12 +45,12 @@ impl PostgresStore {
             table,
             messages_table,
             runs_table,
+            schema_ready: tokio::sync::Mutex::new(false),
         }
     }
 
-    /// Ensure the storage tables exist (idempotent).
-    pub async fn ensure_table(&self) -> Result<(), ThreadStoreError> {
-        let statements = vec![
+    fn schema_statements(&self) -> Vec<String> {
+        vec![
             format!(
                 "CREATE TABLE IF NOT EXISTS {} (id TEXT PRIMARY KEY, data JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())",
                 self.table
@@ -119,14 +121,38 @@ impl PostgresStore {
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_{}_thread_active_unique ON {} (thread_id) WHERE status != 'done'",
                 self.runs_table, self.runs_table
             ),
-        ];
+        ]
+    }
 
-        for sql in statements {
-            sqlx::query(&sql)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| ThreadStoreError::Io(std::io::Error::other(e.to_string())))?;
+    async fn ensure_schema_ready(&self) -> Result<(), sqlx::Error> {
+        let mut schema_ready = self.schema_ready.lock().await;
+        if *schema_ready {
+            return Ok(());
         }
+
+        // Only flip the flag after all statements succeed so transient failures can retry.
+        for sql in self.schema_statements() {
+            sqlx::query(&sql).execute(&self.pool).await?;
+        }
+
+        *schema_ready = true;
+        Ok(())
+    }
+
+    async fn ensure_thread_schema_ready(&self) -> Result<(), ThreadStoreError> {
+        self.ensure_schema_ready().await.map_err(Self::sql_err)
+    }
+
+    async fn ensure_run_schema_ready(&self) -> Result<(), RunStoreError> {
+        self.ensure_schema_ready().await.map_err(Self::run_sql_err)
+    }
+
+    /// Ensure the storage tables exist (idempotent).
+    ///
+    /// This is optional for callers; the store also initializes its schema
+    /// automatically on first access.
+    pub async fn ensure_table(&self) -> Result<(), ThreadStoreError> {
+        self.ensure_thread_schema_ready().await?;
         Ok(())
     }
 
@@ -205,6 +231,8 @@ impl PostgresStore {
 #[async_trait]
 impl ThreadWriter for PostgresStore {
     async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError> {
+        self.ensure_thread_schema_ready().await?;
+
         let mut v = serde_json::to_value(thread)
             .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
         if let Some(obj) = v.as_object_mut() {
@@ -265,6 +293,8 @@ impl ThreadWriter for PostgresStore {
         delta: &ThreadChangeSet,
         precondition: VersionPrecondition,
     ) -> Result<Committed, ThreadStoreError> {
+        self.ensure_thread_schema_ready().await?;
+
         let mut tx = self.pool.begin().await.map_err(Self::sql_err)?;
 
         // Lock the row for atomic read-modify-write.
@@ -369,6 +399,8 @@ impl ThreadWriter for PostgresStore {
     }
 
     async fn delete(&self, thread_id: &str) -> Result<(), ThreadStoreError> {
+        self.ensure_thread_schema_ready().await?;
+
         // CASCADE will delete messages automatically.
         let sql = format!("DELETE FROM {} WHERE id = $1", self.table);
         sqlx::query(&sql)
@@ -380,6 +412,8 @@ impl ThreadWriter for PostgresStore {
     }
 
     async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
+        self.ensure_thread_schema_ready().await?;
+
         // Serialize session skeleton (without messages).
         let mut v = serde_json::to_value(thread)
             .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
@@ -482,6 +516,8 @@ impl ThreadWriter for PostgresStore {
 #[async_trait]
 impl ThreadReader for PostgresStore {
     async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
+        self.ensure_thread_schema_ready().await?;
+
         let sql = format!("SELECT data FROM {} WHERE id = $1", self.table);
         let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
             .bind(thread_id)
@@ -521,6 +557,8 @@ impl ThreadReader for PostgresStore {
         thread_id: &str,
         query: &MessageQuery,
     ) -> Result<MessagePage, ThreadStoreError> {
+        self.ensure_thread_schema_ready().await?;
+
         // Check session exists.
         let exists_sql = format!("SELECT 1 FROM {} WHERE id = $1", self.table);
         let exists: Option<(i32,)> = sqlx::query_as(&exists_sql)
@@ -641,6 +679,8 @@ impl ThreadReader for PostgresStore {
     }
 
     async fn message_count(&self, thread_id: &str) -> Result<usize, ThreadStoreError> {
+        self.ensure_thread_schema_ready().await?;
+
         // Check session exists.
         let exists_sql = format!("SELECT 1 FROM {} WHERE id = $1", self.table);
         let exists: Option<(i32,)> = sqlx::query_as(&exists_sql)
@@ -668,6 +708,8 @@ impl ThreadReader for PostgresStore {
         &self,
         query: &ThreadListQuery,
     ) -> Result<ThreadListPage, ThreadStoreError> {
+        self.ensure_thread_schema_ready().await?;
+
         let limit = query.limit.clamp(1, 200);
         let fetch_limit = (limit + 1) as i64;
         let offset = query.offset as i64;
@@ -808,6 +850,8 @@ impl PostgresStore {
 #[async_trait]
 impl RunReader for PostgresStore {
     async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, RunStoreError> {
+        self.ensure_run_schema_ready().await?;
+
         let sql = format!(
             "SELECT run_id, thread_id, agent_id, parent_run_id, parent_thread_id, origin, status, termination_code, termination_detail, created_at, updated_at, metadata FROM {} WHERE run_id = $1",
             self.runs_table
@@ -821,6 +865,8 @@ impl RunReader for PostgresStore {
     }
 
     async fn list_runs(&self, query: &RunQuery) -> Result<RunPage, RunStoreError> {
+        self.ensure_run_schema_ready().await?;
+
         let limit = query.limit.clamp(1, 200);
         let fetch_limit = (limit + 1) as i64;
         let offset = i64::try_from(query.offset)
@@ -977,6 +1023,8 @@ impl RunReader for PostgresStore {
     }
 
     async fn resolve_thread_id(&self, run_id: &str) -> Result<Option<String>, RunStoreError> {
+        self.ensure_run_schema_ready().await?;
+
         let sql = format!(
             "SELECT thread_id FROM {} WHERE run_id = $1",
             self.runs_table
@@ -989,6 +1037,8 @@ impl RunReader for PostgresStore {
     }
 
     async fn load_current_run(&self, thread_id: &str) -> Result<Option<RunRecord>, RunStoreError> {
+        self.ensure_run_schema_ready().await?;
+
         let sql = format!(
             "SELECT run_id, thread_id, agent_id, parent_run_id, parent_thread_id, origin, status, \
              termination_code, termination_detail, created_at, updated_at, metadata \
@@ -1010,6 +1060,8 @@ impl RunReader for PostgresStore {
 #[async_trait]
 impl RunWriter for PostgresStore {
     async fn upsert_run(&self, record: &RunRecord) -> Result<(), RunStoreError> {
+        self.ensure_run_schema_ready().await?;
+
         let created_at = Self::to_db_timestamp(record.created_at, "created_at")?;
         let updated_at = Self::to_db_timestamp(record.updated_at, "updated_at")?;
         let sql = format!(
@@ -1036,6 +1088,8 @@ impl RunWriter for PostgresStore {
     }
 
     async fn delete_run(&self, run_id: &str) -> Result<(), RunStoreError> {
+        self.ensure_run_schema_ready().await?;
+
         let sql = format!("DELETE FROM {} WHERE run_id = $1", self.runs_table);
         sqlx::query(&sql)
             .bind(run_id)

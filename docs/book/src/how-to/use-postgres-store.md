@@ -6,7 +6,7 @@ Use `PostgresStore` when you need shared durable storage across instances.
 
 - `tirea-store-adapters` is enabled with feature `postgres`.
 - A reachable PostgreSQL DSN is available.
-- Tables are created via `ensure_table()` before serving traffic.
+- Tables auto-initialize on first store access; call `ensure_table()` only if you want eager startup validation.
 
 ## Steps
 
@@ -56,7 +56,7 @@ let loaded = store.load_agent_state("thread-1").await?;
 ## Common Errors
 
 - Missing tables:
-  Call `ensure_table()` once during startup.
+  The store bootstraps them on first access; call `ensure_table()` during startup only if you want failures surfaced before traffic.
 - DSN/auth failures:
   Validate `DATABASE_URL` and database permissions.
 - Feature not enabled:
