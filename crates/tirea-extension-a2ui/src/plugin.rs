@@ -158,12 +158,27 @@ mod tests {
         match action {
             BeforeInferenceAction::AddSystemContext(text) => {
                 assert!(text.contains("render_a2ui"), "should mention tool name");
-                assert!(text.contains("createSurface"), "should mention createSurface");
-                assert!(text.contains("updateComponents"), "should mention updateComponents");
-                assert!(text.contains("updateDataModel"), "should mention updateDataModel");
-                assert!(text.contains("deleteSurface"), "should mention deleteSurface");
+                assert!(
+                    text.contains("createSurface"),
+                    "should mention createSurface"
+                );
+                assert!(
+                    text.contains("updateComponents"),
+                    "should mention updateComponents"
+                );
+                assert!(
+                    text.contains("updateDataModel"),
+                    "should mention updateDataModel"
+                );
+                assert!(
+                    text.contains("deleteSurface"),
+                    "should mention deleteSurface"
+                );
                 assert!(text.contains(TEST_CATALOG), "should contain catalog ID");
-                assert!(!text.contains("{{CATALOG_ID}}"), "template should be resolved");
+                assert!(
+                    !text.contains("{{CATALOG_ID}}"),
+                    "template should be resolved"
+                );
             }
             _ => panic!("expected AddSystemContext"),
         }

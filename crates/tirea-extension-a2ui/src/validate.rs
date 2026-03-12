@@ -57,12 +57,19 @@ fn validate_single(index: usize, msg: &Value) -> Option<A2uiValidationError> {
     // version check
     match obj.get("version").and_then(Value::as_str) {
         Some(v) if v == SUPPORTED_VERSION => {}
-        Some(v) => return err(&format!("unsupported version \"{v}\", expected \"{SUPPORTED_VERSION}\"")),
+        Some(v) => {
+            return err(&format!(
+                "unsupported version \"{v}\", expected \"{SUPPORTED_VERSION}\""
+            ))
+        }
         None => return err("missing required field \"version\""),
     }
 
     // exactly one message-type key
-    let type_keys: Vec<&&str> = MESSAGE_KEYS.iter().filter(|k| obj.contains_key(**k)).collect();
+    let type_keys: Vec<&&str> = MESSAGE_KEYS
+        .iter()
+        .filter(|k| obj.contains_key(**k))
+        .collect();
     match type_keys.len() {
         0 => {
             return err(&format!(
@@ -88,7 +95,9 @@ fn validate_single(index: usize, msg: &Value) -> Option<A2uiValidationError> {
 
     // surfaceId is required on all message types
     match body.get("surfaceId").and_then(Value::as_str) {
-        Some(s) if s.is_empty() => return err(&format!("\"{type_key}.surfaceId\" must not be empty")),
+        Some(s) if s.is_empty() => {
+            return err(&format!("\"{type_key}.surfaceId\" must not be empty"))
+        }
         Some(_) => {}
         None => return err(&format!("\"{type_key}.surfaceId\" is required")),
     }

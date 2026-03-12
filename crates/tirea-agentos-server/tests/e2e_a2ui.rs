@@ -394,11 +394,11 @@ async fn e2e_a2ui_validation_rejects_invalid_payload() {
     }
 
     let mut resolved = os.resolve("a2ui").unwrap();
-    resolved.agent = resolved.agent.with_llm_executor(
-        Arc::new(InvalidA2uiMockLlm {
+    resolved.agent = resolved
+        .agent
+        .with_llm_executor(Arc::new(InvalidA2uiMockLlm {
             call_count: AtomicUsize::new(0),
-        }) as Arc<dyn LlmExecutor>,
-    );
+        }) as Arc<dyn LlmExecutor>);
 
     let prepared = os
         .prepare_run(
@@ -500,10 +500,9 @@ async fn e2e_a2ui_plugin_injects_system_prompt() {
     });
 
     let mut resolved = os.resolve("a2ui").unwrap();
-    resolved.agent =
-        resolved
-            .agent
-            .with_llm_executor(mock.clone() as Arc<dyn LlmExecutor>);
+    resolved.agent = resolved
+        .agent
+        .with_llm_executor(mock.clone() as Arc<dyn LlmExecutor>);
 
     let prepared = os
         .prepare_run(

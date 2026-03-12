@@ -214,7 +214,9 @@ mod tests {
             messages: contact_form_messages(),
         };
         let fixture = TestFixture::new();
-        let result = TypedTool::execute(&tool, args, &fixture.ctx()).await.unwrap();
+        let result = TypedTool::execute(&tool, args, &fixture.ctx())
+            .await
+            .unwrap();
         assert_eq!(result.tool_name, TOOL_NAME);
         assert_eq!(result.data["rendered"], true);
         assert!(result.data["a2ui"].is_array());

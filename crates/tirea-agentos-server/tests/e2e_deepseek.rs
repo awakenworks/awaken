@@ -1117,8 +1117,10 @@ fn make_a2ui_os(write_store: Arc<dyn ThreadStore>) -> tirea_agentos::orchestrato
         ..Default::default()
     };
 
-    let tools: HashMap<String, Arc<dyn Tool>> =
-        HashMap::from([("render_a2ui".to_string(), Arc::new(A2uiRenderTool::new()) as _)]);
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::from([(
+        "render_a2ui".to_string(),
+        Arc::new(A2uiRenderTool::new()) as _,
+    )]);
 
     AgentOsBuilder::new()
         .with_tools(tools)
@@ -1155,8 +1157,7 @@ async fn e2e_ag_ui_a2ui_tool_call_with_deepseek() {
         "tools": []
     });
 
-    let (status, text) =
-        post_sse_with_retry(app, "/v1/ag-ui/agents/a2ui/runs", payload).await;
+    let (status, text) = post_sse_with_retry(app, "/v1/ag-ui/agents/a2ui/runs", payload).await;
 
     assert_eq!(status, StatusCode::OK);
     assert!(
@@ -1209,8 +1210,7 @@ async fn e2e_ai_sdk_a2ui_tool_call_with_deepseek() {
         Some("r-a2ui-sdk-1"),
     );
 
-    let (status, text) =
-        post_sse_with_retry(app, "/v1/ai-sdk/agents/a2ui/runs", payload).await;
+    let (status, text) = post_sse_with_retry(app, "/v1/ai-sdk/agents/a2ui/runs", payload).await;
 
     assert_eq!(status, StatusCode::OK);
     assert!(text.contains(r#""type":"start""#), "missing start event");
