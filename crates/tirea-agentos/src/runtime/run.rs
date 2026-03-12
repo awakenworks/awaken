@@ -290,6 +290,9 @@ impl AgentOs {
             version = refreshed.version;
         }
 
+        // 1a. Lazy context loading: trim pre-boundary messages.
+        crate::runtime::plugin::context_manager::trim_thread_to_latest_boundary(&mut thread);
+
         // 2. Set resource_id on thread if provided
         if let Some(ref resource_id) = request.resource_id {
             thread.resource_id = Some(resource_id.clone());

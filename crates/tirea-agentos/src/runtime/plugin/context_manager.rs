@@ -22,7 +22,7 @@ use tirea_contract::runtime::tool_call::{
     suspended_calls_from_state, tool_call_states_from_state, SuspendedCall, ToolCallState,
     ToolDescriptor, ToolResult,
 };
-use tirea_contract::thread::{Message, Role};
+use tirea_contract::thread::{Message, Role, Thread};
 use tirea_state::State;
 
 use crate::engine::token_estimator::{
@@ -512,12 +512,15 @@ fn unsummarized_start_index(
         return Some(0);
     };
 
-    messages
-        .iter()
-        .position(|message| {
-            message.id.as_deref() == Some(boundary.covers_through_message_id.as_str())
-        })
-        .map(|idx| idx + 1)
+    Some(
+        messages
+            .iter()
+            .position(|message| {
+                message.id.as_deref() == Some(boundary.covers_through_message_id.as_str())
+            })
+            .map(|idx| idx + 1)
+            .unwrap_or(0),
+    )
 }
 
 fn protected_tail_start(
@@ -751,6 +754,57 @@ fn build_artifact_preview(result: &ToolResult) -> String {
     }
 
     sections.join("\n")
+}
+
+// ---------------------------------------------------------------------------
+// Lazy context loading
+// ---------------------------------------------------------------------------
+
+/// Trim pre-boundary messages from a thread at load time.
+///
+/// Reads [`ContextManagerState`] from the thread's persisted state. If a
+/// compaction boundary exists, replaces all messages up to (and including) the
+/// boundary message with a single summary message. This avoids carrying
+/// thousands of `Arc<Message>` references through `RunContext` that would be
+/// replaced by `ContextAssemblyTransform` at inference time anyway.
+///
+/// Safe to call multiple times (idempotent): the second call finds no boundary
+/// message and returns without changes.
+pub(crate) fn trim_thread_to_latest_boundary(thread: &mut Thread) {
+    let state = match thread.rebuild_state() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "skipping lazy trim: state rebuild failed");
+            return;
+        }
+    };
+
+    let ctx_value = match state.get(<ContextManagerState as State>::PATH) {
+        Some(v) => v,
+        None => return,
+    };
+
+    let cm_state: ContextManagerState = match serde_json::from_value(ctx_value.clone()) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let Some(boundary) = cm_state.latest_boundary() else {
+        return;
+    };
+
+    let Some(idx) = thread.messages.iter().position(|m| {
+        m.id.as_deref() == Some(boundary.covers_through_message_id.as_str())
+    }) else {
+        return;
+    };
+
+    let summary = Message::internal_system(format!(
+        "{SUMMARY_MESSAGE_OPEN}\n{}\n{SUMMARY_MESSAGE_CLOSE}",
+        boundary.summary
+    ));
+    thread.messages.drain(..=idx);
+    thread.messages.insert(0, Arc::new(summary));
 }
 
 // ---------------------------------------------------------------------------
@@ -1916,5 +1970,209 @@ mod tests {
         assert_eq!(output.messages.len(), 3);
         assert!(output.messages[1].content.contains("New summary"));
         assert_eq!(output.messages[2].content, "q3");
+    }
+
+    // -- Lazy trim tests --
+
+    fn thread_with_context_state(
+        messages: Vec<Message>,
+        cm_state: &ContextManagerState,
+    ) -> Thread {
+        let state = json!({
+            <ContextManagerState as State>::PATH: serde_json::to_value(cm_state).unwrap()
+        });
+        Thread::with_initial_state("test-thread", state).with_messages(messages)
+    }
+
+    #[test]
+    fn trim_no_boundary_is_noop() {
+        let messages = vec![
+            Message::user("hello").with_id("msg-1".into()),
+            Message::assistant("hi").with_id("msg-2".into()),
+        ];
+        let mut thread = thread_with_context_state(messages, &ContextManagerState::default());
+        let original_len = thread.messages.len();
+
+        trim_thread_to_latest_boundary(&mut thread);
+
+        assert_eq!(thread.messages.len(), original_len);
+        assert_eq!(thread.messages[0].content, "hello");
+        assert_eq!(thread.messages[1].content, "hi");
+    }
+
+    #[test]
+    fn trim_replaces_pre_boundary_messages() {
+        let messages = vec![
+            Message::user("q1").with_id("msg-1".into()),
+            Message::assistant("a1").with_id("msg-2".into()),
+            Message::user("q2").with_id("msg-3".into()),
+            Message::assistant("a2").with_id("msg-4".into()),
+        ];
+        let cm_state = ContextManagerState {
+            boundaries: vec![CompactBoundary {
+                covers_through_message_id: "msg-2".into(),
+                summary: "Summary of q1/a1".into(),
+                original_token_count: 50,
+                created_at_ms: 1000,
+            }],
+            artifact_refs: vec![],
+        };
+        let mut thread = thread_with_context_state(messages, &cm_state);
+
+        trim_thread_to_latest_boundary(&mut thread);
+
+        assert_eq!(thread.messages.len(), 3); // summary + msg-3 + msg-4
+        assert!(thread.messages[0].content.contains(SUMMARY_MESSAGE_OPEN));
+        assert!(thread.messages[0].content.contains("Summary of q1/a1"));
+        assert!(thread.messages[0].content.contains(SUMMARY_MESSAGE_CLOSE));
+        assert_eq!(thread.messages[0].role, Role::System);
+    }
+
+    #[test]
+    fn trim_preserves_post_boundary_messages() {
+        let messages = vec![
+            Message::user("q1").with_id("msg-1".into()),
+            Message::assistant("a1").with_id("msg-2".into()),
+            Message::user("q2").with_id("msg-3".into()),
+            Message::assistant("a2").with_id("msg-4".into()),
+        ];
+        let cm_state = ContextManagerState {
+            boundaries: vec![CompactBoundary {
+                covers_through_message_id: "msg-2".into(),
+                summary: "Summary".into(),
+                original_token_count: 50,
+                created_at_ms: 1000,
+            }],
+            artifact_refs: vec![],
+        };
+        let mut thread = thread_with_context_state(messages, &cm_state);
+
+        trim_thread_to_latest_boundary(&mut thread);
+
+        assert_eq!(thread.messages[1].content, "q2");
+        assert_eq!(thread.messages[1].id.as_deref(), Some("msg-3"));
+        assert_eq!(thread.messages[2].content, "a2");
+        assert_eq!(thread.messages[2].id.as_deref(), Some("msg-4"));
+    }
+
+    #[test]
+    fn trim_boundary_message_not_found_is_noop() {
+        let messages = vec![
+            Message::user("q1").with_id("msg-1".into()),
+            Message::assistant("a1").with_id("msg-2".into()),
+        ];
+        let cm_state = ContextManagerState {
+            boundaries: vec![CompactBoundary {
+                covers_through_message_id: "nonexistent-id".into(),
+                summary: "Summary".into(),
+                original_token_count: 50,
+                created_at_ms: 1000,
+            }],
+            artifact_refs: vec![],
+        };
+        let mut thread = thread_with_context_state(messages, &cm_state);
+
+        trim_thread_to_latest_boundary(&mut thread);
+
+        assert_eq!(thread.messages.len(), 2);
+        assert_eq!(thread.messages[0].content, "q1");
+    }
+
+    #[test]
+    fn trim_state_parse_failure_is_noop() {
+        let state = json!({ <ContextManagerState as State>::PATH: "not-valid-json-object" });
+        let mut thread = Thread::with_initial_state("test-thread", state)
+            .with_message(Message::user("q1").with_id("msg-1".into()));
+
+        trim_thread_to_latest_boundary(&mut thread);
+
+        assert_eq!(thread.messages.len(), 1);
+        assert_eq!(thread.messages[0].content, "q1");
+    }
+
+    #[test]
+    fn trim_idempotent() {
+        let messages = vec![
+            Message::user("q1").with_id("msg-1".into()),
+            Message::assistant("a1").with_id("msg-2".into()),
+            Message::user("q2").with_id("msg-3".into()),
+        ];
+        let cm_state = ContextManagerState {
+            boundaries: vec![CompactBoundary {
+                covers_through_message_id: "msg-2".into(),
+                summary: "Summary".into(),
+                original_token_count: 50,
+                created_at_ms: 1000,
+            }],
+            artifact_refs: vec![],
+        };
+        let mut thread = thread_with_context_state(messages, &cm_state);
+
+        trim_thread_to_latest_boundary(&mut thread);
+        assert_eq!(thread.messages.len(), 2); // summary + msg-3
+
+        // Second call: boundary message "msg-2" no longer in messages → noop.
+        trim_thread_to_latest_boundary(&mut thread);
+        assert_eq!(thread.messages.len(), 2);
+        assert!(thread.messages[0].content.contains("Summary"));
+        assert_eq!(thread.messages[1].content, "q2");
+    }
+
+    #[test]
+    fn unsummarized_start_returns_zero_after_trim() {
+        let summary = Arc::new(Message::internal_system("summary of earlier"));
+        let msg_a = Arc::new(Message::user("q1").with_id("msg-3".into()));
+        let msg_b = Arc::new(Message::assistant("a1").with_id("msg-4".into()));
+        let messages = vec![summary, msg_a, msg_b];
+
+        // State still has a boundary referencing a message that was trimmed.
+        let state = ContextManagerState {
+            boundaries: vec![CompactBoundary {
+                covers_through_message_id: "msg-2".into(),
+                summary: "old summary".into(),
+                original_token_count: 50,
+                created_at_ms: 1000,
+            }],
+            artifact_refs: vec![],
+        };
+
+        let result = unsummarized_start_index(&messages, &state);
+        assert_eq!(result, Some(0));
+    }
+
+    #[test]
+    fn compaction_plan_after_trim() {
+        let summary = Arc::new(Message::internal_system("summary of earlier"));
+        let msg_a = Arc::new(Message::user("q2").with_id("msg-3".into()));
+        let msg_b = Arc::new(Message::assistant("a2").with_id("msg-4".into()));
+        let msg_c = Arc::new(Message::user("q3").with_id("msg-5".into()));
+        let msg_d = Arc::new(Message::assistant("a3").with_id("msg-6".into()));
+        let messages = vec![summary, msg_a, msg_b, msg_c, msg_d];
+
+        let state = ContextManagerState {
+            boundaries: vec![CompactBoundary {
+                covers_through_message_id: "msg-2".into(),
+                summary: "old summary".into(),
+                original_token_count: 50,
+                created_at_ms: 1000,
+            }],
+            artifact_refs: vec![],
+        };
+
+        let tool_states = HashMap::new();
+        let suspended = HashMap::new();
+        let plan = find_compaction_plan(
+            &messages,
+            &state,
+            &tool_states,
+            &suspended,
+            ContextCompactionMode::CompactToSafeFrontier,
+            0,
+        );
+
+        assert!(plan.is_some(), "should produce a compaction plan after trim");
+        let plan = plan.unwrap();
+        assert_eq!(plan.start_index, 0);
+        assert!(plan.boundary_index > 0);
     }
 }
