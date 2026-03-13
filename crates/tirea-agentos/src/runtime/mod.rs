@@ -11,7 +11,10 @@ pub(crate) mod background_tasks;
 mod behavior;
 mod bundle_merge;
 mod errors;
-pub(crate) mod plugin;
+pub(crate) mod context;
+#[cfg(feature = "skills")]
+pub(crate) mod skills_wiring;
+pub(crate) mod stop_policy;
 mod policy;
 mod prepare;
 pub(crate) mod resolve;
@@ -35,8 +38,8 @@ pub use background_tasks::{
 };
 pub use behavior::compose_behaviors;
 pub use errors::{AgentOsResolveError, AgentOsRunError};
-pub use plugin::context::{ContextPlugin, CONTEXT_PLUGIN_ID};
-pub use plugin::stop_policy::{
+pub use context::{ContextPlugin, CONTEXT_PLUGIN_ID};
+pub use stop_policy::{
     ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds, StopOnTool, StopPolicy,
     StopPolicyInput, StopPolicyPlugin, StopPolicyStats, Timeout, TokenBudget,
 };

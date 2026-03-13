@@ -291,7 +291,7 @@ impl AgentOs {
         }
 
         // 1a. Lazy context loading: trim pre-boundary messages.
-        crate::runtime::plugin::context::trim_thread_to_latest_boundary(&mut thread);
+        crate::runtime::context::trim_thread_to_latest_boundary(&mut thread);
 
         // 2. Set resource_id on thread if provided
         if let Some(ref resource_id) = request.resource_id {
