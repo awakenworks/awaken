@@ -244,6 +244,11 @@ pre-commit:
         fi
       stage_fixed: false
 
+    rustfmt:
+      glob: "**/*.rs"
+      run: rustfmt --edition 2021 {staged_files}
+      stage_fixed: true
+
     lint-staged:
       glob: "**/*.{cjs,mjs,js,ts,tsx,json,md,mdx}"
       run: |
