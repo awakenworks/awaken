@@ -116,9 +116,10 @@ Connect a React frontend with `useChat()`, a CopilotKit app via AG-UI, or anothe
 **React + AI SDK v6:**
 
 ```bash
+git clone https://github.com/tirea-ai/tirea.git && cd tirea
 cd examples/ai-sdk-starter && npm install
 DEEPSEEK_API_KEY=<your-key> npm run dev
-# Open http://localhost:3001
+# First run compiles the Rust agent (~1-2 min), then opens http://localhost:3001
 ```
 
 **Next.js + CopilotKit:**

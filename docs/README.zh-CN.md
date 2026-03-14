@@ -116,9 +116,10 @@ let os = AgentOsBuilder::new()
 **React + AI SDK v6：**
 
 ```bash
+git clone https://github.com/tirea-ai/tirea.git && cd tirea
 cd examples/ai-sdk-starter && npm install
 DEEPSEEK_API_KEY=<your-key> npm run dev
-# Open http://localhost:3001
+# 首次运行会编译 Rust agent（约 1-2 分钟），然后打开 http://localhost:3001
 ```
 
 **Next.js + CopilotKit：**
