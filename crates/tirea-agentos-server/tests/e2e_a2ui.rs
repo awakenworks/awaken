@@ -18,7 +18,7 @@ use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader, ThreadStore}
 use tirea_agentos::contracts::thread::Message;
 use tirea_agentos::contracts::AgentBehavior;
 use tirea_agentos::runtime::loop_runner::{LlmEventStream, LlmExecutor};
-use tirea_agentos::{AgentDefinition, AgentOs, AgentOsBuilder};
+use tirea_agentos::AgentOs;
 use tirea_agentos_server::service::{AppState, MailboxService};
 use tirea_extension_a2ui::{A2uiPlugin, A2uiRenderTool};
 use tirea_store_adapters::MemoryStore;
