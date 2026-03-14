@@ -68,3 +68,11 @@
 - [Glossary](./appendix/glossary.md)
 - [FAQ](./appendix/faq.md)
 - [Migration Notes](./appendix/migration.md)
+
+# 中文文档
+
+- [简介](./zh-CN/introduction.md)
+- [第一个 Agent](./zh-CN/tutorials/first-agent.md)
+- [第一个 Tool](./zh-CN/tutorials/first-tool.md)
+- [架构](./zh-CN/explanation/architecture.md)
+- [不可变状态管理](./zh-CN/explanation/state-and-patch-model.md)
