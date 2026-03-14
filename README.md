@@ -2,9 +2,9 @@
 
 # Tirea
 
-**Build AI agents in Rust. Connect to any frontend. Scale to production.**
+**Type-safe AI agents that handle concurrent state without locks. One binary serves React, Next.js, and other agents over three protocols.**
 
-Define agents, tools, and state in Rust — then serve them to React, Next.js, CopilotKit, or other agents over AG-UI, AI SDK v6, A2A, and MCP from a single binary.
+Define agents, tools, and state in Rust — then serve them to any frontend over AG-UI, AI SDK v6, and A2A from a single binary. Connect to external tool servers via MCP.
 
 [![Crates.io](https://img.shields.io/crates/v/tirea.svg)](https://crates.io/crates/tirea)
 [![docs.rs](https://img.shields.io/docsrs/tirea)](https://docs.rs/tirea)
@@ -14,9 +14,110 @@ Define agents, tools, and state in Rust — then serve them to React, Next.js, C
   <img src="./docs/assets/demo.svg" alt="Tirea demo — tool call + LLM streaming" width="800">
 </p>
 
-## What you can build
+## 30-second mental model
 
-Build components — tools, plugins, agents — then assemble them into an `AgentOs`. The OS is a container; agents are composed from the components you register.
+1. **Tools** — typed functions your agent can call; JSON schema is generated from the struct
+2. **Agents** — each agent has a system prompt and a set of allowed tools/sub-agents; the LLM drives all orchestration through natural language — no DAGs or state machines like LangGraph/ADK
+3. **State** — typed, scoped (thread / run / tool_call), with CRDT fields for safe concurrent writes
+4. **Plugins** — lifecycle hooks for permissions, observability, context window, reminders, and more
+
+Your agent picks tools, calls them, reads and updates state, and repeats — all orchestrated by the runtime. Every state change is an immutable patch you can replay.
+
+## Why Tirea
+
+| What you get | How it works |
+|---|---|
+| **Ship one backend for every frontend** | Serve React (AI SDK v6), Next.js (AG-UI), and other agents (A2A) from the same binary. No separate deployments. Connect to external tool servers via MCP. |
+| **Let multiple agents write to the same state** | CRDT fields (`GSet`, `ORSet`, `GCounter`) merge concurrent writes automatically — you don't need locks, queues, or manual conflict resolution. |
+| **Scope state to its lifetime** | Mark state as Thread-scoped (persists across conversations), Run-scoped (reset each run), or ToolCall-scoped (gone after the tool finishes). No stale data leaks between runs. |
+| **Catch plugin wiring errors at compile time** | Plugins hook into 8 typed lifecycle phases. Wire a permission check to the wrong phase? The compiler tells you, not your users. |
+| **Replay any conversation to any point** | Every state change is an immutable patch. Replay them to reconstruct the exact state at any point — useful for debugging, auditing, and testing. |
+| **Run thousands of agents on minimal resources** | No GC pauses. ~170 KB RSS per agent run (10-turn conversation, mock LLM). 32 concurrent agents at ~1,000 runs/s. (`cargo bench --package tirea-agentos --bench runtime_throughput` to reproduce.) |
+
+### Feature comparison
+
+|  | Tirea | LangGraph | CrewAI | OpenAI Agents | Mastra | PydanticAI | Letta |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Language** | Rust | Python | Python | Python/TS | TypeScript | Python | Python |
+| **Multi-protocol server** | AG-UI · AI SDK · A2A | ◐ | ❌ | ❌ | ◐ | AG-UI | REST |
+| **Typed state** | ✅ derive macros | ◐ | ❌ | ❌ | ◐ | ◐ | ❌ |
+| **Concurrent state (CRDT)** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **State lifecycle scoping** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **State replay** | ✅ | ◐ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Plugin lifecycle** | 8 typed phases | ❌ | ❌ | Guardrails | ❌ | ❌ | ❌ |
+| **Sub-agents** | ✅ | ✅ | ✅ | Handoffs | ◐ | ◐ | ✅ |
+| **MCP support** | ✅ | Adapter | ✅ | ✅ | ✅ | ✅ | ❌ |
+| **Human-in-the-loop** | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ |
+| **Built-in general tools** | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ |
+
+✅ = native  ◐ = partial  ❌ = not available
+
+## Quick start
+
+### Prerequisites
+
+- Rust toolchain from [`rust-toolchain.toml`](./rust-toolchain.toml)
+- For frontend demos: Node.js 20+ and npm
+- One model provider key (OpenAI, DeepSeek, Anthropic, etc.)
+
+### Full-stack demo in 60 seconds
+
+**React + AI SDK v6:**
+
+```bash
+git clone https://github.com/tirea-ai/tirea.git && cd tirea
+cd examples/ai-sdk-starter && npm install
+DEEPSEEK_API_KEY=<your-key> npm run dev
+# First run compiles the Rust agent (~1-2 min), then opens http://localhost:3001
+```
+
+**Next.js + CopilotKit:**
+
+```bash
+cd examples/copilotkit-starter && npm install
+cp .env.example .env.local
+DEEPSEEK_API_KEY=<your-key> npm run setup:agent && npm run dev
+# Open http://localhost:3000
+```
+
+### Server only
+
+```bash
+export OPENAI_API_KEY=<your-key>
+cargo run --package tirea-agentos-server -- --http-addr 127.0.0.1:8080
+```
+
+## Usage
+
+### Architecture
+
+```mermaid
+graph LR
+    subgraph "Your frontends"
+        A["React app\n(AI SDK v6)"]
+        B["Next.js app\n(CopilotKit / AG-UI)"]
+        C["Another agent\n(A2A)"]
+    end
+
+    subgraph "tirea server (one binary)"
+        GW["Protocol gateway\nUI: AG-UI · AI SDK\nAgent: A2A"]
+        RT["Agent runtime\nLLM streaming · tool dispatch\nplugin lifecycle · context mgmt"]
+        EXT["Extensions\npermission · skills · MCP\nreminder · observability"]
+    end
+
+    subgraph "Storage (pick one)"
+        S1[(File)]
+        S2[(PostgreSQL)]
+    end
+
+    A & B --> GW
+    C --> GW
+    GW --> RT
+    RT --> EXT
+    RT --> S1 & S2
+```
+
+### Define tools, agents, and assemble
 
 ```rust
 // 1. Build tools — define args as a struct, schema is generated automatically
@@ -70,119 +171,11 @@ let os = AgentOsBuilder::new()
     .build()?;
 ```
 
-Tools are registered globally on the OS. Each agent defines its own access policy — which tools, skills, and sub-agents it can use via `allowed_*` / `excluded_*` lists. At resolve time, the runtime filters the global tool pool down to what each agent is permitted to access.
-
-Connect a React frontend with `useChat()`, a CopilotKit app via AG-UI, or another agent via A2A — no code changes needed.
-
-## What makes it different
-
-| What you get | Why it matters |
-|---|---|
-| **One server, four protocols** | UI protocols (AG-UI, AI SDK v6) and agent protocols (A2A, MCP) from the same binary. No separate deployments. |
-| **State that survives concurrency** | Multiple agents can write to the same state simultaneously. CRDT fields (`GSet`, `ORSet`, `GCounter`) merge automatically — no locks, no conflicts. |
-| **State scoped to its lifetime** | Mark state as Thread-scoped (persists forever), Run-scoped (reset each run), or ToolCall-scoped (gone after the tool finishes). No stale data leaking between runs. |
-| **Compile-time plugin safety** | Plugins hook into 8 lifecycle phases. Wire a permission check to the wrong phase? Compiler catches it. |
-| **Replay any conversation** | Every state change is an immutable patch. Replay them to reconstruct the exact state at any point. |
-| **Rust performance** | No GC pauses. ~170 KB RSS per agent run (10-turn conversation, mock LLM). 32 concurrent agents at ~1,000 runs/s. `cargo bench --package tirea-agentos --bench runtime_throughput` to reproduce. |
-
-## Feature comparison
-
-|  | Tirea | LangGraph | CrewAI | OpenAI Agents | Mastra | PydanticAI | Letta |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| **Language** | Rust | Python | Python | Python/TS | TypeScript | Python | Python |
-| **Multi-protocol server** | AG-UI · AI SDK · A2A · MCP | ❌ | ❌ | ❌ | ❌ | AG-UI | REST |
-| **Typed state** | ✅ derive macros | ◐ | ❌ | ❌ | ◐ | ◐ | ❌ |
-| **Concurrent state safety** | ✅ CRDT | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **State lifecycle scoping** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **State replay** | ✅ | ◐ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Plugin lifecycle** | 8 typed phases | ❌ | ❌ | Guardrails | ❌ | ❌ | ❌ |
-| **Sub-agents** | ✅ | ✅ | ✅ | Handoffs | ◐ | ◐ | ✅ |
-| **MCP support** | ✅ | Adapter | ✅ | ✅ | ✅ | ✅ | ❌ |
-| **Human-in-the-loop** | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ |
-| **Built-in general tools** | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ |
-
-✅ = native  ◐ = partial  ❌ = not available
-
-## Quick start
-
-### Prerequisites
-
-- Rust toolchain from [`rust-toolchain.toml`](./rust-toolchain.toml)
-- For frontend demos: Node.js 20+ and npm
-- One model provider key (OpenAI, DeepSeek, Anthropic, etc.)
-
-### Full-stack demo in 60 seconds
-
-**React + AI SDK v6:**
-
-```bash
-git clone https://github.com/tirea-ai/tirea.git && cd tirea
-cd examples/ai-sdk-starter && npm install
-DEEPSEEK_API_KEY=<your-key> npm run dev
-# First run compiles the Rust agent (~1-2 min), then opens http://localhost:3001
-```
-
-**Next.js + CopilotKit:**
-
-```bash
-cd examples/copilotkit-starter && npm install
-cp .env.example .env.local
-DEEPSEEK_API_KEY=<your-key> npm run setup:agent && npm run dev
-# Open http://localhost:3000
-```
-
-### Server only
-
-```bash
-export OPENAI_API_KEY=<your-key>
-cargo run --package tirea-agentos-server -- --http-addr 127.0.0.1:8080
-```
-
-## How it works
-
-```mermaid
-graph LR
-    subgraph "Your frontends"
-        A["React app\n(AI SDK v6)"]
-        B["Next.js app\n(CopilotKit / AG-UI)"]
-        C["Another agent\n(A2A)"]
-    end
-
-    subgraph "tirea server (one binary)"
-        GW["Protocol gateway\nUI: AG-UI · AI SDK\nAgent: A2A · MCP"]
-        RT["Agent runtime\nLLM streaming · tool dispatch\nplugin lifecycle · context mgmt"]
-        EXT["Extensions\npermission · skills · MCP\nreminder · observability"]
-    end
-
-    subgraph "Storage (pick one)"
-        S1[(File)]
-        S2[(PostgreSQL)]
-    end
-
-    A & B --> GW
-    C --> GW
-    GW --> RT
-    RT --> EXT
-    RT --> S1 & S2
-```
-
-## What you can do
+Tools are registered globally. Each agent controls its own access via `allowed_*` / `excluded_*` lists — the runtime filters the tool pool at resolve time.
 
 ### Connect to any frontend
 
-One backend serves multiple protocols from the same binary. No code changes between them:
-
-**UI protocols** — connect frontends to your agent:
-
-- **AG-UI** (CopilotKit) — shared state, frontend actions, generative UI, human-in-the-loop
-- **AI SDK v6** (Vercel) — `useChat()` streaming, canvas, thread history
-
-**Agent protocols** — connect agents to each other:
-
-- **A2A** — Google's agent-to-agent protocol; expose your agent as a peer service
-- **MCP** — connect to MCP servers; external tools appear as native tools
-
-**Endpoints** — start the server, then connect from any frontend:
+Start the server, then connect from React, Next.js, or another agent — no code changes between them:
 
 ```bash
 cargo run --package tirea-agentos-server -- --http-addr 127.0.0.1:8080
@@ -192,8 +185,9 @@ cargo run --package tirea-agentos-server -- --http-addr 127.0.0.1:8080
 |---|---|---|
 | AI SDK v6 | `POST /v1/ai-sdk/agents/:agent_id/runs` | React `useChat()` |
 | AG-UI | `POST /v1/ag-ui/agents/:agent_id/runs` | CopilotKit `<CopilotKit>` |
+| A2A | `POST /v1/a2a/agents/:agent_id/message:send` | Other agents |
 
-**React + AI SDK v6** — minimal frontend:
+**React + AI SDK v6:**
 
 ```typescript
 import { useChat } from "ai/react";
@@ -203,7 +197,7 @@ const { messages, input, handleSubmit } = useChat({
 });
 ```
 
-**Next.js + CopilotKit** — minimal frontend:
+**Next.js + CopilotKit:**
 
 ```typescript
 import { CopilotKit } from "@copilotkit/react-core";
@@ -260,59 +254,23 @@ Tirea ships with tools for sub-agents, background tasks, skills, UI rendering, a
 | **A2UI** (`a2ui` extension) | `render_a2ui` | Send declarative UI components to the frontend |
 | **MCP** (`mcp` feature) | *dynamic* | Tools from connected MCP servers appear as native tools |
 
-### Why plugins? Tools alone aren't enough
-
-A tool is just a function the LLM can call. But a bare tool doesn't work in practice:
-
-**The LLM doesn't know it exists.** The `agent_run` tool can launch sub-agents — but the LLM won't call it unless the system prompt lists which agents are available. That context injection isn't the tool's job. The `AgentToolsPlugin` handles it by injecting the agent catalog before each inference.
-
-The same pattern applies everywhere: `SkillDiscoveryPlugin` injects the skill catalog so the LLM knows which skills to activate. `BackgroundTasksPlugin` injects task status so the LLM knows which tasks are running. `A2uiPlugin` injects the UI schema so the LLM knows how to render components.
-
-**Cross-cutting concerns can't live in individual tools:**
-
-| Problem | Why tools can't solve it | Plugin solution |
-|---|---|---|
-| Permission gating | Each tool would re-implement auth | `PermissionPlugin` — one `before_tool_execute` hook for all tools |
-| Token budget | No single tool sees the full message history | `ContextPlugin` — truncates, summarizes, and caches across all messages |
-| Stop conditions | No tool knows when to stop the agent loop | `StopPolicyPlugin` — evaluates max rounds, timeout, budget after each inference |
-| Observability | Latency/token spans cross tool boundaries | `LLMMetryPlugin` — OpenTelemetry spans for the full LLM + tool pipeline |
-| Persistent reminders | Reminders survive across turns, not tied to one tool | `ReminderPlugin` — injects reminders before each inference |
-| Orphan recovery | Sub-agents can outlive their parent process | `AgentRecoveryPlugin` — detects and resumes orphaned runs on restart |
-
-This is why every built-in tool ships with a companion plugin. The tool provides the capability; the plugin wires it into the LLM's awareness and the runtime's lifecycle.
-
 ### Require approval before dangerous actions
 
-The built-in `PermissionPlugin` checks tool permissions via `PermissionPolicy` state (Allow/Deny/Ask per tool). Or write a custom plugin to gate any tool with full control over the suspension flow:
-
-```rust
-// In your plugin's before_tool_execute:
-async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>)
-    -> ActionSet<BeforeToolExecuteAction>
-{
-    let tool_id = ctx.tool_name().unwrap_or_default();
-    let call_id = ctx.tool_call_id().unwrap_or_default();
-
-    if tool_id == "delete_account" {
-        let pending_id = format!("fc_{call_id}");
-        let tool_args = ctx.tool_args().cloned().unwrap_or_default();
-        let suspension = Suspension::new(&pending_id, "confirm_delete")
-            .with_message("Requires admin approval");
-        let pending = PendingToolCall::new(pending_id, "Confirm", tool_args);
-        ActionSet::single(BeforeToolExecuteAction::Suspend(
-            SuspendTicket::new(suspension, pending, ToolCallResumeMode::ReplayToolCall)
-        ))
-    } else {
-        ActionSet::empty()
-    }
-}
-```
-
-The frontend receives the suspension event with the pending call. When the user approves, the runtime replays the original tool call — this time bypassing the permission check.
+The built-in `PermissionPlugin` gates tool execution via Allow/Deny/Ask policies per tool. When a tool requires approval, the runtime suspends execution and sends the pending call to the frontend. When the user approves, the runtime replays the original tool call. See the [human-in-the-loop guide](https://tirea-ai.github.io/tirea/explanation/human-in-the-loop.html) for details.
 
 ### Multi-agent collaboration
 
-Multi-agent orchestration is a core capability. Register agents at build time — the runtime injects the agent catalog into the system prompt, and the orchestrator delegates via built-in tools:
+Tirea agents delegate through **natural-language orchestration**. You define each agent's identity and access policy, then register them in the agent registry; the LLM decides when to delegate, to whom, and how to combine results — no DAGs, no hand-coded state machines, no explicit routing logic.
+
+The runtime makes this work:
+- **Agent registry** — register agents at build time; the runtime renders the registry into the system prompt so the LLM always knows who it can delegate to
+- **Background execution with completion notifications** — sub-agents and tasks run in the background; the runtime injects their status after each tool call, so the LLM stays aware of what's running, what's finished, and what failed
+- **Foreground and background modes** — block until a sub-agent finishes, or run multiple sub-agents concurrently in the background and receive completion notifications when each one finishes
+- **Thread isolation** — each sub-agent runs in its own thread with independent state
+- **Orphan recovery** — if the parent process crashes, orphaned sub-agents are detected and resumed on restart
+- **Local + remote transparency** — in-process agents and remote A2A agents use the same `agent_run` interface; the orchestrator doesn't need to know the difference
+
+Register agents at build time:
 
 ```rust
 let orchestrator = AgentDefinition::with_id("orchestrator", "deepseek-chat")
@@ -334,27 +292,7 @@ let os = AgentOsBuilder::new()
     .build()?;
 ```
 
-**Delegation tools** — each sub-agent runs in its own isolated thread:
-
-- `agent_run` — launch by `agent_id` (foreground or background), or resume by `run_id`
-- `agent_stop` — cancel a running sub-agent (cascades to descendants)
-- `agent_output` — read a sub-agent's results from its thread
-
-**Supported patterns:**
-
-| Pattern | How it works |
-|---|---|
-| **Coordinator** | Orchestrator analyzes intent, routes to the right specialist |
-| **Pipeline** | Agents execute sequentially — each transforms the previous output |
-| **Parallel fan-out** | Orchestrator launches multiple agents concurrently, gathers results |
-| **Hierarchical** | Parent decomposes → children decompose further → recursive delegation |
-| **Generator-Critic** | Generator drafts, critic validates, generator revises in a loop |
-
-**Foreground vs background:** `agent_run(background=false)` blocks until the child finishes (progress streamed back). `agent_run(background=true)` returns immediately with a `run_id` — check status later with `agent_output`.
-
-**Local + remote agents:** Local agents run in-process. Remote agents communicate via A2A protocol over HTTP — same `agent_run` interface, transparent to the orchestrator.
-
-Agents must be pre-defined in the builder. Visibility is policy-enforced via `allowed_agents` / `excluded_agents`. Orphaned sub-agents are automatically recovered on restart. See the [multi-agent design patterns guide](https://tirea-ai.github.io/tirea/explanation/multi-agent-design-patterns.html) for details.
+See the [multi-agent design patterns guide](https://tirea-ai.github.io/tirea/explanation/multi-agent-design-patterns.html) for coordinator, pipeline, fan-out, and other patterns.
 
 ### Manage state across conversations
 
@@ -374,7 +312,7 @@ struct SearchProgress { /* ... */ }
 struct ToolWorkspace { /* ... */ }
 ```
 
-Fields marked `#[tirea(lattice)]` use CRDT types that merge automatically when multiple agents write concurrently — no locks needed.
+Fields marked `#[tirea(lattice)]` use CRDT types (conflict-free replicated data types) that merge automatically when multiple agents write concurrently — no locks needed.
 
 ### Persist conversations
 
@@ -439,12 +377,12 @@ model: "claude-sonnet-4-20250514".into(), // Anthropic
 
 ## Examples
 
-| Example | What it shows |
-|---|---|
-| [ai-sdk-starter](./examples/ai-sdk-starter/) | React + AI SDK v6 — chat, canvas, shared state |
-| [copilotkit-starter](./examples/copilotkit-starter/) | Next.js + CopilotKit — persisted threads, frontend actions |
-| [travel-ui](./examples/travel-ui/) | Map canvas + approval-gated trip planning |
-| [research-ui](./examples/research-ui/) | Resource collection + report writing with approval |
+| Example | What it shows | Best for |
+|---|---|---|
+| [ai-sdk-starter](./examples/ai-sdk-starter/) | React + AI SDK v6 — chat, canvas, shared state | Fastest start, minimal setup |
+| [copilotkit-starter](./examples/copilotkit-starter/) | Next.js + CopilotKit — persisted threads, frontend actions | Full-stack with persistence |
+| [travel-ui](./examples/travel-ui/) | Map canvas + approval-gated trip planning | Geospatial + human-in-the-loop |
+| [research-ui](./examples/research-ui/) | Resource collection + report writing with approval | Approval-gated workflows |
 
 ## Documentation
 

@@ -2,7 +2,7 @@
 name = "tirea-extension-a2ui"
 version.workspace = true
 edition = "2021"
-description = "A2UI (Agent-to-UI) extension for tirea — declarative generative UI via tool-based rendering"
+description = "Render interactive UI components to the frontend via AG-UI protocol for tirea"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
 

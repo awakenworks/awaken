@@ -1,6 +1,17 @@
 # Multi-Agent Design Patterns
 
-This page describes common multi-agent patterns and how they map to Tirea primitives.
+## Natural-language orchestration
+
+Tirea uses **natural-language orchestration** — the LLM decides when to delegate, to whom, and how to combine results. You define each agent's identity and access policy; the runtime handles everything else. There are no DAGs, no state machines, and no explicit routing code — unlike frameworks such as LangGraph or Google ADK where you wire agents into graphs and define transitions in code.
+
+This works because the runtime provides:
+- **Agent registry** — agents registered at build time are rendered into the system prompt, so the LLM always knows who it can delegate to
+- **Background execution with completion notifications** — sub-agents run in the background; the runtime injects their status after each tool call, keeping the LLM aware of what's running, finished, or failed
+- **Foreground and background modes** — block until a sub-agent finishes, or run multiple concurrently and receive completion notifications
+- **Thread isolation** — each sub-agent runs in its own thread with independent state
+- **Orphan recovery** — orphaned sub-agents are detected and resumed on restart
+
+## Patterns
 
 All patterns below are implemented with the same building blocks:
 
@@ -9,7 +20,7 @@ All patterns below are implemented with the same building blocks:
 - `SuspendTicket` for human-in-the-loop gating
 - System prompt engineering for control flow
 
-Tirea does not require dedicated workflow agent types. The LLM-driven loop plus delegation tools cover these patterns through prompt configuration.
+No dedicated workflow agent types are needed. The LLM-driven loop plus delegation tools cover these patterns through prompt configuration.
 
 ## Pattern Index
 

@@ -1,4 +1,4 @@
-# with-tirea
+# CopilotKit Starter with Tirea
 
 Official-style CopilotKit starter for integrating with `tirea-agentos-server` over AG-UI.
 
