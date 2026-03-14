@@ -305,25 +305,51 @@ async fn before_tool_execute(&self, ctx: &ReadOnlyContext<'_>)
 
 The frontend receives the suspension event with the pending call. When the user approves, the runtime replays the original tool call — this time bypassing the permission check.
 
-### Run sub-agents
+### Multi-agent collaboration
 
-Register multiple agents at build time, then the parent agent can orchestrate them via built-in tools:
+Multi-agent orchestration is a core capability. Register agents at build time — the runtime injects the agent catalog into the system prompt, and the orchestrator delegates via built-in tools:
 
 ```rust
+let orchestrator = AgentDefinition::with_id("orchestrator", "deepseek-chat")
+    .with_system_prompt("Route tasks to the right agent.")
+    .with_allowed_agents(vec!["researcher".into(), "writer".into()]);
+
+let researcher = AgentDefinition::with_id("researcher", "deepseek-chat")
+    .with_system_prompt("Research topics and return summaries.")
+    .with_excluded_tools(vec!["agent_run".into()]); // no further delegation
+
 let os = AgentOsBuilder::new()
-    .with_agent_spec(AgentDefinitionSpec::local(planner_agent))
-    .with_agent_spec(AgentDefinitionSpec::local(researcher_agent))
-    .with_agent_spec(AgentDefinitionSpec::local(writer_agent))
+    .with_agent_spec(AgentDefinitionSpec::local(orchestrator))
+    .with_agent_spec(AgentDefinitionSpec::local(researcher))
+    // Remote agents via A2A protocol
+    .with_agent_spec(AgentDefinitionSpec::a2a_with_id(
+        "writer",
+        A2aAgentBinding::new("https://writer-service.example.com/v1/a2a", "writer-v2"),
+    ))
     .build()?;
 ```
 
-The runtime injects the available agent catalog into the system prompt. The parent agent launches sub-agents by ID — each runs in its own conversation thread:
+**Delegation tools** — each sub-agent runs in its own isolated thread:
 
-- `agent_run` — launch a sub-agent by `agent_id`, or resume an existing one by `run_id`
-- `agent_stop` — cancel a running sub-agent
-- `agent_output` — read a sub-agent's results
+- `agent_run` — launch by `agent_id` (foreground or background), or resume by `run_id`
+- `agent_stop` — cancel a running sub-agent (cascades to descendants)
+- `agent_output` — read a sub-agent's results from its thread
 
-Sub-agents must be pre-defined in the builder; the LLM selects from the registered catalog, not arbitrary configurations. Orphaned sub-agents are automatically recovered on parent restart.
+**Supported patterns:**
+
+| Pattern | How it works |
+|---|---|
+| **Coordinator** | Orchestrator analyzes intent, routes to the right specialist |
+| **Pipeline** | Agents execute sequentially — each transforms the previous output |
+| **Parallel fan-out** | Orchestrator launches multiple agents concurrently, gathers results |
+| **Hierarchical** | Parent decomposes → children decompose further → recursive delegation |
+| **Generator-Critic** | Generator drafts, critic validates, generator revises in a loop |
+
+**Foreground vs background:** `agent_run(background=false)` blocks until the child finishes (progress streamed back). `agent_run(background=true)` returns immediately with a `run_id` — check status later with `agent_output`.
+
+**Local + remote agents:** Local agents run in-process. Remote agents communicate via A2A protocol over HTTP — same `agent_run` interface, transparent to the orchestrator.
+
+Agents must be pre-defined in the builder. Visibility is policy-enforced via `allowed_agents` / `excluded_agents`. Orphaned sub-agents are automatically recovered on restart. See the [multi-agent design patterns guide](https://tirea-ai.github.io/tirea/explanation/multi-agent-design-patterns.html) for details.
 
 ### Manage state across conversations
 
