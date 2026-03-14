@@ -10,6 +10,10 @@
 [![docs.rs](https://img.shields.io/docsrs/tirea)](https://docs.rs/tirea)
 [![License](https://img.shields.io/crates/l/tirea)](LICENSE-MIT)
 
+<p align="center">
+  <img src="./assets/demo.svg" alt="Tirea demo — 工具调用 + LLM 流式响应" width="800">
+</p>
+
 ## 你能构建什么
 
 构建组件——工具、插件、智能体——然后将它们组装成一个 `AgentOs`。AgentOs 是一个容器，智能体由你注册的组件组合而成。

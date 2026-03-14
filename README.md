@@ -10,6 +10,10 @@ Define agents, tools, and state in Rust — then serve them to React, Next.js, C
 [![docs.rs](https://img.shields.io/docsrs/tirea)](https://docs.rs/tirea)
 [![License](https://img.shields.io/crates/l/tirea)](LICENSE-MIT)
 
+<p align="center">
+  <img src="./docs/assets/demo.svg" alt="Tirea demo — tool call + LLM streaming" width="800">
+</p>
+
 ## What you can build
 
 Build components — tools, plugins, agents — then assemble them into an `AgentOs`. The OS is a container; agents are composed from the components you register.
