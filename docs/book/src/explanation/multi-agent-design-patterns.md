@@ -2,7 +2,7 @@
 
 ## Natural-language orchestration
 
-Tirea uses **natural-language orchestration** — the LLM decides when to delegate, to whom, and how to combine results. You define each agent's identity and access policy; the runtime handles everything else. There are no DAGs, no state machines, and no explicit routing code — unlike frameworks such as LangGraph or Google ADK where you wire agents into graphs and define transitions in code.
+Tirea uses **natural-language orchestration**, inspired by Claude Code's sub-agent model. The LLM decides when to delegate, to whom, and how to combine results. You define each agent's identity and access policy; the runtime handles everything else. There are no DAGs, no state machines, and no explicit routing code — unlike frameworks such as LangGraph or Google ADK where you wire agents into graphs and define transitions in code.
 
 This works because the runtime provides:
 - **Agent registry** — agents registered at build time are rendered into the system prompt, so the LLM always knows who it can delegate to
