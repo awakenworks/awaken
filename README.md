@@ -28,7 +28,7 @@ Your agent picks tools, calls them, reads and updates state, and repeats — all
 | What you get | How it works |
 |---|---|
 | **Ship one backend for every frontend** | Serve React (AI SDK v6), Next.js (AG-UI), and other agents (A2A) from the same binary. No separate deployments. Connect to external tool servers via MCP. |
-| **Let multiple agents write to the same state** | CRDT fields (`GSet`, `ORSet`, `GCounter`) merge concurrent writes automatically — you don't need locks, queues, or manual conflict resolution. |
+| **Let multiple agents write to the same state** | CRDT fields (`GSet`, `ORSet`, `GCounter`) merge concurrent writes automatically — no locks, no conflicts. This also enables future parallel plugin and tool-call execution. |
 | **Scope state to its lifetime** | Mark state as Thread-scoped (persists across conversations), Run-scoped (reset each run), or ToolCall-scoped (gone after the tool finishes). No stale data leaks between runs. |
 | **Catch plugin wiring errors at compile time** | Plugins hook into 8 typed lifecycle phases. Wire a permission check to the wrong phase? The compiler tells you, not your users. |
 | **Replay any conversation to any point** | Every state change is an immutable patch. Replay them to reconstruct the exact state at any point — useful for debugging, auditing, and testing. |
@@ -39,15 +39,15 @@ Your agent picks tools, calls them, reads and updates state, and repeats — all
 |  | Tirea | LangGraph | CrewAI | OpenAI Agents | Mastra | PydanticAI | Letta |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | **Language** | Rust | Python | Python | Python/TS | TypeScript | Python | Python |
-| **Multi-protocol server** | AG-UI · AI SDK · A2A | ◐ | ❌ | ❌ | ◐ | AG-UI | REST |
+| **Multi-protocol server** | AG-UI · AI SDK · A2A | ◐ | ◐ | ❌ | AG-UI · AI SDK · A2A | AG-UI | REST |
 | **Typed state** | ✅ derive macros | ◐ | ❌ | ❌ | ◐ | ◐ | ❌ |
 | **Concurrent state (CRDT)** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **State lifecycle scoping** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **State replay** | ✅ | ◐ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Plugin lifecycle** | 8 typed phases | ❌ | ❌ | Guardrails | ❌ | ❌ | ❌ |
-| **Sub-agents** | ✅ | ✅ | ✅ | Handoffs | ◐ | ◐ | ✅ |
-| **MCP support** | ✅ | Adapter | ✅ | ✅ | ✅ | ✅ | ❌ |
-| **Human-in-the-loop** | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ |
+| **Plugin lifecycle** | 8 typed phases | Middleware | ❌ | Guardrails | ❌ | ❌ | ❌ |
+| **Sub-agents** | ✅ | ✅ | ✅ | Handoffs | ✅ | ◐ | ✅ |
+| **MCP support** | ✅ | Adapter | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Human-in-the-loop** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Built-in general tools** | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ |
 
 ✅ = native  ◐ = partial  ❌ = not available
@@ -365,6 +365,14 @@ model: "claude-sonnet-4-20250514".into(), // Anthropic
 - You want a **visual workflow builder** — consider Dify, LangGraph Studio
 - You want **Python** and rapid prototyping — consider LangGraph, PydanticAI
 - You need **LLM-managed memory** (agent decides what to remember) — consider Letta
+
+## Design inspirations
+
+Tirea's architecture draws from ideas across several projects:
+
+- **Claude Code** — natural-language multi-agent orchestration, mailbox-based message passing, persistent reminders across turns
+- **ag2 / FastAgency** — NATS JetStream as a durable transport layer for agent event streaming and crash recovery
+- **LangGraph** — typed state with reducers and checkpoint persistence (Tirea extends this with patch-based immutability and replay)
 
 ## Learning paths
 

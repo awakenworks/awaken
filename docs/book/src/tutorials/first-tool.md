@@ -17,8 +17,8 @@ Implement one tool that reads and updates typed state.
 async-trait = "0.1"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
-tirea = "0.4.0"
-tirea-state-derive = "0.4.0"
+tirea = "0.5.0-alpha.1"
+tirea-state-derive = "0.5.0-alpha.1"
 ```
 
 ## 1. Define Typed State with Action
