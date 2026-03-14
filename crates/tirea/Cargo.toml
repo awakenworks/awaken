@@ -5,8 +5,8 @@ edition = "2021"
 description = "Rust AI agent framework with typed state, CRDT conflict resolution, and multi-protocol serving"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
-keywords = ["ai-agent", "llm", "crdt", "agent-framework"]
-categories = ["asynchronous"]
+keywords = ["ai-agent", "llm", "mcp", "copilot", "agent-framework"]
+categories = ["asynchronous", "web-programming"]
 
 [dependencies]
 # Always included: core contract types + state
