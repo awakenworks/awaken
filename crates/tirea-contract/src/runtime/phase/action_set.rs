@@ -256,17 +256,6 @@ impl Action for AfterToolExecuteAction {
             Self::State(action) => step.emit_state_action(action),
         }
     }
-
-    fn is_state_action(&self) -> bool {
-        matches!(self, Self::State(_))
-    }
-
-    fn into_state_action(self: Box<Self>) -> Option<AnyStateAction> {
-        match *self {
-            Self::State(action) => Some(action),
-            _ => None,
-        }
-    }
 }
 
 impl From<AnyStateAction> for AfterToolExecuteAction {

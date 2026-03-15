@@ -1,6 +1,5 @@
 use crate::runtime::phase::step::StepContext;
 use crate::runtime::phase::Phase;
-use crate::runtime::state::AnyStateAction;
 
 /// Unified action trait for all phase effects.
 ///
@@ -25,25 +24,6 @@ pub trait Action: Send + 'static {
     /// Consumes `self` (boxed) so that actions can move data into the
     /// step context without cloning.
     fn apply(self: Box<Self>, step: &mut StepContext<'_>);
-
-    /// Returns `true` if this action wraps an [`AnyStateAction`] for
-    /// execution-patch reduction.
-    ///
-    /// State actions must be reduced separately to produce the tool's
-    /// `execution.patch` (used for parallel conflict detection). The loop
-    /// checks this before calling [`into_state_action`](Self::into_state_action)
-    /// to partition the actions Vec without consuming non-state actions.
-    fn is_state_action(&self) -> bool {
-        false
-    }
-
-    /// Extract the inner [`AnyStateAction`].
-    ///
-    /// Only call when [`is_state_action`](Self::is_state_action) returns
-    /// `true`; returns `None` for all other actions.
-    fn into_state_action(self: Box<Self>) -> Option<AnyStateAction> {
-        None
-    }
 }
 
 #[cfg(test)]

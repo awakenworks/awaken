@@ -13,25 +13,6 @@ use std::sync::{Arc, Mutex};
 use tirea_contract::RunPolicy;
 use tirea_state::{apply_patch, DocCell, Patch, TrackedPatch};
 
-const DIRECT_STATE_WRITE_DENIED_ERROR_CODE: &str = "tool_context_state_write_not_allowed";
-
-pub(crate) fn merge_context_patch_into_effect(
-    call: &ToolCall,
-    _effect: &mut ToolExecutionEffect,
-    context_patch: TrackedPatch,
-) -> Result<(), Box<ToolResult>> {
-    if context_patch.patch().is_empty() {
-        return Ok(());
-    }
-
-    // No compatibility mode: tool-side direct state writes are always rejected.
-    Err(Box::new(ToolResult::error_with_code(
-        &call.name,
-        DIRECT_STATE_WRITE_DENIED_ERROR_CODE,
-        "direct ToolCallContext state writes are disabled; emit ToolExecutionEffect actions instead",
-    )))
-}
-
 /// Execute a single tool call.
 ///
 /// This function:
@@ -105,19 +86,10 @@ pub async fn execute_single_tool_with_run_policy_and_behavior(
     }
 
     // Execute the tool
-    let mut effect = match tool.execute_effect(call.arguments.clone(), &ctx).await {
+    let effect = match tool.execute_effect(call.arguments.clone(), &ctx).await {
         Ok(effect) => effect,
         Err(e) => ToolExecutionEffect::from(ToolResult::error(&call.name, e.to_string())),
     };
-
-    let context_patch = ctx.take_patch();
-    if let Err(result) = merge_context_patch_into_effect(call, &mut effect, context_patch) {
-        return ToolExecution {
-            call: call.clone(),
-            result: *result,
-            patch: None,
-        };
-    }
     let (result, actions) = effect.into_parts();
     let state_actions: Vec<AnyStateAction> = actions
         .into_iter()
@@ -301,44 +273,6 @@ mod tests {
         }
     }
 
-    struct DirectWriteEffectTool;
-
-    #[async_trait]
-    impl Tool for DirectWriteEffectTool {
-        fn descriptor(&self) -> ToolDescriptor {
-            ToolDescriptor::new(
-                "direct_write_effect",
-                "DirectWriteEffect",
-                "writes state directly in execute_effect",
-            )
-        }
-
-        async fn execute(
-            &self,
-            _args: Value,
-            _ctx: &ToolCallContext<'_>,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success(
-                "direct_write_effect",
-                json!({"ok": true}),
-            ))
-        }
-
-        async fn execute_effect(
-            &self,
-            _args: Value,
-            ctx: &ToolCallContext<'_>,
-        ) -> Result<crate::contracts::runtime::ToolExecutionEffect, ToolError> {
-            let state = ctx.state_of::<TestFixtureState>();
-            state
-                .set_label(Some("direct_write".to_string()))
-                .expect("failed to set label");
-            Ok(crate::contracts::runtime::ToolExecutionEffect::new(
-                ToolResult::success("direct_write_effect", json!({"ok": true})),
-            ))
-        }
-    }
-
     #[tokio::test]
     async fn test_execute_single_tool_not_found() {
         let call = ToolCall::new("call_1", "nonexistent", json!({}));
@@ -373,23 +307,6 @@ mod tests {
         let next = apply_patch(&state, patch.patch()).expect("patch should apply");
 
         assert_eq!(next["counter"]["value"], 3);
-    }
-
-    #[tokio::test]
-    async fn test_execute_single_tool_rejects_direct_context_writes_in_strict_mode() {
-        let tool = DirectWriteEffectTool;
-        let call = ToolCall::new("call_1", "direct_write_effect", json!({}));
-        let state = json!({});
-        let scope = RunPolicy::default();
-
-        let exec =
-            execute_single_tool_with_run_policy(Some(&tool), &call, &state, Some(&scope)).await;
-        assert!(exec.result.is_error());
-        assert_eq!(
-            exec.result.data["error"]["code"],
-            json!("tool_context_state_write_not_allowed")
-        );
-        assert!(exec.patch.is_none());
     }
 
     #[tokio::test]

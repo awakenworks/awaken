@@ -64,14 +64,6 @@ impl Action for AnyStateAction {
         "state_action"
     }
 
-    fn is_state_action(&self) -> bool {
-        true
-    }
-
-    fn into_state_action(self: Box<Self>) -> Option<AnyStateAction> {
-        Some(*self)
-    }
-
     fn apply(self: Box<Self>, step: &mut StepContext<'_>) {
         step.emit_state_action(*self);
     }

@@ -22,7 +22,6 @@ use crate::contracts::thread::Thread;
 use crate::contracts::thread::{Message, MessageMetadata, ToolCall};
 use crate::contracts::{RunContext, Suspension};
 use crate::engine::convert::tool_response;
-use crate::engine::tool_execution::merge_context_patch_into_effect;
 use crate::runtime::run_context::{await_or_cancel, is_cancelled, CancelAware};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -1000,21 +999,13 @@ async fn execute_single_tool_with_phases_impl(
                     if let Some(token) = phase_ctx.cancellation_token {
                         tool_ctx = tool_ctx.with_cancellation_token(token);
                     }
-                    let mut effect =
-                        match tool.execute_effect(call.arguments.clone(), &tool_ctx).await {
-                            Ok(effect) => effect,
-                            Err(e) => ToolExecutionEffect::from(ToolResult::error(
-                                &call.name,
-                                e.to_string(),
-                            )),
-                        };
-
-                    let context_patch = tool_ctx.take_patch();
-                    if let Err(result) =
-                        merge_context_patch_into_effect(call, &mut effect, context_patch)
+                    let effect = match tool.execute_effect(call.arguments.clone(), &tool_ctx).await
                     {
-                        effect = ToolExecutionEffect::from(*result);
-                    }
+                        Ok(effect) => effect,
+                        Err(e) => {
+                            ToolExecutionEffect::from(ToolResult::error(&call.name, e.to_string()))
+                        }
+                    };
                     let (result, actions) = effect.into_parts();
                     let outcome = ToolCallOutcome::from_tool_result(&result);
 

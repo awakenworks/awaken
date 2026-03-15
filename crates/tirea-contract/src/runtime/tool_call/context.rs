@@ -390,7 +390,13 @@ impl<'a> ToolCallContext<'a> {
     pub fn state<T: State>(&self, path: &str) -> T::Ref<'_> {
         let base = parse_path(path);
         let doc = self.doc;
-        let hook: PatchHook<'_> = Arc::new(|op: &Op| {
+        let read_only = self.read_only;
+        let hook: PatchHook<'_> = Arc::new(move |op: &Op| {
+            if read_only {
+                return Err(TireaError::invalid_operation(
+                    "tool context is read-only; emit ToolExecutionEffect actions instead",
+                ));
+            }
             doc.apply(op)?;
             Ok(())
         });
