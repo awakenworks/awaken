@@ -183,7 +183,7 @@ pub fn has_active_claim_for_mailbox<'a>(
         e.mailbox_id == mailbox_id
             && e.status == MailboxEntryStatus::Claimed
             && e.lease_until.is_some_and(|l| l > now)
-            && exclude_entry_id.map_or(true, |eid| e.entry_id != eid)
+            && exclude_entry_id.is_none_or(|eid| e.entry_id != eid)
     })
 }
 
