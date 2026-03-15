@@ -17,6 +17,7 @@ tirea-state.workspace = true
 tirea-agentos = { workspace = true, optional = true }
 
 # Protocols
+tirea-protocol-acp = { workspace = true, optional = true }
 tirea-protocol-ag-ui = { workspace = true, optional = true }
 tirea-protocol-ai-sdk-v6 = { workspace = true, optional = true }
 
@@ -35,13 +36,14 @@ schemars = { workspace = true }
 [features]
 default = ["core"]
 core = ["dep:tirea-agentos"]
+acp = ["dep:tirea-protocol-acp"]
 ag-ui = ["dep:tirea-protocol-ag-ui", "core"]
 ai-sdk-v6 = ["dep:tirea-protocol-ai-sdk-v6"]
 skills = ["dep:tirea-extension-skills", "core"]
 mcp = ["core", "tirea-agentos/mcp"]
 postgres = ["dep:tirea-store-adapters", "tirea-store-adapters/postgres"]
 nats = ["dep:tirea-store-adapters", "tirea-store-adapters/nats"]
-full = ["core", "ag-ui", "ai-sdk-v6", "skills", "mcp", "postgres", "nats"]
+full = ["core", "acp", "ag-ui", "ai-sdk-v6", "skills", "mcp", "postgres", "nats"]
 
 [dev-dependencies]
 trybuild.workspace = true

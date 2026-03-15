@@ -3,7 +3,7 @@ use crate::composition::{
     A2aAgentBinding, AgentDefinitionSpec, AgentDescriptor, InMemoryAgentCatalog,
     InMemoryAgentRegistry, ResolvedAgent,
 };
-use crate::contracts::runtime::action::Action;
+
 use crate::contracts::runtime::behavior::ReadOnlyContext;
 use crate::contracts::runtime::phase::{ActionSet, AfterToolExecuteAction, BeforeInferenceAction};
 use crate::contracts::runtime::phase::{Phase, StepContext};

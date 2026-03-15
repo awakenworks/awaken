@@ -4584,6 +4584,7 @@ dependencies = [
  "tirea-agentos",
  "tirea-contract",
  "tirea-extension-skills",
+ "tirea-protocol-acp",
  "tirea-protocol-ag-ui",
  "tirea-protocol-ai-sdk-v6",
  "tirea-state",
@@ -4656,6 +4657,7 @@ dependencies = [
  "tirea-contract",
  "tirea-extension-a2ui",
  "tirea-extension-permission",
+ "tirea-protocol-acp",
  "tirea-protocol-ag-ui",
  "tirea-protocol-ai-sdk-v6",
  "tirea-store-adapters",
@@ -4800,6 +4802,15 @@ dependencies = [
  "tokio",
  "tracing",
  "unicode-normalization",
+]
+
+[[package]]
+name = "tirea-protocol-acp"
+version = "0.5.0-alpha.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tirea-contract",
 ]
 
 [[package]]

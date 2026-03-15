@@ -47,7 +47,7 @@ impl AgentBehavior for PermissionPlugin {
 
         match decision {
             PermissionMechanismDecision::Proceed => ActionSet::empty(),
-            PermissionMechanismDecision::Action(action) => ActionSet::single(action),
+            PermissionMechanismDecision::Action(action) => ActionSet::single(*action),
         }
     }
 }

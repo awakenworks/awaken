@@ -20,7 +20,7 @@ pub struct PermissionMechanismInput<'a> {
 /// Mechanism output after combining strategy verdict with runtime state.
 pub enum PermissionMechanismDecision {
     Proceed,
-    Action(BeforeToolExecuteAction),
+    Action(Box<BeforeToolExecuteAction>),
 }
 
 fn decision_requests_memory(result: &Value) -> bool {
@@ -84,16 +84,14 @@ pub fn enforce_permission(
     match evaluation.behavior {
         ToolPermissionBehavior::Allow => PermissionMechanismDecision::Proceed,
         ToolPermissionBehavior::Deny => {
-            PermissionMechanismDecision::Action(deny_tool(input.tool_id))
+            PermissionMechanismDecision::Action(Box::new(deny_tool(input.tool_id)))
         }
         ToolPermissionBehavior::Ask => {
             let Some(call_id) = input.call_id.filter(|call_id| !call_id.is_empty()) else {
-                return PermissionMechanismDecision::Action(deny_missing_call_id());
+                return PermissionMechanismDecision::Action(Box::new(deny_missing_call_id()));
             };
-            PermissionMechanismDecision::Action(request_permission(permission_confirmation_ticket(
-                call_id,
-                input.tool_id,
-                input.tool_args,
+            PermissionMechanismDecision::Action(Box::new(request_permission(
+                permission_confirmation_ticket(call_id, input.tool_id, input.tool_args),
             )))
         }
     }

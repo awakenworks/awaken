@@ -42,6 +42,10 @@ struct Args {
     /// Print the canonical AGENTOS_CONFIG JSON Schema and exit.
     #[arg(long)]
     print_agent_config_schema: bool,
+
+    /// Run as ACP stdio server (JSON-RPC 2.0 over stdin/stdout) instead of HTTP.
+    #[arg(long)]
+    stdio: bool,
 }
 
 /// Simple backend tool that returns server information.
@@ -294,9 +298,15 @@ async fn main() {
 
     let file_store = Arc::new(FileStore::new(args.storage_dir));
     let write_store: Arc<dyn ThreadStore> = file_store.clone();
+    let os = Arc::new(build_os(cfg, args.tensorzero_url, write_store));
+
+    if args.stdio {
+        protocol::acp::stdio::serve_stdio(os).await;
+        return;
+    }
+
     let read_store: Arc<dyn ThreadReader> = file_store.clone();
     let mailbox_store: Arc<dyn MailboxStore> = file_store.clone();
-    let os = Arc::new(build_os(cfg, args.tensorzero_url, write_store));
     let mailbox_svc = Arc::new(MailboxService::new(
         os.clone(),
         mailbox_store,

@@ -13,6 +13,7 @@ tirea-contract.workspace = true
 tirea-extension-permission = { workspace = true, optional = true }
 tirea-agentos.workspace = true
 tirea-protocol-ag-ui.workspace = true
+tirea-protocol-acp.workspace = true
 tirea-protocol-ai-sdk-v6.workspace = true
 tirea-store-adapters = { workspace = true, features = ["nats", "postgres"] }
 serde = { workspace = true, features = ["derive"] }

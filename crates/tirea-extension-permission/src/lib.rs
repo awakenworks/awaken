@@ -264,7 +264,7 @@ mod tests {
         );
         assert!(matches!(
             outcome,
-            PermissionMechanismDecision::Action(BeforeToolExecuteAction::Block(_))
+            PermissionMechanismDecision::Action(ref action) if matches!(**action, BeforeToolExecuteAction::Block(_))
         ));
     }
 

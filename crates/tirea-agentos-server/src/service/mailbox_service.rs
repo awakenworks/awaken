@@ -84,7 +84,6 @@ struct BufferedEntry {
 enum ThreadStatus {
     Idle,
     Running {
-        run_id: String,
         entry_id: String,
         claim_token: String,
     },
@@ -375,7 +374,6 @@ impl MailboxService {
                 inner.generation = generation;
             }
             inner.status = ThreadStatus::Running {
-                run_id: request.run_id.clone().unwrap_or_default(),
                 entry_id: entry_id.clone(),
                 claim_token: claim_token.clone(),
             };
@@ -511,7 +509,6 @@ impl MailboxService {
                     {
                         let mut inner = mailbox.inner.lock().await;
                         inner.status = ThreadStatus::Running {
-                            run_id,
                             entry_id: entry_id.clone(),
                             claim_token: claim_token.clone(),
                         };
@@ -930,7 +927,6 @@ impl MailboxService {
                                     {
                                         let mut inner = mailbox.inner.lock().await;
                                         inner.status = ThreadStatus::Running {
-                                            run_id,
                                             entry_id,
                                             claim_token,
                                         };
@@ -1182,6 +1178,7 @@ mod tests {
         .await;
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn seed_child_terminal_run_with_status(
         store: &MemoryStore,
         run_id: &str,

@@ -1,0 +1,20 @@
+[package]
+name = "tirea-protocol-acp"
+version.workspace = true
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+description = "Agent Client Protocol (ACP) JSON-RPC 2.0 encoding adapter for tirea"
+keywords = ["agent", "llm", "acp", "protocol", "json-rpc"]
+categories = ["asynchronous", "encoding"]
+
+[dependencies]
+tirea-contract.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tirea-contract.workspace = true
+
+[lints]
+workspace = true

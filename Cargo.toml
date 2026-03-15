@@ -12,6 +12,7 @@ members = [
     "crates/tirea-extension-mcp",
     "crates/tirea-extension-a2ui",
     "crates/tirea-protocol-ag-ui",
+    "crates/tirea-protocol-acp",
     "crates/tirea-protocol-ai-sdk-v6",
     "crates/tirea",
     "crates/tirea-store-adapters",
@@ -41,6 +42,7 @@ tirea-extension-observability = { version = "0.5.0-alpha.1", path = "crates/tire
 tirea-extension-skills = { version = "0.5.0-alpha.1", path = "crates/tirea-extension-skills" }
 tirea-extension-mcp = { version = "0.5.0-alpha.1", path = "crates/tirea-extension-mcp" }
 tirea-extension-a2ui = { version = "0.5.0-alpha.1", path = "crates/tirea-extension-a2ui" }
+tirea-protocol-acp = { version = "0.5.0-alpha.1", path = "crates/tirea-protocol-acp" }
 tirea-protocol-ag-ui = { version = "0.5.0-alpha.1", path = "crates/tirea-protocol-ag-ui" }
 tirea-protocol-ai-sdk-v6 = { version = "0.5.0-alpha.1", path = "crates/tirea-protocol-ai-sdk-v6" }
 tirea = { version = "0.5.0-alpha.1", path = "crates/tirea" }
