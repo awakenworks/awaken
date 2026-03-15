@@ -1391,9 +1391,12 @@ mod tests {
         let store = Arc::new(MemoryStore::new());
         let mailbox_store: Arc<dyn MailboxStore> = store.clone();
 
-        store.ensure_mailbox_state("mbx-batch", 1).await.unwrap();
+        // Use distinct mailboxes so each entry can be claimed concurrently
+        // (exclusive claim limits one active claim per mailbox).
         for i in 0..5 {
-            let entry = MailboxEntryBuilder::queued(format!("entry-batch-{i}"), "mbx-batch")
+            let mid = format!("mbx-batch-{i}");
+            store.ensure_mailbox_state(&mid, 1).await.unwrap();
+            let entry = MailboxEntryBuilder::queued(format!("entry-batch-{i}"), &mid)
                 .with_payload(serde_json::json!({"test": true}))
                 .build();
             store.enqueue_mailbox_entry(&entry).await.unwrap();
@@ -1408,9 +1411,9 @@ mod tests {
             .expect("dispatch should succeed");
         assert_eq!(count, 5);
 
+        // All entries should be accepted
         let page = mailbox_store
             .list_mailbox_entries(&MailboxQuery {
-                mailbox_id: Some("mbx-batch".to_string()),
                 status: Some(MailboxEntryStatus::Accepted),
                 limit: 100,
                 ..Default::default()

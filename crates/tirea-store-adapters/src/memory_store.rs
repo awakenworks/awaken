@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use tirea_contract::storage::{
-    paginate_mailbox_entries, paginate_runs_in_memory, MailboxEntry, MailboxInterrupt, MailboxPage,
-    MailboxQuery, MailboxReader, MailboxState, MailboxStoreError, MailboxWriter, RunPage, RunQuery,
-    RunReader, RunRecord, RunStoreError, RunWriter, ThreadHead, ThreadListPage, ThreadListQuery,
-    ThreadReader, ThreadStoreError, ThreadSync, ThreadWriter, VersionPrecondition,
+    has_active_claim_for_mailbox, paginate_mailbox_entries, paginate_runs_in_memory, MailboxEntry,
+    MailboxInterrupt, MailboxPage, MailboxQuery, MailboxReader, MailboxState, MailboxStoreError,
+    MailboxWriter, RunPage, RunQuery, RunReader, RunRecord, RunStoreError, RunWriter, ThreadHead,
+    ThreadListPage, ThreadListQuery, ThreadReader, ThreadStoreError, ThreadSync, ThreadWriter,
+    VersionPrecondition,
 };
 use tirea_contract::{Committed, Thread, ThreadChangeSet, Version};
 
@@ -142,11 +143,29 @@ impl MailboxWriter for MemoryStore {
                 .then_with(|| left.cmp(right))
         });
 
+        // Track which mailbox IDs we've already claimed in this batch so we
+        // don't claim two entries for the same mailbox in one call.
+        let mut claimed_mailbox_ids = std::collections::HashSet::new();
+
         let mut claimed = Vec::new();
-        for entry_id in claimable_ids.into_iter().take(limit) {
-            let Some(entry) = mailbox.get_mut(&entry_id) else {
+        for entry_id in claimable_ids.into_iter() {
+            if claimed.len() >= limit {
+                break;
+            }
+            let Some(entry) = mailbox.get(&entry_id) else {
                 continue;
             };
+            let mid = entry.mailbox_id.clone();
+
+            // Mailbox-level exclusive claim: skip if this mailbox already has
+            // an active (non-expired) claim.
+            if claimed_mailbox_ids.contains(&mid)
+                || has_active_claim_for_mailbox(mailbox.values(), &mid, now, Some(&entry_id))
+            {
+                continue;
+            }
+
+            let entry = mailbox.get_mut(&entry_id).expect("checked above");
             entry.status = tirea_contract::MailboxEntryStatus::Claimed;
             entry.claim_token = Some(uuid::Uuid::now_v7().simple().to_string());
             entry.claimed_by = Some(consumer_id.to_string());
@@ -154,6 +173,7 @@ impl MailboxWriter for MemoryStore {
             entry.attempt_count = entry.attempt_count.saturating_add(1);
             entry.updated_at = now;
             claimed.push(entry.clone());
+            claimed_mailbox_ids.insert(mid);
         }
         Ok(claimed)
     }
@@ -166,7 +186,7 @@ impl MailboxWriter for MemoryStore {
         lease_duration_ms: u64,
     ) -> Result<Option<MailboxEntry>, MailboxStoreError> {
         let mut mailbox = self.mailbox.write().await;
-        let Some(entry) = mailbox.get_mut(entry_id) else {
+        let Some(entry) = mailbox.get(entry_id) else {
             return Ok(None);
         };
         if entry.status.is_terminal() {
@@ -178,6 +198,13 @@ impl MailboxWriter for MemoryStore {
             return Ok(None);
         }
 
+        // Mailbox-level exclusive claim: reject if another entry in the same
+        // mailbox already holds an active lease.
+        if has_active_claim_for_mailbox(mailbox.values(), &entry.mailbox_id, now, Some(entry_id)) {
+            return Ok(None);
+        }
+
+        let entry = mailbox.get_mut(entry_id).expect("checked above");
         entry.status = tirea_contract::MailboxEntryStatus::Claimed;
         entry.claim_token = Some(uuid::Uuid::now_v7().simple().to_string());
         entry.claimed_by = Some(consumer_id.to_string());
@@ -366,6 +393,28 @@ impl MailboxWriter for MemoryStore {
             mailbox_state,
             superseded_entries: superseded,
         })
+    }
+
+    async fn extend_lease(
+        &self,
+        entry_id: &str,
+        claim_token: &str,
+        extension_ms: u64,
+        now: u64,
+    ) -> Result<bool, MailboxStoreError> {
+        let mut mailbox = self.mailbox.write().await;
+        let Some(entry) = mailbox.get_mut(entry_id) else {
+            return Ok(false);
+        };
+        if entry.status != tirea_contract::MailboxEntryStatus::Claimed {
+            return Ok(false);
+        }
+        if entry.claim_token.as_deref() != Some(claim_token) {
+            return Ok(false);
+        }
+        entry.lease_until = Some(now.saturating_add(extension_ms));
+        entry.updated_at = now;
+        Ok(true)
     }
 
     async fn purge_terminal_mailbox_entries(

@@ -1631,15 +1631,16 @@ async fn mailbox_claim_entries_filters_by_mailbox_id() {
         .await
         .unwrap();
 
-    // Claim only from mailbox-a
+    // Claim only from mailbox-a — exclusive: only one per mailbox
     let claimed_a = store
         .claim_mailbox_entries(Some("mailbox-a"), 10, "consumer-1", 10, 5000)
         .await
         .unwrap();
-    assert_eq!(claimed_a.len(), 2);
-    assert!(claimed_a.iter().all(|e| e.mailbox_id == "mailbox-a"));
+    assert_eq!(claimed_a.len(), 1, "exclusive claim: one per mailbox");
+    assert_eq!(claimed_a[0].mailbox_id, "mailbox-a");
+    let token_a = claimed_a[0].claim_token.clone().unwrap();
 
-    // Claim from mailbox-b
+    // Claim from mailbox-b — independent mailbox, should work
     let claimed_b = store
         .claim_mailbox_entries(Some("mailbox-b"), 10, "consumer-1", 10, 5000)
         .await
@@ -1647,12 +1648,24 @@ async fn mailbox_claim_entries_filters_by_mailbox_id() {
     assert_eq!(claimed_b.len(), 1);
     assert_eq!(claimed_b[0].mailbox_id, "mailbox-b");
 
-    // Claim all (no filter) — all already claimed, lease not expired
+    // Claim all (no filter) — both mailboxes have active claims
     let claimed_all = store
         .claim_mailbox_entries(None, 10, "consumer-2", 10, 5000)
         .await
         .unwrap();
     assert_eq!(claimed_all.len(), 0);
+
+    // Ack the mailbox-a claim, then second entry becomes claimable
+    store
+        .ack_mailbox_entry("entry-a1", &token_a, 20)
+        .await
+        .unwrap();
+    let claimed_a2 = store
+        .claim_mailbox_entries(Some("mailbox-a"), 10, "consumer-1", 21, 5000)
+        .await
+        .unwrap();
+    assert_eq!(claimed_a2.len(), 1);
+    assert_eq!(claimed_a2[0].entry_id, "entry-a2");
 }
 
 // ---------------------------------------------------------------------------
@@ -1790,14 +1803,13 @@ async fn mailbox_claim_respects_priority_ordering() {
         .build();
     store.enqueue_mailbox_entry(&medium).await.unwrap();
 
+    // Exclusive claim: only the highest-priority entry should be claimed
     let claimed = store
         .claim_mailbox_entries(None, 10, "consumer", 10, 5000)
         .await
         .unwrap();
-    assert_eq!(claimed.len(), 3);
-    assert_eq!(claimed[0].entry_id, "entry-high");
-    assert_eq!(claimed[1].entry_id, "entry-med");
-    assert_eq!(claimed[2].entry_id, "entry-low");
+    assert_eq!(claimed.len(), 1, "exclusive claim: one per mailbox");
+    assert_eq!(claimed[0].entry_id, "entry-high", "highest priority wins");
 }
 
 // ---------------------------------------------------------------------------
@@ -1987,4 +1999,232 @@ async fn mailbox_list_entries_filters_by_origin() {
         .unwrap();
     assert_eq!(internal.total, 1);
     assert_eq!(internal.items[0].entry_id, "entry-int");
+}
+
+// ---------------------------------------------------------------------------
+// Mailbox-level exclusive claim
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mailbox_exclusive_claim_prevents_concurrent_claims_on_same_mailbox() {
+    let store = MemoryStore::new();
+    store.ensure_mailbox_state("thread-1", 1).await.unwrap();
+
+    // Enqueue two entries for the same mailbox
+    let entry_a = MailboxEntryBuilder::queued("entry-a", "thread-1").build();
+    let entry_b = MailboxEntryBuilder::queued("entry-b", "thread-1").build();
+    store.enqueue_mailbox_entry(&entry_a).await.unwrap();
+    store.enqueue_mailbox_entry(&entry_b).await.unwrap();
+
+    // Claim first entry
+    let claimed = store
+        .claim_mailbox_entries(Some("thread-1"), 10, "worker-1", 10, 30_000)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1, "should only claim one entry per mailbox");
+    assert_eq!(claimed[0].entry_id, "entry-a");
+
+    // Try to claim more — should get none because mailbox has active claim
+    let claimed2 = store
+        .claim_mailbox_entries(Some("thread-1"), 10, "worker-2", 11, 30_000)
+        .await
+        .unwrap();
+    assert_eq!(claimed2.len(), 0, "second claim should be blocked");
+
+    // claim_mailbox_entry by ID should also be blocked
+    let by_id = store
+        .claim_mailbox_entry("entry-b", "worker-2", 12, 30_000)
+        .await
+        .unwrap();
+    assert!(by_id.is_none(), "direct claim should be blocked too");
+}
+
+#[tokio::test]
+async fn mailbox_exclusive_claim_allows_claim_after_ack() {
+    let store = MemoryStore::new();
+    store.ensure_mailbox_state("thread-2", 1).await.unwrap();
+
+    let entry_a = MailboxEntryBuilder::queued("entry-2a", "thread-2").build();
+    let entry_b = MailboxEntryBuilder::queued("entry-2b", "thread-2").build();
+    store.enqueue_mailbox_entry(&entry_a).await.unwrap();
+    store.enqueue_mailbox_entry(&entry_b).await.unwrap();
+
+    // Claim and ack first entry
+    let claimed = store
+        .claim_mailbox_entry("entry-2a", "worker-1", 10, 30_000)
+        .await
+        .unwrap()
+        .unwrap();
+    let token = claimed.claim_token.unwrap();
+    store
+        .ack_mailbox_entry("entry-2a", &token, 20)
+        .await
+        .unwrap();
+
+    // Now second entry should be claimable
+    let claimed2 = store
+        .claim_mailbox_entry("entry-2b", "worker-1", 21, 30_000)
+        .await
+        .unwrap();
+    assert!(claimed2.is_some(), "should be claimable after ack");
+}
+
+#[tokio::test]
+async fn mailbox_exclusive_claim_allows_claim_after_lease_expires() {
+    let store = MemoryStore::new();
+    store.ensure_mailbox_state("thread-3", 1).await.unwrap();
+
+    let entry_a = MailboxEntryBuilder::queued("entry-3a", "thread-3").build();
+    let entry_b = MailboxEntryBuilder::queued("entry-3b", "thread-3").build();
+    store.enqueue_mailbox_entry(&entry_a).await.unwrap();
+    store.enqueue_mailbox_entry(&entry_b).await.unwrap();
+
+    // Claim with short lease (expires at 10 + 100 = 110)
+    store
+        .claim_mailbox_entry("entry-3a", "worker-1", 10, 100)
+        .await
+        .unwrap();
+
+    // Blocked before expiry
+    let blocked = store
+        .claim_mailbox_entry("entry-3b", "worker-2", 50, 30_000)
+        .await
+        .unwrap();
+    assert!(blocked.is_none());
+
+    // Allowed after lease expires
+    let allowed = store
+        .claim_mailbox_entry("entry-3b", "worker-2", 120, 30_000)
+        .await
+        .unwrap();
+    assert!(allowed.is_some());
+}
+
+#[tokio::test]
+async fn mailbox_exclusive_claim_different_mailboxes_are_independent() {
+    let store = MemoryStore::new();
+    store.ensure_mailbox_state("thread-x", 1).await.unwrap();
+    store.ensure_mailbox_state("thread-y", 1).await.unwrap();
+
+    let entry_x = MailboxEntryBuilder::queued("entry-x", "thread-x").build();
+    let entry_y = MailboxEntryBuilder::queued("entry-y", "thread-y").build();
+    store.enqueue_mailbox_entry(&entry_x).await.unwrap();
+    store.enqueue_mailbox_entry(&entry_y).await.unwrap();
+
+    // Claim on thread-x
+    let claimed_x = store
+        .claim_mailbox_entry("entry-x", "worker-1", 10, 30_000)
+        .await
+        .unwrap();
+    assert!(claimed_x.is_some());
+
+    // Claim on thread-y should still work
+    let claimed_y = store
+        .claim_mailbox_entry("entry-y", "worker-1", 11, 30_000)
+        .await
+        .unwrap();
+    assert!(claimed_y.is_some(), "different mailboxes are independent");
+}
+
+#[tokio::test]
+async fn mailbox_batch_claim_returns_at_most_one_per_mailbox() {
+    let store = MemoryStore::new();
+    store.ensure_mailbox_state("thread-m1", 1).await.unwrap();
+    store.ensure_mailbox_state("thread-m2", 1).await.unwrap();
+
+    // Two entries per mailbox
+    for (i, mid) in [
+        ("1", "thread-m1"),
+        ("2", "thread-m1"),
+        ("3", "thread-m2"),
+        ("4", "thread-m2"),
+    ]
+    .iter()
+    {
+        store
+            .enqueue_mailbox_entry(
+                &MailboxEntryBuilder::queued(format!("entry-batch-{i}"), *mid).build(),
+            )
+            .await
+            .unwrap();
+    }
+
+    let claimed = store
+        .claim_mailbox_entries(None, 10, "worker-1", 10, 30_000)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 2, "one per mailbox");
+    let mailbox_ids: Vec<&str> = claimed.iter().map(|e| e.mailbox_id.as_str()).collect();
+    assert!(mailbox_ids.contains(&"thread-m1"));
+    assert!(mailbox_ids.contains(&"thread-m2"));
+}
+
+// ---------------------------------------------------------------------------
+// extend_lease
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mailbox_extend_lease_extends_active_claim() {
+    let store = MemoryStore::new();
+    store.ensure_mailbox_state("thread-el", 1).await.unwrap();
+    store
+        .enqueue_mailbox_entry(&MailboxEntryBuilder::queued("entry-el", "thread-el").build())
+        .await
+        .unwrap();
+
+    // Claim with lease expiring at 10 + 100 = 110
+    let claimed = store
+        .claim_mailbox_entry("entry-el", "worker-1", 10, 100)
+        .await
+        .unwrap()
+        .unwrap();
+    let token = claimed.claim_token.unwrap();
+
+    // Extend at now=50, extension_ms=200 → new lease_until = 250
+    let extended = store
+        .extend_lease("entry-el", &token, 200, 50)
+        .await
+        .unwrap();
+    assert!(extended);
+
+    let loaded = store.load_mailbox_entry("entry-el").await.unwrap().unwrap();
+    assert_eq!(loaded.lease_until, Some(250));
+}
+
+#[tokio::test]
+async fn mailbox_extend_lease_rejects_wrong_token() {
+    let store = MemoryStore::new();
+    store.ensure_mailbox_state("thread-elt", 1).await.unwrap();
+    store
+        .enqueue_mailbox_entry(&MailboxEntryBuilder::queued("entry-elt", "thread-elt").build())
+        .await
+        .unwrap();
+
+    store
+        .claim_mailbox_entry("entry-elt", "worker-1", 10, 100)
+        .await
+        .unwrap();
+
+    let result = store
+        .extend_lease("entry-elt", "wrong-token", 200, 50)
+        .await
+        .unwrap();
+    assert!(!result);
+}
+
+#[tokio::test]
+async fn mailbox_extend_lease_rejects_non_claimed() {
+    let store = MemoryStore::new();
+    store.ensure_mailbox_state("thread-elnc", 1).await.unwrap();
+    store
+        .enqueue_mailbox_entry(&MailboxEntryBuilder::queued("entry-elnc", "thread-elnc").build())
+        .await
+        .unwrap();
+
+    // Entry is Queued, not Claimed
+    let result = store
+        .extend_lease("entry-elnc", "any-token", 200, 50)
+        .await
+        .unwrap();
+    assert!(!result);
 }

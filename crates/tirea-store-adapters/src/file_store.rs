@@ -4,10 +4,10 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tirea_contract::storage::{
-    paginate_mailbox_entries, paginate_runs_in_memory, Committed, MailboxEntry, MailboxInterrupt,
-    MailboxPage, MailboxQuery, MailboxReader, MailboxState, MailboxStoreError, MailboxWriter,
-    RunPage, RunQuery, RunRecord, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader,
-    ThreadStoreError, ThreadWriter, VersionPrecondition,
+    has_active_claim_for_mailbox, paginate_mailbox_entries, paginate_runs_in_memory, Committed,
+    MailboxEntry, MailboxInterrupt, MailboxPage, MailboxQuery, MailboxReader, MailboxState,
+    MailboxStoreError, MailboxWriter, RunPage, RunQuery, RunRecord, ThreadHead, ThreadListPage,
+    ThreadListQuery, ThreadReader, ThreadStoreError, ThreadWriter, VersionPrecondition,
 };
 use tirea_contract::{Thread, ThreadChangeSet, Version};
 
@@ -214,8 +214,14 @@ impl MailboxWriter for FileStore {
         now: u64,
         lease_duration_ms: u64,
     ) -> Result<Vec<MailboxEntry>, MailboxStoreError> {
-        let mut entries = self.load_all_mailbox_entries().await?;
-        entries.sort_by(|left, right| {
+        let all_entries = self.load_all_mailbox_entries().await?;
+        let mut candidates: Vec<MailboxEntry> = all_entries
+            .iter()
+            .filter(|entry| entry.is_claimable(now))
+            .filter(|entry| mailbox_id.is_none_or(|id| entry.mailbox_id == id))
+            .cloned()
+            .collect();
+        candidates.sort_by(|left, right| {
             right
                 .priority
                 .cmp(&left.priority)
@@ -223,12 +229,29 @@ impl MailboxWriter for FileStore {
                 .then_with(|| left.created_at.cmp(&right.created_at))
                 .then_with(|| left.entry_id.cmp(&right.entry_id))
         });
+
+        // Track which mailbox IDs we've already claimed in this batch.
+        let mut claimed_mailbox_ids = std::collections::HashSet::new();
+
         let mut claimed = Vec::new();
-        for mut entry in entries
-            .into_iter()
-            .filter(|entry| entry.is_claimable(now))
-            .filter(|entry| mailbox_id.is_none_or(|id| entry.mailbox_id == id))
-        {
+        for mut entry in candidates {
+            if claimed.len() >= limit {
+                break;
+            }
+
+            // Mailbox-level exclusive claim: skip if this mailbox already has
+            // an active (non-expired) claim.
+            if claimed_mailbox_ids.contains(&entry.mailbox_id)
+                || has_active_claim_for_mailbox(
+                    all_entries.iter(),
+                    &entry.mailbox_id,
+                    now,
+                    Some(&entry.entry_id),
+                )
+            {
+                continue;
+            }
+
             // Reconcile: supersede stale-generation entries that survived a
             // partial interrupt (FileStore interrupt is not atomic).
             if let Some(ts) = self.load_mailbox_state_inner(&entry.mailbox_id).await? {
@@ -245,6 +268,7 @@ impl MailboxWriter for FileStore {
                 }
             }
 
+            let mid = entry.mailbox_id.clone();
             entry.status = tirea_contract::MailboxEntryStatus::Claimed;
             entry.claim_token = Some(uuid::Uuid::now_v7().simple().to_string());
             entry.claimed_by = Some(consumer_id.to_string());
@@ -253,9 +277,7 @@ impl MailboxWriter for FileStore {
             entry.updated_at = now;
             self.save_mailbox_entry(&entry).await?;
             claimed.push(entry);
-            if claimed.len() >= limit {
-                break;
-            }
+            claimed_mailbox_ids.insert(mid);
         }
         Ok(claimed)
     }
@@ -275,6 +297,14 @@ impl MailboxWriter for FileStore {
         }
         if entry.status == tirea_contract::MailboxEntryStatus::Claimed
             && entry.lease_until.is_some_and(|lease| lease > now)
+        {
+            return Ok(None);
+        }
+
+        // Mailbox-level exclusive claim: reject if another entry in the same
+        // mailbox already holds an active lease.
+        let all_entries = self.load_all_mailbox_entries().await?;
+        if has_active_claim_for_mailbox(all_entries.iter(), &entry.mailbox_id, now, Some(entry_id))
         {
             return Ok(None);
         }
@@ -468,6 +498,28 @@ impl MailboxWriter for FileStore {
             mailbox_state: state,
             superseded_entries: superseded,
         })
+    }
+
+    async fn extend_lease(
+        &self,
+        entry_id: &str,
+        claim_token: &str,
+        extension_ms: u64,
+        now: u64,
+    ) -> Result<bool, MailboxStoreError> {
+        let Some(mut entry) = self.load_mailbox_entry(entry_id).await? else {
+            return Ok(false);
+        };
+        if entry.status != tirea_contract::MailboxEntryStatus::Claimed {
+            return Ok(false);
+        }
+        if entry.claim_token.as_deref() != Some(claim_token) {
+            return Ok(false);
+        }
+        entry.lease_until = Some(now.saturating_add(extension_ms));
+        entry.updated_at = now;
+        self.save_mailbox_entry(&entry).await?;
+        Ok(true)
     }
 
     async fn purge_terminal_mailbox_entries(

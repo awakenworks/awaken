@@ -99,6 +99,18 @@ pub trait MailboxWriter: MailboxReader {
         now: u64,
     ) -> Result<MailboxInterrupt, MailboxStoreError>;
 
+    /// Extend the lease on a claimed entry.
+    ///
+    /// Returns `true` if the lease was extended, `false` if the claim token does
+    /// not match or the entry is no longer in `Claimed` status.
+    async fn extend_lease(
+        &self,
+        entry_id: &str,
+        claim_token: &str,
+        extension_ms: u64,
+        now: u64,
+    ) -> Result<bool, MailboxStoreError>;
+
     /// Delete terminal entries older than `older_than` (unix millis). Returns count deleted.
     async fn purge_terminal_mailbox_entries(
         &self,

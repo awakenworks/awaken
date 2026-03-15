@@ -171,6 +171,22 @@ pub fn paginate_mailbox_entries(entries: &[MailboxEntry], query: &MailboxQuery) 
     }
 }
 
+/// Check whether any entry in the given collection holds an active (non-expired)
+/// claim for `mailbox_id`, optionally excluding `exclude_entry_id`.
+pub fn has_active_claim_for_mailbox<'a>(
+    entries: impl IntoIterator<Item = &'a MailboxEntry>,
+    mailbox_id: &str,
+    now: u64,
+    exclude_entry_id: Option<&str>,
+) -> bool {
+    entries.into_iter().any(|e| {
+        e.mailbox_id == mailbox_id
+            && e.status == MailboxEntryStatus::Claimed
+            && e.lease_until.is_some_and(|l| l > now)
+            && exclude_entry_id.map_or(true, |eid| e.entry_id != eid)
+    })
+}
+
 /// Outcome of a receiver processing a mailbox entry.
 #[derive(Debug, Clone)]
 pub enum ReceiveOutcome {

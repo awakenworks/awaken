@@ -21,6 +21,44 @@ use super::mailbox::{
 use super::mailbox::{EnqueueOptions, MailboxRunStartError};
 use super::ApiError;
 
+/// Interval between lease renewal heartbeats.
+const LEASE_RENEWAL_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Spawn a background task that periodically extends a mailbox entry's lease.
+///
+/// Returns a [`tokio::task::JoinHandle`] that should be aborted when the run
+/// completes (the handle is cancel-safe).
+fn spawn_lease_renewal(
+    store: Arc<dyn MailboxStore>,
+    entry_id: String,
+    claim_token: String,
+    lease_ms: u64,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(LEASE_RENEWAL_INTERVAL);
+        // Skip the first immediate tick.
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let now = now_unix_millis();
+            match store
+                .extend_lease(&entry_id, &claim_token, lease_ms, now)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::debug!(entry_id, "lease renewal: entry no longer claimed, stopping");
+                    break;
+                }
+                Err(err) => {
+                    tracing::warn!(entry_id, %err, "lease renewal failed");
+                    break;
+                }
+            }
+        }
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Control signals
 // ---------------------------------------------------------------------------
@@ -45,13 +83,19 @@ struct BufferedEntry {
 
 enum ThreadStatus {
     Idle,
-    Running { _run_id: String, _entry_id: String },
+    Running {
+        run_id: String,
+        entry_id: String,
+        claim_token: String,
+    },
 }
 
 struct MailboxInner {
     status: ThreadStatus,
     generation: u64,
     pending: VecDeque<BufferedEntry>,
+    /// Background task that extends the mailbox entry lease while a run is active.
+    lease_renewal: Option<tokio::task::JoinHandle<()>>,
 }
 
 struct ThreadMailbox {
@@ -67,6 +111,7 @@ impl ThreadMailbox {
                 status: ThreadStatus::Idle,
                 generation,
                 pending: VecDeque::new(),
+                lease_renewal: None,
             }),
         }
     }
@@ -318,20 +363,28 @@ impl MailboxService {
 
         // Register the thread mailbox as Running before starting
         let mailbox = self.get_or_create_mailbox(&thread_id, generation).await;
+        let renewal = spawn_lease_renewal(
+            self.mailbox_store.clone(),
+            entry_id.clone(),
+            claim_token.clone(),
+            DEFAULT_MAILBOX_LEASE_MS,
+        );
         {
             let mut inner = mailbox.inner.lock().await;
             if generation > inner.generation {
                 inner.generation = generation;
             }
             inner.status = ThreadStatus::Running {
-                _run_id: request.run_id.clone().unwrap_or_default(),
-                _entry_id: entry_id.clone(),
+                run_id: request.run_id.clone().unwrap_or_default(),
+                entry_id: entry_id.clone(),
+                claim_token: claim_token.clone(),
             };
+            inner.lease_renewal = Some(renewal);
         }
 
         match start_agent_run_for_entry(&self.os, &self.mailbox_store, &claimed, false).await {
             Ok(run) => {
-                ack_claimed_entry(&self.mailbox_store, &entry_id, &claim_token).await?;
+                // Defer ack until stream exhausts via wrap_with_completion.
                 Ok(self.wrap_with_completion(thread_id, run))
             }
             Err(MailboxRunStartError::Superseded(error)) => {
@@ -441,11 +494,15 @@ impl MailboxService {
 
             match start_agent_run_for_entry(&self.os, &self.mailbox_store, &claimed, true).await {
                 Ok(run) => {
-                    if let Err(err) =
-                        ack_claimed_entry(&self.mailbox_store, &entry_id, &claim_token).await
-                    {
-                        tracing::error!(entry_id, %err, "failed to ack entry");
-                    }
+                    // Defer ack until run completes — the Claimed status with
+                    // active lease serves as a distributed lock preventing
+                    // concurrent runs on the same thread across nodes.
+                    let renewal = spawn_lease_renewal(
+                        self.mailbox_store.clone(),
+                        entry_id.clone(),
+                        claim_token.clone(),
+                        DEFAULT_MAILBOX_LEASE_MS,
+                    );
 
                     let run_id = run.run_id.clone();
                     let completed_run_id = run_id.clone();
@@ -454,9 +511,11 @@ impl MailboxService {
                     {
                         let mut inner = mailbox.inner.lock().await;
                         inner.status = ThreadStatus::Running {
-                            _run_id: run_id,
-                            _entry_id: entry_id.clone(),
+                            run_id,
+                            entry_id: entry_id.clone(),
+                            claim_token: claim_token.clone(),
                         };
+                        inner.lease_renewal = Some(renewal);
                     }
 
                     // Spawn background drain with completion callback
@@ -569,8 +628,9 @@ impl MailboxService {
         }
     }
 
-    /// Called when a run completes on a thread. Transitions to Idle and
-    /// spawns dispatch of the next pending entry.
+    /// Called when a run completes on a thread. Acks the mailbox entry,
+    /// stops lease renewal, transitions to Idle, and dispatches the next
+    /// pending entry.
     async fn on_run_complete(self: &Arc<Self>, thread_id: &str, run_id: &str) {
         if let Err(err) = self.submit_parent_completion_notification(run_id).await {
             tracing::warn!(thread_id, run_id, %err, "failed to submit parent completion notification");
@@ -586,6 +646,24 @@ impl MailboxService {
 
         let next = {
             let mut inner = mailbox.inner.lock().await;
+
+            // Abort lease renewal and ack the completed entry.
+            if let Some(handle) = inner.lease_renewal.take() {
+                handle.abort();
+            }
+            if let ThreadStatus::Running {
+                entry_id,
+                claim_token,
+                ..
+            } = &inner.status
+            {
+                if let Err(err) =
+                    ack_claimed_entry(&self.mailbox_store, entry_id, claim_token).await
+                {
+                    tracing::error!(entry_id, %err, "failed to ack entry on run completion");
+                }
+            }
+
             inner.status = ThreadStatus::Idle;
             inner.pending.pop_front()
         };
@@ -727,6 +805,9 @@ impl MailboxService {
                     inner.generation = new_generation;
                     // If there's no active run to complete, mark idle
                     if cancelled_run_id.is_none() {
+                        if let Some(handle) = inner.lease_renewal.take() {
+                            handle.abort();
+                        }
                         inner.status = ThreadStatus::Idle;
                     }
                 }
@@ -837,21 +918,23 @@ impl MailboxService {
                             .await
                             {
                                 Ok(run) => {
-                                    let _ = ack_claimed_entry(
-                                        &self.mailbox_store,
-                                        &entry.entry_id,
-                                        &claim_token,
-                                    )
-                                    .await;
+                                    let renewal = spawn_lease_renewal(
+                                        self.mailbox_store.clone(),
+                                        entry.entry_id.clone(),
+                                        claim_token.clone(),
+                                        DEFAULT_MAILBOX_LEASE_MS,
+                                    );
                                     let run_id = run.run_id.clone();
                                     let completed_run_id = run_id.clone();
                                     let entry_id = entry.entry_id.clone();
                                     {
                                         let mut inner = mailbox.inner.lock().await;
                                         inner.status = ThreadStatus::Running {
-                                            _run_id: run_id,
-                                            _entry_id: entry_id,
+                                            run_id,
+                                            entry_id,
+                                            claim_token,
                                         };
+                                        inner.lease_renewal = Some(renewal);
                                     }
                                     let svc = self.clone();
                                     let tid = thread_id.clone();

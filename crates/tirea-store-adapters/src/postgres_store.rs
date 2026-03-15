@@ -552,14 +552,30 @@ impl MailboxWriter for PostgresStore {
         let now_i64 = i64::try_from(now).map_err(|_| {
             MailboxStoreError::Backend("now too large for postgres BIGINT".to_string())
         })?;
+        // Mailbox-level exclusive claim: only select entries whose mailbox
+        // does NOT already have an active (non-expired) claim.
+        let exclusive_filter = format!(
+            "AND NOT EXISTS (\
+                SELECT 1 FROM {} e2 \
+                WHERE e2.mailbox_id = e1.mailbox_id \
+                  AND e2.status = 'claimed' \
+                  AND e2.lease_until IS NOT NULL \
+                  AND e2.lease_until > $1 \
+                  AND e2.entry_id != e1.entry_id\
+            )",
+            self.mailbox_table
+        );
         let rows: Vec<MailboxRow> = if let Some(mailbox_id) = mailbox_id {
             sqlx::query_as(&format!(
-                "SELECT entry_id, mailbox_id, origin, sender_id, payload, priority, dedupe_key, \
-                 generation, status, available_at, attempt_count, last_error, claim_token, \
-                 claimed_by, lease_until, created_at, updated_at FROM {} \
-                 WHERE mailbox_id = $3 AND ((status = 'queued' AND available_at <= $1) \
-                    OR (status = 'claimed' AND lease_until IS NOT NULL AND lease_until <= $1)) \
-                 ORDER BY priority DESC, available_at ASC, created_at ASC, entry_id ASC \
+                "SELECT e1.entry_id, e1.mailbox_id, e1.origin, e1.sender_id, e1.payload, \
+                 e1.priority, e1.dedupe_key, e1.generation, e1.status, e1.available_at, \
+                 e1.attempt_count, e1.last_error, e1.claim_token, e1.claimed_by, e1.lease_until, \
+                 e1.created_at, e1.updated_at FROM {} e1 \
+                 WHERE e1.mailbox_id = $3 \
+                   AND ((e1.status = 'queued' AND e1.available_at <= $1) \
+                    OR (e1.status = 'claimed' AND e1.lease_until IS NOT NULL AND e1.lease_until <= $1)) \
+                 {exclusive_filter} \
+                 ORDER BY e1.priority DESC, e1.available_at ASC, e1.created_at ASC, e1.entry_id ASC \
                  FOR UPDATE SKIP LOCKED LIMIT $2",
                 self.mailbox_table
             ))
@@ -571,12 +587,14 @@ impl MailboxWriter for PostgresStore {
             .map_err(Self::mailbox_sql_err)?
         } else {
             sqlx::query_as(&format!(
-                "SELECT entry_id, mailbox_id, origin, sender_id, payload, priority, dedupe_key, \
-                 generation, status, available_at, attempt_count, last_error, claim_token, \
-                 claimed_by, lease_until, created_at, updated_at FROM {} \
-                 WHERE (status = 'queued' AND available_at <= $1) \
-                    OR (status = 'claimed' AND lease_until IS NOT NULL AND lease_until <= $1) \
-                 ORDER BY priority DESC, available_at ASC, created_at ASC, entry_id ASC \
+                "SELECT e1.entry_id, e1.mailbox_id, e1.origin, e1.sender_id, e1.payload, \
+                 e1.priority, e1.dedupe_key, e1.generation, e1.status, e1.available_at, \
+                 e1.attempt_count, e1.last_error, e1.claim_token, e1.claimed_by, e1.lease_until, \
+                 e1.created_at, e1.updated_at FROM {} e1 \
+                 WHERE (e1.status = 'queued' AND e1.available_at <= $1) \
+                    OR (e1.status = 'claimed' AND e1.lease_until IS NOT NULL AND e1.lease_until <= $1) \
+                 {exclusive_filter} \
+                 ORDER BY e1.priority DESC, e1.available_at ASC, e1.created_at ASC, e1.entry_id ASC \
                  FOR UPDATE SKIP LOCKED LIMIT $2",
                 self.mailbox_table
             ))
@@ -587,9 +605,14 @@ impl MailboxWriter for PostgresStore {
             .map_err(Self::mailbox_sql_err)?
         };
 
+        // Deduplicate by mailbox_id: only claim one entry per mailbox.
+        let mut seen_mailbox_ids = std::collections::HashSet::new();
         let mut claimed = Vec::with_capacity(rows.len());
         for row in rows {
             let mut entry = Self::mailbox_entry_from_row(row)?;
+            if !seen_mailbox_ids.insert(entry.mailbox_id.clone()) {
+                continue;
+            }
             let claim_token = uuid::Uuid::now_v7().simple().to_string();
             let lease_until = now.saturating_add(lease_duration_ms);
             sqlx::query(&format!(
@@ -633,13 +656,24 @@ impl MailboxWriter for PostgresStore {
         let now_i64 = i64::try_from(now).map_err(|_| {
             MailboxStoreError::Backend("now too large for postgres BIGINT".to_string())
         })?;
+        // Mailbox-level exclusive claim: reject if another entry in the same
+        // mailbox already holds an active (non-expired) lease.
         let row = sqlx::query_as::<_, MailboxRow>(&format!(
             "SELECT entry_id, mailbox_id, origin, sender_id, payload, priority, dedupe_key, \
              generation, status, available_at, attempt_count, last_error, claim_token, \
              claimed_by, lease_until, created_at, updated_at FROM {} \
-             WHERE entry_id = $1 AND (status = 'queued' OR (status = 'claimed' AND lease_until IS NOT NULL AND lease_until <= $2)) \
+             WHERE entry_id = $1 \
+               AND (status = 'queued' OR (status = 'claimed' AND lease_until IS NOT NULL AND lease_until <= $2)) \
+               AND NOT EXISTS (\
+                   SELECT 1 FROM {} e2 \
+                   WHERE e2.mailbox_id = (SELECT mailbox_id FROM {} WHERE entry_id = $1) \
+                     AND e2.status = 'claimed' \
+                     AND e2.lease_until IS NOT NULL \
+                     AND e2.lease_until > $2 \
+                     AND e2.entry_id != $1\
+               ) \
              FOR UPDATE SKIP LOCKED",
-            self.mailbox_table
+            self.mailbox_table, self.mailbox_table, self.mailbox_table
         ))
         .bind(entry_id)
         .bind(now_i64)
@@ -961,6 +995,34 @@ impl MailboxWriter for PostgresStore {
             mailbox_state,
             superseded_entries,
         })
+    }
+
+    async fn extend_lease(
+        &self,
+        entry_id: &str,
+        claim_token: &str,
+        extension_ms: u64,
+        now: u64,
+    ) -> Result<bool, MailboxStoreError> {
+        let now_i64 = i64::try_from(now).map_err(|_| {
+            MailboxStoreError::Backend("now too large for postgres BIGINT".to_string())
+        })?;
+        let lease_until = i64::try_from(now.saturating_add(extension_ms)).map_err(|_| {
+            MailboxStoreError::Backend("lease_until too large for postgres BIGINT".to_string())
+        })?;
+        let result = sqlx::query(&format!(
+            "UPDATE {} SET lease_until = $1, updated_at = $2 \
+             WHERE entry_id = $3 AND status = 'claimed' AND claim_token = $4",
+            self.mailbox_table
+        ))
+        .bind(lease_until)
+        .bind(now_i64)
+        .bind(entry_id)
+        .bind(claim_token)
+        .execute(&self.pool)
+        .await
+        .map_err(Self::mailbox_sql_err)?;
+        Ok(result.rows_affected() > 0)
     }
 
     async fn purge_terminal_mailbox_entries(
