@@ -4,9 +4,9 @@ use crate::composition::{
     InMemoryAgentRegistry, ResolvedAgent,
 };
 use crate::contracts::runtime::behavior::ReadOnlyContext;
-use crate::contracts::runtime::phase::{ActionSet, BeforeInferenceAction};
+use crate::contracts::runtime::phase::{ActionSet, AfterToolExecuteAction, BeforeInferenceAction};
 use crate::contracts::runtime::phase::{Phase, StepContext};
-use crate::contracts::runtime::state::{reduce_state_actions, ScopeContext};
+use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction, ScopeContext};
 use crate::contracts::runtime::tool_call::CallerContext;
 use crate::contracts::runtime::tool_call::ToolStatus;
 use crate::contracts::storage::RunOrigin;
@@ -42,6 +42,32 @@ fn apply_caller_scope(fix: &mut TestFixture, scope: CallerScopeFixture) {
     fix.doc = DocCell::new(scope.state);
     fix.run_policy = scope.run_policy;
     fix.caller_context = scope.caller_context;
+}
+
+/// Reduce effect actions against a base state snapshot, returning the updated state.
+fn apply_effect_actions(
+    base: &serde_json::Value,
+    actions: Vec<AfterToolExecuteAction>,
+    source: &str,
+) -> serde_json::Value {
+    let state_actions: Vec<AnyStateAction> = actions
+        .into_iter()
+        .filter_map(|a| match a {
+            AfterToolExecuteAction::State(sa) => Some(sa),
+            _ => None,
+        })
+        .collect();
+    if state_actions.is_empty() {
+        return base.clone();
+    }
+    let scope_ctx = ScopeContext::run();
+    let patches = reduce_state_actions(state_actions, base, source, &scope_ctx)
+        .expect("state actions should reduce");
+    let mut result = base.clone();
+    for p in patches {
+        result = apply_patches(&result, std::iter::once(p.patch())).unwrap();
+    }
+    result
 }
 
 #[async_trait]
@@ -1133,8 +1159,8 @@ async fn agent_run_tool_persists_run_state_patch() {
 
     let mut fix = TestFixture::new();
     apply_caller_scope(&mut fix, caller_scope());
-    let started = run_tool
-        .execute(
+    let effect = run_tool
+        .execute_effect(
             json!({
                 "agent_id":"worker",
                 "prompt":"start",
@@ -1144,19 +1170,19 @@ async fn agent_run_tool_persists_run_state_patch() {
         )
         .await
         .unwrap();
+    let (started, actions) = effect.into_parts();
     assert_eq!(started.status, ToolStatus::Success);
     let run_id = started.data["run_id"]
         .as_str()
         .expect("run_id should exist")
         .to_string();
 
-    let patch = fix.ctx_with("call-run", "tool:agent_run").take_patch();
     assert!(
-        !patch.patch().is_empty(),
+        !actions.is_empty(),
         "expected tool to persist run snapshot into state"
     );
     let base = json!({});
-    let updated = apply_patches(&base, std::iter::once(patch.patch())).unwrap();
+    let updated = apply_effect_actions(&base, actions, "tool:agent_run");
     assert_eq!(
         updated["sub_agents"]["runs"][&run_id]["status"],
         json!("running")
@@ -1200,8 +1226,8 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
         &mut fix,
         caller_scope_with_state_and_run(json!({"forked": true}), "parent-run-42"),
     );
-    let started = run_tool
-        .execute(
+    let effect = run_tool
+        .execute_effect(
             json!({
                 "agent_id":"worker",
                 "prompt":"start",
@@ -1211,15 +1237,15 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
         )
         .await
         .unwrap();
+    let (started, actions) = effect.into_parts();
     assert_eq!(started.status, ToolStatus::Success);
     let run_id = started.data["run_id"]
         .as_str()
         .expect("run_id should exist")
         .to_string();
 
-    let patch = fix.ctx_with("call-run", "tool:agent_run").take_patch();
     let base = json!({});
-    let updated = apply_patches(&base, std::iter::once(patch.patch())).unwrap();
+    let updated = apply_effect_actions(&base, actions, "tool:agent_run");
     assert_eq!(
         updated["sub_agents"]["runs"][&run_id]["parent_run_id"],
         json!("parent-run-42")
@@ -1465,13 +1491,14 @@ async fn agent_stop_tool_stops_descendant_runs() {
             ),
         },
     );
-    let result = stop_tool
-        .execute(
+    let effect = stop_tool
+        .execute_effect(
             json!({ "run_id": parent_run_id }),
             &fix.ctx_with("call-stop", "tool:agent_stop"),
         )
         .await
         .unwrap();
+    let (result, actions) = effect.into_parts();
     assert_eq!(result.status, ToolStatus::Success, "{result:?}");
     assert_eq!(result.data["status"], json!("stopped"));
 
@@ -1491,8 +1518,7 @@ async fn agent_stop_tool_stops_descendant_runs() {
         .expect("grandchild run should exist");
     assert_eq!(grandchild.status, SubAgentStatus::Stopped);
 
-    let patch = fix.ctx_with("call-stop", "tool:agent_stop").take_patch();
-    let updated = apply_patches(&doc, std::iter::once(patch.patch())).unwrap();
+    let updated = apply_effect_actions(&doc, actions, "tool:agent_stop");
     assert_eq!(
         updated["sub_agents"]["runs"][parent_run_id]["status"],
         json!("stopped")
@@ -2927,19 +2953,19 @@ async fn agent_stop_tool_stops_persisted_running_without_live_handle() {
         },
     );
 
-    let result = stop_tool
-        .execute(
+    let effect = stop_tool
+        .execute_effect(
             json!({ "run_id": "run-orphan" }),
             &fix.ctx_with("call-stop", "tool:agent_stop"),
         )
         .await
         .unwrap();
+    let (result, actions) = effect.into_parts();
     assert_eq!(result.status, ToolStatus::Success);
     assert_eq!(result.data["status"], json!("stopped"));
 
-    // Verify the state patch marks it stopped.
-    let patch = fix.ctx_with("call-stop", "tool:agent_stop").take_patch();
-    let updated = apply_patches(&doc, std::iter::once(patch.patch())).unwrap();
+    // Verify the state actions mark it stopped.
+    let updated = apply_effect_actions(&doc, actions, "tool:agent_stop");
     assert_eq!(
         updated["sub_agents"]["runs"]["run-orphan"]["status"],
         json!("stopped")
@@ -3508,8 +3534,8 @@ async fn remote_a2a_agent_run_foreground_completes_and_persists_remote_locator()
 
     let mut fix = TestFixture::new();
     apply_caller_scope(&mut fix, caller_scope());
-    let result = run_tool
-        .execute(
+    let effect = run_tool
+        .execute_effect(
             json!({
                 "agent_id": "remote-worker",
                 "prompt": "hello remote",
@@ -3519,6 +3545,7 @@ async fn remote_a2a_agent_run_foreground_completes_and_persists_remote_locator()
         )
         .await
         .unwrap();
+    let (result, actions) = effect.into_parts();
     if result.status != ToolStatus::Success {
         panic!("{result:?}");
     }
@@ -3532,10 +3559,7 @@ async fn remote_a2a_agent_run_foreground_completes_and_persists_remote_locator()
     let run_id = result.data["run_id"]
         .as_str()
         .expect("remote run_id should exist");
-    let patch = fix
-        .ctx_with("call-remote-run", "tool:agent_run")
-        .take_patch();
-    let updated = apply_patches(&json!({}), std::iter::once(patch.patch())).unwrap();
+    let updated = apply_effect_actions(&json!({}), actions, "tool:agent_run");
     let entry = &updated["sub_agents"]["runs"][run_id];
     assert_eq!(entry["protocol"], json!("a2a"));
     assert_eq!(entry["target_id"], json!("remote-worker"));
@@ -3617,8 +3641,8 @@ async fn remote_a2a_agent_run_refreshes_orphaned_running_status() {
     });
     let mut fix = TestFixture::new_with_state(doc.clone());
     apply_caller_scope(&mut fix, caller_scope_with_state(doc.clone()));
-    let result = run_tool
-        .execute(
+    let effect = run_tool
+        .execute_effect(
             json!({
                 "run_id": "run-remote",
                 "background": false
@@ -3627,13 +3651,11 @@ async fn remote_a2a_agent_run_refreshes_orphaned_running_status() {
         )
         .await
         .unwrap();
+    let (result, actions) = effect.into_parts();
     assert_eq!(result.status, ToolStatus::Success);
     assert_eq!(result.data["status"], json!("completed"));
 
-    let patch = fix
-        .ctx_with("call-remote-refresh", "tool:agent_run")
-        .take_patch();
-    let updated = apply_patches(&doc, std::iter::once(patch.patch())).unwrap();
+    let updated = apply_effect_actions(&doc, actions, "tool:agent_run");
     assert_eq!(
         updated["sub_agents"]["runs"]["run-remote"]["status"],
         json!("completed")
@@ -3734,8 +3756,8 @@ async fn agent_output_tool_reads_remote_a2a_mirror_thread() {
 
     let mut fix = TestFixture::new();
     apply_caller_scope(&mut fix, caller_scope());
-    let started = run_tool
-        .execute(
+    let effect = run_tool
+        .execute_effect(
             json!({
                 "agent_id": "remote-worker",
                 "prompt": "show remote output",
@@ -3745,13 +3767,11 @@ async fn agent_output_tool_reads_remote_a2a_mirror_thread() {
         )
         .await
         .unwrap();
+    let (started, actions) = effect.into_parts();
     assert_eq!(started.status, ToolStatus::Success);
 
     let output_tool = AgentOutputTool::new(os);
-    let patch = fix
-        .ctx_with("call-remote-output-run", "tool:agent_run")
-        .take_patch();
-    let persisted = apply_patches(&json!({}), std::iter::once(patch.patch())).unwrap();
+    let persisted = apply_effect_actions(&json!({}), actions, "tool:agent_run");
     let output_fix = TestFixture::new_with_state(persisted);
     let result = output_tool
         .execute(
@@ -3796,21 +3816,22 @@ async fn agent_output_tool_backfills_legacy_completed_remote_a2a_run() {
             }
         }
     });
-    let fixture = TestFixture::new_with_state(doc);
-    let result = output_tool
-        .execute(
+    let fixture = TestFixture::new_with_state(doc.clone());
+    let effect = output_tool
+        .execute_effect(
             json!({ "run_id": "run-legacy" }),
             &fixture.ctx_with("call-legacy-output", "tool:agent_output"),
         )
         .await
         .unwrap();
+    let (result, actions) = effect.into_parts();
     assert_eq!(result.status, ToolStatus::Success);
     assert_eq!(
         result.data["output"],
         json!("seeded remote output for task-existing")
     );
 
-    let updated = fixture.updated_state();
+    let updated = apply_effect_actions(&doc, actions, "tool:agent_output");
     assert_eq!(
         updated["sub_agents"]["runs"]["run-legacy"]["mirror_thread_id"],
         json!(super::tools::sub_agent_thread_id("run-legacy"))
@@ -4270,8 +4291,8 @@ async fn integration_parent_state_contains_only_lightweight_metadata() {
         ),
     );
 
-    let result = run_tool
-        .execute(
+    let effect = run_tool
+        .execute_effect(
             json!({
                 "agent_id": "worker",
                 "prompt": "task",
@@ -4281,12 +4302,12 @@ async fn integration_parent_state_contains_only_lightweight_metadata() {
         )
         .await
         .unwrap();
+    let (result, actions) = effect.into_parts();
     assert_eq!(result.status, ToolStatus::Success);
     let run_id = result.data["run_id"].as_str().unwrap();
 
-    // Check the state patch that was emitted.
-    let patch = fix.ctx_with("call-1", "tool:agent_run").take_patch();
-    let updated = apply_patches(&json!({}), std::iter::once(patch.patch())).unwrap();
+    // Check the state actions that were emitted.
+    let updated = apply_effect_actions(&json!({}), actions, "tool:agent_run");
     let sub_agent_entry = &updated["sub_agents"]["runs"][run_id];
 
     // Should have lightweight fields.

@@ -1,4 +1,3 @@
-use crate::runtime::action::Action;
 use crate::runtime::inference::InferenceRequestTransform;
 use crate::runtime::run::TerminationReason;
 use crate::runtime::state::AnyStateAction;
@@ -229,42 +228,13 @@ pub enum AfterToolExecuteAction {
     State(AnyStateAction),
 }
 
-impl Action for AfterToolExecuteAction {
-    fn label(&self) -> &'static str {
+impl AfterToolExecuteAction {
+    /// Human-readable label for diagnostics.
+    pub fn label(&self) -> &'static str {
         match self {
             Self::AddSystemReminder(_) => "add_system_reminder",
             Self::AddUserMessage(_) => "add_user_message",
             Self::State(_) => "state_action",
-        }
-    }
-
-    fn validate(&self, phase: super::types::Phase) -> Result<(), String> {
-        if phase == super::types::Phase::AfterToolExecute {
-            Ok(())
-        } else {
-            Err(format!(
-                "AfterToolExecuteAction '{}' is only valid in AfterToolExecute, got {phase}",
-                self.label()
-            ))
-        }
-    }
-
-    fn apply(self: Box<Self>, step: &mut super::step::StepContext<'_>) {
-        match *self {
-            Self::AddSystemReminder(text) => step.messaging.reminders.push(text),
-            Self::AddUserMessage(text) => step.messaging.user_messages.push(text),
-            Self::State(action) => step.emit_state_action(action),
-        }
-    }
-
-    fn is_state_action(&self) -> bool {
-        matches!(self, Self::State(_))
-    }
-
-    fn into_state_action(self: Box<Self>) -> Option<AnyStateAction> {
-        match *self {
-            Self::State(action) => Some(action),
-            _ => None,
         }
     }
 }

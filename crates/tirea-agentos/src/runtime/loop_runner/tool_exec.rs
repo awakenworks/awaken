@@ -5,9 +5,8 @@ use super::core::{
 use super::parallel_state_merge::merge_parallel_state_patches;
 use super::plugin_runtime::emit_tool_phase;
 use super::{Agent, AgentLoopError, BaseAgent, RunCancellationToken};
-use crate::contracts::runtime::action::Action;
 use crate::contracts::runtime::behavior::AgentBehavior;
-use crate::contracts::runtime::phase::{Phase, StepContext};
+use crate::contracts::runtime::phase::{AfterToolExecuteAction, Phase, StepContext};
 use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction, ScopeContext};
 use crate::contracts::runtime::tool_call::{CallerContext, ToolGate};
 use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
@@ -23,7 +22,6 @@ use crate::contracts::thread::Thread;
 use crate::contracts::thread::{Message, MessageMetadata, ToolCall};
 use crate::contracts::{RunContext, Suspension};
 use crate::engine::convert::tool_response;
-use crate::engine::tool_execution::merge_context_patch_into_effect;
 use crate::runtime::run_context::{await_or_cancel, is_cancelled, CancelAware};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -918,7 +916,7 @@ async fn execute_single_tool_with_phases_impl(
             },
             ToolCallOutcome::Failed,
             None,
-            Vec::<Box<dyn Action>>::new(),
+            Vec::<AfterToolExecuteAction>::new(),
         )
     } else if let Some(plugin_result) = step.tool_result().cloned() {
         let outcome = ToolCallOutcome::from_tool_result(&plugin_result);
@@ -930,7 +928,7 @@ async fn execute_single_tool_with_phases_impl(
             },
             outcome,
             None,
-            Vec::<Box<dyn Action>>::new(),
+            Vec::<AfterToolExecuteAction>::new(),
         )
     } else {
         match tool {
@@ -945,7 +943,7 @@ async fn execute_single_tool_with_phases_impl(
                 },
                 ToolCallOutcome::Failed,
                 None,
-                Vec::<Box<dyn Action>>::new(),
+                Vec::<AfterToolExecuteAction>::new(),
             ),
             Some(tool) => {
                 if let Err(e) = tool.validate_args(&call.arguments) {
@@ -957,7 +955,7 @@ async fn execute_single_tool_with_phases_impl(
                         },
                         ToolCallOutcome::Failed,
                         None,
-                        Vec::<Box<dyn Action>>::new(),
+                        Vec::<AfterToolExecuteAction>::new(),
                     )
                 } else if step.tool_pending() {
                     let Some(suspend_ticket) =
@@ -978,7 +976,7 @@ async fn execute_single_tool_with_phases_impl(
                         },
                         ToolCallOutcome::Suspended,
                         Some(SuspendedCall::new(call, suspend_ticket)),
-                        Vec::<Box<dyn Action>>::new(),
+                        Vec::<AfterToolExecuteAction>::new(),
                     )
                 } else {
                     persist_tool_call_status(&step, call, ToolCallStatus::Running, None)?;
@@ -995,26 +993,19 @@ async fn execute_single_tool_with_phases_impl(
                         &tool_pending_msgs,
                         phase_ctx.activity_manager.clone(),
                     )
+                    .as_read_only()
                     .with_run_identity(phase_ctx.run_identity.clone())
                     .with_caller_context(phase_ctx.caller_context.clone());
                     if let Some(token) = phase_ctx.cancellation_token {
                         tool_ctx = tool_ctx.with_cancellation_token(token);
                     }
-                    let mut effect =
-                        match tool.execute_effect(call.arguments.clone(), &tool_ctx).await {
-                            Ok(effect) => effect,
-                            Err(e) => ToolExecutionEffect::from(ToolResult::error(
-                                &call.name,
-                                e.to_string(),
-                            )),
-                        };
-
-                    let context_patch = tool_ctx.take_patch();
-                    if let Err(result) =
-                        merge_context_patch_into_effect(call, &mut effect, context_patch)
+                    let effect = match tool.execute_effect(call.arguments.clone(), &tool_ctx).await
                     {
-                        effect = ToolExecutionEffect::from(*result);
-                    }
+                        Ok(effect) => effect,
+                        Err(e) => {
+                            ToolExecutionEffect::from(ToolResult::error(&call.name, e.to_string()))
+                        }
+                    };
                     let (result, actions) = effect.into_parts();
                     let outcome = ToolCallOutcome::from_tool_result(&result);
 
@@ -1047,24 +1038,16 @@ async fn execute_single_tool_with_phases_impl(
     // Partition tool actions: state actions go to execution.patch reduction;
     // non-state actions are validated and applied before plugin hooks run.
     let mut tool_state_actions = Vec::<AnyStateAction>::new();
-    let mut other_actions = Vec::<Box<dyn Action>>::new();
     for action in tool_actions {
-        if action.is_state_action() {
-            if let Some(sa) = action.into_state_action() {
-                tool_state_actions.push(sa);
+        match action {
+            AfterToolExecuteAction::State(sa) => tool_state_actions.push(sa),
+            AfterToolExecuteAction::AddSystemReminder(text) => {
+                step.messaging.reminders.push(text);
             }
-        } else {
-            other_actions.push(action);
+            AfterToolExecuteAction::AddUserMessage(text) => {
+                step.messaging.user_messages.push(text);
+            }
         }
-    }
-    // Apply non-state tool-emitted actions (validated against AfterToolExecute) before plugin hooks.
-    for action in &other_actions {
-        action
-            .validate(Phase::AfterToolExecute)
-            .map_err(AgentLoopError::StateError)?;
-    }
-    for action in other_actions {
-        action.apply(&mut step);
     }
 
     // Phase: AfterToolExecute

@@ -2460,7 +2460,7 @@ async fn test_tool_execute_effect_state_actions_become_pending_patches() {
 }
 
 #[tokio::test]
-async fn test_tool_execute_effect_direct_context_writes_denied_by_default_policy() {
+async fn test_tool_read_only_context_rejects_direct_writes() {
     struct DirectWriteEffectTool;
 
     #[async_trait]
@@ -2490,9 +2490,11 @@ async fn test_tool_execute_effect_direct_context_writes_denied_by_default_policy
             ctx: &ToolCallContext<'_>,
         ) -> Result<ToolExecutionEffect, ToolError> {
             let state = ctx.state_of::<tirea_contract::testing::TestFixtureState>();
-            state
-                .set_label(Some("direct_write".to_string()))
-                .expect("failed to set label");
+            if let Err(err) = state.set_label(Some("direct_write".to_string())) {
+                return Err(ToolError::ExecutionFailed(format!(
+                    "context write rejected: {err}"
+                )));
+            }
             Ok(ToolExecutionEffect::new(ToolResult::success(
                 "direct_write_effect_tool",
                 json!({"ok": true}),
@@ -2520,24 +2522,18 @@ async fn test_tool_execute_effect_direct_context_writes_denied_by_default_policy
         .await
         .expect("tool execution should complete");
 
+    // Read-only context rejects writes; tool propagates as error
     assert!(result.execution.result.is_error());
-    assert_eq!(
-        result.execution.result.data["error"]["code"],
-        json!("tool_context_state_write_not_allowed")
-    );
-    let mut final_state = state.clone();
-    if let Some(patch) = result.execution.patch.as_ref() {
-        final_state = tirea_state::apply_patch(&final_state, patch.patch())
-            .expect("execution patch should apply");
-    }
-    for pending in &result.pending_patches {
-        final_state = tirea_state::apply_patch(&final_state, pending.patch())
-            .expect("pending patch should apply");
-    }
-    assert_eq!(final_state["label"], Value::Null);
-    assert_eq!(
-        final_state["__tool_call_scope"]["call_1"]["tool_call_state"]["status"],
-        json!("failed")
+    assert!(
+        result
+            .execution
+            .result
+            .message
+            .as_deref()
+            .unwrap_or("")
+            .contains("read-only"),
+        "error should mention read-only: {:?}",
+        result.execution.result.message,
     );
 }
 

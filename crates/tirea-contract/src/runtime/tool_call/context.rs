@@ -231,6 +231,7 @@ pub struct ToolCallContext<'a> {
     activity_manager: Arc<dyn ActivityManager>,
     tool_call_progress_sink: Arc<dyn ToolCallProgressSink>,
     cancellation_token: Option<&'a CancellationToken>,
+    read_only: bool,
 }
 
 impl<'a> ToolCallContext<'a> {
@@ -242,6 +243,11 @@ impl<'a> ToolCallContext<'a> {
     }
 
     fn apply_op(&self, op: Op) -> TireaResult<()> {
+        if self.read_only {
+            return Err(TireaError::invalid_operation(
+                "tool context is read-only; emit ToolExecutionEffect actions instead",
+            ));
+        }
         self.doc.apply(&op)?;
         self.ops.lock().unwrap().push(op);
         Ok(())
@@ -271,7 +277,15 @@ impl<'a> ToolCallContext<'a> {
             activity_manager,
             tool_call_progress_sink,
             cancellation_token: None,
+            read_only: false,
         }
+    }
+
+    /// Mark this context as read-only; state writes via `apply_op` are rejected.
+    #[must_use]
+    pub fn as_read_only(mut self) -> Self {
+        self.read_only = true;
+        self
     }
 
     /// Attach cancellation token.
@@ -376,7 +390,13 @@ impl<'a> ToolCallContext<'a> {
     pub fn state<T: State>(&self, path: &str) -> T::Ref<'_> {
         let base = parse_path(path);
         let doc = self.doc;
-        let hook: PatchHook<'_> = Arc::new(|op: &Op| {
+        let read_only = self.read_only;
+        let hook: PatchHook<'_> = Arc::new(move |op: &Op| {
+            if read_only {
+                return Err(TireaError::invalid_operation(
+                    "tool context is read-only; emit ToolExecutionEffect actions instead",
+                ));
+            }
             doc.apply(op)?;
             Ok(())
         });
