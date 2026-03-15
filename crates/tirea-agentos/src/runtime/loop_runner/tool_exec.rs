@@ -5,9 +5,8 @@ use super::core::{
 use super::parallel_state_merge::merge_parallel_state_patches;
 use super::plugin_runtime::emit_tool_phase;
 use super::{Agent, AgentLoopError, BaseAgent, RunCancellationToken};
-use crate::contracts::runtime::action::Action;
 use crate::contracts::runtime::behavior::AgentBehavior;
-use crate::contracts::runtime::phase::{Phase, StepContext};
+use crate::contracts::runtime::phase::{AfterToolExecuteAction, Phase, StepContext};
 use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction, ScopeContext};
 use crate::contracts::runtime::tool_call::{CallerContext, ToolGate};
 use crate::contracts::runtime::tool_call::{Tool, ToolDescriptor, ToolResult};
@@ -918,7 +917,7 @@ async fn execute_single_tool_with_phases_impl(
             },
             ToolCallOutcome::Failed,
             None,
-            Vec::<Box<dyn Action>>::new(),
+            Vec::<AfterToolExecuteAction>::new(),
         )
     } else if let Some(plugin_result) = step.tool_result().cloned() {
         let outcome = ToolCallOutcome::from_tool_result(&plugin_result);
@@ -930,7 +929,7 @@ async fn execute_single_tool_with_phases_impl(
             },
             outcome,
             None,
-            Vec::<Box<dyn Action>>::new(),
+            Vec::<AfterToolExecuteAction>::new(),
         )
     } else {
         match tool {
@@ -945,7 +944,7 @@ async fn execute_single_tool_with_phases_impl(
                 },
                 ToolCallOutcome::Failed,
                 None,
-                Vec::<Box<dyn Action>>::new(),
+                Vec::<AfterToolExecuteAction>::new(),
             ),
             Some(tool) => {
                 if let Err(e) = tool.validate_args(&call.arguments) {
@@ -957,7 +956,7 @@ async fn execute_single_tool_with_phases_impl(
                         },
                         ToolCallOutcome::Failed,
                         None,
-                        Vec::<Box<dyn Action>>::new(),
+                        Vec::<AfterToolExecuteAction>::new(),
                     )
                 } else if step.tool_pending() {
                     let Some(suspend_ticket) =
@@ -978,7 +977,7 @@ async fn execute_single_tool_with_phases_impl(
                         },
                         ToolCallOutcome::Suspended,
                         Some(SuspendedCall::new(call, suspend_ticket)),
-                        Vec::<Box<dyn Action>>::new(),
+                        Vec::<AfterToolExecuteAction>::new(),
                     )
                 } else {
                     persist_tool_call_status(&step, call, ToolCallStatus::Running, None)?;
@@ -1047,24 +1046,16 @@ async fn execute_single_tool_with_phases_impl(
     // Partition tool actions: state actions go to execution.patch reduction;
     // non-state actions are validated and applied before plugin hooks run.
     let mut tool_state_actions = Vec::<AnyStateAction>::new();
-    let mut other_actions = Vec::<Box<dyn Action>>::new();
     for action in tool_actions {
-        if action.is_state_action() {
-            if let Some(sa) = action.into_state_action() {
-                tool_state_actions.push(sa);
+        match action {
+            AfterToolExecuteAction::State(sa) => tool_state_actions.push(sa),
+            AfterToolExecuteAction::AddSystemReminder(text) => {
+                step.messaging.reminders.push(text);
             }
-        } else {
-            other_actions.push(action);
+            AfterToolExecuteAction::AddUserMessage(text) => {
+                step.messaging.user_messages.push(text);
+            }
         }
-    }
-    // Apply non-state tool-emitted actions (validated against AfterToolExecute) before plugin hooks.
-    for action in &other_actions {
-        action
-            .validate(Phase::AfterToolExecute)
-            .map_err(AgentLoopError::StateError)?;
-    }
-    for action in other_actions {
-        action.apply(&mut step);
     }
 
     // Phase: AfterToolExecute

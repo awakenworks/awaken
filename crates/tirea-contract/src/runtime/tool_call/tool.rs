@@ -3,7 +3,7 @@
 //! Tools execute actions and can modify state through `Thread`.
 
 use super::ToolCallContext;
-use crate::runtime::action::Action;
+use crate::runtime::phase::AfterToolExecuteAction;
 use crate::runtime::phase::SuspendTicket;
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -193,17 +193,13 @@ impl ToolResult {
 
 /// Structured tool effect used by the action/reducer pipeline.
 ///
-/// Tools return a [`ToolResult`] plus actions applied during `AfterToolExecute`
-/// before plugin hooks run. All side effects—state changes, user messages, and
-/// other context mutations—are expressed as `Box<dyn Action>`.
-///
-/// State actions (`AnyStateAction`) implement `Action` via `into_state_action`,
-/// which allows the loop to extract them for execution-patch reduction (required
-/// for parallel conflict detection) while keeping a single unified interface.
+/// Tools return a [`ToolResult`] plus typed [`AfterToolExecuteAction`]s applied
+/// during `AfterToolExecute` before plugin hooks run. State actions are
+/// extracted for execution-patch reduction (parallel conflict detection).
 pub struct ToolExecutionEffect {
     pub result: ToolResult,
     /// All tool-emitted actions applied during `AfterToolExecute`.
-    actions: Vec<Box<dyn Action>>,
+    actions: Vec<AfterToolExecuteAction>,
 }
 
 impl ToolExecutionEffect {
@@ -215,19 +211,14 @@ impl ToolExecutionEffect {
         }
     }
 
-    /// Add an action applied during `AfterToolExecute` before plugin hooks.
-    ///
-    /// Accepts any `Action` implementor, including `AnyStateAction` (state
-    /// changes), `AddUserMessage` (user-facing messages), and custom actions.
-    /// Only `AfterToolExecute`-compatible actions are accepted; others will be
-    /// rejected at runtime by phase validation.
+    /// Add a typed action applied during `AfterToolExecute` before plugin hooks.
     #[must_use]
-    pub fn with_action<A: Action + 'static>(mut self, action: A) -> Self {
-        self.actions.push(Box::new(action));
+    pub fn with_action(mut self, action: impl Into<AfterToolExecuteAction>) -> Self {
+        self.actions.push(action.into());
         self
     }
 
-    pub fn into_parts(self) -> (ToolResult, Vec<Box<dyn Action>>) {
+    pub fn into_parts(self) -> (ToolResult, Vec<AfterToolExecuteAction>) {
         (self.result, self.actions)
     }
 }
@@ -1339,12 +1330,13 @@ mod tests {
         assert!(effect.result.is_success());
         let (_, actions) = effect.into_parts();
         assert_eq!(actions.len(), 1);
-        let boxed = actions.into_iter().next().unwrap();
-        assert!(boxed.is_state_action());
-        let sa = boxed
-            .into_state_action()
-            .expect("is_state_action returned true");
-        assert!(sa.state_type_name().contains("ToolEffectState"));
+        let action = actions.into_iter().next().unwrap();
+        match action {
+            crate::runtime::phase::AfterToolExecuteAction::State(sa) => {
+                assert!(sa.state_type_name().contains("ToolEffectState"));
+            }
+            _ => panic!("expected State action"),
+        }
     }
 
     // -- TypedTool with execute_effect override --------------------------------
@@ -1407,13 +1399,13 @@ mod tests {
         assert_eq!(effect.result.data["amount"], 5);
         let (_, actions) = effect.into_parts();
         assert_eq!(actions.len(), 1);
-        let sa = actions
-            .into_iter()
-            .next()
-            .unwrap()
-            .into_state_action()
-            .expect("should be state action");
-        assert!(sa.state_type_name().contains("ToolEffectState"));
+        let action = actions.into_iter().next().unwrap();
+        match action {
+            crate::runtime::phase::AfterToolExecuteAction::State(sa) => {
+                assert!(sa.state_type_name().contains("ToolEffectState"));
+            }
+            _ => panic!("expected State action"),
+        }
     }
 
     #[tokio::test]

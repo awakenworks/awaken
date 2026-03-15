@@ -120,12 +120,9 @@ pub async fn execute_single_tool_with_run_policy_and_behavior(
     let (result, actions) = effect.into_parts();
     let state_actions: Vec<AnyStateAction> = actions
         .into_iter()
-        .filter_map(|a| {
-            if a.is_state_action() {
-                a.into_state_action()
-            } else {
-                None
-            }
+        .filter_map(|a| match a {
+            crate::contracts::runtime::phase::AfterToolExecuteAction::State(sa) => Some(sa),
+            _ => None,
         })
         .collect();
     let tool_scope_ctx = ScopeContext::for_call(&call.id);

@@ -176,8 +176,14 @@ async fn test_skill_activation_delivers_instructions_via_user_messages_on_effect
     let fixture = TestFixture::new();
     let mut step = fixture.step(vec![]);
     for action in actions {
-        if !action.is_state_action() {
-            action.apply(&mut step);
+        match action {
+            tirea_contract::runtime::phase::AfterToolExecuteAction::AddSystemReminder(text) => {
+                step.messaging.reminders.push(text);
+            }
+            tirea_contract::runtime::phase::AfterToolExecuteAction::AddUserMessage(text) => {
+                step.messaging.user_messages.push(text);
+            }
+            tirea_contract::runtime::phase::AfterToolExecuteAction::State(_) => {}
         }
     }
     let user_messages = step.messaging.user_messages.clone();
@@ -504,8 +510,14 @@ async fn test_skill_activation_user_messages_contain_skill_instructions() {
     let fixture = TestFixture::new();
     let mut step = fixture.step(vec![]);
     for action in actions {
-        if !action.is_state_action() {
-            action.apply(&mut step);
+        match action {
+            tirea_contract::runtime::phase::AfterToolExecuteAction::AddSystemReminder(text) => {
+                step.messaging.reminders.push(text);
+            }
+            tirea_contract::runtime::phase::AfterToolExecuteAction::AddUserMessage(text) => {
+                step.messaging.user_messages.push(text);
+            }
+            tirea_contract::runtime::phase::AfterToolExecuteAction::State(_) => {}
         }
     }
     let user_messages = step.messaging.user_messages.clone();

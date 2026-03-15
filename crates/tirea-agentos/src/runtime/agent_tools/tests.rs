@@ -3,9 +3,8 @@ use crate::composition::{
     A2aAgentBinding, AgentDefinitionSpec, AgentDescriptor, InMemoryAgentCatalog,
     InMemoryAgentRegistry, ResolvedAgent,
 };
-use crate::contracts::runtime::action::Action;
 use crate::contracts::runtime::behavior::ReadOnlyContext;
-use crate::contracts::runtime::phase::{ActionSet, BeforeInferenceAction};
+use crate::contracts::runtime::phase::{ActionSet, AfterToolExecuteAction, BeforeInferenceAction};
 use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::runtime::state::{reduce_state_actions, AnyStateAction, ScopeContext};
 use crate::contracts::runtime::tool_call::CallerContext;
@@ -48,17 +47,14 @@ fn apply_caller_scope(fix: &mut TestFixture, scope: CallerScopeFixture) {
 /// Reduce effect actions against a base state snapshot, returning the updated state.
 fn apply_effect_actions(
     base: &serde_json::Value,
-    actions: Vec<Box<dyn Action>>,
+    actions: Vec<AfterToolExecuteAction>,
     source: &str,
 ) -> serde_json::Value {
     let state_actions: Vec<AnyStateAction> = actions
         .into_iter()
-        .filter_map(|a| {
-            if a.is_state_action() {
-                a.into_state_action()
-            } else {
-                None
-            }
+        .filter_map(|a| match a {
+            AfterToolExecuteAction::State(sa) => Some(sa),
+            _ => None,
         })
         .collect();
     if state_actions.is_empty() {
