@@ -2,6 +2,33 @@ use super::stop_condition::StopConditionSpec;
 use super::AgentDescriptor;
 use crate::runtime::loop_runner::LlmRetryPolicy;
 use genai::chat::ChatOptions;
+use std::collections::HashMap;
+
+/// Partial configuration overlay applied when switching agent modes.
+///
+/// Each `Option` field means "override this value from the base definition".
+/// `None` means "keep the base value".
+#[derive(Debug, Clone, Default)]
+pub struct ModeOverlay {
+    /// Override model identifier.
+    pub model: Option<String>,
+    /// Override system prompt.
+    pub system_prompt: Option<String>,
+    /// Override maximum rounds.
+    pub max_rounds: Option<usize>,
+    /// Override chat options.
+    pub chat_options: Option<Option<ChatOptions>>,
+    /// Override fallback models.
+    pub fallback_models: Option<Vec<String>>,
+    /// Override tool whitelist.
+    pub allowed_tools: Option<Option<Vec<String>>>,
+    /// Override tool blacklist.
+    pub excluded_tools: Option<Option<Vec<String>>>,
+    /// Override behavior references.
+    pub behavior_ids: Option<Vec<String>>,
+    /// Override stop condition specs.
+    pub stop_condition_specs: Option<Vec<StopConditionSpec>>,
+}
 
 /// Tool execution strategy mode exposed by AgentDefinition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +87,8 @@ pub struct AgentDefinition {
     pub stop_condition_specs: Vec<StopConditionSpec>,
     /// Stop condition references resolved from AgentOS StopPolicyRegistry.
     pub stop_condition_ids: Vec<String>,
+    /// Named mode overlays. Each mode partially overrides the base config.
+    pub modes: HashMap<String, ModeOverlay>,
 }
 
 impl Default for AgentDefinition {
@@ -89,6 +118,7 @@ impl Default for AgentDefinition {
             excluded_agents: None,
             stop_condition_specs: Vec::new(),
             stop_condition_ids: Vec::new(),
+            modes: HashMap::new(),
         }
     }
 }
@@ -118,6 +148,7 @@ impl std::fmt::Debug for AgentDefinition {
             .field("excluded_agents", &self.excluded_agents)
             .field("stop_condition_specs", &self.stop_condition_specs)
             .field("stop_condition_ids", &self.stop_condition_ids)
+            .field("modes", &self.modes.keys().collect::<Vec<_>>())
             .finish()
     }
 }
@@ -231,6 +262,46 @@ impl AgentDefinition {
         self.excluded_agents = Some(agents);
         self
     }
+
+    /// Register a named mode overlay.
+    #[must_use]
+    pub fn with_mode(mut self, name: impl Into<String>, overlay: ModeOverlay) -> Self {
+        self.modes.insert(name.into(), overlay);
+        self
+    }
+
+    /// Apply a mode overlay, returning a new definition with overridden fields.
+    #[must_use]
+    pub fn with_overlay(mut self, overlay: &ModeOverlay) -> Self {
+        if let Some(ref model) = overlay.model {
+            self.model = model.clone();
+        }
+        if let Some(ref prompt) = overlay.system_prompt {
+            self.system_prompt = prompt.clone();
+        }
+        if let Some(rounds) = overlay.max_rounds {
+            self.max_rounds = rounds;
+        }
+        if let Some(ref opts) = overlay.chat_options {
+            self.chat_options = opts.clone();
+        }
+        if let Some(ref models) = overlay.fallback_models {
+            self.fallback_models = models.clone();
+        }
+        if let Some(ref tools) = overlay.allowed_tools {
+            self.allowed_tools = tools.clone();
+        }
+        if let Some(ref tools) = overlay.excluded_tools {
+            self.excluded_tools = tools.clone();
+        }
+        if let Some(ref ids) = overlay.behavior_ids {
+            self.behavior_ids = ids.clone();
+        }
+        if let Some(ref specs) = overlay.stop_condition_specs {
+            self.stop_condition_specs = specs.clone();
+        }
+        self
+    }
 }
 
 #[cfg(test)]
@@ -252,6 +323,69 @@ mod tests {
         assert_eq!(
             normalized.fallback_models,
             vec!["gpt-4o-mini".to_string(), "claude-3-7-sonnet".to_string()]
+        );
+    }
+
+    #[test]
+    fn with_overlay_overrides_specified_fields() {
+        let base = AgentDefinition::with_id("agent-1", "claude-opus")
+            .with_system_prompt("base prompt")
+            .with_max_rounds(20);
+
+        let overlay = ModeOverlay {
+            model: Some("claude-haiku".to_string()),
+            max_rounds: Some(5),
+            ..Default::default()
+        };
+
+        let result = base.with_overlay(&overlay);
+        assert_eq!(result.model, "claude-haiku");
+        assert_eq!(result.max_rounds, 5);
+        assert_eq!(result.system_prompt, "base prompt"); // not overridden
+        assert_eq!(result.id, "agent-1"); // never overridden
+    }
+
+    #[test]
+    fn with_overlay_preserves_none_fields() {
+        let base = AgentDefinition::with_id("agent-1", "claude-opus")
+            .with_allowed_tools(vec!["Read".to_string()]);
+
+        let overlay = ModeOverlay::default(); // all None
+
+        let result = base.with_overlay(&overlay);
+        assert_eq!(result.model, "claude-opus");
+        assert_eq!(result.allowed_tools, Some(vec!["Read".to_string()]));
+    }
+
+    #[test]
+    fn with_overlay_can_clear_allowed_tools() {
+        let base = AgentDefinition::with_id("agent-1", "claude-opus")
+            .with_allowed_tools(vec!["Read".to_string()]);
+
+        let overlay = ModeOverlay {
+            allowed_tools: Some(None), // explicitly clear
+            ..Default::default()
+        };
+
+        let result = base.with_overlay(&overlay);
+        assert!(result.allowed_tools.is_none());
+    }
+
+    #[test]
+    fn with_mode_registers_named_overlay() {
+        let definition = AgentDefinition::new("claude-opus").with_mode(
+            "fast",
+            ModeOverlay {
+                model: Some("claude-haiku".to_string()),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(definition.modes.len(), 1);
+        assert!(definition.modes.contains_key("fast"));
+        assert_eq!(
+            definition.modes["fast"].model.as_deref(),
+            Some("claude-haiku")
         );
     }
 }

@@ -431,7 +431,44 @@ impl AgentOs {
             .agents
             .get(agent_id)
             .ok_or_else(|| AgentOsResolveError::AgentNotFound(agent_id.to_string()))?;
+        self.resolve_definition(definition)
+    }
 
+    /// Resolve an agent with a named mode overlay applied.
+    ///
+    /// If `mode` is `None`, behaves identically to [`resolve`].
+    pub fn resolve_with_mode(
+        &self,
+        agent_id: &str,
+        mode: Option<&str>,
+    ) -> Result<ResolvedRun, AgentOsResolveError> {
+        let definition = self
+            .agents
+            .get(agent_id)
+            .ok_or_else(|| AgentOsResolveError::AgentNotFound(agent_id.to_string()))?;
+
+        let definition = match mode {
+            Some(mode_name) => {
+                let overlay = definition
+                    .modes
+                    .get(mode_name)
+                    .ok_or_else(|| AgentOsResolveError::ModeNotFound {
+                        agent_id: agent_id.to_string(),
+                        mode: mode_name.to_string(),
+                    })?
+                    .clone();
+                definition.with_overlay(&overlay)
+            }
+            None => definition,
+        };
+
+        self.resolve_definition(definition)
+    }
+
+    fn resolve_definition(
+        &self,
+        definition: AgentDefinition,
+    ) -> Result<ResolvedRun, AgentOsResolveError> {
         let mut run_policy = RunPolicy::new();
         set_runtime_policy_from_definition_if_absent(&mut run_policy, &definition);
 

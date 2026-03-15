@@ -16,6 +16,9 @@ pub enum AgentOsResolveError {
         model_id: String,
     },
 
+    #[error("mode '{mode}' not found on agent '{agent_id}'")]
+    ModeNotFound { agent_id: String, mode: String },
+
     #[error(transparent)]
     Wiring(#[from] AgentOsWiringError),
 }

@@ -2,6 +2,8 @@
 
 #[cfg(feature = "mcp")]
 pub mod mcp;
+#[cfg(feature = "mode")]
+pub mod mode;
 #[cfg(feature = "observability")]
 pub mod observability;
 #[cfg(feature = "permission")]

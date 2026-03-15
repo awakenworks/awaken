@@ -8,12 +8,14 @@ pub mod registry;
 mod stop_condition;
 mod wiring;
 
-pub use agent_definition::{AgentDefinition, ToolExecutionMode};
+pub use agent_definition::{AgentDefinition, ModeOverlay, ToolExecutionMode};
 pub use builder::AgentOsBuilder;
 pub use bundle::ToolBehaviorBundle;
 pub use bundle::{
     BundleComposeError, BundleComposer, BundleRegistryAccumulator, BundleRegistryKind,
 };
+#[cfg(feature = "mode")]
+pub use config::ModeConfig;
 #[cfg(feature = "plan")]
 pub use config::PlanConfig;
 pub use config::{

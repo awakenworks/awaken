@@ -7,14 +7,16 @@ use super::types::{AgentOs, AgentStateStoreStateCommitter, PreparedRun, RunStrea
 use super::ResolvedRun;
 
 use crate::composition::AgentOsWiringError;
+use crate::contracts::runtime::run::TerminationReason;
 use crate::contracts::runtime::RunIdentity;
 use crate::contracts::storage::{ThreadHead, ThreadStore, VersionPrecondition};
 use crate::contracts::thread::{CheckpointReason, Message, Thread};
-use crate::contracts::{AgentEvent, RunContext, RunRequest};
+use crate::contracts::{AgentEvent, RunContext, RunRequest, ToolCallDecision};
 use crate::runtime::loop_runner::{
     run_loop_stream_with_context, AgentLoopError, RunCancellationToken, StateCommitter,
 };
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
+use std::pin::Pin;
 use std::sync::Arc;
 
 impl AgentOs {
@@ -435,6 +437,154 @@ impl AgentOs {
         let resolved = self.resolve(&request.agent_id)?;
         let prepared = self.prepare_run(request, resolved).await?;
         Self::execute_prepared(prepared)
+    }
+
+    /// Resolve, prepare, and execute an agent run with automatic mode-switch restart.
+    ///
+    /// When the agent has named modes and the run terminates with a mode-switch
+    /// stop code, the loop automatically re-resolves with the new mode overlay
+    /// and starts a new run on the same thread. The mode switch is invisible to
+    /// the stream consumer.
+    ///
+    /// If the agent has no modes, this delegates directly to [`run_stream`].
+    #[cfg(feature = "mode")]
+    pub async fn run(&self, request: RunRequest) -> Result<RunStream, AgentOsRunError> {
+        use crate::extensions::mode::MODE_SWITCH_STOP_CODE;
+
+        let definition = self
+            .agent(&request.agent_id)
+            .ok_or_else(|| AgentOsResolveError::AgentNotFound(request.agent_id.clone()))?;
+
+        // Fast path: no modes configured — delegate to run_stream.
+        if definition.modes.is_empty() {
+            return self.run_stream(request).await;
+        }
+
+        let agent_id = request.agent_id.clone();
+        let os = self.clone();
+
+        // Read initial mode from thread state (if thread exists).
+        let initial_mode = if let Some(thread_id) = request.thread_id.as_deref() {
+            os.read_mode_from_thread_state(thread_id).await
+        } else {
+            None
+        };
+
+        // First run: resolve with initial mode.
+        let resolved = os.resolve_with_mode(&agent_id, initial_mode.as_deref())?;
+        let first_prepared = os.prepare_run(request, resolved).await?;
+        let outer_thread_id = first_prepared.thread_id().to_string();
+        let outer_run_id = first_prepared.run_id().to_string();
+        let thread_id = outer_thread_id.clone();
+        let first_stream = Self::execute_prepared(first_prepared)?;
+        let (outer_decision_tx, _outer_decision_rx) =
+            tokio::sync::mpsc::unbounded_channel::<ToolCallDecision>();
+
+        let events: Pin<Box<dyn Stream<Item = AgentEvent> + Send>> =
+            Box::pin(async_stream::stream! {
+                let mut current_stream = first_stream;
+
+                loop {
+                    let mut is_mode_switch = false;
+
+                    while let Some(event) = current_stream.events.next().await {
+                        match &event {
+                            AgentEvent::RunFinish { termination, .. }
+                                if matches!(
+                                    termination,
+                                    TerminationReason::Stopped(ref s)
+                                        if s.code == MODE_SWITCH_STOP_CODE
+                                ) =>
+                            {
+                                // Swallow the mode-switch RunFinish — don't forward.
+                                is_mode_switch = true;
+                                break;
+                            }
+                            _ => yield event,
+                        }
+                    }
+
+                    if !is_mode_switch {
+                        break;
+                    }
+
+                    // Read the requested mode from thread state.
+                    let new_mode = os.read_mode_from_thread_state(&thread_id).await;
+
+                    // Re-resolve with the new mode.
+                    let resolved = match os.resolve_with_mode(&agent_id, new_mode.as_deref()) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            yield AgentEvent::Error {
+                                message: format!("mode switch resolve failed: {e}"),
+                                code: None,
+                            };
+                            break;
+                        }
+                    };
+
+                    // Build a resume request on the same thread (no new messages).
+                    let resume_request = RunRequest {
+                        agent_id: agent_id.clone(),
+                        thread_id: Some(thread_id.clone()),
+                        run_id: None,
+                        parent_run_id: None,
+                        parent_thread_id: None,
+                        resource_id: None,
+                        origin: Default::default(),
+                        state: None,
+                        messages: Vec::new(),
+                        initial_decisions: Vec::new(),
+                        source_mailbox_entry_id: None,
+                    };
+
+                    let prepared = match os.prepare_run(resume_request, resolved).await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            yield AgentEvent::Error {
+                                message: format!("mode switch prepare failed: {e}"),
+                                code: None,
+                            };
+                            break;
+                        }
+                    };
+
+                    current_stream = match Self::execute_prepared(prepared) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            yield AgentEvent::Error {
+                                message: format!("mode switch execute failed: {e}"),
+                                code: None,
+                            };
+                            break;
+                        }
+                    };
+                }
+            });
+
+        Ok(RunStream {
+            thread_id: outer_thread_id,
+            run_id: outer_run_id,
+            decision_tx: outer_decision_tx,
+            events,
+        })
+    }
+
+    /// Read the requested mode from thread state via JSON path.
+    ///
+    /// Returns `requested_mode` if set, otherwise `active_mode`.
+    /// No dependency on extension crate types — pure JSON path lookup.
+    #[cfg(feature = "mode")]
+    async fn read_mode_from_thread_state(&self, thread_id: &str) -> Option<String> {
+        let head = self.load_thread(thread_id).await.ok()??;
+        let state = &head.thread.state;
+        let mode_state = state.get("agent_mode")?;
+        // Prefer requested_mode (pending switch), fall back to active_mode.
+        mode_state
+            .get("requested_mode")
+            .and_then(|v| v.as_str())
+            .or_else(|| mode_state.get("active_mode").and_then(|v| v.as_str()))
+            .map(String::from)
     }
 
     /// Deduplicate incoming messages against existing thread messages.

@@ -4616,6 +4616,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tirea-contract",
  "tirea-extension-mcp",
+ "tirea-extension-mode",
  "tirea-extension-observability",
  "tirea-extension-permission",
  "tirea-extension-plan",
@@ -4738,6 +4739,18 @@ dependencies = [
  "tirea-state",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "tirea-extension-mode"
+version = "0.5.0-alpha.1"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tirea-contract",
+ "tirea-state",
+ "tokio",
 ]
 
 [[package]]
