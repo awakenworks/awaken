@@ -994,6 +994,7 @@ async fn execute_single_tool_with_phases_impl(
                         &tool_pending_msgs,
                         phase_ctx.activity_manager.clone(),
                     )
+                    .as_read_only()
                     .with_run_identity(phase_ctx.run_identity.clone())
                     .with_caller_context(phase_ctx.caller_context.clone());
                     if let Some(token) = phase_ctx.cancellation_token {

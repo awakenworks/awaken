@@ -92,7 +92,8 @@ pub async fn execute_single_tool_with_run_policy_and_behavior(
         run_policy,
         &pending_messages,
         tirea_contract::runtime::activity::NoOpActivityManager::arc(),
-    );
+    )
+    .as_read_only();
 
     // Validate arguments against the tool's JSON Schema
     if let Err(e) = tool.validate_args(&call.arguments) {
