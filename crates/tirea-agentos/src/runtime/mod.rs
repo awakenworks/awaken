@@ -12,6 +12,8 @@ mod behavior;
 mod bundle_merge;
 pub(crate) mod context;
 mod errors;
+#[cfg(feature = "plan")]
+pub(crate) mod plan_wiring;
 mod policy;
 mod prepare;
 pub(crate) mod resolve;

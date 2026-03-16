@@ -6,6 +6,8 @@ pub mod mcp;
 pub mod observability;
 #[cfg(feature = "permission")]
 pub mod permission;
+#[cfg(feature = "plan")]
+pub mod plan;
 #[cfg(feature = "reminder")]
 pub mod reminder;
 #[cfg(feature = "skills")]

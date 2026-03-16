@@ -85,6 +85,13 @@ pub use crate::extensions::reminder::{
     SystemReminder,
 };
 
+// ── Plan mode extension (require "core" feature) ────────────────────────
+
+#[cfg(feature = "core")]
+pub use crate::extensions::plan::{
+    EnterPlanModeTool, ExitPlanModeTool, PlanModePlugin, PlanModeState, PlanRef,
+};
+
 // ── Skills extension (require "skills" feature) ──────────────────────────
 
 #[cfg(feature = "skills")]

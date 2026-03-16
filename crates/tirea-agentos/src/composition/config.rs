@@ -27,6 +27,14 @@ impl Default for SkillsConfig {
     }
 }
 
+/// Configuration for the plan mode extension.
+#[cfg(feature = "plan")]
+#[derive(Debug, Clone, Default)]
+pub struct PlanConfig {
+    /// Whether plan mode tools should be registered.
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentToolsConfig {
     pub discovery_max_entries: usize,

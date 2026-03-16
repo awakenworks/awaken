@@ -6,6 +6,8 @@ use crate::contracts::storage::ThreadStore;
 use crate::extensions::skills::{
     CompositeSkillRegistry, InMemorySkillRegistry, Skill, SkillRegistry, SkillRegistryManagerError,
 };
+#[cfg(feature = "plan")]
+use crate::runtime::plan_wiring::PlanSystemWiring;
 #[cfg(feature = "skills")]
 use crate::runtime::resolve::SkillsSystemWiring;
 use crate::runtime::StopPolicy;
@@ -41,6 +43,8 @@ pub struct AgentOsBuilder {
     pub(crate) skills_refresh_interval: Option<Duration>,
     #[cfg(feature = "skills")]
     pub(crate) skills_config: SkillsConfig,
+    #[cfg(feature = "plan")]
+    pub(crate) plan_config: PlanConfig,
     pub(crate) system_wirings: Vec<Arc<dyn SystemWiring>>,
     pub(crate) agent_tools: AgentToolsConfig,
     pub(crate) agent_state_store: Option<Arc<dyn ThreadStore>>,
@@ -176,6 +180,8 @@ impl AgentOsBuilder {
             skills_refresh_interval: None,
             #[cfg(feature = "skills")]
             skills_config: SkillsConfig::default(),
+            #[cfg(feature = "plan")]
+            plan_config: PlanConfig::default(),
             system_wirings: Vec::new(),
             agent_tools: AgentToolsConfig::default(),
             agent_state_store: None,
@@ -300,6 +306,13 @@ impl AgentOsBuilder {
         self
     }
 
+    /// Configure the plan mode extension.
+    #[cfg(feature = "plan")]
+    pub fn with_plan_config(mut self, cfg: PlanConfig) -> Self {
+        self.plan_config = cfg;
+        self
+    }
+
     /// Register a [`SystemWiring`] implementation for generic extension wiring.
     pub fn with_system_wiring(mut self, wiring: Arc<dyn SystemWiring>) -> Self {
         self.system_wirings.push(wiring);
@@ -342,6 +355,8 @@ impl AgentOsBuilder {
             skills_refresh_interval,
             #[cfg(feature = "skills")]
             skills_config,
+            #[cfg(feature = "plan")]
+            plan_config,
             system_wirings,
             agent_tools,
             agent_state_store,
@@ -406,6 +421,12 @@ impl AgentOsBuilder {
 
             registry
         };
+
+        // --- Plan mode setup (feature-gated) ---
+        #[cfg(feature = "plan")]
+        if plan_config.enabled {
+            system_wirings.push(Arc::new(PlanSystemWiring::new()));
+        }
 
         let mut base_tools = InMemoryToolRegistry::new();
         base_tools.extend_named(base_tools_defs)?;
