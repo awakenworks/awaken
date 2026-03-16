@@ -151,29 +151,42 @@ fn map_permission_decision(tool_call_id: &str, decision: &str) -> ToolCallDecisi
 }
 
 // ---------------------------------------------------------------------------
-// Public entry point
+// Public entry points
 // ---------------------------------------------------------------------------
 
-/// Run the ACP stdio server: read JSON-RPC requests from stdin, write
-/// JSON-RPC notifications to stdout, logs to stderr.
+/// Run the ACP stdio server over real stdin/stdout.
 pub async fn serve_stdio(os: Arc<AgentOs>) {
-    // Stdout writer task: serialises lines from mpsc channel.
+    let stdin = tokio::io::stdin();
+    let stdout = tokio::io::stdout();
+    serve_io(os, stdin, stdout).await;
+}
+
+/// Core ACP JSON-RPC server loop over generic async I/O.
+///
+/// Reads newline-delimited JSON-RPC requests from `input`, writes
+/// JSON-RPC notifications to `output`.
+pub async fn serve_io<R, W>(os: Arc<AgentOs>, input: R, output: W)
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    // Writer task: serialises lines from mpsc channel.
     let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<String>();
     tokio::spawn(async move {
-        let mut stdout = tokio::io::stdout();
+        let mut output = output;
         while let Some(line) = writer_rx.recv().await {
-            if let Err(e) = stdout.write_all(line.as_bytes()).await {
-                error!("stdout write error: {e}");
+            if let Err(e) = output.write_all(line.as_bytes()).await {
+                error!("output write error: {e}");
                 break;
             }
             if !line.ends_with('\n') {
-                if let Err(e) = stdout.write_all(b"\n").await {
-                    error!("stdout write error: {e}");
+                if let Err(e) = output.write_all(b"\n").await {
+                    error!("output write error: {e}");
                     break;
                 }
             }
-            if let Err(e) = stdout.flush().await {
-                error!("stdout flush error: {e}");
+            if let Err(e) = output.flush().await {
+                error!("output flush error: {e}");
                 break;
             }
         }
@@ -182,21 +195,20 @@ pub async fn serve_stdio(os: Arc<AgentOs>) {
     // Active session state: at most one session at a time (stdio is single-session).
     let mut active_decision_tx: Option<tokio::sync::mpsc::UnboundedSender<ToolCallDecision>> = None;
 
-    // Stdin reader loop.
-    let stdin = tokio::io::stdin();
-    let mut reader = BufReader::new(stdin);
+    // Reader loop.
+    let mut reader = BufReader::new(input);
     let mut line_buf = String::new();
 
     loop {
         line_buf.clear();
         match reader.read_line(&mut line_buf).await {
             Ok(0) => {
-                info!("stdin EOF — shutting down");
+                info!("input EOF — shutting down");
                 break;
             }
             Ok(_) => {}
             Err(e) => {
-                error!("stdin read error: {e}");
+                error!("input read error: {e}");
                 break;
             }
         }
