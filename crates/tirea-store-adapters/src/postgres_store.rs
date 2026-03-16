@@ -5,7 +5,8 @@ use tirea_contract::storage::{
     paginate_mailbox_entries, Committed, MailboxEntry, MailboxEntryOrigin, MailboxInterrupt,
     MailboxPage, MailboxQuery, MailboxReader, MailboxState, MailboxStoreError, MailboxWriter,
     MessagePage, MessageQuery, MessageWithCursor, RunOrigin, RunPage, RunQuery, RunReader,
-    RunRecord, RunStatus, RunStoreError, RunWriter, SortOrder, ThreadHead, ThreadListPage,
+    RunRecord, RunStatus, RunStoreError, RunWriter, SortOrder, Task, TaskPage, TaskQuery,
+    TaskReader, TaskStatus, TaskStoreError, TaskUpdate, TaskWriter, ThreadHead, ThreadListPage,
     ThreadListQuery, ThreadReader, ThreadStoreError, ThreadWriter, VersionPrecondition,
 };
 use tirea_contract::{Message, Thread, ThreadChangeSet, Visibility};
@@ -17,6 +18,7 @@ pub struct PostgresStore {
     runs_table: String,
     mailbox_table: String,
     mailbox_threads_table: String,
+    tasks_table: String,
     schema_ready: tokio::sync::Mutex<bool>,
 }
 
@@ -34,6 +36,7 @@ impl PostgresStore {
             runs_table: "agent_runs".to_string(),
             mailbox_table: "agent_mailbox".to_string(),
             mailbox_threads_table: "agent_mailbox_threads".to_string(),
+            tasks_table: "agent_tasks".to_string(),
             schema_ready: tokio::sync::Mutex::new(false),
         }
     }
@@ -47,6 +50,7 @@ impl PostgresStore {
         let runs_table = format!("{}_runs", table);
         let mailbox_table = format!("{}_mailbox", table);
         let mailbox_threads_table = format!("{}_mailbox_threads", table);
+        let tasks_table = format!("{}_tasks", table);
         Self {
             pool,
             table,
@@ -54,6 +58,7 @@ impl PostgresStore {
             runs_table,
             mailbox_table,
             mailbox_threads_table,
+            tasks_table,
             schema_ready: tokio::sync::Mutex::new(false),
         }
     }
@@ -157,6 +162,36 @@ impl PostgresStore {
             format!(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_{}_thread_active_unique ON {} (thread_id) WHERE status != 'done'",
                 self.runs_table, self.runs_table
+            ),
+            // Task board table.
+            format!(
+                "CREATE TABLE IF NOT EXISTS {} (\
+                 task_id TEXT PRIMARY KEY, \
+                 subject TEXT NOT NULL, \
+                 description TEXT, \
+                 owner TEXT, \
+                 status TEXT NOT NULL, \
+                 blocks JSONB NOT NULL DEFAULT '[]', \
+                 blocked_by JSONB NOT NULL DEFAULT '[]', \
+                 team_id TEXT, \
+                 metadata JSONB, \
+                 created_at BIGINT NOT NULL, \
+                 updated_at BIGINT NOT NULL, \
+                 created_by TEXT\
+                 )",
+                self.tasks_table
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_{}_team_status ON {} (team_id, status)",
+                self.tasks_table, self.tasks_table
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_{}_owner ON {} (owner) WHERE owner IS NOT NULL",
+                self.tasks_table, self.tasks_table
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_{}_created_at ON {} (created_at, task_id)",
+                self.tasks_table, self.tasks_table
             ),
         ]
     }
@@ -2015,6 +2050,467 @@ impl RunWriter for PostgresStore {
             .execute(&self.pool)
             .await
             .map_err(Self::run_sql_err)?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task board
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "postgres")]
+struct TaskRow {
+    task_id: String,
+    subject: String,
+    description: Option<String>,
+    owner: Option<String>,
+    status: String,
+    blocks: serde_json::Value,
+    blocked_by: serde_json::Value,
+    team_id: Option<String>,
+    metadata: Option<serde_json::Value>,
+    created_at: i64,
+    updated_at: i64,
+    created_by: Option<String>,
+}
+
+#[cfg(feature = "postgres")]
+impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for TaskRow {
+    fn from_row(row: &'r sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row;
+        Ok(Self {
+            task_id: row.try_get("task_id")?,
+            subject: row.try_get("subject")?,
+            description: row.try_get("description")?,
+            owner: row.try_get("owner")?,
+            status: row.try_get("status")?,
+            blocks: row.try_get("blocks")?,
+            blocked_by: row.try_get("blocked_by")?,
+            team_id: row.try_get("team_id")?,
+            metadata: row.try_get("metadata")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+            created_by: row.try_get("created_by")?,
+        })
+    }
+}
+
+#[cfg(feature = "postgres")]
+impl PostgresStore {
+    fn task_sql_err(e: sqlx::Error) -> TaskStoreError {
+        TaskStoreError::Backend(e.to_string())
+    }
+
+    fn encode_task_status(status: TaskStatus) -> &'static str {
+        match status {
+            TaskStatus::Pending => "pending",
+            TaskStatus::InProgress => "in_progress",
+            TaskStatus::Completed => "completed",
+        }
+    }
+
+    fn decode_task_status(raw: &str) -> Result<TaskStatus, TaskStoreError> {
+        match raw {
+            "pending" => Ok(TaskStatus::Pending),
+            "in_progress" => Ok(TaskStatus::InProgress),
+            "completed" => Ok(TaskStatus::Completed),
+            _ => Err(TaskStoreError::Backend(format!(
+                "invalid task status value: {raw}"
+            ))),
+        }
+    }
+
+    fn task_from_row(row: TaskRow) -> Result<Task, TaskStoreError> {
+        let blocks: Vec<String> = serde_json::from_value(row.blocks)
+            .map_err(|e| TaskStoreError::Backend(e.to_string()))?;
+        let blocked_by: Vec<String> = serde_json::from_value(row.blocked_by)
+            .map_err(|e| TaskStoreError::Backend(e.to_string()))?;
+        Ok(Task {
+            task_id: row.task_id,
+            subject: row.subject,
+            description: row.description,
+            owner: row.owner,
+            status: Self::decode_task_status(&row.status)?,
+            blocks,
+            blocked_by,
+            team_id: row.team_id,
+            metadata: row.metadata,
+            created_at: u64::try_from(row.created_at)
+                .map_err(|_| TaskStoreError::Backend("created_at is negative".to_string()))?,
+            updated_at: u64::try_from(row.updated_at)
+                .map_err(|_| TaskStoreError::Backend("updated_at is negative".to_string()))?,
+            created_by: row.created_by,
+        })
+    }
+}
+
+#[cfg(feature = "postgres")]
+#[async_trait]
+impl TaskReader for PostgresStore {
+    async fn load_task(&self, task_id: &str) -> Result<Option<Task>, TaskStoreError> {
+        let sql = format!(
+            "SELECT task_id, subject, description, owner, status, blocks, blocked_by, \
+             team_id, metadata, created_at, updated_at, created_by \
+             FROM {} WHERE task_id = $1",
+            self.tasks_table
+        );
+        let row = sqlx::query_as::<_, TaskRow>(&sql)
+            .bind(task_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(Self::task_sql_err)?;
+        row.map(Self::task_from_row).transpose()
+    }
+
+    async fn list_tasks(&self, query: &TaskQuery) -> Result<TaskPage, TaskStoreError> {
+        let limit = query.limit.clamp(1, 200);
+        let fetch_limit = (limit + 1) as i64;
+        let offset = i64::try_from(query.offset)
+            .map_err(|_| TaskStoreError::Backend("offset is too large".to_string()))?;
+
+        // Count query.
+        let mut count_qb = QueryBuilder::<Postgres>::new(format!(
+            "SELECT COUNT(*)::bigint FROM {}",
+            self.tasks_table
+        ));
+        let mut has_where = false;
+        if let Some(team_id) = query.team_id.as_deref() {
+            count_qb.push(if has_where { " AND " } else { " WHERE " });
+            has_where = true;
+            count_qb.push("team_id = ").push_bind(team_id);
+        }
+        if let Some(owner) = query.owner.as_deref() {
+            count_qb.push(if has_where { " AND " } else { " WHERE " });
+            has_where = true;
+            count_qb.push("owner = ").push_bind(owner);
+        }
+        if let Some(status) = query.status {
+            count_qb.push(if has_where { " AND " } else { " WHERE " });
+            #[allow(unused_assignments)]
+            {
+                has_where = true;
+            }
+            count_qb
+                .push("status = ")
+                .push_bind(Self::encode_task_status(status));
+        }
+        let total: (i64,) = count_qb
+            .build_query_as()
+            .fetch_one(&self.pool)
+            .await
+            .map_err(Self::task_sql_err)?;
+        let total = total.0 as usize;
+
+        // Data query.
+        let mut data_qb = QueryBuilder::<Postgres>::new(format!(
+            "SELECT task_id, subject, description, owner, status, blocks, blocked_by, \
+             team_id, metadata, created_at, updated_at, created_by FROM {}",
+            self.tasks_table
+        ));
+        let mut has_where = false;
+        if let Some(team_id) = query.team_id.as_deref() {
+            data_qb.push(if has_where { " AND " } else { " WHERE " });
+            has_where = true;
+            data_qb.push("team_id = ").push_bind(team_id);
+        }
+        if let Some(owner) = query.owner.as_deref() {
+            data_qb.push(if has_where { " AND " } else { " WHERE " });
+            has_where = true;
+            data_qb.push("owner = ").push_bind(owner);
+        }
+        if let Some(status) = query.status {
+            data_qb.push(if has_where { " AND " } else { " WHERE " });
+            #[allow(unused_assignments)]
+            {
+                has_where = true;
+            }
+            data_qb
+                .push("status = ")
+                .push_bind(Self::encode_task_status(status));
+        }
+        data_qb.push(" ORDER BY created_at ASC, task_id ASC");
+        data_qb.push(" LIMIT ").push_bind(fetch_limit);
+        data_qb.push(" OFFSET ").push_bind(offset);
+
+        let rows: Vec<TaskRow> = data_qb
+            .build_query_as()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(Self::task_sql_err)?;
+
+        let has_more = rows.len() > limit;
+        let items: Vec<Task> = rows
+            .into_iter()
+            .take(limit)
+            .map(Self::task_from_row)
+            .collect::<Result<_, _>>()?;
+
+        Ok(TaskPage {
+            items,
+            total,
+            has_more,
+        })
+    }
+}
+
+#[cfg(feature = "postgres")]
+#[async_trait]
+impl TaskWriter for PostgresStore {
+    async fn create_task(&self, task: &Task) -> Result<(), TaskStoreError> {
+        let created_at = task.created_at as i64;
+        let updated_at = task.updated_at as i64;
+        let blocks = serde_json::to_value(&task.blocks)
+            .map_err(|e| TaskStoreError::Backend(e.to_string()))?;
+        let blocked_by = serde_json::to_value(&task.blocked_by)
+            .map_err(|e| TaskStoreError::Backend(e.to_string()))?;
+
+        let sql = format!(
+            "INSERT INTO {} (task_id, subject, description, owner, status, blocks, blocked_by, \
+             team_id, metadata, created_at, updated_at, created_by) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+            self.tasks_table
+        );
+        sqlx::query(&sql)
+            .bind(&task.task_id)
+            .bind(&task.subject)
+            .bind(task.description.as_deref())
+            .bind(task.owner.as_deref())
+            .bind(Self::encode_task_status(task.status))
+            .bind(&blocks)
+            .bind(&blocked_by)
+            .bind(task.team_id.as_deref())
+            .bind(&task.metadata)
+            .bind(created_at)
+            .bind(updated_at)
+            .bind(task.created_by.as_deref())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| {
+                if let sqlx::Error::Database(ref db_err) = e {
+                    if db_err.is_unique_violation() {
+                        return TaskStoreError::AlreadyExists(task.task_id.clone());
+                    }
+                }
+                Self::task_sql_err(e)
+            })?;
+        Ok(())
+    }
+
+    async fn update_task(
+        &self,
+        task_id: &str,
+        update: &TaskUpdate,
+        now: u64,
+    ) -> Result<Task, TaskStoreError> {
+        let now_i64 = now as i64;
+        let mut qb = QueryBuilder::<Postgres>::new(format!("UPDATE {} SET ", self.tasks_table));
+        let mut separated = qb.separated(", ");
+
+        if let Some(ref subject) = update.subject {
+            separated
+                .push("subject = ")
+                .push_bind_unseparated(subject.clone());
+        }
+        if let Some(ref description) = update.description {
+            separated
+                .push("description = ")
+                .push_bind_unseparated(description.clone());
+        }
+        if let Some(ref owner) = update.owner {
+            separated
+                .push("owner = ")
+                .push_bind_unseparated(owner.clone());
+        }
+        if let Some(status) = update.status {
+            separated
+                .push("status = ")
+                .push_bind_unseparated(Self::encode_task_status(status).to_string());
+        }
+        if let Some(ref blocks) = update.blocks {
+            let val =
+                serde_json::to_value(blocks).map_err(|e| TaskStoreError::Backend(e.to_string()))?;
+            separated.push("blocks = ").push_bind_unseparated(val);
+        }
+        if let Some(ref blocked_by) = update.blocked_by {
+            let val = serde_json::to_value(blocked_by)
+                .map_err(|e| TaskStoreError::Backend(e.to_string()))?;
+            separated.push("blocked_by = ").push_bind_unseparated(val);
+        }
+        if let Some(ref metadata) = update.metadata {
+            separated
+                .push("metadata = ")
+                .push_bind_unseparated(metadata.clone());
+        }
+        separated
+            .push("updated_at = ")
+            .push_bind_unseparated(now_i64);
+
+        qb.push(" WHERE task_id = ").push_bind(task_id);
+        qb.push(
+            " RETURNING task_id, subject, description, owner, status, blocks, blocked_by, \
+             team_id, metadata, created_at, updated_at, created_by",
+        );
+
+        let row: Option<TaskRow> = qb
+            .build_query_as()
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(Self::task_sql_err)?;
+
+        let row = row.ok_or_else(|| TaskStoreError::NotFound(task_id.to_string()))?;
+        Self::task_from_row(row)
+    }
+
+    async fn claim_task(
+        &self,
+        task_id: &str,
+        agent_id: &str,
+        now: u64,
+    ) -> Result<Task, TaskStoreError> {
+        let now_i64 = now as i64;
+        let mut tx = self.pool.begin().await.map_err(Self::task_sql_err)?;
+
+        // Lock the row and check preconditions.
+        let sql = format!(
+            "SELECT task_id, subject, description, owner, status, blocks, blocked_by, \
+             team_id, metadata, created_at, updated_at, created_by \
+             FROM {} WHERE task_id = $1 FOR UPDATE",
+            self.tasks_table
+        );
+        let row: Option<TaskRow> = sqlx::query_as(&sql)
+            .bind(task_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(Self::task_sql_err)?;
+        let row = row.ok_or_else(|| TaskStoreError::NotFound(task_id.to_string()))?;
+        let task = Self::task_from_row(row)?;
+
+        if task.owner.is_some() {
+            return Err(TaskStoreError::ClaimConflict(task_id.to_string()));
+        }
+
+        // Check dependency completion.
+        if !task.blocked_by.is_empty() {
+            let dep_sql = format!(
+                "SELECT task_id, status FROM {} WHERE task_id = ANY($1)",
+                self.tasks_table
+            );
+            let dep_rows: Vec<(String, String)> = sqlx::query_as(&dep_sql)
+                .bind(&task.blocked_by)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(Self::task_sql_err)?;
+            for (dep_id, dep_status) in &dep_rows {
+                if dep_status != "completed" {
+                    return Err(TaskStoreError::Blocked(format!(
+                        "{task_id} blocked by {dep_id}"
+                    )));
+                }
+            }
+            // If a dependency doesn't exist at all, consider it incomplete.
+            if dep_rows.len() < task.blocked_by.len() {
+                return Err(TaskStoreError::Blocked(task_id.to_string()));
+            }
+        }
+
+        let update_sql = format!(
+            "UPDATE {} SET owner = $1, status = 'in_progress', updated_at = $2 \
+             WHERE task_id = $3 \
+             RETURNING task_id, subject, description, owner, status, blocks, blocked_by, \
+             team_id, metadata, created_at, updated_at, created_by",
+            self.tasks_table
+        );
+        let row: TaskRow = sqlx::query_as(&update_sql)
+            .bind(agent_id)
+            .bind(now_i64)
+            .bind(task_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(Self::task_sql_err)?;
+
+        tx.commit().await.map_err(Self::task_sql_err)?;
+        Self::task_from_row(row)
+    }
+
+    async fn assign_task(
+        &self,
+        task_id: &str,
+        agent_id: &str,
+        now: u64,
+    ) -> Result<Task, TaskStoreError> {
+        let now_i64 = now as i64;
+        let sql = format!(
+            "UPDATE {} SET owner = $1, status = 'in_progress', updated_at = $2 \
+             WHERE task_id = $3 \
+             RETURNING task_id, subject, description, owner, status, blocks, blocked_by, \
+             team_id, metadata, created_at, updated_at, created_by",
+            self.tasks_table
+        );
+        let row: Option<TaskRow> = sqlx::query_as(&sql)
+            .bind(agent_id)
+            .bind(now_i64)
+            .bind(task_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(Self::task_sql_err)?;
+        let row = row.ok_or_else(|| TaskStoreError::NotFound(task_id.to_string()))?;
+        Self::task_from_row(row)
+    }
+
+    async fn complete_task(&self, task_id: &str, now: u64) -> Result<Task, TaskStoreError> {
+        let now_i64 = now as i64;
+        let mut tx = self.pool.begin().await.map_err(Self::task_sql_err)?;
+
+        let sql = format!(
+            "UPDATE {} SET status = 'completed', updated_at = $1 \
+             WHERE task_id = $2 \
+             RETURNING task_id, subject, description, owner, status, blocks, blocked_by, \
+             team_id, metadata, created_at, updated_at, created_by",
+            self.tasks_table
+        );
+        let row: Option<TaskRow> = sqlx::query_as(&sql)
+            .bind(now_i64)
+            .bind(task_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(Self::task_sql_err)?;
+        let row = row.ok_or_else(|| TaskStoreError::NotFound(task_id.to_string()))?;
+        let completed = Self::task_from_row(row)?;
+
+        // Clear this task from downstream blocked_by arrays.
+        // Uses JSONB array removal: blocked_by - 'task_id'.
+        let clear_sql = format!(
+            "UPDATE {} SET blocked_by = blocked_by - $1, updated_at = $2 \
+             WHERE blocked_by @> $3::jsonb",
+            self.tasks_table
+        );
+        let task_id_json =
+            serde_json::to_value([task_id]).map_err(|e| TaskStoreError::Backend(e.to_string()))?;
+        sqlx::query(&clear_sql)
+            .bind(task_id)
+            .bind(now_i64)
+            .bind(&task_id_json)
+            .execute(&mut *tx)
+            .await
+            .map_err(Self::task_sql_err)?;
+
+        tx.commit().await.map_err(Self::task_sql_err)?;
+        Ok(completed)
+    }
+
+    async fn delete_task(&self, task_id: &str) -> Result<(), TaskStoreError> {
+        let sql = format!(
+            "DELETE FROM {} WHERE task_id = $1 RETURNING task_id",
+            self.tasks_table
+        );
+        let row: Option<(String,)> = sqlx::query_as(&sql)
+            .bind(task_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(Self::task_sql_err)?;
+        if row.is_none() {
+            return Err(TaskStoreError::NotFound(task_id.to_string()));
+        }
         Ok(())
     }
 }

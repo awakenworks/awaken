@@ -187,7 +187,6 @@ mod tests {
     use async_trait::async_trait;
     use serde::{Deserialize, Serialize};
     use serde_json::json;
-    use tirea_contract::testing::TestFixtureState;
     use tirea_state::{PatchSink, Path as TPath, State, TireaResult};
 
     struct EchoTool;

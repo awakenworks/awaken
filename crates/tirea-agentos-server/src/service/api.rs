@@ -2,7 +2,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use std::sync::Arc;
-use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader};
+use tirea_agentos::contracts::storage::{MailboxStore, TaskStore, ThreadReader};
 use tirea_agentos::runtime::{AgentOs, AgentOsRunError};
 
 use super::mailbox_service::MailboxService;
@@ -12,6 +12,7 @@ pub struct AppState {
     pub os: Arc<AgentOs>,
     pub read_store: Arc<dyn ThreadReader>,
     pub mailbox_service: Arc<MailboxService>,
+    pub task_store: Option<Arc<dyn TaskStore>>,
 }
 
 impl AppState {
@@ -24,11 +25,18 @@ impl AppState {
             os,
             read_store,
             mailbox_service,
+            task_store: None,
         }
     }
 
     pub fn mailbox_store(&self) -> &Arc<dyn MailboxStore> {
         self.mailbox_service.mailbox_store()
+    }
+
+    #[must_use]
+    pub fn with_task_store(mut self, task_store: Arc<dyn TaskStore>) -> Self {
+        self.task_store = Some(task_store);
+        self
     }
 }
 

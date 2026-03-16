@@ -1,10 +1,11 @@
 use async_trait::async_trait;
 use tirea_contract::storage::{
-    has_active_claim_for_mailbox, paginate_mailbox_entries, paginate_runs_in_memory, MailboxEntry,
-    MailboxInterrupt, MailboxPage, MailboxQuery, MailboxReader, MailboxState, MailboxStoreError,
-    MailboxWriter, RunPage, RunQuery, RunReader, RunRecord, RunStoreError, RunWriter, ThreadHead,
-    ThreadListPage, ThreadListQuery, ThreadReader, ThreadStoreError, ThreadSync, ThreadWriter,
-    VersionPrecondition,
+    has_active_claim_for_mailbox, paginate_mailbox_entries, paginate_runs_in_memory,
+    paginate_tasks, MailboxEntry, MailboxInterrupt, MailboxPage, MailboxQuery, MailboxReader,
+    MailboxState, MailboxStoreError, MailboxWriter, RunPage, RunQuery, RunReader, RunRecord,
+    RunStoreError, RunWriter, Task, TaskPage, TaskQuery, TaskReader, TaskStatus, TaskStoreError,
+    TaskUpdate, TaskWriter, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader,
+    ThreadStoreError, ThreadSync, ThreadWriter, VersionPrecondition,
 };
 use tirea_contract::{Committed, Thread, ThreadChangeSet, Version};
 
@@ -27,6 +28,7 @@ pub struct MemoryStore {
     runs: tokio::sync::RwLock<std::collections::HashMap<String, RunRecord>>,
     mailbox: tokio::sync::RwLock<std::collections::HashMap<String, MailboxEntry>>,
     mailbox_states: tokio::sync::RwLock<std::collections::HashMap<String, MailboxState>>,
+    tasks: tokio::sync::RwLock<std::collections::HashMap<String, Task>>,
 }
 
 impl MemoryStore {
@@ -425,6 +427,144 @@ impl MailboxWriter for MemoryStore {
         let before = mailbox.len();
         mailbox.retain(|_, entry| !(entry.status.is_terminal() && entry.updated_at < older_than));
         Ok(before - mailbox.len())
+    }
+}
+
+#[async_trait]
+impl TaskReader for MemoryStore {
+    async fn load_task(&self, task_id: &str) -> Result<Option<Task>, TaskStoreError> {
+        Ok(self.tasks.read().await.get(task_id).cloned())
+    }
+
+    async fn list_tasks(&self, query: &TaskQuery) -> Result<TaskPage, TaskStoreError> {
+        let tasks = self.tasks.read().await;
+        let all: Vec<Task> = tasks.values().cloned().collect();
+        Ok(paginate_tasks(&all, query))
+    }
+}
+
+#[async_trait]
+impl TaskWriter for MemoryStore {
+    async fn create_task(&self, task: &Task) -> Result<(), TaskStoreError> {
+        let mut tasks = self.tasks.write().await;
+        if tasks.contains_key(&task.task_id) {
+            return Err(TaskStoreError::AlreadyExists(task.task_id.clone()));
+        }
+        tasks.insert(task.task_id.clone(), task.clone());
+        Ok(())
+    }
+
+    async fn update_task(
+        &self,
+        task_id: &str,
+        update: &TaskUpdate,
+        now: u64,
+    ) -> Result<Task, TaskStoreError> {
+        let mut tasks = self.tasks.write().await;
+        let task = tasks
+            .get_mut(task_id)
+            .ok_or_else(|| TaskStoreError::NotFound(task_id.to_string()))?;
+        if let Some(ref subject) = update.subject {
+            task.subject.clone_from(subject);
+        }
+        if let Some(ref description) = update.description {
+            task.description.clone_from(description);
+        }
+        if let Some(ref owner) = update.owner {
+            task.owner.clone_from(owner);
+        }
+        if let Some(status) = update.status {
+            task.status = status;
+        }
+        if let Some(ref blocks) = update.blocks {
+            task.blocks.clone_from(blocks);
+        }
+        if let Some(ref blocked_by) = update.blocked_by {
+            task.blocked_by.clone_from(blocked_by);
+        }
+        if let Some(ref metadata) = update.metadata {
+            task.metadata.clone_from(metadata);
+        }
+        task.updated_at = now;
+        Ok(task.clone())
+    }
+
+    async fn claim_task(
+        &self,
+        task_id: &str,
+        agent_id: &str,
+        now: u64,
+    ) -> Result<Task, TaskStoreError> {
+        let mut tasks = self.tasks.write().await;
+        {
+            let task = tasks
+                .get(task_id)
+                .ok_or_else(|| TaskStoreError::NotFound(task_id.to_string()))?;
+            if task.owner.is_some() {
+                return Err(TaskStoreError::ClaimConflict(task_id.to_string()));
+            }
+            for dep_id in &task.blocked_by {
+                let dep = tasks.get(dep_id);
+                if !dep.is_some_and(|d| d.status == TaskStatus::Completed) {
+                    return Err(TaskStoreError::Blocked(task_id.to_string()));
+                }
+            }
+        }
+        let task = tasks.get_mut(task_id).expect("just checked");
+        task.owner = Some(agent_id.to_string());
+        task.status = TaskStatus::InProgress;
+        task.updated_at = now;
+        Ok(task.clone())
+    }
+
+    async fn assign_task(
+        &self,
+        task_id: &str,
+        agent_id: &str,
+        now: u64,
+    ) -> Result<Task, TaskStoreError> {
+        let mut tasks = self.tasks.write().await;
+        let task = tasks
+            .get_mut(task_id)
+            .ok_or_else(|| TaskStoreError::NotFound(task_id.to_string()))?;
+        task.owner = Some(agent_id.to_string());
+        task.status = TaskStatus::InProgress;
+        task.updated_at = now;
+        Ok(task.clone())
+    }
+
+    async fn complete_task(&self, task_id: &str, now: u64) -> Result<Task, TaskStoreError> {
+        let mut tasks = self.tasks.write().await;
+        let task = tasks
+            .get_mut(task_id)
+            .ok_or_else(|| TaskStoreError::NotFound(task_id.to_string()))?;
+        task.status = TaskStatus::Completed;
+        task.updated_at = now;
+        let completed = task.clone();
+
+        // Clear this task from ALL downstream blocked_by lists.
+        // Scan all tasks rather than relying on `blocks` (which may be incomplete).
+        let ids_to_clear: Vec<String> = tasks
+            .values()
+            .filter(|t| t.blocked_by.contains(&task_id.to_string()))
+            .map(|t| t.task_id.clone())
+            .collect();
+        for id in ids_to_clear {
+            if let Some(downstream) = tasks.get_mut(&id) {
+                downstream.blocked_by.retain(|dep| dep != task_id);
+                downstream.updated_at = now;
+            }
+        }
+
+        Ok(completed)
+    }
+
+    async fn delete_task(&self, task_id: &str) -> Result<(), TaskStoreError> {
+        let mut tasks = self.tasks.write().await;
+        tasks
+            .remove(task_id)
+            .ok_or_else(|| TaskStoreError::NotFound(task_id.to_string()))?;
+        Ok(())
     }
 }
 

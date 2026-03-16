@@ -231,6 +231,7 @@ impl SubAgentHandleTable {
         epoch
     }
 
+    #[allow(dead_code)]
     pub(super) async fn remove_if_epoch(&self, run_id: &str, epoch: u64) -> bool {
         let mut handles = self.handles.lock().await;
         if handles.get(run_id).is_some_and(|h| h.epoch == epoch) {

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use tirea_contract::runtime::state::SerializedStateAction;
 use tirea_contract::storage::{
     MailboxEntryOrigin, MailboxEntryStatus, MailboxQuery, MailboxReader, MailboxStoreError,
-    MailboxWriter, ThreadReader, ThreadStore, ThreadStoreError, ThreadSync, ThreadWriter,
-    VersionPrecondition,
+    MailboxWriter, Task, TaskQuery, TaskReader, TaskStatus, TaskStoreError, TaskWriter,
+    ThreadReader, ThreadStore, ThreadStoreError, ThreadSync, ThreadWriter, VersionPrecondition,
 };
 use tirea_contract::testing::MailboxEntryBuilder;
 use tirea_contract::thread::ThreadChangeSet;
@@ -2227,4 +2227,346 @@ async fn mailbox_extend_lease_rejects_non_claimed() {
         .await
         .unwrap();
     assert!(!result);
+}
+
+// ========================================================================
+// TaskBoard tests
+// ========================================================================
+
+fn make_task(id: &str) -> Task {
+    Task {
+        task_id: id.to_string(),
+        subject: format!("Task {id}"),
+        description: None,
+        owner: None,
+        status: TaskStatus::Pending,
+        blocks: vec![],
+        blocked_by: vec![],
+        team_id: Some("team-1".to_string()),
+        metadata: None,
+        created_at: 100,
+        updated_at: 100,
+        created_by: Some("lead".to_string()),
+    }
+}
+
+#[tokio::test]
+async fn task_create_and_load() {
+    let store = MemoryStore::new();
+    let task = make_task("t1");
+    store.create_task(&task).await.unwrap();
+
+    let loaded = store.load_task("t1").await.unwrap().unwrap();
+    assert_eq!(loaded.task_id, "t1");
+    assert_eq!(loaded.subject, "Task t1");
+}
+
+#[tokio::test]
+async fn task_create_duplicate_fails() {
+    let store = MemoryStore::new();
+    let task = make_task("t1");
+    store.create_task(&task).await.unwrap();
+    let err = store.create_task(&task).await.unwrap_err();
+    assert!(matches!(err, TaskStoreError::AlreadyExists(_)));
+}
+
+#[tokio::test]
+async fn task_update_partial_fields() {
+    use tirea_contract::storage::TaskUpdate;
+    let store = MemoryStore::new();
+    store.create_task(&make_task("t1")).await.unwrap();
+
+    let updated = store
+        .update_task(
+            "t1",
+            &TaskUpdate {
+                subject: Some("New subject".to_string()),
+                description: Some(Some("desc".to_string())),
+                ..Default::default()
+            },
+            200,
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.subject, "New subject");
+    assert_eq!(updated.description.as_deref(), Some("desc"));
+    assert_eq!(updated.updated_at, 200);
+    // Unmodified fields preserved
+    assert_eq!(updated.status, TaskStatus::Pending);
+}
+
+#[tokio::test]
+async fn task_claim_cas_succeeds_when_unowned() {
+    let store = MemoryStore::new();
+    store.create_task(&make_task("t1")).await.unwrap();
+
+    let claimed = store.claim_task("t1", "agent-a", 200).await.unwrap();
+    assert_eq!(claimed.owner.as_deref(), Some("agent-a"));
+    assert_eq!(claimed.status, TaskStatus::InProgress);
+}
+
+#[tokio::test]
+async fn task_claim_cas_fails_when_owned() {
+    let store = MemoryStore::new();
+    store.create_task(&make_task("t1")).await.unwrap();
+    store.claim_task("t1", "agent-a", 200).await.unwrap();
+
+    let err = store.claim_task("t1", "agent-b", 300).await.unwrap_err();
+    assert!(matches!(err, TaskStoreError::ClaimConflict(_)));
+}
+
+#[tokio::test]
+async fn task_claim_blocked_by_incomplete_deps() {
+    let store = MemoryStore::new();
+    let mut dep = make_task("dep-1");
+    dep.blocks = vec!["t1".to_string()];
+    store.create_task(&dep).await.unwrap();
+
+    let mut task = make_task("t1");
+    task.blocked_by = vec!["dep-1".to_string()];
+    store.create_task(&task).await.unwrap();
+
+    let err = store.claim_task("t1", "agent-a", 200).await.unwrap_err();
+    assert!(matches!(err, TaskStoreError::Blocked(_)));
+}
+
+#[tokio::test]
+async fn task_claim_succeeds_after_dep_completed() {
+    let store = MemoryStore::new();
+    let mut dep = make_task("dep-1");
+    dep.blocks = vec!["t1".to_string()];
+    store.create_task(&dep).await.unwrap();
+
+    let mut task = make_task("t1");
+    task.blocked_by = vec!["dep-1".to_string()];
+    store.create_task(&task).await.unwrap();
+
+    // Complete the dependency
+    store.complete_task("dep-1", 150).await.unwrap();
+
+    // Now claim should succeed (blocked_by was cleared by complete_task)
+    let claimed = store.claim_task("t1", "agent-a", 200).await.unwrap();
+    assert_eq!(claimed.owner.as_deref(), Some("agent-a"));
+}
+
+#[tokio::test]
+async fn task_assign_overrides_existing_owner() {
+    let store = MemoryStore::new();
+    store.create_task(&make_task("t1")).await.unwrap();
+    store.claim_task("t1", "agent-a", 200).await.unwrap();
+
+    let assigned = store.assign_task("t1", "agent-b", 300).await.unwrap();
+    assert_eq!(assigned.owner.as_deref(), Some("agent-b"));
+}
+
+#[tokio::test]
+async fn task_complete_clears_downstream_blocked_by() {
+    let store = MemoryStore::new();
+    let mut upstream = make_task("up");
+    upstream.blocks = vec!["down".to_string()];
+    store.create_task(&upstream).await.unwrap();
+
+    let mut downstream = make_task("down");
+    downstream.blocked_by = vec!["up".to_string()];
+    store.create_task(&downstream).await.unwrap();
+
+    store.claim_task("up", "agent-a", 200).await.unwrap();
+    let completed = store.complete_task("up", 300).await.unwrap();
+    assert_eq!(completed.status, TaskStatus::Completed);
+
+    let down = store.load_task("down").await.unwrap().unwrap();
+    assert!(down.blocked_by.is_empty());
+}
+
+#[tokio::test]
+async fn task_delete() {
+    let store = MemoryStore::new();
+    store.create_task(&make_task("t1")).await.unwrap();
+    store.delete_task("t1").await.unwrap();
+    assert!(store.load_task("t1").await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn task_delete_not_found() {
+    let store = MemoryStore::new();
+    let err = store.delete_task("nope").await.unwrap_err();
+    assert!(matches!(err, TaskStoreError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn task_list_filters_by_team_and_status() {
+    let store = MemoryStore::new();
+    store.create_task(&make_task("t1")).await.unwrap();
+    let mut t2 = make_task("t2");
+    t2.status = TaskStatus::InProgress;
+    t2.owner = Some("agent-a".to_string());
+    store.create_task(&t2).await.unwrap();
+    let mut t3 = make_task("t3");
+    t3.team_id = Some("team-2".to_string());
+    store.create_task(&t3).await.unwrap();
+
+    // Filter by team
+    let page = store
+        .list_tasks(&TaskQuery {
+            team_id: Some("team-1".to_string()),
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.total, 2);
+
+    // Filter by status
+    let page = store
+        .list_tasks(&TaskQuery {
+            status: Some(TaskStatus::Pending),
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.total, 2); // t1 and t3
+
+    // Filter by owner
+    let page = store
+        .list_tasks(&TaskQuery {
+            owner: Some("agent-a".to_string()),
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].task_id, "t2");
+}
+
+/// Chain A→B→C: completing A unblocks B, completing B unblocks C.
+#[tokio::test]
+async fn task_dep_chain_a_b_c() {
+    let store = MemoryStore::new();
+
+    let mut a = make_task("a");
+    a.blocks = vec!["b".to_string()];
+    store.create_task(&a).await.unwrap();
+
+    let mut b = make_task("b");
+    b.blocked_by = vec!["a".to_string()];
+    b.blocks = vec!["c".to_string()];
+    store.create_task(&b).await.unwrap();
+
+    let mut c = make_task("c");
+    c.blocked_by = vec!["b".to_string()];
+    store.create_task(&c).await.unwrap();
+
+    // C is blocked by B which is blocked by A.
+    assert!(store.claim_task("c", "x", 10).await.is_err());
+    assert!(store.claim_task("b", "x", 10).await.is_err());
+
+    // Complete A → B becomes claimable, C still blocked.
+    store.complete_task("a", 20).await.unwrap();
+    store.claim_task("b", "x", 30).await.unwrap();
+    assert!(store.claim_task("c", "y", 30).await.is_err());
+
+    // Complete B → C becomes claimable.
+    store.complete_task("b", 40).await.unwrap();
+    let claimed_c = store.claim_task("c", "y", 50).await.unwrap();
+    assert_eq!(claimed_c.owner.as_deref(), Some("y"));
+}
+
+/// Diamond: D depends on both B and C, which both depend on A.
+#[tokio::test]
+async fn task_dep_diamond() {
+    let store = MemoryStore::new();
+
+    let a = make_task("a");
+    store.create_task(&a).await.unwrap();
+
+    let mut b = make_task("b");
+    b.blocked_by = vec!["a".to_string()];
+    store.create_task(&b).await.unwrap();
+
+    let mut c = make_task("c");
+    c.blocked_by = vec!["a".to_string()];
+    store.create_task(&c).await.unwrap();
+
+    let mut d = make_task("d");
+    d.blocked_by = vec!["b".to_string(), "c".to_string()];
+    store.create_task(&d).await.unwrap();
+
+    // Complete A → unblocks B and C.
+    store.complete_task("a", 10).await.unwrap();
+    let b_loaded = store.load_task("b").await.unwrap().unwrap();
+    assert!(b_loaded.blocked_by.is_empty());
+    let c_loaded = store.load_task("c").await.unwrap().unwrap();
+    assert!(c_loaded.blocked_by.is_empty());
+
+    // D still blocked (needs both B and C complete).
+    assert!(store.claim_task("d", "x", 20).await.is_err());
+
+    // Complete B only → D still blocked by C.
+    store.claim_task("b", "x", 20).await.unwrap();
+    store.complete_task("b", 30).await.unwrap();
+    let d_loaded = store.load_task("d").await.unwrap().unwrap();
+    assert_eq!(d_loaded.blocked_by, vec!["c".to_string()]);
+    assert!(store.claim_task("d", "x", 30).await.is_err());
+
+    // Complete C → D fully unblocked.
+    store.claim_task("c", "y", 30).await.unwrap();
+    store.complete_task("c", 40).await.unwrap();
+    let d_final = store.claim_task("d", "z", 50).await.unwrap();
+    assert!(d_final.blocked_by.is_empty());
+    assert_eq!(d_final.owner.as_deref(), Some("z"));
+}
+
+/// Claim should fail when a dependency task_id doesn't exist in the store.
+#[tokio::test]
+async fn task_claim_fails_when_dep_missing() {
+    let store = MemoryStore::new();
+    let mut task = make_task("t1");
+    task.blocked_by = vec!["nonexistent".to_string()];
+    store.create_task(&task).await.unwrap();
+
+    let err = store.claim_task("t1", "agent", 10).await.unwrap_err();
+    assert!(matches!(err, TaskStoreError::Blocked(_)));
+}
+
+/// Completing a task with no downstream dependents should have no side effects.
+#[tokio::test]
+async fn task_complete_no_downstream_is_noop() {
+    let store = MemoryStore::new();
+    store.create_task(&make_task("solo")).await.unwrap();
+
+    let other = make_task("other");
+    store.create_task(&other).await.unwrap();
+
+    store.complete_task("solo", 20).await.unwrap();
+
+    // Other task is untouched.
+    let loaded = store.load_task("other").await.unwrap().unwrap();
+    assert_eq!(loaded.updated_at, 100); // original timestamp
+}
+
+/// Partial deps: task has 2 deps, only 1 completed → still blocked.
+#[tokio::test]
+async fn task_claim_partial_deps_still_blocked() {
+    let store = MemoryStore::new();
+
+    store.create_task(&make_task("d1")).await.unwrap();
+    store.create_task(&make_task("d2")).await.unwrap();
+
+    let mut task = make_task("t1");
+    task.blocked_by = vec!["d1".to_string(), "d2".to_string()];
+    store.create_task(&task).await.unwrap();
+
+    // Complete only d1.
+    store.complete_task("d1", 20).await.unwrap();
+
+    // Still blocked by d2.
+    let err = store.claim_task("t1", "agent", 30).await.unwrap_err();
+    assert!(matches!(err, TaskStoreError::Blocked(_)));
+
+    // Complete d2 → now claimable.
+    store.complete_task("d2", 40).await.unwrap();
+    let claimed = store.claim_task("t1", "agent", 50).await.unwrap();
+    assert_eq!(claimed.owner.as_deref(), Some("agent"));
 }

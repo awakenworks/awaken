@@ -23,7 +23,6 @@ use tirea_agentos_server::service::{AppState, MailboxService};
 use tirea_extension_a2ui::{A2uiPlugin, A2uiRenderTool};
 use tirea_store_adapters::MemoryStore;
 
-#[allow(dead_code)]
 mod common;
 
 use common::{compose_http_app, post_sse};

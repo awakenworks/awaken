@@ -4,10 +4,12 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tirea_contract::storage::{
-    has_active_claim_for_mailbox, paginate_mailbox_entries, paginate_runs_in_memory, Committed,
-    MailboxEntry, MailboxInterrupt, MailboxPage, MailboxQuery, MailboxReader, MailboxState,
-    MailboxStoreError, MailboxWriter, RunPage, RunQuery, RunRecord, ThreadHead, ThreadListPage,
-    ThreadListQuery, ThreadReader, ThreadStoreError, ThreadWriter, VersionPrecondition,
+    has_active_claim_for_mailbox, paginate_mailbox_entries, paginate_runs_in_memory,
+    paginate_tasks, Committed, MailboxEntry, MailboxInterrupt, MailboxPage, MailboxQuery,
+    MailboxReader, MailboxState, MailboxStoreError, MailboxWriter, RunPage, RunQuery, RunRecord,
+    Task, TaskPage, TaskQuery, TaskReader, TaskStoreError, TaskUpdate, TaskWriter, ThreadHead,
+    ThreadListPage, ThreadListQuery, ThreadReader, ThreadStoreError, ThreadWriter,
+    VersionPrecondition,
 };
 use tirea_contract::{Thread, ThreadChangeSet, Version};
 
@@ -116,6 +118,48 @@ impl FileStore {
             mailbox_entries.push(mailbox_entry);
         }
         Ok(mailbox_entries)
+    }
+
+    fn task_dir(&self) -> PathBuf {
+        self.base_path.join("_tasks")
+    }
+
+    fn task_path(&self, task_id: &str) -> Result<PathBuf, TaskStoreError> {
+        file_utils::validate_fs_id(task_id, "task id").map_err(TaskStoreError::Backend)?;
+        Ok(self.task_dir().join(format!("{task_id}.json")))
+    }
+
+    async fn save_task(&self, task: &Task) -> Result<(), TaskStoreError> {
+        let payload = serde_json::to_string_pretty(task)
+            .map_err(|e| TaskStoreError::Backend(e.to_string()))?;
+        let filename = format!("{}.json", task.task_id);
+        file_utils::atomic_json_write(&self.task_dir(), &filename, &payload)
+            .await
+            .map_err(TaskStoreError::Io)
+    }
+
+    async fn load_all_tasks(&self) -> Result<Vec<Task>, TaskStoreError> {
+        let dir = self.task_dir();
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut entries = tokio::fs::read_dir(&dir)
+            .await
+            .map_err(TaskStoreError::Io)?;
+        let mut tasks = Vec::new();
+        while let Some(entry) = entries.next_entry().await.map_err(TaskStoreError::Io)? {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "json") {
+                continue;
+            }
+            let content = tokio::fs::read_to_string(path)
+                .await
+                .map_err(TaskStoreError::Io)?;
+            let task: Task = serde_json::from_str(&content)
+                .map_err(|e| TaskStoreError::Backend(e.to_string()))?;
+            tasks.push(task);
+        }
+        Ok(tasks)
     }
 }
 
@@ -850,6 +894,160 @@ struct VersionedThread {
     _version: Option<Version>,
 }
 
+#[async_trait]
+impl TaskReader for FileStore {
+    async fn load_task(&self, task_id: &str) -> Result<Option<Task>, TaskStoreError> {
+        let path = self.task_path(task_id)?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = tokio::fs::read_to_string(path)
+            .await
+            .map_err(TaskStoreError::Io)?;
+        let task =
+            serde_json::from_str(&content).map_err(|e| TaskStoreError::Backend(e.to_string()))?;
+        Ok(Some(task))
+    }
+
+    async fn list_tasks(&self, query: &TaskQuery) -> Result<TaskPage, TaskStoreError> {
+        let tasks = self.load_all_tasks().await?;
+        Ok(paginate_tasks(&tasks, query))
+    }
+}
+
+#[async_trait]
+impl TaskWriter for FileStore {
+    async fn create_task(&self, task: &Task) -> Result<(), TaskStoreError> {
+        let path = self.task_path(&task.task_id)?;
+        if path.exists() {
+            return Err(TaskStoreError::AlreadyExists(task.task_id.clone()));
+        }
+        self.save_task(task).await
+    }
+
+    async fn update_task(
+        &self,
+        task_id: &str,
+        update: &TaskUpdate,
+        now: u64,
+    ) -> Result<Task, TaskStoreError> {
+        let mut task = self
+            .load_task(task_id)
+            .await?
+            .ok_or_else(|| TaskStoreError::NotFound(task_id.to_string()))?;
+
+        if let Some(ref subject) = update.subject {
+            task.subject = subject.clone();
+        }
+        if let Some(ref description) = update.description {
+            task.description = description.clone();
+        }
+        if let Some(ref owner) = update.owner {
+            task.owner = owner.clone();
+        }
+        if let Some(status) = update.status {
+            task.status = status;
+        }
+        if let Some(ref blocks) = update.blocks {
+            task.blocks = blocks.clone();
+        }
+        if let Some(ref blocked_by) = update.blocked_by {
+            task.blocked_by = blocked_by.clone();
+        }
+        if let Some(ref metadata) = update.metadata {
+            task.metadata = metadata.clone();
+        }
+        task.updated_at = now;
+        self.save_task(&task).await?;
+        Ok(task)
+    }
+
+    async fn claim_task(
+        &self,
+        task_id: &str,
+        agent_id: &str,
+        now: u64,
+    ) -> Result<Task, TaskStoreError> {
+        let tasks = self.load_all_tasks().await?;
+        let task = tasks
+            .iter()
+            .find(|t| t.task_id == task_id)
+            .ok_or_else(|| TaskStoreError::NotFound(task_id.to_string()))?;
+
+        if task.owner.is_some() {
+            return Err(TaskStoreError::ClaimConflict(task_id.to_string()));
+        }
+        for dep_id in &task.blocked_by {
+            let dep = tasks.iter().find(|t| t.task_id == *dep_id);
+            if !dep.is_some_and(|d| d.status == tirea_contract::storage::TaskStatus::Completed) {
+                return Err(TaskStoreError::Blocked(task_id.to_string()));
+            }
+        }
+
+        let mut task = task.clone();
+        task.owner = Some(agent_id.to_string());
+        task.status = tirea_contract::storage::TaskStatus::InProgress;
+        task.updated_at = now;
+        self.save_task(&task).await?;
+        Ok(task)
+    }
+
+    async fn assign_task(
+        &self,
+        task_id: &str,
+        agent_id: &str,
+        now: u64,
+    ) -> Result<Task, TaskStoreError> {
+        let mut task = self
+            .load_task(task_id)
+            .await?
+            .ok_or_else(|| TaskStoreError::NotFound(task_id.to_string()))?;
+
+        task.owner = Some(agent_id.to_string());
+        task.status = tirea_contract::storage::TaskStatus::InProgress;
+        task.updated_at = now;
+        self.save_task(&task).await?;
+        Ok(task)
+    }
+
+    async fn complete_task(&self, task_id: &str, now: u64) -> Result<Task, TaskStoreError> {
+        let mut all_tasks = self.load_all_tasks().await?;
+        let task = all_tasks
+            .iter_mut()
+            .find(|t| t.task_id == task_id)
+            .ok_or_else(|| TaskStoreError::NotFound(task_id.to_string()))?;
+
+        task.status = tirea_contract::storage::TaskStatus::Completed;
+        task.updated_at = now;
+        let completed = task.clone();
+
+        // Clear this task from downstream blocked_by lists.
+        let downstream: Vec<Task> = all_tasks
+            .iter()
+            .filter(|t| t.blocked_by.contains(&task_id.to_string()))
+            .cloned()
+            .collect();
+        for mut dep in downstream {
+            dep.blocked_by.retain(|id| id != task_id);
+            dep.updated_at = now;
+            self.save_task(&dep).await?;
+        }
+
+        self.save_task(&completed).await?;
+        Ok(completed)
+    }
+
+    async fn delete_task(&self, task_id: &str) -> Result<(), TaskStoreError> {
+        let path = self.task_path(task_id)?;
+        if !path.exists() {
+            return Err(TaskStoreError::NotFound(task_id.to_string()));
+        }
+        tokio::fs::remove_file(path)
+            .await
+            .map_err(TaskStoreError::Io)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1247,5 +1445,208 @@ mod tests {
         storage.enqueue_mailbox_entry(&first).await.unwrap();
         let result = storage.enqueue_mailbox_entry(&duplicate).await;
         assert!(matches!(result, Err(MailboxStoreError::AlreadyExists(_))));
+    }
+
+    // ---- Task board tests ----
+
+    use tirea_contract::storage::TaskStatus;
+
+    fn make_task(id: &str, team: &str) -> Task {
+        Task {
+            task_id: id.to_string(),
+            subject: format!("Task {id}"),
+            description: None,
+            owner: None,
+            status: TaskStatus::Pending,
+            blocks: vec![],
+            blocked_by: vec![],
+            team_id: Some(team.to_string()),
+            metadata: None,
+            created_at: 100,
+            updated_at: 100,
+            created_by: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn file_task_create_load_delete() {
+        let temp = TempDir::new().unwrap();
+        let store = FileStore::new(temp.path());
+
+        let task = make_task("t-1", "team-a");
+        store.create_task(&task).await.unwrap();
+
+        let loaded = store.load_task("t-1").await.unwrap().expect("should exist");
+        assert_eq!(loaded.subject, "Task t-1");
+
+        store.delete_task("t-1").await.unwrap();
+        assert!(store.load_task("t-1").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn file_task_create_duplicate_fails() {
+        let temp = TempDir::new().unwrap();
+        let store = FileStore::new(temp.path());
+
+        let task = make_task("t-dup", "team-a");
+        store.create_task(&task).await.unwrap();
+        let err = store.create_task(&task).await.unwrap_err();
+        assert!(matches!(err, TaskStoreError::AlreadyExists(_)));
+    }
+
+    #[tokio::test]
+    async fn file_task_claim_and_complete() {
+        let temp = TempDir::new().unwrap();
+        let store = FileStore::new(temp.path());
+
+        let dep = make_task("dep-1", "team-a");
+        store.create_task(&dep).await.unwrap();
+
+        let mut blocked = make_task("blk-1", "team-a");
+        blocked.blocked_by = vec!["dep-1".to_string()];
+        store.create_task(&blocked).await.unwrap();
+
+        // Cannot claim while blocked.
+        let err = store.claim_task("blk-1", "agent-a", 200).await.unwrap_err();
+        assert!(matches!(err, TaskStoreError::Blocked(_)));
+
+        // Complete dep, then claim succeeds.
+        store.complete_task("dep-1", 200).await.unwrap();
+        let claimed = store.claim_task("blk-1", "agent-a", 300).await.unwrap();
+        assert_eq!(claimed.owner.as_deref(), Some("agent-a"));
+        assert_eq!(claimed.status, TaskStatus::InProgress);
+
+        // Double claim fails.
+        let err = store.claim_task("blk-1", "agent-b", 400).await.unwrap_err();
+        assert!(matches!(err, TaskStoreError::ClaimConflict(_)));
+    }
+
+    #[tokio::test]
+    async fn file_task_assign_overrides() {
+        let temp = TempDir::new().unwrap();
+        let store = FileStore::new(temp.path());
+
+        let task = make_task("t-assign", "team-a");
+        store.create_task(&task).await.unwrap();
+
+        store.assign_task("t-assign", "agent-a", 200).await.unwrap();
+        let assigned = store.assign_task("t-assign", "agent-b", 300).await.unwrap();
+        assert_eq!(assigned.owner.as_deref(), Some("agent-b"));
+    }
+
+    #[tokio::test]
+    async fn file_task_list_filters() {
+        let temp = TempDir::new().unwrap();
+        let store = FileStore::new(temp.path());
+
+        store
+            .create_task(&make_task("t-a", "team-1"))
+            .await
+            .unwrap();
+        store
+            .create_task(&make_task("t-b", "team-2"))
+            .await
+            .unwrap();
+
+        // FileStore: complete clears downstream blocked_by.
+        let temp2 = TempDir::new().unwrap();
+        let s = FileStore::new(temp2.path());
+        let mut up = make_task("up", "t");
+        up.blocks = vec!["down".to_string()];
+        s.create_task(&up).await.unwrap();
+        let mut down = make_task("down", "t");
+        down.blocked_by = vec!["up".to_string()];
+        s.create_task(&down).await.unwrap();
+        s.complete_task("up", 200).await.unwrap();
+        let d = s.load_task("down").await.unwrap().unwrap();
+        assert!(d.blocked_by.is_empty());
+    }
+
+    #[tokio::test]
+    async fn file_task_dep_chain() {
+        let temp = TempDir::new().unwrap();
+        let store = FileStore::new(temp.path());
+
+        let mut a = make_task("a", "t");
+        a.blocks = vec!["b".to_string()];
+        store.create_task(&a).await.unwrap();
+
+        let mut b = make_task("b", "t");
+        b.blocked_by = vec!["a".to_string()];
+        b.blocks = vec!["c".to_string()];
+        store.create_task(&b).await.unwrap();
+
+        let mut c = make_task("c", "t");
+        c.blocked_by = vec!["b".to_string()];
+        store.create_task(&c).await.unwrap();
+
+        assert!(store.claim_task("b", "x", 10).await.is_err());
+        store.complete_task("a", 20).await.unwrap();
+        store.claim_task("b", "x", 30).await.unwrap();
+        assert!(store.claim_task("c", "y", 30).await.is_err());
+        store.complete_task("b", 40).await.unwrap();
+        let cc = store.claim_task("c", "y", 50).await.unwrap();
+        assert_eq!(cc.owner.as_deref(), Some("y"));
+    }
+
+    #[tokio::test]
+    async fn file_task_dep_diamond() {
+        let temp = TempDir::new().unwrap();
+        let store = FileStore::new(temp.path());
+
+        store.create_task(&make_task("a", "t")).await.unwrap();
+        let mut b = make_task("b", "t");
+        b.blocked_by = vec!["a".to_string()];
+        store.create_task(&b).await.unwrap();
+        let mut c = make_task("c", "t");
+        c.blocked_by = vec!["a".to_string()];
+        store.create_task(&c).await.unwrap();
+        let mut d = make_task("d", "t");
+        d.blocked_by = vec!["b".to_string(), "c".to_string()];
+        store.create_task(&d).await.unwrap();
+
+        store.complete_task("a", 10).await.unwrap();
+        assert!(store.claim_task("d", "x", 20).await.is_err());
+
+        store.claim_task("b", "x", 20).await.unwrap();
+        store.complete_task("b", 30).await.unwrap();
+        assert!(store.claim_task("d", "x", 30).await.is_err());
+
+        store.claim_task("c", "y", 30).await.unwrap();
+        store.complete_task("c", 40).await.unwrap();
+        let dd = store.claim_task("d", "z", 50).await.unwrap();
+        assert!(dd.blocked_by.is_empty());
+        assert_eq!(dd.owner.as_deref(), Some("z"));
+    }
+
+    #[tokio::test]
+    async fn file_task_claim_fails_when_dep_missing() {
+        let temp = TempDir::new().unwrap();
+        let store = FileStore::new(temp.path());
+        let mut t = make_task("t1", "t");
+        t.blocked_by = vec!["ghost".to_string()];
+        store.create_task(&t).await.unwrap();
+
+        let err = store.claim_task("t1", "a", 10).await.unwrap_err();
+        assert!(matches!(err, TaskStoreError::Blocked(_)));
+    }
+
+    #[tokio::test]
+    async fn file_task_partial_deps_still_blocked() {
+        let temp = TempDir::new().unwrap();
+        let store = FileStore::new(temp.path());
+
+        store.create_task(&make_task("d1", "t")).await.unwrap();
+        store.create_task(&make_task("d2", "t")).await.unwrap();
+        let mut t = make_task("t1", "t");
+        t.blocked_by = vec!["d1".to_string(), "d2".to_string()];
+        store.create_task(&t).await.unwrap();
+
+        store.complete_task("d1", 20).await.unwrap();
+        assert!(store.claim_task("t1", "a", 30).await.is_err());
+
+        store.complete_task("d2", 40).await.unwrap();
+        let claimed = store.claim_task("t1", "a", 50).await.unwrap();
+        assert_eq!(claimed.owner.as_deref(), Some("a"));
     }
 }

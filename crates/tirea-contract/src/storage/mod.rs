@@ -4,6 +4,8 @@ pub mod mailbox_traits;
 pub mod mailbox_types;
 pub mod run_traits;
 pub mod run_types;
+pub mod task_traits;
+pub mod task_types;
 pub mod traits;
 pub mod types;
 
@@ -17,6 +19,10 @@ pub use mailbox_types::{
 pub use run_traits::{RunReader, RunStore, RunWriter};
 pub use run_types::{
     paginate_runs_in_memory, RunOrigin, RunPage, RunQuery, RunRecord, RunStoreError,
+};
+pub use task_traits::{TaskReader, TaskStore, TaskWriter};
+pub use task_types::{
+    paginate_tasks, Task, TaskPage, TaskQuery, TaskStatus, TaskStoreError, TaskUpdate,
 };
 pub use traits::{ThreadReader, ThreadStore, ThreadSync, ThreadWriter};
 pub use types::{

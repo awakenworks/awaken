@@ -11,8 +11,10 @@ pub mod composition;
 pub mod engine;
 pub mod extensions;
 pub mod runtime;
+pub mod team_tools;
 
 // ── Top-level re-exports for common entry points ────────────────────────
 
 pub use composition::{AgentDefinition, AgentOsBuilder, RegistrySet, ToolBehaviorBundle};
 pub use runtime::{AgentOs, AgentOsRunError, PreparedRun, RunStream};
+pub use team_tools::{TeamPlugin, TeamStores, TeamWiring};
