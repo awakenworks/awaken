@@ -1,4 +1,4 @@
-use crate::runtime::inference::InferenceRequestTransform;
+use crate::runtime::inference::{InferenceModelOverride, InferenceRequestTransform};
 use crate::runtime::run::TerminationReason;
 use crate::runtime::state::AnyStateAction;
 use crate::runtime::tool_call::gate::{SuspendTicket, ToolCallAction};
@@ -119,6 +119,12 @@ pub enum BeforeInferenceAction {
     IncludeOnlyTools(Vec<String>),
     /// Register a request transform applied after messages are assembled.
     AddRequestTransform(Arc<dyn InferenceRequestTransform>),
+    /// Override the model for this inference call.
+    ///
+    /// When emitted, the loop runner uses the specified model and fallback
+    /// models instead of the base agent's configuration. If multiple
+    /// `OverrideModel` actions are emitted, the last one wins.
+    OverrideModel(InferenceModelOverride),
     /// Request run termination before inference fires.
     Terminate(TerminationReason),
     /// Emit a persistent state change.

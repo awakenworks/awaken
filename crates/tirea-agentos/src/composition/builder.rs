@@ -6,8 +6,6 @@ use crate::contracts::storage::ThreadStore;
 use crate::extensions::skills::{
     CompositeSkillRegistry, InMemorySkillRegistry, Skill, SkillRegistry, SkillRegistryManagerError,
 };
-#[cfg(feature = "mode")]
-use crate::runtime::mode_wiring::ModeSystemWiring;
 #[cfg(feature = "plan")]
 use crate::runtime::plan_wiring::PlanSystemWiring;
 #[cfg(feature = "skills")]
@@ -45,8 +43,6 @@ pub struct AgentOsBuilder {
     pub(crate) skills_refresh_interval: Option<Duration>,
     #[cfg(feature = "skills")]
     pub(crate) skills_config: SkillsConfig,
-    #[cfg(feature = "mode")]
-    pub(crate) mode_config: ModeConfig,
     #[cfg(feature = "plan")]
     pub(crate) plan_config: PlanConfig,
     pub(crate) system_wirings: Vec<Arc<dyn SystemWiring>>,
@@ -184,8 +180,6 @@ impl AgentOsBuilder {
             skills_refresh_interval: None,
             #[cfg(feature = "skills")]
             skills_config: SkillsConfig::default(),
-            #[cfg(feature = "mode")]
-            mode_config: ModeConfig::default(),
             #[cfg(feature = "plan")]
             plan_config: PlanConfig::default(),
             system_wirings: Vec::new(),
@@ -312,13 +306,6 @@ impl AgentOsBuilder {
         self
     }
 
-    /// Configure the mode switching extension.
-    #[cfg(feature = "mode")]
-    pub fn with_mode_config(mut self, cfg: ModeConfig) -> Self {
-        self.mode_config = cfg;
-        self
-    }
-
     /// Configure the plan mode extension.
     #[cfg(feature = "plan")]
     pub fn with_plan_config(mut self, cfg: PlanConfig) -> Self {
@@ -368,8 +355,6 @@ impl AgentOsBuilder {
             skills_refresh_interval,
             #[cfg(feature = "skills")]
             skills_config,
-            #[cfg(feature = "mode")]
-            mode_config,
             #[cfg(feature = "plan")]
             plan_config,
             system_wirings,
@@ -438,11 +423,6 @@ impl AgentOsBuilder {
         };
 
         // --- Mode switching setup (feature-gated) ---
-        #[cfg(feature = "mode")]
-        if mode_config.enabled {
-            system_wirings.push(Arc::new(ModeSystemWiring::new()));
-        }
-
         // --- Plan mode setup (feature-gated) ---
         #[cfg(feature = "plan")]
         if plan_config.enabled {

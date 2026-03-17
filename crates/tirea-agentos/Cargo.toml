@@ -17,7 +17,7 @@ tirea-extension-observability = { workspace = true, optional = true }
 tirea-extension-skills = { workspace = true, optional = true }
 tirea-extension-mcp = { workspace = true, optional = true }
 tirea-extension-plan = { workspace = true, optional = true }
-tirea-extension-mode = { workspace = true, optional = true }
+tirea-extension-handoff = { workspace = true, optional = true }
 schemars.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -42,7 +42,7 @@ reminder = ["dep:tirea-extension-reminder"]
 observability = ["dep:tirea-extension-observability"]
 mcp = ["dep:tirea-extension-mcp"]
 plan = ["dep:tirea-extension-plan"]
-mode = ["dep:tirea-extension-mode"]
+mode = ["dep:tirea-extension-handoff"]
 
 [dev-dependencies]
 tirea-contract = { workspace = true, features = ["test-support"] }

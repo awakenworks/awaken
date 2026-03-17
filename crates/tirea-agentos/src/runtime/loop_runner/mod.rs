@@ -267,6 +267,22 @@ pub(super) fn effective_llm_models_from(
     models.into_iter().skip(index).collect()
 }
 
+pub(super) fn effective_llm_models_from_override(
+    ovr: &tirea_contract::runtime::inference::InferenceModelOverride,
+) -> Vec<String> {
+    let mut models = Vec::with_capacity(1 + ovr.fallback_models.len());
+    models.push(ovr.model.clone());
+    for model in &ovr.fallback_models {
+        if model.trim().is_empty() {
+            continue;
+        }
+        if !models.iter().any(|m| m == model) {
+            models.push(model.clone());
+        }
+    }
+    models
+}
+
 pub(super) fn next_llm_model_after(agent: &dyn Agent, current_model: &str) -> Option<String> {
     let models = effective_llm_models(agent);
     let current_index = models.iter().position(|model| model == current_model)?;
@@ -735,6 +751,7 @@ pub(super) async fn run_llm_with_retry_and_fallback<T, Invoke, Fut>(
     run_cancellation_token: Option<&RunCancellationToken>,
     retry_current_model: bool,
     start_model: Option<&str>,
+    model_override: Option<&tirea_contract::runtime::inference::InferenceModelOverride>,
     unknown_error: &str,
     mut invoke: Invoke,
 ) -> LlmAttemptOutcome<T>
@@ -744,7 +761,22 @@ where
 {
     let mut last_llm_error = unknown_error.to_string();
     let mut last_error_class: Option<&'static str> = None;
-    let model_candidates = effective_llm_models_from(agent, start_model);
+    let model_candidates = match model_override {
+        Some(ovr) => {
+            let base = effective_llm_models_from_override(ovr);
+            match start_model.map(str::trim).filter(|s| !s.is_empty()) {
+                Some(sm) => {
+                    if let Some(idx) = base.iter().position(|m| m == sm) {
+                        base.into_iter().skip(idx).collect()
+                    } else {
+                        base
+                    }
+                }
+                None => base,
+            }
+        }
+        None => effective_llm_models_from(agent, start_model),
+    };
     let max_attempts = llm_retry_attempts(agent);
     let mut total_attempts = 0usize;
     let mut retry_window = RetryBackoffWindow::default();
@@ -838,13 +870,14 @@ pub(super) async fn run_step_prepare_phases(
         Vec<String>,
         RunAction,
         Vec<std::sync::Arc<dyn tirea_contract::runtime::inference::InferenceRequestTransform>>,
+        Option<tirea_contract::runtime::inference::InferenceModelOverride>,
         Vec<TrackedPatch>,
         Vec<tirea_contract::SerializedStateAction>,
     ),
     AgentLoopError,
 > {
     let system_prompt = agent.system_prompt().to_string();
-    let ((messages, filtered_tools, run_action, transforms), pending, actions) =
+    let ((messages, filtered_tools, run_action, transforms, model_override), pending, actions) =
         plugin_runtime::run_phase_block(
             run_ctx,
             tool_descriptors,
@@ -859,6 +892,7 @@ pub(super) async fn run_step_prepare_phases(
         filtered_tools,
         run_action,
         transforms,
+        model_override,
         pending,
         actions,
     ))
@@ -872,6 +906,7 @@ pub(super) struct PreparedStep {
     pub(super) serialized_state_actions: Vec<tirea_contract::SerializedStateAction>,
     pub(super) request_transforms:
         Vec<std::sync::Arc<dyn tirea_contract::runtime::inference::InferenceRequestTransform>>,
+    pub(super) model_override: Option<tirea_contract::runtime::inference::InferenceModelOverride>,
 }
 
 pub(super) async fn prepare_step_execution(
@@ -879,7 +914,7 @@ pub(super) async fn prepare_step_execution(
     tool_descriptors: &[crate::contracts::runtime::tool_call::ToolDescriptor],
     agent: &dyn Agent,
 ) -> Result<PreparedStep, AgentLoopError> {
-    let (messages, filtered_tools, run_action, transforms, pending, actions) =
+    let (messages, filtered_tools, run_action, transforms, model_override, pending, actions) =
         run_step_prepare_phases(run_ctx, tool_descriptors, agent).await?;
     Ok(PreparedStep {
         messages,
@@ -888,6 +923,7 @@ pub(super) async fn prepare_step_execution(
         pending_patches: pending,
         serialized_state_actions: actions,
         request_transforms: transforms,
+        model_override,
     })
 }
 
@@ -2098,12 +2134,14 @@ pub async fn run_loop_with_context(
         let messages = prepared.messages;
         let filtered_tools = prepared.filtered_tools;
         let request_transforms = prepared.request_transforms;
+        let step_model_override = prepared.model_override;
         let chat_options = agent.chat_options().cloned();
         let attempt_outcome = run_llm_with_retry_and_fallback(
             agent,
             run_cancellation_token.as_ref(),
             true,
             None,
+            step_model_override.as_ref(),
             "unknown llm error",
             |model| {
                 let request = build_request_for_filtered_tools(

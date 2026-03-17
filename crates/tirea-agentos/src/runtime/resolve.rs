@@ -1,3 +1,5 @@
+#[cfg(feature = "mode")]
+use super::agent_tools::AgentHandoffTool;
 use super::agent_tools::{
     AgentOutputTool, AgentRecoveryPlugin, AgentRunTool, AgentStopTool, AgentToolsPlugin,
     AGENT_RECOVERY_PLUGIN_ID, AGENT_TOOLS_PLUGIN_ID,
@@ -201,6 +203,7 @@ impl AgentOs {
         &self,
         resolved_plugins: &[Arc<dyn AgentBehavior>],
         agents_registry: Arc<dyn AgentRegistry>,
+        _current_definition: &AgentDefinition,
     ) -> Result<Vec<Arc<dyn RegistryBundle>>, AgentOsWiringError> {
         Self::ensure_agent_tools_plugin_not_installed(resolved_plugins)?;
 
@@ -254,13 +257,17 @@ impl AgentOs {
         let background_tasks_plugin =
             BackgroundTasksPlugin::new(self.background_tasks.clone()).with_task_store(task_store);
 
-        let tools_bundle: Arc<dyn RegistryBundle> = Arc::new(
-            ToolBehaviorBundle::new(AGENT_TOOLS_PLUGIN_ID)
-                .with_tool(run_tool)
-                .with_tool(stop_tool)
-                .with_tool(output_tool)
-                .with_behavior(Arc::new(tools_plugin)),
-        );
+        let mut agent_tools_bundle = ToolBehaviorBundle::new(AGENT_TOOLS_PLUGIN_ID)
+            .with_tool(run_tool)
+            .with_tool(stop_tool)
+            .with_tool(output_tool);
+        #[cfg(feature = "mode")]
+        {
+            agent_tools_bundle =
+                agent_tools_bundle.with_tool(Arc::new(AgentHandoffTool) as Arc<dyn Tool>);
+        }
+        let tools_bundle: Arc<dyn RegistryBundle> =
+            Arc::new(agent_tools_bundle.with_behavior(Arc::new(tools_plugin)));
         let recovery_bundle: Arc<dyn RegistryBundle> = Arc::new(
             ToolBehaviorBundle::new(AGENT_RECOVERY_PLUGIN_ID)
                 .with_behavior(Arc::new(recovery_plugin)),
@@ -273,7 +280,50 @@ impl AgentOs {
                 .with_behavior(Arc::new(background_tasks_plugin)),
         );
 
-        Ok(vec![tools_bundle, recovery_bundle, background_tasks_bundle])
+        let mut bundles = vec![tools_bundle, recovery_bundle, background_tasks_bundle];
+
+        // Handoff plugin: auto-compute overlays from all agents in the registry.
+        #[cfg(feature = "mode")]
+        {
+            use crate::extensions::handoff::{
+                HandoffPlugin, HandoffRuntimeOverlay, HANDOFF_PLUGIN_ID,
+            };
+
+            let all_agents = agents_registry.snapshot();
+            if all_agents.len() > 1 {
+                let mut overlays = std::collections::HashMap::new();
+                for (id, def) in &all_agents {
+                    if id == &_current_definition.id {
+                        continue;
+                    }
+                    overlays.insert(
+                        id.clone(),
+                        HandoffRuntimeOverlay {
+                            model: Some(def.model.clone()),
+                            system_prompt: if def.system_prompt.is_empty() {
+                                None
+                            } else {
+                                Some(def.system_prompt.clone())
+                            },
+                            fallback_models: if def.fallback_models.is_empty() {
+                                None
+                            } else {
+                                Some(def.fallback_models.clone())
+                            },
+                            allowed_tools: def.allowed_tools.clone(),
+                            excluded_tools: def.excluded_tools.clone(),
+                        },
+                    );
+                }
+                let handoff_bundle: Arc<dyn RegistryBundle> = Arc::new(
+                    ToolBehaviorBundle::new(HANDOFF_PLUGIN_ID)
+                        .with_behavior(Arc::new(HandoffPlugin::new(overlays))),
+                );
+                bundles.push(handoff_bundle);
+            }
+        }
+
+        Ok(bundles)
     }
 
     #[cfg(test)]
@@ -313,8 +363,11 @@ impl AgentOs {
         }
 
         // Agent tools stay hardcoded (internal, needs &self/AgentOs access).
-        system_bundles
-            .extend(self.build_agent_tool_wiring_bundles(&resolved_plugins, frozen_agents)?);
+        system_bundles.extend(self.build_agent_tool_wiring_bundles(
+            &resolved_plugins,
+            frozen_agents,
+            &definition,
+        )?);
 
         let system_plugins = merge_wiring_bundles(&system_bundles, tools)?;
         let mut all_plugins = ResolvedBehaviors::default()
@@ -431,37 +484,6 @@ impl AgentOs {
             .agents
             .get(agent_id)
             .ok_or_else(|| AgentOsResolveError::AgentNotFound(agent_id.to_string()))?;
-        self.resolve_definition(definition)
-    }
-
-    /// Resolve an agent with a named mode overlay applied.
-    ///
-    /// If `mode` is `None`, behaves identically to [`resolve`].
-    pub fn resolve_with_mode(
-        &self,
-        agent_id: &str,
-        mode: Option<&str>,
-    ) -> Result<ResolvedRun, AgentOsResolveError> {
-        let definition = self
-            .agents
-            .get(agent_id)
-            .ok_or_else(|| AgentOsResolveError::AgentNotFound(agent_id.to_string()))?;
-
-        let definition = match mode {
-            Some(mode_name) => {
-                let overlay = definition
-                    .modes
-                    .get(mode_name)
-                    .ok_or_else(|| AgentOsResolveError::ModeNotFound {
-                        agent_id: agent_id.to_string(),
-                        mode: mode_name.to_string(),
-                    })?
-                    .clone();
-                definition.with_overlay(&overlay)
-            }
-            None => definition,
-        };
-
         self.resolve_definition(definition)
     }
 

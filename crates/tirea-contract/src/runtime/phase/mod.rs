@@ -10,6 +10,8 @@ pub use action_set::{
     ActionSet, AfterInferenceAction, AfterToolExecuteAction, BeforeInferenceAction,
     BeforeToolExecuteAction, LifecycleAction,
 };
+// Re-export InferenceModelOverride for convenience (canonical home is runtime::inference).
+pub use crate::runtime::inference::InferenceModelOverride;
 pub use contexts::{
     AfterInferenceContext, AfterToolExecuteContext, BeforeInferenceContext,
     BeforeToolExecuteContext, PhaseContext, RunEndContext, RunStartContext, StepEndContext,

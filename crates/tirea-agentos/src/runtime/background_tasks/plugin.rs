@@ -351,6 +351,7 @@ mod tests {
                 | BeforeInferenceAction::ExcludeTool(_)
                 | BeforeInferenceAction::IncludeOnlyTools(_)
                 | BeforeInferenceAction::AddRequestTransform(_)
+                | BeforeInferenceAction::OverrideModel(_)
                 | BeforeInferenceAction::Terminate(_) => {}
             }
         }

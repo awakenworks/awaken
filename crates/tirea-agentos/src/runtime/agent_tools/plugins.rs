@@ -224,6 +224,9 @@ impl AgentToolsPlugin {
             "Stop running background run: tool \"agent_stop\" with {\"run_id\":\"...\"}.\n",
         );
         out.push_str("Retrieve output: tool \"agent_output\" with {\"run_id\":\"...\"}.\n");
+        out.push_str(
+            "Handoff (same thread): tool \"agent_handoff\" with {\"agent_id\":\"<id>\"}.\n",
+        );
         out.push_str("Statuses: running, completed, failed, stopped.\n");
         out.push_str("</agent_tools_usage>");
 

@@ -1,9 +1,9 @@
 //! Extension bundles: skills, policy, reminders, observability.
 
+#[cfg(feature = "mode")]
+pub mod handoff;
 #[cfg(feature = "mcp")]
 pub mod mcp;
-#[cfg(feature = "mode")]
-pub mod mode;
 #[cfg(feature = "observability")]
 pub mod observability;
 #[cfg(feature = "permission")]

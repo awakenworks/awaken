@@ -33,6 +33,8 @@ pub(crate) const AGENT_RECOVERY_PLUGIN_ID: &str = "agent_recovery";
 pub(crate) const AGENT_RUN_TOOL_ID: &str = "agent_run";
 pub(crate) const AGENT_STOP_TOOL_ID: &str = "agent_stop";
 pub(crate) const AGENT_OUTPUT_TOOL_ID: &str = "agent_output";
+#[cfg(feature = "mode")]
+pub(crate) const AGENT_HANDOFF_TOOL_ID: &str = "agent_handoff";
 pub(crate) const AGENT_RECOVERY_INTERACTION_ACTION: &str = "recover_agent_run";
 pub(crate) const AGENT_RECOVERY_INTERACTION_PREFIX: &str = "agent_recovery_";
 
@@ -78,6 +80,8 @@ use manager::{execute_sub_agent, SubAgentExecutionRequest};
 pub(crate) use manager::{SubAgentHandleTable, SubAgentSummary};
 pub(super) use plugins::{AgentRecoveryPlugin, AgentToolsPlugin};
 use state::*;
+#[cfg(feature = "mode")]
+pub(super) use tools::AgentHandoffTool;
 pub(super) use tools::{AgentOutputTool, AgentRunTool, AgentStopTool};
 
 #[cfg(test)]

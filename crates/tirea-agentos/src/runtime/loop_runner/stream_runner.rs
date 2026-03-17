@@ -427,6 +427,7 @@ pub(super) fn run_stream(
             let messages = prepared.messages;
             let filtered_tools = prepared.filtered_tools;
             let request_transforms = prepared.request_transforms;
+            let step_model_override = prepared.model_override;
 
             match prepared.run_action {
                 RunAction::Continue => {}
@@ -456,6 +457,7 @@ pub(super) fn run_stream(
                 run_cancellation_token.as_ref(),
                 agent.llm_retry_policy().retry_stream_start,
                 stream_retry_model_preference.as_deref(),
+                step_model_override.as_ref(),
                 "unknown llm stream start error",
                 |model| {
                     let request =

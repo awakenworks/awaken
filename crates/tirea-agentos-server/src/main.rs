@@ -197,7 +197,6 @@ fn build_os(
             tool_execution_mode: ToolExecutionModeConfig::ParallelStreaming,
             behavior_ids: Vec::new(),
             stop_condition_specs: Vec::new(),
-            modes: Default::default(),
         })],
     };
 

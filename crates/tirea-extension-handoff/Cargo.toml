@@ -1,11 +1,11 @@
 [package]
-name = "tirea-extension-mode"
+name = "tirea-extension-handoff"
 version.workspace = true
 edition = "2021"
-description = "Agent mode switching extension: named configuration profiles with runtime overlay for tirea agents"
+description = "Agent handoff extension: same-thread agent switching with dynamic overlay for tirea agents"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
-keywords = ["agent", "llm", "mode", "configuration"]
+keywords = ["agent", "llm", "handoff", "delegation"]
 categories = ["asynchronous"]
 
 [dependencies]

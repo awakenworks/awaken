@@ -4616,8 +4616,8 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tirea-contract",
+ "tirea-extension-handoff",
  "tirea-extension-mcp",
- "tirea-extension-mode",
  "tirea-extension-observability",
  "tirea-extension-permission",
  "tirea-extension-plan",
@@ -4729,6 +4729,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tirea-extension-handoff"
+version = "0.5.0-alpha.1"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tirea-contract",
+ "tirea-state",
+ "tokio",
+]
+
+[[package]]
 name = "tirea-extension-mcp"
 version = "0.5.0-alpha.1"
 dependencies = [
@@ -4741,18 +4753,6 @@ dependencies = [
  "tirea-state",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "tirea-extension-mode"
-version = "0.5.0-alpha.1"
-dependencies = [
- "async-trait",
- "serde",
- "serde_json",
- "tirea-contract",
- "tirea-state",
- "tokio",
 ]
 
 [[package]]

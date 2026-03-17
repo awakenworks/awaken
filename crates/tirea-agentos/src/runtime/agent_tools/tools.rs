@@ -1265,3 +1265,88 @@ impl Tool for AgentOutputTool {
         Ok(effect)
     }
 }
+
+// ---------------------------------------------------------------------------
+// AgentHandoffTool
+// ---------------------------------------------------------------------------
+
+/// Tool to transfer control to another agent on the same thread.
+///
+/// Unlike `agent_run` (which delegates to a sub-agent on a new thread),
+/// `agent_handoff` switches the active agent configuration in-place.
+/// The target agent continues with full conversation history.
+///
+/// Implemented via the dynamic mode switching mechanism: the handoff writes
+/// a `request_mode_switch_action` that `ModePlugin` picks up in the next
+/// `before_inference` phase.
+#[cfg(feature = "mode")]
+#[derive(Debug, Clone)]
+pub struct AgentHandoffTool;
+
+#[cfg(feature = "mode")]
+#[async_trait]
+impl Tool for AgentHandoffTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(
+            AGENT_HANDOFF_TOOL_ID,
+            "Agent Handoff",
+            "Transfer control to another agent on the same thread. \
+             The current agent stops and the target agent continues \
+             with full conversation history.",
+        )
+        .with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "agent_id": {
+                    "type": "string",
+                    "description": "The agent to hand off to."
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Optional context message for the receiving agent."
+                }
+            },
+            "required": ["agent_id"],
+            "additionalProperties": false
+        }))
+        .with_category("meta")
+    }
+
+    async fn execute(
+        &self,
+        _args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, crate::contracts::runtime::tool_call::ToolError> {
+        unreachable!("AgentHandoffTool uses execute_effect")
+    }
+
+    async fn execute_effect(
+        &self,
+        args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolExecutionEffect, crate::contracts::runtime::tool_call::ToolError> {
+        use crate::contracts::runtime::phase::AfterToolExecuteAction;
+        use tirea_extension_handoff::request_handoff_action;
+
+        let tool_name = AGENT_HANDOFF_TOOL_ID;
+
+        let agent_id = match required_string(&args, "agent_id") {
+            Ok(id) => id,
+            Err(err) => return Ok(ToolExecutionEffect::from(err.into_tool_result(tool_name))),
+        };
+
+        let state_action = request_handoff_action(&agent_id);
+
+        let mut effect = ToolExecutionEffect::new(ToolResult::success(
+            tool_name,
+            json!({ "status": "handoff_initiated", "target": agent_id }),
+        ))
+        .with_action(AfterToolExecuteAction::State(state_action));
+
+        if let Some(message) = optional_string(&args, "message") {
+            effect = effect.with_action(AfterToolExecuteAction::AddUserMessage(message));
+        }
+
+        Ok(effect)
+    }
+}

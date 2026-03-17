@@ -60,10 +60,23 @@ impl Default for ContextWindowPolicy {
     }
 }
 
+/// Override for model selection during inference.
+///
+/// When set via `BeforeInferenceAction::OverrideModel`, the loop runner
+/// uses these values instead of the base agent's model and fallback models.
+#[derive(Debug, Clone)]
+pub struct InferenceModelOverride {
+    /// Primary model identifier to use for this inference call.
+    pub model: String,
+    /// Fallback model identifiers (tried in order if the primary fails).
+    pub fallback_models: Vec<String>,
+}
+
 /// Inference-phase extension: system/session context and tool descriptors.
 ///
 /// Populated by `AddSystemContext`, `AddSessionContext`, `ExcludeTool`,
-/// `IncludeOnlyTools`, `AddRequestTransform` actions during `BeforeInference`.
+/// `IncludeOnlyTools`, `AddRequestTransform`, `OverrideModel` actions
+/// during `BeforeInference`.
 #[derive(Default, Clone)]
 pub struct InferenceContext {
     /// System context lines appended to the system prompt.
@@ -75,6 +88,9 @@ pub struct InferenceContext {
     /// Request transforms registered by plugins. Applied in order after
     /// messages are assembled, before the request is sent to the LLM.
     pub request_transforms: Vec<Arc<dyn InferenceRequestTransform>>,
+    /// Model override set by a `BeforeInferenceAction::OverrideModel` action.
+    /// When `Some`, the loop runner uses this instead of `agent.model()`.
+    pub model_override: Option<InferenceModelOverride>,
 }
 
 impl std::fmt::Debug for InferenceContext {
@@ -84,6 +100,7 @@ impl std::fmt::Debug for InferenceContext {
             .field("session_context", &self.session_context)
             .field("tools", &self.tools)
             .field("request_transforms", &self.request_transforms.len())
+            .field("model_override", &self.model_override)
             .finish()
     }
 }

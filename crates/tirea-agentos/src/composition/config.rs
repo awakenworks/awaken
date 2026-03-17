@@ -1,6 +1,6 @@
 use super::{
-    A2aAgentBinding, AgentDefinition, AgentDefinitionSpec, AgentDescriptor, ModeOverlay,
-    RemoteSecurityConfig, StopConditionSpec, ToolExecutionMode,
+    A2aAgentBinding, AgentDefinition, AgentDefinitionSpec, AgentDescriptor, RemoteSecurityConfig,
+    StopConditionSpec, ToolExecutionMode,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -32,14 +32,6 @@ impl Default for SkillsConfig {
 #[derive(Debug, Clone, Default)]
 pub struct PlanConfig {
     /// Whether plan mode tools should be registered.
-    pub enabled: bool,
-}
-
-/// Configuration for the mode switching extension.
-#[cfg(feature = "mode")]
-#[derive(Debug, Clone, Default)]
-pub struct ModeConfig {
-    /// Whether mode switching tools should be registered.
     pub enabled: bool,
 }
 
@@ -124,31 +116,6 @@ pub enum TaggedAgentConfigEntry {
     A2a(A2aAgentConfig),
 }
 
-/// JSON-deserializable mode overlay for agent config files.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-pub struct ModeOverlayConfig {
-    /// Override model identifier.
-    #[serde(default)]
-    pub model: Option<String>,
-    /// Override system prompt.
-    #[serde(default)]
-    pub system_prompt: Option<String>,
-    /// Override maximum rounds.
-    #[serde(default)]
-    pub max_rounds: Option<usize>,
-}
-
-impl ModeOverlayConfig {
-    fn into_overlay(self, agent_id: &str) -> Result<ModeOverlay, AgentConfigError> {
-        Ok(ModeOverlay {
-            model: normalize_optional_field(agent_id, "mode.model", self.model)?,
-            system_prompt: self.system_prompt,
-            max_rounds: self.max_rounds,
-            ..Default::default()
-        })
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LocalAgentConfig {
     pub id: String,
@@ -168,9 +135,6 @@ pub struct LocalAgentConfig {
     pub behavior_ids: Vec<String>,
     #[serde(default)]
     pub stop_condition_specs: Vec<StopConditionSpec>,
-    /// Named mode overlays for runtime switching.
-    #[serde(default)]
-    pub modes: HashMap<String, ModeOverlayConfig>,
 }
 
 impl LocalAgentConfig {
@@ -199,10 +163,6 @@ impl LocalAgentConfig {
         definition.tool_execution_mode = self.tool_execution_mode.into();
         definition.behavior_ids = behavior_ids;
         definition.stop_condition_specs = self.stop_condition_specs;
-        for (mode_name, mode_config) in self.modes {
-            let overlay = mode_config.into_overlay(&definition.id)?;
-            definition = definition.with_mode(mode_name, overlay);
-        }
         Ok(AgentDefinitionSpec::local(definition))
     }
 }
@@ -432,32 +392,21 @@ mod tests {
     }
 
     #[test]
-    fn parses_agent_with_modes() {
+    fn parses_multiple_agents_for_handoff() {
         let specs = AgentConfig::parse_specs_json(
             &serde_json::json!({
-                "agents": [{
-                    "id": "coder",
-                    "model": "claude-opus",
-                    "modes": {
-                        "fast": { "model": "claude-haiku" },
-                        "deep": { "model": "claude-opus", "max_rounds": 50 }
-                    }
-                }]
+                "agents": [
+                    { "id": "coder", "model": "claude-opus" },
+                    { "id": "fast", "model": "claude-haiku" }
+                ]
             })
             .to_string(),
         )
         .expect("config should parse");
 
-        assert_eq!(specs.len(), 1);
-        let spec = &specs[0];
-        assert_eq!(spec.id(), "coder");
-        if let super::super::AgentDefinitionSpec::Local(def) = spec {
-            assert_eq!(def.modes.len(), 2);
-            assert_eq!(def.modes["fast"].model.as_deref(), Some("claude-haiku"));
-            assert_eq!(def.modes["deep"].max_rounds, Some(50));
-        } else {
-            panic!("expected local agent spec");
-        }
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].id(), "coder");
+        assert_eq!(specs[1].id(), "fast");
     }
 
     #[test]

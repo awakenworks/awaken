@@ -46,6 +46,9 @@ fn apply_before_inference_actions(
             BeforeInferenceAction::AddRequestTransform(transform) => {
                 step.inference.request_transforms.push(transform);
             }
+            BeforeInferenceAction::OverrideModel(ovr) => {
+                step.inference.model_override = Some(ovr);
+            }
             BeforeInferenceAction::Terminate(reason) => {
                 step.flow.run_action = Some(RunAction::Terminate(reason));
             }
