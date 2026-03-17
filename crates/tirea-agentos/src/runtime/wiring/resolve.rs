@@ -286,9 +286,7 @@ impl AgentOs {
         // Handoff plugin: auto-compute overlays from all agents in the registry.
         #[cfg(feature = "handoff")]
         {
-            use tirea_extension_handoff::{
-                HandoffPlugin, HandoffRuntimeOverlay, HANDOFF_PLUGIN_ID,
-            };
+            use tirea_extension_handoff::{AgentOverlay, HandoffPlugin, HANDOFF_PLUGIN_ID};
 
             let all_agents = agents_registry.snapshot();
             if all_agents.len() > 1 {
@@ -297,54 +295,7 @@ impl AgentOs {
                     if id == &_current_definition.id {
                         continue;
                     }
-                    let (temperature, max_tokens, top_p, reasoning_effort) = def
-                        .chat_options
-                        .as_ref()
-                        .map_or((None, None, None, None), |opts| {
-                            (
-                                opts.temperature,
-                                opts.max_tokens,
-                                opts.top_p,
-                                opts.reasoning_effort.as_ref().map(|r| {
-                                    use genai::chat::ReasoningEffort as G;
-                                    use tirea_contract::runtime::inference::ReasoningEffort as R;
-                                    match r {
-                                        G::None => R::None,
-                                        G::Low | G::Minimal => R::Low,
-                                        G::Medium => R::Medium,
-                                        G::High => R::High,
-                                        G::Max => R::Max,
-                                        G::Budget(n) => R::Budget(*n),
-                                    }
-                                }),
-                            )
-                        });
-                    overlays.insert(
-                        id.clone(),
-                        HandoffRuntimeOverlay {
-                            model: if def.model.is_empty() {
-                                None
-                            } else {
-                                Some(def.model.clone())
-                            },
-                            system_prompt: if def.system_prompt.is_empty() {
-                                None
-                            } else {
-                                Some(def.system_prompt.clone())
-                            },
-                            fallback_models: if def.fallback_models.is_empty() {
-                                None
-                            } else {
-                                Some(def.fallback_models.clone())
-                            },
-                            allowed_tools: def.allowed_tools.clone(),
-                            excluded_tools: def.excluded_tools.clone(),
-                            temperature,
-                            max_tokens,
-                            top_p,
-                            reasoning_effort,
-                        },
-                    );
+                    overlays.insert(id.clone(), agent_overlay_from_definition(def));
                 }
                 let handoff_bundle: Arc<dyn RegistryBundle> = Arc::new(
                     ToolBehaviorBundle::new(HANDOFF_PLUGIN_ID)
@@ -624,6 +575,83 @@ fn normalize_definition_models(mut definition: AgentDefinition) -> AgentDefiniti
         .filter(|model| !model.is_empty())
         .collect();
     definition
+}
+
+/// Build an [`AgentOverlay`] from an [`AgentDefinition`], extracting all
+/// overridable configuration dimensions including inference parameters
+/// from `chat_options`.
+#[cfg(feature = "handoff")]
+fn agent_overlay_from_definition(
+    def: &AgentDefinition,
+) -> tirea_contract::runtime::overlay::AgentOverlay {
+    use tirea_contract::runtime::inference::{InferenceOverride, ReasoningEffort};
+
+    let (temperature, max_tokens, top_p, reasoning_effort) =
+        def.chat_options
+            .as_ref()
+            .map_or((None, None, None, None), |opts| {
+                (
+                    opts.temperature,
+                    opts.max_tokens,
+                    opts.top_p,
+                    opts.reasoning_effort.as_ref().map(|r| {
+                        use genai::chat::ReasoningEffort as G;
+                        match r {
+                            G::None => ReasoningEffort::None,
+                            G::Low | G::Minimal => ReasoningEffort::Low,
+                            G::Medium => ReasoningEffort::Medium,
+                            G::High => ReasoningEffort::High,
+                            G::Max => ReasoningEffort::Max,
+                            G::Budget(n) => ReasoningEffort::Budget(*n),
+                        }
+                    }),
+                )
+            });
+
+    let model = if def.model.is_empty() {
+        None
+    } else {
+        Some(def.model.clone())
+    };
+    let fallback_models = if def.fallback_models.is_empty() {
+        None
+    } else {
+        Some(def.fallback_models.clone())
+    };
+
+    let has_inference = model.is_some()
+        || fallback_models.is_some()
+        || temperature.is_some()
+        || max_tokens.is_some()
+        || top_p.is_some()
+        || reasoning_effort.is_some();
+
+    tirea_contract::runtime::overlay::AgentOverlay {
+        inference: if has_inference {
+            Some(InferenceOverride {
+                model,
+                fallback_models,
+                temperature,
+                max_tokens,
+                top_p,
+                reasoning_effort,
+            })
+        } else {
+            None
+        },
+        system_prompt: if def.system_prompt.is_empty() {
+            None
+        } else {
+            Some(def.system_prompt.clone())
+        },
+        allowed_tools: def.allowed_tools.clone(),
+        excluded_tools: def.excluded_tools.clone(),
+        allowed_skills: def.allowed_skills.clone(),
+        excluded_skills: def.excluded_skills.clone(),
+        allowed_agents: def.allowed_agents.clone(),
+        excluded_agents: def.excluded_agents.clone(),
+        ..Default::default()
+    }
 }
 
 #[cfg(test)]

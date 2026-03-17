@@ -93,7 +93,7 @@ pub enum ReasoningEffort {
 /// All fields are `Option` — `None` means "use the agent-level default".
 /// Multiple plugins can emit `BeforeInferenceAction::OverrideInference`;
 /// fields are merged with last-wins semantics.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct InferenceOverride {
     /// Primary model identifier.
     pub model: Option<String>,

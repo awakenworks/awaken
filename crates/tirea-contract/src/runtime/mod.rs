@@ -5,6 +5,7 @@ pub mod activity;
 pub mod behavior;
 pub mod extensions;
 pub mod inference;
+pub mod overlay;
 pub mod phase;
 pub mod run;
 pub mod state;

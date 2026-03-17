@@ -14,5 +14,6 @@ mod plugin;
 mod state;
 
 pub use actions::{activate_handoff_action, clear_handoff_action, request_handoff_action};
-pub use plugin::{HandoffPlugin, HandoffRuntimeOverlay, HANDOFF_PLUGIN_ID};
+pub use plugin::{HandoffPlugin, HANDOFF_PLUGIN_ID};
 pub use state::{HandoffAction, HandoffState};
+pub use tirea_contract::runtime::overlay::AgentOverlay;
