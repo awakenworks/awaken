@@ -3,12 +3,12 @@ use crate::composition::{
     WiringContext,
 };
 use crate::contracts::runtime::behavior::AgentBehavior;
-use crate::extensions::skills::{
+use std::collections::HashMap;
+use std::sync::Arc;
+use tirea_extension_skills::{
     InMemorySkillRegistry, SkillDiscoveryPlugin, SkillRegistry, SkillSubsystem,
     SkillSubsystemError, SKILLS_BUNDLE_ID, SKILLS_DISCOVERY_PLUGIN_ID, SKILLS_PLUGIN_ID,
 };
-use std::collections::HashMap;
-use std::sync::Arc;
 
 pub(crate) struct SkillsSystemWiring {
     registry: Arc<dyn SkillRegistry>,

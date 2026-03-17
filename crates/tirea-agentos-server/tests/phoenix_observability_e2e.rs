@@ -12,9 +12,9 @@ use tirea_agentos::composition::{
     AgentDefinition, AgentDefinitionSpec, AgentOsBuilder, ModelDefinition,
 };
 use tirea_agentos::contracts::storage::{MailboxStore, ThreadStore};
-use tirea_agentos::extensions::observability::{InMemorySink, LLMMetryPlugin};
 use tirea_agentos::runtime::AgentOs;
 use tirea_agentos_server::service::{AppState, MailboxService};
+use tirea_extension_observability::{InMemorySink, LLMMetryPlugin};
 use tower::ServiceExt;
 
 mod common;

@@ -15,11 +15,11 @@ use tirea_agentos::contracts::AnyStateAction;
 use tirea_agentos::contracts::SuspensionResponse;
 use tirea_agentos::contracts::ToolCallContext;
 use tirea_agentos::engine::convert;
-use tirea_agentos::extensions::reminder::SystemReminder;
 use tirea_agentos::runtime::activity::ActivityHub;
 use tirea_agentos::runtime::loop_runner::AgentLoopError;
 use tirea_contract::runtime::state::StateSpec;
 use tirea_contract::testing::TestFixture;
+use tirea_extension_reminder::SystemReminder;
 use tirea_protocol_ag_ui::{interaction_to_ag_ui_events, Role, ToolExecutionLocation};
 use tirea_state::StateManager;
 use tirea_state::{DocCell, PatchSink, Path, State, TireaError, TireaResult};
@@ -5822,7 +5822,7 @@ fn test_scenario_empty_request() {
 // Permission Resume Flow Scenario Tests
 // ============================================================================
 
-use tirea_agentos::extensions::permission::PermissionPlugin;
+use tirea_extension_permission::PermissionPlugin;
 
 /// Test scenario: Complete permission approval flow
 /// Agent → Pending → AG-UI Events → Client Approves → Resume
@@ -12790,8 +12790,8 @@ mod llmmetry_tracing {
     use tirea_agentos::contracts::runtime::StreamResult;
     use tirea_agentos::contracts::thread::Thread as ConversationAgentState;
     use tirea_agentos::contracts::thread::ToolCall;
-    use tirea_agentos::extensions::observability::{InMemorySink, LLMMetryPlugin};
     use tirea_contract::testing::TestFixture;
+    use tirea_extension_observability::{InMemorySink, LLMMetryPlugin};
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::registry::LookupSpan;
 

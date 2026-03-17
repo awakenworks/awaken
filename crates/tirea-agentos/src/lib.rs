@@ -2,14 +2,12 @@
 //!
 //! - [`composition`]: agent definitions, builder, registries, and wiring.
 //! - [`runtime`]: run preparation, execution, stop policies, and background tasks.
-//! - [`extensions`]: feature-gated bridges to permission, reminder, skills, observability, and MCP.
 #![allow(missing_docs)]
 
 pub use tirea_contract as contracts;
 
 pub mod composition;
 pub mod engine;
-pub mod extensions;
 pub mod runtime;
 
 // ── Top-level re-exports for common entry points ────────────────────────

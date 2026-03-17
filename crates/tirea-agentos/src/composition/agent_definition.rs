@@ -236,7 +236,7 @@ impl AgentDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::resolve::normalize_definition_models_for_test;
+    use crate::runtime::wiring::resolve::normalize_definition_models_for_test;
 
     #[test]
     fn normalize_definition_trims_model_and_fallback_models() {

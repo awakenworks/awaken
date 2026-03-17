@@ -8,6 +8,7 @@ publish = false
 tirea-agentos = { workspace = true, features = ["mcp"] }
 tirea-agentos-server.workspace = true
 tirea-extension-permission.workspace = true
+tirea-extension-observability.workspace = true
 tirea-extension-a2ui.workspace = true
 tirea-extension-mcp.workspace = true
 tirea-store-adapters.workspace = true

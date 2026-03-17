@@ -14,7 +14,7 @@ pub use bundle::ToolBehaviorBundle;
 pub use bundle::{
     BundleComposeError, BundleComposer, BundleRegistryAccumulator, BundleRegistryKind,
 };
-#[cfg(feature = "mode")]
+#[cfg(feature = "handoff")]
 #[cfg(feature = "plan")]
 pub use config::PlanConfig;
 pub use config::{

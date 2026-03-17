@@ -13,9 +13,9 @@ use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::RunIdentity;
 use crate::contracts::storage::{ThreadStore, VersionPrecondition};
 use crate::contracts::{AgentEvent, RunContext, ToolCallDecision};
-#[cfg(feature = "skills")]
-use crate::extensions::skills::SkillRegistry;
 use crate::runtime::loop_runner::{Agent, RunCancellationToken, StateCommitError, StateCommitter};
+#[cfg(feature = "skills")]
+use tirea_extension_skills::SkillRegistry;
 
 use super::agent_tools::SubAgentHandleTable;
 use super::background_tasks::{BackgroundTaskManager, TaskStore};

@@ -14,12 +14,12 @@ use tirea_agentos::composition::{
 use tirea_agentos::contracts::runtime::behavior::AgentBehavior;
 use tirea_agentos::contracts::runtime::tool_call::Tool;
 use tirea_agentos::contracts::storage::{MailboxStore, ThreadReader, ThreadStore};
-use tirea_agentos::extensions::permission::{PermissionPlugin, ToolPolicyPlugin};
 use tirea_agentos_server::http::{self, AppState};
 use tirea_agentos_server::protocol;
 use tirea_agentos_server::service::MailboxService;
 use tirea_extension_a2ui::{A2uiPlugin, A2uiRenderTool};
 use tirea_extension_mcp::McpToolRegistryManager;
+use tirea_extension_permission::{PermissionPlugin, ToolPolicyPlugin};
 use tirea_store_adapters::FileStore;
 use tower_http::cors::{Any, CorsLayer};
 
