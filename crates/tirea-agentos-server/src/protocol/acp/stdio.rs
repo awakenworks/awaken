@@ -139,7 +139,8 @@ struct LegacyPermissionResponseParams {
 struct Session {
     session_id: String,
     agent_id: String,
-    decision_tx: Option<mpsc::UnboundedSender<ToolCallDecision>>,
+    /// Active run ID for cancel support.
+    run_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -329,10 +330,11 @@ where
         }
     });
 
+    let os_for_decisions = os.clone();
     let mut initialized = false;
     let mut session: Option<Session> = None;
-    // Pending agent→client permission requests: jsonrpc_id → tool_call_id.
-    let pending_permissions: Arc<Mutex<HashMap<u64, String>>> =
+    // Pending agent→client permission requests: jsonrpc_id → (tool_call_id, run_id).
+    let pending_permissions: Arc<Mutex<HashMap<u64, (String, String)>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let next_request_id = Arc::new(AtomicU64::new(1));
 
@@ -374,15 +376,13 @@ where
         // --- Handle responses to agent→client requests (permission) ---
         if msg.method.is_none() && (msg.result.is_some() || msg.error.is_some()) {
             if let Some(id) = &msg.id {
-                let numeric_id = id.as_u64();
-                if let Some(rid) = numeric_id {
-                    let tool_call_id = pending_permissions.lock().await.remove(&rid);
-                    if let Some(tcid) = tool_call_id {
+                if let Some(rid) = id.as_u64() {
+                    let entry = pending_permissions.lock().await.remove(&rid);
+                    if let Some((tcid, run_id)) = entry {
                         let decision = if let Some(result) = &msg.result {
                             let outcome = result.get("outcome").cloned().unwrap_or(Value::Null);
                             map_permission_outcome(&tcid, &outcome)
                         } else {
-                            // Error response → treat as cancellation.
                             Some(ToolCallDecision::cancel(
                                 &tcid,
                                 json!({"approved": false}),
@@ -391,10 +391,12 @@ where
                             ))
                         };
                         if let Some(d) = decision {
-                            if let Some(s) = &session {
-                                if let Some(tx) = &s.decision_tx {
-                                    let _ = tx.send(d);
-                                }
+                            if os_for_decisions
+                                .forward_decisions_by_run_id(&run_id, &[d])
+                                .await
+                                .is_none()
+                            {
+                                warn!("decision forward failed for run {run_id}");
                             }
                         }
                     }
@@ -487,7 +489,7 @@ where
                 session = Some(Session {
                     session_id: session_id.clone(),
                     agent_id,
-                    decision_tx: None,
+                    run_id: None,
                 });
 
                 let id = msg.id.unwrap_or(Value::Null);
@@ -584,11 +586,11 @@ where
                     }
                 };
 
-                info!(session_id = %session_id, run_id = %run.run_id, "prompt started");
+                let run_id = run.run_id.clone();
+                info!(session_id = %session_id, run_id = %run_id, "prompt started");
 
-                // Store decision_tx on session for permission responses.
                 if let Some(s) = &mut session {
-                    s.decision_tx = Some(run.decision_tx.clone());
+                    s.run_id = Some(run_id.clone());
                 }
 
                 // Spawn event pump. When done, sends PromptResponse.
@@ -597,6 +599,7 @@ where
                 let pump_session_id = session_id.clone();
                 let pump_permissions = pending_permissions.clone();
                 let pump_next_id = next_request_id.clone();
+                let pump_run_id = run_id;
                 tokio::spawn(async move {
                     let mut encoder = AcpEncoder::new();
                     let mut events = run.events;
@@ -607,18 +610,20 @@ where
                             match acp_ev {
                                 AcpEvent::RequestPermission(perm) => {
                                     let rid = pump_next_id.fetch_add(1, Ordering::Relaxed);
-                                    pump_permissions
-                                        .lock()
-                                        .await
-                                        .insert(rid, perm.tool_call_id.clone());
-                                    let params = serde_json::to_value(perm).unwrap_or(Value::Null);
+                                    pump_permissions.lock().await.insert(
+                                        rid,
+                                        (perm.tool_call_id.clone(), pump_run_id.clone()),
+                                    );
                                     let line = make_agent_request(
                                         "session/request_permission",
                                         json!({
                                             "sessionId": pump_session_id,
-                                            "toolCall": params,
-                                            "options": params.get("options").cloned()
-                                                .unwrap_or_else(|| json!([])),
+                                            "toolCall": {
+                                                "id": perm.tool_call_id,
+                                                "name": perm.tool_name,
+                                                "args": perm.tool_args,
+                                            },
+                                            "options": perm.options,
                                         }),
                                         rid,
                                     );
@@ -644,7 +649,6 @@ where
                             }
                         }
                     }
-                    // Send PromptResponse as the result of session/prompt.
                     let _ = pump_writer
                         .send(make_response(prompt_id, json!({"stopReason": stop_reason})));
                 });
@@ -654,8 +658,12 @@ where
             // session/cancel — notification
             // =============================================================
             "session/cancel" => {
-                info!("session/cancel received");
-                // Cancel is best-effort; not implemented yet.
+                if let Some(s) = &session {
+                    if let Some(run_id) = &s.run_id {
+                        let cancelled = os.cancel_active_run_by_id(run_id).await;
+                        info!(run_id = %run_id, cancelled, "session/cancel");
+                    }
+                }
             }
 
             // =============================================================
@@ -725,28 +733,62 @@ where
                     }
                 };
 
-                if let Some(s) = &mut session {
-                    s.decision_tx = Some(run.decision_tx.clone());
-                }
+                let run_id = run.run_id.clone();
+                session = Some(Session {
+                    session_id: format!("legacy_{run_id}"),
+                    agent_id: agent_id.clone(),
+                    run_id: Some(run_id.clone()),
+                });
 
                 let pump_writer = writer_tx.clone();
+                let pump_permissions = pending_permissions.clone();
+                let pump_next_id = next_request_id.clone();
+                let pump_run_id = run_id;
                 tokio::spawn(async move {
                     let mut encoder = AcpEncoder::new();
                     let mut events = run.events;
                     while let Some(ev) = events.next().await {
                         let acp_events = encoder.transcode(&ev);
                         for acp_ev in &acp_events {
-                            let value = serde_json::to_value(acp_ev)
-                                .expect("AcpEvent is always serializable");
-                            let method = value
-                                .get("method")
-                                .and_then(|m| m.as_str())
-                                .unwrap_or("session/update")
-                                .to_string();
-                            let params = value.get("params").cloned().unwrap_or(Value::Null);
-                            let line = make_notification(&method, params);
-                            if pump_writer.send(line).is_err() {
-                                return;
+                            match acp_ev {
+                                AcpEvent::RequestPermission(perm) => {
+                                    let rid = pump_next_id.fetch_add(1, Ordering::Relaxed);
+                                    pump_permissions.lock().await.insert(
+                                        rid,
+                                        (perm.tool_call_id.clone(), pump_run_id.clone()),
+                                    );
+                                    let line = make_agent_request(
+                                        "session/request_permission",
+                                        json!({
+                                            "sessionId": "",
+                                            "toolCall": {
+                                                "id": perm.tool_call_id,
+                                                "name": perm.tool_name,
+                                                "args": perm.tool_args,
+                                            },
+                                            "options": perm.options,
+                                        }),
+                                        rid,
+                                    );
+                                    if pump_writer.send(line).is_err() {
+                                        return;
+                                    }
+                                }
+                                AcpEvent::SessionUpdate(_) => {
+                                    let value = serde_json::to_value(acp_ev)
+                                        .expect("AcpEvent is always serializable");
+                                    let method = value
+                                        .get("method")
+                                        .and_then(|m| m.as_str())
+                                        .unwrap_or("session/update")
+                                        .to_string();
+                                    let params =
+                                        value.get("params").cloned().unwrap_or(Value::Null);
+                                    let line = make_notification(&method, params);
+                                    if pump_writer.send(line).is_err() {
+                                        return;
+                                    }
+                                }
                             }
                         }
                     }
@@ -773,9 +815,13 @@ where
 
                 let decision = map_permission_decision(&params.tool_call_id, &params.decision);
                 if let Some(s) = &session {
-                    if let Some(tx) = &s.decision_tx {
-                        if let Err(e) = tx.send(decision) {
-                            warn!("decision send failed (run may have ended): {e}");
+                    if let Some(run_id) = &s.run_id {
+                        if os_for_decisions
+                            .forward_decisions_by_run_id(run_id, &[decision])
+                            .await
+                            .is_none()
+                        {
+                            warn!("decision forward failed for run {run_id}");
                         }
                     }
                 } else {
