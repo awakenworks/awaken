@@ -8,12 +8,10 @@ use tirea_agentos::contracts::runtime::tool_call::ToolDescriptor;
 use tirea_agentos::contracts::thread::{Thread as ConversationAgentState, ToolCall};
 use tirea_agentos::contracts::AgentEvent;
 use tirea_agentos::engine::tool_execution::execute_single_tool_with_run_policy_and_behavior;
-use tirea_agentos::extensions::permission::PermissionPlugin;
-use tirea_agentos::extensions::skills::{
-    FsSkill, InMemorySkillRegistry, SkillRegistry, SkillSubsystem,
-};
 use tirea_agentos::runtime::compose_behaviors;
 use tirea_contract::testing::TestFixture;
+use tirea_extension_permission::PermissionPlugin;
+use tirea_extension_skills::{FsSkill, InMemorySkillRegistry, SkillRegistry, SkillSubsystem};
 use tirea_protocol_ag_ui::{AgUiEventContext, Event};
 
 fn make_agui_ctx(thread_id: &str, run_id: &str) -> AgUiEventContext {

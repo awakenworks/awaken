@@ -35,14 +35,14 @@ tracing = "0.1"
 json-patch = "3"
 
 [features]
-default = ["skills", "permission", "reminder", "observability", "plan", "mode"]
+default = ["skills", "permission", "reminder", "observability", "plan", "handoff"]
 skills = ["dep:tirea-extension-skills"]
 permission = ["dep:tirea-extension-permission"]
 reminder = ["dep:tirea-extension-reminder"]
 observability = ["dep:tirea-extension-observability"]
 mcp = ["dep:tirea-extension-mcp"]
 plan = ["dep:tirea-extension-plan"]
-mode = ["dep:tirea-extension-handoff"]
+handoff = ["dep:tirea-extension-handoff"]
 
 [dev-dependencies]
 tirea-contract = { workspace = true, features = ["test-support"] }

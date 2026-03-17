@@ -75,12 +75,12 @@ pub use crate::contracts::AgentBehavior;
 // ── Extension types (require "core" feature) ─────────────────────────────
 
 #[cfg(feature = "core")]
-pub use crate::extensions::permission::{
+pub use tirea_extension_permission::{
     PermissionAction, PermissionPlugin, ToolPermissionBehavior, ToolPolicyPlugin,
 };
 
 #[cfg(feature = "core")]
-pub use crate::extensions::reminder::{
+pub use tirea_extension_reminder::{
     add_reminder_action, clear_reminder_action, inject_reminders, ReminderAction, ReminderPlugin,
     SystemReminder,
 };
@@ -88,7 +88,7 @@ pub use crate::extensions::reminder::{
 // ── Plan mode extension (require "core" feature) ────────────────────────
 
 #[cfg(feature = "core")]
-pub use crate::extensions::plan::{
+pub use tirea_extension_plan::{
     EnterPlanModeTool, ExitPlanModeTool, PlanModePlugin, PlanModeState, PlanRef,
 };
 

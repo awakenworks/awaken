@@ -1,30 +1,30 @@
-use super::agent_tools::{AGENT_RECOVERY_PLUGIN_ID, AGENT_TOOLS_PLUGIN_ID};
 use crate::composition::{AgentOsWiringError, RegistryBundle};
 use crate::contracts::runtime::behavior::AgentBehavior;
 use crate::contracts::runtime::tool_call::Tool;
-#[cfg(feature = "skills")]
-use crate::extensions::skills::SKILLS_BUNDLE_ID;
+use crate::runtime::agent_tools::{AGENT_RECOVERY_PLUGIN_ID, AGENT_TOOLS_PLUGIN_ID};
 use std::collections::HashMap;
 use std::sync::Arc;
+#[cfg(feature = "skills")]
+use tirea_extension_skills::SKILLS_BUNDLE_ID;
 
 #[derive(Default)]
-pub(super) struct ResolvedBehaviors {
+pub(crate) struct ResolvedBehaviors {
     global: Vec<Arc<dyn AgentBehavior>>,
     agent_default: Vec<Arc<dyn AgentBehavior>>,
 }
 
 impl ResolvedBehaviors {
-    pub(super) fn with_global(mut self, plugins: Vec<Arc<dyn AgentBehavior>>) -> Self {
+    pub(crate) fn with_global(mut self, plugins: Vec<Arc<dyn AgentBehavior>>) -> Self {
         self.global.extend(plugins);
         self
     }
 
-    pub(super) fn with_agent_default(mut self, plugins: Vec<Arc<dyn AgentBehavior>>) -> Self {
+    pub(crate) fn with_agent_default(mut self, plugins: Vec<Arc<dyn AgentBehavior>>) -> Self {
         self.agent_default.extend(plugins);
         self
     }
 
-    pub(super) fn into_plugins(self) -> Result<Vec<Arc<dyn AgentBehavior>>, AgentOsWiringError> {
+    pub(crate) fn into_plugins(self) -> Result<Vec<Arc<dyn AgentBehavior>>, AgentOsWiringError> {
         let mut plugins = Vec::new();
         plugins.extend(self.global);
         plugins.extend(self.agent_default);
@@ -33,7 +33,7 @@ impl ResolvedBehaviors {
     }
 }
 
-pub(super) fn ensure_unique_behavior_ids(
+pub(crate) fn ensure_unique_behavior_ids(
     plugins: &[Arc<dyn AgentBehavior>],
 ) -> Result<(), AgentOsWiringError> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -46,7 +46,7 @@ pub(super) fn ensure_unique_behavior_ids(
     Ok(())
 }
 
-pub(super) fn merge_wiring_bundles(
+pub(crate) fn merge_wiring_bundles(
     bundles: &[Arc<dyn RegistryBundle>],
     tools: &mut HashMap<String, Arc<dyn Tool>>,
 ) -> Result<Vec<Arc<dyn AgentBehavior>>, AgentOsWiringError> {
@@ -61,7 +61,7 @@ pub(super) fn merge_wiring_bundles(
     Ok(plugins)
 }
 
-pub(super) fn validate_wiring_bundle(
+pub(crate) fn validate_wiring_bundle(
     bundle: &dyn RegistryBundle,
 ) -> Result<(), AgentOsWiringError> {
     let unsupported = [
@@ -99,7 +99,7 @@ pub(super) fn validate_wiring_bundle(
     Ok(())
 }
 
-pub(super) fn merge_wiring_bundle_tools(
+pub(crate) fn merge_wiring_bundle_tools(
     bundle: &dyn RegistryBundle,
     tools: &mut HashMap<String, Arc<dyn Tool>>,
 ) -> Result<(), AgentOsWiringError> {
@@ -128,7 +128,7 @@ pub(super) fn merge_wiring_bundle_tools(
     Ok(())
 }
 
-pub(super) fn collect_wiring_bundle_behaviors(
+pub(crate) fn collect_wiring_bundle_behaviors(
     bundle: &dyn RegistryBundle,
 ) -> Result<Vec<Arc<dyn AgentBehavior>>, AgentOsWiringError> {
     let mut out = Vec::new();
@@ -169,7 +169,7 @@ pub(super) fn collect_wiring_bundle_behaviors(
     Ok(out)
 }
 
-pub(super) fn wiring_tool_conflict(bundle_id: &str, id: String) -> AgentOsWiringError {
+pub(crate) fn wiring_tool_conflict(bundle_id: &str, id: String) -> AgentOsWiringError {
     #[cfg(feature = "skills")]
     if bundle_id == SKILLS_BUNDLE_ID {
         return AgentOsWiringError::SkillsToolIdConflict(id);

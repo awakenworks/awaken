@@ -1,19 +1,3 @@
-#[cfg(feature = "mode")]
-use super::agent_tools::AgentHandoffTool;
-use super::agent_tools::{
-    AgentOutputTool, AgentRecoveryPlugin, AgentRunTool, AgentStopTool, AgentToolsPlugin,
-    AGENT_RECOVERY_PLUGIN_ID, AGENT_TOOLS_PLUGIN_ID,
-};
-use super::background_tasks::{
-    BackgroundTasksPlugin, TaskCancelTool, TaskOutputTool, TaskStatusTool,
-    BACKGROUND_TASKS_PLUGIN_ID,
-};
-use super::context::{policy_for_model, ContextPlugin, CONTEXT_PLUGIN_ID};
-use super::policy::{filter_tools_in_place, set_runtime_policy_from_definition_if_absent};
-#[cfg(feature = "skills")]
-pub(crate) use super::skills_wiring::SkillsSystemWiring;
-use super::stop_policy::{StopPolicyPlugin, STOP_POLICY_PLUGIN_ID};
-use super::{behavior::CompositeBehavior, AgentOs, AgentOsResolveError, StopPolicy};
 use crate::composition::{
     AgentCatalog, AgentDefinition, AgentOsBuilder, AgentOsWiringError, AgentRegistry,
     InMemoryAgentCatalog, InMemoryAgentRegistry, RegistryBundle, StopConditionSpec, SystemWiring,
@@ -23,19 +7,34 @@ use crate::contracts::runtime::behavior::{AgentBehavior, NoOpBehavior};
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::ToolExecutor;
 use crate::contracts::RunPolicy;
-#[cfg(feature = "skills")]
-use crate::extensions::skills::{InMemorySkillRegistry, Skill, SkillRegistry};
+#[cfg(feature = "handoff")]
+use crate::runtime::agent_tools::AgentHandoffTool;
+use crate::runtime::agent_tools::{
+    AgentOutputTool, AgentRecoveryPlugin, AgentRunTool, AgentStopTool, AgentToolsPlugin,
+    AGENT_RECOVERY_PLUGIN_ID, AGENT_TOOLS_PLUGIN_ID,
+};
+use crate::runtime::background_tasks::{
+    BackgroundTasksPlugin, TaskCancelTool, TaskOutputTool, TaskStatusTool,
+    BACKGROUND_TASKS_PLUGIN_ID,
+};
+use crate::runtime::context::{policy_for_model, ContextPlugin, CONTEXT_PLUGIN_ID};
 use crate::runtime::loop_runner::{
     BaseAgent, GenaiLlmExecutor, LlmExecutor, ParallelToolExecutor, ResolvedRun,
     SequentialToolExecutor,
 };
+use crate::runtime::policy::{filter_tools_in_place, set_runtime_policy_from_definition_if_absent};
+use crate::runtime::stop_policy::{StopPolicyPlugin, STOP_POLICY_PLUGIN_ID};
+use crate::runtime::{AgentOs, AgentOsResolveError, StopPolicy};
 use genai::{chat::ChatOptions, Client};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tirea_contract::runtime::state::{StateActionDeserializerRegistry, StateScopeRegistry};
+#[cfg(feature = "skills")]
+use tirea_extension_skills::{InMemorySkillRegistry, Skill, SkillRegistry};
 use tirea_state::LatticeRegistry;
 
-use super::bundle_merge::{ensure_unique_behavior_ids, merge_wiring_bundles, ResolvedBehaviors};
+use super::bundle_merge::ResolvedBehaviors;
+use super::{ensure_unique_behavior_ids, merge_wiring_bundles, CompositeBehavior};
 
 #[derive(Clone)]
 struct ResolvedModelRuntime {
@@ -177,10 +176,12 @@ impl AgentOs {
         })
     }
 
-    fn background_task_store(&self) -> Option<Arc<super::background_tasks::TaskStore>> {
-        self.agent_state_store
-            .as_ref()
-            .map(|store| Arc::new(super::background_tasks::TaskStore::new(store.clone())))
+    fn background_task_store(&self) -> Option<Arc<crate::runtime::background_tasks::TaskStore>> {
+        self.agent_state_store.as_ref().map(|store| {
+            Arc::new(crate::runtime::background_tasks::TaskStore::new(
+                store.clone(),
+            ))
+        })
     }
 
     fn with_registry_overrides(
@@ -261,7 +262,7 @@ impl AgentOs {
             .with_tool(run_tool)
             .with_tool(stop_tool)
             .with_tool(output_tool);
-        #[cfg(feature = "mode")]
+        #[cfg(feature = "handoff")]
         {
             agent_tools_bundle =
                 agent_tools_bundle.with_tool(Arc::new(AgentHandoffTool) as Arc<dyn Tool>);
@@ -283,9 +284,9 @@ impl AgentOs {
         let mut bundles = vec![tools_bundle, recovery_bundle, background_tasks_bundle];
 
         // Handoff plugin: auto-compute overlays from all agents in the registry.
-        #[cfg(feature = "mode")]
+        #[cfg(feature = "handoff")]
         {
-            use crate::extensions::handoff::{
+            use tirea_extension_handoff::{
                 HandoffPlugin, HandoffRuntimeOverlay, HANDOFF_PLUGIN_ID,
             };
 

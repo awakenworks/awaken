@@ -43,6 +43,7 @@ permission = ["dep:tirea-extension-permission", "tirea-agentos/permission"]
 [dev-dependencies]
 tirea-contract = { workspace = true, features = ["test-support"] }
 tirea-extension-a2ui.workspace = true
+tirea-extension-observability.workspace = true
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 async-trait = "0.1"

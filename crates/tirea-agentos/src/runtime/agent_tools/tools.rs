@@ -1279,11 +1279,11 @@ impl Tool for AgentOutputTool {
 /// Implemented via the dynamic mode switching mechanism: the handoff writes
 /// a `request_mode_switch_action` that `ModePlugin` picks up in the next
 /// `before_inference` phase.
-#[cfg(feature = "mode")]
+#[cfg(feature = "handoff")]
 #[derive(Debug, Clone)]
 pub struct AgentHandoffTool;
 
-#[cfg(feature = "mode")]
+#[cfg(feature = "handoff")]
 #[async_trait]
 impl Tool for AgentHandoffTool {
     fn descriptor(&self) -> ToolDescriptor {

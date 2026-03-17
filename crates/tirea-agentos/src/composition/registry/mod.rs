@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 #[cfg(feature = "skills")]
-use crate::extensions::skills::SkillRegistry;
+use tirea_extension_skills::SkillRegistry;
 
 pub use stop_policy::StopPolicyRegistry;
 pub use traits::{AgentRegistry, BehaviorRegistry, ModelRegistry, ProviderRegistry, ToolRegistry};

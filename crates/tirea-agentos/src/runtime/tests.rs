@@ -9,11 +9,6 @@ use crate::contracts::storage::{RunOrigin, ThreadReader, ThreadWriter};
 use crate::contracts::thread::{Message, Thread};
 use crate::contracts::ToolCallContext;
 use crate::contracts::{AgentBehavior, AgentEvent, RunRequest};
-#[cfg(feature = "skills")]
-use crate::extensions::skills::{
-    FsSkill, FsSkillRegistryManager, InMemorySkillRegistry, ScriptResult, Skill, SkillError,
-    SkillMeta, SkillRegistry, SkillRegistryError, SkillResource, SkillResourceKind,
-};
 use async_trait::async_trait;
 use genai::Client;
 use serde_json::{json, Value};
@@ -31,6 +26,11 @@ use tempfile::TempDir;
 use tirea_contract::testing::{apply_before_inference_for_test, TestFixture};
 use tirea_contract::TerminationReason;
 use tirea_extension_permission::{resolve_permission_behavior, ToolPermissionBehavior};
+#[cfg(feature = "skills")]
+use tirea_extension_skills::{
+    FsSkill, FsSkillRegistryManager, InMemorySkillRegistry, ScriptResult, Skill, SkillError,
+    SkillMeta, SkillRegistry, SkillRegistryError, SkillResource, SkillResourceKind,
+};
 
 fn decision_for(
     target_id: &str,

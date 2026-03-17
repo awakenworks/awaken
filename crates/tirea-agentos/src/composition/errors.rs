@@ -7,7 +7,7 @@ use super::{
     },
 };
 #[cfg(feature = "skills")]
-use crate::extensions::skills::{SkillError, SkillRegistryError, SkillRegistryManagerError};
+use tirea_extension_skills::{SkillError, SkillRegistryError, SkillRegistryManagerError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentOsWiringError {

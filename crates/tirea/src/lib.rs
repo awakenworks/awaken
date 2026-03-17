@@ -41,9 +41,8 @@ pub use tirea_agentos::composition;
 #[cfg(feature = "core")]
 pub use tirea_agentos::runtime;
 
-/// AgentOS extensions (permission, reminder, interaction, etc.).
-#[cfg(feature = "core")]
-pub use tirea_agentos::extensions;
+/// AgentOS extensions (permission, reminder, observability, plan, handoff, mcp, skills).
+pub mod extensions;
 
 // ── Protocols ───────────────────────────────────────────────────────────
 

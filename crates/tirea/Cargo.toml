@@ -22,7 +22,13 @@ tirea-protocol-ag-ui = { workspace = true, optional = true }
 tirea-protocol-ai-sdk-v6 = { workspace = true, optional = true }
 
 # Extensions
+tirea-extension-permission = { workspace = true, optional = true }
+tirea-extension-reminder = { workspace = true, optional = true }
+tirea-extension-observability = { workspace = true, optional = true }
 tirea-extension-skills = { workspace = true, optional = true }
+tirea-extension-mcp = { workspace = true, optional = true }
+tirea-extension-plan = { workspace = true, optional = true }
+tirea-extension-handoff = { workspace = true, optional = true }
 
 # Storage backends
 tirea-store-adapters = { workspace = true, optional = true }
@@ -35,12 +41,19 @@ schemars = { workspace = true }
 
 [features]
 default = ["core"]
-core = ["dep:tirea-agentos"]
+core = [
+    "dep:tirea-agentos",
+    "dep:tirea-extension-permission",
+    "dep:tirea-extension-reminder",
+    "dep:tirea-extension-observability",
+    "dep:tirea-extension-plan",
+    "dep:tirea-extension-handoff",
+]
 acp = ["dep:tirea-protocol-acp"]
 ag-ui = ["dep:tirea-protocol-ag-ui", "core"]
 ai-sdk-v6 = ["dep:tirea-protocol-ai-sdk-v6"]
 skills = ["dep:tirea-extension-skills", "core"]
-mcp = ["core", "tirea-agentos/mcp"]
+mcp = ["core", "dep:tirea-extension-mcp", "tirea-agentos/mcp"]
 postgres = ["dep:tirea-store-adapters", "tirea-store-adapters/postgres"]
 nats = ["dep:tirea-store-adapters", "tirea-store-adapters/nats"]
 full = ["core", "acp", "ag-ui", "ai-sdk-v6", "skills", "mcp", "postgres", "nats"]

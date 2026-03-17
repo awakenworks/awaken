@@ -442,7 +442,7 @@ impl AgentOs {
     /// When multiple agents are registered, `HandoffPlugin` handles dynamic
     /// agent switching within the run via `agent_handoff`. No termination or
     /// re-resolution occurs — this method simply delegates to [`run_stream`].
-    #[cfg(feature = "mode")]
+    #[cfg(feature = "handoff")]
     pub async fn run(&self, request: RunRequest) -> Result<RunStream, AgentOsRunError> {
         self.run_stream(request).await
     }

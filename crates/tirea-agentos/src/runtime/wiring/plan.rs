@@ -1,10 +1,10 @@
 use crate::composition::{
     AgentOsWiringError, RegistryBundle, SystemWiring, ToolBehaviorBundle, WiringContext,
 };
-use crate::extensions::plan::{
+use std::sync::Arc;
+use tirea_extension_plan::{
     EnterPlanModeTool, ExitPlanModeTool, PlanModePlugin, PLAN_MODE_PLUGIN_ID,
 };
-use std::sync::Arc;
 
 const PLAN_BUNDLE_ID: &str = "plan_mode";
 

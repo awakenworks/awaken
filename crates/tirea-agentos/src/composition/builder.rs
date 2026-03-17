@@ -2,14 +2,10 @@ use super::*;
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::AgentBehavior;
 use crate::contracts::storage::ThreadStore;
-#[cfg(feature = "skills")]
-use crate::extensions::skills::{
-    CompositeSkillRegistry, InMemorySkillRegistry, Skill, SkillRegistry, SkillRegistryManagerError,
-};
 #[cfg(feature = "plan")]
-use crate::runtime::plan_wiring::PlanSystemWiring;
+use crate::runtime::wiring::plan::PlanSystemWiring;
 #[cfg(feature = "skills")]
-use crate::runtime::resolve::SkillsSystemWiring;
+use crate::runtime::wiring::SkillsSystemWiring;
 use crate::runtime::StopPolicy;
 use crate::runtime::{AgentOs, RuntimeServices};
 use genai::Client;
@@ -17,6 +13,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 #[cfg(feature = "skills")]
 use std::time::Duration;
+#[cfg(feature = "skills")]
+use tirea_extension_skills::{
+    CompositeSkillRegistry, InMemorySkillRegistry, Skill, SkillRegistry, SkillRegistryManagerError,
+};
 
 pub struct AgentOsBuilder {
     pub(crate) client: Option<Client>,
