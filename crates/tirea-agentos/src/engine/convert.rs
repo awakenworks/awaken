@@ -70,16 +70,23 @@ pub fn build_request(messages: &[Message], tools: &[&dyn Tool]) -> ChatRequest {
 
 /// Apply prompt cache hints to a chat request.
 ///
-/// Sets `CacheControl::Ephemeral` on the last system message in the request,
-/// which tells Anthropic to cache everything up to (and including) that message.
+/// Marks each system message with `CacheControl::Ephemeral` so that the
+/// provider can cache the prefix up to each boundary independently.
+/// With multiple system messages (base prompt + plugin segments), this
+/// allows the static base prompt to remain cached even when dynamic
+/// plugin segments change between turns.
+///
 /// This is a no-op for providers that don't support cache control.
 pub fn apply_prompt_cache_hints(request: &mut ChatRequest) {
-    // Find the last system message and mark it as the cache boundary.
-    if let Some(pos) = request
+    let positions: Vec<usize> = request
         .messages
         .iter()
-        .rposition(|m| matches!(m.role, genai::chat::ChatRole::System))
-    {
+        .enumerate()
+        .filter(|(_, m)| matches!(m.role, genai::chat::ChatRole::System))
+        .map(|(i, _)| i)
+        .collect();
+
+    for pos in positions {
         let msg = request.messages.remove(pos);
         request
             .messages
@@ -435,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_prompt_cache_hints_marks_last_system_message() {
+    fn apply_prompt_cache_hints_marks_all_system_messages() {
         let messages = vec![
             Message::system("System prompt"),
             Message::system("Session context"),
@@ -445,17 +452,17 @@ mod tests {
         let mut request = build_request(&messages, &[]);
         apply_prompt_cache_hints(&mut request);
 
-        // Last system message (index 1) should have CacheControl::Ephemeral.
-        // First system message should not.
+        // Both system messages should have CacheControl::Ephemeral so that
+        // the static base prompt stays cached even when dynamic segments change.
         let debug_0 = format!("{:?}", request.messages[0]);
         let debug_1 = format!("{:?}", request.messages[1]);
         assert!(
-            !debug_0.contains("Ephemeral"),
-            "first system message should not have cache hint"
+            debug_0.contains("Ephemeral"),
+            "first system message should have Ephemeral cache hint"
         );
         assert!(
             debug_1.contains("Ephemeral"),
-            "last system message should have Ephemeral cache hint"
+            "second system message should have Ephemeral cache hint"
         );
         // Message count should be preserved.
         assert_eq!(request.messages.len(), 4);

@@ -2273,12 +2273,14 @@ fn test_build_messages_with_context() {
 
     let messages = build_messages(&step, "Base system prompt");
 
-    assert_eq!(messages.len(), 3);
-    assert!(messages[0].content.contains("Base system prompt"));
-    assert!(messages[0].content.contains("System context 1"));
-    assert!(messages[0].content.contains("System context 2"));
-    assert_eq!(messages[1].content, "Thread context");
-    assert_eq!(messages[2].content, "Hello");
+    // Base prompt and each system_context are separate system messages
+    // to improve prompt cache hit rates.
+    assert_eq!(messages.len(), 5);
+    assert_eq!(messages[0].content, "Base system prompt");
+    assert_eq!(messages[1].content, "System context 1");
+    assert_eq!(messages[2].content, "System context 2");
+    assert_eq!(messages[3].content, "Thread context");
+    assert_eq!(messages[4].content, "Hello");
 }
 
 #[test]

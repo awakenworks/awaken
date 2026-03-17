@@ -38,14 +38,15 @@ pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec
     let system_ctx = &step.inference.system_context[..];
     let session_ctx = &step.inference.session_context[..];
 
-    let system = if system_ctx.is_empty() {
-        system_prompt.to_string()
-    } else {
-        format!("{}\n\n{}", system_prompt, system_ctx.join("\n"))
-    };
-
-    if !system.is_empty() {
-        messages.push(Message::system(system));
+    // Emit base system prompt and each plugin-injected context as separate
+    // system messages. Keeping them separate improves prompt cache hit rates:
+    // the static base prompt stays cached even when dynamic plugin segments
+    // change between turns.
+    if !system_prompt.is_empty() {
+        messages.push(Message::system(system_prompt.to_string()));
+    }
+    for ctx in system_ctx.iter().filter(|s| !s.is_empty()) {
+        messages.push(Message::system(ctx.clone()));
     }
 
     for ctx in session_ctx {
