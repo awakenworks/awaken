@@ -3,7 +3,7 @@ use super::state::HandoffState;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
-use tirea_contract::runtime::inference::InferenceModelOverride;
+use tirea_contract::runtime::inference::{InferenceOverride, ReasoningEffort};
 use tirea_contract::runtime::phase::{ActionSet, BeforeInferenceAction, BeforeToolExecuteAction};
 
 /// Stable plugin id for handoff behavior.
@@ -26,6 +26,14 @@ pub struct HandoffRuntimeOverlay {
     pub allowed_tools: Option<Vec<String>>,
     /// Tool blacklist — these tools are hidden after handoff.
     pub excluded_tools: Option<Vec<String>>,
+    /// Sampling temperature override.
+    pub temperature: Option<f64>,
+    /// Maximum output tokens override.
+    pub max_tokens: Option<u32>,
+    /// Nucleus sampling (top-p) override.
+    pub top_p: Option<f64>,
+    /// Reasoning effort override.
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// Dynamic agent handoff plugin.
@@ -87,12 +95,21 @@ impl AgentBehavior for HandoffPlugin {
             return actions;
         };
 
-        // Model override
-        if let Some(ref model) = overlay.model {
-            actions = actions.and(ActionSet::single(BeforeInferenceAction::OverrideModel(
-                InferenceModelOverride {
-                    model: model.clone(),
-                    fallback_models: overlay.fallback_models.clone().unwrap_or_default(),
+        // Model and inference parameter overrides
+        let has_any_override = overlay.model.is_some()
+            || overlay.temperature.is_some()
+            || overlay.max_tokens.is_some()
+            || overlay.top_p.is_some()
+            || overlay.reasoning_effort.is_some();
+        if has_any_override {
+            actions = actions.and(ActionSet::single(BeforeInferenceAction::OverrideInference(
+                InferenceOverride {
+                    model: overlay.model.clone(),
+                    fallback_models: overlay.fallback_models.clone(),
+                    temperature: overlay.temperature,
+                    max_tokens: overlay.max_tokens,
+                    top_p: overlay.top_p,
+                    reasoning_effort: overlay.reasoning_effort.clone(),
                 },
             )));
         }
@@ -249,14 +266,14 @@ mod tests {
         let has_state = actions
             .iter()
             .any(|a| matches!(a, BeforeInferenceAction::State(_)));
-        let has_model = actions
-            .iter()
-            .any(|a| matches!(a, BeforeInferenceAction::OverrideModel(ovr) if ovr.model == "claude-haiku"));
+        let has_override = actions.iter().any(
+            |a| matches!(a, BeforeInferenceAction::OverrideInference(ovr) if ovr.model.as_deref() == Some("claude-haiku")),
+        );
         let has_system = actions.iter().any(
             |a| matches!(a, BeforeInferenceAction::AddSystemContext(s) if s.contains("fast mode")),
         );
         assert!(has_state, "should emit Activate state action");
-        assert!(has_model, "should emit OverrideModel");
+        assert!(has_override, "should emit OverrideInference");
         assert!(has_system, "should emit AddSystemContext");
     }
 
@@ -280,11 +297,11 @@ mod tests {
         let has_state = actions
             .iter()
             .any(|a| matches!(a, BeforeInferenceAction::State(_)));
-        let has_model = actions
+        let has_override = actions
             .iter()
-            .any(|a| matches!(a, BeforeInferenceAction::OverrideModel(_)));
+            .any(|a| matches!(a, BeforeInferenceAction::OverrideInference(_)));
         assert!(!has_state, "should NOT emit Activate (already active)");
-        assert!(has_model, "should still emit OverrideModel");
+        assert!(has_override, "should still emit OverrideInference");
     }
 
     #[tokio::test]

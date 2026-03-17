@@ -5,6 +5,7 @@ pub mod transform;
 
 pub use context::{
     ContextCompactionMode, ContextWindowPolicy, InferenceContext, InferenceModelOverride,
+    InferenceOverride, ReasoningEffort,
 };
 pub use messaging::MessagingContext;
 pub use response::{InferenceError, LLMResponse, StopReason, StreamResult, TokenUsage};

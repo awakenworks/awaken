@@ -343,7 +343,17 @@ pub fn apply_before_inference_for_test(
                 step.inference.request_transforms.push(transform);
             }
             BeforeInferenceAction::OverrideModel(ovr) => {
-                step.inference.model_override = Some(ovr);
+                let converted: crate::runtime::inference::InferenceOverride = ovr.into();
+                match &mut step.inference.inference_override {
+                    Some(existing) => existing.merge(converted),
+                    slot => *slot = Some(converted),
+                }
+            }
+            BeforeInferenceAction::OverrideInference(ovr) => {
+                match &mut step.inference.inference_override {
+                    Some(existing) => existing.merge(ovr),
+                    slot => *slot = Some(ovr),
+                }
             }
             BeforeInferenceAction::Terminate(reason) => {
                 step.flow.run_action = Some(RunAction::Terminate(reason));

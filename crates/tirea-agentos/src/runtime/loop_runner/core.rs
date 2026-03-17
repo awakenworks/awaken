@@ -182,7 +182,7 @@ pub(super) type InferenceInputs = (
     Vec<String>,
     RunAction,
     Vec<std::sync::Arc<dyn tirea_contract::runtime::inference::InferenceRequestTransform>>,
-    Option<tirea_contract::runtime::inference::InferenceModelOverride>,
+    Option<tirea_contract::runtime::inference::InferenceOverride>,
 );
 
 pub(super) fn inference_inputs_from_step(
@@ -194,13 +194,13 @@ pub(super) fn inference_inputs_from_step(
     let filtered_tools = tools.iter().map(|td| td.id.clone()).collect::<Vec<_>>();
     let run_action = step.run_action();
     let transforms = std::mem::take(&mut step.inference.request_transforms);
-    let model_override = step.inference.model_override.take();
+    let inference_override = step.inference.inference_override.take();
     (
         messages,
         filtered_tools,
         run_action,
         transforms,
-        model_override,
+        inference_override,
     )
 }
 

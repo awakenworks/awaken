@@ -1,4 +1,6 @@
-use crate::runtime::inference::{InferenceModelOverride, InferenceRequestTransform};
+use crate::runtime::inference::{
+    InferenceModelOverride, InferenceOverride, InferenceRequestTransform,
+};
 use crate::runtime::run::TerminationReason;
 use crate::runtime::state::AnyStateAction;
 use crate::runtime::tool_call::gate::{SuspendTicket, ToolCallAction};
@@ -122,9 +124,16 @@ pub enum BeforeInferenceAction {
     /// Override the model for this inference call.
     ///
     /// When emitted, the loop runner uses the specified model and fallback
-    /// models instead of the base agent's configuration. If multiple
-    /// `OverrideModel` actions are emitted, the last one wins.
+    /// models instead of the base agent's configuration. Converted internally
+    /// to [`InferenceOverride`]; prefer `OverrideInference` for new code.
     OverrideModel(InferenceModelOverride),
+    /// Override model and/or inference parameters for this call.
+    ///
+    /// Subsumes `OverrideModel` with additional fields for temperature,
+    /// max_tokens, top_p, and reasoning_effort. All fields are `Option` —
+    /// `None` means "use the agent-level default". If multiple plugins emit
+    /// this action, fields are merged with last-wins semantics.
+    OverrideInference(InferenceOverride),
     /// Request run termination before inference fires.
     Terminate(TerminationReason),
     /// Emit a persistent state change.

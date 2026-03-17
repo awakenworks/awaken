@@ -297,6 +297,28 @@ impl AgentOs {
                     if id == &_current_definition.id {
                         continue;
                     }
+                    let (temperature, max_tokens, top_p, reasoning_effort) = def
+                        .chat_options
+                        .as_ref()
+                        .map_or((None, None, None, None), |opts| {
+                            (
+                                opts.temperature,
+                                opts.max_tokens,
+                                opts.top_p,
+                                opts.reasoning_effort.as_ref().map(|r| {
+                                    use genai::chat::ReasoningEffort as G;
+                                    use tirea_contract::runtime::inference::ReasoningEffort as R;
+                                    match r {
+                                        G::None => R::None,
+                                        G::Low | G::Minimal => R::Low,
+                                        G::Medium => R::Medium,
+                                        G::High => R::High,
+                                        G::Max => R::Max,
+                                        G::Budget(n) => R::Budget(*n),
+                                    }
+                                }),
+                            )
+                        });
                     overlays.insert(
                         id.clone(),
                         HandoffRuntimeOverlay {
@@ -317,6 +339,10 @@ impl AgentOs {
                             },
                             allowed_tools: def.allowed_tools.clone(),
                             excluded_tools: def.excluded_tools.clone(),
+                            temperature,
+                            max_tokens,
+                            top_p,
+                            reasoning_effort,
                         },
                     );
                 }
