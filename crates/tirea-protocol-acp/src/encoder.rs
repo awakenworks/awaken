@@ -119,15 +119,40 @@ impl AcpEncoder {
                 vec![AcpEvent::state_delta(delta.clone())]
             }
 
+            // -- Activity --
+            AgentEvent::ActivitySnapshot {
+                message_id,
+                activity_type,
+                content,
+                replace,
+            } => {
+                vec![AcpEvent::activity_snapshot(
+                    message_id,
+                    activity_type,
+                    content.clone(),
+                    *replace,
+                )]
+            }
+
+            AgentEvent::ActivityDelta {
+                message_id,
+                activity_type,
+                patch,
+            } => {
+                vec![AcpEvent::activity_delta(
+                    message_id,
+                    activity_type,
+                    patch.clone(),
+                )]
+            }
+
             // -- Events silently consumed by ACP --
             AgentEvent::RunStart { .. }
             | AgentEvent::StepStart { .. }
             | AgentEvent::StepEnd
             | AgentEvent::InferenceComplete { .. }
             | AgentEvent::ReasoningEncryptedValue { .. }
-            | AgentEvent::MessagesSnapshot { .. }
-            | AgentEvent::ActivitySnapshot { .. }
-            | AgentEvent::ActivityDelta { .. } => Vec::new(),
+            | AgentEvent::MessagesSnapshot { .. } => Vec::new(),
         }
     }
 }

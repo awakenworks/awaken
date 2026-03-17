@@ -10,7 +10,7 @@ mod types;
 
 pub use encoder::AcpEncoder;
 pub use events::{
-    AcpError, AcpEvent, AcpFinished, AcpToolCall, AcpToolCallUpdate, RequestPermissionParams,
-    SessionUpdateParams,
+    AcpActivity, AcpError, AcpEvent, AcpFinished, AcpToolCall, AcpToolCallUpdate,
+    RequestPermissionParams, SessionUpdateParams,
 };
 pub use types::{PermissionOption, StopReason, ToolCallStatus};

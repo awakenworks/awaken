@@ -55,6 +55,10 @@ pub struct SessionUpdateParams {
     /// Incremental state delta (JSON Patch ops).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state_delta: Option<Vec<Value>>,
+
+    /// Activity snapshot (progress indicator for long-running operations).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<AcpActivity>,
 }
 
 /// A tool call ready for execution.
@@ -102,6 +106,24 @@ pub struct AcpError {
     /// Optional error code.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
+}
+
+/// Activity update for long-running operations.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpActivity {
+    /// Identifier of the message/context this activity belongs to.
+    pub message_id: String,
+    /// Activity kind (e.g. `"tool_call_progress"`, `"thinking"`).
+    pub activity_type: String,
+    /// Activity payload.
+    pub content: Value,
+    /// When `true`, replaces the previous activity with the same `message_id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replace: Option<bool>,
+    /// JSON Patch ops for incremental activity updates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patch: Option<Vec<Value>>,
 }
 
 /// Payload for `session/request_permission` notifications.
@@ -225,6 +247,43 @@ impl AcpEvent {
         }))
     }
 
+    /// Create a `session/update` with an activity snapshot.
+    pub fn activity_snapshot(
+        message_id: impl Into<String>,
+        activity_type: impl Into<String>,
+        content: Value,
+        replace: Option<bool>,
+    ) -> Self {
+        Self::SessionUpdate(Box::new(SessionUpdateParams {
+            activity: Some(AcpActivity {
+                message_id: message_id.into(),
+                activity_type: activity_type.into(),
+                content,
+                replace,
+                patch: None,
+            }),
+            ..SessionUpdateParams::empty()
+        }))
+    }
+
+    /// Create a `session/update` with an activity delta.
+    pub fn activity_delta(
+        message_id: impl Into<String>,
+        activity_type: impl Into<String>,
+        patch: Vec<Value>,
+    ) -> Self {
+        Self::SessionUpdate(Box::new(SessionUpdateParams {
+            activity: Some(AcpActivity {
+                message_id: message_id.into(),
+                activity_type: activity_type.into(),
+                content: Value::Null,
+                replace: None,
+                patch: Some(patch),
+            }),
+            ..SessionUpdateParams::empty()
+        }))
+    }
+
     /// Create a `session/request_permission` event.
     pub fn request_permission(
         tool_call_id: impl Into<String>,
@@ -257,6 +316,7 @@ impl SessionUpdateParams {
             error: None,
             state_snapshot: None,
             state_delta: None,
+            activity: None,
         }
     }
 }

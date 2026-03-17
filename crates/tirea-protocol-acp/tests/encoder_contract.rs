@@ -239,21 +239,37 @@ fn step_events_silently_consumed() {
 }
 
 #[test]
-fn activity_events_silently_consumed() {
+fn activity_snapshot_forwarded() {
     let mut enc = AcpEncoder::new();
-    assert!(enc
-        .transcode(&AgentEvent::ActivitySnapshot {
-            message_id: "m".into(),
-            activity_type: "reasoning".into(),
-            content: json!({}),
-            replace: None,
-        })
-        .is_empty());
-    assert!(enc
-        .transcode(&AgentEvent::ActivityDelta {
-            message_id: "m".into(),
-            activity_type: "reasoning".into(),
-            patch: vec![],
-        })
-        .is_empty());
+    let events = enc.transcode(&AgentEvent::ActivitySnapshot {
+        message_id: "m".into(),
+        activity_type: "thinking".into(),
+        content: json!({"text": "processing"}),
+        replace: Some(true),
+    });
+    assert_eq!(events.len(), 1);
+    let value = serde_json::to_value(&events[0]).unwrap();
+    assert_eq!(value["params"]["activity"]["messageId"], "m");
+    assert_eq!(value["params"]["activity"]["activityType"], "thinking");
+    assert_eq!(value["params"]["activity"]["content"]["text"], "processing");
+    assert_eq!(value["params"]["activity"]["replace"], true);
+}
+
+#[test]
+fn activity_delta_forwarded() {
+    let mut enc = AcpEncoder::new();
+    let patch = vec![json!({"op": "replace", "path": "/progress", "value": 50})];
+    let events = enc.transcode(&AgentEvent::ActivityDelta {
+        message_id: "m".into(),
+        activity_type: "tool_call_progress".into(),
+        patch: patch.clone(),
+    });
+    assert_eq!(events.len(), 1);
+    let value = serde_json::to_value(&events[0]).unwrap();
+    assert_eq!(value["params"]["activity"]["messageId"], "m");
+    assert_eq!(
+        value["params"]["activity"]["activityType"],
+        "tool_call_progress"
+    );
+    assert_eq!(value["params"]["activity"]["patch"], json!(patch));
 }
