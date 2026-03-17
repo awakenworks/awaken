@@ -551,7 +551,7 @@ fn build_base_agent_from_definition(
         max_rounds: definition.max_rounds,
         tool_executor,
         chat_options: definition.chat_options,
-        fallback_models: definition.fallback_models,
+        fallback_models: definition.model_fallbacks,
         llm_retry_policy: definition.llm_retry_policy,
         behavior,
         lattice_registry: Arc::new(lattice_registry),
@@ -564,8 +564,8 @@ fn build_base_agent_from_definition(
 
 fn normalize_definition_models(mut definition: AgentDefinition) -> AgentDefinition {
     definition.model = definition.model.trim().to_string();
-    definition.fallback_models = definition
-        .fallback_models
+    definition.model_fallbacks = definition
+        .model_fallbacks
         .into_iter()
         .map(|model| model.trim().to_string())
         .filter(|model| !model.is_empty())

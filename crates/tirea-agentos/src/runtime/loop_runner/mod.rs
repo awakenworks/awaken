@@ -316,6 +316,13 @@ impl LlmErrorClass {
     }
 }
 
+fn should_fallback_on_llm_error_class(error_class: LlmErrorClass) -> bool {
+    matches!(
+        error_class,
+        LlmErrorClass::RateLimit | LlmErrorClass::ServerUnavailable
+    )
+}
+
 fn classify_llm_error_message(message: &str) -> LlmErrorClass {
     let lower = message.to_ascii_lowercase();
     if ["429", "too many requests", "rate limit"]
@@ -779,6 +786,7 @@ where
                     let message = e.to_string();
                     last_llm_error =
                         format!("model='{model}' attempt={attempt}/{max_attempts}: {message}");
+                    let can_fallback_model = should_fallback_on_llm_error_class(error_class);
                     let can_retry_same_model =
                         retry_current_model && attempt < max_attempts && error_class.is_retryable();
                     tracing::warn!(
@@ -786,6 +794,7 @@ where
                         attempt = attempt,
                         max_attempts = max_attempts,
                         error_class = error_class.as_str(),
+                        fallbackable = can_fallback_model,
                         retryable = can_retry_same_model,
                         error = %message,
                         "LLM call failed"
@@ -814,6 +823,9 @@ where
                                 break 'models;
                             }
                         }
+                    }
+                    if !can_fallback_model {
+                        break 'models;
                     }
                     break;
                 }

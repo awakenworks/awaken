@@ -192,6 +192,7 @@ fn build_os(
             name: None,
             description: None,
             model: None,
+            model_fallbacks: None,
             system_prompt: String::new(),
             max_rounds: None,
             tool_execution_mode: ToolExecutionModeConfig::ParallelStreaming,

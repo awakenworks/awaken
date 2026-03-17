@@ -130,6 +130,9 @@ pub struct ModeOverlayConfig {
     /// Override model identifier.
     #[serde(default)]
     pub model: Option<String>,
+    /// Override model fallbacks.
+    #[serde(default)]
+    pub model_fallbacks: Option<Vec<String>>,
     /// Override system prompt.
     #[serde(default)]
     pub system_prompt: Option<String>,
@@ -142,6 +145,11 @@ impl ModeOverlayConfig {
     fn into_overlay(self, agent_id: &str) -> Result<ModeOverlay, AgentConfigError> {
         Ok(ModeOverlay {
             model: normalize_optional_field(agent_id, "mode.model", self.model)?,
+            model_fallbacks: normalize_optional_list(
+                agent_id,
+                "mode.model_fallbacks",
+                self.model_fallbacks,
+            )?,
             system_prompt: self.system_prompt,
             max_rounds: self.max_rounds,
             ..Default::default()
@@ -158,6 +166,8 @@ pub struct LocalAgentConfig {
     pub description: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub model_fallbacks: Option<Vec<String>>,
     #[serde(default)]
     pub system_prompt: String,
     #[serde(default)]
@@ -179,6 +189,9 @@ impl LocalAgentConfig {
         let name = normalize_optional_text(self.name);
         let description = normalize_optional_text(self.description).unwrap_or_default();
         let model = normalize_optional_field(&id, "model", self.model)?;
+        let model_fallbacks =
+            normalize_optional_list(&id, "model_fallbacks", self.model_fallbacks)?
+                .unwrap_or_default();
         let behavior_ids = normalize_identifier_list(&id, "behavior_ids", self.behavior_ids)?;
 
         let mut definition = AgentDefinition {
@@ -193,6 +206,7 @@ impl LocalAgentConfig {
         if let Some(model) = model {
             definition.model = model;
         }
+        definition.model_fallbacks = model_fallbacks;
         if let Some(max_rounds) = self.max_rounds {
             definition.max_rounds = max_rounds;
         }
@@ -339,6 +353,17 @@ fn normalize_optional_field(
     }
 }
 
+fn normalize_optional_list(
+    agent_id: &str,
+    field: &'static str,
+    values: Option<Vec<String>>,
+) -> Result<Option<Vec<String>>, AgentConfigError> {
+    match values {
+        Some(values) => normalize_identifier_list(agent_id, field, values).map(Some),
+        None => Ok(None),
+    }
+}
+
 fn normalize_identifier_list(
     agent_id: &str,
     field: &'static str,
@@ -438,8 +463,12 @@ mod tests {
                 "agents": [{
                     "id": "coder",
                     "model": "claude-opus",
+                    "model_fallbacks": ["claude-instant"],
                     "modes": {
-                        "fast": { "model": "claude-haiku" },
+                        "fast": {
+                            "model": "claude-haiku",
+                            "model_fallbacks": ["claude-sonnet"]
+                        },
                         "deep": { "model": "claude-opus", "max_rounds": 50 }
                     }
                 }]
@@ -453,7 +482,12 @@ mod tests {
         assert_eq!(spec.id(), "coder");
         if let super::super::AgentDefinitionSpec::Local(def) = spec {
             assert_eq!(def.modes.len(), 2);
+            assert_eq!(def.model_fallbacks, vec!["claude-instant".to_string()]);
             assert_eq!(def.modes["fast"].model.as_deref(), Some("claude-haiku"));
+            assert_eq!(
+                def.modes["fast"].model_fallbacks.as_ref(),
+                Some(&vec!["claude-sonnet".to_string()])
+            );
             assert_eq!(def.modes["deep"].max_rounds, Some(50));
         } else {
             panic!("expected local agent spec");

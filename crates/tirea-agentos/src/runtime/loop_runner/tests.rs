@@ -5989,6 +5989,163 @@ async fn test_nonstream_uses_fallback_model_after_primary_failures() {
 }
 
 #[tokio::test]
+async fn test_nonstream_succeeds_without_using_fallbacks() {
+    let provider = Arc::new(MockChatProvider::new(vec![Ok(text_chat_response("ok"))]));
+    let config = BaseAgent::new("primary")
+        .with_fallback_models(vec!["fallback-a".to_string(), "fallback-b".to_string()])
+        .with_llm_retry_policy(LlmRetryPolicy {
+            max_attempts_per_model: 1,
+            initial_backoff_ms: 1,
+            max_backoff_ms: 10,
+            retry_stream_start: true,
+            ..LlmRetryPolicy::default()
+        })
+        .with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
+
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
+
+    assert_eq!(outcome.termination, TerminationReason::NaturalEnd);
+    assert_eq!(outcome.response.as_deref(), Some("ok"));
+    assert_eq!(provider.seen_models(), vec!["primary".to_string()]);
+}
+
+#[tokio::test]
+async fn test_nonstream_uses_first_fallback_after_primary_service_unavailable() {
+    let provider = Arc::new(MockChatProvider::new(vec![
+        Err(genai::Error::Internal(
+            "503 service unavailable".to_string(),
+        )),
+        Ok(text_chat_response("ok")),
+    ]));
+    let config = BaseAgent::new("primary")
+        .with_fallback_models(vec!["fallback-a".to_string(), "fallback-b".to_string()])
+        .with_llm_retry_policy(LlmRetryPolicy {
+            max_attempts_per_model: 1,
+            initial_backoff_ms: 1,
+            max_backoff_ms: 10,
+            retry_stream_start: true,
+            ..LlmRetryPolicy::default()
+        })
+        .with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
+    assert_eq!(outcome.termination, TerminationReason::NaturalEnd);
+    assert_eq!(outcome.response.as_deref(), Some("ok"));
+    assert_eq!(
+        provider.seen_models(),
+        vec!["primary".to_string(), "fallback-a".to_string(),]
+    );
+}
+
+#[tokio::test]
+async fn test_nonstream_does_not_fallback_for_non_fallbackable_errors() {
+    let provider = Arc::new(MockChatProvider::new(vec![
+        Err(genai::Error::Internal("401 unauthorized".to_string())),
+        Ok(text_chat_response("should not be used")),
+    ]));
+    let config = BaseAgent::new("primary")
+        .with_fallback_model("fallback")
+        .with_llm_retry_policy(LlmRetryPolicy {
+            max_attempts_per_model: 1,
+            initial_backoff_ms: 1,
+            max_backoff_ms: 10,
+            retry_stream_start: true,
+            ..LlmRetryPolicy::default()
+        })
+        .with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
+    assert!(matches!(outcome.termination, TerminationReason::Error(_)));
+    assert!(
+        matches!(outcome.failure, Some(LoopFailure::Llm(message)) if message.contains("401 unauthorized"))
+    );
+    assert_eq!(provider.seen_models(), vec!["primary".to_string()]);
+}
+
+#[tokio::test]
+async fn test_nonstream_propagates_error_after_all_fallbacks_fail() {
+    let provider = Arc::new(MockChatProvider::new(vec![
+        Err(genai::Error::Internal(
+            "503 service unavailable".to_string(),
+        )),
+        Err(genai::Error::Internal(
+            "503 service unavailable".to_string(),
+        )),
+        Err(genai::Error::Internal(
+            "503 service unavailable".to_string(),
+        )),
+    ]));
+    let config = BaseAgent::new("primary")
+        .with_fallback_models(vec!["fallback-a".to_string(), "fallback-b".to_string()])
+        .with_llm_retry_policy(LlmRetryPolicy {
+            max_attempts_per_model: 1,
+            initial_backoff_ms: 1,
+            max_backoff_ms: 10,
+            retry_stream_start: true,
+            ..LlmRetryPolicy::default()
+        })
+        .with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
+
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None, None).await;
+
+    assert!(matches!(outcome.termination, TerminationReason::Error(_)));
+    assert!(matches!(
+        outcome.failure,
+        Some(LoopFailure::Llm(message)) if message.contains("503 service unavailable")
+    ));
+    assert_eq!(
+        provider.seen_models(),
+        vec![
+            "primary".to_string(),
+            "fallback-a".to_string(),
+            "fallback-b".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn test_stream_tries_multiple_fallback_models_in_order() {
+    let provider = Arc::new(FailingStartProvider::new(2));
+    let config = BaseAgent::new("primary")
+        .with_fallback_models(vec!["fallback-a".to_string(), "fallback-b".to_string()])
+        .with_llm_retry_policy(LlmRetryPolicy {
+            max_attempts_per_model: 1,
+            initial_backoff_ms: 1,
+            max_backoff_ms: 10,
+            retry_stream_start: true,
+            ..LlmRetryPolicy::default()
+        });
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let tools = HashMap::new();
+    let config = config.with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>);
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
+    let events = collect_stream_events(stream).await;
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::NaturalEnd)
+    );
+    assert_eq!(
+        provider.seen_models(),
+        vec![
+            "primary".to_string(),
+            "fallback-a".to_string(),
+            "fallback-b".to_string(),
+        ]
+    );
+    assert_eq!(
+        extract_inference_model(&events),
+        Some("fallback-b".to_string())
+    );
+}
+
+#[tokio::test]
 async fn test_nonstream_retry_budget_exhaustion_stops_additional_attempts() {
     let provider = Arc::new(MockChatProvider::new(vec![
         Err(genai::Error::Internal("429 rate limit".to_string())),

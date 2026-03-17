@@ -12,14 +12,14 @@ use std::collections::HashMap;
 pub struct ModeOverlay {
     /// Override model identifier.
     pub model: Option<String>,
+    /// Override model fallbacks.
+    pub model_fallbacks: Option<Vec<String>>,
     /// Override system prompt.
     pub system_prompt: Option<String>,
     /// Override maximum rounds.
     pub max_rounds: Option<usize>,
     /// Override chat options.
     pub chat_options: Option<Option<ChatOptions>>,
-    /// Override fallback models.
-    pub fallback_models: Option<Vec<String>>,
     /// Override tool whitelist.
     pub allowed_tools: Option<Option<Vec<String>>>,
     /// Override tool blacklist.
@@ -55,6 +55,8 @@ pub struct AgentDefinition {
     pub description: Option<String>,
     /// Model identifier (e.g., "gpt-4", "claude-3-opus").
     pub model: String,
+    /// Fallback model ids used when the primary model fails.
+    pub model_fallbacks: Vec<String>,
     /// System prompt for the LLM.
     pub system_prompt: String,
     /// Maximum number of tool call rounds before stopping.
@@ -63,10 +65,6 @@ pub struct AgentDefinition {
     pub tool_execution_mode: ToolExecutionMode,
     /// Chat options for the LLM.
     pub chat_options: Option<ChatOptions>,
-    /// Fallback model ids used when the primary model fails.
-    ///
-    /// Evaluated in order after `model`.
-    pub fallback_models: Vec<String>,
     /// Retry policy for LLM inference failures.
     pub llm_retry_policy: LlmRetryPolicy,
     /// Behavior references resolved from AgentOS behavior registry.
@@ -98,6 +96,7 @@ impl Default for AgentDefinition {
             name: None,
             description: None,
             model: "gpt-4o-mini".to_string(),
+            model_fallbacks: Vec::new(),
             system_prompt: String::new(),
             max_rounds: 10,
             tool_execution_mode: ToolExecutionMode::ParallelStreaming,
@@ -107,7 +106,6 @@ impl Default for AgentDefinition {
                     .with_capture_reasoning_content(true)
                     .with_capture_tool_calls(true),
             ),
-            fallback_models: Vec::new(),
             llm_retry_policy: LlmRetryPolicy::default(),
             behavior_ids: Vec::new(),
             allowed_tools: None,
@@ -130,6 +128,7 @@ impl std::fmt::Debug for AgentDefinition {
             .field("name", &self.name)
             .field("description", &self.description)
             .field("model", &self.model)
+            .field("model_fallbacks", &self.model_fallbacks)
             .field(
                 "system_prompt",
                 &format!("[{} chars]", self.system_prompt.len()),
@@ -137,7 +136,6 @@ impl std::fmt::Debug for AgentDefinition {
             .field("max_rounds", &self.max_rounds)
             .field("tool_execution_mode", &self.tool_execution_mode)
             .field("chat_options", &self.chat_options)
-            .field("fallback_models", &self.fallback_models)
             .field("llm_retry_policy", &self.llm_retry_policy)
             .field("behavior_ids", &self.behavior_ids)
             .field("allowed_tools", &self.allowed_tools)
@@ -154,7 +152,64 @@ impl std::fmt::Debug for AgentDefinition {
 }
 
 impl AgentDefinition {
-    tirea_contract::impl_shared_agent_builder_methods!();
+    /// Create a new instance with the given model id.
+    pub fn new(model: impl Into<String>) -> Self {
+        Self {
+            model: model.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Create a new instance with explicit id and model.
+    pub fn with_id(id: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            model: model.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Set system prompt.
+    #[must_use]
+    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.system_prompt = prompt.into();
+        self
+    }
+
+    /// Set max rounds.
+    #[must_use]
+    pub fn with_max_rounds(mut self, max_rounds: usize) -> Self {
+        self.max_rounds = max_rounds;
+        self
+    }
+
+    /// Set chat options.
+    #[must_use]
+    pub fn with_chat_options(mut self, options: ChatOptions) -> Self {
+        self.chat_options = Some(options);
+        self
+    }
+
+    /// Set fallback model ids to try after the primary model.
+    #[must_use]
+    pub fn with_fallback_models(mut self, models: Vec<String>) -> Self {
+        self.model_fallbacks = models;
+        self
+    }
+
+    /// Add a single fallback model id.
+    #[must_use]
+    pub fn with_fallback_model(mut self, model: impl Into<String>) -> Self {
+        self.model_fallbacks.push(model.into());
+        self
+    }
+
+    /// Set LLM retry policy.
+    #[must_use]
+    pub fn with_llm_retry_policy(mut self, policy: LlmRetryPolicy) -> Self {
+        self.llm_retry_policy = policy;
+        self
+    }
 
     #[must_use]
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
@@ -276,6 +331,9 @@ impl AgentDefinition {
         if let Some(ref model) = overlay.model {
             self.model = model.clone();
         }
+        if let Some(ref models) = overlay.model_fallbacks {
+            self.model_fallbacks = models.clone();
+        }
         if let Some(ref prompt) = overlay.system_prompt {
             self.system_prompt = prompt.clone();
         }
@@ -284,9 +342,6 @@ impl AgentDefinition {
         }
         if let Some(ref opts) = overlay.chat_options {
             self.chat_options = opts.clone();
-        }
-        if let Some(ref models) = overlay.fallback_models {
-            self.fallback_models = models.clone();
         }
         if let Some(ref tools) = overlay.allowed_tools {
             self.allowed_tools = tools.clone();
@@ -321,7 +376,7 @@ mod tests {
 
         assert_eq!(normalized.model, "openai::gemini-2.5-flash");
         assert_eq!(
-            normalized.fallback_models,
+            normalized.model_fallbacks,
             vec!["gpt-4o-mini".to_string(), "claude-3-7-sonnet".to_string()]
         );
     }
