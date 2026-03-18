@@ -16,7 +16,8 @@ This works because the runtime provides:
 All patterns below are implemented with the same building blocks:
 
 - `agent_run` / `agent_stop` / `agent_output` delegation tools
-- `AgentDefinition` with `allowed_agents` / `excluded_agents`
+- `agent_handoff` for same-thread agent switching
+- `AgentDefinition` with `allowed_agents` / `excluded_agents` / `allowed_tools`
 - `SuspendTicket` for human-in-the-loop gating
 - System prompt engineering for control flow
 
@@ -33,7 +34,7 @@ No dedicated workflow agent types are needed. The LLM-driven loop plus delegatio
 | [Generator-Critic](#generator-critic) | Generator as main agent, critic as child via `agent_run` | No |
 | [Iterative Refinement](#iterative-refinement) | Same as Generator-Critic with additional refiner child | No |
 | [Human-in-the-Loop](#human-in-the-loop) | `SuspendTicket` + `PermissionPlugin` | Yes (runtime gating) |
-| [Swarm / Peer Handoff](#swarm--peer-handoff) | **TODO** — not yet supported | — |
+| [Swarm / Peer Handoff](#swarm--peer-handoff) | `agent_handoff` + `HandoffPlugin` overlay | No (LLM decides) |
 
 ## Coordinator
 
@@ -269,26 +270,112 @@ See [Enable Tool Permission HITL](../how-to/enable-tool-permission-hitl.md) for 
 
 ## Swarm / Peer Handoff
 
-> **TODO** — This pattern is not yet supported. The section below describes the target behavior and current gap.
-
-Agents operate as peers without a central coordinator. Each agent decides when to hand off to another. The handoff transfers full control: Agent A exits, Agent B takes over the same thread with shared message history.
+Agents operate as peers without a central coordinator. Each agent decides when to hand off to another. The handoff transfers full control on the same thread with shared message history.
 
 ```text
 [Alice] <-> [Bob] <-> [Charlie]
   (math)    (code)    (writing)
 ```
 
-Unlike Coordinator, there is no parent-child hierarchy. The active agent switches identity, not spawns a child.
+Unlike Coordinator, there is no parent-child hierarchy. The active agent switches identity (system prompt, tools, model) in-place — no child spawning, no nesting.
 
-### Why delegation does not work for handoff
+### Mechanism
 
-Tirea's current `agent_run` model is hierarchical (parent spawns child). Using it for handoff has fundamental issues:
+Tirea implements peer handoff via the `agent_handoff` tool and the `HandoffPlugin`:
 
-- **Nesting depth grows per hop.** A→B→C means C runs as a grandchild. Each hop adds a level of indirection and resource consumption.
-- **No shared message history.** Each child agent gets its own thread. The handoff target cannot see the prior conversation.
-- **Parent does not exit.** The parent agent remains alive waiting for the child to finish, consuming context window.
+1. Register multiple agents with `AgentOsBuilder` — each becomes a handoff target
+2. When the LLM calls `agent_handoff("bob")`, the runtime writes a handoff request to thread state
+3. On the next `before_inference` phase, `HandoffPlugin` applies the target agent's overlay: model override, system prompt, and tool restrictions
+4. To return to the base agent, call `agent_handoff` again or use `clear_handoff_action()`
 
-A true peer handoff requires a different mechanism: the runtime switches the active agent's identity (system prompt, tools, model) on the same thread within the same run. This is not yet implemented.
+Handoff is **instant** — no run termination, no re-resolution, no new thread. The full conversation history is preserved.
+
+### Setup
+
+```rust,ignore
+let os = AgentOs::builder()
+    .with_agent_spec(AgentDefinitionSpec::local_with_id(
+        "alice",
+        AgentDefinition::new("claude-sonnet")
+            .with_system_prompt("You are Alice, a math specialist."),
+    ))
+    .with_agent_spec(AgentDefinitionSpec::local_with_id(
+        "bob",
+        AgentDefinition::new("claude-sonnet")
+            .with_system_prompt("You are Bob, a code specialist."),
+    ))
+    .with_agent_spec(AgentDefinitionSpec::local_with_id(
+        "charlie",
+        AgentDefinition::new("claude-sonnet")
+            .with_system_prompt("You are Charlie, a writing specialist."),
+    ))
+    .build()?;
+```
+
+When 2+ agents are registered, the runtime automatically:
+- Adds the `agent_handoff` tool to the tool set
+- Computes handoff overlays from each agent's definition
+- Wires the `HandoffPlugin` to enforce tool restrictions and apply overlays
+
+Each agent can hand off to any other by calling `agent_handoff("target_id")`.
+
+### Overlay fields
+
+Each agent definition maps to a `HandoffRuntimeOverlay`:
+
+| AgentDefinition field | Overlay effect |
+|---|---|
+| `model` | `OverrideModel` — switch the LLM model (empty = inherit base) |
+| `system_prompt` | `AddSystemContext` — append to system prompt |
+| `allowed_tools` | `IncludeOnlyTools` + hard gate in `before_tool_execute` |
+| `excluded_tools` | `ExcludeTool` — hide specific tools |
+| `fallback_models` | Fallback model chain for the override |
+
+### Example: Plan mode via handoff
+
+A "plan mode" restricts the agent to read-only tools for exploration before execution. Instead of a dedicated extension, define a planner agent:
+
+```rust,ignore
+let os = AgentOs::builder()
+    .with_agent_spec(AgentDefinitionSpec::local_with_id(
+        "assistant",
+        AgentDefinition::new("claude-sonnet")
+            .with_system_prompt("You are a helpful coding assistant."),
+    ))
+    .with_agent_spec(AgentDefinitionSpec::local_with_id(
+        "planner",
+        AgentDefinition::new("")  // empty model = inherit from base agent
+            .with_system_prompt(
+                "Plan mode is active. Only use read-only tools to explore. \
+                 When ready, call agent_handoff(\"assistant\") to return.",
+            )
+            .with_allowed_tools(vec![
+                "Read".into(), "Glob".into(), "Grep".into(),
+                "WebSearch".into(), "agent_handoff".into(),
+            ]),
+    ))
+    .build()?;
+```
+
+The LLM calls `agent_handoff("planner")` to enter plan mode and `agent_handoff("assistant")` to exit. No framework-level plan extension is needed — the restriction is entirely configuration-driven.
+
+### Key decisions
+
+- Each agent's `allowed_tools` acts as a hard whitelist enforced at runtime, not just a prompt hint.
+- `agent_handoff` is always allowed regardless of tool restrictions.
+- An agent with empty `model` inherits the base agent's model — useful for mode switching without model changes.
+- Handoff state is thread-scoped and persists across runs on the same thread.
+
+### Why handoff instead of delegation
+
+`agent_run` (delegation) spawns a child on a new thread. Handoff switches identity on the same thread:
+
+| | Delegation (`agent_run`) | Handoff (`agent_handoff`) |
+|---|---|---|
+| Thread | New thread per child | Same thread |
+| Message history | Isolated | Shared |
+| Nesting | Grows per hop | Flat (no nesting) |
+| Use case | Independent subtasks | Mode switching, peer routing |
 
 ## When to Use Multi-Agent
 
@@ -309,6 +396,7 @@ Stay with a single agent when:
 ## See Also
 
 - [Sub-Agent Delegation](./sub-agent-delegation.md) for the runtime model behind delegation tools
-- [Use Sub-Agent Delegation](../how-to/use-sub-agent-delegation.md) for setup instructions
+- [Use Sub-Agent Delegation](../how-to/use-sub-agent-delegation.md) for delegation setup
+- [Use Agent Handoff](../how-to/use-agent-handoff.md) for handoff setup and examples
 - [HITL and Decision Flow](./hitl-and-decision-flow.md) for suspension mechanics
 - [Architecture](./architecture.md) for the three-layer runtime model

@@ -1276,9 +1276,8 @@ impl Tool for AgentOutputTool {
 /// `agent_handoff` switches the active agent configuration in-place.
 /// The target agent continues with full conversation history.
 ///
-/// Implemented via the dynamic mode switching mechanism: the handoff writes
-/// a `request_mode_switch_action` that `ModePlugin` picks up in the next
-/// `before_inference` phase.
+/// Implemented via the handoff mechanism: writes a handoff request that
+/// `HandoffPlugin` picks up in the next `before_inference` phase.
 #[cfg(feature = "handoff")]
 #[derive(Debug, Clone)]
 pub struct AgentHandoffTool;

@@ -26,6 +26,7 @@
 - [Use Reminder Plugin](./how-to/use-reminder-plugin.md)
 - [Enable LLMMetry Observability](./how-to/enable-llmmetry-observability.md)
 - [Use Sub-Agent Delegation](./how-to/use-sub-agent-delegation.md)
+- [Use Agent Handoff](./how-to/use-agent-handoff.md)
 - [Debug a Run](./how-to/debug-a-run.md)
 
 # Reference
