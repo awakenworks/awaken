@@ -3,8 +3,6 @@
 
 mod behavior;
 pub(crate) mod bundle_merge;
-#[cfg(feature = "plan")]
-pub(crate) mod plan;
 pub(crate) mod resolve;
 #[cfg(feature = "skills")]
 pub(crate) mod skills;

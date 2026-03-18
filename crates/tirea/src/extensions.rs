@@ -19,11 +19,6 @@ pub mod observability {
 }
 
 #[cfg(feature = "core")]
-pub mod plan {
-    pub use tirea_extension_plan::*;
-}
-
-#[cfg(feature = "core")]
 pub mod handoff {
     pub use tirea_extension_handoff::*;
 }

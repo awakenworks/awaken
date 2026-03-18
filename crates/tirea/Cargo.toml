@@ -27,7 +27,6 @@ tirea-extension-reminder = { workspace = true, optional = true }
 tirea-extension-observability = { workspace = true, optional = true }
 tirea-extension-skills = { workspace = true, optional = true }
 tirea-extension-mcp = { workspace = true, optional = true }
-tirea-extension-plan = { workspace = true, optional = true }
 tirea-extension-handoff = { workspace = true, optional = true }
 
 # Storage backends
@@ -46,7 +45,6 @@ core = [
     "dep:tirea-extension-permission",
     "dep:tirea-extension-reminder",
     "dep:tirea-extension-observability",
-    "dep:tirea-extension-plan",
     "dep:tirea-extension-handoff",
 ]
 acp = ["dep:tirea-protocol-acp"]

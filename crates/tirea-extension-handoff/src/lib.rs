@@ -13,6 +13,6 @@ mod actions;
 mod plugin;
 mod state;
 
-pub use actions::{activate_handoff_action, request_handoff_action};
+pub use actions::{activate_handoff_action, clear_handoff_action, request_handoff_action};
 pub use plugin::{HandoffPlugin, HandoffRuntimeOverlay, HANDOFF_PLUGIN_ID};
 pub use state::{HandoffAction, HandoffState};

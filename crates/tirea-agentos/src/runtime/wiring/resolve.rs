@@ -300,7 +300,11 @@ impl AgentOs {
                     overlays.insert(
                         id.clone(),
                         HandoffRuntimeOverlay {
-                            model: Some(def.model.clone()),
+                            model: if def.model.is_empty() {
+                                None
+                            } else {
+                                Some(def.model.clone())
+                            },
                             system_prompt: if def.system_prompt.is_empty() {
                                 None
                             } else {

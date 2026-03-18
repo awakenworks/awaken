@@ -14,9 +14,6 @@ pub use bundle::ToolBehaviorBundle;
 pub use bundle::{
     BundleComposeError, BundleComposer, BundleRegistryAccumulator, BundleRegistryKind,
 };
-#[cfg(feature = "handoff")]
-#[cfg(feature = "plan")]
-pub use config::PlanConfig;
 pub use config::{
     A2aAgentConfig, AgentConfig, AgentConfigEntry, AgentConfigError, AgentToolsConfig,
     LocalAgentConfig, RemoteAuthConfig, SkillsConfig, TaggedAgentConfigEntry,

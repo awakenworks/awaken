@@ -14,3 +14,8 @@ pub fn activate_handoff_action(agent: &str) -> AnyStateAction {
         agent: agent.to_string(),
     })
 }
+
+/// Create a state action that clears all handoff state (returns to base agent).
+pub fn clear_handoff_action() -> AnyStateAction {
+    AnyStateAction::new::<HandoffState>(HandoffAction::Clear)
+}
