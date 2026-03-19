@@ -10,7 +10,6 @@ categories = ["asynchronous"]
 
 [dependencies]
 tirea-contract.workspace = true
-tirea-extension-permission.workspace = true
 tirea-state = { workspace = true, features = ["derive"] }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }

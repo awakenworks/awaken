@@ -280,6 +280,19 @@ struct LegacyPermissionPolicy {
     pub denied_tools: Vec<String>,
 }
 
+/// Concrete [`tirea_contract::runtime::tool_call::ToolAccessGranter`] that creates
+/// run-scoped permission overrides. Injected into skill tools via DI.
+pub struct PermissionOverrideGranter;
+
+impl tirea_contract::runtime::tool_call::ToolAccessGranter for PermissionOverrideGranter {
+    fn grant_tool_override(&self, tool_id: &str) -> tirea_contract::runtime::state::AnyStateAction {
+        permission_override_action(PermissionAction::SetTool {
+            tool_id: tool_id.to_string(),
+            behavior: ToolPermissionBehavior::Allow,
+        })
+    }
+}
+
 /// Target state for a permission rule change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionDestination {

@@ -37,8 +37,8 @@ pub use pattern::{ArgMatcher, FieldCondition, MatchOp, PathSegment, ToolCallPatt
 pub use plugin::{PermissionPlugin, ToolPolicyPlugin, PERMISSION_PLUGIN_ID};
 pub use state::{
     permission_override_action, permission_rules_from_snapshot, permission_state_action,
-    permission_update, PermissionAction, PermissionDestination, PermissionOverrides,
-    PermissionOverridesAction, PermissionPolicy, PermissionPolicyAction,
+    permission_update, PermissionAction, PermissionDestination, PermissionOverrideGranter,
+    PermissionOverrides, PermissionOverridesAction, PermissionPolicy, PermissionPolicyAction,
 };
 pub use strategy::{evaluate_tool_permission, resolve_permission_behavior};
 

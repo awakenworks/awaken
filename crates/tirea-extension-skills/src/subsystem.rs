@@ -3,7 +3,7 @@ use crate::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use tirea_contract::runtime::tool_call::Tool;
+use tirea_contract::runtime::tool_call::{Tool, ToolAccessGranter};
 
 /// Errors returned when wiring the skills subsystem into an agent.
 #[derive(Debug, thiserror::Error)]
@@ -47,6 +47,7 @@ pub enum SkillSubsystemError {
 #[derive(Clone)]
 pub struct SkillSubsystem {
     registry: Arc<dyn SkillRegistry>,
+    access_granter: Option<Arc<dyn ToolAccessGranter>>,
 }
 
 impl std::fmt::Debug for SkillSubsystem {
@@ -57,7 +58,17 @@ impl std::fmt::Debug for SkillSubsystem {
 
 impl SkillSubsystem {
     pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            access_granter: None,
+        }
+    }
+
+    /// Set the tool access granter for run-scoped permission overrides.
+    #[must_use]
+    pub fn with_access_granter(mut self, granter: Arc<dyn ToolAccessGranter>) -> Self {
+        self.access_granter = Some(granter);
+        self
     }
 
     pub fn registry(&self) -> &Arc<dyn SkillRegistry> {
@@ -90,8 +101,12 @@ impl SkillSubsystem {
         tools: &mut HashMap<String, Arc<dyn Tool>>,
     ) -> Result<(), SkillSubsystemError> {
         let registry = self.registry.clone();
+        let mut activate = SkillActivateTool::new(registry.clone());
+        if let Some(granter) = &self.access_granter {
+            activate = activate.with_access_granter(granter.clone());
+        }
         let tool_defs: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(SkillActivateTool::new(registry.clone())),
+            Arc::new(activate),
             Arc::new(LoadSkillResourceTool::new(registry.clone())),
             Arc::new(SkillScriptTool::new(registry)),
         ];

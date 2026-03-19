@@ -10,13 +10,11 @@ use std::path::{Component, Path};
 use std::sync::Arc;
 use tirea_contract::runtime::phase::AfterToolExecuteAction;
 use tirea_contract::runtime::state::AnyStateAction;
+use tirea_contract::runtime::tool_call::ToolAccessGranter;
 use tirea_contract::runtime::tool_call::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult, ToolStatus,
 };
 use tirea_contract::scope::{is_scope_allowed, ScopeDomain};
-use tirea_extension_permission::{
-    permission_override_action, PermissionAction, ToolPermissionBehavior,
-};
 use tracing::{debug, warn};
 
 #[derive(Debug)]
@@ -43,6 +41,7 @@ impl ToolArgError {
 #[derive(Clone)]
 pub struct SkillActivateTool {
     registry: Arc<dyn SkillRegistry>,
+    access_granter: Option<Arc<dyn ToolAccessGranter>>,
 }
 
 impl std::fmt::Debug for SkillActivateTool {
@@ -53,7 +52,17 @@ impl std::fmt::Debug for SkillActivateTool {
 
 impl SkillActivateTool {
     pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            access_granter: None,
+        }
+    }
+
+    /// Set the tool access granter for injecting run-scoped permission overrides.
+    #[must_use]
+    pub fn with_access_granter(mut self, granter: Arc<dyn ToolAccessGranter>) -> Self {
+        self.access_granter = Some(granter);
+        self
     }
 
     fn resolve(&self, key: &str) -> Option<Arc<dyn Skill>> {
@@ -122,15 +131,12 @@ impl SkillActivateTool {
         let mut applied_tool_ids: Vec<String> = Vec::new();
         let mut skipped_tokens: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
-        let mut permission_actions = Vec::new();
+        let mut grant_tool_ids: Vec<String> = Vec::new();
         for token in meta.allowed_tools.iter() {
             match parse_allowed_tool_token(token.clone()) {
                 Ok(parsed) if parsed.scope.is_none() => {
                     if seen.insert(parsed.tool_id.clone()) {
-                        permission_actions.push(PermissionAction::SetTool {
-                            tool_id: parsed.tool_id.clone(),
-                            behavior: ToolPermissionBehavior::Allow,
-                        });
+                        grant_tool_ids.push(parsed.tool_id.clone());
                         applied_tool_ids.push(parsed.tool_id);
                     }
                 }
@@ -173,8 +179,10 @@ impl SkillActivateTool {
         };
 
         let mut effect = ToolExecutionEffect::from(result).with_action(activate_action);
-        for action in permission_actions {
-            effect = effect.with_action(permission_override_action(action));
+        if let Some(granter) = &self.access_granter {
+            for tool_id in &grant_tool_ids {
+                effect = effect.with_action(granter.grant_tool_override(tool_id));
+            }
         }
         if !instruction_for_message.trim().is_empty() {
             effect = effect.with_action(AfterToolExecuteAction::AddUserMessage(

@@ -229,6 +229,16 @@ impl From<ToolResult> for ToolExecutionEffect {
     }
 }
 
+/// Trait for injecting run-scoped tool access grants into tool execution effects.
+///
+/// Decouples tool implementations (e.g., skill activation) from the permission
+/// extension. The permission extension provides the concrete implementation;
+/// the orchestrator wires it in at construction time.
+pub trait ToolAccessGranter: Send + Sync {
+    /// Construct a run-scoped state action that grants the given tool access.
+    fn grant_tool_override(&self, tool_id: &str) -> crate::runtime::state::AnyStateAction;
+}
+
 /// Tool execution errors.
 #[derive(Debug, Error)]
 pub enum ToolError {

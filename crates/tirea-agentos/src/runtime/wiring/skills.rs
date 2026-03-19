@@ -66,7 +66,13 @@ impl SystemWiring for SkillsSystemWiring {
 
         let frozen = self.freeze_registry();
 
-        let subsystem = SkillSubsystem::new(frozen.clone());
+        let mut subsystem = SkillSubsystem::new(frozen.clone());
+        #[cfg(feature = "permission")]
+        {
+            use tirea_extension_permission::PermissionOverrideGranter;
+            subsystem =
+                subsystem.with_access_granter(std::sync::Arc::new(PermissionOverrideGranter));
+        }
         let mut tool_defs = HashMap::new();
         subsystem
             .extend_tools(&mut tool_defs)

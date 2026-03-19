@@ -23,6 +23,6 @@ pub use lifecycle::{
 };
 pub use suspension::{Suspension, SuspensionResponse};
 pub use tool::{
-    validate_against_schema, Tool, ToolDescriptor, ToolError, ToolExecutionEffect, ToolResult,
-    ToolStatus, TypedTool,
+    validate_against_schema, Tool, ToolAccessGranter, ToolDescriptor, ToolError,
+    ToolExecutionEffect, ToolResult, ToolStatus, TypedTool,
 };

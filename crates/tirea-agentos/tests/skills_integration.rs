@@ -13,7 +13,8 @@ use tirea_agentos::contracts::thread::{Message, ToolCall};
 use tirea_agentos::engine::tool_execution::execute_single_tool_with_run_policy_and_behavior;
 use tirea_contract::testing::TestFixture;
 use tirea_extension_permission::{
-    resolve_permission_behavior, PermissionPlugin, ToolPermissionBehavior,
+    resolve_permission_behavior, PermissionOverrideGranter, PermissionPlugin,
+    ToolPermissionBehavior,
 };
 use tirea_extension_skills::{
     FsSkill, InMemorySkillRegistry, LoadSkillResourceTool, Skill, SkillActivateTool, SkillRegistry,
@@ -461,7 +462,8 @@ async fn test_skill_activation_missing_skill_argument_is_error() {
 #[tokio::test]
 async fn test_skill_activation_applies_allowed_tools_to_permission_state() {
     let (_td, skills) = make_skill_tree();
-    let activate = SkillActivateTool::new(skills);
+    let activate =
+        SkillActivateTool::new(skills).with_access_granter(Arc::new(PermissionOverrideGranter));
 
     let thread = Thread::with_initial_state("s", json!({}));
     let (thread, result) = apply_tool(
@@ -849,7 +851,8 @@ Body
         .map(|s| Arc::new(s) as Arc<dyn Skill>)
         .collect();
     let registry: Arc<dyn SkillRegistry> = Arc::new(InMemorySkillRegistry::from_skills(skills));
-    let activate = SkillActivateTool::new(registry);
+    let activate =
+        SkillActivateTool::new(registry).with_access_granter(Arc::new(PermissionOverrideGranter));
 
     let thread = Thread::with_initial_state("s", json!({}));
     let (thread, result) = apply_tool(
