@@ -133,6 +133,7 @@ fn stream_result_has_usage(result: &StreamResult) -> bool {
             || usage.total_tokens.is_some()
             || usage.cache_read_tokens.is_some()
             || usage.cache_creation_tokens.is_some()
+            || usage.thinking_tokens.is_some()
     })
 }
 

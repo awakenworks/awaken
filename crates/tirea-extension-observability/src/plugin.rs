@@ -23,10 +23,15 @@ pub(super) fn lock_unpoison<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 pub(super) fn extract_token_counts(
     usage: Option<&TokenUsage>,
-) -> (Option<i32>, Option<i32>, Option<i32>) {
+) -> (Option<i32>, Option<i32>, Option<i32>, Option<i32>) {
     match usage {
-        Some(u) => (u.prompt_tokens, u.completion_tokens, u.total_tokens),
-        None => (None, None, None),
+        Some(u) => (
+            u.prompt_tokens,
+            u.completion_tokens,
+            u.total_tokens,
+            u.thinking_tokens,
+        ),
+        None => (None, None, None, None),
     }
 }
 
@@ -142,6 +147,7 @@ impl AgentBehavior for LLMMetryPlugin {
             "gen_ai.request.stop_sequences" = tracing::field::Empty,
             "gen_ai.response.model" = tracing::field::Empty,
             "gen_ai.response.id" = tracing::field::Empty,
+            "gen_ai.usage.thinking_tokens" = tracing::field::Empty,
             "gen_ai.usage.input_tokens" = tracing::field::Empty,
             "gen_ai.usage.output_tokens" = tracing::field::Empty,
             "gen_ai.response.finish_reasons" = tracing::field::Empty,
@@ -183,7 +189,8 @@ impl AgentBehavior for LLMMetryPlugin {
             .unwrap_or(0);
 
         let usage = ctx.response().and_then(|r| r.usage.as_ref());
-        let (input_tokens, output_tokens, total_tokens) = extract_token_counts(usage);
+        let (input_tokens, output_tokens, total_tokens, thinking_tokens) =
+            extract_token_counts(usage);
         let (cache_read_input_tokens, cache_creation_input_tokens) = extract_cache_tokens(usage);
         let error = ctx.inference_error().cloned();
 
@@ -201,6 +208,7 @@ impl AgentBehavior for LLMMetryPlugin {
             input_tokens,
             output_tokens,
             total_tokens,
+            thinking_tokens,
             cache_read_input_tokens,
             cache_creation_input_tokens,
             temperature: *lock_unpoison(&self.temperature),
@@ -211,6 +219,9 @@ impl AgentBehavior for LLMMetryPlugin {
         };
 
         if let Some(tracing_span) = lock_unpoison(&self.inference_tracing_span).take() {
+            if let Some(v) = span.thinking_tokens {
+                tracing_span.record("gen_ai.usage.thinking_tokens", v);
+            }
             if let Some(v) = span.input_tokens {
                 tracing_span.record("gen_ai.usage.input_tokens", v);
             }
@@ -321,6 +332,7 @@ impl AgentBehavior for LLMMetryPlugin {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(&call_id_for_span);
+
         if let Some(tracing_span) = tracing_span {
             if let (Some(ref v), Some(ref msg)) = (&span.error_type, &error_message) {
                 tracing_span.record("error.type", v.as_str());

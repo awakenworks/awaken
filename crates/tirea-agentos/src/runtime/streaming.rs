@@ -21,12 +21,19 @@ pub(crate) fn token_usage_from_genai(u: &Usage) -> TokenUsage {
         .prompt_tokens_details
         .as_ref()
         .map_or((None, None), |d| (d.cached_tokens, d.cache_creation_tokens));
+
+    let thinking_tokens = u
+        .completion_tokens_details
+        .as_ref()
+        .and_then(|d| d.reasoning_tokens);
+
     TokenUsage {
         prompt_tokens: u.prompt_tokens,
         completion_tokens: u.completion_tokens,
         total_tokens: u.total_tokens,
         cache_read_tokens: cache_read,
         cache_creation_tokens: cache_creation,
+        thinking_tokens,
     }
 }
 
@@ -337,6 +344,7 @@ mod tests {
     use crate::contracts::runtime::tool_call::ToolResult;
     use crate::contracts::AgentEvent;
     use crate::contracts::TerminationReason;
+    use genai::chat::CompletionTokensDetails;
     use serde_json::json;
 
     #[test]
@@ -1443,6 +1451,37 @@ mod tests {
         assert_eq!(usage.prompt_tokens, Some(10));
         assert_eq!(usage.completion_tokens, Some(20));
         assert_eq!(usage.total_tokens, Some(30));
+        assert_eq!(usage.thinking_tokens, None);
+    }
+
+    #[test]
+    fn test_stream_collector_end_event_captures_thinking_usage() {
+        let mut collector = StreamCollector::new();
+
+        let end = StreamEnd {
+            captured_usage: Some(Usage {
+                prompt_tokens: Some(10),
+                prompt_tokens_details: None,
+                completion_tokens: Some(20),
+                completion_tokens_details: Some(CompletionTokensDetails {
+                    accepted_prediction_tokens: None,
+                    rejected_prediction_tokens: None,
+                    reasoning_tokens: Some(10),
+                    audio_tokens: None,
+                }),
+                total_tokens: Some(30),
+            }),
+            ..Default::default()
+        };
+        collector.process(ChatStreamEvent::End(end));
+
+        let result = collector.finish(None);
+        assert!(result.usage.is_some());
+        let usage = result.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, Some(10));
+        assert_eq!(usage.completion_tokens, Some(20));
+        assert_eq!(usage.total_tokens, Some(30));
+        assert_eq!(usage.thinking_tokens, Some(10));
     }
 
     #[test]

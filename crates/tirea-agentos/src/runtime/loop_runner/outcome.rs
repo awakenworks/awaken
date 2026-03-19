@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 pub struct LoopUsage {
     pub prompt_tokens: usize,
     pub completion_tokens: usize,
+    pub thinking_tokens: usize,
     pub total_tokens: usize,
 }
 

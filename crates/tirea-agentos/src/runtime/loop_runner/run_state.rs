@@ -7,6 +7,7 @@ use std::time::Instant;
 /// Internal state tracked across run steps for loop stats/cancellation flows.
 pub(super) struct LoopRunState {
     pub(super) completed_steps: usize,
+    pub(super) total_thinking_tokens: usize,
     pub(super) total_input_tokens: usize,
     pub(super) total_output_tokens: usize,
     pub(super) llm_calls: usize,
@@ -28,6 +29,7 @@ impl LoopRunState {
     pub(super) fn new() -> Self {
         Self {
             completed_steps: 0,
+            total_thinking_tokens: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
             llm_calls: 0,
@@ -59,6 +61,7 @@ impl LoopRunState {
 
     pub(super) fn update_from_response(&mut self, result: &StreamResult) {
         if let Some(ref usage) = result.usage {
+            self.total_thinking_tokens += usage.thinking_tokens.unwrap_or(0) as usize;
             self.total_input_tokens += usage.prompt_tokens.unwrap_or(0) as usize;
             self.total_output_tokens += usage.completion_tokens.unwrap_or(0) as usize;
         }
@@ -95,6 +98,7 @@ impl LoopRunState {
             prompt_tokens: self.total_input_tokens,
             completion_tokens: self.total_output_tokens,
             total_tokens: self.total_input_tokens + self.total_output_tokens,
+            thinking_tokens: self.total_thinking_tokens,
         }
     }
 

@@ -9416,15 +9416,18 @@ async fn test_run_state_tracks_token_usage() {
             prompt_tokens: Some(100),
             completion_tokens: Some(50),
             total_tokens: Some(150),
+            thinking_tokens: Some(20),
             ..Default::default()
         }),
         stop_reason: None,
     };
     state.update_from_response(&result);
+    assert_eq!(state.total_thinking_tokens, 20);
     assert_eq!(state.total_input_tokens, 100);
     assert_eq!(state.total_output_tokens, 50);
 
     state.update_from_response(&result);
+    assert_eq!(state.total_thinking_tokens, 40);
     assert_eq!(state.total_input_tokens, 200);
     assert_eq!(state.total_output_tokens, 100);
 }

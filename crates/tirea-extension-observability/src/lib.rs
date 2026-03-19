@@ -99,6 +99,7 @@ mod tests {
             total_tokens: Some(total),
             cache_read_tokens: None,
             cache_creation_tokens: None,
+            thinking_tokens: None,
         }
     }
 
@@ -109,6 +110,7 @@ mod tests {
             total_tokens: Some(total),
             cache_read_tokens: Some(cached),
             cache_creation_tokens: None,
+            thinking_tokens: None,
         }
     }
 
@@ -122,6 +124,7 @@ mod tests {
             finish_reasons: Vec::new(),
             error_type: None,
             error_class: None,
+            thinking_tokens: None,
             input_tokens: Some(10),
             output_tokens: Some(20),
             total_tokens: Some(30),
@@ -492,18 +495,37 @@ mod tests {
     #[test]
     fn test_extract_token_counts_some() {
         let u = usage(10, 20, 30);
-        let (i, o, t) = extract_token_counts(Some(&u));
+        let (i, o, t, thinking) = extract_token_counts(Some(&u));
         assert_eq!(i, Some(10));
         assert_eq!(o, Some(20));
         assert_eq!(t, Some(30));
+        assert_eq!(thinking, None);
+    }
+
+    #[test]
+    fn test_extract_token_counts_with_thinking() {
+        let u = TokenUsage {
+            prompt_tokens: Some(10),
+            completion_tokens: Some(20),
+            total_tokens: Some(30),
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
+            thinking_tokens: Some(7),
+        };
+        let (i, o, t, thinking) = extract_token_counts(Some(&u));
+        assert_eq!(i, Some(10));
+        assert_eq!(o, Some(20));
+        assert_eq!(t, Some(30));
+        assert_eq!(thinking, Some(7));
     }
 
     #[test]
     fn test_extract_token_counts_none() {
-        let (i, o, t) = extract_token_counts(None);
+        let (i, o, t, thinking) = extract_token_counts(None);
         assert!(i.is_none());
         assert!(o.is_none());
         assert!(t.is_none());
+        assert!(thinking.is_none());
     }
 
     #[test]
