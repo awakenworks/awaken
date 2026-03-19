@@ -1,4 +1,5 @@
 use super::*;
+use crate::builtin_tools::ReadFileTool;
 use crate::contracts::runtime::tool_call::Tool;
 use crate::contracts::runtime::AgentBehavior;
 use crate::contracts::storage::ThreadStore;
@@ -407,6 +408,10 @@ impl AgentOsBuilder {
             registry
         };
 
+        base_tools_defs
+            .entry("read_file".to_string())
+            .or_insert_with(|| Arc::new(ReadFileTool::default()) as Arc<dyn Tool>);
+
         let mut base_tools = InMemoryToolRegistry::new();
         base_tools.extend_named(base_tools_defs)?;
 
@@ -676,5 +681,15 @@ mod tests {
             err,
             AgentOsBuildError::AgentCatalog(AgentCatalogError::AgentIdConflict(id)) if id == "worker"
         ));
+    }
+
+    #[test]
+    fn build_registers_read_file_tool_by_default() {
+        let os = AgentOsBuilder::new().build().expect("builder should build");
+
+        assert!(
+            os.base_tools.get("read_file").is_some(),
+            "read_file should be registered in the base tool registry"
+        );
     }
 }
