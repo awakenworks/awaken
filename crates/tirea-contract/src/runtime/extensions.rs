@@ -8,7 +8,7 @@ use std::collections::HashMap;
 /// via the [`Action::apply`](super::Action::apply) method; the loop reads
 /// them back after a phase completes.
 pub struct Extensions {
-    map: HashMap<TypeId, Box<dyn Any + Send>>,
+    map: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
 }
 
 impl Extensions {
@@ -19,21 +19,21 @@ impl Extensions {
     }
 
     /// Get a shared reference to the value of type `T`.
-    pub fn get<T: 'static + Send>(&self) -> Option<&T> {
+    pub fn get<T: 'static + Send + Sync>(&self) -> Option<&T> {
         self.map
             .get(&TypeId::of::<T>())
             .and_then(|boxed| boxed.downcast_ref::<T>())
     }
 
     /// Get a mutable reference to the value of type `T`.
-    pub fn get_mut<T: 'static + Send>(&mut self) -> Option<&mut T> {
+    pub fn get_mut<T: 'static + Send + Sync>(&mut self) -> Option<&mut T> {
         self.map
             .get_mut(&TypeId::of::<T>())
             .and_then(|boxed| boxed.downcast_mut::<T>())
     }
 
     /// Get a mutable reference, inserting `T::default()` if absent.
-    pub fn get_or_default<T: 'static + Send + Default>(&mut self) -> &mut T {
+    pub fn get_or_default<T: 'static + Send + Sync + Default>(&mut self) -> &mut T {
         self.map
             .entry(TypeId::of::<T>())
             .or_insert_with(|| Box::new(T::default()))
@@ -42,7 +42,7 @@ impl Extensions {
     }
 
     /// Insert a value, returning any previous value of the same type.
-    pub fn insert<T: 'static + Send>(&mut self, val: T) -> Option<T> {
+    pub fn insert<T: 'static + Send + Sync>(&mut self, val: T) -> Option<T> {
         self.map
             .insert(TypeId::of::<T>(), Box::new(val))
             .and_then(|prev| prev.downcast::<T>().ok())
@@ -55,7 +55,7 @@ impl Extensions {
     }
 
     /// Check if the map contains a value of type `T`.
-    pub fn contains<T: 'static + Send>(&self) -> bool {
+    pub fn contains<T: 'static + Send + Sync>(&self) -> bool {
         self.map.contains_key(&TypeId::of::<T>())
     }
 }

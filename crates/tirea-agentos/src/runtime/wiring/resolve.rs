@@ -489,10 +489,15 @@ impl AgentOs {
         cfg.model = model_runtime.model;
         cfg.chat_options = model_runtime.chat_options;
         cfg.llm_executor = Some(model_runtime.llm_executor);
+        let mut run_config = tirea_contract::AgentRunConfig::new(run_policy.clone());
+        run_config.set_model(&cfg.model);
+        run_config.set_agent_id(&cfg.id);
+
         Ok(ResolvedRun {
             agent: cfg,
             tools,
             run_policy,
+            run_config: std::sync::Arc::new(run_config),
             parent_tool_call_id: None,
         })
     }

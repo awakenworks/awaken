@@ -298,10 +298,14 @@ mod tests {
     use tirea_protocol_ag_ui::{Context, Message, ToolExecutionLocation};
 
     fn empty_resolved() -> ResolvedRun {
+        let run_policy = tirea_contract::RunPolicy::new();
         ResolvedRun {
             agent: BaseAgent::default(),
             tools: HashMap::new(),
-            run_policy: tirea_contract::RunPolicy::new(),
+            run_config: std::sync::Arc::new(tirea_contract::AgentRunConfig::new(
+                run_policy.clone(),
+            )),
+            run_policy,
             parent_tool_call_id: None,
         }
     }

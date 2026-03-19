@@ -119,6 +119,8 @@ pub mod transport;
 
 /// Per-run scope and execution policy.
 pub type RunPolicy = runtime::RunPolicy;
+/// Layered runtime configuration with typed extensions.
+pub type AgentRunConfig = runtime::AgentRunConfig;
 
 // thread
 pub use thread::{

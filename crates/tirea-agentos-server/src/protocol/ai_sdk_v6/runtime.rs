@@ -25,10 +25,14 @@ mod tests {
     use tirea_contract::RunPolicy;
 
     fn empty_resolved() -> ResolvedRun {
+        let run_policy = RunPolicy::new();
         ResolvedRun {
             agent: BaseAgent::default(),
             tools: HashMap::new(),
-            run_policy: RunPolicy::new(),
+            run_config: std::sync::Arc::new(tirea_contract::AgentRunConfig::new(
+                run_policy.clone(),
+            )),
+            run_policy,
             parent_tool_call_id: None,
         }
     }
