@@ -3519,7 +3519,7 @@ async fn prepare_run_scope_appends_plugins() {
     let new_b = Arc::new(RunScopedPlugin) as Arc<dyn AgentBehavior>;
     let id = format!("{}+{}", resolved.agent.behavior.id(), new_b.id());
     resolved.agent.behavior =
-        super::compose_behaviors(id, vec![resolved.agent.behavior.clone(), new_b]);
+        super::compose_behaviors(id, vec![resolved.agent.behavior.clone(), new_b]).unwrap();
 
     let prepared = os
         .prepare_run(
@@ -3573,7 +3573,7 @@ async fn prepare_run_scope_rejects_duplicate_plugin_id() {
     let new_b = Arc::new(DupPlugin) as Arc<dyn AgentBehavior>;
     let id = format!("{}+{}", resolved.agent.behavior.id(), new_b.id());
     resolved.agent.behavior =
-        super::compose_behaviors(id, vec![resolved.agent.behavior.clone(), new_b]);
+        super::compose_behaviors(id, vec![resolved.agent.behavior.clone(), new_b]).unwrap();
 
     let result = os
         .prepare_run(

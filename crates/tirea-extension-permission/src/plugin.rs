@@ -6,7 +6,7 @@ use super::state::{PermissionOverrides, PermissionPolicy};
 use super::strategy::evaluate_tool_permission;
 use async_trait::async_trait;
 use serde_json::Value;
-use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
+use tirea_contract::runtime::behavior::{AgentBehavior, PluginOrdering, ReadOnlyContext};
 use tirea_contract::runtime::phase::{ActionSet, BeforeInferenceAction, BeforeToolExecuteAction};
 use tirea_contract::runtime::run::config::AgentRunConfig;
 use tirea_contract::scope;
@@ -41,6 +41,10 @@ pub struct PermissionPlugin;
 impl AgentBehavior for PermissionPlugin {
     fn id(&self) -> &str {
         PERMISSION_PLUGIN_ID
+    }
+
+    fn ordering(&self) -> PluginOrdering {
+        PluginOrdering::after(&["tool_policy"])
     }
 
     tirea_contract::declare_plugin_states!(PermissionPolicy, PermissionOverrides);
@@ -101,6 +105,10 @@ pub struct ToolPolicyPlugin;
 impl AgentBehavior for ToolPolicyPlugin {
     fn id(&self) -> &str {
         "tool_policy"
+    }
+
+    fn ordering(&self) -> PluginOrdering {
+        PluginOrdering::before(&[PERMISSION_PLUGIN_ID])
     }
 
     async fn before_inference(

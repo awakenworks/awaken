@@ -14,7 +14,7 @@ pub mod tool_call;
 pub use action::Action;
 pub use activity::{ActivityManager, NoOpActivityManager};
 pub use behavior::{
-    build_read_only_context_from_step, AgentBehavior, NoOpBehavior, ReadOnlyContext,
+    build_read_only_context_from_step, AgentBehavior, NoOpBehavior, PluginOrdering, ReadOnlyContext,
 };
 pub use extensions::Extensions;
 pub use inference::{StopReason, StreamResult, TokenUsage};

@@ -47,7 +47,8 @@ async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
     let state = thread.rebuild_state().unwrap();
     let call = ToolCall::new("call_1", "skill", json!({"skill": "docx"}));
 
-    let behavior = compose_behaviors("skills_test_router", vec![Arc::new(PermissionPlugin)]);
+    let behavior =
+        compose_behaviors("skills_test_router", vec![Arc::new(PermissionPlugin)]).unwrap();
     let exec = execute_single_tool_with_run_policy_and_behavior(
         Some(tool.as_ref()),
         &call,

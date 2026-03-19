@@ -218,6 +218,43 @@ impl<'a> ReadOnlyContext<'a> {
     }
 }
 
+/// Declarative execution ordering constraints for a plugin.
+#[derive(Debug, Clone, Default)]
+pub struct PluginOrdering {
+    /// This plugin's phase hooks execute AFTER the listed plugin IDs.
+    pub after: &'static [&'static str],
+    /// This plugin's phase hooks execute BEFORE the listed plugin IDs.
+    pub before: &'static [&'static str],
+}
+
+impl PluginOrdering {
+    pub const NONE: Self = Self {
+        after: &[],
+        before: &[],
+    };
+
+    #[must_use]
+    pub const fn after(ids: &'static [&'static str]) -> Self {
+        Self {
+            after: ids,
+            before: &[],
+        }
+    }
+
+    #[must_use]
+    pub const fn before(ids: &'static [&'static str]) -> Self {
+        Self {
+            after: &[],
+            before: ids,
+        }
+    }
+
+    #[must_use]
+    pub fn is_constrained(&self) -> bool {
+        !self.after.is_empty() || !self.before.is_empty()
+    }
+}
+
 /// Behavioral abstraction for agent phase hooks.
 ///
 /// Each hook receives an immutable [`ReadOnlyContext`] snapshot and returns a
@@ -233,6 +270,14 @@ pub trait AgentBehavior: Send + Sync {
     fn behavior_ids(&self) -> Vec<&str> {
         vec![self.id()]
     }
+
+    /// Declare execution ordering constraints relative to other plugins.
+    fn ordering(&self) -> PluginOrdering {
+        PluginOrdering::NONE
+    }
+
+    /// Self-configuration hook called once during resolve, before the loop starts.
+    fn configure(&self, _config: &mut AgentRunConfig) {}
 
     /// Register lattice (CRDT) paths with the registry.
     fn register_lattice_paths(&self, _registry: &mut LatticeRegistry) {}

@@ -7,8 +7,8 @@ pub(crate) mod resolve;
 #[cfg(feature = "skills")]
 pub(crate) mod skills;
 
-pub use behavior::compose_behaviors;
 pub(super) use behavior::CompositeBehavior;
+pub use behavior::{compose_behaviors, PluginOrderingCycleError};
 pub(super) use bundle_merge::{ensure_unique_behavior_ids, merge_wiring_bundles};
 #[cfg(feature = "skills")]
 pub(crate) use skills::SkillsSystemWiring;

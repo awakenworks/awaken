@@ -81,7 +81,7 @@ fn add_behavior_mut(agent: &mut BaseAgent, behavior: Arc<dyn AgentBehavior>) {
         agent.behavior = behavior;
     } else {
         let id = format!("{}+{}", agent.behavior.id(), behavior.id());
-        agent.behavior = compose_behaviors(id, vec![agent.behavior.clone(), behavior]);
+        agent.behavior = compose_behaviors(id, vec![agent.behavior.clone(), behavior]).unwrap();
     }
 }
 

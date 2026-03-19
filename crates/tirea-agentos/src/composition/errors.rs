@@ -56,6 +56,9 @@ pub enum AgentOsWiringError {
         key: String,
         behavior_id: String,
     },
+
+    #[error("plugin ordering cycle: {0}")]
+    PluginOrderingCycle(#[from] crate::runtime::wiring::PluginOrderingCycleError),
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -379,7 +379,7 @@ impl AgentOs {
             ensure_unique_behavior_ids(&all_plugins)?;
         }
 
-        Ok(build_base_agent_from_definition(definition, all_plugins))
+        build_base_agent_from_definition(definition, all_plugins)
     }
 
     fn resolve_model_runtime(
@@ -450,7 +450,7 @@ impl AgentOs {
             ensure_unique_behavior_ids(&all_plugins)?;
         }
 
-        Ok(build_base_agent_from_definition(definition, all_plugins))
+        build_base_agent_from_definition(definition, all_plugins)
     }
 
     /// Check whether an agent with the given ID is registered.
@@ -526,7 +526,7 @@ fn synthesize_stop_specs(definition: &AgentDefinition) -> Vec<StopConditionSpec>
 fn build_base_agent_from_definition(
     definition: AgentDefinition,
     behaviors: Vec<Arc<dyn AgentBehavior>>,
-) -> BaseAgent {
+) -> Result<BaseAgent, AgentOsWiringError> {
     let definition = normalize_definition_models(definition);
     let tool_executor: Arc<dyn ToolExecutor> = match definition.tool_execution_mode {
         ToolExecutionMode::Sequential => Arc::new(SequentialToolExecutor),
@@ -554,10 +554,10 @@ fn build_base_agent_from_definition(
     let behavior: Arc<dyn AgentBehavior> = if behaviors.is_empty() {
         Arc::new(NoOpBehavior)
     } else {
-        Arc::new(CompositeBehavior::new(definition.id.clone(), behaviors))
+        Arc::new(CompositeBehavior::new(definition.id.clone(), behaviors)?)
     };
 
-    BaseAgent {
+    Ok(BaseAgent {
         id: definition.id,
         model: definition.model,
         system_prompt: definition.system_prompt,
@@ -572,7 +572,7 @@ fn build_base_agent_from_definition(
         step_tool_provider: None,
         llm_executor: None,
         state_action_deserializer_registry: Arc::new(state_action_deserializer_registry),
-    }
+    })
 }
 
 fn normalize_definition_models(mut definition: AgentDefinition) -> AgentDefinition {
