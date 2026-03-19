@@ -56,6 +56,9 @@ pub struct AgentDefinition {
     pub allowed_agents: Option<Vec<String>>,
     /// Agent blacklist for `agent_run` delegation.
     pub excluded_agents: Option<Vec<String>>,
+    /// Permission rules (RLS-style pattern strings).
+    /// Each entry is `(behavior, pattern)` where behavior is `"allow"` / `"deny"` / `"ask"`.
+    pub permission_rules: Vec<(String, String)>,
     /// Declarative stop condition specs, resolved at runtime.
     pub stop_condition_specs: Vec<StopConditionSpec>,
     /// Stop condition references resolved from AgentOS StopPolicyRegistry.
@@ -87,6 +90,7 @@ impl Default for AgentDefinition {
             excluded_skills: None,
             allowed_agents: None,
             excluded_agents: None,
+            permission_rules: Vec::new(),
             stop_condition_specs: Vec::new(),
             stop_condition_ids: Vec::new(),
         }
@@ -229,6 +233,23 @@ impl AgentDefinition {
     #[must_use]
     pub fn with_excluded_agents(mut self, agents: Vec<String>) -> Self {
         self.excluded_agents = Some(agents);
+        self
+    }
+
+    /// Add a permission rule (behavior + pattern string).
+    ///
+    /// ```ignore
+    /// AgentDefinition::new("claude-3-opus")
+    ///     .with_permission_rule("allow", "Bash(npm *)")
+    ///     .with_permission_rule("deny", "Bash(rm *)")
+    /// ```
+    pub fn with_permission_rule(
+        mut self,
+        behavior: impl Into<String>,
+        pattern: impl Into<String>,
+    ) -> Self {
+        self.permission_rules
+            .push((behavior.into(), pattern.into()));
         self
     }
 }

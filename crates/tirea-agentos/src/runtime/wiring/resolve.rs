@@ -22,7 +22,9 @@ use crate::runtime::loop_runner::{
     BaseAgent, GenaiLlmExecutor, LlmExecutor, ParallelToolExecutor, ResolvedRun,
     SequentialToolExecutor,
 };
-use crate::runtime::policy::{filter_tools_in_place, set_runtime_policy_from_definition_if_absent};
+use crate::runtime::policy::{
+    filter_tools_in_place, populate_permission_config, set_runtime_policy_from_definition_if_absent,
+};
 use crate::runtime::stop_policy::{StopPolicyPlugin, STOP_POLICY_PLUGIN_ID};
 use crate::runtime::{AgentOs, AgentOsResolveError, StopPolicy};
 use genai::{chat::ChatOptions, Client};
@@ -479,6 +481,7 @@ impl AgentOs {
         let model_runtime = self.resolve_model_runtime(&definition)?;
         let allowed_tools = definition.allowed_tools.clone();
         let excluded_tools = definition.excluded_tools.clone();
+        let permission_rules = definition.permission_rules.clone();
         let mut tools = self.base_tools.snapshot();
         let mut cfg = self.wire_into(definition, &mut tools, &model_runtime)?;
         filter_tools_in_place(
@@ -492,6 +495,7 @@ impl AgentOs {
         let mut run_config = tirea_contract::AgentRunConfig::new(run_policy.clone());
         run_config.set_model(&cfg.model);
         run_config.set_agent_id(&cfg.id);
+        populate_permission_config(&mut run_config, &permission_rules);
 
         Ok(ResolvedRun {
             agent: cfg,

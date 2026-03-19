@@ -26,3 +26,50 @@ pub(super) fn set_runtime_policy_from_definition_if_absent(
     policy.set_allowed_agents_if_absent(definition.allowed_agents.as_deref());
     policy.set_excluded_agents_if_absent(definition.excluded_agents.as_deref());
 }
+
+/// Populate permission rules into `AgentRunConfig.extensions` from definition-level rules.
+#[cfg(feature = "permission")]
+pub(super) fn populate_permission_config(
+    config: &mut tirea_contract::AgentRunConfig,
+    rules: &[(String, String)],
+) {
+    if rules.is_empty() {
+        return;
+    }
+
+    use tirea_extension_permission::{
+        parse_pattern, PermissionRule, PermissionRuleSource, ToolPermissionBehavior,
+    };
+
+    let mut parsed_rules = Vec::new();
+    for (behavior_str, pattern_str) in rules {
+        let behavior = match behavior_str.as_str() {
+            "allow" => ToolPermissionBehavior::Allow,
+            "deny" => ToolPermissionBehavior::Deny,
+            "ask" => ToolPermissionBehavior::Ask,
+            _ => continue,
+        };
+        let Ok(pattern) = parse_pattern(pattern_str) else {
+            continue;
+        };
+        parsed_rules.push(
+            PermissionRule::new_pattern(pattern, behavior)
+                .with_source(PermissionRuleSource::Definition),
+        );
+    }
+
+    if !parsed_rules.is_empty() {
+        config
+            .extensions_mut()
+            .insert(tirea_extension_permission::PermissionRulesConfig::new(
+                parsed_rules,
+            ));
+    }
+}
+
+#[cfg(not(feature = "permission"))]
+pub(super) fn populate_permission_config(
+    _config: &mut tirea_contract::AgentRunConfig,
+    _rules: &[(String, String)],
+) {
+}
