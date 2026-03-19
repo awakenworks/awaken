@@ -140,6 +140,8 @@ pub struct ResolvedRun {
     pub tools: HashMap<String, Arc<dyn Tool>>,
     /// Typed per-run policy.
     pub run_policy: crate::contracts::RunPolicy,
+    /// Layered runtime configuration with typed extensions.
+    pub run_config: std::sync::Arc<tirea_contract::AgentRunConfig>,
     /// Optional lineage seed for nested tool-driven runs.
     pub parent_tool_call_id: Option<String>,
 }

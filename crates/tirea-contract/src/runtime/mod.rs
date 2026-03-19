@@ -25,8 +25,9 @@ pub use phase::{
     ToolCallAction,
 };
 pub use run::{
-    run_lifecycle_from_state, FlowControl, InferenceError, RunContext, RunDelta, RunIdentity,
-    RunLifecycleAction, RunLifecycleState, RunPolicy, RunStatus, StoppedReason, TerminationReason,
+    run_lifecycle_from_state, AgentRunConfig, FlowControl, InferenceError, RunContext, RunDelta,
+    RunIdentity, RunLifecycleAction, RunLifecycleState, RunPolicy, RunStatus, StoppedReason,
+    TerminationReason,
 };
 pub use state::{
     reduce_state_actions, AnyStateAction, ScopeContext, SerializedStateAction,
