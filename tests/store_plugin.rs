@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use awaken::*;
 
 use serde::{Deserialize, Serialize};
@@ -80,6 +82,18 @@ impl StateSlot for SharedCounter {
     }
 }
 
+struct RetainedSummary;
+
+impl StateSlot for RetainedSummary {
+    const KEY: &'static str = "retained.summary";
+    type Value = Option<String>;
+    type Update = String;
+
+    fn apply(value: &mut Self::Value, update: Self::Update) {
+        *value = Some(update);
+    }
+}
+
 struct ChatPlugin;
 
 impl StatePlugin for ChatPlugin {
@@ -120,6 +134,45 @@ impl StatePlugin for SharedPlugin {
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
         registrar.register_slot::<SharedCounter>(SlotOptions::default())?;
+        Ok(())
+    }
+}
+
+struct RetainedPlugin;
+
+impl StatePlugin for RetainedPlugin {
+    fn meta(&self) -> PluginMeta {
+        PluginMeta {
+            name: "retained-plugin",
+        }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_slot::<RetainedSummary>(SlotOptions {
+            persistent: true,
+            retain_on_uninstall: true,
+        })?;
+        Ok(())
+    }
+
+    fn on_install(&self, patch: &mut MutationBatch) -> Result<(), StateError> {
+        patch.update::<RetainedSummary>("seed".into());
+        Ok(())
+    }
+}
+
+struct DuplicateSlotPlugin;
+
+impl StatePlugin for DuplicateSlotPlugin {
+    fn meta(&self) -> PluginMeta {
+        PluginMeta {
+            name: "duplicate-slot-plugin",
+        }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_slot::<Messages>(SlotOptions::default())?;
+        registrar.register_slot::<Messages>(SlotOptions::default())?;
         Ok(())
     }
 }
@@ -276,4 +329,54 @@ fn unregistered_slot_is_rejected() {
     patch.update::<TokenUsage>(1);
     let err = store.commit(patch).unwrap_err();
     assert!(matches!(err, StateError::UnknownSlot { .. }));
+}
+
+#[test]
+fn duplicate_slot_registration_within_plugin_is_rejected() {
+    let store = StateStore::new();
+    let err = store.install_plugin(DuplicateSlotPlugin).unwrap_err();
+    assert!(matches!(err, StateError::SlotAlreadyRegistered { .. }));
+}
+
+#[test]
+fn retained_slots_survive_plugin_uninstall() {
+    let store = StateStore::new();
+    store.install_plugin(RetainedPlugin).unwrap();
+
+    assert_eq!(
+        store.read_slot::<RetainedSummary>(),
+        Some(Some("seed".to_string()))
+    );
+
+    store.uninstall_plugin::<RetainedPlugin>().unwrap();
+
+    assert_eq!(
+        store.read_slot::<RetainedSummary>(),
+        Some(Some("seed".to_string()))
+    );
+}
+
+#[test]
+fn restore_persisted_can_skip_unknown_slots() {
+    let store = StateStore::new();
+    store.install_plugin(ChatPlugin).unwrap();
+
+    let persisted = PersistedState {
+        revision: 7,
+        extensions: std::collections::HashMap::from([
+            ("chat.token_usage".to_string(), serde_json::json!(99_u64)),
+            (
+                "missing.slot".to_string(),
+                serde_json::json!({"ignored": true}),
+            ),
+        ]),
+    };
+
+    store
+        .restore_persisted(persisted, UnknownSlotPolicy::Skip)
+        .unwrap();
+
+    assert_eq!(store.revision(), 7);
+    assert_eq!(store.read_slot::<TokenUsage>(), Some(99));
+    assert!(store.read_slot::<Messages>().is_none());
 }

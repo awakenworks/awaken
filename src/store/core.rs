@@ -85,13 +85,13 @@ impl StateStore {
         let registry = self.registry.lock().expect("registry lock poisoned");
         let mut state = self.inner.write().expect("state lock poisoned");
 
-        if let Some(expected) = patch.base_revision {
-            if state.revision != expected {
-                return Err(StateError::RevisionConflict {
-                    expected,
-                    actual: state.revision,
-                });
-            }
+        if let Some(expected) = patch.base_revision
+            && state.revision != expected
+        {
+            return Err(StateError::RevisionConflict {
+                expected,
+                actual: state.revision,
+            });
         }
 
         for key in &patch.touched_slot_keys {
