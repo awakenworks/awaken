@@ -83,6 +83,14 @@ echo "hello"
     (td, registry)
 }
 
+fn normalized_tool_path(value: &serde_json::Value) -> &str {
+    value.as_str().expect("tool result path should be a string")
+}
+
+fn assert_tool_path_eq(value: &serde_json::Value, expected: &str) {
+    assert_eq!(normalized_tool_path(value).replace('\\', "/"), expected);
+}
+
 async fn apply_tool(thread: Thread, tool: &dyn Tool, call: ToolCall) -> (Thread, ToolResult) {
     let state = thread.rebuild_state().unwrap();
     let behavior = TestToolBehavior::new();
@@ -253,7 +261,7 @@ async fn test_load_reference_returns_content_in_tool_result() {
     assert!(result.is_success(), "result={result:?}");
     assert_eq!(result.data["loaded"], true);
     assert_eq!(result.data["kind"], "reference");
-    assert_eq!(result.data["path"], "references/DOCX-JS.md");
+    assert_tool_path_eq(&result.data["path"], "references/DOCX-JS.md");
     assert!(
         result.data["content"]
             .as_str()
@@ -262,6 +270,7 @@ async fn test_load_reference_returns_content_in_tool_result() {
     );
 }
 
+#[cfg(not(windows))]
 #[tokio::test]
 async fn test_script_result_is_in_tool_result() {
     let (_td, skills) = make_skill_tree();
@@ -289,7 +298,7 @@ async fn test_script_result_is_in_tool_result() {
     .await;
     assert!(result.is_success(), "result={result:?}");
     assert_eq!(result.data["ok"], true);
-    assert_eq!(result.data["script"], "scripts/hello.sh");
+    assert_tool_path_eq(&result.data["script"], "scripts/hello.sh");
     assert!(
         result.data["stdout"].is_string(),
         "expected stdout in tool result"
@@ -320,7 +329,7 @@ async fn test_load_asset_returns_metadata_in_tool_result() {
     assert!(result.is_success(), "result={result:?}");
     assert_eq!(result.data["encoding"], "base64");
     assert_eq!(result.data["kind"], "asset");
-    assert_eq!(result.data["path"], "assets/logo.txt");
+    assert_tool_path_eq(&result.data["path"], "assets/logo.txt");
     assert!(
         result.data["content"]
             .as_str()
@@ -715,6 +724,7 @@ async fn test_script_missing_arguments_are_errors() {
     assert_invalid_arguments_error(&r2);
 }
 
+#[cfg(not(windows))]
 #[tokio::test]
 async fn test_script_args_are_passed_through() {
     let (td, skills) = make_skill_tree();
@@ -745,6 +755,7 @@ printf "%s" "$*"
     assert_eq!(result.data["ok"], true);
 }
 
+#[cfg(not(windows))]
 #[tokio::test]
 async fn test_script_nonzero_exit_sets_ok_false() {
     let (td, skills) = make_skill_tree();
@@ -899,10 +910,11 @@ async fn test_reference_truncation_flag_in_tool_result() {
     )
     .await;
     assert!(result.is_success());
-    assert_eq!(result.data["path"], "references/BIG.md");
+    assert_tool_path_eq(&result.data["path"], "references/BIG.md");
     assert_eq!(result.data["truncated"], true);
 }
 
+#[cfg(not(windows))]
 #[tokio::test]
 async fn test_script_stdout_truncation_flag_in_tool_result() {
     let (td, skills) = make_skill_tree();
@@ -931,6 +943,6 @@ head -c 40000 /dev/zero | tr '\0' 'a'
     )
     .await;
     assert!(result.is_success());
-    assert_eq!(result.data["script"], "scripts/big.sh");
+    assert_tool_path_eq(&result.data["script"], "scripts/big.sh");
     assert_eq!(result.data["stdout_truncated"], true);
 }

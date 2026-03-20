@@ -173,7 +173,7 @@ mod tests {
             &self,
             _ctx: &ReadOnlyContext<'_>,
         ) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::AddSystemContext(self.text.clone()))
+            ActionSet::single(BeforeInferenceAction::AddSessionContext(self.text.clone()))
         }
     }
 
@@ -226,8 +226,8 @@ mod tests {
 
         assert_eq!(actions.len(), 2);
         let v = actions.into_vec();
-        assert!(matches!(v[0], BeforeInferenceAction::AddSystemContext(_)));
-        assert!(matches!(v[1], BeforeInferenceAction::AddSystemContext(_)));
+        assert!(matches!(v[0], BeforeInferenceAction::AddSessionContext(_)));
+        assert!(matches!(v[1], BeforeInferenceAction::AddSessionContext(_)));
     }
 
     #[tokio::test]
@@ -264,8 +264,8 @@ mod tests {
         // BlockBehavior returns empty for BeforeInference, so 2 actions
         assert_eq!(actions.len(), 2);
         let v = actions.into_vec();
-        assert!(matches!(v[0], BeforeInferenceAction::AddSystemContext(_)));
-        assert!(matches!(v[1], BeforeInferenceAction::AddSystemContext(_)));
+        assert!(matches!(v[0], BeforeInferenceAction::AddSessionContext(_)));
+        assert!(matches!(v[1], BeforeInferenceAction::AddSessionContext(_)));
     }
 
     #[test]
