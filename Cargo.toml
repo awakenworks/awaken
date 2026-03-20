@@ -8,6 +8,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 typedmap = { version = "0.6", features = ["clone"] }
+uuid = { version = "1", features = ["v7"] }
 
 [lints.rust]
 unsafe_code = "forbid"

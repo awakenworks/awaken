@@ -2,6 +2,7 @@
 
 //! Awaken framework primitives.
 
+pub mod contract;
 mod error;
 mod model;
 mod plugins;
