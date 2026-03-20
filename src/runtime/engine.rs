@@ -86,7 +86,6 @@ impl PhaseRuntime {
         let mut registrar = PluginRegistrar::new();
         plugin.register(&mut registrar)?;
         let plugin_type_id = TypeId::of::<P>();
-        self.ensure_runtime_registrations_available(Some(plugin_type_id), &registrar)?;
 
         let slots = std::mem::take(&mut registrar.slots);
         let plugin_arc: Arc<dyn Plugin> = Arc::new(plugin);
@@ -348,43 +347,6 @@ impl PhaseRuntime {
         })
     }
 
-    fn ensure_runtime_registrations_available(
-        &self,
-        plugin_type_id: Option<TypeId>,
-        registrar: &PluginRegistrar,
-    ) -> Result<(), StateError> {
-        let registry = self
-            .runtime_registry
-            .read()
-            .expect("runtime registry lock poisoned");
-
-        if let Some(plugin_type_id) = plugin_type_id
-            && registry.installed_plugins.contains_key(&plugin_type_id)
-        {
-            return Err(StateError::PluginAlreadyInstalled {
-                name: format!("runtime-plugin:{plugin_type_id:?}"),
-            });
-        }
-
-        for entry in &registrar.scheduled_actions {
-            if registry.scheduled_action_handlers.contains_key(&entry.key) {
-                return Err(StateError::HandlerAlreadyRegistered {
-                    key: entry.key.clone(),
-                });
-            }
-        }
-
-        for entry in &registrar.effects {
-            if registry.effect_handlers.contains_key(&entry.key) {
-                return Err(StateError::EffectHandlerAlreadyRegistered {
-                    key: entry.key.clone(),
-                });
-            }
-        }
-
-        Ok(())
-    }
-
     fn commit_runtime_registrations(
         &self,
         plugin_type_id: Option<TypeId>,
@@ -395,29 +357,7 @@ impl PhaseRuntime {
             .write()
             .expect("runtime registry lock poisoned");
 
-        if let Some(plugin_type_id) = plugin_type_id
-            && registry.installed_plugins.contains_key(&plugin_type_id)
-        {
-            return Err(StateError::PluginAlreadyInstalled {
-                name: format!("runtime-plugin:{plugin_type_id:?}"),
-            });
-        }
-
-        for entry in &registrar.scheduled_actions {
-            if registry.scheduled_action_handlers.contains_key(&entry.key) {
-                return Err(StateError::HandlerAlreadyRegistered {
-                    key: entry.key.clone(),
-                });
-            }
-        }
-
-        for entry in &registrar.effects {
-            if registry.effect_handlers.contains_key(&entry.key) {
-                return Err(StateError::EffectHandlerAlreadyRegistered {
-                    key: entry.key.clone(),
-                });
-            }
-        }
+        registry.validate_registrar(plugin_type_id, &registrar)?;
 
         let mut installed_plugin = InstalledRuntimePlugin::default();
         for entry in registrar.scheduled_actions.drain(..) {

@@ -103,46 +103,17 @@ pub struct ScheduledActionLogEntry {
     pub key: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
-pub enum ScheduledActionLogUpdate {
-    Append(ScheduledActionLogEntry),
-    TrimToLast { keep: usize },
-    Clear,
-}
-
-pub struct ScheduledActionLog;
-
-impl StateSlot for ScheduledActionLog {
-    const KEY: &'static str = "__runtime.scheduled_action_log";
-
-    type Value = Vec<ScheduledActionLogEntry>;
-    type Update = ScheduledActionLogUpdate;
-
-    fn apply(value: &mut Self::Value, update: Self::Update) {
-        match update {
-            ScheduledActionLogUpdate::Append(entry) => value.push(entry),
-            ScheduledActionLogUpdate::TrimToLast { keep } => trim_to_last(value, keep),
-            ScheduledActionLogUpdate::Clear => value.clear(),
-        }
-    }
-}
-
-fn trim_to_last<T>(value: &mut Vec<T>, keep: usize) {
-    if keep == 0 {
-        value.clear();
-        return;
-    }
-
-    if value.len() > keep {
-        let drop_count = value.len() - keep;
-        value.drain(0..drop_count);
-    }
+super::define_log_slot! {
+    slot = ScheduledActionLog,
+    update = ScheduledActionLogUpdate,
+    entry = ScheduledActionLogEntry,
+    key = "__runtime.scheduled_action_log",
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::trim_to_last;
 
     struct TestAction;
 

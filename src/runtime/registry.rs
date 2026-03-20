@@ -37,6 +37,41 @@ impl Default for RuntimeRegistry {
     }
 }
 
+impl RuntimeRegistry {
+    /// Validate that registrar entries don't conflict with existing registrations.
+    pub(crate) fn validate_registrar(
+        &self,
+        plugin_type_id: Option<TypeId>,
+        registrar: &PluginRegistrar,
+    ) -> Result<(), StateError> {
+        if let Some(plugin_type_id) = plugin_type_id
+            && self.installed_plugins.contains_key(&plugin_type_id)
+        {
+            return Err(StateError::PluginAlreadyInstalled {
+                name: format!("runtime-plugin:{plugin_type_id:?}"),
+            });
+        }
+
+        for entry in &registrar.scheduled_actions {
+            if self.scheduled_action_handlers.contains_key(&entry.key) {
+                return Err(StateError::HandlerAlreadyRegistered {
+                    key: entry.key.clone(),
+                });
+            }
+        }
+
+        for entry in &registrar.effects {
+            if self.effect_handlers.contains_key(&entry.key) {
+                return Err(StateError::EffectHandlerAlreadyRegistered {
+                    key: entry.key.clone(),
+                });
+            }
+        }
+
+        Ok(())
+    }
+}
+
 pub(crate) struct RuntimeQueuePlugin;
 
 impl Plugin for RuntimeQueuePlugin {

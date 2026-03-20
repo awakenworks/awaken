@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::contract::lifecycle::TerminationReason;
 use crate::error::StateError;
-use crate::state::StateSlot;
 
 use super::{JsonValue, decode_json, encode_json};
 
@@ -53,41 +52,11 @@ pub struct EffectLogEntry {
     pub key: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
-pub enum EffectLogUpdate {
-    Append(EffectLogEntry),
-    TrimToLast { keep: usize },
-    Clear,
-}
-
-pub struct EffectLog;
-
-impl StateSlot for EffectLog {
-    const KEY: &'static str = "__runtime.effect_log";
-
-    type Value = Vec<EffectLogEntry>;
-    type Update = EffectLogUpdate;
-
-    fn apply(value: &mut Self::Value, update: Self::Update) {
-        match update {
-            EffectLogUpdate::Append(entry) => value.push(entry),
-            EffectLogUpdate::TrimToLast { keep } => trim_to_last(value, keep),
-            EffectLogUpdate::Clear => value.clear(),
-        }
-    }
-}
-
-fn trim_to_last<T>(value: &mut Vec<T>, keep: usize) {
-    if keep == 0 {
-        value.clear();
-        return;
-    }
-
-    if value.len() > keep {
-        let drop_count = value.len() - keep;
-        value.drain(0..drop_count);
-    }
+super::define_log_slot! {
+    slot = EffectLog,
+    update = EffectLogUpdate,
+    entry = EffectLogEntry,
+    key = "__runtime.effect_log",
 }
 
 #[cfg(test)]
