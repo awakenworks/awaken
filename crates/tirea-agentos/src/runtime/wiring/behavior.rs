@@ -273,7 +273,14 @@ mod tests {
             &self,
             _ctx: &ReadOnlyContext<'_>,
         ) -> ActionSet<BeforeInferenceAction> {
-            ActionSet::single(BeforeInferenceAction::AddSystemContext(self.text.clone()))
+            ActionSet::single(BeforeInferenceAction::AddContextMessage(
+                tirea_contract::runtime::inference::ContextMessage {
+                    key: self.id.to_string(),
+                    content: self.text.clone(),
+                    cooldown_turns: 0,
+                    target: Default::default(),
+                },
+            ))
         }
     }
 
@@ -286,7 +293,7 @@ mod tests {
             .into_vec()
             .into_iter()
             .filter_map(|a| match a {
-                BeforeInferenceAction::AddSystemContext(s) => Some(s),
+                BeforeInferenceAction::AddContextMessage(m) => Some(m.content),
                 _ => None,
             })
             .collect()
