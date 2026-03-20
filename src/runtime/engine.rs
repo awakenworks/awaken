@@ -176,15 +176,12 @@ impl PhaseRuntime {
             registry
                 .phase_hooks
                 .get(&phase)
-                .map(|hooks| hooks.iter().map(|(_, hook)| Arc::clone(hook)).collect())
+                .map(|hooks| hooks.iter().map(|(_, _, hook)| Arc::clone(hook)).collect())
                 .unwrap_or_default()
         };
 
         for hook in hooks {
-            let ctx = PhaseContext {
-                phase,
-                snapshot: self.store.snapshot(),
-            };
+            let ctx = PhaseContext::new(phase, self.store.snapshot());
             let command = hook.run(&ctx)?;
             if !command.is_empty() {
                 total_effects += command.effects.len();
@@ -243,10 +240,7 @@ impl PhaseRuntime {
                     continue;
                 };
 
-                let ctx = PhaseContext {
-                    phase,
-                    snapshot: self.store.snapshot(),
-                };
+                let ctx = PhaseContext::new(phase, self.store.snapshot());
                 let mut command = match handler.handle_erased(&ctx, envelope.action.payload.clone())
                 {
                     Ok(command) => command,
@@ -444,11 +438,11 @@ impl PhaseRuntime {
             let hook_id = registry.next_hook_id;
             registry.next_hook_id += 1;
             installed_plugin.phase_hook_ids.push((entry.phase, hook_id));
-            registry
-                .phase_hooks
-                .entry(entry.phase)
-                .or_default()
-                .push((hook_id, entry.hook));
+            registry.phase_hooks.entry(entry.phase).or_default().push((
+                hook_id,
+                entry.plugin_id,
+                entry.hook,
+            ));
         }
 
         if let Some(plugin_type_id) = plugin_type_id {
@@ -480,7 +474,7 @@ impl PhaseRuntime {
         }
         for (phase, hook_id) in installed.phase_hook_ids {
             if let Some(hooks) = registry.phase_hooks.get_mut(&phase) {
-                hooks.retain(|(id, _)| *id != hook_id);
+                hooks.retain(|(id, _, _)| *id != hook_id);
             }
         }
     }

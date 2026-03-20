@@ -818,6 +818,7 @@ impl Plugin for HookPlugin {
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
         registrar.register_phase_hook(
+            "hook-plugin",
             Phase::BeforeInference,
             CountingHook(Arc::clone(&self.hook_count)),
         )?;
@@ -851,7 +852,11 @@ fn phase_hook_can_mutate_state() {
             }
         }
         fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-            registrar.register_phase_hook(Phase::BeforeInference, MutatingHook)?;
+            registrar.register_phase_hook(
+                "mutating-hook-plugin",
+                Phase::BeforeInference,
+                MutatingHook,
+            )?;
             Ok(())
         }
     }
@@ -878,7 +883,11 @@ fn phase_hook_can_enqueue_actions() {
             }
         }
         fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-            registrar.register_phase_hook(Phase::BeforeInference, ActionEnqueuingHook)?;
+            registrar.register_phase_hook(
+                "enqueue-plugin",
+                Phase::BeforeInference,
+                ActionEnqueuingHook,
+            )?;
             Ok(())
         }
     }
@@ -922,6 +931,7 @@ fn phase_hooks_execute_in_registration_order() {
         }
         fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
             registrar.register_phase_hook(
+                "order-plugin",
                 Phase::BeforeInference,
                 OrderHook {
                     label: "first",
@@ -929,6 +939,7 @@ fn phase_hooks_execute_in_registration_order() {
                 },
             )?;
             registrar.register_phase_hook(
+                "order-plugin",
                 Phase::BeforeInference,
                 OrderHook {
                     label: "second",
@@ -976,4 +987,103 @@ fn phase_hook_does_not_fire_for_other_phases() {
 
     app.run_phase(Phase::AfterInference).unwrap();
     assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[test]
+fn phase_hooks_fire_for_step_start_and_step_end() {
+    let step_start_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let step_end_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    struct StepHookPlugin {
+        start_count: Arc<std::sync::atomic::AtomicUsize>,
+        end_count: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Plugin for StepHookPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "step-hook-plugin",
+            }
+        }
+
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_phase_hook(
+                "step-hook-plugin",
+                Phase::StepStart,
+                CountingHook(Arc::clone(&self.start_count)),
+            )?;
+            registrar.register_phase_hook(
+                "step-hook-plugin",
+                Phase::StepEnd,
+                CountingHook(Arc::clone(&self.end_count)),
+            )?;
+            Ok(())
+        }
+    }
+
+    let app = AppRuntime::new().unwrap();
+    app.install_plugin(StepHookPlugin {
+        start_count: Arc::clone(&step_start_count),
+        end_count: Arc::clone(&step_end_count),
+    })
+    .unwrap();
+
+    app.run_phase(Phase::StepStart).unwrap();
+    app.run_phase(Phase::StepEnd).unwrap();
+
+    assert_eq!(
+        step_start_count.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert_eq!(step_end_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn phase_hooks_do_not_cross_fire_between_step_phases() {
+    let start_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    struct StepStartOnlyPlugin {
+        count: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Plugin for StepStartOnlyPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "step-start-only",
+            }
+        }
+
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_phase_hook(
+                "step-start-only",
+                Phase::StepStart,
+                CountingHook(Arc::clone(&self.count)),
+            )?;
+            Ok(())
+        }
+    }
+
+    let app = AppRuntime::new().unwrap();
+    app.install_plugin(StepStartOnlyPlugin {
+        count: Arc::clone(&start_count),
+    })
+    .unwrap();
+
+    // StepEnd should NOT trigger StepStart hook
+    app.run_phase(Phase::StepEnd).unwrap();
+    assert_eq!(start_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    // StepStart should trigger it
+    app.run_phase(Phase::StepStart).unwrap();
+    assert_eq!(start_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn all_eight_phases_can_run_without_hooks() {
+    let app = AppRuntime::new().unwrap();
+    for phase in Phase::ALL {
+        let report = app.run_phase(phase).unwrap();
+        assert_eq!(report.phase, phase);
+        assert_eq!(report.processed_scheduled_actions, 0);
+    }
 }

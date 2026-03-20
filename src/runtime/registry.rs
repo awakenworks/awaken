@@ -20,7 +20,7 @@ pub(crate) struct InstalledRuntimePlugin {
 pub(crate) struct RuntimeRegistry {
     pub(crate) scheduled_action_handlers: HashMap<String, ScheduledActionHandlerArc>,
     pub(crate) effect_handlers: HashMap<String, EffectHandlerArc>,
-    pub(crate) phase_hooks: HashMap<Phase, Vec<(u64, PhaseHookArc)>>,
+    pub(crate) phase_hooks: HashMap<Phase, Vec<(u64, String, PhaseHookArc)>>,
     pub(crate) installed_plugins: HashMap<TypeId, InstalledRuntimePlugin>,
     pub(crate) next_hook_id: u64,
 }

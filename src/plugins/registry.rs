@@ -56,6 +56,7 @@ pub(crate) struct EffectHandlerRegistration {
 
 pub(crate) struct PhaseHookRegistration {
     pub(crate) phase: Phase,
+    pub(crate) plugin_id: String,
     pub(crate) hook: PhaseHookArc,
 }
 
@@ -162,12 +163,18 @@ impl PluginRegistrar {
         Ok(())
     }
 
-    pub fn register_phase_hook<H>(&mut self, phase: Phase, hook: H) -> Result<(), StateError>
+    pub fn register_phase_hook<H>(
+        &mut self,
+        plugin_id: impl Into<String>,
+        phase: Phase,
+        hook: H,
+    ) -> Result<(), StateError>
     where
         H: PhaseHook,
     {
         self.phase_hooks.push(PhaseHookRegistration {
             phase,
+            plugin_id: plugin_id.into(),
             hook: Arc::new(hook),
         });
         Ok(())

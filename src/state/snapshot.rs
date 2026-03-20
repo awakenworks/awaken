@@ -13,6 +13,10 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    pub fn new(revision: u64, ext: Arc<SlotMap>) -> Self {
+        Self { revision, ext }
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }

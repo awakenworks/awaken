@@ -102,7 +102,7 @@ mod tests {
             .expect("schedule should succeed");
         command
             .effect(RuntimeEffect::Terminate {
-                reason: "done".into(),
+                reason: crate::contract::lifecycle::TerminationReason::NaturalEnd,
             })
             .expect("effect should encode");
 
