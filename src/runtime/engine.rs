@@ -146,11 +146,25 @@ impl PhaseRuntime {
         self.run_phase_with_limit(phase, DEFAULT_MAX_PHASE_ROUNDS)
     }
 
+    pub fn run_phase_with_context(&self, ctx: PhaseContext) -> Result<PhaseRunReport, StateError> {
+        self.run_phase_ctx_inner(ctx, DEFAULT_MAX_PHASE_ROUNDS)
+    }
+
     pub fn run_phase_with_limit(
         &self,
         phase: Phase,
         max_rounds: usize,
     ) -> Result<PhaseRunReport, StateError> {
+        let ctx = PhaseContext::new(phase, self.store.snapshot());
+        self.run_phase_ctx_inner(ctx, max_rounds)
+    }
+
+    fn run_phase_ctx_inner(
+        &self,
+        base_ctx: PhaseContext,
+        max_rounds: usize,
+    ) -> Result<PhaseRunReport, StateError> {
+        let phase = base_ctx.phase;
         let _guard = self
             .execution_lock
             .lock()
@@ -180,7 +194,7 @@ impl PhaseRuntime {
         };
 
         for hook in hooks {
-            let ctx = PhaseContext::new(phase, self.store.snapshot());
+            let ctx = base_ctx.clone().with_snapshot(self.store.snapshot());
             let command = hook.run(&ctx)?;
             if !command.is_empty() {
                 total_effects += command.effects.len();
@@ -239,7 +253,7 @@ impl PhaseRuntime {
                     continue;
                 };
 
-                let ctx = PhaseContext::new(phase, self.store.snapshot());
+                let ctx = base_ctx.clone().with_snapshot(self.store.snapshot());
                 let mut command = match handler.handle_erased(&ctx, envelope.action.payload.clone())
                 {
                     Ok(command) => command,

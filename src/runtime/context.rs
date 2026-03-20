@@ -59,6 +59,12 @@ impl PhaseContext {
     // -- Builder methods for setting optional fields --
 
     #[must_use]
+    pub fn with_snapshot(mut self, snapshot: Snapshot) -> Self {
+        self.snapshot = snapshot;
+        self
+    }
+
+    #[must_use]
     pub fn with_run_identity(mut self, identity: RunIdentity) -> Self {
         self.run_identity = identity;
         self

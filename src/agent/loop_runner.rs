@@ -3,23 +3,25 @@
 //! Run lifecycle: RunLifecycleSlot (Running → StepCompleted → Done/Waiting)
 //! Tool call lifecycle: ToolCallStatesSlot (New → Running → Succeeded/Failed/Suspended)
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::contract::event::AgentEvent;
 use crate::contract::executor::InferenceRequest;
 use crate::contract::identity::RunIdentity;
+use crate::contract::inference::LLMResponse;
 use crate::contract::lifecycle::TerminationReason;
 use crate::contract::message::{Message, Role, ToolCall, gen_message_id};
 use crate::contract::suspension::{ToolCallOutcome, ToolCallStatus};
-use crate::contract::tool::ToolResult;
-use crate::model::Phase;
-use crate::runtime::PhaseRuntime;
-use crate::state::MutationBatch;
+use crate::contract::tool::{ToolResult, ToolStatus};
+use crate::model::{Phase, RuntimeEffect};
+use crate::runtime::{PhaseContext, PhaseRuntime, TypedEffectHandler};
+use crate::state::{MutationBatch, Snapshot};
 
 use super::config::AgentConfig;
 use super::state::{
     RunLifecycleSlot, RunLifecycleUpdate, ToolCallStatesSlot, ToolCallStatesUpdate,
 };
+use super::stop_conditions::MaxRoundsPlugin;
 
 /// Errors from the agent loop.
 #[derive(Debug, thiserror::Error)]
@@ -46,6 +48,40 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+// ---------------------------------------------------------------------------
+// Termination flag — set by RuntimeEffect::Terminate effect handler
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Default)]
+struct TerminationFlag {
+    inner: Arc<Mutex<Option<TerminationReason>>>,
+}
+
+impl TerminationFlag {
+    fn is_set(&self) -> bool {
+        self.inner
+            .lock()
+            .expect("termination flag poisoned")
+            .is_some()
+    }
+
+    fn take(&self) -> Option<TerminationReason> {
+        self.inner.lock().expect("termination flag poisoned").take()
+    }
+}
+
+impl TypedEffectHandler<RuntimeEffect> for TerminationFlag {
+    fn handle_typed(&self, payload: RuntimeEffect, _snapshot: &Snapshot) -> Result<(), String> {
+        if let RuntimeEffect::Terminate { reason } = payload {
+            let mut guard = self.inner.lock().expect("termination flag poisoned");
+            if guard.is_none() {
+                *guard = Some(reason);
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Run the agent loop to completion.
 ///
 /// State-machine driven: every lifecycle transition is committed via StateStore.
@@ -60,6 +96,18 @@ pub async fn run_agent_loop(
     let mut events = Vec::new();
     let mut messages: Vec<Arc<Message>> = initial_messages.into_iter().map(Arc::new).collect();
     let mut steps: usize = 0;
+
+    // Register termination effect handler and stop condition plugin
+    let termination_flag = TerminationFlag::default();
+    runtime.register_effect::<RuntimeEffect, _>(termination_flag.clone())?;
+    runtime.install_plugin(MaxRoundsPlugin::new(agent.max_rounds))?;
+
+    // Helper to build PhaseContext with current state
+    let make_ctx = |phase: Phase, msgs: &[Arc<Message>], identity: &RunIdentity| -> PhaseContext {
+        PhaseContext::new(phase, store.snapshot())
+            .with_run_identity(identity.clone())
+            .with_messages(msgs.to_vec())
+    };
 
     // --- Run lifecycle: Start ---
     commit_update::<RunLifecycleSlot>(
@@ -76,16 +124,10 @@ pub async fn run_agent_loop(
         parent_run_id: run_identity.parent_run_id.clone(),
     });
 
-    runtime.run_phase(Phase::RunStart)?;
+    runtime.run_phase_with_context(make_ctx(Phase::RunStart, &messages, &run_identity))?;
 
     let termination = loop {
         steps += 1;
-        if steps > agent.max_rounds {
-            break TerminationReason::stopped_with_detail(
-                "max_rounds",
-                format!("exceeded {} rounds", agent.max_rounds),
-            );
-        }
 
         events.push(AgentEvent::StepStart {
             message_id: gen_message_id(),
@@ -94,8 +136,19 @@ pub async fn run_agent_loop(
         // Clear tool call states from previous step
         commit_update::<ToolCallStatesSlot>(store, ToolCallStatesUpdate::Clear)?;
 
-        runtime.run_phase(Phase::StepStart)?;
-        runtime.run_phase(Phase::BeforeInference)?;
+        runtime.run_phase_with_context(make_ctx(Phase::StepStart, &messages, &run_identity))?;
+        if let Some(reason) = termination_flag.take() {
+            break reason;
+        }
+
+        runtime.run_phase_with_context(make_ctx(
+            Phase::BeforeInference,
+            &messages,
+            &run_identity,
+        ))?;
+        if let Some(reason) = termination_flag.take() {
+            break reason;
+        }
 
         // LLM inference
         let start = std::time::Instant::now();
@@ -120,11 +173,17 @@ pub async fn run_agent_loop(
             duration_ms,
         });
 
-        runtime.run_phase(Phase::AfterInference)?;
+        let llm_response = LLMResponse::success(stream_result.clone());
+        let after_inf_ctx = make_ctx(Phase::AfterInference, &messages, &run_identity)
+            .with_llm_response(llm_response);
+        runtime.run_phase_with_context(after_inf_ctx)?;
+        if let Some(reason) = termination_flag.take() {
+            break reason;
+        }
 
         if !stream_result.needs_tools() {
             messages.push(Arc::new(Message::assistant(&stream_result.text)));
-            complete_step(store, runtime, &mut events)?;
+            complete_step(store, runtime, &mut events, &messages, &run_identity)?;
             break TerminationReason::NaturalEnd;
         }
 
@@ -135,6 +194,7 @@ pub async fn run_agent_loop(
         )));
 
         // Execute each tool call sequentially with state machine transitions
+        let mut suspended = false;
         for call in &stream_result.tool_calls {
             events.push(AgentEvent::ToolCallStart {
                 id: call.id.clone(),
@@ -144,9 +204,36 @@ pub async fn run_agent_loop(
             // Tool call lifecycle: New → Running
             commit_tool_call_transition(store, call, ToolCallStatus::Running)?;
 
-            runtime.run_phase(Phase::BeforeToolExecute)?;
+            let before_ctx = make_ctx(Phase::BeforeToolExecute, &messages, &run_identity)
+                .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
+            runtime.run_phase_with_context(before_ctx)?;
+            if termination_flag.is_set() {
+                break;
+            }
 
             let tool_result = execute_tool(agent, call).await;
+
+            // Handle suspension: tool returned Pending
+            if tool_result.status == ToolStatus::Pending {
+                commit_tool_call_transition(store, call, ToolCallStatus::Suspended)?;
+
+                events.push(AgentEvent::ToolCallDone {
+                    id: call.id.clone(),
+                    result: tool_result.clone(),
+                    outcome: ToolCallOutcome::Suspended,
+                });
+
+                let after_ctx = make_ctx(Phase::AfterToolExecute, &messages, &run_identity)
+                    .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()))
+                    .with_tool_result(tool_result.clone());
+                runtime.run_phase_with_context(after_ctx)?;
+
+                let tool_content = tool_result_to_content(&tool_result);
+                messages.push(Arc::new(Message::tool(&call.id, tool_content)));
+
+                suspended = true;
+                break;
+            }
 
             // Tool call lifecycle: Running → Succeeded/Failed
             let terminal_status = if tool_result.is_success() {
@@ -162,26 +249,54 @@ pub async fn run_agent_loop(
                 outcome: ToolCallOutcome::from_tool_result(&tool_result),
             });
 
-            runtime.run_phase(Phase::AfterToolExecute)?;
+            let after_ctx = make_ctx(Phase::AfterToolExecute, &messages, &run_identity)
+                .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()))
+                .with_tool_result(tool_result.clone());
+            runtime.run_phase_with_context(after_ctx)?;
+            if termination_flag.is_set() {
+                break;
+            }
 
             let tool_content = tool_result_to_content(&tool_result);
             messages.push(Arc::new(Message::tool(&call.id, tool_content)));
         }
 
-        complete_step(store, runtime, &mut events)?;
+        // Check termination after tool loop
+        if let Some(reason) = termination_flag.take() {
+            break reason;
+        }
+
+        if suspended {
+            // Transition run to Waiting
+            commit_update::<RunLifecycleSlot>(
+                store,
+                RunLifecycleUpdate::SetWaiting {
+                    updated_at: now_ms(),
+                },
+            )?;
+            complete_step(store, runtime, &mut events, &messages, &run_identity)?;
+            break TerminationReason::Suspended;
+        }
+
+        complete_step(store, runtime, &mut events, &messages, &run_identity)?;
+        if let Some(reason) = termination_flag.take() {
+            break reason;
+        }
     };
 
-    // --- Run lifecycle: Done ---
-    let (_, done_reason) = termination.to_run_status();
-    commit_update::<RunLifecycleSlot>(
-        store,
-        RunLifecycleUpdate::Done {
-            done_reason: done_reason.unwrap_or_else(|| "unknown".into()),
-            updated_at: now_ms(),
-        },
-    )?;
+    // --- Run lifecycle: Done (unless Suspended → Waiting, not Done) ---
+    let (target_status, done_reason) = termination.to_run_status();
+    if target_status.is_terminal() {
+        commit_update::<RunLifecycleSlot>(
+            store,
+            RunLifecycleUpdate::Done {
+                done_reason: done_reason.unwrap_or_else(|| "unknown".into()),
+                updated_at: now_ms(),
+            },
+        )?;
+    }
 
-    runtime.run_phase(Phase::RunEnd)?;
+    runtime.run_phase_with_context(make_ctx(Phase::RunEnd, &messages, &run_identity))?;
 
     let response = messages
         .iter()
@@ -211,6 +326,8 @@ fn complete_step(
     store: &crate::state::StateStore,
     runtime: &PhaseRuntime,
     events: &mut Vec<AgentEvent>,
+    messages: &[Arc<Message>],
+    run_identity: &RunIdentity,
 ) -> Result<(), AgentLoopError> {
     commit_update::<RunLifecycleSlot>(
         store,
@@ -218,7 +335,10 @@ fn complete_step(
             updated_at: now_ms(),
         },
     )?;
-    runtime.run_phase(Phase::StepEnd)?;
+    let ctx = PhaseContext::new(Phase::StepEnd, store.snapshot())
+        .with_run_identity(run_identity.clone())
+        .with_messages(messages.to_vec());
+    runtime.run_phase_with_context(ctx)?;
     events.push(AgentEvent::StepEnd);
     Ok(())
 }

@@ -3,6 +3,7 @@ use crate::model::Phase;
 use crate::plugins::Plugin;
 use crate::state::{Snapshot, StateCommand, StateStore};
 
+use super::PhaseContext;
 use super::engine::PhaseRuntime;
 use super::reports::{PhaseRunReport, SubmitCommandReport};
 
@@ -44,6 +45,10 @@ impl AppRuntime {
 
     pub fn run_phase(&self, phase: Phase) -> Result<PhaseRunReport, StateError> {
         self.phase_runtime.run_phase(phase)
+    }
+
+    pub fn run_phase_with_context(&self, ctx: PhaseContext) -> Result<PhaseRunReport, StateError> {
+        self.phase_runtime.run_phase_with_context(ctx)
     }
 
     pub fn run_phase_with_limit(
