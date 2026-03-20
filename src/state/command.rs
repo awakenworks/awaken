@@ -82,7 +82,7 @@ impl DerefMut for StateCommand {
 
 #[cfg(test)]
 mod tests {
-    use crate::model::{Phase, ScheduledActionSpec};
+    use crate::model::{EffectSpec, Phase, ScheduledActionSpec};
 
     use super::*;
 
@@ -109,5 +109,45 @@ mod tests {
         assert!(!command.is_empty());
         assert_eq!(command.scheduled_actions.len(), 1);
         assert_eq!(command.effects.len(), 1);
+    }
+
+    struct CustomEffect;
+
+    impl EffectSpec for CustomEffect {
+        const KEY: &'static str = "test.custom_effect";
+        type Payload = String;
+    }
+
+    #[test]
+    fn state_command_extend_merges_patch_actions_and_effects() {
+        let mut left = StateCommand::new().with_base_revision(5);
+        left.schedule_action::<TestAction>("left".into())
+            .expect("left action should schedule");
+
+        let mut right = StateCommand::new().with_base_revision(5);
+        right
+            .effect(RuntimeEffect::Suspend {
+                reason: "wait".into(),
+            })
+            .expect("right effect should encode");
+
+        left.extend(right).expect("commands should merge");
+
+        assert_eq!(left.base_revision(), Some(5));
+        assert_eq!(left.scheduled_actions.len(), 1);
+        assert_eq!(left.effects.len(), 1);
+    }
+
+    #[test]
+    fn state_command_emit_supports_custom_effect_specs() {
+        let mut command = StateCommand::new();
+        command
+            .emit::<CustomEffect>("payload".into())
+            .expect("custom effect should encode");
+
+        let decoded = command.effects[0]
+            .decode::<CustomEffect>()
+            .expect("custom effect should decode");
+        assert_eq!(decoded, "payload");
     }
 }

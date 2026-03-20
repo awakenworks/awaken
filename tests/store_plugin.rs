@@ -82,6 +82,18 @@ impl StateSlot for SharedCounter {
     }
 }
 
+struct EphemeralCounter;
+
+impl StateSlot for EphemeralCounter {
+    const KEY: &'static str = "ephemeral.counter";
+    type Value = usize;
+    type Update = usize;
+
+    fn apply(value: &mut Self::Value, update: Self::Update) {
+        *value += update;
+    }
+}
+
 struct RetainedSummary;
 
 impl StateSlot for RetainedSummary {
@@ -134,6 +146,24 @@ impl StatePlugin for SharedPlugin {
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
         registrar.register_slot::<SharedCounter>(SlotOptions::default())?;
+        Ok(())
+    }
+}
+
+struct EphemeralPlugin;
+
+impl StatePlugin for EphemeralPlugin {
+    fn meta(&self) -> PluginMeta {
+        PluginMeta {
+            name: "ephemeral-plugin",
+        }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_slot::<EphemeralCounter>(SlotOptions {
+            persistent: false,
+            retain_on_uninstall: false,
+        })?;
         Ok(())
     }
 }
@@ -298,6 +328,20 @@ fn hooks_are_called() {
 }
 
 #[test]
+fn empty_patch_commit_keeps_revision_and_skips_hooks() {
+    let store = StateStore::new();
+    store.install_plugin(ChatPlugin).unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    store.add_hook(CountingHook(Arc::clone(&hits)));
+
+    let before = store.revision();
+    let after = store.commit(MutationBatch::new()).unwrap();
+
+    assert_eq!(before, after);
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn persistence_roundtrip_works() {
     let store = StateStore::new();
     store.install_plugin(ChatPlugin).unwrap();
@@ -329,6 +373,23 @@ fn unregistered_slot_is_rejected() {
     patch.update::<TokenUsage>(1);
     let err = store.commit(patch).unwrap_err();
     assert!(matches!(err, StateError::UnknownSlot { .. }));
+}
+
+#[test]
+fn duplicate_plugin_install_is_rejected() {
+    let store = StateStore::new();
+    store.install_plugin(ChatPlugin).unwrap();
+
+    let err = store.install_plugin(ChatPlugin).unwrap_err();
+    assert!(matches!(err, StateError::PluginAlreadyInstalled { .. }));
+}
+
+#[test]
+fn uninstalling_unknown_plugin_is_rejected() {
+    let store = StateStore::new();
+
+    let err = store.uninstall_plugin::<ChatPlugin>().unwrap_err();
+    assert!(matches!(err, StateError::PluginNotInstalled { .. }));
 }
 
 #[test]
@@ -379,4 +440,40 @@ fn restore_persisted_can_skip_unknown_slots() {
     assert_eq!(store.revision(), 7);
     assert_eq!(store.read_slot::<TokenUsage>(), Some(99));
     assert!(store.read_slot::<Messages>().is_none());
+}
+
+#[test]
+fn export_persisted_skips_non_persistent_slots() {
+    let store = StateStore::new();
+    store.install_plugin(ChatPlugin).unwrap();
+    store.install_plugin(EphemeralPlugin).unwrap();
+
+    let mut patch = MutationBatch::new();
+    patch.update::<TokenUsage>(5);
+    patch.update::<EphemeralCounter>(7);
+    store.commit(patch).unwrap();
+
+    let persisted = store.export_persisted().unwrap();
+
+    assert!(persisted.extensions.contains_key("chat.token_usage"));
+    assert!(!persisted.extensions.contains_key("ephemeral.counter"));
+}
+
+#[test]
+fn restore_persisted_reports_decode_errors() {
+    let store = StateStore::new();
+    store.install_plugin(ChatPlugin).unwrap();
+
+    let persisted = PersistedState {
+        revision: 1,
+        extensions: std::collections::HashMap::from([(
+            "chat.token_usage".to_string(),
+            serde_json::json!("bad"),
+        )]),
+    };
+
+    let err = store
+        .restore_persisted(persisted, UnknownSlotPolicy::Error)
+        .unwrap_err();
+    assert!(matches!(err, StateError::SlotDecode { .. }));
 }

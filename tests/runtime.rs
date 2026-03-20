@@ -2,7 +2,8 @@
 
 use awaken::*;
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,6 +185,119 @@ impl TypedScheduledActionHandler<InfiniteLoopAction> for InfiniteLoopHandler {
     }
 }
 
+struct OtherPhaseAction;
+
+impl ScheduledActionSpec for OtherPhaseAction {
+    const KEY: &'static str = "test.other_phase";
+    const PHASE: Phase = Phase::AfterInference;
+    type Payload = ();
+}
+
+struct OtherPhaseHandler;
+
+impl TypedScheduledActionHandler<OtherPhaseAction> for OtherPhaseHandler {
+    fn handle_typed(&self, _ctx: &PhaseContext, _payload: ()) -> Result<StateCommand, StateError> {
+        Ok(StateCommand::new())
+    }
+}
+
+struct LogOnlyAction;
+
+impl ScheduledActionSpec for LogOnlyAction {
+    const KEY: &'static str = "test.log_only";
+    const PHASE: Phase = Phase::BeforeInference;
+    type Payload = ();
+}
+
+struct LogOnlyHandler;
+
+impl TypedScheduledActionHandler<LogOnlyAction> for LogOnlyHandler {
+    fn handle_typed(&self, _ctx: &PhaseContext, _payload: ()) -> Result<StateCommand, StateError> {
+        Ok(StateCommand::new())
+    }
+}
+
+struct BadlyEncodedAction;
+
+impl ScheduledActionSpec for BadlyEncodedAction {
+    const KEY: &'static str = "test.badly_encoded";
+    const PHASE: Phase = Phase::BeforeInference;
+    type Payload = String;
+
+    fn encode_payload(_payload: &Self::Payload) -> Result<JsonValue, StateError> {
+        Ok(serde_json::json!(42))
+    }
+}
+
+struct BadlyEncodedActionHandler;
+
+impl TypedScheduledActionHandler<BadlyEncodedAction> for BadlyEncodedActionHandler {
+    fn handle_typed(
+        &self,
+        _ctx: &PhaseContext,
+        _payload: String,
+    ) -> Result<StateCommand, StateError> {
+        Ok(StateCommand::new())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MismatchedPayload;
+
+impl Serialize for MismatchedPayload {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u64(7)
+    }
+}
+
+impl<'de> Deserialize<'de> for MismatchedPayload {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct StringOnlyVisitor;
+
+        impl Visitor<'_> for StringOnlyVisitor {
+            type Value = MismatchedPayload;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a string payload")
+            }
+
+            fn visit_str<E>(self, _value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(MismatchedPayload)
+            }
+        }
+
+        deserializer.deserialize_str(StringOnlyVisitor)
+    }
+}
+
+struct MismatchedEffect;
+
+impl EffectSpec for MismatchedEffect {
+    const KEY: &'static str = "test.mismatched_effect";
+    type Payload = MismatchedPayload;
+}
+
+struct MismatchedEffectHandler;
+
+impl TypedEffectHandler<MismatchedEffect> for MismatchedEffectHandler {
+    fn handle_typed(
+        &self,
+        _payload: MismatchedPayload,
+        _snapshot: &Snapshot,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 #[test]
 fn unregistered_action_handler_is_rejected_on_submit() {
     let app = AppRuntime::new().unwrap();
@@ -349,6 +463,39 @@ fn duplicate_typed_handler_registration_is_rejected() {
 }
 
 #[test]
+fn duplicate_effect_handler_registration_is_rejected() {
+    let app = AppRuntime::new().unwrap();
+    app.phase_runtime()
+        .register_effect::<RuntimeEffect, _>(RuntimeEffectRecorder::default())
+        .unwrap();
+    let err = app
+        .phase_runtime()
+        .register_effect::<RuntimeEffect, _>(RuntimeEffectRecorder::default())
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        StateError::EffectHandlerAlreadyRegistered { .. }
+    ));
+}
+
+#[test]
+fn duplicate_runtime_plugin_install_is_rejected() {
+    let app = AppRuntime::new().unwrap();
+    app.install_plugin(HandoffPlugin).unwrap();
+
+    let err = app.install_plugin(HandoffPlugin).unwrap_err();
+    assert!(matches!(err, StateError::PluginAlreadyInstalled { .. }));
+}
+
+#[test]
+fn uninstalling_unknown_runtime_plugin_is_rejected() {
+    let app = AppRuntime::new().unwrap();
+
+    let err = app.uninstall_plugin::<HandoffPlugin>().unwrap_err();
+    assert!(matches!(err, StateError::PluginNotInstalled { .. }));
+}
+
+#[test]
 fn runtime_plugin_can_be_uninstalled_and_reinstalled() {
     let app = AppRuntime::new().unwrap();
     app.install_plugin(HandoffPlugin).unwrap();
@@ -434,6 +581,29 @@ fn run_phase_processes_same_phase_actions_across_rounds() {
 }
 
 #[test]
+fn run_phase_reports_skipped_actions_from_other_phases() {
+    let app = AppRuntime::new().unwrap();
+    app.phase_runtime()
+        .register_scheduled_action::<OtherPhaseAction, _>(OtherPhaseHandler)
+        .unwrap();
+
+    let mut cmd = StateCommand::new();
+    cmd.schedule_action::<OtherPhaseAction>(()).unwrap();
+    app.submit_command(cmd).unwrap();
+
+    let report = app.run_phase(Phase::BeforeInference).unwrap();
+    assert_eq!(report.processed_scheduled_actions, 0);
+    assert_eq!(report.skipped_scheduled_actions, 1);
+    assert_eq!(
+        app.store()
+            .read_slot::<PendingScheduledActions>()
+            .unwrap_or_default()
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn run_phase_returns_error_on_infinite_loop() {
     let app = AppRuntime::new().unwrap();
     app.phase_runtime()
@@ -498,7 +668,13 @@ fn runtime_logs_can_be_trimmed() {
     app.trim_logs(2).unwrap();
 
     let effect_log = app.store().read_slot::<EffectLog>().unwrap_or_default();
+    let scheduled_action_log = app
+        .store()
+        .read_slot::<ScheduledActionLog>()
+        .unwrap_or_default();
+
     assert_eq!(effect_log.len(), 2);
+    assert_eq!(scheduled_action_log.len(), 0);
     assert!(
         effect_log
             .iter()
@@ -535,4 +711,69 @@ fn runtime_logs_can_be_cleared() {
             .unwrap_or_default()
             .is_empty()
     );
+}
+
+#[test]
+fn scheduled_action_logs_can_be_trimmed() {
+    let app = AppRuntime::new().unwrap();
+    app.phase_runtime()
+        .register_scheduled_action::<LogOnlyAction, _>(LogOnlyHandler)
+        .unwrap();
+
+    for _ in 0..3 {
+        let mut cmd = StateCommand::new();
+        cmd.schedule_action::<LogOnlyAction>(()).unwrap();
+        app.submit_command(cmd).unwrap();
+    }
+
+    app.trim_logs(2).unwrap();
+
+    let scheduled_action_log = app
+        .store()
+        .read_slot::<ScheduledActionLog>()
+        .unwrap_or_default();
+    assert_eq!(scheduled_action_log.len(), 2);
+    assert!(
+        scheduled_action_log
+            .iter()
+            .all(|entry| entry.key == LogOnlyAction::KEY)
+    );
+}
+
+#[test]
+fn malformed_action_payloads_are_dead_lettered() {
+    let app = AppRuntime::new().unwrap();
+    app.phase_runtime()
+        .register_scheduled_action::<BadlyEncodedAction, _>(BadlyEncodedActionHandler)
+        .unwrap();
+
+    let mut cmd = StateCommand::new();
+    cmd.schedule_action::<BadlyEncodedAction>("broken".into())
+        .unwrap();
+    app.submit_command(cmd).unwrap();
+
+    let report = app.run_phase(Phase::BeforeInference).unwrap();
+    assert_eq!(report.failed_scheduled_actions, 1);
+    let failed = app
+        .store()
+        .read_slot::<FailedScheduledActions>()
+        .unwrap_or_default();
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0].action.key, BadlyEncodedAction::KEY);
+}
+
+#[test]
+fn malformed_effect_payloads_are_reported_as_failed_dispatch() {
+    let runtime = PhaseRuntime::new(StateStore::new()).unwrap();
+    runtime
+        .register_effect::<MismatchedEffect, _>(MismatchedEffectHandler)
+        .unwrap();
+
+    let mut cmd = StateCommand::new();
+    cmd.emit::<MismatchedEffect>(MismatchedPayload).unwrap();
+
+    let report = runtime.submit_command(cmd).unwrap();
+    assert_eq!(report.effect_report.attempted, 1);
+    assert_eq!(report.effect_report.dispatched, 0);
+    assert_eq!(report.effect_report.failed, 1);
 }
