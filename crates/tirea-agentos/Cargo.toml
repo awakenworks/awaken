@@ -5,8 +5,8 @@ edition = "2021"
 description = "Agent runtime with streaming LLM integration, sub-agent orchestration, and context window management"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
-keywords = [ "ai-agent", "llm", "agent-framework", "orchestration" ]
-categories = [ "asynchronous" ]
+keywords = ["ai-agent", "llm", "agent-framework", "orchestration"]
+categories = ["asynchronous"]
 
 [dependencies]
 tirea-state.workspace = true
@@ -18,56 +18,50 @@ tirea-extension-skills = { workspace = true, optional = true }
 tirea-extension-mcp = { workspace = true, optional = true }
 tirea-extension-handoff = { workspace = true, optional = true }
 schemars.workspace = true
-serde = { version = "1", features = [ "derive" ] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
 async-stream = "0.3"
-tokio = { version = "1", features = [ "sync", "rt", "time", "process", "fs" ] }
+tokio = { version = "1", features = ["sync", "rt", "time", "process","fs"] }
 tokio-util = "0.7"
 thiserror = "2"
 genai.workspace = true
 futures = "0.3"
-uuid = { version = "1", features = [ "v4", "v7" ] }
+uuid = { version = "1", features = ["v4", "v7"] }
 bytes = "1"
-reqwest = { version = "0.12", default-features = false, features = [ "json", "rustls-tls" ] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tracing = "0.1"
 json-patch = "3"
 
 [features]
-default = [ "skills", "permission", "reminder", "observability", "handoff" ]
-skills = [ "dep:tirea-extension-skills" ]
-permission = [ "dep:tirea-extension-permission" ]
-reminder = [ "dep:tirea-extension-reminder" ]
-observability = [ "dep:tirea-extension-observability" ]
-mcp = [ "dep:tirea-extension-mcp" ]
-handoff = [ "dep:tirea-extension-handoff" ]
+default = ["skills", "permission", "reminder", "observability", "handoff"]
+skills = ["dep:tirea-extension-skills"]
+permission = ["dep:tirea-extension-permission"]
+reminder = ["dep:tirea-extension-reminder"]
+observability = ["dep:tirea-extension-observability"]
+mcp = ["dep:tirea-extension-mcp"]
+handoff = ["dep:tirea-extension-handoff"]
 
 [dev-dependencies]
-tirea-contract = { workspace = true, features = [ "test-support" ] }
-tirea-state = { workspace = true, features = [ "derive" ] }
+tirea-contract = { workspace = true, features = ["test-support"] }
+tirea-state = { workspace = true, features = ["derive"] }
 tirea-extension-observability.workspace = true
 tirea-extension-permission.workspace = true
 tirea-extension-skills.workspace = true
 tirea-store-adapters.workspace = true
-tokio = { version = "1", features = [ "rt-multi-thread", "macros", "fs" ] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
 tempfile = "3"
-tracing-subscriber = { version = "0.3", features = [ "fmt", "registry" ] }
+tracing-subscriber = { version = "0.3", features = ["fmt", "registry"] }
 opentelemetry = "0.28"
-opentelemetry_sdk = { version = "0.28", features = [ "rt-tokio", "testing" ] }
-opentelemetry-otlp = { version = "0.28", default-features = false, features = [
-  "http-proto",
-  "reqwest-blocking-client",
-  "trace"
-] }
+opentelemetry_sdk = { version = "0.28", features = ["rt-tokio", "testing"] }
+opentelemetry-otlp = { version = "0.28", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace"] }
 tracing-opentelemetry = "0.29"
-reqwest = { version = "0.12", default-features = false, features = [ "json", "rustls-tls" ] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 phoenix-test-helpers = { path = "../../e2e/phoenix/test-helpers" }
-criterion = { workspace = true, features = [ "async_tokio" ] }
+criterion = { workspace = true, features = ["async_tokio"] }
 trybuild.workspace = true
-mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = [
-  "client"
-] }
-axum = { version = "0.7", default-features = false, features = [ "http1", "json", "tokio" ] }
+mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio"] }
 
 [lints]
 workspace = true
