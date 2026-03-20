@@ -1,0 +1,434 @@
+# Lefthook configuration
+# https://github.com/evilmartians/lefthook
+
+pre-commit:
+  parallel: false
+  commands:
+    check-root-md-files:
+      run: |
+        ALLOWED_ROOT_MD="README.md|CHANGELOG.md|CONTRIBUTING.md|LICENSE.md|CLAUDE.md|AGENTS.md"
+        root_md_files=$(git diff --cached --name-only --diff-filter=A | grep -E '^[^/]+\.md$' | grep -vE "^($ALLOWED_ROOT_MD)$" || true)
+        if [ -n "$root_md_files" ]; then
+          echo "ERROR: Attempting to add .md files in root directory:"
+          echo "$root_md_files"
+          echo ""
+          echo "❌ 根目录禁止创建新的 .md 文档。请将文档放入 docs/ 目录中。"
+          echo ""
+          echo "允许的例外文件:"
+          echo "  - README.md, CHANGELOG.md, CONTRIBUTING.md"
+          echo "  - LICENSE.md, CLAUDE.md, AGENTS.md"
+          echo ""
+          echo "<system-reminder>"
+          echo "→ Next: git reset HEAD <file> → mv to docs/{specifications,architecture,guides,runbooks} → git add"
+          echo "</system-reminder>"
+          exit 1
+        fi
+      stage_fixed: false
+
+    check-forbidden-docs:
+      run: |
+        FORBIDDEN_PATTERNS="STATUS|REPORT|SUMMARY|PROGRESS|IMPLEMENTATION|_LOG|_NOTES|QUICKREF|QUICK|_V[0-9]|_OLD|_NEW"
+        process_docs=$(git diff --cached --name-only --diff-filter=A | grep -E '\.md$' | grep -vE '^docs/runbooks/' | grep -iE "($FORBIDDEN_PATTERNS)" || true)
+        if [ -n "$process_docs" ]; then
+          echo "ERROR: Attempting to add process/status documents:"
+          echo "$process_docs"
+          echo ""
+          echo "❌ 禁止提交以下类型的文档:"
+          echo "  - 状态报告: *_STATUS.md, *_REPORT.md, *REPORT*.md"
+          echo "  - 进度文档: *_PROGRESS.md, *_IMPLEMENTATION.md"
+          echo "  - 过程记录: *_LOG.md, *_NOTES.md"
+          echo "  - 临时摘要: *_SUMMARY.md, *_QUICKREF.md, *_QUICK.md"
+          echo "  - 冗余变体: *_V1.md, *_V2.md, *_OLD.md, *_NEW.md"
+          echo ""
+          echo "例外: docs/runbooks/ 允许审计和验证报告"
+          echo ""
+          echo "<system-reminder>"
+          echo "→ Next: git reset HEAD <file> → grep -r '<concept>' docs/ to find canonical source → consolidate"
+          echo "</system-reminder>"
+          exit 1
+        fi
+      stage_fixed: false
+
+    check-root-forbidden-files:
+      run: |
+        # 检查临时测试脚本
+        forbidden_scripts=$(git diff --cached --name-only --diff-filter=A | grep -E '^(test_.*\.sh|.*\.test\.sh)$' || true)
+
+        # 检查禁止的测试数据目录
+        forbidden_dirs=$(git diff --cached --name-only --diff-filter=A | grep -E '^(profiles|migrations|fixtures|test-data)/' || true)
+
+        if [ -n "$forbidden_scripts" ] || [ -n "$forbidden_dirs" ]; then
+          echo "ERROR: Detected forbidden files/directories in root:"
+          [ -n "$forbidden_scripts" ] && echo "$forbidden_scripts"
+          [ -n "$forbidden_dirs" ] && echo "$forbidden_dirs"
+          echo ""
+          echo "❌ 根目录禁止创建:"
+          echo "  - 临时测试脚本: test_*.sh, *.test.sh"
+          echo "  - 测试数据目录: profiles/, migrations/, fixtures/, test-data/"
+          echo ""
+          echo "✅ 正确位置:"
+          echo "  - 测试脚本 → scripts/"
+          echo "  - Fixtures → tests/fixtures/ 或 __fixtures__/"
+          echo ""
+          echo "<system-reminder>"
+          echo "→ Next:"
+          if [ -n "$forbidden_scripts" ]; then
+            echo "  git reset HEAD <script> → Remove ad-hoc scripts or mv to scripts/ → git add"
+          fi
+          if [ -n "$forbidden_dirs" ]; then
+            echo "  Replace static fixtures with Factory Pattern/Fixture Builders for dynamic generation"
+          fi
+          echo "</system-reminder>"
+          exit 1
+        fi
+      stage_fixed: false
+
+    check-doc-content:
+      glob: "docs/**/*.md"
+      run: |
+        # 检查被修改的文档（排除 runbooks）
+        modified_docs=$(git diff --cached --name-only --diff-filter=AM | grep -E '^docs/.*\.md$' | grep -vE '^docs/runbooks/' || true)
+
+        if [ -z "$modified_docs" ]; then
+          exit 0
+        fi
+
+        # 项目管理术语（中英文）
+        FORBIDDEN_TERMS="(Author:|Owner:|Assignee:|Maintainer:|Contributor:|作者:|负责人:|维护者:)"
+        FORBIDDEN_TERMS="${FORBIDDEN_TERMS}|(预计[0-9]+[周天小时人日])|(est\.|estimated|[Ee]stimat(e|ion))"
+        FORBIDDEN_TERMS="${FORBIDDEN_TERMS}|(Week [0-9]+:|Phase [0-9]+:|Stage [0-9]+:|Step [0-9]+-[0-9]+:)"
+        FORBIDDEN_TERMS="${FORBIDDEN_TERMS}|(第[一二三四五1-9][周天阶段])|(阶段[1-9]:)|(步骤[0-9]+-[0-9]+:)"
+        FORBIDDEN_TERMS="${FORBIDDEN_TERMS}|(Q[1-4] 20[0-9]{2}|Deadline:|Milestone|里程碑)"
+        FORBIDDEN_TERMS="${FORBIDDEN_TERMS}|(待开始|未开始|进行中 [0-9]+%|阻塞中)"
+        FORBIDDEN_TERMS="${FORBIDDEN_TERMS}|([Ii]n [Pp]rogress|[Bb]locked|[Nn]ot [Ss]tarted)"
+        FORBIDDEN_TERMS="${FORBIDDEN_TERMS}|(分工:|责任分配:|团队分配:|Sprint [0-9]+)"
+        FORBIDDEN_TERMS="${FORBIDDEN_TERMS}|(工作量:)"
+
+        violations=""
+        for file in $modified_docs; do
+          matches=$(git diff --cached "$file" | grep "^+" | grep -v "^+++" | grep -E "$FORBIDDEN_TERMS" || true)
+          if [ -n "$matches" ]; then
+            violations="${violations}\n${file}:\n${matches}\n"
+          fi
+        done
+
+        if [ -n "$violations" ]; then
+          echo "ERROR: 文档中检测到禁止的项目管理术语:"
+          printf '%b' "$violations"
+          echo ""
+          echo "❌ 技术文档中不应出现:"
+          echo "  - 作者/负责人: Author, Owner, Assignee, Maintainer, 负责人, 维护者"
+          echo "  - 工作量估算: 预计X周/天/小时, est., estimated, 工作量"
+          echo "  - 实施计划: Week 1:, Phase 1:, Step 1-3, 第一周, 阶段1, 步骤1-3"
+          echo "  - 未来时间线: Q1 2025, Deadline, Milestone, 里程碑"
+          echo "  - 项目状态: 待开始, 进行中 60%, In Progress, Blocked"
+          echo "  - 协作信息: 分工, 责任分配, 团队分配, Sprint"
+          echo ""
+          echo "✅ 允许的状态描述:"
+          echo "  - 完成状态: completed, fixed, implemented, 已完成, 已实施"
+          echo "  - 完成时间: completed on 2026-01-06, 实施于2026-01-06"
+          echo ""
+          echo "<system-reminder>"
+          echo "→ Next: Strip ephemeral metadata (timelines/assignments/progress) → Focus on invariants → git add"
+          echo "</system-reminder>"
+          exit 1
+        fi
+      stage_fixed: false
+
+    check-secrets:
+      run: |
+        # 检查常见的硬编码密钥模式
+        sensitive=$(git diff --cached --diff-filter=AM | grep "^+" | grep -v "^+++" | grep -iE "(api[_-]?key|password|secret[_-]?key|access[_-]?token).*(=|:).*(sk-|pk-|['\"][A-Za-z0-9]{32,}['\"])" || true)
+
+        if [ -n "$sensitive" ]; then
+          echo ""
+          echo "⚠️  WARNING: 可能检测到硬编码的敏感信息:"
+          echo "$sensitive"
+          echo ""
+          echo "请确认以上内容不包含真实的 API keys/passwords/tokens"
+          echo ""
+          echo "<system-reminder>"
+          echo "→ Next: git reset HEAD <file> → Move secrets to env vars/vault → Update .env.example → git add"
+          echo "   (For docs only: LEFTHOOK_EXCLUDE=check-secrets git commit)"
+          echo "</system-reminder>"
+          echo ""
+        fi
+      stage_fixed: false
+
+    check-license-text:
+      run: |
+        # 检查非 LICENSE 文件中的完整 LICENSE 描述文本
+        modified_files=$(git diff --cached --name-only --diff-filter=AM | grep -vE '^(LICENSE|LICENSE\.md|COPYING|COPYING\.md|lefthook\.yml)$' || true)
+
+        if [ -z "$modified_files" ]; then
+          exit 0
+        fi
+
+        LICENSE_PATTERNS="(Permission is hereby granted, free of charge)|(WITHOUT WARRANTY OF ANY KIND)|(THIS SOFTWARE IS PROVIDED)|(Subject to the terms and conditions)|(Apache License, Version 2\.0)|(GNU (GENERAL|LESSER) PUBLIC LICENSE)|(BSD [0-9]-Clause License)"
+
+        violations=""
+        for file in $modified_files; do
+          matches=$(git diff --cached "$file" | grep "^+" | grep -v "^+++" | grep -iE "$LICENSE_PATTERNS" || true)
+          if [ -n "$matches" ]; then
+            violations="${violations}\n${file}:\n${matches}\n"
+          fi
+        done
+
+        if [ -n "$violations" ]; then
+          echo "ERROR: 检测到完整的 LICENSE 描述文本:"
+          printf '%b' "$violations"
+          echo ""
+          echo "❌ 代码和文档文件中不应包含:"
+          echo "  - 完整的 LICENSE 文本（MIT、Apache、BSD、GPL 等）"
+          echo "  - LICENSE 免责声明全文"
+          echo "  - 详细的许可条款和条件"
+          echo ""
+          echo "✅ 允许的 LICENSE 引用方式:"
+          echo "  - SPDX 标识符: // SPDX-License-Identifier: MIT"
+          echo "  - 简短引用: // Licensed under the MIT License"
+          echo "  - 项目根目录的 LICENSE 或 LICENSE.md 文件"
+          echo ""
+          echo "<system-reminder>"
+          echo "→ Next: git reset HEAD <file> → Replace with // SPDX-License-Identifier: MIT → git add"
+          echo "</system-reminder>"
+          exit 1
+        fi
+      stage_fixed: false
+
+    rustfmt:
+      glob: "**/*.rs"
+      run: rustfmt --edition 2024 {staged_files}
+      stage_fixed: true
+
+    check-code-quality:
+      run: |
+        # 检查代码文件中的占位符、TODO、调试代码
+        code_files=$(git diff --cached --name-only --diff-filter=AM | grep -E '\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|c|cpp|h|hpp)$' || true)
+
+        if [ -z "$code_files" ]; then
+          exit 0
+        fi
+
+        violations=""
+
+        for file in $code_files; do
+          # 检查占位符代码
+          placeholder_matches=$(git diff --cached "$file" | grep "^+" | grep -v "^+++" | grep -iE '(TODO|FIXME|XXX|HACK|placeholder|dummy.*implementation|temp.*implementation)' || true)
+          if [ -n "$placeholder_matches" ]; then
+            violations="${violations}\n【占位符代码】${file}:\n${placeholder_matches}\n"
+          fi
+
+          # 检查调试代码（允许在测试文件中使用）
+          if ! echo "$file" | grep -qE '\.(test|spec)\.(ts|tsx|js|jsx|py|go|rs)$'; then
+            debug_matches=$(git diff --cached "$file" | grep "^+" | grep -v "^+++" | grep -E '(console\.(log|debug|info|warn)|debugger;|print\(|println!|fmt\.Println|System\.out\.println)' || true)
+            if [ -n "$debug_matches" ]; then
+              violations="${violations}\n【调试代码】${file}:\n${debug_matches}\n"
+            fi
+          fi
+        done
+
+        if [ -n "$violations" ]; then
+          echo "⚠️  WARNING: 检测到需要注意的代码质量问题:"
+          printf '%b' "$violations"
+          echo ""
+          echo "❌ 生产代码中不应包含:"
+          echo "  - 占位符: TODO, FIXME, XXX, HACK, placeholder"
+          echo "  - 调试代码: console.log, debugger, print, println"
+          echo "  - 临时实现: dummy implementation, temp implementation"
+          echo ""
+          echo "<system-reminder>"
+          echo "→ Next: Complete implementation → Migrate TODOs to issue tracker → Remove debug code → git add"
+          echo "   (For test utils/dev tools: LEFTHOOK_EXCLUDE=check-code-quality git commit)"
+          echo "</system-reminder>"
+          echo ""
+        fi
+      stage_fixed: false
+
+pre-push:
+  commands:
+    validate:
+      run: |
+        cargo clippy --workspace --lib --bins --examples --locked -- -D clippy::correctness
+
+commit-msg:
+  commands:
+    validate-message:
+      run: |
+        MSG_FILE="{1}"
+        if [ ! -f "$MSG_FILE" ]; then
+          echo "ERROR: commit message file not found: $MSG_FILE"
+          exit 1
+        fi
+
+        first_line="$(sed -n '1p' "$MSG_FILE" | tr -d '\r')"
+        line_count="$(wc -l < "$MSG_FILE" | tr -d ' ')"
+        second_line="$(sed -n '2p' "$MSG_FILE" | tr -d '\r')"
+
+        if [ "$line_count" -gt 4 ]; then
+          echo "ERROR: commit message has too many lines (max 4)."
+          echo ""
+          echo "<system-reminder>→ Next: simplify commit messages. "
+          echo "Use single-line commit messages by default. Add a multi-line "
+          echo "description only when necessary to provide essential context, reasoning, or impact"
+          echo "</system-reminder>"
+          exit 1
+        fi
+
+        if [ "$line_count" -gt 1 ] && [ -n "$second_line" ]; then
+          echo "ERROR: commit body must be separated by a blank line."
+          exit 1
+        fi
+
+        if [ "${#first_line}" -gt 100 ]; then
+          echo "ERROR: commit subject exceeds 100 characters."
+          exit 1
+        fi
+
+        if ! printf '%s\n' "$first_line" | grep -Eq '^[^[:space:]]+ [a-z]+\([a-z0-9-]+\): .+'; then
+          echo "ERROR: commit subject must match '<emoji> <type>(<scope>): <subject>'."
+          echo "Example: ✨ feat(auth): add OAuth2 login"
+          exit 1
+        fi
+
+        if grep -iq "Co-Authored-By:" "$MSG_FILE"; then
+          echo "ERROR: commit message contains 'Co-Authored-By:' which is not allowed."
+          exit 1
+        fi
+
+        if grep -iE "(Generated (with|by))|(🤖.*Generated)" "$MSG_FILE" >/dev/null 2>&1; then
+          echo "ERROR: commit message contains AI generation markers which are not allowed."
+          exit 1
+        fi
+
+        EXTERNAL_TOOL_PATTERNS="(^via \[[^]]+\]\(https?://[^)]+\)$)|(^via https?://)|(^Tool: [A-Za-z0-9._-]+$)|(^Platform: [A-Za-z0-9._-]+$)"
+        if grep -Ei "$EXTERNAL_TOOL_PATTERNS" "$MSG_FILE" >/dev/null 2>&1; then
+          echo "ERROR: commit message contains external tool provenance markers."
+          exit 1
+        fi
+
+        # Check for prohibited project management terms
+        PROHIBITED_PATTERNS="(Phases? [0-9])|(Stages? [0-9])|(Steps? [0-9])|(Week [0-9])|(Day [0-9])|([Ii]n [Pp]rogress)|([0-9]+% done)|(Sprint [0-9])|(Milestone)|(est\.)|(estimated)|(预计)|(计划)|(负责人)|(工作量)|(Owner)|(Assignee)"
+        if grep -E "$PROHIBITED_PATTERNS" "$MSG_FILE" >/dev/null 2>&1; then
+          echo "ERROR: commit message contains prohibited project management terms."
+          exit 1
+        fi
+
+        # Extract commit type and provide type-specific suggestions
+        commit_type=$(printf '%s\n' "$first_line" | sed -E 's/^[^[:space:]]+ ([a-z]+)\([a-z0-9-]+\):.*/\1/')
+
+        if [ -n "$commit_type" ]; then
+          echo ""
+          echo "<system-reminder>"
+          echo "📋 Type-Specific Quality Gate (type: $commit_type):"
+          echo ""
+
+          case "$commit_type" in
+            refactor)
+              echo "  ♻️ Recommended Actions:"
+              echo "  → Verify: Obsolete code removed; no dead imports/commented blocks"
+              echo "  → Check: DRY + Single Responsibility; <50 lines/func; ≤3 nesting"
+              echo "  → Run: All tests; confirm behavioral equivalence"
+              echo "  → Document: Create ADR if 2+ modules or pattern/perf/security impact"
+              ;;
+            feat)
+              echo "  ✨ Recommended Actions:"
+              echo "  → Validate: Simple Design (tests pass, clear intent, DRY, minimal elements)"
+              echo "  → Review: Considered simpler approaches? Checked OSS solutions? Justified build vs buy?"
+              echo "  → Complete: Remove TODO/debug; run tests; update docs"
+              echo "  → Document: Create ADR if 2+ modules, new infra/patterns, or tech selection"
+              ;;
+            fix)
+              echo "  🐛 Recommended Actions:"
+              echo "  → Complete: Remove placeholders/debug; avoid new duplication"
+              echo "  → Test: Add regression test; link issue; run all tests"
+              echo "  → Document: Update CHANGELOG if user-facing"
+              ;;
+            docs)
+              echo "  📝 → Verify: Links valid; examples executable; no PM terms"
+              ;;
+            test)
+              echo "  ✅ → Check: All pass; coverage improved; AAA pattern; isolated"
+              ;;
+            chore)
+              echo "  🔧 → Verify: Code unaffected; build/CI validated"
+              ;;
+            perf)
+              echo "  ⚡ → Action: Add benchmarks; preserve correctness; document gains"
+              ;;
+            style)
+              echo "  💄 → Verify: Linter run; no logic change; tests pass"
+              ;;
+            build)
+              echo "  🏗️ → Check: Local build OK; deps compatible; licenses OK"
+              ;;
+            ci)
+              echo "  👷 → Verify: Syntax valid; secrets configured; tested in PR"
+              ;;
+            revert)
+              echo "  ⏪ → Action: Explain rationale; update issue; notify stakeholders"
+              ;;
+            *)
+              echo "  💡 → Verify: Meets standards; tests pass; docs updated"
+              ;;
+          esac
+
+          echo "</system-reminder>"
+          echo ""
+        fi
+
+post-rewrite:
+  commands:
+    validate-rebase-commits:
+      run: |
+        rewrite_type="{1}"
+        if [ "$rewrite_type" != "rebase" ]; then
+          exit 0
+        fi
+
+        invalid_commits=""
+        PROHIBITED_PATTERNS="(Phases? [0-9])|(Stages? [0-9])|(Steps? [0-9])|(Week [0-9])|(Day [0-9])|([Ii]n [Pp]rogress)|([0-9]+% done)|(Sprint [0-9])|(Milestone)|(est\.)|(estimated)|(预计)|(计划)|(负责人)|(工作量)|(Owner)|(Assignee)"
+        EXTERNAL_TOOL_PATTERNS="(^via \[[^]]+\]\(https?://[^)]+\)$)|(^via https?://)|(^Tool: [A-Za-z0-9._-]+$)|(^Platform: [A-Za-z0-9._-]+$)"
+
+        if read -t 1 -r old_sha new_sha rest 2>/dev/null; then
+          while true; do
+            msg=$(git log -1 --format=%s "$new_sha" 2>/dev/null || echo "")
+            if [ -n "$msg" ]; then
+              if ! printf '%s\n' "$msg" | grep -Eq '^[^[:space:]]+ [a-z]+\([a-z0-9-]+\): .+'; then
+                invalid_commits="${invalid_commits}  ${new_sha}: ${msg}\n"
+              fi
+              full_msg=$(git log -1 --format=%B "$new_sha" 2>/dev/null || echo "")
+              if printf '%s\n' "$full_msg" | grep -iq "Co-Authored-By:"; then
+                invalid_commits="${invalid_commits}  ${new_sha}: contains Co-Authored-By\n"
+              fi
+              if printf '%s\n' "$full_msg" | grep -iE "(Generated (with|by))|(🤖.*Generated)" >/dev/null 2>&1; then
+                invalid_commits="${invalid_commits}  ${new_sha}: contains AI generation markers\n"
+              fi
+              if printf '%s\n' "$full_msg" | grep -Ei "$EXTERNAL_TOOL_PATTERNS" >/dev/null 2>&1; then
+                invalid_commits="${invalid_commits}  ${new_sha}: contains external tool provenance markers\n"
+              fi
+              if printf '%s\n' "$full_msg" | grep -E "$PROHIBITED_PATTERNS" >/dev/null 2>&1; then
+                invalid_commits="${invalid_commits}  ${new_sha}: contains prohibited project management terms\n"
+              fi
+              line_count=$(printf '%s\n' "$full_msg" | wc -l | tr -d ' ')
+              if [ "$line_count" -gt 4 ]; then
+                invalid_commits="${invalid_commits}  ${new_sha}: too many lines (${line_count} > 4)\n"
+              fi
+            fi
+            read -t 1 -r old_sha new_sha rest 2>/dev/null || break
+          done
+        fi
+
+        if [ -n "$invalid_commits" ]; then
+          echo ""
+          echo "ERROR: The following rebased commits have invalid commit messages:"
+          printf '%b' "$invalid_commits"
+          echo ""
+          echo "Expected format: <emoji> <type>(<scope>): <subject>"
+          echo "Example: ✨ feat(auth): add OAuth2 login"
+          echo ""
+          echo "<system-reminder>"
+          echo "→ Next: git rebase -i HEAD~N → Mark commits as 'reword'/'edit' → Fix each message"
+          echo "</system-reminder>"
+          echo ""
+          exit 1
+        fi
