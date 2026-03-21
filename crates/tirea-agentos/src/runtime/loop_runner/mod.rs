@@ -62,7 +62,7 @@ use crate::contracts::runtime::{
     ToolExecutionResult,
 };
 use crate::contracts::thread::CheckpointReason;
-use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, Role, ToolCall};
+use crate::contracts::thread::{gen_message_id, Message, MessageMetadata, ToolCall};
 use crate::contracts::RunContext;
 use crate::contracts::{AgentEvent, RunAction, TerminationReason, ToolCallDecision};
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
@@ -82,6 +82,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
+use self::core::apply_context_messages_to_prompt;
 pub use crate::contracts::runtime::ToolExecutor;
 pub use crate::runtime::run_context::{
     await_or_cancel, is_cancelled, CancelAware, RunCancellationToken, StateCommitError,
@@ -2204,22 +2205,13 @@ pub async fn run_loop_with_context(
         let request_transforms = prepared.request_transforms;
         let step_inference_override = prepared.inference_override;
 
-        // Insert throttle-filtered context entries after the base system
-        // prompt but before session context and conversation history.  This
-        // ordering maximises prompt-cache hit rates: the static base prompt
-        // stays cached even when dynamic plugin segments change.
-        let insert_pos = if messages.first().map_or(false, |m| m.role == Role::System) {
-            1
-        } else {
-            0
-        };
-        for (i, entry) in context_tracker
-            .filter(prepared.context_messages, step_counter)
-            .into_iter()
-            .enumerate()
-        {
-            messages.insert(insert_pos + i, Message::system(entry.content));
-        }
+        apply_context_messages_to_prompt(
+            &mut messages,
+            &mut context_tracker,
+            prepared.context_messages,
+            step_counter,
+            !agent.system_prompt().is_empty(),
+        );
         step_counter = step_counter.saturating_add(1);
         let chat_options =
             apply_inference_override(agent.chat_options(), step_inference_override.as_ref());

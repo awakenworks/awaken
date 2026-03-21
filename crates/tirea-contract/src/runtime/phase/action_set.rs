@@ -111,7 +111,11 @@ impl From<AnyStateAction> for ActionSet<LifecycleAction> {
 
 /// Actions valid in `BeforeInference`.
 pub enum BeforeInferenceAction {
-    /// Append a session message.
+    /// Legacy alias for injecting session-band context.
+    ///
+    /// New code should prefer `AddContextMessage(ContextMessage::session(...))`
+    /// so placement and throttling always flow through the unified prompt
+    /// segment mechanism.
     AddSessionContext(String),
     /// Inject a structured context message with throttle metadata.
     ///

@@ -69,6 +69,11 @@ pub use crate::runtime::{AgentOs, PreparedRun, RunStream};
 pub use crate::composition::{tool_map, tool_map_from_arc, AgentDefinition, AgentOsBuilder};
 
 // Plugin SPI
+pub use crate::contracts::runtime::inference::{
+    clear_prompt_segment_namespace_action, consume_after_emit_prompt_segments_action,
+    remove_prompt_segment_action, upsert_prompt_segment_action, PromptSegmentAction,
+    PromptSegmentConsumePolicy, PromptSegmentState, StoredPromptSegment,
+};
 pub use crate::contracts::runtime::phase::{ActionSet, BeforeInferenceAction};
 pub use crate::contracts::AgentBehavior;
 
@@ -81,8 +86,8 @@ pub use tirea_extension_permission::{
 
 #[cfg(feature = "core")]
 pub use tirea_extension_reminder::{
-    add_reminder_action, clear_reminder_action, inject_reminders, ReminderAction, ReminderPlugin,
-    SystemReminder,
+    add_persistent_reminder_action, add_reminder_action, clear_reminder_action, inject_reminders,
+    ReminderAction, ReminderPlugin, SystemReminder,
 };
 
 // ── Skills extension (require "skills" feature) ──────────────────────────

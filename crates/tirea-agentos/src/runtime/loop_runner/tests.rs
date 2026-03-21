@@ -1041,15 +1041,8 @@ fn tool_execution_result(call_id: &str, patch: Option<TrackedPatch>) -> ToolExec
     }
 }
 
-fn skill_activation_result(
-    call_id: &str,
-    skill_id: &str,
-    instruction: Option<&str>,
-) -> ToolExecutionResult {
+fn skill_activation_result(call_id: &str, skill_id: &str) -> ToolExecutionResult {
     let result = ToolResult::success("skill", json!({ "activated": true, "skill_id": skill_id }));
-    let user_messages = instruction
-        .map(|text| vec![text.to_string()])
-        .unwrap_or_default();
 
     ToolExecutionResult {
         execution: crate::engine::tool_execution::ToolExecution {
@@ -1062,7 +1055,7 @@ fn skill_activation_result(
             patch: None,
         },
         reminders: Vec::new(),
-        user_messages,
+        user_messages: Vec::new(),
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
         suspended_call: None,
         pending_patches: Vec::new(),
@@ -2268,17 +2261,15 @@ fn test_build_messages_with_context() {
     fixture.messages = thread.messages.clone();
     let mut step = fixture.step(tool_descriptors);
 
-    // Context messages are now injected by the loop runner after
-    // build_messages, so only session context is set here.
+    // All injected context is normalized after build_messages, so this helper
+    // only returns the base system prompt plus conversation history.
     step.inference.session_context.push("Thread context".into());
 
     let messages = build_messages(&step, "Base system prompt");
 
-    // Base prompt + session context + user message.
-    assert_eq!(messages.len(), 3);
+    assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].content, "Base system prompt");
-    assert_eq!(messages[1].content, "Thread context");
-    assert_eq!(messages[2].content, "Hello");
+    assert_eq!(messages[1].content, "Hello");
 }
 
 #[test]
@@ -3256,33 +3247,28 @@ fn test_apply_tool_results_suspends_all_interactions() {
 }
 
 #[test]
-fn test_apply_tool_results_appends_skill_instruction_as_user_message() {
+fn test_apply_tool_results_skill_activation_only_persists_tool_message() {
     let thread = Thread::with_initial_state("test", json!({}));
     let mut run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
-    let result = skill_activation_result("call_1", "docx", Some("## DOCX\nUse docx-js."));
+    let result = skill_activation_result("call_1", "docx");
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
         .expect("apply_tool_results_to_session should succeed");
 
-    assert_eq!(run_ctx.messages().len(), 2);
+    assert_eq!(run_ctx.messages().len(), 1);
     assert_eq!(
         run_ctx.messages()[0].role,
         crate::contracts::thread::Role::Tool
     );
-    assert_eq!(
-        run_ctx.messages()[1].role,
-        crate::contracts::thread::Role::User
-    );
-    assert_eq!(run_ctx.messages()[1].content, "## DOCX\nUse docx-js.");
 }
 
 #[test]
-fn test_apply_tool_results_skill_instruction_user_message_attaches_metadata() {
+fn test_apply_tool_results_skill_activation_attaches_metadata_to_tool_message() {
     let thread = Thread::with_initial_state("test", json!({}));
     let mut run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
-    let result = skill_activation_result("call_1", "docx", Some("Use docx-js."));
+    let result = skill_activation_result("call_1", "docx");
     let meta = MessageMetadata {
         run_id: Some("run-1".to_string()),
         step_index: Some(3),
@@ -3292,10 +3278,10 @@ fn test_apply_tool_results_skill_instruction_user_message_attaches_metadata() {
         apply_tool_results_to_session(&mut run_ctx, &[result], Some(meta.clone()), false)
             .expect("apply_tool_results_to_session should succeed");
 
-    assert_eq!(run_ctx.messages().len(), 2);
-    let user_msg = &run_ctx.messages()[1];
-    assert_eq!(user_msg.role, crate::contracts::thread::Role::User);
-    assert_eq!(user_msg.metadata.as_ref(), Some(&meta));
+    assert_eq!(run_ctx.messages().len(), 1);
+    let tool_msg = &run_ctx.messages()[0];
+    assert_eq!(tool_msg.role, crate::contracts::thread::Role::Tool);
+    assert_eq!(tool_msg.metadata.as_ref(), Some(&meta));
 }
 
 #[test]
@@ -3303,7 +3289,7 @@ fn test_apply_tool_results_skill_without_instruction_does_not_append_user_messag
     let thread = Thread::with_initial_state("test", json!({}));
     let mut run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
-    let result = skill_activation_result("call_1", "docx", None);
+    let result = skill_activation_result("call_1", "docx");
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
         .expect("apply_tool_results_to_session should succeed");
@@ -3384,26 +3370,22 @@ fn test_apply_tool_results_ignores_blank_user_messages() {
 }
 
 #[test]
-fn test_apply_tool_results_keeps_tool_and_appended_user_message_order_stable() {
+fn test_apply_tool_results_keeps_skill_activation_tool_message_order_stable() {
     let thread = Thread::with_initial_state("test", json!({}));
     let mut run_ctx =
         RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
-    let first = skill_activation_result("call_2", "beta", Some("Instruction B"));
-    let second = skill_activation_result("call_1", "alpha", Some("Instruction A"));
+    let first = skill_activation_result("call_2", "beta");
+    let second = skill_activation_result("call_1", "alpha");
 
     let _applied =
         apply_tool_results_to_session(&mut run_ctx, &[first, second], None, true).expect("apply");
     let messages = run_ctx.messages();
 
-    assert_eq!(messages.len(), 4);
+    assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].role, crate::contracts::thread::Role::Tool);
     assert_eq!(messages[0].tool_call_id.as_deref(), Some("call_2"));
     assert_eq!(messages[1].role, crate::contracts::thread::Role::Tool);
     assert_eq!(messages[1].tool_call_id.as_deref(), Some("call_1"));
-    assert_eq!(messages[2].role, crate::contracts::thread::Role::User);
-    assert_eq!(messages[2].content, "Instruction B");
-    assert_eq!(messages[3].role, crate::contracts::thread::Role::User);
-    assert_eq!(messages[3].content, "Instruction A");
 }
 
 #[test]

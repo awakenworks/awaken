@@ -7,6 +7,7 @@
 //! - Tools: activate skill, load reference, run script
 //! - `SkillDiscoveryPlugin`: inject skills catalog before inference
 
+mod active_instructions_plugin;
 mod discovery_plugin;
 mod embedded_registry;
 mod materialize;
@@ -20,11 +21,13 @@ mod types;
 pub const SKILLS_PLUGIN_ID: &str = "skills";
 pub const SKILLS_BUNDLE_ID: &str = SKILLS_PLUGIN_ID;
 pub const SKILLS_DISCOVERY_PLUGIN_ID: &str = "skills_discovery";
+pub const SKILLS_ACTIVE_INSTRUCTIONS_PLUGIN_ID: &str = "skills_active_instructions";
 
 pub const SKILL_ACTIVATE_TOOL_ID: &str = "skill";
 pub const SKILL_LOAD_RESOURCE_TOOL_ID: &str = "load_skill_resource";
 pub const SKILL_SCRIPT_TOOL_ID: &str = "skill_script";
 
+pub use active_instructions_plugin::ActiveSkillInstructionsPlugin;
 pub use discovery_plugin::SkillDiscoveryPlugin;
 pub use embedded_registry::{EmbeddedSkill, EmbeddedSkillData};
 pub use mcp_registry::{McpPromptSkill, McpPromptSkillRegistryManager};

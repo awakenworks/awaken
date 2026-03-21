@@ -32,7 +32,9 @@ fn apply_before_inference_actions(
     for action in actions {
         match action {
             BeforeInferenceAction::AddSessionContext(text) => {
-                step.inference.session_context.push(text);
+                step.inference
+                    .context_messages
+                    .push(crate::contracts::runtime::inference::ContextMessage::session_text(text));
             }
             BeforeInferenceAction::AddContextMessage(entry) => {
                 step.inference.context_messages.push(entry);
@@ -456,6 +458,8 @@ mod tests {
 
     struct TestActionBehavior;
 
+    struct LegacySessionActionBehavior;
+
     #[async_trait]
     impl AgentBehavior for TestActionBehavior {
         fn id(&self) -> &str {
@@ -473,6 +477,22 @@ mod tests {
                     cooldown_turns: 0,
                     target: Default::default(),
                 },
+            ))
+        }
+    }
+
+    #[async_trait]
+    impl AgentBehavior for LegacySessionActionBehavior {
+        fn id(&self) -> &str {
+            "legacy_session_action"
+        }
+
+        async fn before_inference(
+            &self,
+            _ctx: &ReadOnlyContext<'_>,
+        ) -> ActionSet<BeforeInferenceAction> {
+            ActionSet::single(BeforeInferenceAction::AddSessionContext(
+                "legacy session".into(),
             ))
         }
     }
@@ -503,5 +523,29 @@ mod tests {
         emit_agent_phase(Phase::RunStart, &mut step, &NoOpBehavior, &doc)
             .await
             .expect("noop behavior should succeed");
+    }
+
+    #[tokio::test]
+    async fn emit_agent_phase_normalizes_legacy_session_context_into_context_messages() {
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
+        let doc = DocCell::new(serde_json::json!({}));
+
+        emit_agent_phase(
+            Phase::BeforeInference,
+            &mut step,
+            &LegacySessionActionBehavior,
+            &doc,
+        )
+        .await
+        .expect("legacy session action should succeed");
+
+        assert!(step.inference.session_context.is_empty());
+        assert_eq!(step.inference.context_messages.len(), 1);
+        assert_eq!(step.inference.context_messages[0].content, "legacy session");
+        assert_eq!(
+            step.inference.context_messages[0].target,
+            crate::contracts::runtime::inference::ContextMessageTarget::Session
+        );
     }
 }

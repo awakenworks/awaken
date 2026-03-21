@@ -280,9 +280,10 @@ async fn wire_skills_inserts_tools_and_plugin() {
     assert!(tools.contains_key("skill_script"));
 
     let behavior_ids = cfg.behavior.behavior_ids();
-    assert_eq!(behavior_ids.len(), 2);
+    assert_eq!(behavior_ids.len(), 3);
     assert_eq!(behavior_ids[0], "skills_discovery");
-    assert_eq!(behavior_ids[1], "stop_policy");
+    assert_eq!(behavior_ids[1], "skills_active_instructions");
+    assert_eq!(behavior_ids[2], "stop_policy");
 
     // Verify injection does not panic and includes catalog.
     let state = json!({
@@ -314,10 +315,8 @@ async fn wire_skills_inserts_tools_and_plugin() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(merged.contains("<available_skills>"));
-    assert!(
-        !merged.contains("<skill_instructions skill=\"s1\">"),
-        "runtime skill instructions are delivered via ToolExecutionEffect user messages, not system context"
-    );
+    assert!(merged.contains("<active_skill_instructions>"));
+    assert!(merged.contains("Do X"));
 }
 
 #[cfg(feature = "skills")]
@@ -340,10 +339,12 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
     let cfg = AgentDefinition::new("gpt-4o-mini");
     let cfg = os.wire_skills_into(cfg, &mut tools).unwrap();
 
-    // With advertise_catalog=false, no discovery plugin is registered — only tools.
+    // With advertise_catalog=false, discovery is disabled but active-skill
+    // hidden instructions are still injected at inference time.
     let behavior_ids = cfg.behavior.behavior_ids();
-    assert_eq!(behavior_ids.len(), 1);
-    assert_eq!(behavior_ids[0], "stop_policy");
+    assert_eq!(behavior_ids.len(), 2);
+    assert_eq!(behavior_ids[0], "skills_active_instructions");
+    assert_eq!(behavior_ids[1], "stop_policy");
 
     // Tools are still available even without the catalog plugin.
     assert!(tools.contains_key("skill"));
@@ -589,13 +590,15 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
     assert!(resolved.tools.contains_key("task_cancel"));
     assert!(resolved.tools.contains_key("task_output"));
     let behavior_ids = resolved.agent.behavior.behavior_ids();
-    assert_eq!(behavior_ids.len(), 6);
+    assert_eq!(behavior_ids.len(), 8);
     assert_eq!(behavior_ids[0], "skills_discovery");
-    assert_eq!(behavior_ids[1], "agent_tools");
-    assert_eq!(behavior_ids[2], "agent_recovery");
-    assert_eq!(behavior_ids[3], "background_tasks");
-    assert_eq!(behavior_ids[4], "context");
-    assert_eq!(behavior_ids[5], "stop_policy");
+    assert_eq!(behavior_ids[1], "skills_active_instructions");
+    assert_eq!(behavior_ids[2], "agent_tools");
+    assert_eq!(behavior_ids[3], "agent_recovery");
+    assert_eq!(behavior_ids[4], "background_tasks");
+    assert_eq!(behavior_ids[5], "prompt_segments");
+    assert_eq!(behavior_ids[6], "context");
+    assert_eq!(behavior_ids[7], "stop_policy");
 }
 
 #[test]
@@ -1636,6 +1639,8 @@ async fn resolve_wires_agent_tools_by_default() {
     let behavior_ids = resolved.agent.behavior.behavior_ids();
     assert_eq!(behavior_ids[0], "agent_tools");
     assert_eq!(behavior_ids[1], "agent_recovery");
+    assert_eq!(behavior_ids[2], "background_tasks");
+    assert_eq!(behavior_ids[3], "prompt_segments");
 }
 
 #[tokio::test]
@@ -1834,8 +1839,9 @@ async fn resolve_wires_plugins_in_order() {
     assert_eq!(behavior_ids[0], "agent_tools");
     assert_eq!(behavior_ids[1], "agent_recovery");
     assert_eq!(behavior_ids[2], "background_tasks");
-    assert_eq!(behavior_ids[3], "policy1");
-    assert_eq!(behavior_ids[4], "p1");
+    assert_eq!(behavior_ids[3], "prompt_segments");
+    assert_eq!(behavior_ids[4], "policy1");
+    assert_eq!(behavior_ids[5], "p1");
 }
 
 #[cfg(feature = "skills")]
@@ -1873,11 +1879,13 @@ async fn resolve_wires_skills_before_plugins() {
 
     let behavior_ids = resolved.agent.behavior.behavior_ids();
     assert_eq!(behavior_ids[0], "skills_discovery");
-    assert_eq!(behavior_ids[1], "agent_tools");
-    assert_eq!(behavior_ids[2], "agent_recovery");
-    assert_eq!(behavior_ids[3], "background_tasks");
-    assert_eq!(behavior_ids[4], "policy1");
-    assert_eq!(behavior_ids[5], "p1");
+    assert_eq!(behavior_ids[1], "skills_active_instructions");
+    assert_eq!(behavior_ids[2], "agent_tools");
+    assert_eq!(behavior_ids[3], "agent_recovery");
+    assert_eq!(behavior_ids[4], "background_tasks");
+    assert_eq!(behavior_ids[5], "prompt_segments");
+    assert_eq!(behavior_ids[6], "policy1");
+    assert_eq!(behavior_ids[7], "p1");
 }
 
 #[test]
@@ -4887,9 +4895,10 @@ fn reserved_behavior_ids_without_wirings() {
     assert!(ids.contains(&"agent_tools"));
     assert!(ids.contains(&"agent_recovery"));
     assert!(ids.contains(&"background_tasks"));
+    assert!(ids.contains(&"prompt_segments"));
     assert!(ids.contains(&"stop_policy"));
     assert!(ids.contains(&"context"));
-    assert_eq!(ids.len(), 5, "only internal reserved ids: {ids:?}");
+    assert_eq!(ids.len(), 6, "only internal reserved ids: {ids:?}");
 }
 
 #[test]
@@ -4902,10 +4911,11 @@ fn reserved_behavior_ids_aggregates_from_wirings() {
     let ids = AgentOs::reserved_behavior_ids(&wirings);
     assert!(ids.contains(&"agent_tools"));
     assert!(ids.contains(&"agent_recovery"));
+    assert!(ids.contains(&"prompt_segments"));
     assert!(ids.contains(&"stop_policy"));
     assert!(ids.contains(&"ext1_reserved_a"));
     assert!(ids.contains(&"ext1_reserved_b"));
     assert!(ids.contains(&"ext2_reserved"));
     assert!(ids.contains(&"context"));
-    assert_eq!(ids.len(), 8, "should aggregate all reserved ids: {ids:?}");
+    assert_eq!(ids.len(), 9, "should aggregate all reserved ids: {ids:?}");
 }

@@ -35,18 +35,12 @@ fn is_pending_approval_placeholder(msg: &Message) -> bool {
 pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec<Message> {
     let mut messages = Vec::new();
 
-    let session_ctx = &step.inference.session_context[..];
-
     // Emit base system prompt as the first system message. Plugin-injected
     // context (via AddContextMessage) is inserted after this by the loop
     // runner, keeping each segment as a separate system message for
     // independent prompt cache boundaries.
     if !system_prompt.is_empty() {
         messages.push(Message::system(system_prompt.to_string()));
-    }
-
-    for ctx in session_ctx {
-        messages.push(Message::system(ctx.clone()));
     }
 
     // Collect all tool_call IDs issued by the assistant so we can filter
@@ -192,7 +186,12 @@ pub(super) fn inference_inputs_from_step(
     let run_action = step.run_action();
     let transforms = std::mem::take(&mut step.inference.request_transforms);
     let inference_override = step.inference.inference_override.take();
-    let context_messages = std::mem::take(&mut step.inference.context_messages);
+    let mut context_messages = std::mem::take(&mut step.inference.context_messages);
+    context_messages.extend(
+        std::mem::take(&mut step.inference.session_context)
+            .into_iter()
+            .map(tirea_contract::runtime::inference::ContextMessage::session_text),
+    );
     (
         messages,
         filtered_tools,
@@ -239,6 +238,62 @@ pub(super) fn build_request_for_filtered_tools(
     }
 
     request
+}
+
+pub(super) fn apply_context_messages_to_prompt(
+    messages: &mut Vec<Message>,
+    tracker: &mut ContextThrottleTracker,
+    entries: Vec<tirea_contract::runtime::inference::ContextMessage>,
+    current_step: usize,
+    has_base_system_prompt: bool,
+) {
+    use tirea_contract::runtime::inference::ContextMessageTarget;
+
+    let filtered = tracker.filter(normalize_context_messages(entries), current_step);
+    if filtered.is_empty() {
+        return;
+    }
+
+    let mut prefix = Vec::new();
+    let mut session = Vec::new();
+    let mut suffix = Vec::new();
+    for entry in filtered {
+        let msg = Message::system(entry.content);
+        match entry.target {
+            ContextMessageTarget::System => prefix.push(msg),
+            ContextMessageTarget::Session => session.push(msg),
+            ContextMessageTarget::SuffixSystem => suffix.push(msg),
+        }
+    }
+
+    let prefix_insert_pos = usize::from(has_base_system_prompt);
+    for (offset, msg) in prefix.into_iter().enumerate() {
+        messages.insert(prefix_insert_pos + offset, msg);
+    }
+
+    let session_insert_pos = messages
+        .iter()
+        .take_while(|m| m.role == Role::System)
+        .count();
+    for (offset, msg) in session.into_iter().enumerate() {
+        messages.insert(session_insert_pos + offset, msg);
+    }
+
+    messages.extend(suffix);
+}
+
+fn normalize_context_messages(
+    entries: Vec<tirea_contract::runtime::inference::ContextMessage>,
+) -> Vec<tirea_contract::runtime::inference::ContextMessage> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::with_capacity(entries.len());
+    for entry in entries.into_iter().rev() {
+        if seen.insert(entry.key.clone()) {
+            deduped.push(entry);
+        }
+    }
+    deduped.reverse();
+    deduped
 }
 
 #[allow(dead_code)]
@@ -703,5 +758,98 @@ mod tests {
         let r = tracker.filter(vec![entry("a", "alpha", 2), entry("b", "beta", 4)], 3);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].key, "a");
+    }
+
+    #[test]
+    fn apply_context_messages_positions_prefix_session_and_suffix() {
+        use tirea_contract::runtime::inference::{ContextMessage, ContextMessageTarget};
+
+        let mut tracker = ContextThrottleTracker::new();
+        let mut messages = vec![
+            Message::system("base"),
+            Message::user("hello"),
+            Message::assistant("world"),
+        ];
+
+        apply_context_messages_to_prompt(
+            &mut messages,
+            &mut tracker,
+            vec![
+                ContextMessage {
+                    key: "prefix".into(),
+                    content: "prefix".into(),
+                    cooldown_turns: 0,
+                    target: ContextMessageTarget::System,
+                },
+                ContextMessage {
+                    key: "session".into(),
+                    content: "session".into(),
+                    cooldown_turns: 0,
+                    target: ContextMessageTarget::Session,
+                },
+                ContextMessage {
+                    key: "suffix".into(),
+                    content: "suffix".into(),
+                    cooldown_turns: 0,
+                    target: ContextMessageTarget::SuffixSystem,
+                },
+            ],
+            0,
+            true,
+        );
+
+        let contents: Vec<_> = messages.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(
+            contents,
+            vec!["base", "prefix", "session", "hello", "world", "suffix"]
+        );
+    }
+
+    #[test]
+    fn apply_context_messages_without_base_system_starts_with_prefix() {
+        use tirea_contract::runtime::inference::{ContextMessage, ContextMessageTarget};
+
+        let mut tracker = ContextThrottleTracker::new();
+        let mut messages = vec![Message::user("hello")];
+
+        apply_context_messages_to_prompt(
+            &mut messages,
+            &mut tracker,
+            vec![
+                ContextMessage {
+                    key: "prefix".into(),
+                    content: "prefix".into(),
+                    cooldown_turns: 0,
+                    target: ContextMessageTarget::System,
+                },
+                ContextMessage {
+                    key: "session".into(),
+                    content: "session".into(),
+                    cooldown_turns: 0,
+                    target: ContextMessageTarget::Session,
+                },
+            ],
+            0,
+            false,
+        );
+
+        let contents: Vec<_> = messages.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(contents, vec!["prefix", "session", "hello"]);
+    }
+
+    #[test]
+    fn normalize_context_messages_last_key_wins() {
+        use tirea_contract::runtime::inference::ContextMessage;
+
+        let entries = normalize_context_messages(vec![
+            ContextMessage::system("dup", "first"),
+            ContextMessage::session("keep", "session"),
+            ContextMessage::suffix_system("dup", "second"),
+        ]);
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].key, "keep");
+        assert_eq!(entries[1].key, "dup");
+        assert_eq!(entries[1].content, "second");
     }
 }

@@ -336,7 +336,9 @@ pub fn apply_before_inference_for_test(
     for action in actions {
         match action {
             BeforeInferenceAction::AddSessionContext(text) => {
-                step.inference.session_context.push(text);
+                step.inference.context_messages.push(
+                    crate::runtime::inference::ContextMessage::session_text(text),
+                );
             }
             BeforeInferenceAction::AddContextMessage(entry) => {
                 step.inference.context_messages.push(entry);

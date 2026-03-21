@@ -150,7 +150,7 @@ fn assert_invalid_arguments_error(result: &ToolResult) {
 }
 
 #[tokio::test]
-async fn test_skill_activation_delivers_instructions_via_user_messages_on_effect() {
+async fn test_skill_activation_effect_does_not_emit_user_messages() {
     let (_td, skills) = make_skill_tree();
     let activate = SkillActivateTool::new(skills);
 
@@ -190,8 +190,7 @@ async fn test_skill_activation_delivers_instructions_via_user_messages_on_effect
         }
     }
     let user_messages = step.messaging.user_messages.clone();
-    assert_eq!(user_messages.len(), 1);
-    assert!(user_messages[0].contains("Use docx-js for new documents"));
+    assert!(user_messages.is_empty());
 }
 
 #[tokio::test]
@@ -483,7 +482,7 @@ async fn test_skill_activation_applies_allowed_tools_to_permission_state() {
 }
 
 #[tokio::test]
-async fn test_skill_activation_user_messages_contain_skill_instructions() {
+async fn test_skill_activation_effect_keeps_skill_instructions_hidden() {
     let (_td, skills) = make_skill_tree();
     let activate = SkillActivateTool::new(skills);
 
@@ -522,12 +521,7 @@ async fn test_skill_activation_user_messages_contain_skill_instructions() {
         }
     }
     let user_messages = step.messaging.user_messages.clone();
-    assert_eq!(user_messages.len(), 1);
-    assert!(
-        user_messages[0].contains("# DOCX Processing"),
-        "expected SKILL.md heading in user message, got: {}",
-        &user_messages[0][..user_messages[0].len().min(200)]
-    );
+    assert!(user_messages.is_empty());
 }
 
 #[tokio::test]

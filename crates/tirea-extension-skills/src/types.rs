@@ -74,9 +74,9 @@ pub struct LoadedAsset {
 
 /// Persisted skill state — only the CRDT active set.
 ///
-/// Material content (instructions, references, scripts, assets) is delivered
-/// inline via `ToolResult` / `with_user_message` and never stored in state,
-/// avoiding parallel-branch conflicts on HashMap writes.
+/// Material content (instructions, references, scripts, assets) is read from
+/// the registry on demand and never stored in state, avoiding parallel-branch
+/// conflicts on large prompt-bearing payloads.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[tirea(path = "skills", action = "SkillStateAction", scope = "thread")]
 pub struct SkillState {

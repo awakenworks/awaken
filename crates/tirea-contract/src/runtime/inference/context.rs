@@ -155,7 +155,13 @@ impl From<InferenceModelOverride> for InferenceOverride {
 /// `OverrideInference` actions during `BeforeInference`.
 #[derive(Default, Clone)]
 pub struct InferenceContext {
-    /// Session context messages injected before user messages.
+    /// Legacy session-context messages injected before user messages.
+    ///
+    /// Prefer `context_messages` with `ContextMessageTarget::Session`. This
+    /// field remains only to preserve backwards compatibility for older action
+    /// producers and stored test fixtures; the loop runner normalizes these
+    /// strings into `context_messages` before prompt assembly so they share the
+    /// same placement and throttle pipeline.
     pub session_context: Vec<String>,
     /// Available tool descriptors (can be filtered by actions).
     pub tools: Vec<ToolDescriptor>,

@@ -6,8 +6,9 @@ use crate::contracts::runtime::behavior::AgentBehavior;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tirea_extension_skills::{
-    InMemorySkillRegistry, SkillDiscoveryPlugin, SkillRegistry, SkillSubsystem,
-    SkillSubsystemError, SKILLS_BUNDLE_ID, SKILLS_DISCOVERY_PLUGIN_ID, SKILLS_PLUGIN_ID,
+    ActiveSkillInstructionsPlugin, InMemorySkillRegistry, SkillDiscoveryPlugin, SkillRegistry,
+    SkillSubsystem, SkillSubsystemError, SKILLS_ACTIVE_INSTRUCTIONS_PLUGIN_ID, SKILLS_BUNDLE_ID,
+    SKILLS_DISCOVERY_PLUGIN_ID, SKILLS_PLUGIN_ID,
 };
 
 pub(crate) struct SkillsSystemWiring {
@@ -27,14 +28,17 @@ impl SkillsSystemWiring {
     }
 
     fn build_plugins(&self, registry: Arc<dyn SkillRegistry>) -> Vec<Arc<dyn AgentBehavior>> {
-        if !self.config.advertise_catalog {
-            return Vec::new();
+        let mut plugins: Vec<Arc<dyn AgentBehavior>> = vec![Arc::new(
+            ActiveSkillInstructionsPlugin::new(registry.clone()),
+        )];
+        if self.config.advertise_catalog {
+            let discovery = SkillDiscoveryPlugin::new(registry).with_limits(
+                self.config.discovery_max_entries,
+                self.config.discovery_max_chars,
+            );
+            plugins.insert(0, Arc::new(discovery));
         }
-        let discovery = SkillDiscoveryPlugin::new(registry).with_limits(
-            self.config.discovery_max_entries,
-            self.config.discovery_max_chars,
-        );
-        vec![Arc::new(discovery)]
+        plugins
     }
 }
 
@@ -44,7 +48,11 @@ impl SystemWiring for SkillsSystemWiring {
     }
 
     fn reserved_behavior_ids(&self) -> &[&'static str] {
-        &[SKILLS_PLUGIN_ID, SKILLS_DISCOVERY_PLUGIN_ID]
+        &[
+            SKILLS_PLUGIN_ID,
+            SKILLS_DISCOVERY_PLUGIN_ID,
+            SKILLS_ACTIVE_INSTRUCTIONS_PLUGIN_ID,
+        ]
     }
 
     fn wire(

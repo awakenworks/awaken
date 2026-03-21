@@ -1,14 +1,23 @@
 use serde::{Deserialize, Serialize};
+use std::hash::{Hash, Hasher};
 
 /// Injection target for a [`ContextMessage`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextMessageTarget {
-    /// Inject as a system message (good for prompt caching of static content).
+    /// Inject immediately after the base system prompt.
+    ///
+    /// This keeps static agent identity text at the front while allowing
+    /// dynamic prefix context to remain independently cacheable.
     #[default]
     System,
-    /// Inject as session context before conversation history.
+    /// Inject in the session-context band before conversation history.
     Session,
+    /// Inject at the end of the assembled prompt, after conversation history.
+    ///
+    /// Use this for hidden tail instructions that should shape the next model
+    /// turn without being persisted as user-visible conversation messages.
+    SuffixSystem,
 }
 
 /// A structured, managed context entry with throttle metadata.
@@ -20,7 +29,7 @@ pub enum ContextMessageTarget {
 /// - **Deduplicate** by `key` (same key replaces previous content)
 /// - **Throttle** by `cooldown_turns` (skip injection if recently injected
 ///   and content hasn't changed)
-/// - **Target** by `target` (system message vs session context)
+/// - **Target** by `target` (prefix system, session context, or suffix system)
 ///
 /// The loop runner maintains a per-run tracker. An entry is injected when:
 /// 1. It has never been injected before, OR
@@ -41,6 +50,56 @@ pub struct ContextMessage {
     /// Where to inject the content in the message sequence.
     #[serde(default)]
     pub target: ContextMessageTarget,
+}
+
+impl ContextMessage {
+    #[must_use]
+    pub fn new(key: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            content: content.into(),
+            cooldown_turns: 0,
+            target: ContextMessageTarget::System,
+        }
+    }
+
+    #[must_use]
+    pub fn with_target(mut self, target: ContextMessageTarget) -> Self {
+        self.target = target;
+        self
+    }
+
+    #[must_use]
+    pub fn with_cooldown_turns(mut self, cooldown_turns: u32) -> Self {
+        self.cooldown_turns = cooldown_turns;
+        self
+    }
+
+    #[must_use]
+    pub fn system(key: impl Into<String>, content: impl Into<String>) -> Self {
+        Self::new(key, content)
+    }
+
+    #[must_use]
+    pub fn session(key: impl Into<String>, content: impl Into<String>) -> Self {
+        Self::new(key, content).with_target(ContextMessageTarget::Session)
+    }
+
+    #[must_use]
+    pub fn suffix_system(key: impl Into<String>, content: impl Into<String>) -> Self {
+        Self::new(key, content).with_target(ContextMessageTarget::SuffixSystem)
+    }
+
+    /// Build a session-scoped context entry using a deterministic key derived
+    /// from the content. Intended for legacy session-context callers that lack
+    /// an explicit stable key but still need unified throttle/placement logic.
+    #[must_use]
+    pub fn session_text(content: impl Into<String>) -> Self {
+        let content = content.into();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        content.hash(&mut hasher);
+        Self::session(format!("legacy_session:{:016x}", hasher.finish()), content)
+    }
 }
 
 #[cfg(test)]
@@ -82,5 +141,29 @@ mod tests {
         assert!(json.contains("\"session\""));
         let restored: ContextMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.target, ContextMessageTarget::Session);
+    }
+
+    #[test]
+    fn suffix_target_serde() {
+        let entry = ContextMessage {
+            key: "skill_tail".into(),
+            content: "Do X".into(),
+            cooldown_turns: 0,
+            target: ContextMessageTarget::SuffixSystem,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"suffix_system\""));
+        let restored: ContextMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.target, ContextMessageTarget::SuffixSystem);
+    }
+
+    #[test]
+    fn session_text_auto_keys_by_content() {
+        let a = ContextMessage::session_text("branch: main");
+        let b = ContextMessage::session_text("branch: main");
+        let c = ContextMessage::session_text("branch: dev");
+        assert_eq!(a.target, ContextMessageTarget::Session);
+        assert_eq!(a.key, b.key);
+        assert_ne!(a.key, c.key);
     }
 }

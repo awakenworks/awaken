@@ -99,7 +99,9 @@ impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
 
     /// Append a session message.
     pub fn add_session_message(&mut self, text: impl Into<String>) {
-        self.step.inference.session_context.push(text.into());
+        self.step.inference.context_messages.push(
+            crate::runtime::inference::ContextMessage::session_text(text.into()),
+        );
     }
 
     /// Exclude tool by id.

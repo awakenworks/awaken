@@ -8,7 +8,6 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use std::sync::Arc;
-use tirea_contract::runtime::phase::AfterToolExecuteAction;
 use tirea_contract::runtime::state::AnyStateAction;
 use tirea_contract::runtime::tool_call::ToolAccessGranter;
 use tirea_contract::runtime::tool_call::{
@@ -112,7 +111,7 @@ impl SkillActivateTool {
             Ok(v) => v,
             Err(r) => return Ok(ToolExecutionEffect::from(r)),
         };
-        let instruction_for_message = activation.instructions;
+
 
         let activate_action =
             AnyStateAction::new::<SkillState>(SkillStateAction::Activate(meta.id.clone()));
@@ -183,11 +182,6 @@ impl SkillActivateTool {
                 effect = effect.with_action(granter.grant_tool_rule_override(pattern));
             }
         }
-        if !instruction_for_message.trim().is_empty() {
-            effect = effect.with_action(AfterToolExecuteAction::AddUserMessage(
-                instruction_for_message,
-            ));
-        }
         Ok(effect)
     }
 }
@@ -198,7 +192,7 @@ impl Tool for SkillActivateTool {
         ToolDescriptor::new(
             SKILL_ACTIVATE_TOOL_ID,
             "Skill",
-            "Activate a skill and persist its instructions",
+            "Activate a skill for subsequent hidden prompt injection",
         )
         .with_parameters(json!({
             "type": "object",
