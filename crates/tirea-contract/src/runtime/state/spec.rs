@@ -144,11 +144,6 @@ impl AnyStateAction {
         Box::new(move |doc: &Value, actual_path: &str| {
             let path = parse_path(actual_path);
             let sub_doc = get_at_path(doc, &path).cloned().unwrap_or(Value::Null);
-            // Track whether the state is being created for the first time.
-            // When true, we must emit a whole-state Op::set rather than a
-            // per-field diff, because diff_ops would skip fields that match
-            // the default (e.g., status=Running when default is Running).
-            let is_creation = sub_doc.is_null() || sub_doc == Value::Object(Default::default());
 
             // When the path doesn't exist (Null) and from_value fails,
             // fall back to an empty object. This handles derive(State) structs
@@ -162,20 +157,24 @@ impl AnyStateAction {
                 }
             })?;
 
-            if is_creation && S::lattice_keys().is_empty() {
-                // First-time creation of non-CRDT state: emit whole-state
-                // Op::set so all fields (including those matching defaults)
-                // are materialised in the document.
+            if S::lattice_keys().is_empty() {
+                // Non-CRDT state: emit whole-state Op::set for both creation
+                // and update. Per-field diffing is unnecessary because each
+                // state type is owned by a single plugin (no parallel writes
+                // to different fields of the same state).
                 state.reduce(action);
                 let new_value = state.to_value()?;
+                if sub_doc == new_value {
+                    return Ok(Patch::default());
+                }
                 let base_path = path_from_str(actual_path);
                 return Ok(Patch::with_ops(vec![tirea_state::Op::set(
                     base_path, new_value,
                 )]));
             }
 
-            // For CRDT types (or updates to existing state): use diff_ops
-            // so lattice fields correctly emit Op::LatticeMerge.
+            // CRDT state: use diff_ops so lattice fields correctly emit
+            // Op::LatticeMerge instead of Op::Set.
             let old = state.clone();
             state.reduce(action);
 

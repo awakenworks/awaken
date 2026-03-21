@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tirea_state::State;
 
-/// Public permission-domain action exposed to tools/plugins.
+/// Permission-domain action used by both [`PermissionPolicy`] and
+/// [`PermissionOverrides`] reducers. Scope and source metadata are determined
+/// by the target reducer, not by fields on the action itself.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PermissionAction {
@@ -31,43 +33,11 @@ pub enum PermissionAction {
         pattern: String,
     },
     ClearTools,
-}
-
-/// Action type for the [`PermissionPolicy`] reducer.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum PermissionPolicyAction {
-    SetDefault {
-        behavior: ToolPermissionBehavior,
-    },
-    SetTool {
-        tool_id: String,
-        behavior: ToolPermissionBehavior,
-        #[serde(default)]
-        scope: PermissionRuleScope,
-        #[serde(default)]
-        source: PermissionRuleSource,
-    },
-    /// Set a pattern-based permission rule.
-    SetRule {
-        pattern: String,
-        behavior: ToolPermissionBehavior,
-        #[serde(default)]
-        scope: PermissionRuleScope,
-        #[serde(default)]
-        source: PermissionRuleSource,
-    },
-    RemoveTool {
-        tool_id: String,
-    },
-    /// Remove a pattern-based rule.
-    RemoveRule {
-        pattern: String,
-    },
-    ClearTools,
+    /// Convenience: allow a tool (equivalent to `SetTool` with `Allow`).
     AllowTool {
         tool_id: String,
     },
+    /// Convenience: deny a tool (equivalent to `SetTool` with `Deny`).
     DenyTool {
         tool_id: String,
     },
@@ -78,7 +48,7 @@ pub enum PermissionPolicyAction {
 #[serde(default)]
 #[tirea(
     path = "permission_policy",
-    action = "PermissionPolicyAction",
+    action = "PermissionAction",
     scope = "thread"
 )]
 pub struct PermissionPolicy {
@@ -94,173 +64,109 @@ pub struct PermissionPolicy {
 #[serde(default)]
 #[tirea(
     path = "permission_overrides",
-    action = "PermissionOverridesAction",
+    action = "PermissionAction",
     scope = "run"
 )]
 pub struct PermissionOverrides {
     pub rules: HashMap<String, PermissionRule>,
 }
 
-/// Action type for the [`PermissionOverrides`] reducer.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum PermissionOverridesAction {
-    SetTool {
-        tool_id: String,
-        behavior: ToolPermissionBehavior,
-        #[serde(default)]
-        scope: PermissionRuleScope,
-        #[serde(default)]
-        source: PermissionRuleSource,
-    },
-    /// Set a pattern-based override rule.
-    SetRule {
-        pattern: String,
-        behavior: ToolPermissionBehavior,
-        #[serde(default)]
-        scope: PermissionRuleScope,
-        #[serde(default)]
-        source: PermissionRuleSource,
-    },
-    RemoveTool {
-        tool_id: String,
-    },
-    /// Remove a pattern-based override rule.
-    RemoveRule {
-        pattern: String,
-    },
-    Clear,
-}
-
 impl PermissionOverrides {
-    fn upsert_tool_rule(
-        &mut self,
-        tool_id: String,
-        behavior: ToolPermissionBehavior,
-        scope: PermissionRuleScope,
-        source: PermissionRuleSource,
-    ) {
+    fn upsert_tool_rule(&mut self, tool_id: String, behavior: ToolPermissionBehavior) {
         let rule = PermissionRule::new_tool(tool_id, behavior)
-            .with_scope(scope)
-            .with_source(source);
+            .with_scope(PermissionRuleScope::Thread)
+            .with_source(PermissionRuleSource::Skill);
         self.rules.insert(rule.subject.key(), rule);
     }
 
-    fn upsert_pattern_rule(
-        &mut self,
-        pattern_str: String,
-        behavior: ToolPermissionBehavior,
-        scope: PermissionRuleScope,
-        source: PermissionRuleSource,
-    ) {
+    fn upsert_pattern_rule(&mut self, pattern_str: String, behavior: ToolPermissionBehavior) {
         if let Ok(pattern) = parse_pattern(&pattern_str) {
             let rule = PermissionRule::new_pattern(pattern, behavior)
-                .with_scope(scope)
-                .with_source(source);
+                .with_scope(PermissionRuleScope::Thread)
+                .with_source(PermissionRuleSource::Skill);
             self.rules.insert(rule.subject.key(), rule);
         }
     }
 
-    pub(super) fn reduce(&mut self, action: PermissionOverridesAction) {
+    pub(super) fn reduce(&mut self, action: PermissionAction) {
         match action {
-            PermissionOverridesAction::SetTool {
-                tool_id,
-                behavior,
-                scope,
-                source,
-            } => self.upsert_tool_rule(tool_id, behavior, scope, source),
-            PermissionOverridesAction::SetRule {
-                pattern,
-                behavior,
-                scope,
-                source,
-            } => self.upsert_pattern_rule(pattern, behavior, scope, source),
-            PermissionOverridesAction::RemoveTool { tool_id } => {
+            PermissionAction::SetTool { tool_id, behavior } => {
+                self.upsert_tool_rule(tool_id, behavior)
+            }
+            PermissionAction::SetRule { pattern, behavior } => {
+                self.upsert_pattern_rule(pattern, behavior)
+            }
+            PermissionAction::AllowTool { tool_id } => {
+                self.upsert_tool_rule(tool_id, ToolPermissionBehavior::Allow)
+            }
+            PermissionAction::DenyTool { tool_id } => {
+                self.upsert_tool_rule(tool_id, ToolPermissionBehavior::Deny)
+            }
+            PermissionAction::RemoveTool { tool_id } => {
                 self.rules.remove(
                     &PermissionRule::new_tool(tool_id, ToolPermissionBehavior::Ask)
                         .subject
                         .key(),
                 );
             }
-            PermissionOverridesAction::RemoveRule { pattern } => {
+            PermissionAction::RemoveRule { pattern } => {
                 if let Ok(parsed) = parse_pattern(&pattern) {
                     self.rules.remove(&PermissionSubject::pattern(parsed).key());
                 }
             }
-            PermissionOverridesAction::Clear => self.rules.clear(),
+            PermissionAction::ClearTools => self.rules.clear(),
+            // SetDefault has no run-scoped equivalent; callers should route
+            // this variant to PermissionPolicy instead.
+            PermissionAction::SetDefault { .. } => {}
         }
     }
 }
 
 impl PermissionPolicy {
-    fn upsert_tool_rule(
-        &mut self,
-        tool_id: String,
-        behavior: ToolPermissionBehavior,
-        scope: PermissionRuleScope,
-        source: PermissionRuleSource,
-    ) {
+    fn upsert_tool_rule(&mut self, tool_id: String, behavior: ToolPermissionBehavior) {
         let rule = PermissionRule::new_tool(tool_id, behavior)
-            .with_scope(scope)
-            .with_source(source);
+            .with_scope(PermissionRuleScope::Thread)
+            .with_source(PermissionRuleSource::Runtime);
         self.rules.insert(rule.subject.key(), rule);
     }
 
-    fn upsert_pattern_rule(
-        &mut self,
-        pattern_str: String,
-        behavior: ToolPermissionBehavior,
-        scope: PermissionRuleScope,
-        source: PermissionRuleSource,
-    ) {
+    fn upsert_pattern_rule(&mut self, pattern_str: String, behavior: ToolPermissionBehavior) {
         if let Ok(pattern) = parse_pattern(&pattern_str) {
             let rule = PermissionRule::new_pattern(pattern, behavior)
-                .with_scope(scope)
-                .with_source(source);
+                .with_scope(PermissionRuleScope::Thread)
+                .with_source(PermissionRuleSource::Runtime);
             self.rules.insert(rule.subject.key(), rule);
         }
     }
 
-    pub(super) fn reduce(&mut self, action: PermissionPolicyAction) {
+    pub(super) fn reduce(&mut self, action: PermissionAction) {
         match action {
-            PermissionPolicyAction::SetDefault { behavior } => self.default_behavior = behavior,
-            PermissionPolicyAction::SetTool {
-                tool_id,
-                behavior,
-                scope,
-                source,
-            } => self.upsert_tool_rule(tool_id, behavior, scope, source),
-            PermissionPolicyAction::SetRule {
-                pattern,
-                behavior,
-                scope,
-                source,
-            } => self.upsert_pattern_rule(pattern, behavior, scope, source),
-            PermissionPolicyAction::RemoveTool { tool_id } => {
+            PermissionAction::SetDefault { behavior } => self.default_behavior = behavior,
+            PermissionAction::SetTool { tool_id, behavior } => {
+                self.upsert_tool_rule(tool_id, behavior)
+            }
+            PermissionAction::SetRule { pattern, behavior } => {
+                self.upsert_pattern_rule(pattern, behavior)
+            }
+            PermissionAction::AllowTool { tool_id } => {
+                self.upsert_tool_rule(tool_id, ToolPermissionBehavior::Allow)
+            }
+            PermissionAction::DenyTool { tool_id } => {
+                self.upsert_tool_rule(tool_id, ToolPermissionBehavior::Deny)
+            }
+            PermissionAction::RemoveTool { tool_id } => {
                 self.rules.remove(
                     &PermissionRule::new_tool(tool_id, ToolPermissionBehavior::Ask)
                         .subject
                         .key(),
                 );
             }
-            PermissionPolicyAction::RemoveRule { pattern } => {
+            PermissionAction::RemoveRule { pattern } => {
                 if let Ok(parsed) = parse_pattern(&pattern) {
                     self.rules.remove(&PermissionSubject::pattern(parsed).key());
                 }
             }
-            PermissionPolicyAction::ClearTools => self.rules.clear(),
-            PermissionPolicyAction::AllowTool { tool_id } => self.upsert_tool_rule(
-                tool_id,
-                ToolPermissionBehavior::Allow,
-                PermissionRuleScope::Thread,
-                PermissionRuleSource::Runtime,
-            ),
-            PermissionPolicyAction::DenyTool { tool_id } => self.upsert_tool_rule(
-                tool_id,
-                ToolPermissionBehavior::Deny,
-                PermissionRuleScope::Thread,
-                PermissionRuleSource::Runtime,
-            ),
+            PermissionAction::ClearTools => self.rules.clear(),
         }
     }
 }
@@ -319,28 +225,7 @@ pub fn permission_update(
 pub fn permission_state_action(
     action: PermissionAction,
 ) -> tirea_contract::runtime::state::AnyStateAction {
-    use tirea_contract::runtime::state::AnyStateAction;
-    let policy_action = match action {
-        PermissionAction::SetDefault { behavior } => {
-            PermissionPolicyAction::SetDefault { behavior }
-        }
-        PermissionAction::SetTool { tool_id, behavior } => PermissionPolicyAction::SetTool {
-            tool_id,
-            behavior,
-            scope: PermissionRuleScope::Thread,
-            source: PermissionRuleSource::Runtime,
-        },
-        PermissionAction::SetRule { pattern, behavior } => PermissionPolicyAction::SetRule {
-            pattern,
-            behavior,
-            scope: PermissionRuleScope::Thread,
-            source: PermissionRuleSource::Runtime,
-        },
-        PermissionAction::RemoveTool { tool_id } => PermissionPolicyAction::RemoveTool { tool_id },
-        PermissionAction::RemoveRule { pattern } => PermissionPolicyAction::RemoveRule { pattern },
-        PermissionAction::ClearTools => PermissionPolicyAction::ClearTools,
-    };
-    AnyStateAction::new::<PermissionPolicy>(policy_action)
+    tirea_contract::runtime::state::AnyStateAction::new::<PermissionPolicy>(action)
 }
 
 /// Route a [`PermissionAction`] to the run-scoped [`PermissionOverrides`] state.
@@ -348,36 +233,16 @@ pub fn permission_state_action(
 /// Use this instead of [`permission_state_action`] when the permission change
 /// should be temporary and automatically cleaned up at the end of the current run
 /// (e.g., skill-granted tool permissions).
+///
+/// `SetDefault` has no run-scoped equivalent; it is redirected to thread-level
+/// [`PermissionPolicy`] instead.
 pub fn permission_override_action(
     action: PermissionAction,
 ) -> tirea_contract::runtime::state::AnyStateAction {
-    use tirea_contract::runtime::state::AnyStateAction;
-    let overrides_action = match action {
-        PermissionAction::SetTool { tool_id, behavior } => PermissionOverridesAction::SetTool {
-            tool_id,
-            behavior,
-            scope: PermissionRuleScope::Thread,
-            source: PermissionRuleSource::Skill,
-        },
-        PermissionAction::SetRule { pattern, behavior } => PermissionOverridesAction::SetRule {
-            pattern,
-            behavior,
-            scope: PermissionRuleScope::Thread,
-            source: PermissionRuleSource::Skill,
-        },
-        PermissionAction::RemoveTool { tool_id } => {
-            PermissionOverridesAction::RemoveTool { tool_id }
-        }
-        PermissionAction::RemoveRule { pattern } => {
-            PermissionOverridesAction::RemoveRule { pattern }
-        }
-        PermissionAction::ClearTools => PermissionOverridesAction::Clear,
-        // SetDefault has no run-scoped equivalent; route to thread-level policy.
-        PermissionAction::SetDefault { behavior } => {
-            return permission_state_action(PermissionAction::SetDefault { behavior });
-        }
-    };
-    AnyStateAction::new::<PermissionOverrides>(overrides_action)
+    if matches!(action, PermissionAction::SetDefault { .. }) {
+        return permission_state_action(action);
+    }
+    tirea_contract::runtime::state::AnyStateAction::new::<PermissionOverrides>(action)
 }
 
 /// Load resolved permission rules from a runtime snapshot.

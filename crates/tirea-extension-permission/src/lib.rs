@@ -38,7 +38,7 @@ pub use plugin::{PermissionPlugin, ToolPolicyPlugin, PERMISSION_PLUGIN_ID};
 pub use state::{
     permission_override_action, permission_rules_from_snapshot, permission_state_action,
     permission_update, PermissionAction, PermissionDestination, PermissionOverrideGranter,
-    PermissionOverrides, PermissionOverridesAction, PermissionPolicy, PermissionPolicyAction,
+    PermissionOverrides, PermissionPolicy,
 };
 pub use strategy::{evaluate_tool_permission, resolve_permission_behavior};
 
@@ -565,14 +565,20 @@ mod tests {
     }
 
     #[test]
-    fn permission_override_action_marks_source_as_skill() {
-        let action = PermissionAction::SetTool {
+    fn permission_override_reducer_marks_source_as_skill() {
+        use tirea_contract::runtime::state::{reduce_state_actions, ScopeContext};
+        use tirea_state::apply_patch;
+
+        let base = json!({});
+        let action = permission_override_action(PermissionAction::SetTool {
             tool_id: "Bash".to_string(),
             behavior: ToolPermissionBehavior::Allow,
-        };
-        let serialized = permission_override_action(action).to_serialized_state_action();
-        // The override action should set source to "skill".
-        assert_eq!(serialized.payload["source"], "skill");
+        });
+        let patches =
+            reduce_state_actions(vec![action], &base, "test", &ScopeContext::run()).unwrap();
+        let result = apply_patch(&base, patches[0].patch()).unwrap();
+        let rule = &result["permission_overrides"]["rules"]["tool:Bash"];
+        assert_eq!(rule["source"], "skill");
     }
 
     // --- Pattern-based permission rules ---
