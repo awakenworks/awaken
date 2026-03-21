@@ -583,11 +583,23 @@ async fn start_run(
     let resolved = st.os.resolve(&agent_id).map_err(AgentOsRunError::from)?;
     let prepared = start_http_run(&st.os, resolved, run_request, &agent_id).await?;
 
+    let starter = prepared
+        .starter
+        .lock()
+        .unwrap()
+        .take()
+        .expect("starter already consumed");
+    let ingress_rx = prepared
+        .ingress_rx
+        .lock()
+        .unwrap()
+        .take()
+        .expect("ingress_rx already consumed");
     let encoder = Identity::<AgentEvent>::default();
     let sse_rx = wire_http_sse_relay(
-        prepared.starter,
+        starter,
         encoder,
-        prepared.ingress_rx,
+        ingress_rx,
         HttpSseRelayConfig {
             thread_id: prepared.thread_id,
             fanout: None,
