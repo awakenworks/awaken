@@ -7,6 +7,7 @@ pub mod contract;
 mod error;
 mod model;
 mod plugins;
+pub mod registry;
 mod runtime;
 mod state;
 
