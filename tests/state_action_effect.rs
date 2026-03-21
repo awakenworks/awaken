@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use awaken::ExecutionEnv;
+
 // ===========================================================================
 // Test keys
 // ===========================================================================
@@ -528,48 +530,37 @@ fn plugin_reinstall_after_uninstall_gets_clean_state() {
 }
 
 #[test]
-fn plugin_on_install_state_visible_immediately() {
-    struct SeedPlugin;
-    impl Plugin for SeedPlugin {
-        fn descriptor(&self) -> PluginDescriptor {
-            PluginDescriptor { name: "seed" }
-        }
-        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
-            r.register_key::<Counter>(StateKeyOptions::default())
-        }
-        fn on_install(&self, patch: &mut MutationBatch) -> Result<(), StateError> {
-            patch.update::<Counter>(99);
-            Ok(())
-        }
-    }
-
+fn plugin_install_then_manual_seed_visible() {
     let store = StateStore::new();
-    store.install_plugin(SeedPlugin).unwrap();
+    store.install_plugin(CounterPlugin).unwrap();
+
+    // Seed state manually (on_install was removed)
+    let mut patch = MutationBatch::new();
+    patch.update::<Counter>(99);
+    store.commit(patch).unwrap();
+
     assert_eq!(store.read::<Counter>(), Some(99));
 }
 
 #[test]
-fn plugin_on_install_failure_propagates_error() {
-    struct FailingInstallPlugin;
-    impl Plugin for FailingInstallPlugin {
+fn plugin_register_failure_prevents_key_registration() {
+    struct FailingRegisterPlugin;
+    impl Plugin for FailingRegisterPlugin {
         fn descriptor(&self) -> PluginDescriptor {
             PluginDescriptor {
-                name: "failing-install",
+                name: "failing-register",
             }
         }
         fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_key::<Counter>(StateKeyOptions::default())?;
+            // Duplicate key registration causes failure
             r.register_key::<Counter>(StateKeyOptions::default())
-        }
-        fn on_install(&self, _patch: &mut MutationBatch) -> Result<(), StateError> {
-            Err(StateError::PluginNotInstalled {
-                type_name: "synthetic",
-            })
         }
     }
 
     let store = StateStore::new();
-    let err = store.install_plugin(FailingInstallPlugin).unwrap_err();
-    assert!(matches!(err, StateError::PluginNotInstalled { .. }));
+    let err = store.install_plugin(FailingRegisterPlugin).unwrap_err();
+    assert!(matches!(err, StateError::KeyAlreadyRegistered { .. }));
 
     // No state was committed — counter is None
     assert!(store.read::<Counter>().is_none());
@@ -630,14 +621,15 @@ fn plugin_with_retained_key_survives_uninstall() {
                 retain_on_uninstall: true,
             })
         }
-        fn on_install(&self, patch: &mut MutationBatch) -> Result<(), StateError> {
-            patch.update::<Counter>(100);
-            Ok(())
-        }
     }
 
     let store = StateStore::new();
     store.install_plugin(RetainedPlugin).unwrap();
+
+    // Manually seed (on_install removed)
+    let mut p = MutationBatch::new();
+    p.update::<Counter>(100);
+    store.commit(p).unwrap();
     assert_eq!(store.read::<Counter>(), Some(100));
 
     store.uninstall_plugin::<RetainedPlugin>().unwrap();
@@ -791,7 +783,8 @@ impl ScheduledActionSpec for CountingAction {
 #[tokio::test]
 async fn phase_with_no_hooks_no_actions_reports_zero() {
     let app = AppRuntime::new().unwrap();
-    let report = app.run_phase(Phase::RunStart).await.unwrap();
+    let env = ExecutionEnv::empty();
+    let report = app.run_phase(&env, Phase::RunStart).await.unwrap();
     assert_eq!(report.processed_scheduled_actions, 0);
     assert_eq!(report.skipped_scheduled_actions, 0);
     assert_eq!(report.failed_scheduled_actions, 0);
@@ -815,19 +808,28 @@ async fn phase_max_rounds_boundary_exact() {
         }
     }
 
+    struct RespawningPlugin;
+    impl Plugin for RespawningPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "respawning" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_scheduled_action::<CountingAction, _>(RespawningHandler)
+        }
+    }
+
     let app = AppRuntime::new().unwrap();
-    app.phase_runtime()
-        .register_scheduled_action::<CountingAction, _>(RespawningHandler)
-        .unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(RespawningPlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<CountingAction>(()).unwrap();
-    app.submit_command(cmd).await.unwrap();
+    app.submit_command(&env, cmd).await.unwrap();
 
     // With limit 3, should process 3 actions then fail on round 4
     let err = app
         .phase_runtime()
-        .run_phase_with_limit(Phase::BeforeInference, 3)
+        .run_phase_with_limit(&env, Phase::BeforeInference, 3)
         .await
         .unwrap_err();
     assert!(matches!(
@@ -856,22 +858,31 @@ async fn phase_action_for_different_phase_is_skipped() {
         }
     }
 
+    struct OtherPlugin;
+    impl Plugin for OtherPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "other" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_scheduled_action::<OtherPhaseAction, _>(OtherHandler)
+        }
+    }
+
     let app = AppRuntime::new().unwrap();
-    app.phase_runtime()
-        .register_scheduled_action::<OtherPhaseAction, _>(OtherHandler)
-        .unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OtherPlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<OtherPhaseAction>(()).unwrap();
-    app.submit_command(cmd).await.unwrap();
+    app.submit_command(&env, cmd).await.unwrap();
 
     // Run BeforeInference — should skip the AfterInference action
-    let report = app.run_phase(Phase::BeforeInference).await.unwrap();
+    let report = app.run_phase(&env, Phase::BeforeInference).await.unwrap();
     assert_eq!(report.processed_scheduled_actions, 0);
     assert_eq!(report.skipped_scheduled_actions, 1);
 
     // Run AfterInference — should process it
-    let report = app.run_phase(Phase::AfterInference).await.unwrap();
+    let report = app.run_phase(&env, Phase::AfterInference).await.unwrap();
     assert_eq!(report.processed_scheduled_actions, 1);
 }
 
@@ -914,21 +925,38 @@ async fn phase_hook_state_mutation_visible_to_action_handler() {
         }
     }
 
+    struct ReaderPlugin {
+        seen: Arc<Mutex<Option<i64>>>,
+    }
+    impl Plugin for ReaderPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "reader" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_scheduled_action::<TestAction, _>(ReaderHandler {
+                seen: Arc::clone(&self.seen),
+            })
+        }
+    }
+
     let seen = Arc::new(Mutex::new(None));
     let app = AppRuntime::new().unwrap();
-    app.install_plugin(WriterPlugin).unwrap();
-    app.phase_runtime()
-        .register_scheduled_action::<TestAction, _>(ReaderHandler {
+    app.store().install_plugin(WriterPlugin).unwrap();
+
+    let plugins: Vec<Arc<dyn Plugin>> = vec![
+        Arc::new(WriterPlugin),
+        Arc::new(ReaderPlugin {
             seen: Arc::clone(&seen),
-        })
-        .unwrap();
+        }),
+    ];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     // Schedule action, then run phase — hook writes first, action reads
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<TestAction>("check".into()).unwrap();
-    app.submit_command(cmd).await.unwrap();
+    app.submit_command(&env, cmd).await.unwrap();
 
-    app.run_phase(Phase::BeforeInference).await.unwrap();
+    app.run_phase(&env, Phase::BeforeInference).await.unwrap();
 
     // Action handler should have seen the counter value written by the hook
     assert_eq!(*seen.lock().unwrap(), Some(100));
@@ -955,11 +983,20 @@ impl TypedEffectHandler<RuntimeEffect> for EffectRecorder {
 
 #[tokio::test]
 async fn effect_dispatch_preserves_order() {
+    struct RecorderPlugin(EffectRecorder);
+    impl Plugin for RecorderPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "recorder" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_effect::<RuntimeEffect, _>(self.0.clone())
+        }
+    }
+
     let recorder = EffectRecorder::default();
     let app = AppRuntime::new().unwrap();
-    app.phase_runtime()
-        .register_effect::<RuntimeEffect, _>(recorder.clone())
-        .unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(RecorderPlugin(recorder.clone()))];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.effect(RuntimeEffect::Suspend {
@@ -974,7 +1011,7 @@ async fn effect_dispatch_preserves_order() {
         reason: "third".into(),
     })
     .unwrap();
-    app.submit_command(cmd).await.unwrap();
+    app.submit_command(&env, cmd).await.unwrap();
 
     let effects = recorder.0.lock().unwrap();
     assert_eq!(effects.len(), 3);
@@ -997,17 +1034,28 @@ async fn effect_handler_failure_does_not_block_other_effects() {
         }
     }
 
+    struct FailingEffectPlugin;
+    impl Plugin for FailingEffectPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "failing-effect",
+            }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_effect::<RuntimeEffect, _>(FailingHandler)
+        }
+    }
+
     let app = AppRuntime::new().unwrap();
-    app.phase_runtime()
-        .register_effect::<RuntimeEffect, _>(FailingHandler)
-        .unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(FailingEffectPlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.effect(RuntimeEffect::Suspend { reason: "a".into() })
         .unwrap();
     cmd.effect(RuntimeEffect::Block { reason: "b".into() })
         .unwrap();
-    let report = app.submit_command(cmd).await.unwrap();
+    let report = app.submit_command(&env, cmd).await.unwrap();
 
     assert_eq!(report.effect_report.attempted, 2);
     assert_eq!(report.effect_report.failed, 2);
@@ -1017,6 +1065,7 @@ async fn effect_handler_failure_does_not_block_other_effects() {
 #[tokio::test]
 async fn effect_with_no_handler_rejected_at_submit() {
     let app = AppRuntime::new().unwrap();
+    let env = ExecutionEnv::empty();
     // No handler registered for RuntimeEffect
 
     let mut cmd = StateCommand::new();
@@ -1024,7 +1073,7 @@ async fn effect_with_no_handler_rejected_at_submit() {
         reason: "test".into(),
     })
     .unwrap();
-    let err = app.submit_command(cmd).await.unwrap_err();
+    let err = app.submit_command(&env, cmd).await.unwrap_err();
     assert!(matches!(err, StateError::UnknownEffectHandler { .. }));
 }
 
@@ -1045,11 +1094,22 @@ async fn effect_handler_sees_post_commit_snapshot() {
         }
     }
 
+    struct SnapshotReaderPlugin(Arc<Mutex<Option<i64>>>);
+    impl Plugin for SnapshotReaderPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "snapshot-reader",
+            }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_effect::<RuntimeEffect, _>(SnapshotReader(Arc::clone(&self.0)))
+        }
+    }
+
     let app = AppRuntime::new().unwrap();
-    app.install_plugin(CounterPlugin).unwrap();
-    app.phase_runtime()
-        .register_effect::<RuntimeEffect, _>(SnapshotReader(Arc::clone(&seen)))
-        .unwrap();
+    app.store().install_plugin(CounterPlugin).unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(SnapshotReaderPlugin(Arc::clone(&seen)))];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.update::<Counter>(77);
@@ -1057,7 +1117,7 @@ async fn effect_handler_sees_post_commit_snapshot() {
         reason: "check".into(),
     })
     .unwrap();
-    app.submit_command(cmd).await.unwrap();
+    app.submit_command(&env, cmd).await.unwrap();
 
     // Effect handler should see the committed counter value
     assert_eq!(*seen.lock().unwrap(), Some(77));
@@ -1117,14 +1177,19 @@ async fn hooks_from_different_plugins_see_each_others_mutations() {
 
     let seen = Arc::new(Mutex::new(None));
     let app = AppRuntime::new().unwrap();
-    // Install A first (writes counter), then B (reads counter)
-    app.install_plugin(PluginA).unwrap();
-    app.install_plugin(PluginB {
-        seen: Arc::clone(&seen),
-    })
-    .unwrap();
+    // Install A for state keys
+    app.store().install_plugin(PluginA).unwrap();
 
-    app.run_phase(Phase::BeforeInference).await.unwrap();
+    // Build env with both plugins (A writes counter, B reads counter)
+    let plugins: Vec<Arc<dyn Plugin>> = vec![
+        Arc::new(PluginA),
+        Arc::new(PluginB {
+            seen: Arc::clone(&seen),
+        }),
+    ];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+
+    app.run_phase(&env, Phase::BeforeInference).await.unwrap();
 
     // PluginB's hook should see PluginA's write
     assert_eq!(*seen.lock().unwrap(), Some(10));
@@ -1154,14 +1219,18 @@ async fn uninstalled_plugin_hooks_do_not_fire() {
     }
 
     let app = AppRuntime::new().unwrap();
-    app.install_plugin(CountPlugin(Arc::clone(&count))).unwrap();
 
-    app.run_phase(Phase::RunStart).await.unwrap();
+    // First run: with the hook plugin
+    let count_plugin = Arc::new(CountPlugin(Arc::clone(&count)));
+    let env_with = ExecutionEnv::from_plugins(&[count_plugin as Arc<dyn Plugin>]).unwrap();
+
+    app.run_phase(&env_with, Phase::RunStart).await.unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 1);
 
-    app.uninstall_plugin::<CountPlugin>().unwrap();
+    // Second run: without the hook plugin (simulates uninstall)
+    let env_without = ExecutionEnv::empty();
 
-    app.run_phase(Phase::RunStart).await.unwrap();
+    app.run_phase(&env_without, Phase::RunStart).await.unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 1); // No additional fires
 }
 
@@ -1210,19 +1279,27 @@ async fn action_handler_spawning_different_action_converges() {
         }
     }
 
+    struct StepPlugin;
+    impl Plugin for StepPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "step" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_scheduled_action::<StepOneAction, _>(StepOneHandler)?;
+            r.register_scheduled_action::<StepTwoAction, _>(StepTwoHandler)?;
+            Ok(())
+        }
+    }
+
     let app = AppRuntime::new().unwrap();
-    app.phase_runtime()
-        .register_scheduled_action::<StepOneAction, _>(StepOneHandler)
-        .unwrap();
-    app.phase_runtime()
-        .register_scheduled_action::<StepTwoAction, _>(StepTwoHandler)
-        .unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(StepPlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<StepOneAction>(()).unwrap();
-    app.submit_command(cmd).await.unwrap();
+    app.submit_command(&env, cmd).await.unwrap();
 
-    let report = app.run_phase(Phase::BeforeInference).await.unwrap();
+    let report = app.run_phase(&env, Phase::BeforeInference).await.unwrap();
     assert_eq!(report.processed_scheduled_actions, 2); // step_one + step_two
     assert_eq!(report.rounds, 3); // round 1: step_one, round 2: step_two, round 3: empty → exit
 }
@@ -1260,13 +1337,24 @@ async fn hook_emitted_effects_dispatched_during_phase() {
         }
     }
 
-    let app = AppRuntime::new().unwrap();
-    app.phase_runtime()
-        .register_effect::<RuntimeEffect, _>(recorder.clone())
-        .unwrap();
-    app.install_plugin(EffectPlugin).unwrap();
+    struct RecorderPlugin2(EffectRecorder);
+    impl Plugin for RecorderPlugin2 {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "recorder2" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_effect::<RuntimeEffect, _>(self.0.clone())
+        }
+    }
 
-    let report = app.run_phase(Phase::RunStart).await.unwrap();
+    let app = AppRuntime::new().unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![
+        Arc::new(RecorderPlugin2(recorder.clone())),
+        Arc::new(EffectPlugin),
+    ];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+
+    let report = app.run_phase(&env, Phase::RunStart).await.unwrap();
     assert_eq!(report.effect_report.dispatched, 1);
 
     let effects = recorder.0.lock().unwrap();
@@ -1604,7 +1692,8 @@ fn merge_parallel_commutative_multiple_updates_per_batch() {
 #[tokio::test]
 async fn command_merge_parallel_disjoint_keys() {
     let app = AppRuntime::new().unwrap();
-    app.install_plugin(ParallelPlugin).unwrap();
+    app.store().install_plugin(ParallelPlugin).unwrap();
+    let env = ExecutionEnv::empty();
 
     let mut a = StateCommand::new();
     a.update::<Counter>(10);
@@ -1612,7 +1701,7 @@ async fn command_merge_parallel_disjoint_keys() {
     b.update::<Label>("hello".into());
 
     let merged = app.store().merge_all_commands(vec![a, b]).unwrap();
-    app.submit_command(merged).await.unwrap();
+    app.submit_command(&env, merged).await.unwrap();
 
     assert_eq!(app.store().read::<Counter>(), Some(10));
     assert_eq!(app.store().read::<Label>().as_deref(), Some("hello"));
@@ -1621,7 +1710,8 @@ async fn command_merge_parallel_disjoint_keys() {
 #[tokio::test]
 async fn command_merge_parallel_commutative_overlap() {
     let app = AppRuntime::new().unwrap();
-    app.install_plugin(ParallelPlugin).unwrap();
+    app.store().install_plugin(ParallelPlugin).unwrap();
+    let env = ExecutionEnv::empty();
 
     let mut a = StateCommand::new();
     a.update::<SharedCounter>(3);
@@ -1629,7 +1719,7 @@ async fn command_merge_parallel_commutative_overlap() {
     b.update::<SharedCounter>(7);
 
     let merged = app.store().merge_all_commands(vec![a, b]).unwrap();
-    app.submit_command(merged).await.unwrap();
+    app.submit_command(&env, merged).await.unwrap();
 
     assert_eq!(app.store().read::<SharedCounter>(), Some(10));
 }
@@ -1701,17 +1791,23 @@ async fn collect_commands_returns_combined_hook_output() {
     }
 
     let app = AppRuntime::new().unwrap();
-    app.install_plugin(WriterPlugin).unwrap();
+    app.store().install_plugin(WriterPlugin).unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(WriterPlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let ctx = PhaseContext::new(Phase::AfterToolExecute, app.snapshot());
-    let cmd = app.phase_runtime().collect_commands(ctx).await.unwrap();
+    let cmd = app
+        .phase_runtime()
+        .collect_commands(&env, ctx)
+        .await
+        .unwrap();
 
     // Command collected but NOT committed
     assert!(!cmd.is_empty());
     assert!(app.store().read::<Counter>().is_none());
 
     // Now submit
-    app.submit_command(cmd).await.unwrap();
+    app.submit_command(&env, cmd).await.unwrap();
     assert_eq!(app.store().read::<Counter>(), Some(5));
 }
 
@@ -1750,21 +1846,32 @@ async fn collect_commands_from_multiple_hooks_combined() {
     }
 
     let app = AppRuntime::new().unwrap();
-    app.install_plugin(DualHookPlugin).unwrap();
+    app.store().install_plugin(DualHookPlugin).unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(DualHookPlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let ctx = PhaseContext::new(Phase::AfterToolExecute, app.snapshot());
-    let cmd = app.phase_runtime().collect_commands(ctx).await.unwrap();
+    let cmd = app
+        .phase_runtime()
+        .collect_commands(&env, ctx)
+        .await
+        .unwrap();
 
-    app.submit_command(cmd).await.unwrap();
+    app.submit_command(&env, cmd).await.unwrap();
     assert_eq!(app.store().read::<SharedCounter>(), Some(30));
 }
 
 #[tokio::test]
 async fn collect_commands_no_hooks_returns_empty() {
     let app = AppRuntime::new().unwrap();
+    let env = ExecutionEnv::empty();
 
     let ctx = PhaseContext::new(Phase::AfterToolExecute, app.snapshot());
-    let cmd = app.phase_runtime().collect_commands(ctx).await.unwrap();
+    let cmd = app
+        .phase_runtime()
+        .collect_commands(&env, ctx)
+        .await
+        .unwrap();
 
     assert!(cmd.is_empty());
 }
@@ -1800,18 +1907,28 @@ async fn parallel_tool_calls_merge_hook_commands() {
     }
 
     let app = AppRuntime::new().unwrap();
-    app.install_plugin(ToolCounterPlugin).unwrap();
+    app.store().install_plugin(ToolCounterPlugin).unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(ToolCounterPlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     // Simulate two parallel tool calls, each collecting commands independently
     let ctx1 = PhaseContext::new(Phase::AfterToolExecute, app.snapshot());
     let ctx2 = PhaseContext::new(Phase::AfterToolExecute, app.snapshot());
 
-    let cmd1 = app.phase_runtime().collect_commands(ctx1).await.unwrap();
-    let cmd2 = app.phase_runtime().collect_commands(ctx2).await.unwrap();
+    let cmd1 = app
+        .phase_runtime()
+        .collect_commands(&env, ctx1)
+        .await
+        .unwrap();
+    let cmd2 = app
+        .phase_runtime()
+        .collect_commands(&env, ctx2)
+        .await
+        .unwrap();
 
     // Merge and commit
     let merged = app.store().merge_all_commands(vec![cmd1, cmd2]).unwrap();
-    app.submit_command(merged).await.unwrap();
+    app.submit_command(&env, merged).await.unwrap();
 
     assert_eq!(app.store().read::<SharedCounter>(), Some(2));
 }
@@ -1863,27 +1980,44 @@ async fn parallel_pipeline_with_effects() {
         }
     }
 
+    struct RecorderPlugin3(Recorder);
+    impl Plugin for RecorderPlugin3 {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "recorder3" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_effect::<RuntimeEffect, _>(self.0.clone())
+        }
+    }
+
     let recorder = Recorder::default();
     let app = AppRuntime::new().unwrap();
-    app.phase_runtime()
-        .register_effect::<RuntimeEffect, _>(recorder.clone())
-        .unwrap();
-    app.install_plugin(EffectPlugin).unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![
+        Arc::new(RecorderPlugin3(recorder.clone())),
+        Arc::new(EffectPlugin),
+    ];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     // Two tool calls, each producing an effect
     let cmd1 = app
         .phase_runtime()
-        .collect_commands(PhaseContext::new(Phase::AfterToolExecute, app.snapshot()))
+        .collect_commands(
+            &env,
+            PhaseContext::new(Phase::AfterToolExecute, app.snapshot()),
+        )
         .await
         .unwrap();
     let cmd2 = app
         .phase_runtime()
-        .collect_commands(PhaseContext::new(Phase::AfterToolExecute, app.snapshot()))
+        .collect_commands(
+            &env,
+            PhaseContext::new(Phase::AfterToolExecute, app.snapshot()),
+        )
         .await
         .unwrap();
 
     let merged = app.store().merge_all_commands(vec![cmd1, cmd2]).unwrap();
-    app.submit_command(merged).await.unwrap();
+    app.submit_command(&env, merged).await.unwrap();
 
     let effects = recorder.0.lock().unwrap();
     assert_eq!(effects.len(), 2);

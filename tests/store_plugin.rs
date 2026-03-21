@@ -122,17 +122,6 @@ impl Plugin for ChatPlugin {
         registrar.register_key::<Summary>(StateKeyOptions::default())?;
         Ok(())
     }
-
-    fn on_install(&self, patch: &mut MutationBatch) -> Result<(), StateError> {
-        patch.update::<CoreChannel>(CoreAction::SetStatus("ready".into()));
-        patch.update::<Messages>("system: plugin installed".into());
-        Ok(())
-    }
-
-    fn on_uninstall(&self, patch: &mut MutationBatch) -> Result<(), StateError> {
-        patch.update::<Messages>("system: uninstalling".into());
-        Ok(())
-    }
 }
 
 struct SharedPlugin;
@@ -184,11 +173,6 @@ impl Plugin for RetainedPlugin {
         })?;
         Ok(())
     }
-
-    fn on_install(&self, patch: &mut MutationBatch) -> Result<(), StateError> {
-        patch.update::<RetainedSummary>("seed".into());
-        Ok(())
-    }
 }
 
 struct DuplicateKeyPlugin;
@@ -219,6 +203,17 @@ impl CommitHook for CountingHook {
 fn plugin_lifecycle_and_seed_state_work() {
     let store = StateStore::new();
     store.install_plugin(ChatPlugin).unwrap();
+
+    // After install, keys are registered but no seed data (on_install removed)
+    let snapshot = store.snapshot();
+    assert!(snapshot.get::<CoreChannel>().is_none());
+    assert!(snapshot.get::<Messages>().is_none());
+
+    // Manually seed state
+    let mut patch = MutationBatch::new();
+    patch.update::<CoreChannel>(CoreAction::SetStatus("ready".into()));
+    patch.update::<Messages>("system: plugin installed".into());
+    store.commit(patch).unwrap();
 
     let snapshot = store.snapshot();
     assert_eq!(snapshot.get::<CoreChannel>().unwrap().status, "ready");
@@ -309,7 +304,7 @@ fn patch_commits_as_single_revision() {
 
     assert_eq!(end, start + 1);
     let snapshot = store.snapshot();
-    assert_eq!(snapshot.get::<Messages>().unwrap().len(), 3);
+    assert_eq!(snapshot.get::<Messages>().unwrap().len(), 2);
     assert_eq!(snapshot.get::<TokenUsage>().copied(), Some(3));
 }
 
@@ -348,6 +343,7 @@ fn persistence_roundtrip_works() {
     store.install_plugin(SharedPlugin).unwrap();
 
     let mut patch = MutationBatch::new();
+    patch.update::<CoreChannel>(CoreAction::SetStatus("ready".into()));
     patch.update::<TokenUsage>(42);
     patch.update::<SharedCounter>(2);
     store.commit(patch).unwrap();
@@ -403,6 +399,11 @@ fn duplicate_slot_registration_within_plugin_is_rejected() {
 fn retained_slots_survive_plugin_uninstall() {
     let store = StateStore::new();
     store.install_plugin(RetainedPlugin).unwrap();
+
+    // Manually seed (on_install removed)
+    let mut patch = MutationBatch::new();
+    patch.update::<RetainedSummary>("seed".into());
+    store.commit(patch).unwrap();
 
     assert_eq!(
         store.read::<RetainedSummary>(),

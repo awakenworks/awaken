@@ -2,7 +2,9 @@
 
 use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
-use awaken::agent::loop_runner::{AgentRunResult, ResumeInput, resume_agent_loop, run_agent_loop};
+use awaken::agent::loop_runner::{
+    AgentRunResult, ResumeInput, build_agent_env, resume_agent_loop, run_agent_loop,
+};
 use awaken::agent::state::{RunLifecycle, RunLifecycleState, ToolCallStates};
 use awaken::contract::event::AgentEvent;
 use awaken::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
@@ -155,8 +157,8 @@ impl Plugin for LoopStatePlugin {
 
 fn make_runtime() -> PhaseRuntime {
     let store = StateStore::new();
-    let runtime = PhaseRuntime::new(store).unwrap();
-    runtime.install_plugin(LoopStatePlugin).unwrap();
+    let runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(LoopStatePlugin).unwrap();
     runtime
 }
 
@@ -191,10 +193,18 @@ async fn single_step_natural_end() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "You are helpful.", llm);
     let runtime = make_runtime();
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
-    let result = run_agent_loop(&agent, &runtime, vec![Message::user("hi")], test_identity())
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        &agent,
+        &runtime,
+        &env,
+        &flag,
+        vec![Message::user("hi")],
+        test_identity(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(result.response, "Hello, world!");
     assert_eq!(result.termination, TerminationReason::NaturalEnd);
@@ -227,10 +237,13 @@ async fn tool_call_then_response() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let result = run_agent_loop(
         &agent,
         &runtime,
+        &env,
+        &flag,
         vec![Message::user("echo hello")],
         test_identity(),
     )
@@ -263,10 +276,13 @@ async fn tool_call_state_machine_transitions() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     run_agent_loop(
         &agent,
         &runtime,
+        &env,
+        &flag,
         vec![Message::user("test")],
         test_identity(),
     )
@@ -304,10 +320,13 @@ async fn multiple_tool_calls_in_one_step() {
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(CalcTool));
     let runtime = make_runtime();
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let result = run_agent_loop(
         &agent,
         &runtime,
+        &env,
+        &flag,
         vec![Message::user("multi-tool")],
         test_identity(),
     )
@@ -344,10 +363,13 @@ async fn max_rounds_exceeded() {
         .with_max_rounds(3)
         .with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let result = run_agent_loop(
         &agent,
         &runtime,
+        &env,
+        &flag,
         vec![Message::user("loop")],
         test_identity(),
     )
@@ -389,10 +411,13 @@ async fn unknown_tool_returns_error_result_not_crash() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
     let runtime = make_runtime();
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let result = run_agent_loop(
         &agent,
         &runtime,
+        &env,
+        &flag,
         vec![Message::user("call unknown")],
         test_identity(),
     )
@@ -434,10 +459,13 @@ async fn failing_tool_produces_error_result_continues_loop() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(FailingTool));
     let runtime = make_runtime();
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let result = run_agent_loop(
         &agent,
         &runtime,
+        &env,
+        &flag,
         vec![Message::user("use fail tool")],
         test_identity(),
     )
@@ -459,10 +487,18 @@ async fn events_have_correct_sequence_for_single_step() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
     let runtime = make_runtime();
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
-    let result = run_agent_loop(&agent, &runtime, vec![Message::user("hi")], test_identity())
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        &agent,
+        &runtime,
+        &env,
+        &flag,
+        vec![Message::user("hi")],
+        test_identity(),
+    )
+    .await
+    .unwrap();
 
     let event_types: Vec<&str> = result
         .events
@@ -508,10 +544,13 @@ async fn events_have_correct_sequence_with_tool_call() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let result = run_agent_loop(
         &agent,
         &runtime,
+        &env,
+        &flag,
         vec![Message::user("echo")],
         test_identity(),
     )
@@ -563,6 +602,7 @@ async fn lifecycle_state_reflects_custom_run_id() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
     let runtime = make_runtime();
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let identity = RunIdentity::new(
         "t-custom".into(),
@@ -573,9 +613,16 @@ async fn lifecycle_state_reflects_custom_run_id() {
         RunOrigin::Internal,
     );
 
-    run_agent_loop(&agent, &runtime, vec![Message::user("hi")], identity)
-        .await
-        .unwrap();
+    run_agent_loop(
+        &agent,
+        &runtime,
+        &env,
+        &flag,
+        vec![Message::user("hi")],
+        identity,
+    )
+    .await
+    .unwrap();
 
     let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.run_id, "r-custom");
@@ -620,13 +667,21 @@ async fn phase_hooks_fire_during_loop() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
     let runtime = make_runtime();
-    runtime
-        .install_plugin(TrackerPlugin(Arc::clone(&hook_phases)))
-        .unwrap();
 
-    run_agent_loop(&agent, &runtime, vec![Message::user("hi")], test_identity())
-        .await
-        .unwrap();
+    let tracker_plugin = Arc::new(TrackerPlugin(Arc::clone(&hook_phases)));
+    let user_plugins: Vec<Arc<dyn Plugin>> = vec![tracker_plugin];
+    let (env, flag) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+
+    run_agent_loop(
+        &agent,
+        &runtime,
+        &env,
+        &flag,
+        vec![Message::user("hi")],
+        test_identity(),
+    )
+    .await
+    .unwrap();
 
     let phases = hook_phases.lock().unwrap();
     assert_eq!(
@@ -665,10 +720,13 @@ async fn tool_suspension_transitions_run_to_waiting() {
 
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     let result = run_agent_loop(
         &agent,
         &runtime,
+        &env,
+        &flag,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -696,11 +754,14 @@ async fn resume_with_use_decision_as_tool_result() {
 
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     // Run until suspension
     let result = run_agent_loop(
         &agent,
         &runtime,
+        &env,
+        &flag,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -726,6 +787,8 @@ async fn resume_with_use_decision_as_tool_result() {
     let resume_result = resume_agent_loop(
         &agent,
         &runtime,
+        &env,
+        &flag,
         messages,
         test_identity(),
         ResumeInput {
@@ -766,11 +829,14 @@ async fn resume_with_cancel_marks_tool_cancelled() {
 
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     // Run until suspension
     let result = run_agent_loop(
         &agent,
         &runtime,
+        &env,
+        &flag,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -795,6 +861,8 @@ async fn resume_with_cancel_marks_tool_cancelled() {
     let resume_result = resume_agent_loop(
         &agent,
         &runtime,
+        &env,
+        &flag,
         messages,
         test_identity(),
         ResumeInput {
@@ -833,11 +901,14 @@ async fn resume_with_replay_tool_call() {
         .with_tool(Arc::new(SuspendingTool))
         .with_tool(Arc::new(EchoTool)); // echo registered for replay
     let runtime = make_runtime();
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     // Run until suspension
     let result = run_agent_loop(
         &agent,
         &runtime,
+        &env,
+        &flag,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -860,6 +931,7 @@ async fn resume_with_replay_tool_call() {
 
     let llm2 = Arc::new(ScriptedLlm::new(vec![]));
     let agent2 = AgentConfig::new("test", "m", "sys", llm2).with_tool(Arc::new(DangerousEcho));
+    let (env2, flag2) = build_agent_env(&[], agent2.max_rounds).unwrap();
 
     let messages = vec![
         Message::user("do it"),
@@ -877,6 +949,8 @@ async fn resume_with_replay_tool_call() {
     let resume_result = resume_agent_loop(
         &agent2,
         &runtime,
+        &env2,
+        &flag2,
         messages,
         test_identity(),
         ResumeInput {
@@ -909,6 +983,7 @@ async fn resume_with_pass_decision_to_tool() {
 
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     // Hack: register passthrough as "dangerous" initially for suspension
     // Actually, let's use a different approach: SuspendingTool is "dangerous"
@@ -919,6 +994,8 @@ async fn resume_with_pass_decision_to_tool() {
     let result = run_agent_loop(
         &agent,
         &runtime,
+        &env,
+        &flag,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -935,10 +1012,13 @@ async fn resume_with_pass_decision_to_tool() {
         json!({"original": true}),
     )]));
     let agent2 = AgentConfig::new("test", "m", "sys", llm2).with_tool(Arc::new(SuspendingTool));
+    let (env2, flag2) = build_agent_env(&[], agent2.max_rounds).unwrap();
 
     let result = run_agent_loop(
         &agent2,
         &runtime2,
+        &env2,
+        &flag2,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -961,6 +1041,7 @@ async fn resume_with_pass_decision_to_tool() {
     let llm3 = Arc::new(ScriptedLlm::new(vec![]));
     let agent3 =
         AgentConfig::new("test", "m", "sys", llm3).with_tool(Arc::new(DangerousPassthrough));
+    let (env3, flag3) = build_agent_env(&[], agent3.max_rounds).unwrap();
 
     let messages = vec![
         Message::user("do it"),
@@ -974,6 +1055,8 @@ async fn resume_with_pass_decision_to_tool() {
     let resume_result = resume_agent_loop(
         &agent3,
         &runtime2,
+        &env3,
+        &flag3,
         messages,
         test_identity(),
         ResumeInput {
@@ -1001,16 +1084,26 @@ async fn resume_rejects_non_waiting_run() {
     let llm = Arc::new(ScriptedLlm::new(vec![]));
     let agent = AgentConfig::new("test", "m", "sys", llm);
     let runtime = make_runtime();
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     // Run to completion (not suspended)
-    run_agent_loop(&agent, &runtime, vec![Message::user("hi")], test_identity())
-        .await
-        .unwrap();
+    run_agent_loop(
+        &agent,
+        &runtime,
+        &env,
+        &flag,
+        vec![Message::user("hi")],
+        test_identity(),
+    )
+    .await
+    .unwrap();
 
     // Attempt resume on a Done run
     let err = resume_agent_loop(
         &agent,
         &runtime,
+        &env,
+        &flag,
         vec![Message::user("hi")],
         test_identity(),
         ResumeInput {
@@ -1034,10 +1127,13 @@ async fn resume_rejects_unknown_call_id() {
 
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     run_agent_loop(
         &agent,
         &runtime,
+        &env,
+        &flag,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -1049,6 +1145,8 @@ async fn resume_rejects_unknown_call_id() {
     let err = resume_agent_loop(
         &agent,
         &runtime,
+        &env,
+        &flag,
         messages,
         test_identity(),
         ResumeInput {

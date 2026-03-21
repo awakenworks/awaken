@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
 use awaken::agent::executor::{ParallelToolExecutor, SequentialToolExecutor, ToolExecutor};
-use awaken::agent::loop_runner::run_agent_loop;
+use awaken::agent::loop_runner::{build_agent_env, run_agent_loop};
 use awaken::agent::state::{RunLifecycle, ToolCallStates};
 use awaken::contract::event::AgentEvent;
 use awaken::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
@@ -136,8 +136,8 @@ impl Plugin for LoopStatePlugin {
 
 fn make_runtime() -> PhaseRuntime {
     let store = StateStore::new();
-    let rt = PhaseRuntime::new(store).unwrap();
-    rt.install_plugin(LoopStatePlugin).unwrap();
+    let rt = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(LoopStatePlugin).unwrap();
     rt
 }
 
@@ -187,7 +187,8 @@ async fn sequential_partial_failure_both_produce_results() {
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(FailingTool));
     let rt = make_runtime();
-    let result = run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
         .await
         .unwrap();
 
@@ -217,7 +218,8 @@ async fn sequential_stops_after_first_suspension_in_loop() {
         .with_tool(Arc::new(SuspendingTool))
         .with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
-    let result = run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
         .await
         .unwrap();
 
@@ -251,7 +253,8 @@ async fn parallel_both_tools_execute() {
         .with_tool(Arc::new(EchoTool))
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
-    let result = run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
         .await
         .unwrap();
 
@@ -278,7 +281,8 @@ async fn parallel_partial_failure() {
         .with_tool(Arc::new(FailingTool))
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
-    let result = run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
         .await
         .unwrap();
 
@@ -311,7 +315,8 @@ async fn parallel_does_not_stop_on_suspension() {
         }))
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
-    let result = run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
         .await
         .unwrap();
 
@@ -344,7 +349,8 @@ async fn suspension_sets_run_to_waiting() {
     )])]));
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let rt = make_runtime();
-    let result = run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
         .await
         .unwrap();
 
@@ -362,7 +368,8 @@ async fn suspension_tool_call_state_is_suspended() {
     )])]));
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let rt = make_runtime();
-    run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
         .await
         .unwrap();
 
@@ -436,12 +443,19 @@ async fn hook_state_mutation_visible_to_next_hook() {
     let llm = Arc::new(ScriptedLlm::new(vec![text_step("done")]));
     let agent = AgentConfig::new("test", "m", "sys", llm);
     let rt = make_runtime();
-    rt.install_plugin(HookPlugin {
-        observed: observed.clone(),
-    })
-    .unwrap();
+    rt.store()
+        .install_plugin(HookPlugin {
+            observed: observed.clone(),
+        })
+        .unwrap();
 
-    run_agent_loop(&agent, &rt, vec![Message::user("hi")], id())
+    let hook_plugin = Arc::new(HookPlugin {
+        observed: observed.clone(),
+    });
+    let user_plugins: Vec<Arc<dyn Plugin>> = vec![hook_plugin];
+    let (env, flag) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+
+    run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("hi")], id())
         .await
         .unwrap();
 
@@ -470,7 +484,8 @@ async fn max_rounds_precise_count() {
         .with_max_rounds(3)
         .with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
-    let result = run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
         .await
         .unwrap();
 
@@ -516,9 +531,11 @@ async fn terminate_via_effect_in_after_inference_hook() {
     ]));
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
-    rt.install_plugin(TermHookPlugin).unwrap();
 
-    let result = run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
+    let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(TermHookPlugin)];
+    let (env, flag) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+
+    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
         .await
         .unwrap();
 
@@ -564,9 +581,11 @@ async fn phase_sequence_with_tool_call() {
     ]));
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
-    rt.install_plugin(LogPlugin(phases.clone())).unwrap();
 
-    run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
+    let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(LogPlugin(phases.clone()))];
+    let (env, flag) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+
+    run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
         .await
         .unwrap();
 
@@ -618,9 +637,11 @@ async fn phase_sequence_on_suspension() {
     )])]));
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let rt = make_runtime();
-    rt.install_plugin(LogPlugin(phases.clone())).unwrap();
 
-    run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
+    let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(LogPlugin(phases.clone()))];
+    let (env, flag) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+
+    run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
         .await
         .unwrap();
 
@@ -676,7 +697,9 @@ async fn profile_sections_available_in_loop_hooks() {
     let llm = Arc::new(ScriptedLlm::new(vec![text_step("ok")]));
     let agent = AgentConfig::new("test", "m", "sys", llm);
     let rt = make_runtime();
-    rt.install_plugin(CfgPlugin(observed.clone())).unwrap();
+
+    let cfg_plugin = Arc::new(CfgPlugin(observed.clone()));
+    let env = ExecutionEnv::from_plugins(&[cfg_plugin as Arc<dyn Plugin>]).unwrap();
 
     // Build a profile with the test section
     let profile = std::sync::Arc::new(
@@ -687,7 +710,7 @@ async fn profile_sections_available_in_loop_hooks() {
     // Run phases manually with profile context
     let store = rt.store();
     let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot()).with_profile(profile);
-    rt.run_phase_with_context(ctx).await.unwrap();
+    rt.run_phase_with_context(&env, ctx).await.unwrap();
 
     assert_eq!(*observed.lock().unwrap(), "test-model");
 }
@@ -707,7 +730,8 @@ async fn empty_tool_calls_treated_as_natural_end() {
     }]));
     let agent = AgentConfig::new("test", "m", "sys", llm);
     let rt = make_runtime();
-    let result = run_agent_loop(&agent, &rt, vec![Message::user("hi")], id())
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("hi")], id())
         .await
         .unwrap();
 
@@ -732,7 +756,8 @@ async fn multiple_steps_accumulate_messages() {
     ]));
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
-    let result = run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
         .await
         .unwrap();
 
@@ -747,6 +772,7 @@ async fn run_lifecycle_run_id_matches_identity() {
     let llm = Arc::new(ScriptedLlm::new(vec![text_step("ok")]));
     let agent = AgentConfig::new("test", "m", "sys", llm);
     let rt = make_runtime();
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
     let custom_id = RunIdentity::new(
         "t-x".into(),
         None,
@@ -755,9 +781,16 @@ async fn run_lifecycle_run_id_matches_identity() {
         "a-x".into(),
         RunOrigin::Internal,
     );
-    run_agent_loop(&agent, &rt, vec![Message::user("hi")], custom_id)
-        .await
-        .unwrap();
+    run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &flag,
+        vec![Message::user("hi")],
+        custom_id,
+    )
+    .await
+    .unwrap();
     let lifecycle = rt.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.run_id, "r-x");
 }
@@ -779,7 +812,8 @@ async fn batch_approval_both_tools_execute_in_loop() {
         .with_tool(Arc::new(EchoTool))
         .with_tool_executor(Arc::new(ParallelToolExecutor::batch_approval()));
     let rt = make_runtime();
-    let result = run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
         .await
         .unwrap();
 
@@ -806,7 +840,8 @@ async fn batch_approval_suspension_still_executes_all() {
         }))
         .with_tool_executor(Arc::new(ParallelToolExecutor::batch_approval()));
     let rt = make_runtime();
-    let result = run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
         .await
         .unwrap();
 
@@ -836,7 +871,8 @@ async fn streaming_partial_failure_in_loop() {
         .with_tool(Arc::new(FailingTool))
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
-    let result = run_agent_loop(&agent, &rt, vec![Message::user("go")], id())
+    let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
+    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
         .await
         .unwrap();
 

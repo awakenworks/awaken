@@ -316,9 +316,10 @@ fn tool_permission_result_helpers() {
 async fn no_checkers_suspends() {
     let store = StateStore::new();
     let runtime = PhaseRuntime::new(store).unwrap();
+    let env = ExecutionEnv::empty();
 
     let result = runtime
-        .check_tool_permission(&tool_ctx(&runtime, "anything"))
+        .check_tool_permission(&env, &tool_ctx(&runtime, "anything"))
         .await
         .unwrap();
     assert!(result.is_suspend());
@@ -328,10 +329,11 @@ async fn no_checkers_suspends() {
 async fn allow_all_plugin_allows_everything() {
     let store = StateStore::new();
     let runtime = PhaseRuntime::new(store).unwrap();
-    runtime.install_plugin(AllowAllPlugin).unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(AllowAllPlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let result = runtime
-        .check_tool_permission(&tool_ctx(&runtime, "anything"))
+        .check_tool_permission(&env, &tool_ctx(&runtime, "anything"))
         .await
         .unwrap();
     assert!(result.is_allow());
@@ -341,16 +343,17 @@ async fn allow_all_plugin_allows_everything() {
 async fn deny_plugin_blocks_specific_tool() {
     let store = StateStore::new();
     let runtime = PhaseRuntime::new(store).unwrap();
-    runtime.install_plugin(AllowAllPlugin).unwrap();
-    runtime
-        .install_plugin(DenyPlugin {
+    let plugins: Vec<Arc<dyn Plugin>> = vec![
+        Arc::new(AllowAllPlugin),
+        Arc::new(DenyPlugin {
             blocked: vec!["rm".into()],
-        })
-        .unwrap();
+        }),
+    ];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     // rm is blocked
     let result = runtime
-        .check_tool_permission(&tool_ctx(&runtime, "rm"))
+        .check_tool_permission(&env, &tool_ctx(&runtime, "rm"))
         .await
         .unwrap();
     assert!(result.is_deny());
@@ -363,7 +366,7 @@ async fn deny_plugin_blocks_specific_tool() {
 
     // read is allowed (deny plugin abstains, allow plugin allows)
     let result = runtime
-        .check_tool_permission(&tool_ctx(&runtime, "read"))
+        .check_tool_permission(&env, &tool_ctx(&runtime, "read"))
         .await
         .unwrap();
     assert!(result.is_allow());
@@ -373,15 +376,16 @@ async fn deny_plugin_blocks_specific_tool() {
 async fn deny_overrides_allow() {
     let store = StateStore::new();
     let runtime = PhaseRuntime::new(store).unwrap();
-    runtime.install_plugin(AllowAllPlugin).unwrap();
-    runtime
-        .install_plugin(DenyPlugin {
+    let plugins: Vec<Arc<dyn Plugin>> = vec![
+        Arc::new(AllowAllPlugin),
+        Arc::new(DenyPlugin {
             blocked: vec!["dangerous".into()],
-        })
-        .unwrap();
+        }),
+    ];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let result = runtime
-        .check_tool_permission(&tool_ctx(&runtime, "dangerous"))
+        .check_tool_permission(&env, &tool_ctx(&runtime, "dangerous"))
         .await
         .unwrap();
     assert!(result.is_deny());
@@ -392,10 +396,11 @@ async fn no_allow_means_suspend() {
     let store = StateStore::new();
     let runtime = PhaseRuntime::new(store).unwrap();
     // Only abstain checker, no allow
-    runtime.install_plugin(AbstainPlugin).unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(AbstainPlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let result = runtime
-        .check_tool_permission(&tool_ctx(&runtime, "anything"))
+        .check_tool_permission(&env, &tool_ctx(&runtime, "anything"))
         .await
         .unwrap();
     assert!(result.is_suspend());
@@ -405,22 +410,21 @@ async fn no_allow_means_suspend() {
 async fn approval_required_suspends_specific_tools() {
     let store = StateStore::new();
     let runtime = PhaseRuntime::new(store).unwrap();
-    runtime
-        .install_plugin(ApprovalPlugin {
-            require_approval: vec!["delete_file".into()],
-        })
-        .unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(ApprovalPlugin {
+        require_approval: vec!["delete_file".into()],
+    })];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     // delete_file: approval checker abstains (no allow) → suspend
     let result = runtime
-        .check_tool_permission(&tool_ctx(&runtime, "delete_file"))
+        .check_tool_permission(&env, &tool_ctx(&runtime, "delete_file"))
         .await
         .unwrap();
     assert!(result.is_suspend());
 
     // read: approval checker allows → allow
     let result = runtime
-        .check_tool_permission(&tool_ctx(&runtime, "read"))
+        .check_tool_permission(&env, &tool_ctx(&runtime, "read"))
         .await
         .unwrap();
     assert!(result.is_allow());
@@ -430,11 +434,16 @@ async fn approval_required_suspends_specific_tools() {
 async fn state_dependent_checker() {
     let store = StateStore::new();
     let runtime = PhaseRuntime::new(store).unwrap();
-    runtime.install_plugin(ThresholdPlugin { max: 2 }).unwrap();
+    runtime
+        .store()
+        .install_plugin(ThresholdPlugin { max: 2 })
+        .unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(ThresholdPlugin { max: 2 })];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     // Counter = 0 → allow
     let result = runtime
-        .check_tool_permission(&tool_ctx(&runtime, "tool"))
+        .check_tool_permission(&env, &tool_ctx(&runtime, "tool"))
         .await
         .unwrap();
     assert!(result.is_allow());
@@ -446,7 +455,7 @@ async fn state_dependent_checker() {
 
     // Counter = 2 → deny
     let result = runtime
-        .check_tool_permission(&tool_ctx(&runtime, "tool"))
+        .check_tool_permission(&env, &tool_ctx(&runtime, "tool"))
         .await
         .unwrap();
     assert!(result.is_deny());
@@ -456,19 +465,23 @@ async fn state_dependent_checker() {
 async fn uninstall_removes_checker() {
     let store = StateStore::new();
     let runtime = PhaseRuntime::new(store).unwrap();
-    runtime.install_plugin(AllowAllPlugin).unwrap();
+
+    // With AllowAllPlugin
+    let plugins_with: Vec<Arc<dyn Plugin>> = vec![Arc::new(AllowAllPlugin)];
+    let env_with = ExecutionEnv::from_plugins(&plugins_with).unwrap();
 
     let result = runtime
-        .check_tool_permission(&tool_ctx(&runtime, "x"))
+        .check_tool_permission(&env_with, &tool_ctx(&runtime, "x"))
         .await
         .unwrap();
     assert!(result.is_allow());
 
-    runtime.uninstall_plugin::<AllowAllPlugin>().unwrap();
+    // Without AllowAllPlugin (simulates uninstall by rebuilding env)
+    let env_without = ExecutionEnv::empty();
 
     // No checkers → suspend
     let result = runtime
-        .check_tool_permission(&tool_ctx(&runtime, "x"))
+        .check_tool_permission(&env_without, &tool_ctx(&runtime, "x"))
         .await
         .unwrap();
     assert!(result.is_suspend());
@@ -478,7 +491,6 @@ async fn uninstall_removes_checker() {
 async fn multiple_checkers_all_allow() {
     let store = StateStore::new();
     let runtime = PhaseRuntime::new(store).unwrap();
-    runtime.install_plugin(AllowAllPlugin).unwrap();
 
     struct AllowAllPlugin2;
     impl Plugin for AllowAllPlugin2 {
@@ -491,10 +503,12 @@ async fn multiple_checkers_all_allow() {
             registrar.register_tool_permission("allow-all-2", AllowAllChecker)
         }
     }
-    runtime.install_plugin(AllowAllPlugin2).unwrap();
+
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(AllowAllPlugin), Arc::new(AllowAllPlugin2)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let result = runtime
-        .check_tool_permission(&tool_ctx(&runtime, "x"))
+        .check_tool_permission(&env, &tool_ctx(&runtime, "x"))
         .await
         .unwrap();
     assert!(result.is_allow());
@@ -504,12 +518,12 @@ async fn multiple_checkers_all_allow() {
 async fn mixed_allow_and_abstain_allows() {
     let store = StateStore::new();
     let runtime = PhaseRuntime::new(store).unwrap();
-    runtime.install_plugin(AllowAllPlugin).unwrap();
-    runtime.install_plugin(AbstainPlugin).unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(AllowAllPlugin), Arc::new(AbstainPlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     // AllowAll allows, Abstain abstains → Allow wins
     let result = runtime
-        .check_tool_permission(&tool_ctx(&runtime, "x"))
+        .check_tool_permission(&env, &tool_ctx(&runtime, "x"))
         .await
         .unwrap();
     assert!(result.is_allow());
@@ -525,11 +539,14 @@ async fn builtin_allow_all_tools_plugin() {
 
     let store = StateStore::new();
     let runtime = PhaseRuntime::new(store).unwrap();
-    runtime.install_plugin(AllowAllToolsPlugin).unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(AllowAllToolsPlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let result = runtime
-        .check_tool_permission(&tool_ctx(&runtime, "anything"))
+        .check_tool_permission(&env, &tool_ctx(&runtime, "anything"))
         .await
         .unwrap();
     assert!(result.is_allow());
 }
+
+use std::sync::Arc;

@@ -1,78 +1,11 @@
-use std::any::TypeId;
-use std::collections::HashMap;
+//! Internal runtime plugins — state keys for action queues.
 
 use crate::error::StateError;
-use crate::model::{FailedScheduledActions, PendingScheduledActions, Phase};
+use crate::model::{FailedScheduledActions, PendingScheduledActions};
 use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use crate::state::StateKeyOptions;
 
-use super::{EffectHandlerArc, PhaseHookArc, ScheduledActionHandlerArc, ToolPermissionCheckerArc};
-
-#[derive(Default)]
-pub(crate) struct InstalledRuntimePlugin {
-    pub(crate) scheduled_action_keys: Vec<String>,
-    pub(crate) effect_keys: Vec<String>,
-    pub(crate) phase_hook_ids: Vec<(Phase, u64)>,
-    pub(crate) tool_permission_ids: Vec<u64>,
-}
-
-pub(crate) struct RuntimeRegistry {
-    pub(crate) scheduled_action_handlers: HashMap<String, ScheduledActionHandlerArc>,
-    pub(crate) effect_handlers: HashMap<String, EffectHandlerArc>,
-    pub(crate) phase_hooks: HashMap<Phase, Vec<(u64, String, PhaseHookArc)>>,
-    pub(crate) tool_permission_checkers: Vec<(u64, String, ToolPermissionCheckerArc)>,
-    pub(crate) installed_plugins: HashMap<TypeId, InstalledRuntimePlugin>,
-    pub(crate) next_hook_id: u64,
-}
-
-impl Default for RuntimeRegistry {
-    fn default() -> Self {
-        Self {
-            scheduled_action_handlers: HashMap::new(),
-            effect_handlers: HashMap::new(),
-            phase_hooks: HashMap::new(),
-            tool_permission_checkers: Vec::new(),
-            installed_plugins: HashMap::new(),
-            next_hook_id: 1,
-        }
-    }
-}
-
-impl RuntimeRegistry {
-    /// Validate that registrar entries don't conflict with existing registrations.
-    pub(crate) fn validate_registrar(
-        &self,
-        plugin_type_id: Option<TypeId>,
-        registrar: &PluginRegistrar,
-    ) -> Result<(), StateError> {
-        if let Some(plugin_type_id) = plugin_type_id
-            && self.installed_plugins.contains_key(&plugin_type_id)
-        {
-            return Err(StateError::PluginAlreadyInstalled {
-                name: format!("runtime-plugin:{plugin_type_id:?}"),
-            });
-        }
-
-        for entry in &registrar.scheduled_actions {
-            if self.scheduled_action_handlers.contains_key(&entry.key) {
-                return Err(StateError::HandlerAlreadyRegistered {
-                    key: entry.key.clone(),
-                });
-            }
-        }
-
-        for entry in &registrar.effects {
-            if self.effect_handlers.contains_key(&entry.key) {
-                return Err(StateError::EffectHandlerAlreadyRegistered {
-                    key: entry.key.clone(),
-                });
-            }
-        }
-
-        Ok(())
-    }
-}
-
+/// Internal plugin that registers runtime queue state keys.
 pub(crate) struct RuntimeQueuePlugin;
 
 impl Plugin for RuntimeQueuePlugin {

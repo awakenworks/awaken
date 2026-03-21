@@ -194,11 +194,7 @@ impl StateStore {
             );
         }
 
-        let mut patch = MutationBatch::new().with_base_revision(self.revision());
-        plugin.on_install(&mut patch)?;
-        self.commit(patch).map(|_| ()).inspect_err(|_| {
-            let _ = self.unregister_plugin_type_id(plugin_type_id, true);
-        })
+        Ok(())
     }
 
     pub fn uninstall_plugin<P>(&self) -> Result<(), StateError>
@@ -206,7 +202,7 @@ impl StateStore {
         P: Plugin,
     {
         let plugin_type_id = TypeId::of::<P>();
-        let (plugin, registrations) =
+        let registrations =
             {
                 let registry = self.registry.lock().expect("registry lock poisoned");
                 let installed = registry.plugins.get(&plugin_type_id).ok_or(
@@ -214,16 +210,14 @@ impl StateStore {
                         type_name: std::any::type_name::<P>(),
                     },
                 )?;
-                let regs = installed
+                installed
                     .owned_key_type_ids
                     .iter()
                     .filter_map(|type_id| registry.keys_by_type.get(type_id).cloned())
-                    .collect::<Vec<_>>();
-                (Arc::clone(&installed.plugin), regs)
+                    .collect::<Vec<_>>()
             };
 
         let mut patch = MutationBatch::new().with_base_revision(self.revision());
-        plugin.on_uninstall(&mut patch)?;
         for reg in &registrations {
             if !reg.options.retain_on_uninstall {
                 patch.clear_extension_with(reg.key.clone(), reg.clear);

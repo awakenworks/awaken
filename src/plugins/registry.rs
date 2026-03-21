@@ -64,6 +64,7 @@ pub(crate) struct PhaseHookRegistration {
 }
 
 pub(crate) struct ToolPermissionRegistration {
+    #[allow(dead_code)]
     pub(crate) plugin_id: String,
     pub(crate) checker: ToolPermissionCheckerArc,
 }
@@ -76,6 +77,7 @@ pub struct PluginRegistry {
 }
 
 pub struct InstalledPlugin {
+    #[allow(dead_code)]
     pub(crate) plugin: Arc<dyn Plugin>,
     pub(crate) owned_key_type_ids: Vec<TypeId>,
 }

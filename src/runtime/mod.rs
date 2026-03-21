@@ -1,6 +1,7 @@
 mod app;
 mod context;
 mod engine;
+mod env;
 mod handlers;
 mod registry;
 mod reports;
@@ -8,6 +9,7 @@ mod reports;
 pub use app::AppRuntime;
 pub use context::PhaseContext;
 pub use engine::PhaseRuntime;
+pub use env::ExecutionEnv;
 pub use handlers::{
     PhaseHook, ToolPermission, ToolPermissionChecker, ToolPermissionResult, TypedEffectHandler,
     TypedScheduledActionHandler, aggregate_tool_permissions,

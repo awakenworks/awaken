@@ -17,14 +17,13 @@ use crate::contract::suspension::{
     ResumeDecisionAction, ToolCallOutcome, ToolCallResume, ToolCallResumeMode, ToolCallStatus,
 };
 use crate::contract::tool::ToolResult;
+use crate::error::StateError;
 use crate::model::{Phase, RuntimeEffect};
-use crate::runtime::{PhaseContext, PhaseRuntime, TypedEffectHandler};
+use crate::runtime::{ExecutionEnv, PhaseContext, PhaseRuntime, TypedEffectHandler};
 use crate::state::{MutationBatch, Snapshot, StateCommand};
 
 use super::config::AgentConfig;
 use super::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
-use super::stop_conditions::MaxRoundsPlugin;
-use super::tool_permission::AllowAllToolsPlugin;
 
 /// Errors from the agent loop.
 #[derive(Debug, thiserror::Error)]
@@ -57,26 +56,33 @@ fn now_ms() -> u64 {
 // Termination flag — set by RuntimeEffect::Terminate effect handler
 // ---------------------------------------------------------------------------
 
+/// Shared termination flag. Checked at phase boundaries to break the step loop.
+///
+/// Implements `Plugin` so it can be included in `ExecutionEnv::from_plugins()`.
+/// The loop runner creates one and reads it; the effect handler sets it when
+/// `RuntimeEffect::Terminate` is dispatched.
 #[derive(Clone, Default)]
-struct TerminationFlag {
+pub struct TerminationFlag {
     inner: Arc<Mutex<Option<TerminationReason>>>,
 }
 
 impl TerminationFlag {
-    fn take(&self) -> Option<TerminationReason> {
+    pub(crate) fn take(&self) -> Option<TerminationReason> {
         self.inner.lock().expect("termination flag poisoned").take()
     }
 }
 
+struct TerminationFlagHandler(TerminationFlag);
+
 #[async_trait]
-impl TypedEffectHandler<RuntimeEffect> for TerminationFlag {
+impl TypedEffectHandler<RuntimeEffect> for TerminationFlagHandler {
     async fn handle_typed(
         &self,
         payload: RuntimeEffect,
         _snapshot: &Snapshot,
     ) -> Result<(), String> {
         if let RuntimeEffect::Terminate { reason } = payload {
-            let mut guard = self.inner.lock().expect("termination flag poisoned");
+            let mut guard = self.0.inner.lock().expect("termination flag poisoned");
             if guard.is_none() {
                 *guard = Some(reason);
             }
@@ -85,13 +91,53 @@ impl TypedEffectHandler<RuntimeEffect> for TerminationFlag {
     }
 }
 
+impl crate::plugins::Plugin for TerminationFlagHandler {
+    fn descriptor(&self) -> crate::plugins::PluginDescriptor {
+        crate::plugins::PluginDescriptor {
+            name: "__termination_flag",
+        }
+    }
+
+    fn register(
+        &self,
+        registrar: &mut crate::plugins::PluginRegistrar,
+    ) -> Result<(), crate::error::StateError> {
+        registrar.register_effect::<RuntimeEffect, _>(TerminationFlagHandler(self.0.clone()))
+    }
+}
+
 /// Run the agent loop to completion.
 ///
 /// State-machine driven: every lifecycle transition is committed via StateStore.
 /// Phase hooks are dispatched through PhaseRuntime.
+/// Build an execution environment for the agent loop from a list of plugins.
+///
+/// Adds internal plugins (termination handler, stop conditions, default permission).
+/// Returns the env and a termination flag that the loop reads.
+pub fn build_agent_env(
+    plugins: &[Arc<dyn crate::plugins::Plugin>],
+    max_rounds: usize,
+) -> Result<(ExecutionEnv, TerminationFlag), StateError> {
+    use super::stop_conditions::MaxRoundsPlugin;
+    use super::tool_permission::AllowAllToolsPlugin;
+
+    let flag = TerminationFlag::default();
+
+    // Combine user plugins with internal plugins
+    let mut all_plugins: Vec<Arc<dyn crate::plugins::Plugin>> = plugins.to_vec();
+    all_plugins.push(Arc::new(TerminationFlagHandler(flag.clone())));
+    all_plugins.push(Arc::new(MaxRoundsPlugin::new(max_rounds)));
+    all_plugins.push(Arc::new(AllowAllToolsPlugin));
+
+    let env = ExecutionEnv::from_plugins(&all_plugins)?;
+    Ok((env, flag))
+}
+
 pub async fn run_agent_loop(
     agent: &AgentConfig,
     runtime: &PhaseRuntime,
+    env: &ExecutionEnv,
+    termination_flag: &TerminationFlag,
     initial_messages: Vec<Message>,
     run_identity: RunIdentity,
 ) -> Result<AgentRunResult, AgentLoopError> {
@@ -99,24 +145,6 @@ pub async fn run_agent_loop(
     let mut events = Vec::new();
     let mut messages: Vec<Arc<Message>> = initial_messages.into_iter().map(Arc::new).collect();
     let mut steps: usize = 0;
-
-    // Register termination effect handler and stop condition plugin (idempotent)
-    let termination_flag = TerminationFlag::default();
-    match runtime.register_effect::<RuntimeEffect, _>(termination_flag.clone()) {
-        Ok(()) => {}
-        Err(crate::error::StateError::EffectHandlerAlreadyRegistered { .. }) => {}
-        Err(e) => return Err(e.into()),
-    }
-    match runtime.install_plugin(MaxRoundsPlugin::new(agent.max_rounds)) {
-        Ok(()) => {}
-        Err(crate::error::StateError::PluginAlreadyInstalled { .. }) => {}
-        Err(e) => return Err(e.into()),
-    }
-    match runtime.install_plugin(AllowAllToolsPlugin) {
-        Ok(()) => {}
-        Err(crate::error::StateError::PluginAlreadyInstalled { .. }) => {}
-        Err(e) => return Err(e.into()),
-    }
 
     // Helper to build PhaseContext with current state
     let make_ctx = |phase: Phase, msgs: &[Arc<Message>], identity: &RunIdentity| -> PhaseContext {
@@ -141,7 +169,7 @@ pub async fn run_agent_loop(
     });
 
     runtime
-        .run_phase_with_context(make_ctx(Phase::RunStart, &messages, &run_identity))
+        .run_phase_with_context(env, make_ctx(Phase::RunStart, &messages, &run_identity))
         .await?;
 
     let termination = loop {
@@ -155,14 +183,17 @@ pub async fn run_agent_loop(
         commit_update::<ToolCallStates>(store, ToolCallStatesUpdate::Clear)?;
 
         runtime
-            .run_phase_with_context(make_ctx(Phase::StepStart, &messages, &run_identity))
+            .run_phase_with_context(env, make_ctx(Phase::StepStart, &messages, &run_identity))
             .await?;
         if let Some(reason) = termination_flag.take() {
             break reason;
         }
 
         runtime
-            .run_phase_with_context(make_ctx(Phase::BeforeInference, &messages, &run_identity))
+            .run_phase_with_context(
+                env,
+                make_ctx(Phase::BeforeInference, &messages, &run_identity),
+            )
             .await?;
         if let Some(reason) = termination_flag.take() {
             break reason;
@@ -194,14 +225,14 @@ pub async fn run_agent_loop(
         let llm_response = LLMResponse::success(stream_result.clone());
         let after_inf_ctx = make_ctx(Phase::AfterInference, &messages, &run_identity)
             .with_llm_response(llm_response);
-        runtime.run_phase_with_context(after_inf_ctx).await?;
+        runtime.run_phase_with_context(env, after_inf_ctx).await?;
         if let Some(reason) = termination_flag.take() {
             break reason;
         }
 
         if !stream_result.needs_tools() {
             messages.push(Arc::new(Message::assistant(&stream_result.text)));
-            complete_step(store, runtime, &mut events, &messages, &run_identity).await?;
+            complete_step(store, runtime, env, &mut events, &messages, &run_identity).await?;
             break TerminationReason::NaturalEnd;
         }
 
@@ -224,7 +255,7 @@ pub async fn run_agent_loop(
         for call in &stream_result.tool_calls {
             let perm_ctx = make_ctx(Phase::BeforeToolExecute, &messages, &run_identity)
                 .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
-            let perm_result = runtime.check_tool_permission(&perm_ctx).await?;
+            let perm_result = runtime.check_tool_permission(env, &perm_ctx).await?;
 
             match perm_result {
                 crate::runtime::ToolPermissionResult::Allow => {
@@ -284,7 +315,7 @@ pub async fn run_agent_loop(
             // Collect BeforeToolExecute hook commands (no commit)
             let before_ctx = make_ctx(Phase::BeforeToolExecute, &messages, &run_identity)
                 .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
-            let before_cmd = runtime.collect_commands(before_ctx).await?;
+            let before_cmd = runtime.collect_commands(env, before_ctx).await?;
             if !before_cmd.is_empty() {
                 tool_commands.push(before_cmd);
             }
@@ -322,7 +353,7 @@ pub async fn run_agent_loop(
             let after_ctx = make_ctx(Phase::AfterToolExecute, &messages, &run_identity)
                 .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()))
                 .with_tool_result(tool_result.clone());
-            let after_cmd = runtime.collect_commands(after_ctx).await?;
+            let after_cmd = runtime.collect_commands(env, after_ctx).await?;
             if !after_cmd.is_empty() {
                 tool_commands.push(after_cmd);
             }
@@ -338,7 +369,7 @@ pub async fn run_agent_loop(
         // Merge all tool call commands and submit once
         if !tool_commands.is_empty() {
             let merged = store.merge_all_commands(tool_commands)?;
-            runtime.submit_command(merged).await?;
+            runtime.submit_command(env, merged).await?;
         }
 
         // Check termination after tool execution
@@ -354,11 +385,11 @@ pub async fn run_agent_loop(
                     updated_at: now_ms(),
                 },
             )?;
-            complete_step(store, runtime, &mut events, &messages, &run_identity).await?;
+            complete_step(store, runtime, env, &mut events, &messages, &run_identity).await?;
             break TerminationReason::Suspended;
         }
 
-        complete_step(store, runtime, &mut events, &messages, &run_identity).await?;
+        complete_step(store, runtime, env, &mut events, &messages, &run_identity).await?;
         if let Some(reason) = termination_flag.take() {
             break reason;
         }
@@ -377,7 +408,7 @@ pub async fn run_agent_loop(
     }
 
     runtime
-        .run_phase_with_context(make_ctx(Phase::RunEnd, &messages, &run_identity))
+        .run_phase_with_context(env, make_ctx(Phase::RunEnd, &messages, &run_identity))
         .await?;
 
     let response = messages
@@ -420,6 +451,8 @@ pub struct ResumeInput {
 pub async fn resume_agent_loop(
     agent: &AgentConfig,
     runtime: &PhaseRuntime,
+    env: &ExecutionEnv,
+    termination_flag: &TerminationFlag,
     messages: Vec<Message>,
     run_identity: RunIdentity,
     input: ResumeInput,
@@ -581,6 +614,8 @@ pub async fn resume_agent_loop(
     run_agent_loop(
         agent,
         runtime,
+        env,
+        termination_flag,
         resume_messages.into_iter().map(|m| (*m).clone()).collect(),
         run_identity,
     )
@@ -608,6 +643,7 @@ async fn execute_single_tool(agent: &AgentConfig, call: &ToolCall) -> ToolResult
 async fn complete_step(
     store: &crate::state::StateStore,
     runtime: &PhaseRuntime,
+    env: &ExecutionEnv,
     events: &mut Vec<AgentEvent>,
     messages: &[Arc<Message>],
     run_identity: &RunIdentity,
@@ -621,7 +657,7 @@ async fn complete_step(
     let ctx = PhaseContext::new(Phase::StepEnd, store.snapshot())
         .with_run_identity(run_identity.clone())
         .with_messages(messages.to_vec());
-    runtime.run_phase_with_context(ctx).await?;
+    runtime.run_phase_with_context(env, ctx).await?;
     events.push(AgentEvent::StepEnd);
     Ok(())
 }

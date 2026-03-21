@@ -112,6 +112,25 @@ impl TypedEffectHandler<RuntimeEffect> for RuntimeEffectRecorder {
     }
 }
 
+/// Plugin wrapper for RuntimeEffect handler.
+struct RuntimeEffectPlugin<H: TypedEffectHandler<RuntimeEffect> + Clone + Send + Sync + 'static>(H);
+
+impl<H: TypedEffectHandler<RuntimeEffect> + Clone + Send + Sync + 'static> Plugin
+    for RuntimeEffectPlugin<H>
+{
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
+            name: "runtime-effect-plugin",
+        }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_effect::<RuntimeEffect, _>(self.0.clone())?;
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
 struct FailingRuntimeEffectHandler;
 
 #[async_trait]
@@ -145,6 +164,22 @@ impl TypedScheduledActionHandler<AlwaysFailingAction> for AlwaysFailingHandler {
         Err(StateError::UnknownKey {
             key: "synthetic".into(),
         })
+    }
+}
+
+/// Plugin wrapper for AlwaysFailingAction handler.
+struct AlwaysFailingPlugin;
+
+impl Plugin for AlwaysFailingPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
+            name: "always-failing-plugin",
+        }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_scheduled_action::<AlwaysFailingAction, _>(AlwaysFailingHandler)?;
+        Ok(())
     }
 }
 
@@ -192,6 +227,23 @@ impl TypedScheduledActionHandler<FinishAction> for FinishHandler {
     }
 }
 
+/// Plugin that registers SpawnOnce + Finish action handlers.
+struct SpawnOncePlugin;
+
+impl Plugin for SpawnOncePlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
+            name: "spawn-once-plugin",
+        }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_scheduled_action::<SpawnOnceAction, _>(SpawnOnceHandler)?;
+        registrar.register_scheduled_action::<FinishAction, _>(FinishHandler)?;
+        Ok(())
+    }
+}
+
 struct InfiniteLoopAction;
 
 impl ScheduledActionSpec for InfiniteLoopAction {
@@ -212,6 +264,22 @@ impl TypedScheduledActionHandler<InfiniteLoopAction> for InfiniteLoopHandler {
         let mut cmd = StateCommand::new().with_base_revision(ctx.snapshot.revision());
         cmd.schedule_action::<InfiniteLoopAction>(()).unwrap();
         Ok(cmd)
+    }
+}
+
+/// Plugin for InfiniteLoopAction handler.
+struct InfiniteLoopPlugin;
+
+impl Plugin for InfiniteLoopPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
+            name: "infinite-loop-plugin",
+        }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_scheduled_action::<InfiniteLoopAction, _>(InfiniteLoopHandler)?;
+        Ok(())
     }
 }
 
@@ -236,6 +304,22 @@ impl TypedScheduledActionHandler<OtherPhaseAction> for OtherPhaseHandler {
     }
 }
 
+/// Plugin for OtherPhaseAction handler.
+struct OtherPhasePlugin;
+
+impl Plugin for OtherPhasePlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
+            name: "other-phase-plugin",
+        }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_scheduled_action::<OtherPhaseAction, _>(OtherPhaseHandler)?;
+        Ok(())
+    }
+}
+
 struct LogOnlyAction;
 
 impl ScheduledActionSpec for LogOnlyAction {
@@ -254,6 +338,22 @@ impl TypedScheduledActionHandler<LogOnlyAction> for LogOnlyHandler {
         _payload: (),
     ) -> Result<StateCommand, StateError> {
         Ok(StateCommand::new())
+    }
+}
+
+/// Plugin for LogOnlyAction handler.
+struct LogOnlyPlugin;
+
+impl Plugin for LogOnlyPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
+            name: "log-only-plugin",
+        }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_scheduled_action::<LogOnlyAction, _>(LogOnlyHandler)?;
+        Ok(())
     }
 }
 
@@ -279,6 +379,22 @@ impl TypedScheduledActionHandler<BadlyEncodedAction> for BadlyEncodedActionHandl
         _payload: String,
     ) -> Result<StateCommand, StateError> {
         Ok(StateCommand::new())
+    }
+}
+
+/// Plugin for BadlyEncodedAction handler.
+struct BadlyEncodedPlugin;
+
+impl Plugin for BadlyEncodedPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
+            name: "badly-encoded-plugin",
+        }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_scheduled_action::<BadlyEncodedAction, _>(BadlyEncodedActionHandler)?;
+        Ok(())
     }
 }
 
@@ -340,12 +456,29 @@ impl TypedEffectHandler<MismatchedEffect> for MismatchedEffectHandler {
     }
 }
 
+/// Plugin for MismatchedEffect handler.
+struct MismatchedEffectPlugin;
+
+impl Plugin for MismatchedEffectPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
+            name: "mismatched-effect-plugin",
+        }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_effect::<MismatchedEffect, _>(MismatchedEffectHandler)?;
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn unregistered_action_handler_is_rejected_on_submit() {
     let app = AppRuntime::new().unwrap();
+    let env = ExecutionEnv::empty();
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<ActivateRequested>(()).unwrap();
-    let err = app.submit_command(cmd).await.unwrap_err();
+    let err = app.submit_command(&env, cmd).await.unwrap_err();
     assert!(matches!(
         err,
         StateError::UnknownScheduledActionHandler { .. }
@@ -355,13 +488,14 @@ async fn unregistered_action_handler_is_rejected_on_submit() {
 #[tokio::test]
 async fn unregistered_effect_handler_is_rejected_on_submit() {
     let app = AppRuntime::new().unwrap();
+    let env = ExecutionEnv::empty();
     let mut cmd = StateCommand::new();
     cmd.effect(RuntimeEffect::PublishJson {
         topic: "test".into(),
         payload: serde_json::json!(null),
     })
     .unwrap();
-    let err = app.submit_command(cmd).await.unwrap_err();
+    let err = app.submit_command(&env, cmd).await.unwrap_err();
     assert!(matches!(err, StateError::UnknownEffectHandler { .. }));
 }
 
@@ -369,18 +503,20 @@ async fn unregistered_effect_handler_is_rejected_on_submit() {
 async fn phase_runtime_stages_and_reduces_actions() {
     let store = StateStore::new();
     let runtime = PhaseRuntime::new(store.clone()).unwrap();
-    runtime.install_plugin(HandoffPlugin).unwrap();
+    store.install_plugin(HandoffPlugin).unwrap();
     let recorder = RuntimeEffectRecorder::default();
-    runtime
-        .register_effect::<RuntimeEffect, _>(recorder.clone())
-        .unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![
+        Arc::new(HandoffPlugin),
+        Arc::new(RuntimeEffectPlugin(recorder.clone())),
+    ];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new().with_base_revision(store.revision());
     cmd.update::<HandoffChannel>(HandoffAction::Request {
         agent: "fast".into(),
     });
     cmd.schedule_action::<ActivateRequested>(()).unwrap();
-    runtime.submit_command(cmd).await.unwrap();
+    runtime.submit_command(&env, cmd).await.unwrap();
 
     assert_eq!(
         store
@@ -390,7 +526,10 @@ async fn phase_runtime_stages_and_reduces_actions() {
         1
     );
 
-    let report = runtime.run_phase(Phase::BeforeInference).await.unwrap();
+    let report = runtime
+        .run_phase(&env, Phase::BeforeInference)
+        .await
+        .unwrap();
     assert_eq!(report.processed_scheduled_actions, 1);
     assert_eq!(report.effect_report.dispatched, 1);
 
@@ -416,9 +555,9 @@ async fn phase_runtime_stages_and_reduces_actions() {
 async fn effect_failures_are_reported_immediately() {
     let store = StateStore::new();
     let runtime = PhaseRuntime::new(store.clone()).unwrap();
-    runtime
-        .register_effect::<RuntimeEffect, _>(FailingRuntimeEffectHandler)
-        .unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> =
+        vec![Arc::new(RuntimeEffectPlugin(FailingRuntimeEffectHandler))];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.effect(RuntimeEffect::PublishJson {
@@ -426,7 +565,7 @@ async fn effect_failures_are_reported_immediately() {
         payload: serde_json::json!({"ok": true}),
     })
     .unwrap();
-    let report = runtime.submit_command(cmd).await.unwrap();
+    let report = runtime.submit_command(&env, cmd).await.unwrap();
     assert_eq!(report.effect_report.attempted, 1);
     assert_eq!(report.effect_report.failed, 1);
 }
@@ -434,19 +573,21 @@ async fn effect_failures_are_reported_immediately() {
 #[tokio::test]
 async fn app_runtime_wraps_store_and_phase_runtime() {
     let app = AppRuntime::new().unwrap();
-    app.install_plugin(HandoffPlugin).unwrap();
-    app.phase_runtime()
-        .register_effect::<RuntimeEffect, _>(RuntimeEffectRecorder::default())
-        .unwrap();
+    app.store().install_plugin(HandoffPlugin).unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![
+        Arc::new(HandoffPlugin),
+        Arc::new(RuntimeEffectPlugin(RuntimeEffectRecorder::default())),
+    ];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new().with_base_revision(app.revision());
     cmd.update::<HandoffChannel>(HandoffAction::Request {
         agent: "planner".into(),
     });
     cmd.schedule_action::<ActivateRequested>(()).unwrap();
-    app.submit_command(cmd).await.unwrap();
+    app.submit_command(&env, cmd).await.unwrap();
 
-    let report = app.run_phase(Phase::BeforeInference).await.unwrap();
+    let report = app.run_phase(&env, Phase::BeforeInference).await.unwrap();
     assert_eq!(report.processed_scheduled_actions, 1);
     assert_eq!(
         app.store()
@@ -460,27 +601,58 @@ async fn app_runtime_wraps_store_and_phase_runtime() {
 
 #[test]
 fn duplicate_typed_handler_registration_is_rejected() {
-    let app = AppRuntime::new().unwrap();
-    app.phase_runtime()
-        .register_scheduled_action::<ActivateRequested, _>(ActivateRequestedHandler)
-        .unwrap();
-    let err = app
-        .phase_runtime()
-        .register_scheduled_action::<ActivateRequested, _>(ActivateRequestedHandler)
-        .unwrap_err();
+    // Two plugins registering the same action key → error from ExecutionEnv::from_plugins
+    struct ActionPlugin1;
+    impl Plugin for ActionPlugin1 {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "action1" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_scheduled_action::<ActivateRequested, _>(ActivateRequestedHandler)
+        }
+    }
+    struct ActionPlugin2;
+    impl Plugin for ActionPlugin2 {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "action2" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_scheduled_action::<ActivateRequested, _>(ActivateRequestedHandler)
+        }
+    }
+
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(ActionPlugin1), Arc::new(ActionPlugin2)];
+    let err = ExecutionEnv::from_plugins(&plugins)
+        .err()
+        .expect("should fail");
     assert!(matches!(err, StateError::HandlerAlreadyRegistered { .. }));
 }
 
 #[test]
 fn duplicate_effect_handler_registration_is_rejected() {
-    let app = AppRuntime::new().unwrap();
-    app.phase_runtime()
-        .register_effect::<RuntimeEffect, _>(RuntimeEffectRecorder::default())
-        .unwrap();
-    let err = app
-        .phase_runtime()
-        .register_effect::<RuntimeEffect, _>(RuntimeEffectRecorder::default())
-        .unwrap_err();
+    struct EffectPlugin1;
+    impl Plugin for EffectPlugin1 {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "effect1" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_effect::<RuntimeEffect, _>(RuntimeEffectRecorder::default())
+        }
+    }
+    struct EffectPlugin2;
+    impl Plugin for EffectPlugin2 {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "effect2" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_effect::<RuntimeEffect, _>(RuntimeEffectRecorder::default())
+        }
+    }
+
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(EffectPlugin1), Arc::new(EffectPlugin2)];
+    let err = ExecutionEnv::from_plugins(&plugins)
+        .err()
+        .expect("should fail");
     assert!(matches!(
         err,
         StateError::EffectHandlerAlreadyRegistered { .. }
@@ -489,41 +661,52 @@ fn duplicate_effect_handler_registration_is_rejected() {
 
 #[test]
 fn duplicate_runtime_plugin_install_is_rejected() {
-    let app = AppRuntime::new().unwrap();
-    app.install_plugin(HandoffPlugin).unwrap();
+    let store = StateStore::new();
+    store.install_plugin(HandoffPlugin).unwrap();
 
-    let err = app.install_plugin(HandoffPlugin).unwrap_err();
+    let err = store.install_plugin(HandoffPlugin).unwrap_err();
     assert!(matches!(err, StateError::PluginAlreadyInstalled { .. }));
 }
 
 #[test]
 fn uninstalling_unknown_runtime_plugin_is_rejected() {
-    let app = AppRuntime::new().unwrap();
+    let store = StateStore::new();
 
-    let err = app.uninstall_plugin::<HandoffPlugin>().unwrap_err();
+    let err = store.uninstall_plugin::<HandoffPlugin>().unwrap_err();
     assert!(matches!(err, StateError::PluginNotInstalled { .. }));
 }
 
 #[tokio::test]
 async fn runtime_plugin_can_be_uninstalled_and_reinstalled() {
     let app = AppRuntime::new().unwrap();
-    app.install_plugin(HandoffPlugin).unwrap();
-    app.phase_runtime()
-        .register_effect::<RuntimeEffect, _>(RuntimeEffectRecorder::default())
-        .unwrap();
-    app.uninstall_plugin::<HandoffPlugin>().unwrap();
+    app.store().install_plugin(HandoffPlugin).unwrap();
+
+    let plugins: Vec<Arc<dyn Plugin>> = vec![
+        Arc::new(HandoffPlugin),
+        Arc::new(RuntimeEffectPlugin(RuntimeEffectRecorder::default())),
+    ];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+
+    // Write some state
+    let mut cmd = StateCommand::new().with_base_revision(app.revision());
+    cmd.update::<HandoffChannel>(HandoffAction::Request {
+        agent: "test".into(),
+    });
+    app.submit_command(&env, cmd).await.unwrap();
+
+    app.store().uninstall_plugin::<HandoffPlugin>().unwrap();
     assert!(app.store().read::<HandoffChannel>().is_none());
 
-    app.install_plugin(HandoffPlugin).unwrap();
+    app.store().install_plugin(HandoffPlugin).unwrap();
 
     let mut cmd = StateCommand::new().with_base_revision(app.revision());
     cmd.update::<HandoffChannel>(HandoffAction::Request {
         agent: "reloaded".into(),
     });
     cmd.schedule_action::<ActivateRequested>(()).unwrap();
-    app.submit_command(cmd).await.unwrap();
+    app.submit_command(&env, cmd).await.unwrap();
 
-    let report = app.run_phase(Phase::BeforeInference).await.unwrap();
+    let report = app.run_phase(&env, Phase::BeforeInference).await.unwrap();
     assert_eq!(report.processed_scheduled_actions, 1);
     assert_eq!(
         app.store()
@@ -538,15 +721,14 @@ async fn runtime_plugin_can_be_uninstalled_and_reinstalled() {
 #[tokio::test]
 async fn failed_scheduled_actions_are_dead_lettered() {
     let app = AppRuntime::new().unwrap();
-    app.phase_runtime()
-        .register_scheduled_action::<AlwaysFailingAction, _>(AlwaysFailingHandler)
-        .unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(AlwaysFailingPlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<AlwaysFailingAction>(()).unwrap();
-    app.submit_command(cmd).await.unwrap();
+    app.submit_command(&env, cmd).await.unwrap();
 
-    let report = app.run_phase(Phase::BeforeInference).await.unwrap();
+    let report = app.run_phase(&env, Phase::BeforeInference).await.unwrap();
     assert_eq!(report.failed_scheduled_actions, 1);
     assert_eq!(
         app.store()
@@ -566,18 +748,14 @@ async fn failed_scheduled_actions_are_dead_lettered() {
 #[tokio::test]
 async fn run_phase_processes_same_phase_actions_across_rounds() {
     let app = AppRuntime::new().unwrap();
-    app.phase_runtime()
-        .register_scheduled_action::<SpawnOnceAction, _>(SpawnOnceHandler)
-        .unwrap();
-    app.phase_runtime()
-        .register_scheduled_action::<FinishAction, _>(FinishHandler)
-        .unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(SpawnOncePlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<SpawnOnceAction>(()).unwrap();
-    app.submit_command(cmd).await.unwrap();
+    app.submit_command(&env, cmd).await.unwrap();
 
-    let report = app.run_phase(Phase::BeforeInference).await.unwrap();
+    let report = app.run_phase(&env, Phase::BeforeInference).await.unwrap();
     assert_eq!(report.rounds, 3);
     assert_eq!(report.processed_scheduled_actions, 2);
     assert_eq!(
@@ -592,15 +770,14 @@ async fn run_phase_processes_same_phase_actions_across_rounds() {
 #[tokio::test]
 async fn run_phase_reports_skipped_actions_from_other_phases() {
     let app = AppRuntime::new().unwrap();
-    app.phase_runtime()
-        .register_scheduled_action::<OtherPhaseAction, _>(OtherPhaseHandler)
-        .unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OtherPhasePlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<OtherPhaseAction>(()).unwrap();
-    app.submit_command(cmd).await.unwrap();
+    app.submit_command(&env, cmd).await.unwrap();
 
-    let report = app.run_phase(Phase::BeforeInference).await.unwrap();
+    let report = app.run_phase(&env, Phase::BeforeInference).await.unwrap();
     assert_eq!(report.processed_scheduled_actions, 0);
     assert_eq!(report.skipped_scheduled_actions, 1);
     assert_eq!(
@@ -615,15 +792,17 @@ async fn run_phase_reports_skipped_actions_from_other_phases() {
 #[tokio::test]
 async fn run_phase_returns_error_on_infinite_loop() {
     let app = AppRuntime::new().unwrap();
-    app.phase_runtime()
-        .register_scheduled_action::<InfiniteLoopAction, _>(InfiniteLoopHandler)
-        .unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(InfiniteLoopPlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<InfiniteLoopAction>(()).unwrap();
-    app.submit_command(cmd).await.unwrap();
+    app.submit_command(&env, cmd).await.unwrap();
 
-    let err = app.run_phase(Phase::BeforeInference).await.unwrap_err();
+    let err = app
+        .run_phase(&env, Phase::BeforeInference)
+        .await
+        .unwrap_err();
     assert!(matches!(
         err,
         StateError::PhaseRunLoopExceeded {
@@ -636,17 +815,16 @@ async fn run_phase_returns_error_on_infinite_loop() {
 #[tokio::test]
 async fn run_phase_with_custom_limit() {
     let app = AppRuntime::new().unwrap();
-    app.phase_runtime()
-        .register_scheduled_action::<InfiniteLoopAction, _>(InfiniteLoopHandler)
-        .unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(InfiniteLoopPlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<InfiniteLoopAction>(()).unwrap();
-    app.submit_command(cmd).await.unwrap();
+    app.submit_command(&env, cmd).await.unwrap();
 
     let err = app
         .phase_runtime()
-        .run_phase_with_limit(Phase::BeforeInference, 3)
+        .run_phase_with_limit(&env, Phase::BeforeInference, 3)
         .await
         .unwrap_err();
     assert!(matches!(
@@ -661,16 +839,15 @@ async fn run_phase_with_custom_limit() {
 #[tokio::test]
 async fn malformed_action_payloads_are_dead_lettered() {
     let app = AppRuntime::new().unwrap();
-    app.phase_runtime()
-        .register_scheduled_action::<BadlyEncodedAction, _>(BadlyEncodedActionHandler)
-        .unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(BadlyEncodedPlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<BadlyEncodedAction>("broken".into())
         .unwrap();
-    app.submit_command(cmd).await.unwrap();
+    app.submit_command(&env, cmd).await.unwrap();
 
-    let report = app.run_phase(Phase::BeforeInference).await.unwrap();
+    let report = app.run_phase(&env, Phase::BeforeInference).await.unwrap();
     assert_eq!(report.failed_scheduled_actions, 1);
     let failed = app
         .store()
@@ -683,14 +860,13 @@ async fn malformed_action_payloads_are_dead_lettered() {
 #[tokio::test]
 async fn malformed_effect_payloads_are_reported_as_failed_dispatch() {
     let runtime = PhaseRuntime::new(StateStore::new()).unwrap();
-    runtime
-        .register_effect::<MismatchedEffect, _>(MismatchedEffectHandler)
-        .unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(MismatchedEffectPlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.emit::<MismatchedEffect>(MismatchedPayload).unwrap();
 
-    let report = runtime.submit_command(cmd).await.unwrap();
+    let report = runtime.submit_command(&env, cmd).await.unwrap();
     assert_eq!(report.effect_report.attempted, 1);
     assert_eq!(report.effect_report.dispatched, 0);
     assert_eq!(report.effect_report.failed, 1);
@@ -757,19 +933,20 @@ impl Plugin for HookPlugin {
 async fn phase_hook_runs_during_run_phase() {
     let app = AppRuntime::new().unwrap();
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    app.install_plugin(HookPlugin {
+    let hook_plugin = Arc::new(HookPlugin {
         hook_count: Arc::clone(&count),
-    })
-    .unwrap();
+    });
+    let plugins: Vec<Arc<dyn Plugin>> = vec![hook_plugin];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    app.run_phase(Phase::BeforeInference).await.unwrap();
+    app.run_phase(&env, Phase::BeforeInference).await.unwrap();
     assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
 async fn phase_hook_can_mutate_state() {
     let app = AppRuntime::new().unwrap();
-    app.install_plugin(HandoffPlugin).unwrap();
+    app.store().install_plugin(HandoffPlugin).unwrap();
 
     struct MutatingHookPlugin;
     impl Plugin for MutatingHookPlugin {
@@ -787,9 +964,11 @@ async fn phase_hook_can_mutate_state() {
             Ok(())
         }
     }
-    app.install_plugin(MutatingHookPlugin).unwrap();
 
-    app.run_phase(Phase::BeforeInference).await.unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(HandoffPlugin), Arc::new(MutatingHookPlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+
+    app.run_phase(&env, Phase::BeforeInference).await.unwrap();
 
     let state = app.store().read::<HandoffChannel>().unwrap();
     assert_eq!(state.requested_agent.as_deref(), Some("from-hook"));
@@ -798,9 +977,6 @@ async fn phase_hook_can_mutate_state() {
 #[tokio::test]
 async fn phase_hook_can_enqueue_actions() {
     let app = AppRuntime::new().unwrap();
-    app.phase_runtime()
-        .register_scheduled_action::<LogOnlyAction, _>(LogOnlyHandler)
-        .unwrap();
 
     struct EnqueuePlugin;
     impl Plugin for EnqueuePlugin {
@@ -815,12 +991,15 @@ async fn phase_hook_can_enqueue_actions() {
                 Phase::BeforeInference,
                 ActionEnqueuingHook,
             )?;
+            registrar.register_scheduled_action::<LogOnlyAction, _>(LogOnlyHandler)?;
             Ok(())
         }
     }
-    app.install_plugin(EnqueuePlugin).unwrap();
 
-    let report = app.run_phase(Phase::BeforeInference).await.unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(EnqueuePlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+
+    let report = app.run_phase(&env, Phase::BeforeInference).await.unwrap();
     assert_eq!(report.processed_scheduled_actions, 1);
     assert_eq!(
         app.store()
@@ -879,28 +1058,35 @@ async fn phase_hooks_execute_in_registration_order() {
     }
 
     let app = AppRuntime::new().unwrap();
-    app.install_plugin(OrderPlugin { order: order_clone })
-        .unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OrderPlugin { order: order_clone })];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    app.run_phase(Phase::BeforeInference).await.unwrap();
+    app.run_phase(&env, Phase::BeforeInference).await.unwrap();
     assert_eq!(*order.lock().unwrap(), vec!["first", "second"]);
 }
 
 #[tokio::test]
 async fn phase_hooks_are_cleaned_up_on_uninstall() {
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let app = AppRuntime::new().unwrap();
-    app.install_plugin(HookPlugin {
-        hook_count: Arc::clone(&count),
-    })
-    .unwrap();
 
-    app.run_phase(Phase::BeforeInference).await.unwrap();
+    // First run: with the hook plugin
+    let app = AppRuntime::new().unwrap();
+    let hook_plugin = Arc::new(HookPlugin {
+        hook_count: Arc::clone(&count),
+    });
+    let env_with_hook = ExecutionEnv::from_plugins(&[hook_plugin as Arc<dyn Plugin>]).unwrap();
+
+    app.run_phase(&env_with_hook, Phase::BeforeInference)
+        .await
+        .unwrap();
     assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
 
-    app.uninstall_plugin::<HookPlugin>().unwrap();
+    // Second run: without the hook plugin (simulates uninstall)
+    let env_without_hook = ExecutionEnv::empty();
 
-    app.run_phase(Phase::BeforeInference).await.unwrap();
+    app.run_phase(&env_without_hook, Phase::BeforeInference)
+        .await
+        .unwrap();
     assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
@@ -908,12 +1094,12 @@ async fn phase_hooks_are_cleaned_up_on_uninstall() {
 async fn phase_hook_does_not_fire_for_other_phases() {
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let app = AppRuntime::new().unwrap();
-    app.install_plugin(HookPlugin {
+    let hook_plugin = Arc::new(HookPlugin {
         hook_count: Arc::clone(&count),
-    })
-    .unwrap();
+    });
+    let env = ExecutionEnv::from_plugins(&[hook_plugin as Arc<dyn Plugin>]).unwrap();
 
-    app.run_phase(Phase::AfterInference).await.unwrap();
+    app.run_phase(&env, Phase::AfterInference).await.unwrap();
     assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
@@ -950,14 +1136,14 @@ async fn phase_hooks_fire_for_step_start_and_step_end() {
     }
 
     let app = AppRuntime::new().unwrap();
-    app.install_plugin(StepHookPlugin {
+    let step_plugin = Arc::new(StepHookPlugin {
         start_count: Arc::clone(&step_start_count),
         end_count: Arc::clone(&step_end_count),
-    })
-    .unwrap();
+    });
+    let env = ExecutionEnv::from_plugins(&[step_plugin as Arc<dyn Plugin>]).unwrap();
 
-    app.run_phase(Phase::StepStart).await.unwrap();
-    app.run_phase(Phase::StepEnd).await.unwrap();
+    app.run_phase(&env, Phase::StepStart).await.unwrap();
+    app.run_phase(&env, Phase::StepEnd).await.unwrap();
 
     assert_eq!(
         step_start_count.load(std::sync::atomic::Ordering::SeqCst),
@@ -992,25 +1178,26 @@ async fn phase_hooks_do_not_cross_fire_between_step_phases() {
     }
 
     let app = AppRuntime::new().unwrap();
-    app.install_plugin(StepStartOnlyPlugin {
+    let step_plugin = Arc::new(StepStartOnlyPlugin {
         count: Arc::clone(&start_count),
-    })
-    .unwrap();
+    });
+    let env = ExecutionEnv::from_plugins(&[step_plugin as Arc<dyn Plugin>]).unwrap();
 
     // StepEnd should NOT trigger StepStart hook
-    app.run_phase(Phase::StepEnd).await.unwrap();
+    app.run_phase(&env, Phase::StepEnd).await.unwrap();
     assert_eq!(start_count.load(std::sync::atomic::Ordering::SeqCst), 0);
 
     // StepStart should trigger it
-    app.run_phase(Phase::StepStart).await.unwrap();
+    app.run_phase(&env, Phase::StepStart).await.unwrap();
     assert_eq!(start_count.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
 async fn all_eight_phases_can_run_without_hooks() {
     let app = AppRuntime::new().unwrap();
+    let env = ExecutionEnv::empty();
     for phase in Phase::ALL {
-        let report = app.run_phase(phase).await.unwrap();
+        let report = app.run_phase(&env, phase).await.unwrap();
         assert_eq!(report.phase, phase);
         assert_eq!(report.processed_scheduled_actions, 0);
     }

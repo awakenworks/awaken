@@ -67,8 +67,8 @@ impl PhaseHook for MaxRoundsHook {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::{AppRuntime, TypedEffectHandler};
-    use crate::state::Snapshot;
+    use crate::runtime::{ExecutionEnv, PhaseRuntime, TypedEffectHandler};
+    use crate::state::{Snapshot, StateStore};
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone, Default)]
@@ -76,44 +76,79 @@ mod tests {
         effects: Arc<Mutex<Vec<RuntimeEffect>>>,
     }
 
+    impl Plugin for Recorder {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "test-recorder",
+            }
+        }
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_effect::<RuntimeEffect, _>(RecorderHandler(self.effects.clone()))
+        }
+    }
+
+    struct RecorderHandler(Arc<Mutex<Vec<RuntimeEffect>>>);
+
     #[async_trait]
-    impl TypedEffectHandler<RuntimeEffect> for Recorder {
+    impl TypedEffectHandler<RuntimeEffect> for RecorderHandler {
         async fn handle_typed(&self, payload: RuntimeEffect, _: &Snapshot) -> Result<(), String> {
-            self.effects.lock().unwrap().push(payload);
+            self.0.lock().unwrap().push(payload);
             Ok(())
         }
     }
 
     #[tokio::test]
     async fn max_rounds_plugin_installs_and_registers_hook() {
-        let app = AppRuntime::new().unwrap();
-        app.phase_runtime()
-            .register_effect::<RuntimeEffect, _>(Recorder::default())
-            .unwrap();
-        app.install_plugin(MaxRoundsPlugin::new(5)).unwrap();
+        let store = StateStore::new();
+        let runtime = PhaseRuntime::new(store).unwrap();
+        let recorder = Recorder::default();
+
+        let plugins: Vec<Arc<dyn Plugin>> = vec![
+            Arc::new(recorder.clone()),
+            Arc::new(MaxRoundsPlugin::new(5)),
+        ];
+        let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
         for _ in 0..5 {
-            app.run_phase(Phase::AfterInference).await.unwrap();
+            runtime
+                .run_phase(&env, Phase::AfterInference)
+                .await
+                .unwrap();
         }
-        let report = app.run_phase(Phase::AfterInference).await.unwrap();
+        let report = runtime
+            .run_phase(&env, Phase::AfterInference)
+            .await
+            .unwrap();
         assert_eq!(report.effect_report.attempted, 1);
         assert_eq!(report.effect_report.dispatched, 1);
     }
 
     #[tokio::test]
     async fn max_rounds_plugin_emits_terminate_with_correct_reason() {
-        let app = AppRuntime::new().unwrap();
+        let store = StateStore::new();
+        let runtime = PhaseRuntime::new(store).unwrap();
         let recorder = Recorder::default();
-        app.phase_runtime()
-            .register_effect::<RuntimeEffect, _>(recorder.clone())
-            .unwrap();
-        app.install_plugin(MaxRoundsPlugin::new(2)).unwrap();
 
-        app.run_phase(Phase::AfterInference).await.unwrap();
-        app.run_phase(Phase::AfterInference).await.unwrap();
+        let plugins: Vec<Arc<dyn Plugin>> = vec![
+            Arc::new(recorder.clone()),
+            Arc::new(MaxRoundsPlugin::new(2)),
+        ];
+        let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+
+        runtime
+            .run_phase(&env, Phase::AfterInference)
+            .await
+            .unwrap();
+        runtime
+            .run_phase(&env, Phase::AfterInference)
+            .await
+            .unwrap();
         assert!(recorder.effects.lock().unwrap().is_empty());
 
-        app.run_phase(Phase::AfterInference).await.unwrap();
+        runtime
+            .run_phase(&env, Phase::AfterInference)
+            .await
+            .unwrap();
         let effects = recorder.effects.lock().unwrap();
         assert_eq!(effects.len(), 1);
         match &effects[0] {

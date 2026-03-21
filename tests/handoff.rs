@@ -196,25 +196,23 @@ async fn hook_filtering_only_active_plugins_fire() {
     let log = HookLog::default();
 
     let runtime = PhaseRuntime::new(StateStore::new()).unwrap();
-    runtime.install_plugin(LoopStatePlugin).unwrap();
+    runtime.store().install_plugin(LoopStatePlugin).unwrap();
 
-    // Install tracker with two plugin_ids
-    runtime
-        .install_plugin(MultiTrackerPlugin {
-            trackers: vec![
-                ("alpha", vec![Phase::BeforeInference]),
-                ("beta", vec![Phase::BeforeInference]),
-            ],
-            log: log.clone(),
-        })
-        .unwrap();
+    let tracker = Arc::new(MultiTrackerPlugin {
+        trackers: vec![
+            ("alpha", vec![Phase::BeforeInference]),
+            ("beta", vec![Phase::BeforeInference]),
+        ],
+        log: log.clone(),
+    });
+    let env = ExecutionEnv::from_plugins(&[tracker as Arc<dyn Plugin>]).unwrap();
 
     // Build a profile that only activates "alpha"
     let profile = profile_with_plugins(&["alpha"]);
 
     let ctx =
         PhaseContext::new(Phase::BeforeInference, runtime.store().snapshot()).with_profile(profile);
-    runtime.run_phase_with_context(ctx).await.unwrap();
+    runtime.run_phase_with_context(&env, ctx).await.unwrap();
 
     let entries = log.entries.lock().unwrap();
     let before_inf: Vec<_> = entries
@@ -232,24 +230,23 @@ async fn empty_active_plugins_runs_all_hooks() {
     let log = HookLog::default();
 
     let runtime = PhaseRuntime::new(StateStore::new()).unwrap();
-    runtime.install_plugin(LoopStatePlugin).unwrap();
+    runtime.store().install_plugin(LoopStatePlugin).unwrap();
 
-    runtime
-        .install_plugin(MultiTrackerPlugin {
-            trackers: vec![
-                ("alpha", vec![Phase::BeforeInference]),
-                ("beta", vec![Phase::BeforeInference]),
-            ],
-            log: log.clone(),
-        })
-        .unwrap();
+    let tracker = Arc::new(MultiTrackerPlugin {
+        trackers: vec![
+            ("alpha", vec![Phase::BeforeInference]),
+            ("beta", vec![Phase::BeforeInference]),
+        ],
+        log: log.clone(),
+    });
+    let env = ExecutionEnv::from_plugins(&[tracker as Arc<dyn Plugin>]).unwrap();
 
     // Default profile has empty active_plugins — no filtering, all hooks run
     let profile = Arc::new(AgentProfile::default());
 
     let ctx =
         PhaseContext::new(Phase::BeforeInference, runtime.store().snapshot()).with_profile(profile);
-    runtime.run_phase_with_context(ctx).await.unwrap();
+    runtime.run_phase_with_context(&env, ctx).await.unwrap();
 
     let entries = log.entries.lock().unwrap();
     let before_inf: Vec<_> = entries
@@ -267,15 +264,14 @@ async fn config_values_accessible_in_hooks() {
     let log = HookLog::default();
 
     let runtime = PhaseRuntime::new(StateStore::new()).unwrap();
-    runtime.install_plugin(LoopStatePlugin).unwrap();
+    runtime.store().install_plugin(LoopStatePlugin).unwrap();
 
-    runtime
-        .install_plugin(SingleTrackerPlugin {
-            id: "tracker",
-            log: log.clone(),
-            phases: vec![Phase::BeforeInference],
-        })
-        .unwrap();
+    let tracker = Arc::new(SingleTrackerPlugin {
+        id: "tracker",
+        log: log.clone(),
+        phases: vec![Phase::BeforeInference],
+    });
+    let env = ExecutionEnv::from_plugins(&[tracker as Arc<dyn Plugin>]).unwrap();
 
     // Build a profile with sections for model_name (overridden) and greeting (default)
     let profile = Arc::new(
@@ -286,7 +282,7 @@ async fn config_values_accessible_in_hooks() {
 
     let ctx =
         PhaseContext::new(Phase::BeforeInference, runtime.store().snapshot()).with_profile(profile);
-    runtime.run_phase_with_context(ctx).await.unwrap();
+    runtime.run_phase_with_context(&env, ctx).await.unwrap();
 
     let entries = log.entries.lock().unwrap();
     let entry = entries
@@ -308,23 +304,18 @@ async fn handoff_switches_profile_at_next_boundary() {
     let log = HookLog::default();
 
     let runtime = PhaseRuntime::new(StateStore::new()).unwrap();
-    runtime.install_plugin(LoopStatePlugin).unwrap();
+    runtime.store().install_plugin(LoopStatePlugin).unwrap();
 
-    // Handoff plugin writes ActiveAgentKey at RunStart
-    runtime
-        .install_plugin(HandoffPlugin {
-            target_profile: "reviewer".into(),
-        })
-        .unwrap();
-
-    // Tracker registered as "review-tracker" — only active when reviewer profile is active
-    runtime
-        .install_plugin(SingleTrackerPlugin {
-            id: "review-tracker",
-            log: log.clone(),
-            phases: vec![Phase::BeforeInference],
-        })
-        .unwrap();
+    let handoff_plugin = Arc::new(HandoffPlugin {
+        target_profile: "reviewer".into(),
+    });
+    let tracker = Arc::new(SingleTrackerPlugin {
+        id: "review-tracker",
+        log: log.clone(),
+        phases: vec![Phase::BeforeInference],
+    });
+    let plugins: Vec<Arc<dyn Plugin>> = vec![handoff_plugin, tracker];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
     // Build a registry with the "reviewer" profile
     let mut registry = MapAgentRegistry::new();
@@ -339,7 +330,10 @@ async fn handoff_switches_profile_at_next_boundary() {
     let handoff_profile = profile_with_plugins(&["handoff"]);
     let run_start_ctx = PhaseContext::new(Phase::RunStart, runtime.store().snapshot())
         .with_profile(handoff_profile);
-    runtime.run_phase_with_context(run_start_ctx).await.unwrap();
+    runtime
+        .run_phase_with_context(&env, run_start_ctx)
+        .await
+        .unwrap();
 
     // After RunStart, read ActiveAgentKey from state to resolve the new profile
     let active_id = runtime
@@ -356,7 +350,7 @@ async fn handoff_switches_profile_at_next_boundary() {
     let before_inf_ctx = PhaseContext::new(Phase::BeforeInference, runtime.store().snapshot())
         .with_profile(reviewer_profile);
     runtime
-        .run_phase_with_context(before_inf_ctx)
+        .run_phase_with_context(&env, before_inf_ctx)
         .await
         .unwrap();
 
@@ -379,21 +373,20 @@ async fn deactivate_plugin_mid_run_via_configure() {
     let log = HookLog::default();
 
     let runtime = PhaseRuntime::new(StateStore::new()).unwrap();
-    runtime.install_plugin(LoopStatePlugin).unwrap();
+    runtime.store().install_plugin(LoopStatePlugin).unwrap();
 
-    runtime
-        .install_plugin(SingleTrackerPlugin {
-            id: "tracker",
-            log: log.clone(),
-            phases: vec![Phase::RunStart, Phase::BeforeInference, Phase::RunEnd],
-        })
-        .unwrap();
+    let tracker = Arc::new(SingleTrackerPlugin {
+        id: "tracker",
+        log: log.clone(),
+        phases: vec![Phase::RunStart, Phase::BeforeInference, Phase::RunEnd],
+    });
+    let env = ExecutionEnv::from_plugins(&[tracker as Arc<dyn Plugin>]).unwrap();
 
     // Phase 1: RunStart with tracker active
     let profile_with_tracker = profile_with_plugins(&["tracker"]);
     let ctx = PhaseContext::new(Phase::RunStart, runtime.store().snapshot())
         .with_profile(profile_with_tracker);
-    runtime.run_phase_with_context(ctx).await.unwrap();
+    runtime.run_phase_with_context(&env, ctx).await.unwrap();
 
     {
         let entries = log.entries.lock().unwrap();
@@ -406,7 +399,7 @@ async fn deactivate_plugin_mid_run_via_configure() {
     let profile_without_tracker = profile_with_plugins(&["other-plugin"]);
     let ctx = PhaseContext::new(Phase::BeforeInference, runtime.store().snapshot())
         .with_profile(profile_without_tracker);
-    runtime.run_phase_with_context(ctx).await.unwrap();
+    runtime.run_phase_with_context(&env, ctx).await.unwrap();
 
     {
         let entries = log.entries.lock().unwrap();
