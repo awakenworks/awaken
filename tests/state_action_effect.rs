@@ -1380,6 +1380,370 @@ async fn collect_commands_still_fails_on_exclusive_conflict() {
 }
 
 #[tokio::test]
+async fn no_conflict_hooks_merge_in_single_commit() {
+    // Two hooks writing disjoint keys → single merge, single commit, no fallback
+    struct PluginA;
+    impl Plugin for PluginA {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "plugin-a" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_key::<Counter>(StateKeyOptions::default())?;
+            r.register_key::<Label>(StateKeyOptions::default())?;
+            struct Hook;
+            #[async_trait]
+            impl PhaseHook for Hook {
+                async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+                    let mut cmd = StateCommand::new();
+                    cmd.update::<Counter>(42);
+                    Ok(cmd)
+                }
+            }
+            r.register_phase_hook("plugin-a", Phase::RunStart, Hook)?;
+            Ok(())
+        }
+    }
+
+    struct PluginB;
+    impl Plugin for PluginB {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "plugin-b" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            struct Hook;
+            #[async_trait]
+            impl PhaseHook for Hook {
+                async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+                    let mut cmd = StateCommand::new();
+                    cmd.update::<Label>("hello".into());
+                    Ok(cmd)
+                }
+            }
+            r.register_phase_hook("plugin-b", Phase::RunStart, Hook)?;
+            Ok(())
+        }
+    }
+
+    let app = AppRuntime::new().unwrap();
+    app.store().install_plugin(PluginA).unwrap();
+
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(PluginA), Arc::new(PluginB)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+
+    let report = app.run_phase(&env, Phase::RunStart).await.unwrap();
+
+    // Both hooks applied in single batch
+    assert_eq!(app.store().read::<Counter>(), Some(42));
+    assert_eq!(app.store().read::<Label>().as_deref(), Some("hello"));
+    // Only one round needed (no convergence loop actions)
+    assert_eq!(report.rounds, 1);
+}
+
+#[tokio::test]
+async fn three_hooks_two_conflicting_one_independent() {
+    // Hook A: writes Counter (exclusive)
+    // Hook B: writes Counter (exclusive) — conflicts with A
+    // Hook C: writes SharedCounter (commutative) — no conflict
+    // Expected: A + C in batch, B deferred and re-run
+    struct KeyPlugin;
+    impl Plugin for KeyPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "keys" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_key::<Counter>(StateKeyOptions::default())?;
+            r.register_key::<SharedCounter>(StateKeyOptions::default())?;
+            struct HookA;
+            #[async_trait]
+            impl PhaseHook for HookA {
+                async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+                    let mut cmd = StateCommand::new();
+                    cmd.update::<Counter>(10);
+                    Ok(cmd)
+                }
+            }
+            r.register_phase_hook("keys", Phase::RunStart, HookA)?;
+            Ok(())
+        }
+    }
+
+    struct PluginB;
+    impl Plugin for PluginB {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "plugin-b" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            struct HookB;
+            #[async_trait]
+            impl PhaseHook for HookB {
+                async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+                    let mut cmd = StateCommand::new();
+                    cmd.update::<Counter>(20);
+                    Ok(cmd)
+                }
+            }
+            r.register_phase_hook("plugin-b", Phase::RunStart, HookB)?;
+            Ok(())
+        }
+    }
+
+    struct PluginC;
+    impl Plugin for PluginC {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "plugin-c" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            struct HookC;
+            #[async_trait]
+            impl PhaseHook for HookC {
+                async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+                    let mut cmd = StateCommand::new();
+                    cmd.update::<SharedCounter>(99);
+                    Ok(cmd)
+                }
+            }
+            r.register_phase_hook("plugin-c", Phase::RunStart, HookC)?;
+            Ok(())
+        }
+    }
+
+    let app = AppRuntime::new().unwrap();
+    app.store().install_plugin(KeyPlugin).unwrap();
+
+    let plugins: Vec<Arc<dyn Plugin>> =
+        vec![Arc::new(KeyPlugin), Arc::new(PluginB), Arc::new(PluginC)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+
+    app.run_phase(&env, Phase::RunStart).await.unwrap();
+
+    // A (10) + B (20) both applied to Counter
+    assert_eq!(app.store().read::<Counter>(), Some(30));
+    // C applied to SharedCounter
+    assert_eq!(app.store().read::<SharedCounter>(), Some(99));
+}
+
+#[tokio::test]
+async fn commutative_key_overlap_does_not_trigger_fallback() {
+    // Two hooks both write SharedCounter (Commutative) → no fallback needed
+    struct KeyPlugin;
+    impl Plugin for KeyPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "keys" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_key::<SharedCounter>(StateKeyOptions::default())?;
+            struct HookA;
+            #[async_trait]
+            impl PhaseHook for HookA {
+                async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+                    let mut cmd = StateCommand::new();
+                    cmd.update::<SharedCounter>(3);
+                    Ok(cmd)
+                }
+            }
+            r.register_phase_hook("keys", Phase::RunStart, HookA)?;
+            Ok(())
+        }
+    }
+
+    struct PluginB;
+    impl Plugin for PluginB {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "plugin-b" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            struct HookB;
+            #[async_trait]
+            impl PhaseHook for HookB {
+                async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+                    let mut cmd = StateCommand::new();
+                    cmd.update::<SharedCounter>(7);
+                    Ok(cmd)
+                }
+            }
+            r.register_phase_hook("plugin-b", Phase::RunStart, HookB)?;
+            Ok(())
+        }
+    }
+
+    let app = AppRuntime::new().unwrap();
+    app.store().install_plugin(KeyPlugin).unwrap();
+
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(KeyPlugin), Arc::new(PluginB)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+
+    app.run_phase(&env, Phase::RunStart).await.unwrap();
+
+    // Both merged in single batch: 3 + 7 = 10
+    assert_eq!(app.store().read::<SharedCounter>(), Some(10));
+}
+
+#[tokio::test]
+async fn all_hooks_return_empty_commands() {
+    struct EmptyPlugin;
+    impl Plugin for EmptyPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "empty" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            struct EmptyHook;
+            #[async_trait]
+            impl PhaseHook for EmptyHook {
+                async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+                    Ok(StateCommand::new())
+                }
+            }
+            r.register_phase_hook("empty", Phase::RunStart, EmptyHook)?;
+            Ok(())
+        }
+    }
+
+    let app = AppRuntime::new().unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(EmptyPlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+
+    let report = app.run_phase(&env, Phase::RunStart).await.unwrap();
+    assert_eq!(report.generated_effects, 0);
+    assert_eq!(report.rounds, 1);
+}
+
+#[tokio::test]
+async fn single_hook_no_fallback_needed() {
+    struct SinglePlugin;
+    impl Plugin for SinglePlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "single" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_key::<Counter>(StateKeyOptions::default())?;
+            struct Hook;
+            #[async_trait]
+            impl PhaseHook for Hook {
+                async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+                    let mut cmd = StateCommand::new();
+                    cmd.update::<Counter>(77);
+                    Ok(cmd)
+                }
+            }
+            r.register_phase_hook("single", Phase::RunStart, Hook)?;
+            Ok(())
+        }
+    }
+
+    let app = AppRuntime::new().unwrap();
+    app.store().install_plugin(SinglePlugin).unwrap();
+
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(SinglePlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+
+    app.run_phase(&env, Phase::RunStart).await.unwrap();
+    assert_eq!(app.store().read::<Counter>(), Some(77));
+}
+
+#[tokio::test]
+async fn exclusive_fallback_effects_still_dispatched() {
+    // Hooks that conflict AND emit effects → effects should still be dispatched
+    use std::sync::atomic::AtomicUsize;
+
+    let effect_count = Arc::new(AtomicUsize::new(0));
+
+    struct EffectKeyPlugin;
+    impl Plugin for EffectKeyPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "effect-keys",
+            }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_key::<Counter>(StateKeyOptions::default())?;
+            Ok(())
+        }
+    }
+
+    struct HookWithEffect;
+    #[async_trait]
+    impl PhaseHook for HookWithEffect {
+        async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+            let mut cmd = StateCommand::new();
+            cmd.update::<Counter>(1);
+            cmd.effect(awaken::RuntimeEffect::PublishJson {
+                topic: "test".into(),
+                payload: serde_json::json!({}),
+            })?;
+            Ok(cmd)
+        }
+    }
+
+    struct EffectPlugin1;
+    impl Plugin for EffectPlugin1 {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "effect-1" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_phase_hook("effect-1", Phase::RunStart, HookWithEffect)?;
+            Ok(())
+        }
+    }
+
+    struct EffectPlugin2;
+    impl Plugin for EffectPlugin2 {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "effect-2" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_phase_hook("effect-2", Phase::RunStart, HookWithEffect)?;
+            Ok(())
+        }
+    }
+
+    struct EffectCounter(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl awaken::TypedEffectHandler<awaken::RuntimeEffect> for EffectCounter {
+        async fn handle_typed(
+            &self,
+            _payload: awaken::RuntimeEffect,
+            _snapshot: &awaken::Snapshot,
+        ) -> Result<(), String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    struct EffectCounterPlugin(Arc<AtomicUsize>);
+    impl Plugin for EffectCounterPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "effect-counter",
+            }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_effect::<awaken::RuntimeEffect, _>(EffectCounter(self.0.clone()))?;
+            Ok(())
+        }
+    }
+
+    let app = AppRuntime::new().unwrap();
+    app.store().install_plugin(EffectKeyPlugin).unwrap();
+
+    let plugins: Vec<Arc<dyn Plugin>> = vec![
+        Arc::new(EffectKeyPlugin),
+        Arc::new(EffectPlugin1),
+        Arc::new(EffectPlugin2),
+        Arc::new(EffectCounterPlugin(effect_count.clone())),
+    ];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+
+    let report = app.run_phase(&env, Phase::RunStart).await.unwrap();
+
+    // Both hooks applied
+    assert_eq!(app.store().read::<Counter>(), Some(2));
+    // Both effects dispatched (one from batch, one from deferred)
+    assert_eq!(report.generated_effects, 2);
+    assert_eq!(effect_count.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn uninstalled_plugin_hooks_do_not_fire() {
     let count = Arc::new(AtomicUsize::new(0));
     struct CountHook(Arc<AtomicUsize>);

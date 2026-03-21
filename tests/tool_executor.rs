@@ -1136,3 +1136,278 @@ async fn before_inference_hook_override_reaches_request() {
     assert_eq!(overrides.max_tokens, Some(256));
     assert!(overrides.model.is_none());
 }
+
+#[tokio::test]
+async fn multiple_hooks_merge_inference_overrides_last_wins() {
+    use awaken::contract::inference::{InferenceOverride, InferenceOverrideEffect};
+
+    struct CapturingLlm {
+        captured: Mutex<Vec<Option<InferenceOverride>>>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for CapturingLlm {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            self.captured.lock().unwrap().push(req.overrides);
+            Ok(StreamResult {
+                text: "done".into(),
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+            })
+        }
+        fn name(&self) -> &str {
+            "capturing"
+        }
+    }
+
+    // Plugin A sets temperature=0.5, model="model-a"
+    struct OverridePluginA;
+    impl Plugin for OverridePluginA {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "override-a" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            struct Hook;
+            #[async_trait]
+            impl PhaseHook for Hook {
+                async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+                    let mut cmd = StateCommand::new();
+                    cmd.emit::<InferenceOverrideEffect>(InferenceOverride {
+                        temperature: Some(0.5),
+                        model: Some("model-a".into()),
+                        ..Default::default()
+                    })?;
+                    Ok(cmd)
+                }
+            }
+            r.register_phase_hook("override-a", Phase::BeforeInference, Hook)?;
+            Ok(())
+        }
+    }
+
+    // Plugin B sets temperature=0.9, max_tokens=512 (overwrites A's temperature, A's model preserved)
+    struct OverridePluginB;
+    impl Plugin for OverridePluginB {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "override-b" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            struct Hook;
+            #[async_trait]
+            impl PhaseHook for Hook {
+                async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+                    let mut cmd = StateCommand::new();
+                    cmd.emit::<InferenceOverrideEffect>(InferenceOverride {
+                        temperature: Some(0.9),
+                        max_tokens: Some(512),
+                        ..Default::default()
+                    })?;
+                    Ok(cmd)
+                }
+            }
+            r.register_phase_hook("override-b", Phase::BeforeInference, Hook)?;
+            Ok(())
+        }
+    }
+
+    let llm = Arc::new(CapturingLlm {
+        captured: Mutex::new(Vec::new()),
+    });
+    let agent = AgentConfig::new("test", "m", "sys", llm.clone());
+    let rt = make_runtime();
+
+    let user_plugins: Vec<Arc<dyn Plugin>> =
+        vec![Arc::new(OverridePluginA), Arc::new(OverridePluginB)];
+    let (env, collectors) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+
+    let _result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &collectors,
+        &NullEventSink,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
+
+    let captured = llm.captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    let overrides = captured[0].as_ref().expect("overrides should be set");
+    // B's temperature wins (last-wins)
+    assert_eq!(overrides.temperature, Some(0.9));
+    // B's max_tokens set
+    assert_eq!(overrides.max_tokens, Some(512));
+    // A's model preserved (B didn't set it)
+    assert_eq!(overrides.model.as_deref(), Some("model-a"));
+}
+
+#[tokio::test]
+async fn no_override_hook_leaves_overrides_none() {
+    use awaken::contract::inference::InferenceOverride;
+
+    struct CapturingLlm {
+        captured: Mutex<Vec<Option<InferenceOverride>>>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for CapturingLlm {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            self.captured.lock().unwrap().push(req.overrides);
+            Ok(StreamResult {
+                text: "done".into(),
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+            })
+        }
+        fn name(&self) -> &str {
+            "capturing"
+        }
+    }
+
+    let llm = Arc::new(CapturingLlm {
+        captured: Mutex::new(Vec::new()),
+    });
+    let agent = AgentConfig::new("test", "m", "sys", llm.clone());
+    let rt = make_runtime();
+
+    // No override plugins
+    let (env, collectors) = build_agent_env(&[], agent.max_rounds).unwrap();
+
+    let _result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &collectors,
+        &NullEventSink,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
+
+    let captured = llm.captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    assert!(
+        captured[0].is_none(),
+        "overrides should be None when no hook emits override"
+    );
+}
+
+#[tokio::test]
+async fn override_consumed_each_step_not_leaked() {
+    use awaken::contract::inference::{InferenceOverride, InferenceOverrideEffect};
+
+    struct CapturingLlm {
+        captured: Mutex<Vec<Option<InferenceOverride>>>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for CapturingLlm {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            let call_idx = self.captured.lock().unwrap().len();
+            self.captured.lock().unwrap().push(req.overrides);
+            // First call: return tool call to force a second step
+            if call_idx == 0 {
+                Ok(StreamResult {
+                    text: "".into(),
+                    tool_calls: vec![ToolCall::new("c1", "echo", json!({}))],
+                    usage: None,
+                    stop_reason: Some(StopReason::ToolUse),
+                })
+            } else {
+                Ok(StreamResult {
+                    text: "done".into(),
+                    tool_calls: vec![],
+                    usage: None,
+                    stop_reason: Some(StopReason::EndTurn),
+                })
+            }
+        }
+        fn name(&self) -> &str {
+            "capturing"
+        }
+    }
+
+    // Plugin that ONLY emits override on the first BeforeInference call
+    struct OnceOverridePlugin {
+        emitted: Arc<AtomicUsize>,
+    }
+    impl Plugin for OnceOverridePlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "once-override",
+            }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            struct Hook(Arc<AtomicUsize>);
+            #[async_trait]
+            impl PhaseHook for Hook {
+                async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+                    let mut cmd = StateCommand::new();
+                    // Only emit on first call
+                    if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                        cmd.emit::<InferenceOverrideEffect>(InferenceOverride {
+                            temperature: Some(0.0),
+                            ..Default::default()
+                        })?;
+                    }
+                    Ok(cmd)
+                }
+            }
+            r.register_phase_hook(
+                "once-override",
+                Phase::BeforeInference,
+                Hook(self.emitted.clone()),
+            )?;
+            Ok(())
+        }
+    }
+
+    let llm = Arc::new(CapturingLlm {
+        captured: Mutex::new(Vec::new()),
+    });
+    let agent = AgentConfig::new("test", "m", "sys", llm.clone()).with_tool(Arc::new(EchoTool));
+    let rt = make_runtime();
+
+    let emitted = Arc::new(AtomicUsize::new(0));
+    let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OnceOverridePlugin {
+        emitted: emitted.clone(),
+    })];
+    let (env, collectors) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+
+    let _result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &collectors,
+        &NullEventSink,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
+
+    let captured = llm.captured.lock().unwrap();
+    assert_eq!(captured.len(), 2, "should have two inference calls");
+    // First call: override set
+    assert!(captured[0].is_some(), "first call should have override");
+    assert_eq!(captured[0].as_ref().unwrap().temperature, Some(0.0));
+    // Second call: override consumed, not leaked
+    assert!(
+        captured[1].is_none(),
+        "second call should NOT have override (consumed)"
+    );
+}
