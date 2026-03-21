@@ -58,9 +58,35 @@ pub struct ProviderConfig {
     pub endpoint: String,
     #[serde(default)]
     pub auth: Option<ProviderAuthConfig>,
+    /// Override the genai adapter kind for this provider (e.g. `"openai"`,
+    /// `"bigmodel"`).  When set, every request through this provider will
+    /// use the specified adapter regardless of the model name.
+    #[serde(default)]
+    pub adapter_kind: Option<String>,
 }
 
 impl ProviderConfig {
+    /// Resolve the optional `adapter_kind` string into a genai adapter.
+    fn resolve_adapter_kind(
+        &self,
+        provider_id: &str,
+    ) -> Result<Option<genai::adapter::AdapterKind>, AgentConfigError> {
+        let Some(ref raw) = self.adapter_kind else {
+            return Ok(None);
+        };
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return Ok(None);
+        }
+        genai::adapter::AdapterKind::from_lower_str(raw)
+            .map(Some)
+            .ok_or_else(|| AgentConfigError::InvalidFieldValue {
+                context_id: provider_id.to_string(),
+                field: "adapter_kind",
+                value: raw.to_string(),
+            })
+    }
+
     /// Build a `genai::Client` configured for this provider.
     pub fn into_client(&self, provider_id: &str) -> Result<genai::Client, AgentConfigError> {
         let endpoint =
@@ -77,10 +103,14 @@ impl ProviderConfig {
                 genai::resolver::AuthData::from_single(value)
             }
         };
+        let adapter_kind = self.resolve_adapter_kind(provider_id)?;
         let client = genai::Client::builder()
             .with_service_target_resolver_fn(move |mut t: genai::ServiceTarget| {
                 t.endpoint = genai::resolver::Endpoint::from_owned(&*endpoint);
                 t.auth = auth.clone();
+                if let Some(kind) = adapter_kind {
+                    t.model = genai::ModelIden::new(kind, t.model.model_name.clone());
+                }
                 Ok(t)
             })
             .build();
@@ -758,6 +788,7 @@ mod tests {
         let cfg = ProviderConfig {
             endpoint: "http://127.0.0.1:10531/v1".to_string(),
             auth: None,
+            adapter_kind: None,
         };
         let _client = cfg
             .into_client("test-proxy")
@@ -771,10 +802,67 @@ mod tests {
             auth: Some(ProviderAuthConfig::Token {
                 value: "sk-test-key".to_string(),
             }),
+            adapter_kind: None,
         };
         let _client = cfg
             .into_client("openai")
             .expect("should build a genai client with token auth");
+    }
+
+    #[test]
+    fn into_client_with_adapter_kind_override() {
+        let cfg = ProviderConfig {
+            endpoint: "https://open.bigmodel.cn/api/coding/paas/v4/".to_string(),
+            auth: Some(ProviderAuthConfig::Token {
+                value: "test-key".to_string(),
+            }),
+            adapter_kind: Some("openai".to_string()),
+        };
+        let _client = cfg
+            .into_client("bigmodel-coding")
+            .expect("should build a genai client with adapter_kind override");
+    }
+
+    #[test]
+    fn into_client_rejects_invalid_adapter_kind() {
+        let cfg = ProviderConfig {
+            endpoint: "https://example.com/v1".to_string(),
+            auth: None,
+            adapter_kind: Some("nonexistent".to_string()),
+        };
+        let err = cfg
+            .into_client("bad")
+            .expect_err("invalid adapter_kind should fail");
+        assert!(matches!(
+            err,
+            AgentConfigError::InvalidFieldValue { field, .. }
+                if field == "adapter_kind"
+        ));
+    }
+
+    #[test]
+    fn parses_provider_config_with_adapter_kind_from_json() {
+        let cfg: AgentConfig = serde_json::from_value(serde_json::json!({
+            "providers": {
+                "bigmodel-coding": {
+                    "endpoint": "https://open.bigmodel.cn/api/coding/paas/v4/",
+                    "auth": { "kind": "token", "value": "test-key" },
+                    "adapter_kind": "openai"
+                }
+            },
+            "models": {
+                "glm": { "provider": "bigmodel-coding", "model": "GLM-4.5-air" }
+            },
+            "agents": [{ "id": "coder", "model": "glm" }]
+        }))
+        .expect("config should parse");
+
+        assert_eq!(cfg.providers.len(), 1);
+        let provider = cfg.providers.get("bigmodel-coding").unwrap();
+        assert_eq!(provider.adapter_kind.as_deref(), Some("openai"));
+        let _clients = cfg
+            .into_provider_clients()
+            .expect("should build provider clients");
     }
 
     #[test]
