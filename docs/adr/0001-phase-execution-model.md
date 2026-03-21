@@ -83,7 +83,7 @@ Guiding principle: maximize parallelism on pure-data paths first; stay conservat
 
 - GATHER parallel hooks: implemented
 - GATHER Exclusive auto-fallback: not implemented
-- InferenceOverride wiring: not implemented (type exists, not connected)
+- InferenceOverride wiring: implemented via `InferenceOverrideEffect` EffectSpec
 - CancellationToken: not implemented
 - EXECUTE parallel actions: not implemented (currently serial)
 
