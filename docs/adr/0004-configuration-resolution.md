@@ -1,6 +1,6 @@
 # ADR-0004: Configuration Resolution
 
-- **Status**: Not Implemented
+- **Status**: Superseded by ADR-0009
 - **Date**: 2026-03-21
 - **Depends on**: ADR-0001, ADR-0002
 
@@ -10,7 +10,7 @@ Plugins need typed configuration (permission rules, MCP server URLs, model name)
 
 ## Decision
 
-**`ConfigSlot` trait**: Parallel to `StateSlot` but without `Update`/`apply`. Whole-replacement values in a `ConfigMap` (separate `TypedMap` with distinct marker). Registered via `PluginRegistrar::register_config::<C>()`.
+**`ConfigSlot` trait**: Parallel to `StateKey` but without `Update`/`apply`. Whole-replacement values in a `ConfigMap` (separate `TypedMap` with distinct marker). Registered via `PluginRegistrar::register_config::<C>()`.
 
 **Live configuration sources**:
 
@@ -29,7 +29,7 @@ These sources are mutable at runtime and may be queried at any time. They are th
 5. `OsConfig.defaults` — global defaults
 6. `C::Value::default()` — type default
 
-Hooks can trigger profile switches by writing `ActiveProfileOverride` (a built-in `StateSlot`); the next boundary resolves it.
+Hooks can trigger profile switches by writing `ActiveProfileOverride` (a built-in `StateKey`); the next boundary resolves it.
 
 **Resolve at boundary**: the runtime resolves a short-lived execution view at the start of each execution boundary rather than once for the whole run. The minimum boundaries are:
 

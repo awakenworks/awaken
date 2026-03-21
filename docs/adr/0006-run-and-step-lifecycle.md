@@ -30,7 +30,7 @@ Running ←→ Waiting → Done
 - Waiting: suspended, awaiting external decisions
 - Done: terminal, with reason (NaturalEnd / Stopped / BehaviorRequested / Cancelled / Error)
 
-Implemented as a built-in `StateSlot` with Run scope.
+Implemented as a built-in `StateKey` with Run scope.
 
 **Stop conditions are plugins**: Implemented as regular plugins with AfterInference hooks, not hardcoded loop logic. Built-in conditions (MaxRounds, Timeout, TokenBudget, etc.) provided as a default plugin bundle. Termination flows through `RuntimeEffect::Terminate` — the agent loop's effect handler sets a flag checked at phase boundaries. Effects (not actions) because termination is control flow, not state mutation.
 
@@ -48,4 +48,4 @@ Implemented as a built-in `StateSlot` with Run scope.
 
 - Phase enum expansion requires updating existing code
 - Stop conditions are replaceable/extensible without modifying the loop
-- Run lifecycle state is observable via standard slot reads
+- Run lifecycle state is observable via standard state reads

@@ -12,7 +12,7 @@ The framework spans pure in-memory state operations and I/O-bound plugin logic (
 
 **Synchronous state engine, asynchronous hooks and handlers**:
 
-- Sync (no async, no tokio locks): `StateStore.commit()`, `MutationBatch`, `SlotMap` / `Snapshot` reads
+- Sync (no async, no tokio locks): `StateStore.commit()`, `MutationBatch`, `StateMap` / `Snapshot` reads
 - Async (`async_trait`): plugin phase hooks, action handlers, effect handlers, `PhaseRuntime.run_phase()`
 
 State operations are pure in-memory mutations (sub-microsecond). Async would force `tokio::sync::RwLock`, adding deadlock surface with no benefit. The async boundary sits where I/O occurs.

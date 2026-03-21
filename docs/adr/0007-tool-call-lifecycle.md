@@ -18,11 +18,11 @@ Pending → Running → Succeeded / Failed
                                → Cancelled
 ```
 
-Implemented as `StateSlot`s with ToolCall scope (namespaced per `call_id`).
+Implemented as `StateKey`s with ToolCall scope (namespaced per `call_id`).
 
 **Suspension is first-class**: Not an error path. A tool or `BeforeToolExecute` hook can suspend a call. Run transitions to Waiting; suspended state persists; external decision arrives asynchronously; agent loop replays at next step boundary. Three resume modes: ReplayToolCall (re-execute with decision context), UseDecisionAsResult (decision payload becomes result), PassDecisionToTool (decision as new arguments).
 
-**Three execution modes** (per-agent via `ConfigSlot`):
+**Three execution modes** (per-agent config):
 
 | Mode | Behavior | Suspension handling |
 |------|----------|-------------------|

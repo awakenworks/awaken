@@ -10,25 +10,25 @@ Different state has different lifetimes: some persists across runs (Global), som
 
 ## Decision
 
-**SlotScope**:
+**KeyScope**:
 
 ```rust
-pub enum SlotScope {
+pub enum KeyScope {
     Global,     // never auto-cleared
     Run,        // cleared at run start
     ToolCall,   // isolated per tool call, cleared after completion
 }
 ```
 
-Specified in `SlotOptions` at registration. Lifecycle: `StateStore::begin_run()` clears Run-scoped slots; `StateStore::end_tool_call(call_id)` removes the ToolCall namespace. ToolCall slots keyed by `(TypeId, call_id)`. Reading ToolCall-scoped slots requires `call_id` in `PhaseContext` (set during BeforeToolExecute/AfterToolExecute); without it, returns None.
+Specified in `StateKeyOptions` at registration. Lifecycle: `StateStore::begin_run()` clears Run-scoped keys; `StateStore::end_tool_call(call_id)` removes the ToolCall namespace. ToolCall keys keyed by `(TypeId, call_id)`. Reading ToolCall-scoped keys requires `call_id` in `PhaseContext` (set during BeforeToolExecute/AfterToolExecute); without it, returns None.
 
-**Parallel merge**: ToolCall-scoped slots cannot conflict (disjoint namespaces). Run/Global-scoped slots require disjoint-write validation: two tools modifying different slots → merge; same slot → reject. `MutationBatch` gains a disjoint merge operation.
+**Parallel merge**: ToolCall-scoped keys cannot conflict (disjoint namespaces). Run/Global-scoped keys require disjoint-write validation: two tools modifying different keys → merge; same key → reject. `MutationBatch` gains a disjoint merge operation.
 
-Rejected slot-level CRDT merge: would require every `StateSlot` to implement a merge function. The common case (tools writing to their own ToolCall-scoped slots) is conflict-free by construction.
+Rejected key-level CRDT merge: would require every `StateKey` to implement a merge function. The common case (tools writing to their own ToolCall-scoped keys) is conflict-free by construction.
 
 ## Consequences
 
-- `SlotOptions` gains `scope: SlotScope` field
+- `StateKeyOptions` gains `scope: KeyScope` field
 - `StateStore` gains `begin_run()`, `end_tool_call(call_id)` methods
 - `PhaseContext` gains optional `call_id` field
 - `MutationBatch` gains disjoint merge validation

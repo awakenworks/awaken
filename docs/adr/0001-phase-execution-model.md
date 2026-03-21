@@ -25,7 +25,7 @@ EXECUTE — convergence loop (max 16 rounds)
 
 **Effect dispatch**: Both GATHER and EXECUTE produce effects via `StateCommand`. Effects are dispatched immediately after each commit (inline within `submit_command`), not deferred. Effect handlers receive the post-commit snapshot. Effect handlers are terminal — they do not produce new actions or effects. This separation prevents feedback loops through the effect path.
 
-**Phase-scoped consumption**: `ScheduledAction` carries a `phase` field. EXECUTE only dequeues actions matching the current phase; others remain queued. Cross-phase communication prefers state slots over cross-phase action scheduling.
+**Phase-scoped consumption**: `ScheduledAction` carries a `phase` field. EXECUTE only dequeues actions matching the current phase; others remain queued. Cross-phase communication prefers state keys over cross-phase action scheduling.
 
 ## Consequences
 
