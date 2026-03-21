@@ -67,6 +67,13 @@ pub(crate) struct ToolPermissionRegistration {
     pub(crate) checker: ToolPermissionCheckerArc,
 }
 
+pub(crate) type RequestTransformArc =
+    std::sync::Arc<dyn crate::contract::transform::InferenceRequestTransform>;
+
+pub(crate) struct RequestTransformRegistration {
+    pub(crate) transform: RequestTransformArc,
+}
+
 #[derive(Default)]
 pub struct PluginRegistry {
     pub(crate) plugins: HashMap<TypeId, InstalledPlugin>,
@@ -105,6 +112,7 @@ pub struct PluginRegistrar {
     effect_keys: HashSet<String>,
     pub(crate) phase_hooks: Vec<PhaseHookRegistration>,
     pub(crate) tool_permissions: Vec<ToolPermissionRegistration>,
+    pub(crate) request_transforms: Vec<RequestTransformRegistration>,
 }
 
 impl PluginRegistrar {
@@ -119,6 +127,7 @@ impl PluginRegistrar {
             effect_keys: HashSet::new(),
             phase_hooks: Vec::new(),
             tool_permissions: Vec::new(),
+            request_transforms: Vec::new(),
         }
     }
 
@@ -208,5 +217,15 @@ impl PluginRegistrar {
             checker: Arc::new(checker),
         });
         Ok(())
+    }
+
+    /// Register a request transform applied after message assembly, before LLM call.
+    pub fn register_request_transform<T>(&mut self, transform: T)
+    where
+        T: crate::contract::transform::InferenceRequestTransform + 'static,
+    {
+        self.request_transforms.push(RequestTransformRegistration {
+            transform: Arc::new(transform),
+        });
     }
 }

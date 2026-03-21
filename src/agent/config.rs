@@ -1,6 +1,7 @@
 //! Agent definition and configuration.
 
 use crate::contract::executor::LlmExecutor;
+use crate::contract::inference::ContextWindowPolicy;
 use crate::contract::tool::Tool;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,6 +17,8 @@ pub struct AgentConfig {
     pub tools: HashMap<String, Arc<dyn Tool>>,
     pub llm_executor: Arc<dyn LlmExecutor>,
     pub tool_executor: Arc<dyn ToolExecutor>,
+    /// Context window management policy. `None` disables compaction and truncation.
+    pub context_policy: Option<ContextWindowPolicy>,
 }
 
 impl AgentConfig {
@@ -33,6 +36,7 @@ impl AgentConfig {
             tools: HashMap::new(),
             llm_executor,
             tool_executor: Arc::new(SequentialToolExecutor),
+            context_policy: None,
         }
     }
 
@@ -61,6 +65,12 @@ impl AgentConfig {
             let desc = tool.descriptor();
             self.tools.insert(desc.id, tool);
         }
+        self
+    }
+
+    #[must_use]
+    pub fn with_context_policy(mut self, policy: ContextWindowPolicy) -> Self {
+        self.context_policy = Some(policy);
         self
     }
 

@@ -50,23 +50,32 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// Build an execution environment for the agent loop from a list of plugins.
+/// Build an execution environment for the agent loop.
 ///
-/// Adds internal plugins (stop conditions, default permission).
+/// Adds internal plugins (stop conditions, default permission) and registers
+/// built-in request transforms (context truncation when a policy is provided).
 pub fn build_agent_env(
     plugins: &[Arc<dyn crate::plugins::Plugin>],
-    max_rounds: usize,
+    agent: &super::config::AgentConfig,
 ) -> Result<ExecutionEnv, StateError> {
+    use super::context::ContextTransform;
     use super::stop_conditions::MaxRoundsPlugin;
     use super::tool_permission::AllowAllToolsPlugin;
 
     let mut all_plugins: Vec<Arc<dyn crate::plugins::Plugin>> = plugins.to_vec();
-    all_plugins.push(Arc::new(MaxRoundsPlugin::new(max_rounds)));
+    all_plugins.push(Arc::new(MaxRoundsPlugin::new(agent.max_rounds)));
     all_plugins.push(Arc::new(AllowAllToolsPlugin));
 
     let mut env = ExecutionEnv::from_plugins(&all_plugins)?;
     env.register_loop_consumed_action::<super::state::SetInferenceOverride>();
     env.register_loop_consumed_action::<super::state::AddContextMessage>();
+
+    // Register built-in context truncation transform when policy is set
+    if let Some(ref policy) = agent.context_policy {
+        env.request_transforms
+            .push(Arc::new(ContextTransform::new(policy.clone())));
+    }
+
     Ok(env)
 }
 
@@ -137,6 +146,17 @@ pub async fn run_agent_loop(
             break reason;
         }
 
+        // LLM compaction: if token count exceeds autocompact threshold,
+        // call LLM to generate summary and replace old messages.
+        if let Some(ref policy) = agent.context_policy {
+            if let Some(threshold) = policy.autocompact_threshold {
+                let token_est = crate::contract::transform::estimate_tokens_arc(&messages);
+                if token_est >= threshold {
+                    compact_with_llm(agent, &mut messages, policy).await?;
+                }
+            }
+        }
+
         // Consume loop actions from PendingScheduledActions before building request
         let overrides = consume_inference_overrides(store)?;
         let context_msgs = consume_context_messages(store, steps)?;
@@ -154,11 +174,19 @@ pub async fn run_agent_loop(
             apply_context_messages(&mut request_messages, context_msgs, has_system_prompt);
         }
 
+        // Apply request transforms (e.g., hard truncation to token budget)
+        let tools = agent.tool_descriptors();
+        let request_messages = crate::contract::transform::apply_transforms(
+            request_messages,
+            &tools,
+            &env.request_transforms,
+        );
+
         let start = std::time::Instant::now();
         let request = InferenceRequest {
             model: agent.model.clone(),
             messages: request_messages,
-            tools: agent.tool_descriptors(),
+            tools,
             system: vec![],
             overrides,
         };
@@ -861,6 +889,80 @@ fn apply_context_messages(
 
     // Suffix: append at end
     messages.extend(suffix);
+}
+
+/// Compact messages by calling LLM to generate a summary.
+///
+/// Finds a safe compaction boundary, renders messages as transcript,
+/// calls LLM to summarize, and replaces the old messages with the summary.
+async fn compact_with_llm(
+    agent: &super::config::AgentConfig,
+    messages: &mut Vec<Arc<Message>>,
+    policy: &crate::contract::inference::ContextWindowPolicy,
+) -> Result<(), AgentLoopError> {
+    use super::context::{find_compaction_boundary, render_transcript};
+
+    if messages.len() < 2 {
+        return Ok(());
+    }
+
+    let keep_suffix = policy.compaction_raw_suffix_messages.min(messages.len());
+    let search_end = messages.len().saturating_sub(keep_suffix);
+    if search_end < 2 {
+        return Ok(());
+    }
+
+    let boundary = match find_compaction_boundary(messages, 0, search_end) {
+        Some(b) => b,
+        None => return Ok(()),
+    };
+
+    let transcript = render_transcript(&messages[..=boundary]);
+    if transcript.is_empty() {
+        return Ok(());
+    }
+
+    let summary_request = crate::contract::executor::InferenceRequest {
+        model: agent.model.clone(),
+        messages: vec![
+            Message::system(
+                "You maintain a durable conversation summary. \
+                 Produce a concise summary of the conversation that preserves \
+                 key decisions, file paths, code changes, and action items.",
+            ),
+            Message::user(format!(
+                "Summarize the following conversation:\n\n<conversation>\n{transcript}\n</conversation>"
+            )),
+        ],
+        tools: vec![],
+        system: vec![],
+        overrides: Some(crate::contract::inference::InferenceOverride {
+            max_tokens: Some(1024),
+            ..Default::default()
+        }),
+    };
+
+    let result = agent
+        .llm_executor
+        .execute(summary_request)
+        .await
+        .map_err(|e| AgentLoopError::InferenceFailed(format!("compaction failed: {e}")))?;
+
+    let summary_text = result.text();
+    if summary_text.is_empty() {
+        return Ok(());
+    }
+
+    // Replace messages up to boundary with the summary
+    messages.drain(..=boundary);
+    messages.insert(
+        0,
+        Arc::new(Message::internal_system(format!(
+            "<conversation-summary>\n{summary_text}\n</conversation-summary>"
+        ))),
+    );
+
+    Ok(())
 }
 
 fn tool_result_to_content(result: &ToolResult) -> String {

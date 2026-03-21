@@ -192,7 +192,7 @@ async fn sequential_partial_failure_both_produce_results() {
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(FailingTool));
     let rt = make_runtime();
-    let env = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], &agent).unwrap();
     let sink = VecEventSink::new();
     let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
         .await
@@ -224,7 +224,7 @@ async fn sequential_stops_after_first_suspension_in_loop() {
         .with_tool(Arc::new(SuspendingTool))
         .with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
-    let env = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], &agent).unwrap();
     let sink = VecEventSink::new();
     let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
         .await
@@ -260,7 +260,7 @@ async fn parallel_both_tools_execute() {
         .with_tool(Arc::new(EchoTool))
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
-    let env = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], &agent).unwrap();
     let sink = VecEventSink::new();
     let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
         .await
@@ -289,7 +289,7 @@ async fn parallel_partial_failure() {
         .with_tool(Arc::new(FailingTool))
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
-    let env = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], &agent).unwrap();
     let sink = VecEventSink::new();
     let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
         .await
@@ -324,7 +324,7 @@ async fn parallel_does_not_stop_on_suspension() {
         }))
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
-    let env = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], &agent).unwrap();
     let sink = VecEventSink::new();
     let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
         .await
@@ -359,7 +359,7 @@ async fn suspension_sets_run_to_waiting() {
     )])]));
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let rt = make_runtime();
-    let env = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], &agent).unwrap();
     let sink = NullEventSink;
     let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
         .await
@@ -379,7 +379,7 @@ async fn suspension_tool_call_state_is_suspended() {
     )])]));
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let rt = make_runtime();
-    let env = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], &agent).unwrap();
     let sink = NullEventSink;
     run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
         .await
@@ -465,7 +465,7 @@ async fn hook_state_mutation_is_not_visible_to_sibling_hook() {
         observed: observed.clone(),
     });
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![hook_plugin];
-    let env = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+    let env = build_agent_env(&user_plugins, &agent).unwrap();
     let sink = NullEventSink;
     run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("hi")], id())
         .await
@@ -496,7 +496,7 @@ async fn max_rounds_precise_count() {
         .with_max_rounds(3)
         .with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
-    let env = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], &agent).unwrap();
     let sink = NullEventSink;
     let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
         .await
@@ -548,7 +548,7 @@ async fn terminate_via_state_in_after_inference_hook() {
     let rt = make_runtime();
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(TermHookPlugin)];
-    let env = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+    let env = build_agent_env(&user_plugins, &agent).unwrap();
     let sink = NullEventSink;
     let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
         .await
@@ -598,7 +598,7 @@ async fn phase_sequence_with_tool_call() {
     let rt = make_runtime();
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(LogPlugin(phases.clone()))];
-    let env = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+    let env = build_agent_env(&user_plugins, &agent).unwrap();
     let sink = NullEventSink;
     run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
         .await
@@ -654,7 +654,7 @@ async fn phase_sequence_on_suspension() {
     let rt = make_runtime();
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(LogPlugin(phases.clone()))];
-    let env = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+    let env = build_agent_env(&user_plugins, &agent).unwrap();
     let sink = NullEventSink;
     run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
         .await
@@ -745,7 +745,7 @@ async fn empty_tool_calls_treated_as_natural_end() {
     }]));
     let agent = AgentConfig::new("test", "m", "sys", llm);
     let rt = make_runtime();
-    let env = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], &agent).unwrap();
     let sink = NullEventSink;
     let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("hi")], id())
         .await
@@ -772,7 +772,7 @@ async fn multiple_steps_accumulate_messages() {
     ]));
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
-    let env = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], &agent).unwrap();
     let sink = NullEventSink;
     let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
         .await
@@ -789,7 +789,7 @@ async fn run_lifecycle_run_id_matches_identity() {
     let llm = Arc::new(ScriptedLlm::new(vec![text_step("ok")]));
     let agent = AgentConfig::new("test", "m", "sys", llm);
     let rt = make_runtime();
-    let env = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], &agent).unwrap();
     let custom_id = RunIdentity::new(
         "t-x".into(),
         None,
@@ -830,7 +830,7 @@ async fn batch_approval_both_tools_execute_in_loop() {
         .with_tool(Arc::new(EchoTool))
         .with_tool_executor(Arc::new(ParallelToolExecutor::batch_approval()));
     let rt = make_runtime();
-    let env = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], &agent).unwrap();
     let sink = VecEventSink::new();
     let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
         .await
@@ -859,7 +859,7 @@ async fn batch_approval_suspension_still_executes_all() {
         }))
         .with_tool_executor(Arc::new(ParallelToolExecutor::batch_approval()));
     let rt = make_runtime();
-    let env = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], &agent).unwrap();
     let sink = NullEventSink;
     let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
         .await
@@ -891,7 +891,7 @@ async fn streaming_partial_failure_in_loop() {
         .with_tool(Arc::new(FailingTool))
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
-    let env = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], &agent).unwrap();
     let sink = VecEventSink::new();
     let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
         .await
@@ -979,7 +979,7 @@ async fn before_inference_hook_override_reaches_request() {
     let rt = make_runtime();
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OverridePlugin)];
-    let env = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+    let env = build_agent_env(&user_plugins, &agent).unwrap();
     let sink = NullEventSink;
     let _result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
         .await
@@ -1078,7 +1078,7 @@ async fn multiple_hooks_merge_inference_overrides_last_wins() {
 
     let user_plugins: Vec<Arc<dyn Plugin>> =
         vec![Arc::new(OverridePluginA), Arc::new(OverridePluginB)];
-    let env = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+    let env = build_agent_env(&user_plugins, &agent).unwrap();
 
     let _result = run_agent_loop(
         &agent,
@@ -1136,7 +1136,7 @@ async fn no_override_hook_leaves_overrides_none() {
     let rt = make_runtime();
 
     // No override plugins
-    let env = build_agent_env(&[], agent.max_rounds).unwrap();
+    let env = build_agent_env(&[], &agent).unwrap();
 
     let _result = run_agent_loop(
         &agent,
@@ -1240,7 +1240,7 @@ async fn override_consumed_each_step_not_leaked() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OnceOverridePlugin {
         emitted: emitted.clone(),
     })];
-    let env = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+    let env = build_agent_env(&user_plugins, &agent).unwrap();
 
     let _result = run_agent_loop(
         &agent,
@@ -1335,7 +1335,7 @@ async fn context_message_injected_into_request() {
     let rt = make_runtime();
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(ContextPlugin)];
-    let env = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+    let env = build_agent_env(&user_plugins, &agent).unwrap();
 
     let _result = run_agent_loop(
         &agent,
@@ -1464,7 +1464,7 @@ async fn context_messages_not_leaked_to_next_step() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OnceContextPlugin {
         emitted: emitted.clone(),
     })];
-    let env = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+    let env = build_agent_env(&user_plugins, &agent).unwrap();
 
     let _result = run_agent_loop(
         &agent,

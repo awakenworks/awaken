@@ -13,6 +13,7 @@ use crate::plugins::{Plugin, PluginRegistrar};
 use super::handlers::{
     EffectHandlerArc, PhaseHookArc, ScheduledActionHandlerArc, ToolPermissionCheckerArc,
 };
+use crate::plugins::RequestTransformArc;
 
 /// A phase hook with its owning plugin ID.
 pub(crate) struct TaggedPhaseHook {
@@ -33,6 +34,8 @@ pub struct ExecutionEnv {
     /// Action keys consumed by the loop runner (not by EXECUTE handlers).
     /// EXECUTE skips these; submit_command allows them without a handler.
     pub(crate) loop_consumed_action_keys: HashSet<String>,
+    /// Request transforms applied after message assembly, before LLM call.
+    pub(crate) request_transforms: Vec<RequestTransformArc>,
 }
 
 impl ExecutionEnv {
@@ -46,6 +49,7 @@ impl ExecutionEnv {
         let mut all_action_handlers: HashMap<String, ScheduledActionHandlerArc> = HashMap::new();
         let mut all_effect_handlers: HashMap<String, EffectHandlerArc> = HashMap::new();
         let mut all_permission_checkers: Vec<ToolPermissionCheckerArc> = Vec::new();
+        let mut all_transforms: Vec<RequestTransformArc> = Vec::new();
 
         for plugin in plugins {
             let mut registrar = PluginRegistrar::new();
@@ -82,6 +86,11 @@ impl ExecutionEnv {
             for entry in registrar.tool_permissions {
                 all_permission_checkers.push(entry.checker);
             }
+
+            // Collect request transforms
+            for entry in registrar.request_transforms {
+                all_transforms.push(entry.transform);
+            }
         }
 
         Ok(Self {
@@ -90,6 +99,7 @@ impl ExecutionEnv {
             effect_handlers: all_effect_handlers,
             tool_permission_checkers: all_permission_checkers,
             loop_consumed_action_keys: HashSet::new(),
+            request_transforms: all_transforms,
         })
     }
 
@@ -101,6 +111,7 @@ impl ExecutionEnv {
             effect_handlers: HashMap::new(),
             tool_permission_checkers: Vec::new(),
             loop_consumed_action_keys: HashSet::new(),
+            request_transforms: Vec::new(),
         }
     }
 
