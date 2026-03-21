@@ -182,6 +182,16 @@ pub struct InferenceOverride {
 }
 
 impl InferenceOverride {
+    /// Returns true if all fields are `None` (no override set).
+    pub fn is_empty(&self) -> bool {
+        self.model.is_none()
+            && self.fallback_models.is_none()
+            && self.temperature.is_none()
+            && self.max_tokens.is_none()
+            && self.top_p.is_none()
+            && self.reasoning_effort.is_none()
+    }
+
     /// Merge `other` into `self` with last-wins semantics per field.
     pub fn merge(&mut self, other: InferenceOverride) {
         if other.model.is_some() {
@@ -203,18 +213,6 @@ impl InferenceOverride {
             self.reasoning_effort = other.reasoning_effort;
         }
     }
-}
-
-/// Effect spec for per-inference parameter overrides.
-///
-/// Emitted by `BeforeInference` hooks via `cmd.emit::<InferenceOverrideEffect>(...)`.
-/// The loop runner collects all emitted overrides and merges them (last-wins per field)
-/// into `InferenceRequest.overrides` before calling the LLM executor.
-pub struct InferenceOverrideEffect;
-
-impl crate::model::EffectSpec for InferenceOverrideEffect {
-    const KEY: &'static str = "runtime.inference_override";
-    type Payload = InferenceOverride;
 }
 
 impl From<InferenceModelOverride> for InferenceOverride {

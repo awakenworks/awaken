@@ -1,5 +1,6 @@
-//! Agent loop state keys — run lifecycle and tool call lifecycle tracking.
+//! Agent loop state keys — run lifecycle, tool call lifecycle, and inference override tracking.
 
+use crate::contract::inference::InferenceOverride;
 use crate::contract::lifecycle::RunStatus;
 use crate::contract::suspension::ToolCallStatus;
 use crate::state::{MergeStrategy, StateKey};
@@ -171,6 +172,38 @@ impl StateKey for ToolCallStates {
             ToolCallStatesUpdate::Clear => {
                 value.calls.clear();
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Inference override state
+// ---------------------------------------------------------------------------
+
+/// Update for inference overrides state key.
+pub enum InferenceOverridesUpdate {
+    /// Merge an override (last-wins per field).
+    Merge(InferenceOverride),
+    /// Clear all overrides.
+    Clear,
+}
+
+/// State key for per-inference parameter overrides.
+///
+/// `BeforeInference` hooks write overrides via `cmd.update::<InferenceOverrides>(...)`.
+/// The loop runner reads and clears this key before each inference call.
+pub struct InferenceOverrides;
+
+impl StateKey for InferenceOverrides {
+    const KEY: &'static str = "__runtime.inference_overrides";
+
+    type Value = InferenceOverride;
+    type Update = InferenceOverridesUpdate;
+
+    fn apply(value: &mut Self::Value, update: Self::Update) {
+        match update {
+            InferenceOverridesUpdate::Merge(incoming) => value.merge(incoming),
+            InferenceOverridesUpdate::Clear => *value = InferenceOverride::default(),
         }
     }
 }
