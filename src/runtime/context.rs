@@ -5,8 +5,9 @@ use serde_json::Value;
 use crate::contract::identity::RunIdentity;
 use crate::contract::inference::LLMResponse;
 use crate::contract::message::Message;
-use crate::contract::profile::{AgentProfile, RunInput};
+use crate::contract::profile::{AgentProfile, PluginConfigKey, RunInput};
 use crate::contract::tool::ToolResult;
+use crate::error::StateError;
 use crate::model::Phase;
 use crate::state::{Snapshot, StateKey};
 
@@ -60,6 +61,12 @@ impl PhaseContext {
     /// Read a state key from the snapshot.
     pub fn state<K: StateKey>(&self) -> Option<&K::Value> {
         self.snapshot.get::<K>()
+    }
+
+    /// Read a typed plugin config from the active profile.
+    /// Returns `Config::default()` if the section is missing.
+    pub fn config<K: PluginConfigKey>(&self) -> Result<K::Config, StateError> {
+        self.profile.config::<K>()
     }
 
     // -- Builder methods --
