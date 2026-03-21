@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use futures::future::join_all;
 use futures::lock::Mutex;
 
 use crate::error::StateError;
@@ -110,23 +111,16 @@ impl PhaseRuntime {
         };
         let mut rounds = 0;
 
-        // Phase hooks from execution environment, filtered by active_plugins
-        let hooks = env.hooks_for_phase(phase);
-        let active_plugins = &base_ctx.profile.active_plugins;
-        for tagged in hooks {
-            // If active_plugins is non-empty, only run hooks whose plugin_id is in the set
-            if !active_plugins.is_empty() && !active_plugins.contains(&tagged.plugin_id) {
-                continue;
-            }
-            let ctx = base_ctx.clone().with_snapshot(self.store.snapshot());
-            let command = tagged.hook.run(&ctx).await?;
-            if !command.is_empty() {
-                total_effects += command.effects.len();
-                let report = self.submit_command_inner(env, command).await?;
-                effect_report.attempted += report.effect_report.attempted;
-                effect_report.dispatched += report.effect_report.dispatched;
-                effect_report.failed += report.effect_report.failed;
-            }
+        let hook_snapshot = self.store.snapshot();
+        let hook_command = self
+            .gather_hook_commands(env, base_ctx.clone(), hook_snapshot)
+            .await?;
+        if !hook_command.is_empty() {
+            total_effects += hook_command.effects.len();
+            let report = self.submit_command_inner(env, hook_command).await?;
+            effect_report.attempted += report.effect_report.attempted;
+            effect_report.dispatched += report.effect_report.dispatched;
+            effect_report.failed += report.effect_report.failed;
         }
 
         loop {
@@ -320,20 +314,48 @@ impl PhaseRuntime {
         env: &ExecutionEnv,
         ctx: PhaseContext,
     ) -> Result<StateCommand, StateError> {
-        let hooks = env.hooks_for_phase(ctx.phase);
-        let active_plugins = &ctx.profile.active_plugins;
-        let mut combined = StateCommand::new();
-        for tagged in hooks {
-            if !active_plugins.is_empty() && !active_plugins.contains(&tagged.plugin_id) {
-                continue;
+        self.gather_hook_commands(env, ctx, self.store.snapshot())
+            .await
+    }
+
+    async fn gather_hook_commands(
+        &self,
+        env: &ExecutionEnv,
+        base_ctx: PhaseContext,
+        snapshot: Snapshot,
+    ) -> Result<StateCommand, StateError> {
+        let hooks = env.hooks_for_phase(base_ctx.phase);
+        let active_plugins = &base_ctx.profile.active_plugins;
+        let filtered_hooks: Vec<_> = hooks
+            .iter()
+            .filter(|tagged| {
+                active_plugins.is_empty() || active_plugins.contains(&tagged.plugin_id)
+            })
+            .collect();
+
+        let results = join_all(filtered_hooks.into_iter().map(|tagged| {
+            let hook = tagged.hook.clone();
+            let hook_snapshot = snapshot.clone();
+            let hook_ctx = base_ctx.clone().with_snapshot(hook_snapshot.clone());
+            async move {
+                let mut cmd = hook.run(&hook_ctx).await?;
+                if cmd.base_revision().is_none() {
+                    cmd = cmd.with_base_revision(hook_snapshot.revision());
+                }
+                Ok::<StateCommand, StateError>(cmd)
             }
-            let hook_ctx = ctx.clone().with_snapshot(self.store.snapshot());
-            let cmd = tagged.hook.run(&hook_ctx).await?;
+        }))
+        .await;
+
+        let mut commands = Vec::new();
+        for result in results {
+            let cmd = result?;
             if !cmd.is_empty() {
-                combined.extend(cmd)?;
+                commands.push(cmd);
             }
         }
-        Ok(combined)
+
+        self.store.merge_all_commands(commands)
     }
 
     fn dead_letter(

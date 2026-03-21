@@ -1128,7 +1128,7 @@ async fn effect_handler_sees_post_commit_snapshot() {
 // ===========================================================================
 
 #[tokio::test]
-async fn hooks_from_different_plugins_see_each_others_mutations() {
+async fn hooks_from_different_plugins_do_not_see_sibling_mutations() {
     struct PluginA;
     impl Plugin for PluginA {
         fn descriptor(&self) -> PluginDescriptor {
@@ -1191,8 +1191,71 @@ async fn hooks_from_different_plugins_see_each_others_mutations() {
 
     app.run_phase(&env, Phase::BeforeInference).await.unwrap();
 
-    // PluginB's hook should see PluginA's write
-    assert_eq!(*seen.lock().unwrap(), Some(10));
+    assert_eq!(*seen.lock().unwrap(), None);
+    assert_eq!(app.store().read::<Counter>(), Some(10));
+}
+
+#[tokio::test]
+async fn parallel_hook_conflict_fails_before_commit() {
+    struct PluginA;
+    impl Plugin for PluginA {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "plugin-a" }
+        }
+
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_key::<Counter>(StateKeyOptions::default())?;
+
+            struct Hook;
+            #[async_trait]
+            impl PhaseHook for Hook {
+                async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+                    let mut cmd = StateCommand::new();
+                    cmd.update::<Counter>(10);
+                    Ok(cmd)
+                }
+            }
+
+            r.register_phase_hook("plugin-a", Phase::BeforeInference, Hook)?;
+            Ok(())
+        }
+    }
+
+    struct PluginB;
+    impl Plugin for PluginB {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "plugin-b" }
+        }
+
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            struct Hook;
+            #[async_trait]
+            impl PhaseHook for Hook {
+                async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+                    let mut cmd = StateCommand::new();
+                    cmd.update::<Counter>(20);
+                    Ok(cmd)
+                }
+            }
+
+            r.register_phase_hook("plugin-b", Phase::BeforeInference, Hook)?;
+            Ok(())
+        }
+    }
+
+    let app = AppRuntime::new().unwrap();
+    app.store().install_plugin(PluginA).unwrap();
+
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(PluginA), Arc::new(PluginB)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+
+    let err = app
+        .run_phase(&env, Phase::BeforeInference)
+        .await
+        .expect_err("exclusive parallel hook writes should conflict");
+
+    assert!(matches!(err, StateError::ParallelMergeConflict { .. }));
+    assert_eq!(app.store().read::<Counter>(), None);
 }
 
 #[tokio::test]

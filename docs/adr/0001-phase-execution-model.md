@@ -12,10 +12,12 @@ We evaluated two execution models: pure queue-based (plugins schedule actions ex
 Each phase executes in two stages:
 
 ```
-GATHER  — call hooks in registration order; each returns StateCommand
-          patch: committed immediately; next hook sees updated store
+GATHER  — run hooks concurrently against the same frozen snapshot;
+          each returns StateCommand
+          merge all commands in registration order
+          commit once
           actions: enqueued for EXECUTE
-          effects: dispatched immediately after commit
+          effects: dispatched after the merged commit
 
 EXECUTE — convergence loop (max 16 rounds)
           dequeue actions matching this phase
@@ -23,7 +25,7 @@ EXECUTE — convergence loop (max 16 rounds)
           loop until queue empty or max_rounds exceeded
 ```
 
-**Effect dispatch**: Both GATHER and EXECUTE produce effects via `StateCommand`. Effects are dispatched immediately after each commit (inline within `submit_command`), not deferred. Effect handlers receive the post-commit snapshot. Effect handlers are terminal — they do not produce new actions or effects. This separation prevents feedback loops through the effect path.
+**Effect dispatch**: Both GATHER and EXECUTE produce effects via `StateCommand`. Effects are dispatched immediately after each commit (inline within `submit_command`), not deferred. During GATHER there is one merged commit, so effect handlers observe the post-merge snapshot. Effect handlers are terminal — they do not produce new actions or effects. This separation prevents feedback loops through the effect path.
 
 **Phase-scoped consumption**: `ScheduledAction` carries a `phase` field. EXECUTE only dequeues actions matching the current phase; others remain queued. Cross-phase communication prefers state keys over cross-phase action scheduling.
 

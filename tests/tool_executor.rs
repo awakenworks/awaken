@@ -447,8 +447,8 @@ async fn suspension_tool_call_state_is_suspended() {
 // ===========================================================================
 
 #[tokio::test]
-async fn hook_state_mutation_visible_to_next_hook() {
-    // Hook A writes state, Hook B reads it in the same phase
+async fn hook_state_mutation_is_not_visible_to_sibling_hook() {
+    // Hooks gather against the same snapshot, so sibling writes are not visible.
     struct WriterHook;
     #[async_trait]
     impl PhaseHook for WriterHook {
@@ -532,8 +532,8 @@ async fn hook_state_mutation_visible_to_next_hook() {
     .await
     .unwrap();
 
-    // Reader should see the value written by Writer in the same phase
-    assert_eq!(*observed.lock().unwrap(), Some(1));
+    assert_eq!(*observed.lock().unwrap(), Some(0));
+    assert_eq!(rt.store().read::<TestCounter>(), Some(1));
 }
 
 // ===========================================================================
