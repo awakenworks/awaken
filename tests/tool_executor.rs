@@ -22,6 +22,7 @@ use awaken::contract::profile::AgentProfile;
 use awaken::contract::suspension::{ToolCallOutcome, ToolCallStatus};
 use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
 use awaken::*;
+use awaken::{AgentResolver, ExecutionEnv, ResolvedAgent};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -146,6 +147,38 @@ fn make_runtime() -> PhaseRuntime {
     rt
 }
 
+/// Test resolver that wraps a fixed AgentConfig + optional user plugins.
+struct FixedResolver {
+    agent: AgentConfig,
+    user_plugins: Vec<Arc<dyn Plugin>>,
+}
+
+impl FixedResolver {
+    fn new(agent: AgentConfig) -> Self {
+        Self {
+            agent,
+            user_plugins: vec![],
+        }
+    }
+
+    fn with_plugins(agent: AgentConfig, plugins: Vec<Arc<dyn Plugin>>) -> Self {
+        Self {
+            agent,
+            user_plugins: plugins,
+        }
+    }
+}
+
+impl AgentResolver for FixedResolver {
+    fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, StateError> {
+        let env = build_agent_env(&self.user_plugins, &self.agent)?;
+        Ok(ResolvedAgent {
+            config: self.agent.clone(),
+            env,
+        })
+    }
+}
+
 fn id() -> RunIdentity {
     RunIdentity::new(
         "t1".into(),
@@ -192,12 +225,12 @@ async fn sequential_partial_failure_both_produce_results() {
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(FailingTool));
     let rt = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
     let sink = VecEventSink::new();
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &sink,
         None,
         vec![Message::user("go")],
@@ -233,12 +266,12 @@ async fn sequential_stops_after_first_suspension_in_loop() {
         .with_tool(Arc::new(SuspendingTool))
         .with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
     let sink = VecEventSink::new();
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &sink,
         None,
         vec![Message::user("go")],
@@ -278,12 +311,12 @@ async fn parallel_both_tools_execute() {
         .with_tool(Arc::new(EchoTool))
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
     let sink = VecEventSink::new();
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &sink,
         None,
         vec![Message::user("go")],
@@ -316,12 +349,12 @@ async fn parallel_partial_failure() {
         .with_tool(Arc::new(FailingTool))
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
     let sink = VecEventSink::new();
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &sink,
         None,
         vec![Message::user("go")],
@@ -360,12 +393,12 @@ async fn parallel_does_not_stop_on_suspension() {
         }))
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
     let sink = VecEventSink::new();
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &sink,
         None,
         vec![Message::user("go")],
@@ -404,12 +437,12 @@ async fn suspension_sets_run_to_waiting() {
     )])]));
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let rt = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
     let sink = NullEventSink;
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &sink,
         None,
         vec![Message::user("go")],
@@ -433,12 +466,12 @@ async fn suspension_tool_call_state_is_suspended() {
     )])]));
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let rt = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
     let sink = NullEventSink;
     run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &sink,
         None,
         vec![Message::user("go")],
@@ -528,12 +561,12 @@ async fn hook_state_mutation_is_not_visible_to_sibling_hook() {
         observed: observed.clone(),
     });
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![hook_plugin];
-    let env = build_agent_env(&user_plugins, &agent).unwrap();
+    let resolver = FixedResolver::with_plugins(agent, user_plugins);
     let sink = NullEventSink;
     run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &sink,
         None,
         vec![Message::user("hi")],
@@ -568,12 +601,12 @@ async fn max_rounds_precise_count() {
         .with_max_rounds(3)
         .with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
     let sink = NullEventSink;
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &sink,
         None,
         vec![Message::user("go")],
@@ -629,12 +662,12 @@ async fn terminate_via_state_in_after_inference_hook() {
     let rt = make_runtime();
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(TermHookPlugin)];
-    let env = build_agent_env(&user_plugins, &agent).unwrap();
+    let resolver = FixedResolver::with_plugins(agent, user_plugins);
     let sink = NullEventSink;
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &sink,
         None,
         vec![Message::user("go")],
@@ -688,12 +721,12 @@ async fn phase_sequence_with_tool_call() {
     let rt = make_runtime();
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(LogPlugin(phases.clone()))];
-    let env = build_agent_env(&user_plugins, &agent).unwrap();
+    let resolver = FixedResolver::with_plugins(agent, user_plugins);
     let sink = NullEventSink;
     run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &sink,
         None,
         vec![Message::user("go")],
@@ -753,12 +786,12 @@ async fn phase_sequence_on_suspension() {
     let rt = make_runtime();
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(LogPlugin(phases.clone()))];
-    let env = build_agent_env(&user_plugins, &agent).unwrap();
+    let resolver = FixedResolver::with_plugins(agent, user_plugins);
     let sink = NullEventSink;
     run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &sink,
         None,
         vec![Message::user("go")],
@@ -853,12 +886,12 @@ async fn empty_tool_calls_treated_as_natural_end() {
     }]));
     let agent = AgentConfig::new("test", "m", "sys", llm);
     let rt = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
     let sink = NullEventSink;
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &sink,
         None,
         vec![Message::user("hi")],
@@ -889,12 +922,12 @@ async fn multiple_steps_accumulate_messages() {
     ]));
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
     let sink = NullEventSink;
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &sink,
         None,
         vec![Message::user("go")],
@@ -915,7 +948,7 @@ async fn run_lifecycle_run_id_matches_identity() {
     let llm = Arc::new(ScriptedLlm::new(vec![text_step("ok")]));
     let agent = AgentConfig::new("test", "m", "sys", llm);
     let rt = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
     let custom_id = RunIdentity::new(
         "t-x".into(),
         None,
@@ -926,9 +959,9 @@ async fn run_lifecycle_run_id_matches_identity() {
     );
     let sink = NullEventSink;
     run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &sink,
         None,
         vec![Message::user("hi")],
@@ -958,12 +991,12 @@ async fn batch_approval_both_tools_execute_in_loop() {
         .with_tool(Arc::new(EchoTool))
         .with_tool_executor(Arc::new(ParallelToolExecutor::batch_approval()));
     let rt = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
     let sink = VecEventSink::new();
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &sink,
         None,
         vec![Message::user("go")],
@@ -996,12 +1029,12 @@ async fn batch_approval_suspension_still_executes_all() {
         }))
         .with_tool_executor(Arc::new(ParallelToolExecutor::batch_approval()));
     let rt = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
     let sink = NullEventSink;
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &sink,
         None,
         vec![Message::user("go")],
@@ -1037,12 +1070,12 @@ async fn streaming_partial_failure_in_loop() {
         .with_tool(Arc::new(FailingTool))
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
     let sink = VecEventSink::new();
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &sink,
         None,
         vec![Message::user("go")],
@@ -1134,12 +1167,12 @@ async fn before_inference_hook_override_reaches_request() {
     let rt = make_runtime();
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OverridePlugin)];
-    let env = build_agent_env(&user_plugins, &agent).unwrap();
+    let resolver = FixedResolver::with_plugins(agent, user_plugins);
     let sink = NullEventSink;
     let _result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &sink,
         None,
         vec![Message::user("go")],
@@ -1242,12 +1275,12 @@ async fn multiple_hooks_merge_inference_overrides_last_wins() {
 
     let user_plugins: Vec<Arc<dyn Plugin>> =
         vec![Arc::new(OverridePluginA), Arc::new(OverridePluginB)];
-    let env = build_agent_env(&user_plugins, &agent).unwrap();
+    let resolver = FixedResolver::with_plugins(agent, user_plugins);
 
     let _result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &NullEventSink,
         None,
         vec![Message::user("go")],
@@ -1302,12 +1335,12 @@ async fn no_override_hook_leaves_overrides_none() {
     let rt = make_runtime();
 
     // No override plugins
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
 
     let _result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &NullEventSink,
         None,
         vec![Message::user("go")],
@@ -1408,12 +1441,12 @@ async fn override_consumed_each_step_not_leaked() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OnceOverridePlugin {
         emitted: emitted.clone(),
     })];
-    let env = build_agent_env(&user_plugins, &agent).unwrap();
+    let resolver = FixedResolver::with_plugins(agent, user_plugins);
 
     let _result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &NullEventSink,
         None,
         vec![Message::user("go")],
@@ -1505,12 +1538,12 @@ async fn context_message_injected_into_request() {
     let rt = make_runtime();
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(ContextPlugin)];
-    let env = build_agent_env(&user_plugins, &agent).unwrap();
+    let resolver = FixedResolver::with_plugins(agent, user_plugins);
 
     let _result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &NullEventSink,
         None,
         vec![Message::user("hello")],
@@ -1636,12 +1669,12 @@ async fn context_messages_not_leaked_to_next_step() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OnceContextPlugin {
         emitted: emitted.clone(),
     })];
-    let env = build_agent_env(&user_plugins, &agent).unwrap();
+    let resolver = FixedResolver::with_plugins(agent, user_plugins);
 
     let _result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &rt,
-        &env,
         &NullEventSink,
         None,
         vec![Message::user("go")],

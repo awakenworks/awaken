@@ -9,6 +9,7 @@ use std::sync::Arc;
 use super::executor::{SequentialToolExecutor, ToolExecutor};
 
 /// The sole interface the agent loop sees.
+#[derive(Clone)]
 pub struct AgentConfig {
     pub id: String,
     pub model: String,

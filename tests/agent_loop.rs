@@ -2,8 +2,8 @@
 
 use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
-use awaken::agent::loop_runner::{AgentRunResult, ResumeInput, build_agent_env, run_agent_loop};
-use awaken::agent::state::{ContextThrottleState, RunLifecycle, RunLifecycleState, ToolCallStates};
+use awaken::agent::loop_runner::{build_agent_env, prepare_resume, run_agent_loop};
+use awaken::agent::state::{ContextThrottleState, RunLifecycle, ToolCallStates};
 use awaken::contract::content::ContentBlock;
 use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::{NullEventSink, VecEventSink};
@@ -17,6 +17,7 @@ use awaken::contract::suspension::{
 };
 use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
 use awaken::*;
+use awaken::{AgentResolver, ResolvedAgent};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
@@ -174,6 +175,38 @@ fn test_identity() -> RunIdentity {
     )
 }
 
+/// Test resolver that wraps a fixed AgentConfig + optional user plugins.
+struct FixedResolver {
+    agent: AgentConfig,
+    user_plugins: Vec<Arc<dyn Plugin>>,
+}
+
+impl FixedResolver {
+    fn new(agent: AgentConfig) -> Self {
+        Self {
+            agent,
+            user_plugins: vec![],
+        }
+    }
+
+    fn with_plugins(agent: AgentConfig, plugins: Vec<Arc<dyn Plugin>>) -> Self {
+        Self {
+            agent,
+            user_plugins: plugins,
+        }
+    }
+}
+
+impl AgentResolver for FixedResolver {
+    fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, StateError> {
+        let env = build_agent_env(&self.user_plugins, &self.agent)?;
+        Ok(ResolvedAgent {
+            config: self.agent.clone(),
+            env,
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -194,13 +227,13 @@ async fn single_step_natural_end() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "You are helpful.", llm);
     let runtime = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
 
     let sink = NullEventSink;
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &runtime,
-        &env,
         &sink,
         None,
         vec![Message::user("hi")],
@@ -241,13 +274,13 @@ async fn tool_call_then_response() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
 
     let sink = NullEventSink;
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &runtime,
-        &env,
         &sink,
         None,
         vec![Message::user("echo hello")],
@@ -283,13 +316,13 @@ async fn tool_call_state_machine_transitions() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
 
     let sink = NullEventSink;
     run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &runtime,
-        &env,
         &sink,
         None,
         vec![Message::user("test")],
@@ -330,13 +363,13 @@ async fn multiple_tool_calls_in_one_step() {
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(CalcTool));
     let runtime = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
 
     let sink = VecEventSink::new();
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &runtime,
-        &env,
         &sink,
         None,
         vec![Message::user("multi-tool")],
@@ -376,13 +409,13 @@ async fn max_rounds_exceeded() {
         .with_max_rounds(3)
         .with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
 
     let sink = NullEventSink;
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &runtime,
-        &env,
         &sink,
         None,
         vec![Message::user("loop")],
@@ -427,13 +460,13 @@ async fn unknown_tool_returns_error_result_not_crash() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
     let runtime = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
 
     let sink = VecEventSink::new();
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &runtime,
-        &env,
         &sink,
         None,
         vec![Message::user("call unknown")],
@@ -478,13 +511,13 @@ async fn failing_tool_produces_error_result_continues_loop() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(FailingTool));
     let runtime = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
 
     let sink = NullEventSink;
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &runtime,
-        &env,
         &sink,
         None,
         vec![Message::user("use fail tool")],
@@ -509,13 +542,13 @@ async fn events_have_correct_sequence_for_single_step() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
     let runtime = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
 
     let sink = VecEventSink::new();
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &runtime,
-        &env,
         &sink,
         None,
         vec![Message::user("hi")],
@@ -569,13 +602,13 @@ async fn events_have_correct_sequence_with_tool_call() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
 
     let sink = VecEventSink::new();
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &runtime,
-        &env,
         &sink,
         None,
         vec![Message::user("echo")],
@@ -630,7 +663,7 @@ async fn lifecycle_state_reflects_custom_run_id() {
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
     let runtime = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
 
     let identity = RunIdentity::new(
         "t-custom".into(),
@@ -643,9 +676,9 @@ async fn lifecycle_state_reflects_custom_run_id() {
 
     let sink = NullEventSink;
     run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &runtime,
-        &env,
         &sink,
         None,
         vec![Message::user("hi")],
@@ -701,13 +734,13 @@ async fn phase_hooks_fire_during_loop() {
 
     let tracker_plugin = Arc::new(TrackerPlugin(Arc::clone(&hook_phases)));
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![tracker_plugin];
-    let env = build_agent_env(&user_plugins, &agent).unwrap();
+    let resolver = FixedResolver::with_plugins(agent, user_plugins);
 
     let sink = NullEventSink;
     run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &runtime,
-        &env,
         &sink,
         None,
         vec![Message::user("hi")],
@@ -754,13 +787,13 @@ async fn tool_suspension_transitions_run_to_waiting() {
 
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
 
     let sink = NullEventSink;
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &runtime,
-        &env,
         &sink,
         None,
         vec![Message::user("do it")],
@@ -791,14 +824,14 @@ async fn resume_with_use_decision_as_tool_result() {
 
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
 
     // Run until suspension
     let sink = NullEventSink;
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &runtime,
-        &env,
         &sink,
         None,
         vec![Message::user("do it")],
@@ -824,27 +857,31 @@ async fn resume_with_use_decision_as_tool_result() {
     ];
 
     // Resume with decision
+    prepare_resume(
+        runtime.store(),
+        vec![(
+            "c1".into(),
+            ToolCallResume {
+                decision_id: "d1".into(),
+                action: ResumeDecisionAction::Resume,
+                result: json!({"approved": true}),
+                reason: None,
+                updated_at: 0,
+            },
+        )],
+        ToolCallResumeMode::UseDecisionAsToolResult,
+    )
+    .unwrap();
+
     let resume_result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &runtime,
-        &env,
         &sink,
         None,
         messages,
         test_identity(),
-        Some(ResumeInput {
-            decisions: vec![(
-                "c1".into(),
-                ToolCallResume {
-                    decision_id: "d1".into(),
-                    action: ResumeDecisionAction::Resume,
-                    result: json!({"approved": true}),
-                    reason: None,
-                    updated_at: 0,
-                },
-            )],
-            resume_mode: ToolCallResumeMode::UseDecisionAsToolResult,
-        }),
+        None,
     )
     .await
     .unwrap();
@@ -870,14 +907,14 @@ async fn resume_with_cancel_marks_tool_cancelled() {
 
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
 
     // Run until suspension
     let sink = NullEventSink;
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &runtime,
-        &env,
         &sink,
         None,
         vec![Message::user("do it")],
@@ -902,27 +939,31 @@ async fn resume_with_cancel_marks_tool_cancelled() {
     ];
 
     // Resume with cancel
+    prepare_resume(
+        runtime.store(),
+        vec![(
+            "c1".into(),
+            ToolCallResume {
+                decision_id: "d1".into(),
+                action: ResumeDecisionAction::Cancel,
+                result: Value::Null,
+                reason: Some("user denied".into()),
+                updated_at: 0,
+            },
+        )],
+        ToolCallResumeMode::ReplayToolCall,
+    )
+    .unwrap();
+
     let resume_result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &runtime,
-        &env,
         &sink,
         None,
         messages,
         test_identity(),
-        Some(ResumeInput {
-            decisions: vec![(
-                "c1".into(),
-                ToolCallResume {
-                    decision_id: "d1".into(),
-                    action: ResumeDecisionAction::Cancel,
-                    result: Value::Null,
-                    reason: Some("user denied".into()),
-                    updated_at: 0,
-                },
-            )],
-            resume_mode: ToolCallResumeMode::ReplayToolCall,
-        }),
+        None,
     )
     .await
     .unwrap();
@@ -946,14 +987,14 @@ async fn resume_with_replay_tool_call() {
         .with_tool(Arc::new(SuspendingTool))
         .with_tool(Arc::new(EchoTool)); // echo registered for replay
     let runtime = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
 
     // Run until suspension
     let sink = NullEventSink;
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &runtime,
-        &env,
         &sink,
         None,
         vec![Message::user("do it")],
@@ -983,7 +1024,7 @@ async fn resume_with_replay_tool_call() {
 
     let llm2 = Arc::new(ScriptedLlm::new(vec![]));
     let agent2 = AgentConfig::new("test", "m", "sys", llm2).with_tool(Arc::new(DangerousEcho));
-    let env2 = build_agent_env(&[], &agent2).unwrap();
+    let resolver2 = FixedResolver::new(agent2);
 
     let messages = vec![
         Message::user("do it"),
@@ -998,27 +1039,31 @@ async fn resume_with_replay_tool_call() {
         Message::tool("c1", "needs user approval"),
     ];
 
+    prepare_resume(
+        runtime.store(),
+        vec![(
+            "c1".into(),
+            ToolCallResume {
+                decision_id: "d1".into(),
+                action: ResumeDecisionAction::Resume,
+                result: Value::Null,
+                reason: None,
+                updated_at: 0,
+            },
+        )],
+        ToolCallResumeMode::ReplayToolCall,
+    )
+    .unwrap();
+
     let resume_result = run_agent_loop(
-        &agent2,
+        &resolver2,
+        "test",
         &runtime,
-        &env2,
         &sink,
         None,
         messages,
         test_identity(),
-        Some(ResumeInput {
-            decisions: vec![(
-                "c1".into(),
-                ToolCallResume {
-                    decision_id: "d1".into(),
-                    action: ResumeDecisionAction::Resume,
-                    result: Value::Null,
-                    reason: None,
-                    updated_at: 0,
-                },
-            )],
-            resume_mode: ToolCallResumeMode::ReplayToolCall,
-        }),
+        None,
     )
     .await
     .unwrap();
@@ -1036,7 +1081,7 @@ async fn resume_with_pass_decision_to_tool() {
 
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
 
     // Hack: register passthrough as "dangerous" initially for suspension
     // Actually, let's use a different approach: SuspendingTool is "dangerous"
@@ -1046,9 +1091,9 @@ async fn resume_with_pass_decision_to_tool() {
     // First run: suspend
     let sink = NullEventSink;
     let result = run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &runtime,
-        &env,
         &sink,
         None,
         vec![Message::user("do it")],
@@ -1068,12 +1113,12 @@ async fn resume_with_pass_decision_to_tool() {
         json!({"original": true}),
     )]));
     let agent2 = AgentConfig::new("test", "m", "sys", llm2).with_tool(Arc::new(SuspendingTool));
-    let env2 = build_agent_env(&[], &agent2).unwrap();
+    let resolver2 = FixedResolver::new(agent2);
 
     let result = run_agent_loop(
-        &agent2,
+        &resolver2,
+        "test",
         &runtime2,
-        &env2,
         &sink,
         None,
         vec![Message::user("do it")],
@@ -1103,7 +1148,7 @@ async fn resume_with_pass_decision_to_tool() {
     let llm3 = Arc::new(ScriptedLlm::new(vec![]));
     let agent3 =
         AgentConfig::new("test", "m", "sys", llm3).with_tool(Arc::new(DangerousPassthrough));
-    let env3 = build_agent_env(&[], &agent3).unwrap();
+    let resolver3 = FixedResolver::new(agent3);
 
     let messages = vec![
         Message::user("do it"),
@@ -1114,27 +1159,31 @@ async fn resume_with_pass_decision_to_tool() {
         Message::tool("c1", "needs user approval"),
     ];
 
+    prepare_resume(
+        runtime2.store(),
+        vec![(
+            "c1".into(),
+            ToolCallResume {
+                decision_id: "d1".into(),
+                action: ResumeDecisionAction::Resume,
+                result: json!({"approved": true, "new_args": "yes"}),
+                reason: None,
+                updated_at: 0,
+            },
+        )],
+        ToolCallResumeMode::PassDecisionToTool,
+    )
+    .unwrap();
+
     let resume_result = run_agent_loop(
-        &agent3,
+        &resolver3,
+        "test",
         &runtime2,
-        &env3,
         &sink,
         None,
         messages,
         test_identity(),
-        Some(ResumeInput {
-            decisions: vec![(
-                "c1".into(),
-                ToolCallResume {
-                    decision_id: "d1".into(),
-                    action: ResumeDecisionAction::Resume,
-                    result: json!({"approved": true, "new_args": "yes"}),
-                    reason: None,
-                    updated_at: 0,
-                },
-            )],
-            resume_mode: ToolCallResumeMode::PassDecisionToTool,
-        }),
+        None,
     )
     .await
     .unwrap();
@@ -1147,14 +1196,14 @@ async fn resume_rejects_non_waiting_run() {
     let llm = Arc::new(ScriptedLlm::new(vec![]));
     let agent = AgentConfig::new("test", "m", "sys", llm);
     let runtime = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
 
     // Run to completion (not suspended)
     let sink = NullEventSink;
     run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &runtime,
-        &env,
         &sink,
         None,
         vec![Message::user("hi")],
@@ -1164,24 +1213,25 @@ async fn resume_rejects_non_waiting_run() {
     .await
     .unwrap();
 
-    // Attempt resume on a Done run
-    let err = run_agent_loop(
-        &agent,
-        &runtime,
-        &env,
-        &sink,
-        None,
-        vec![Message::user("hi")],
-        test_identity(),
-        Some(ResumeInput {
-            decisions: vec![],
-            resume_mode: ToolCallResumeMode::ReplayToolCall,
-        }),
+    // Attempt resume on a Done run with a non-existent call_id
+    // prepare_resume fails because there are no tool call states after completion
+    let err = prepare_resume(
+        runtime.store(),
+        vec![(
+            "nonexistent".into(),
+            ToolCallResume {
+                decision_id: "d1".into(),
+                action: ResumeDecisionAction::Resume,
+                result: Value::Null,
+                reason: None,
+                updated_at: 0,
+            },
+        )],
+        ToolCallResumeMode::ReplayToolCall,
     )
-    .await
     .unwrap_err();
 
-    assert!(err.to_string().contains("expected Waiting"));
+    assert!(err.to_string().contains("not found"));
 }
 
 #[tokio::test]
@@ -1194,13 +1244,13 @@ async fn resume_rejects_unknown_call_id() {
 
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
-    let env = build_agent_env(&[], &agent).unwrap();
+    let resolver = FixedResolver::new(agent);
 
     let sink = NullEventSink;
     run_agent_loop(
-        &agent,
+        &resolver,
+        "test",
         &runtime,
-        &env,
         &sink,
         None,
         vec![Message::user("do it")],
@@ -1210,31 +1260,21 @@ async fn resume_rejects_unknown_call_id() {
     .await
     .unwrap();
 
-    let messages = vec![Message::user("do it")];
-
-    let err = run_agent_loop(
-        &agent,
-        &runtime,
-        &env,
-        &sink,
-        None,
-        messages,
-        test_identity(),
-        Some(ResumeInput {
-            decisions: vec![(
-                "nonexistent".into(),
-                ToolCallResume {
-                    decision_id: "d1".into(),
-                    action: ResumeDecisionAction::Resume,
-                    result: Value::Null,
-                    reason: None,
-                    updated_at: 0,
-                },
-            )],
-            resume_mode: ToolCallResumeMode::ReplayToolCall,
-        }),
+    // prepare_resume with unknown call_id should fail
+    let err = prepare_resume(
+        runtime.store(),
+        vec![(
+            "nonexistent".into(),
+            ToolCallResume {
+                decision_id: "d1".into(),
+                action: ResumeDecisionAction::Resume,
+                result: Value::Null,
+                reason: None,
+                updated_at: 0,
+            },
+        )],
+        ToolCallResumeMode::ReplayToolCall,
     )
-    .await
     .unwrap_err();
 
     assert!(err.to_string().contains("not found"));

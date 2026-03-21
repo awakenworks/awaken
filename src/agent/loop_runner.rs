@@ -18,7 +18,9 @@ use crate::contract::suspension::{
 use crate::contract::tool::{ToolCallContext, ToolResult};
 use crate::error::StateError;
 use crate::model::{PendingScheduledActions, Phase, ScheduledActionQueueUpdate};
-use crate::runtime::{ExecutionEnv, PhaseContext, PhaseRuntime};
+use crate::runtime::{
+    AgentResolver, CancellationToken, ExecutionEnv, PhaseContext, PhaseRuntime, ResolvedAgent,
+};
 use crate::state::{MutationBatch, StateCommand};
 
 use super::config::AgentConfig;
@@ -79,33 +81,40 @@ pub fn build_agent_env(
     Ok(env)
 }
 
-/// Unified agent loop entry point for both fresh runs and resumed runs.
+/// Unified agent loop entry point.
 ///
-/// - `resume`: `None` = fresh run, `Some` = resume from suspension.
-///   When resuming, the loop validates the run is in `Waiting` state, applies
-///   decisions to suspended tool calls, and re-enters the step loop.
+/// Handles both fresh runs and resumed runs (state-driven detection).
+/// Supports dynamic agent handoff via `ActiveAgentKey` re-resolve at step boundaries.
+/// Cooperative cancellation via `CancellationToken`.
 pub async fn run_agent_loop(
-    agent: &AgentConfig,
+    resolver: &dyn AgentResolver,
+    initial_agent_id: &str,
     runtime: &PhaseRuntime,
-    env: &ExecutionEnv,
     sink: &dyn EventSink,
     thread_store: Option<&dyn crate::contract::storage::ThreadStore>,
     initial_messages: Vec<Message>,
     run_identity: RunIdentity,
-    resume: Option<ResumeInput>,
+    cancellation_token: Option<CancellationToken>,
 ) -> Result<AgentRunResult, AgentLoopError> {
     let store = runtime.store();
     let mut messages: Vec<Arc<Message>> = initial_messages.into_iter().map(Arc::new).collect();
+
+    // Resolve initial agent
+    let ResolvedAgent {
+        config: mut agent,
+        mut env,
+    } = resolver
+        .resolve(initial_agent_id)
+        .map_err(AgentLoopError::PhaseError)?;
 
     // Trim to latest compaction boundary — skip already-summarized history
     if agent.context_policy.is_some() {
         super::context::trim_to_compaction_boundary(&mut messages);
     }
 
-    // --- Resume from suspension (optional pre-step) ---
-    if let Some(input) = resume {
-        apply_resume_decisions(agent, store, &run_identity, &mut messages, input).await?;
-    }
+    // --- State-driven resume detection ---
+    // If any tool calls are in Resuming state, replay them before starting the loop.
+    detect_and_replay_resume(&agent, store, &run_identity, &mut messages).await?;
 
     let mut steps: usize = 0;
 
@@ -133,11 +142,36 @@ pub async fn run_agent_loop(
     .await;
 
     runtime
-        .run_phase_with_context(env, make_ctx(Phase::RunStart, &messages, &run_identity))
+        .run_phase_with_context(&env, make_ctx(Phase::RunStart, &messages, &run_identity))
         .await?;
 
     let termination = loop {
         steps += 1;
+
+        // --- Cancellation check ---
+        if cancellation_token
+            .as_ref()
+            .is_some_and(|t| t.is_cancelled())
+        {
+            commit_update::<RunLifecycle>(
+                store,
+                RunLifecycleUpdate::Done {
+                    done_reason: "cancelled".into(),
+                    updated_at: now_ms(),
+                },
+            )?;
+            break TerminationReason::Cancelled;
+        }
+
+        // --- Handoff: check ActiveAgentKey for agent switch ---
+        if let Some(Some(active_id)) = store.read::<crate::contract::profile::ActiveAgentKey>() {
+            if active_id != agent.id {
+                if let Ok(resolved) = resolver.resolve(&active_id) {
+                    agent = resolved.config;
+                    env = resolved.env;
+                }
+            }
+        }
 
         sink.emit(AgentEvent::StepStart {
             message_id: gen_message_id(),
@@ -148,7 +182,7 @@ pub async fn run_agent_loop(
         commit_update::<ToolCallStates>(store, ToolCallStatesUpdate::Clear)?;
 
         runtime
-            .run_phase_with_context(env, make_ctx(Phase::StepStart, &messages, &run_identity))
+            .run_phase_with_context(&env, make_ctx(Phase::StepStart, &messages, &run_identity))
             .await?;
         if let Some(reason) = check_termination(store) {
             break reason;
@@ -156,7 +190,7 @@ pub async fn run_agent_loop(
 
         runtime
             .run_phase_with_context(
-                env,
+                &env,
                 make_ctx(Phase::BeforeInference, &messages, &run_identity),
             )
             .await?;
@@ -170,7 +204,7 @@ pub async fn run_agent_loop(
             if let Some(threshold) = policy.autocompact_threshold {
                 let token_est = crate::contract::transform::estimate_tokens_arc(&messages);
                 if token_est >= threshold {
-                    compact_with_llm(agent, &mut messages, policy).await?;
+                    compact_with_llm(&agent, &mut messages, policy).await?;
                 }
             }
         }
@@ -226,7 +260,7 @@ pub async fn run_agent_loop(
         let llm_response = LLMResponse::success(stream_result.clone());
         let after_inf_ctx = make_ctx(Phase::AfterInference, &messages, &run_identity)
             .with_llm_response(llm_response);
-        runtime.run_phase_with_context(env, after_inf_ctx).await?;
+        runtime.run_phase_with_context(&env, after_inf_ctx).await?;
         if let Some(reason) = check_termination(store) {
             break reason;
         }
@@ -236,7 +270,7 @@ pub async fn run_agent_loop(
             complete_step(
                 store,
                 runtime,
-                env,
+                &env,
                 sink,
                 thread_store,
                 &messages,
@@ -265,7 +299,7 @@ pub async fn run_agent_loop(
         for call in &stream_result.tool_calls {
             let perm_ctx = make_ctx(Phase::BeforeToolExecute, &messages, &run_identity)
                 .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
-            let perm_result = runtime.check_tool_permission(env, &perm_ctx).await?;
+            let perm_result = runtime.check_tool_permission(&env, &perm_ctx).await?;
 
             match perm_result {
                 crate::runtime::ToolPermissionResult::Allow => {
@@ -332,7 +366,7 @@ pub async fn run_agent_loop(
             // Collect BeforeToolExecute hook commands (no commit)
             let before_ctx = make_ctx(Phase::BeforeToolExecute, &messages, &run_identity)
                 .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
-            let before_cmd = runtime.collect_commands(env, before_ctx).await?;
+            let before_cmd = runtime.collect_commands(&env, before_ctx).await?;
             if !before_cmd.is_empty() {
                 tool_commands.push(before_cmd);
             }
@@ -372,7 +406,7 @@ pub async fn run_agent_loop(
             let after_ctx = make_ctx(Phase::AfterToolExecute, &messages, &run_identity)
                 .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()))
                 .with_tool_result(tool_result.clone());
-            let after_cmd = runtime.collect_commands(env, after_ctx).await?;
+            let after_cmd = runtime.collect_commands(&env, after_ctx).await?;
             if !after_cmd.is_empty() {
                 tool_commands.push(after_cmd);
             }
@@ -388,7 +422,7 @@ pub async fn run_agent_loop(
         // Merge all tool call commands and submit once
         if !tool_commands.is_empty() {
             let merged = store.merge_all_commands(tool_commands)?;
-            runtime.submit_command(env, merged).await?;
+            runtime.submit_command(&env, merged).await?;
         }
 
         // Check termination after tool execution
@@ -407,7 +441,7 @@ pub async fn run_agent_loop(
             complete_step(
                 store,
                 runtime,
-                env,
+                &env,
                 sink,
                 thread_store,
                 &messages,
@@ -420,7 +454,7 @@ pub async fn run_agent_loop(
         complete_step(
             store,
             runtime,
-            env,
+            &env,
             sink,
             thread_store,
             &messages,
@@ -445,7 +479,7 @@ pub async fn run_agent_loop(
     }
 
     runtime
-        .run_phase_with_context(env, make_ctx(Phase::RunEnd, &messages, &run_identity))
+        .run_phase_with_context(&env, make_ctx(Phase::RunEnd, &messages, &run_identity))
         .await?;
 
     let response = messages
@@ -470,37 +504,69 @@ pub async fn run_agent_loop(
     })
 }
 
-/// External decisions for suspended tool calls, used to resume a suspended run.
-pub struct ResumeInput {
-    /// Decisions for each suspended tool call, keyed by call_id.
-    pub decisions: Vec<(String, ToolCallResume)>,
-    /// Resume mode to apply (defaults to ReplayToolCall).
-    pub resume_mode: ToolCallResumeMode,
+/// Prepare tool call states for resume. Call before `run_agent_loop`.
+///
+/// Writes resume decisions into `ToolCallStates` so the loop detects them at startup.
+pub fn prepare_resume(
+    store: &crate::state::StateStore,
+    decisions: Vec<(String, ToolCallResume)>,
+    resume_mode: ToolCallResumeMode,
+) -> Result<(), StateError> {
+    let tool_call_states = store.read::<ToolCallStates>().unwrap_or_default();
+    for (call_id, decision) in decisions {
+        let call_state =
+            tool_call_states
+                .calls
+                .get(&call_id)
+                .ok_or_else(|| StateError::UnknownKey {
+                    key: format!("tool call {call_id} not found"),
+                })?;
+        // Write resume payload into state
+        commit_update::<ToolCallStates>(
+            store,
+            ToolCallStatesUpdate::Upsert {
+                call_id: call_id.clone(),
+                tool_name: call_state.tool_name.clone(),
+                arguments: match (&resume_mode, &decision.action) {
+                    (ToolCallResumeMode::PassDecisionToTool, ResumeDecisionAction::Resume) => {
+                        decision.result.clone()
+                    }
+                    _ => call_state.arguments.clone(),
+                },
+                status: match decision.action {
+                    ResumeDecisionAction::Resume => ToolCallStatus::Resuming,
+                    ResumeDecisionAction::Cancel => ToolCallStatus::Cancelled,
+                },
+                updated_at: now_ms(),
+            },
+        )?;
+    }
+    Ok(())
 }
 
-/// Apply resume decisions to suspended tool calls.
+/// Detect Resuming tool calls in state and replay them.
 ///
-/// Validates Waiting state, transitions each tool call, executes resumed calls,
-/// and appends tool result messages.
-async fn apply_resume_decisions(
+/// Called at loop startup. If any tool calls are in Resuming state,
+/// execute them and append results to messages.
+async fn detect_and_replay_resume(
     agent: &AgentConfig,
     store: &crate::state::StateStore,
     run_identity: &RunIdentity,
     messages: &mut Vec<Arc<Message>>,
-    input: ResumeInput,
 ) -> Result<(), AgentLoopError> {
-    // Validate: run must be in Waiting state
-    let lifecycle = store
-        .read::<RunLifecycle>()
-        .ok_or_else(|| AgentLoopError::InvalidResume("no run lifecycle state found".into()))?;
-    if lifecycle.status != RunStatus::Waiting {
-        return Err(AgentLoopError::InvalidResume(format!(
-            "run is {:?}, expected Waiting",
-            lifecycle.status
-        )));
+    let tool_call_states = store.read::<ToolCallStates>().unwrap_or_default();
+
+    // Find all Resuming tool calls
+    let resuming: Vec<_> = tool_call_states
+        .calls
+        .iter()
+        .filter(|(_, state)| state.status == ToolCallStatus::Resuming)
+        .collect();
+
+    if resuming.is_empty() {
+        return Ok(());
     }
 
-    let tool_call_states = store.read::<ToolCallStates>().unwrap_or_default();
     let resume_tool_ctx = ToolCallContext {
         call_id: String::new(),
         run_identity: run_identity.clone(),
@@ -508,122 +574,33 @@ async fn apply_resume_decisions(
         snapshot: store.snapshot(),
     };
 
-    for (call_id, decision) in &input.decisions {
-        let call_state = tool_call_states.calls.get(call_id).ok_or_else(|| {
-            AgentLoopError::InvalidResume(format!("tool call {call_id} not found in state"))
-        })?;
-        if call_state.status != ToolCallStatus::Suspended {
-            return Err(AgentLoopError::InvalidResume(format!(
-                "tool call {call_id} is {:?}, expected Suspended",
-                call_state.status
-            )));
-        }
+    for (call_id, call_state) in resuming {
+        // Re-execute with the arguments stored in state (may be original or decision payload)
+        let call = ToolCall::new(call_id, &call_state.tool_name, call_state.arguments.clone());
+        let mut tool_ctx = resume_tool_ctx.clone();
+        tool_ctx.call_id = call_id.to_string();
+        let result = execute_single_tool(agent, &call, &tool_ctx).await;
 
-        match decision.action {
-            ResumeDecisionAction::Cancel => {
-                commit_update::<ToolCallStates>(
-                    store,
-                    ToolCallStatesUpdate::Upsert {
-                        call_id: call_id.clone(),
-                        tool_name: call_state.tool_name.clone(),
-                        arguments: call_state.arguments.clone(),
-                        status: ToolCallStatus::Cancelled,
-                        updated_at: now_ms(),
-                    },
-                )?;
-                messages.push(Arc::new(Message::tool(
-                    call_id,
-                    format!(
-                        "Tool call cancelled: {}",
-                        decision.reason.as_deref().unwrap_or("user cancelled")
-                    ),
-                )));
-            }
-            ResumeDecisionAction::Resume => {
-                commit_update::<ToolCallStates>(
-                    store,
-                    ToolCallStatesUpdate::Upsert {
-                        call_id: call_id.clone(),
-                        tool_name: call_state.tool_name.clone(),
-                        arguments: call_state.arguments.clone(),
-                        status: ToolCallStatus::Resuming,
-                        updated_at: now_ms(),
-                    },
-                )?;
+        let status = if result.is_success() {
+            ToolCallStatus::Succeeded
+        } else {
+            ToolCallStatus::Failed
+        };
+        commit_update::<ToolCallStates>(
+            store,
+            ToolCallStatesUpdate::Upsert {
+                call_id: call_id.clone(),
+                tool_name: call_state.tool_name.clone(),
+                arguments: call_state.arguments.clone(),
+                status,
+                updated_at: now_ms(),
+            },
+        )?;
 
-                let tool_result = match input.resume_mode {
-                    ToolCallResumeMode::UseDecisionAsToolResult => {
-                        let content = if decision.result.is_null() {
-                            "approved".to_string()
-                        } else {
-                            serde_json::to_string(&decision.result).unwrap_or_default()
-                        };
-                        commit_update::<ToolCallStates>(
-                            store,
-                            ToolCallStatesUpdate::Upsert {
-                                call_id: call_id.clone(),
-                                tool_name: call_state.tool_name.clone(),
-                                arguments: call_state.arguments.clone(),
-                                status: ToolCallStatus::Succeeded,
-                                updated_at: now_ms(),
-                            },
-                        )?;
-                        content
-                    }
-                    ToolCallResumeMode::ReplayToolCall => {
-                        let call = ToolCall::new(
-                            call_id,
-                            &call_state.tool_name,
-                            call_state.arguments.clone(),
-                        );
-                        let mut tool_ctx = resume_tool_ctx.clone();
-                        tool_ctx.call_id = call_id.to_string();
-                        let result = execute_single_tool(agent, &call, &tool_ctx).await;
-                        let status = if result.is_success() {
-                            ToolCallStatus::Succeeded
-                        } else {
-                            ToolCallStatus::Failed
-                        };
-                        commit_update::<ToolCallStates>(
-                            store,
-                            ToolCallStatesUpdate::Upsert {
-                                call_id: call_id.clone(),
-                                tool_name: call_state.tool_name.clone(),
-                                arguments: call_state.arguments.clone(),
-                                status,
-                                updated_at: now_ms(),
-                            },
-                        )?;
-                        tool_result_to_content(&result)
-                    }
-                    ToolCallResumeMode::PassDecisionToTool => {
-                        let call =
-                            ToolCall::new(call_id, &call_state.tool_name, decision.result.clone());
-                        let mut tool_ctx = resume_tool_ctx.clone();
-                        tool_ctx.call_id = call_id.to_string();
-                        let result = execute_single_tool(agent, &call, &tool_ctx).await;
-                        let status = if result.is_success() {
-                            ToolCallStatus::Succeeded
-                        } else {
-                            ToolCallStatus::Failed
-                        };
-                        commit_update::<ToolCallStates>(
-                            store,
-                            ToolCallStatesUpdate::Upsert {
-                                call_id: call_id.clone(),
-                                tool_name: call_state.tool_name.clone(),
-                                arguments: decision.result.clone(),
-                                status,
-                                updated_at: now_ms(),
-                            },
-                        )?;
-                        tool_result_to_content(&result)
-                    }
-                };
-
-                messages.push(Arc::new(Message::tool(call_id, tool_result)));
-            }
-        }
+        messages.push(Arc::new(Message::tool(
+            call_id,
+            tool_result_to_content(&result),
+        )));
     }
 
     Ok(())
@@ -669,7 +646,7 @@ async fn complete_step(
     let ctx = PhaseContext::new(Phase::StepEnd, store.snapshot())
         .with_run_identity(run_identity.clone())
         .with_messages(messages.to_vec());
-    runtime.run_phase_with_context(env, ctx).await?;
+    runtime.run_phase_with_context(&env, ctx).await?;
 
     // Checkpoint: persist current messages (includes compaction if it happened)
     if let Some(ts) = thread_store {
