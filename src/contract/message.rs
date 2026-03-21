@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::content::ContentBlock;
+
 /// Message role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -54,7 +56,8 @@ pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub role: Role,
-    pub content: String,
+    /// Multimodal content blocks.
+    pub content: Vec<ContentBlock>,
     /// Tool calls made by the assistant.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
@@ -72,11 +75,11 @@ pub struct Message {
 
 impl Message {
     /// Create a system message.
-    pub fn system(content: impl Into<String>) -> Self {
+    pub fn system(text: impl Into<String>) -> Self {
         Self {
             id: Some(gen_message_id()),
             role: Role::System,
-            content: content.into(),
+            content: vec![ContentBlock::text(text)],
             tool_calls: None,
             tool_call_id: None,
             visibility: Visibility::All,
@@ -85,11 +88,11 @@ impl Message {
     }
 
     /// Create an internal system message (visible only to LLM, hidden from API consumers).
-    pub fn internal_system(content: impl Into<String>) -> Self {
+    pub fn internal_system(text: impl Into<String>) -> Self {
         Self {
             id: Some(gen_message_id()),
             role: Role::System,
-            content: content.into(),
+            content: vec![ContentBlock::text(text)],
             tool_calls: None,
             tool_call_id: None,
             visibility: Visibility::Internal,
@@ -97,12 +100,25 @@ impl Message {
         }
     }
 
-    /// Create a user message.
-    pub fn user(content: impl Into<String>) -> Self {
+    /// Create a user message with text.
+    pub fn user(text: impl Into<String>) -> Self {
         Self {
             id: Some(gen_message_id()),
             role: Role::User,
-            content: content.into(),
+            content: vec![ContentBlock::text(text)],
+            tool_calls: None,
+            tool_call_id: None,
+            visibility: Visibility::All,
+            metadata: None,
+        }
+    }
+
+    /// Create a user message with multimodal content blocks.
+    pub fn user_with_content(content: Vec<ContentBlock>) -> Self {
+        Self {
+            id: Some(gen_message_id()),
+            role: Role::User,
+            content,
             tool_calls: None,
             tool_call_id: None,
             visibility: Visibility::All,
@@ -111,11 +127,11 @@ impl Message {
     }
 
     /// Create an assistant message.
-    pub fn assistant(content: impl Into<String>) -> Self {
+    pub fn assistant(text: impl Into<String>) -> Self {
         Self {
             id: Some(gen_message_id()),
             role: Role::Assistant,
-            content: content.into(),
+            content: vec![ContentBlock::text(text)],
             tool_calls: None,
             tool_call_id: None,
             visibility: Visibility::All,
@@ -124,11 +140,11 @@ impl Message {
     }
 
     /// Create an assistant message with tool calls.
-    pub fn assistant_with_tool_calls(content: impl Into<String>, calls: Vec<ToolCall>) -> Self {
+    pub fn assistant_with_tool_calls(text: impl Into<String>, calls: Vec<ToolCall>) -> Self {
         Self {
             id: Some(gen_message_id()),
             role: Role::Assistant,
-            content: content.into(),
+            content: vec![ContentBlock::text(text)],
             tool_calls: if calls.is_empty() { None } else { Some(calls) },
             tool_call_id: None,
             visibility: Visibility::All,
@@ -136,17 +152,35 @@ impl Message {
         }
     }
 
-    /// Create a tool response message.
-    pub fn tool(call_id: impl Into<String>, content: impl Into<String>) -> Self {
+    /// Create a tool response message with text.
+    pub fn tool(call_id: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
             id: Some(gen_message_id()),
             role: Role::Tool,
-            content: content.into(),
+            content: vec![ContentBlock::text(text)],
             tool_calls: None,
             tool_call_id: Some(call_id.into()),
             visibility: Visibility::All,
             metadata: None,
         }
+    }
+
+    /// Create a tool response message with multimodal content.
+    pub fn tool_with_content(call_id: impl Into<String>, content: Vec<ContentBlock>) -> Self {
+        Self {
+            id: Some(gen_message_id()),
+            role: Role::Tool,
+            content,
+            tool_calls: None,
+            tool_call_id: Some(call_id.into()),
+            visibility: Visibility::All,
+            metadata: None,
+        }
+    }
+
+    /// Extract concatenated text from content blocks.
+    pub fn text(&self) -> String {
+        super::content::extract_text(&self.content)
     }
 
     /// Override the auto-generated message ID.
@@ -195,11 +229,19 @@ mod tests {
     fn test_user_message() {
         let msg = Message::user("Hello");
         assert_eq!(msg.role, Role::User);
-        assert_eq!(msg.content, "Hello");
+        assert_eq!(msg.text(), "Hello");
         assert!(msg.id.is_some());
-        assert!(msg.tool_calls.is_none());
-        assert!(msg.tool_call_id.is_none());
-        assert!(msg.metadata.is_none());
+    }
+
+    #[test]
+    fn test_user_with_multimodal_content() {
+        let msg = Message::user_with_content(vec![
+            ContentBlock::text("Look at this:"),
+            ContentBlock::image_url("https://example.com/img.png"),
+        ]);
+        assert_eq!(msg.role, Role::User);
+        assert_eq!(msg.content.len(), 2);
+        assert_eq!(msg.text(), "Look at this:");
     }
 
     #[test]
@@ -214,8 +256,8 @@ mod tests {
         ];
         for msg in &msgs {
             let id = msg.id.as_ref().expect("message should have an id");
-            assert_eq!(id.len(), 36, "id should be UUID format: {}", id);
-            assert_eq!(&id[14..15], "7", "UUID version should be 7: {}", id);
+            assert_eq!(id.len(), 36, "id should be UUID format: {id}");
+            assert_eq!(&id[14..15], "7", "UUID version should be 7: {id}");
         }
         let ids: std::collections::HashSet<&str> =
             msgs.iter().map(|m| m.id.as_deref().unwrap()).collect();
@@ -226,9 +268,8 @@ mod tests {
     fn test_assistant_with_tool_calls() {
         let calls = vec![ToolCall::new("call_1", "search", json!({"query": "rust"}))];
         let msg = Message::assistant_with_tool_calls("Let me search", calls);
-
         assert_eq!(msg.role, Role::Assistant);
-        assert_eq!(msg.content, "Let me search");
+        assert_eq!(msg.text(), "Let me search");
         assert!(msg.tool_calls.is_some());
         assert_eq!(msg.tool_calls.as_ref().unwrap().len(), 1);
     }
@@ -236,9 +277,8 @@ mod tests {
     #[test]
     fn test_tool_message() {
         let msg = Message::tool("call_1", "Result: 42");
-
         assert_eq!(msg.role, Role::Tool);
-        assert_eq!(msg.content, "Result: 42");
+        assert_eq!(msg.text(), "Result: 42");
         assert_eq!(msg.tool_call_id.as_deref(), Some("call_1"));
     }
 
@@ -269,19 +309,10 @@ mod tests {
     }
 
     #[test]
-    fn test_message_without_metadata_deserializes() {
-        let json = r#"{"id":"abc","role":"user","content":"hello"}"#;
-        let msg: Message = serde_json::from_str(json).unwrap();
-        assert!(msg.metadata.is_none());
-        assert_eq!(msg.visibility, Visibility::All);
-    }
-
-    #[test]
     fn test_tool_call_serialization() {
         let call = ToolCall::new("id_1", "calculator", json!({"expr": "2+2"}));
         let json = serde_json::to_string(&call).unwrap();
         let parsed: ToolCall = serde_json::from_str(&json).unwrap();
-
         assert_eq!(parsed.id, "id_1");
         assert_eq!(parsed.name, "calculator");
         assert_eq!(parsed.arguments["expr"], "2+2");

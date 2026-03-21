@@ -141,8 +141,8 @@ mod tests {
 
         let loaded = store.load_messages(tid).await.unwrap().unwrap();
         assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded[0].content, "hello");
-        assert_eq!(loaded[1].content, "hi");
+        assert_eq!(loaded[0].text(), "hello");
+        assert_eq!(loaded[1].text(), "hi");
 
         // Append second batch.
         let batch2 = vec![Message::user("more"), Message::tool("c1", "result")];
@@ -150,8 +150,8 @@ mod tests {
 
         let loaded = store.load_messages(tid).await.unwrap().unwrap();
         assert_eq!(loaded.len(), 4);
-        assert_eq!(loaded[2].content, "more");
-        assert_eq!(loaded[3].content, "result");
+        assert_eq!(loaded[2].text(), "more");
+        assert_eq!(loaded[3].text(), "result");
 
         // Delete.
         store.delete_thread(tid).await.unwrap();
@@ -182,9 +182,9 @@ mod tests {
         let t2 = store.load_messages("t2").await.unwrap().unwrap();
 
         assert_eq!(t1.len(), 1);
-        assert_eq!(t1[0].content, "a");
+        assert_eq!(t1[0].text(), "a");
         assert_eq!(t2.len(), 2);
-        assert_eq!(t2[0].content, "b");
+        assert_eq!(t2[0].text(), "b");
 
         // Deleting one does not affect the other.
         store.delete_thread("t1").await.unwrap();

@@ -66,6 +66,7 @@ pub fn build_agent_env(
 
     let mut env = ExecutionEnv::from_plugins(&all_plugins)?;
     env.register_loop_consumed_action::<super::state::SetInferenceOverride>();
+    env.register_loop_consumed_action::<super::state::AddContextMessage>();
     Ok(env)
 }
 
@@ -138,13 +139,27 @@ pub async fn run_agent_loop(
 
         // Consume loop actions from PendingScheduledActions before building request
         let overrides = consume_inference_overrides(store)?;
+        let context_msgs = consume_context_messages(store)?;
+
+        // Build message list: system prompt + conversation history
+        let has_system_prompt = !agent.system_prompt.is_empty();
+        let mut request_messages: Vec<Message> = Vec::new();
+        if has_system_prompt {
+            request_messages.push(Message::system(&agent.system_prompt));
+        }
+        request_messages.extend(messages.iter().map(|m| (**m).clone()));
+
+        // Apply context messages at their target positions
+        if !context_msgs.is_empty() {
+            apply_context_messages(&mut request_messages, context_msgs, has_system_prompt);
+        }
 
         let start = std::time::Instant::now();
         let request = InferenceRequest {
             model: agent.model.clone(),
-            messages: messages.iter().map(|m| (**m).clone()).collect(),
+            messages: request_messages,
             tools: agent.tool_descriptors(),
-            system_prompt: Some(agent.system_prompt.clone()),
+            system: vec![],
             overrides,
         };
 
@@ -171,14 +186,14 @@ pub async fn run_agent_loop(
         }
 
         if !stream_result.needs_tools() {
-            messages.push(Arc::new(Message::assistant(&stream_result.text)));
+            messages.push(Arc::new(Message::assistant(&stream_result.text())));
             complete_step(store, runtime, env, sink, &messages, &run_identity).await?;
             break TerminationReason::NaturalEnd;
         }
 
         // Add assistant message with tool calls
         messages.push(Arc::new(Message::assistant_with_tool_calls(
-            &stream_result.text,
+            &stream_result.text(),
             stream_result.tool_calls.clone(),
         )));
 
@@ -364,7 +379,7 @@ pub async fn run_agent_loop(
         .iter()
         .rev()
         .find(|m| m.role == Role::Assistant)
-        .map(|m| m.content.clone())
+        .map(|m| m.text())
         .unwrap_or_default();
 
     sink.emit(AgentEvent::RunFinish {
@@ -691,6 +706,102 @@ fn consume_inference_overrides(
     } else {
         Ok(Some(merged))
     }
+}
+
+/// Consume `AddContextMessage` actions from the pending queue.
+///
+/// Returns context messages grouped by target, ready for insertion.
+fn consume_context_messages(
+    store: &crate::state::StateStore,
+) -> Result<Vec<crate::contract::context_message::ContextMessage>, crate::error::StateError> {
+    use super::state::AddContextMessage;
+    use crate::model::ScheduledActionSpec;
+
+    let pending = store.read::<PendingScheduledActions>().unwrap_or_default();
+
+    let matching: Vec<_> = pending
+        .iter()
+        .filter(|e| e.action.key == AddContextMessage::KEY)
+        .collect();
+
+    if matching.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut messages = Vec::new();
+    let mut ids = Vec::new();
+    for envelope in matching {
+        let payload = AddContextMessage::decode_payload(envelope.action.payload.clone())?;
+        messages.push(payload);
+        ids.push(envelope.id);
+    }
+
+    let mut patch = MutationBatch::new();
+    for id in ids {
+        patch.update::<PendingScheduledActions>(ScheduledActionQueueUpdate::Remove { id });
+    }
+    store.commit(patch)?;
+
+    Ok(messages)
+}
+
+/// Insert context messages into the message list at their declared target positions.
+fn apply_context_messages(
+    messages: &mut Vec<Message>,
+    context_messages: Vec<crate::contract::context_message::ContextMessage>,
+    has_system_prompt: bool,
+) {
+    use crate::contract::context_message::ContextMessageTarget;
+
+    let mut system = Vec::new();
+    let mut session = Vec::new();
+    let mut conversation = Vec::new();
+    let mut suffix = Vec::new();
+
+    for entry in context_messages {
+        let msg = Message {
+            id: Some(crate::contract::message::gen_message_id()),
+            role: entry.role,
+            content: entry.content,
+            tool_calls: None,
+            tool_call_id: None,
+            visibility: entry.visibility,
+            metadata: None,
+        };
+        match entry.target {
+            ContextMessageTarget::System => system.push(msg),
+            ContextMessageTarget::Session => session.push(msg),
+            ContextMessageTarget::Conversation => conversation.push(msg),
+            ContextMessageTarget::SuffixSystem => suffix.push(msg),
+        }
+    }
+
+    // System: insert after base system prompt
+    let system_insert_pos = usize::from(has_system_prompt);
+    for (offset, msg) in system.into_iter().enumerate() {
+        messages.insert(system_insert_pos + offset, msg);
+    }
+
+    // Session: insert after all system-role messages
+    let session_insert_pos = messages
+        .iter()
+        .take_while(|m| m.role == Role::System)
+        .count();
+    for (offset, msg) in session.into_iter().enumerate() {
+        messages.insert(session_insert_pos + offset, msg);
+    }
+
+    // Conversation: insert after system messages, before history
+    let conversation_insert_pos = messages
+        .iter()
+        .take_while(|m| m.role == Role::System)
+        .count();
+    for (offset, msg) in conversation.into_iter().enumerate() {
+        messages.insert(conversation_insert_pos + offset, msg);
+    }
+
+    // Suffix: append at end
+    messages.extend(suffix);
 }
 
 fn tool_result_to_content(result: &ToolResult) -> String {

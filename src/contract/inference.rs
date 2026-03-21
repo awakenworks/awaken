@@ -1,5 +1,6 @@
 //! Inference response types and override configuration.
 
+use super::content::{ContentBlock, extract_text};
 use super::message::ToolCall;
 use serde::{Deserialize, Serialize};
 
@@ -36,8 +37,8 @@ pub struct TokenUsage {
 /// Result of stream collection used by runtime and plugin phase contracts.
 #[derive(Debug, Clone)]
 pub struct StreamResult {
-    /// Accumulated text content.
-    pub text: String,
+    /// Content blocks from the LLM response.
+    pub content: Vec<ContentBlock>,
     /// Collected tool calls.
     pub tool_calls: Vec<ToolCall>,
     /// Token usage from the LLM response.
@@ -50,6 +51,11 @@ impl StreamResult {
     /// Check if tool execution is needed.
     pub fn needs_tools(&self) -> bool {
         !self.tool_calls.is_empty()
+    }
+
+    /// Extract concatenated text from content blocks.
+    pub fn text(&self) -> String {
+        extract_text(&self.content)
     }
 }
 
@@ -348,7 +354,7 @@ mod tests {
     #[test]
     fn stream_result_needs_tools() {
         let with_tools = StreamResult {
-            text: String::new(),
+            content: vec![],
             tool_calls: vec![ToolCall::new("c1", "search", json!({}))],
             usage: None,
             stop_reason: Some(StopReason::ToolUse),
@@ -356,7 +362,7 @@ mod tests {
         assert!(with_tools.needs_tools());
 
         let without = StreamResult {
-            text: "hello".into(),
+            content: vec![ContentBlock::text("hello")],
             tool_calls: vec![],
             usage: None,
             stop_reason: Some(StopReason::EndTurn),
@@ -367,7 +373,7 @@ mod tests {
     #[test]
     fn llm_response_success_and_error() {
         let success = LLMResponse::success(StreamResult {
-            text: "hi".into(),
+            content: vec![ContentBlock::text("hi")],
             tool_calls: vec![],
             usage: Some(TokenUsage {
                 prompt_tokens: Some(10),

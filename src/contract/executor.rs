@@ -1,5 +1,6 @@
 //! LLM executor trait and tool execution strategy.
 
+use super::content::ContentBlock;
 use super::inference::{InferenceOverride, StreamResult};
 use super::message::Message;
 use super::tool::ToolDescriptor;
@@ -15,8 +16,8 @@ pub struct InferenceRequest {
     pub messages: Vec<Message>,
     /// Available tools.
     pub tools: Vec<ToolDescriptor>,
-    /// System prompt.
-    pub system_prompt: Option<String>,
+    /// System prompt content blocks. Empty means no system prompt.
+    pub system: Vec<ContentBlock>,
     /// Per-inference overrides (temperature, max_tokens, etc).
     pub overrides: Option<InferenceOverride>,
 }
@@ -83,7 +84,11 @@ mod tests {
             _request: InferenceRequest,
         ) -> Result<StreamResult, InferenceExecutionError> {
             Ok(StreamResult {
-                text: self.response_text.clone(),
+                content: if self.response_text.is_empty() {
+                    vec![]
+                } else {
+                    vec![ContentBlock::text(self.response_text.clone())]
+                },
                 tool_calls: self.tool_calls.clone(),
                 usage: Some(TokenUsage {
                     prompt_tokens: Some(100),
@@ -114,11 +119,11 @@ mod tests {
             model: "test-model".into(),
             messages: vec![Message::user("hi")],
             tools: vec![],
-            system_prompt: None,
+            system: vec![],
             overrides: None,
         };
         let result = llm.execute(request).await.unwrap();
-        assert_eq!(result.text, "Hello!");
+        assert_eq!(result.text(), "Hello!");
         assert!(!result.needs_tools());
         assert_eq!(result.stop_reason, Some(StopReason::EndTurn));
     }
@@ -133,7 +138,7 @@ mod tests {
             model: "test-model".into(),
             messages: vec![Message::user("search for rust")],
             tools: vec![ToolDescriptor::new("search", "search", "Web search")],
-            system_prompt: Some("You are helpful.".into()),
+            system: vec![ContentBlock::text("You are helpful.")],
             overrides: None,
         };
         let result = llm.execute(request).await.unwrap();
@@ -153,7 +158,7 @@ mod tests {
             model: "base-model".into(),
             messages: vec![],
             tools: vec![],
-            system_prompt: None,
+            system: vec![],
             overrides: Some(InferenceOverride {
                 model: Some("override-model".into()),
                 temperature: Some(0.7),
@@ -161,7 +166,7 @@ mod tests {
             }),
         };
         let result = llm.execute(request).await.unwrap();
-        assert_eq!(result.text, "ok");
+        assert_eq!(result.text(), "ok");
     }
 
     #[test]

@@ -6,6 +6,7 @@ use awaken::agent::loop_runner::{
     AgentRunResult, ResumeInput, build_agent_env, resume_agent_loop, run_agent_loop,
 };
 use awaken::agent::state::{RunLifecycle, RunLifecycleState, ToolCallStates};
+use awaken::contract::content::ContentBlock;
 use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::{NullEventSink, VecEventSink};
 use awaken::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
@@ -46,7 +47,7 @@ impl LlmExecutor for ScriptedLlm {
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             Ok(StreamResult {
-                text: "I have nothing more to say.".into(),
+                content: vec![ContentBlock::text("I have nothing more to say.")],
                 tool_calls: vec![],
                 usage: None,
                 stop_reason: Some(StopReason::EndTurn),
@@ -181,7 +182,7 @@ fn test_identity() -> RunIdentity {
 #[tokio::test]
 async fn single_step_natural_end() {
     let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
-        text: "Hello, world!".into(),
+        content: vec![ContentBlock::text("Hello, world!")],
         tool_calls: vec![],
         usage: Some(TokenUsage {
             prompt_tokens: Some(10),
@@ -224,13 +225,13 @@ async fn single_step_natural_end() {
 async fn tool_call_then_response() {
     let llm = Arc::new(ScriptedLlm::new(vec![
         StreamResult {
-            text: "Let me search.".into(),
+            content: vec![ContentBlock::text("Let me search.")],
             tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "hello"}))],
             usage: None,
             stop_reason: Some(StopReason::ToolUse),
         },
         StreamResult {
-            text: "The echo said: hello".into(),
+            content: vec![ContentBlock::text("The echo said: hello")],
             tool_calls: vec![],
             usage: None,
             stop_reason: Some(StopReason::EndTurn),
@@ -264,13 +265,13 @@ async fn tool_call_then_response() {
 async fn tool_call_state_machine_transitions() {
     let llm = Arc::new(ScriptedLlm::new(vec![
         StreamResult {
-            text: "".into(),
+            content: vec![],
             tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "hi"}))],
             usage: None,
             stop_reason: Some(StopReason::ToolUse),
         },
         StreamResult {
-            text: "Done.".into(),
+            content: vec![ContentBlock::text("Done.")],
             tool_calls: vec![],
             usage: None,
             stop_reason: Some(StopReason::EndTurn),
@@ -304,7 +305,7 @@ async fn tool_call_state_machine_transitions() {
 async fn multiple_tool_calls_in_one_step() {
     let llm = Arc::new(ScriptedLlm::new(vec![
         StreamResult {
-            text: "".into(),
+            content: vec![],
             tool_calls: vec![
                 ToolCall::new("c1", "echo", json!({"message": "first"})),
                 ToolCall::new("c2", "calc", json!({"result": 42})),
@@ -313,7 +314,7 @@ async fn multiple_tool_calls_in_one_step() {
             stop_reason: Some(StopReason::ToolUse),
         },
         StreamResult {
-            text: "Done.".into(),
+            content: vec![ContentBlock::text("Done.")],
             tool_calls: vec![],
             usage: None,
             stop_reason: Some(StopReason::EndTurn),
@@ -352,7 +353,7 @@ async fn max_rounds_exceeded() {
     let llm = Arc::new(ScriptedLlm::new(
         (0..5)
             .map(|i| StreamResult {
-                text: "".into(),
+                content: vec![],
                 tool_calls: vec![ToolCall::new(
                     format!("c{i}"),
                     "echo",
@@ -402,13 +403,13 @@ async fn max_rounds_exceeded() {
 async fn unknown_tool_returns_error_result_not_crash() {
     let llm = Arc::new(ScriptedLlm::new(vec![
         StreamResult {
-            text: "".into(),
+            content: vec![],
             tool_calls: vec![ToolCall::new("c1", "nonexistent", json!({}))],
             usage: None,
             stop_reason: Some(StopReason::ToolUse),
         },
         StreamResult {
-            text: "Sorry, that tool doesn't exist.".into(),
+            content: vec![ContentBlock::text("Sorry, that tool doesn't exist.")],
             tool_calls: vec![],
             usage: None,
             stop_reason: Some(StopReason::EndTurn),
@@ -451,13 +452,13 @@ async fn unknown_tool_returns_error_result_not_crash() {
 async fn failing_tool_produces_error_result_continues_loop() {
     let llm = Arc::new(ScriptedLlm::new(vec![
         StreamResult {
-            text: "".into(),
+            content: vec![],
             tool_calls: vec![ToolCall::new("c1", "fail", json!({}))],
             usage: None,
             stop_reason: Some(StopReason::ToolUse),
         },
         StreamResult {
-            text: "Tool failed, sorry.".into(),
+            content: vec![ContentBlock::text("Tool failed, sorry.")],
             tool_calls: vec![],
             usage: None,
             stop_reason: Some(StopReason::EndTurn),
@@ -487,7 +488,7 @@ async fn failing_tool_produces_error_result_continues_loop() {
 #[tokio::test]
 async fn events_have_correct_sequence_for_single_step() {
     let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
-        text: "Hi!".into(),
+        content: vec![ContentBlock::text("Hi!")],
         tool_calls: vec![],
         usage: None,
         stop_reason: Some(StopReason::EndTurn),
@@ -538,13 +539,13 @@ async fn events_have_correct_sequence_for_single_step() {
 async fn events_have_correct_sequence_with_tool_call() {
     let llm = Arc::new(ScriptedLlm::new(vec![
         StreamResult {
-            text: "".into(),
+            content: vec![],
             tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "x"}))],
             usage: None,
             stop_reason: Some(StopReason::ToolUse),
         },
         StreamResult {
-            text: "Done".into(),
+            content: vec![ContentBlock::text("Done")],
             tool_calls: vec![],
             usage: None,
             stop_reason: Some(StopReason::EndTurn),
@@ -604,7 +605,7 @@ async fn events_have_correct_sequence_with_tool_call() {
 #[tokio::test]
 async fn lifecycle_state_reflects_custom_run_id() {
     let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
-        text: "ok".into(),
+        content: vec![ContentBlock::text("ok")],
         tool_calls: vec![],
         usage: None,
         stop_reason: Some(StopReason::EndTurn),
@@ -670,7 +671,7 @@ async fn phase_hooks_fire_during_loop() {
     }
 
     let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
-        text: "done".into(),
+        content: vec![ContentBlock::text("done")],
         tool_calls: vec![],
         usage: None,
         stop_reason: Some(StopReason::EndTurn),
@@ -715,7 +716,7 @@ async fn phase_hooks_fire_during_loop() {
 
 fn make_tool_call_response(tool_name: &str, call_id: &str, args: Value) -> StreamResult {
     StreamResult {
-        text: String::new(),
+        content: vec![],
         tool_calls: vec![ToolCall::new(call_id, tool_name, args)],
         usage: None,
         stop_reason: Some(StopReason::ToolUse),

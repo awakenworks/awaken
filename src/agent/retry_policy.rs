@@ -155,6 +155,7 @@ impl LlmExecutor for RetryingExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contract::content::ContentBlock;
     use crate::contract::inference::{StopReason, TokenUsage};
     use crate::contract::message::Message;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -187,7 +188,7 @@ mod tests {
 
     fn ok_result() -> StreamResult {
         StreamResult {
-            text: "ok".into(),
+            content: vec![ContentBlock::text("ok")],
             tool_calls: vec![],
             usage: Some(TokenUsage {
                 prompt_tokens: Some(10),
@@ -204,7 +205,7 @@ mod tests {
             model: "primary-model".into(),
             messages: vec![Message::user("hello")],
             tools: vec![],
-            system_prompt: None,
+            system: vec![],
             overrides: None,
         }
     }

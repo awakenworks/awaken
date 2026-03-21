@@ -8,6 +8,7 @@ use awaken::agent::config::AgentConfig;
 use awaken::agent::executor::{ParallelToolExecutor, SequentialToolExecutor, ToolExecutor};
 use awaken::agent::loop_runner::{build_agent_env, run_agent_loop};
 use awaken::agent::state::{RunLifecycle, SetInferenceOverride, ToolCallStates};
+use awaken::contract::content::ContentBlock;
 use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::{NullEventSink, VecEventSink};
 use awaken::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
@@ -49,7 +50,7 @@ impl LlmExecutor for ScriptedLlm {
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             Ok(StreamResult {
-                text: "Nothing more.".into(),
+                content: vec![ContentBlock::text("Nothing more.")],
                 tool_calls: vec![],
                 usage: None,
                 stop_reason: Some(StopReason::EndTurn),
@@ -155,7 +156,7 @@ fn id() -> RunIdentity {
 
 fn tool_step(calls: Vec<ToolCall>) -> StreamResult {
     StreamResult {
-        text: "".into(),
+        content: vec![],
         tool_calls: calls,
         usage: None,
         stop_reason: Some(StopReason::ToolUse),
@@ -164,7 +165,7 @@ fn tool_step(calls: Vec<ToolCall>) -> StreamResult {
 
 fn text_step(text: &str) -> StreamResult {
     StreamResult {
-        text: text.into(),
+        content: vec![ContentBlock::text(text)],
         tool_calls: vec![],
         usage: None,
         stop_reason: Some(StopReason::EndTurn),
@@ -734,7 +735,7 @@ async fn profile_sections_available_in_loop_hooks() {
 async fn empty_tool_calls_treated_as_natural_end() {
     // LLM returns tool_calls = [] with ToolUse stop_reason (edge case)
     let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
-        text: "Just text.".into(),
+        content: vec![ContentBlock::text("Just text.")],
         tool_calls: vec![],
         usage: None,
         stop_reason: Some(StopReason::ToolUse), // misleading stop_reason
@@ -930,7 +931,7 @@ async fn before_inference_hook_override_reaches_request() {
         ) -> Result<StreamResult, InferenceExecutionError> {
             self.captured.lock().unwrap().push(req.overrides);
             Ok(StreamResult {
-                text: "done".into(),
+                content: vec![ContentBlock::text("done")],
                 tool_calls: vec![],
                 usage: None,
                 stop_reason: Some(StopReason::EndTurn),
@@ -1005,7 +1006,7 @@ async fn multiple_hooks_merge_inference_overrides_last_wins() {
         ) -> Result<StreamResult, InferenceExecutionError> {
             self.captured.lock().unwrap().push(req.overrides);
             Ok(StreamResult {
-                text: "done".into(),
+                content: vec![ContentBlock::text("done")],
                 tool_calls: vec![],
                 usage: None,
                 stop_reason: Some(StopReason::EndTurn),
@@ -1114,7 +1115,7 @@ async fn no_override_hook_leaves_overrides_none() {
         ) -> Result<StreamResult, InferenceExecutionError> {
             self.captured.lock().unwrap().push(req.overrides);
             Ok(StreamResult {
-                text: "done".into(),
+                content: vec![ContentBlock::text("done")],
                 tool_calls: vec![],
                 usage: None,
                 stop_reason: Some(StopReason::EndTurn),
@@ -1172,14 +1173,14 @@ async fn override_consumed_each_step_not_leaked() {
             // First call: return tool call to force a second step
             if call_idx == 0 {
                 Ok(StreamResult {
-                    text: "".into(),
+                    content: vec![],
                     tool_calls: vec![ToolCall::new("c1", "echo", json!({}))],
                     usage: None,
                     stop_reason: Some(StopReason::ToolUse),
                 })
             } else {
                 Ok(StreamResult {
-                    text: "done".into(),
+                    content: vec![ContentBlock::text("done")],
                     tool_calls: vec![],
                     usage: None,
                     stop_reason: Some(StopReason::EndTurn),
@@ -1258,5 +1259,232 @@ async fn override_consumed_each_step_not_leaked() {
     assert!(
         captured[1].is_none(),
         "second call should NOT have override (consumed)"
+    );
+}
+
+// ===========================================================================
+// CONTEXT MESSAGE INJECTION VIA ACTION
+// ===========================================================================
+
+#[tokio::test]
+async fn context_message_injected_into_request() {
+    use awaken::agent::state::AddContextMessage;
+    use awaken::contract::context_message::{ContextMessage, ContextMessageTarget};
+
+    // LLM that captures the messages it receives
+    struct CapturingLlm {
+        captured: Mutex<Vec<Vec<Message>>>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for CapturingLlm {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            self.captured.lock().unwrap().push(req.messages);
+            Ok(StreamResult {
+                content: vec![ContentBlock::text("done")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+            })
+        }
+        fn name(&self) -> &str {
+            "capturing"
+        }
+    }
+
+    // Plugin that injects a system context message and a suffix system message
+    struct ContextPlugin;
+    impl Plugin for ContextPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "context-plugin",
+            }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            struct Hook;
+            #[async_trait]
+            impl PhaseHook for Hook {
+                async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+                    let mut cmd = StateCommand::new();
+                    cmd.schedule_action::<AddContextMessage>(ContextMessage::system(
+                        "You are a helpful assistant",
+                    ))?;
+                    cmd.schedule_action::<AddContextMessage>(ContextMessage::suffix_system(
+                        "Remember: be concise",
+                    ))?;
+                    Ok(cmd)
+                }
+            }
+            r.register_phase_hook("context-plugin", Phase::BeforeInference, Hook)?;
+            Ok(())
+        }
+    }
+
+    let llm = Arc::new(CapturingLlm {
+        captured: Mutex::new(Vec::new()),
+    });
+    let agent = AgentConfig::new("test", "m", "sys", llm.clone());
+    let rt = make_runtime();
+
+    let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(ContextPlugin)];
+    let env = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+
+    let _result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &NullEventSink,
+        vec![Message::user("hello")],
+        id(),
+    )
+    .await
+    .unwrap();
+
+    let captured = llm.captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    let msgs = &captured[0];
+
+    // Expected order:
+    // [0] system prompt ("sys" from AgentConfig)
+    // [1] system context message ("You are a helpful assistant") — System target, after base
+    // [2] user message ("hello")
+    // [3] suffix system ("Remember: be concise") — SuffixSystem target, at end
+    assert!(
+        msgs.len() >= 4,
+        "should have at least 4 messages, got {}",
+        msgs.len()
+    );
+
+    // Base system prompt
+    assert_eq!(msgs[0].role, awaken::contract::message::Role::System);
+    assert_eq!(msgs[0].text(), "sys");
+
+    // Injected system context
+    assert_eq!(msgs[1].role, awaken::contract::message::Role::System);
+    assert_eq!(msgs[1].text(), "You are a helpful assistant");
+
+    // User message
+    assert_eq!(msgs[2].role, awaken::contract::message::Role::User);
+    assert_eq!(msgs[2].text(), "hello");
+
+    // Suffix system
+    let last = msgs.last().unwrap();
+    assert_eq!(last.role, awaken::contract::message::Role::System);
+    assert_eq!(last.text(), "Remember: be concise");
+}
+
+#[tokio::test]
+async fn context_messages_not_leaked_to_next_step() {
+    use awaken::agent::state::AddContextMessage;
+    use awaken::contract::context_message::ContextMessage;
+
+    struct CapturingLlm {
+        captured: Mutex<Vec<Vec<Message>>>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for CapturingLlm {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            let call_idx = self.captured.lock().unwrap().len();
+            self.captured.lock().unwrap().push(req.messages);
+            if call_idx == 0 {
+                // First call: return tool call to force second step
+                Ok(StreamResult {
+                    content: vec![],
+                    tool_calls: vec![ToolCall::new("c1", "echo", json!({}))],
+                    usage: None,
+                    stop_reason: Some(StopReason::ToolUse),
+                })
+            } else {
+                Ok(StreamResult {
+                    content: vec![ContentBlock::text("done")],
+                    tool_calls: vec![],
+                    usage: None,
+                    stop_reason: Some(StopReason::EndTurn),
+                })
+            }
+        }
+        fn name(&self) -> &str {
+            "capturing"
+        }
+    }
+
+    // Plugin that only injects on first step
+    struct OnceContextPlugin {
+        emitted: Arc<AtomicUsize>,
+    }
+    impl Plugin for OnceContextPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "once-context",
+            }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            struct Hook(Arc<AtomicUsize>);
+            #[async_trait]
+            impl PhaseHook for Hook {
+                async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+                    let mut cmd = StateCommand::new();
+                    if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                        cmd.schedule_action::<AddContextMessage>(ContextMessage::suffix_system(
+                            "first step only",
+                        ))?;
+                    }
+                    Ok(cmd)
+                }
+            }
+            r.register_phase_hook(
+                "once-context",
+                Phase::BeforeInference,
+                Hook(self.emitted.clone()),
+            )?;
+            Ok(())
+        }
+    }
+
+    let llm = Arc::new(CapturingLlm {
+        captured: Mutex::new(Vec::new()),
+    });
+    let agent = AgentConfig::new("test", "m", "sys", llm.clone()).with_tool(Arc::new(EchoTool));
+    let rt = make_runtime();
+
+    let emitted = Arc::new(AtomicUsize::new(0));
+    let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OnceContextPlugin {
+        emitted: emitted.clone(),
+    })];
+    let env = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
+
+    let _result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &NullEventSink,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
+
+    let captured = llm.captured.lock().unwrap();
+    assert_eq!(captured.len(), 2, "should have two inference calls");
+
+    // First call: should have the suffix context message
+    let first_msgs = &captured[0];
+    assert!(
+        first_msgs.iter().any(|m| m.text() == "first step only"),
+        "first call should have injected context message"
+    );
+
+    // Second call: should NOT have the context message (action consumed, not re-scheduled)
+    let second_msgs = &captured[1];
+    assert!(
+        !second_msgs.iter().any(|m| m.text() == "first step only"),
+        "second call should NOT have context message (not leaked)"
     );
 }

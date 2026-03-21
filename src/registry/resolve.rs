@@ -208,7 +208,7 @@ mod tests {
             _request: InferenceRequest,
         ) -> Result<StreamResult, InferenceExecutionError> {
             Ok(StreamResult {
-                text: String::new(),
+                content: vec![],
                 tool_calls: vec![],
                 usage: Some(TokenUsage::default()),
                 stop_reason: Some(StopReason::EndTurn),

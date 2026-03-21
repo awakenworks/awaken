@@ -180,6 +180,19 @@ impl StateKey for ToolCallStates {
 // Loop-consumed action specs
 // ---------------------------------------------------------------------------
 
+/// Action spec for injecting a context message into the prompt.
+///
+/// Scheduled by `BeforeInference` hooks via `cmd.schedule_action::<AddContextMessage>(...)`.
+/// The loop runner consumes all matching actions, groups by target, and inserts into
+/// the message list at the appropriate positions before building the `InferenceRequest`.
+pub struct AddContextMessage;
+
+impl crate::model::ScheduledActionSpec for AddContextMessage {
+    const KEY: &'static str = "runtime.add_context_message";
+    const PHASE: crate::model::Phase = crate::model::Phase::BeforeInference;
+    type Payload = crate::contract::context_message::ContextMessage;
+}
+
 /// Action spec for per-inference parameter overrides.
 ///
 /// Scheduled by `BeforeInference` hooks via `cmd.schedule_action::<SetInferenceOverride>(...)`.

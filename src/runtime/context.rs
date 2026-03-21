@@ -137,6 +137,7 @@ impl PhaseContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contract::content::ContentBlock;
     use crate::contract::identity::RunOrigin;
     use crate::contract::inference::{StopReason, StreamResult, TokenUsage};
     use crate::contract::tool::ToolResult;
@@ -235,7 +236,7 @@ mod tests {
     #[test]
     fn phase_context_with_llm_response() {
         let response = LLMResponse::success(StreamResult {
-            text: "hello".into(),
+            content: vec![ContentBlock::text("hello")],
             tool_calls: vec![],
             usage: Some(TokenUsage::default()),
             stop_reason: Some(StopReason::EndTurn),

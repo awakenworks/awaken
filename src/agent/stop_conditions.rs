@@ -303,7 +303,7 @@ impl StopConditionHook {
                     self.total_input_tokens.fetch_add(input, Ordering::SeqCst);
                     self.total_output_tokens.fetch_add(output, Ordering::SeqCst);
 
-                    last_response_text = stream_result.text.clone();
+                    last_response_text = stream_result.text();
                     last_tool_names = stream_result
                         .tool_calls
                         .iter()
@@ -408,6 +408,7 @@ impl Plugin for MaxRoundsPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contract::content::ContentBlock;
     use crate::contract::inference::{
         InferenceError, LLMResponse, StopReason, StreamResult, TokenUsage,
     };
@@ -704,7 +705,7 @@ mod tests {
 
     fn make_llm_response_with_tokens(input: i32, output: i32) -> LLMResponse {
         LLMResponse::success(StreamResult {
-            text: "response".into(),
+            content: vec![ContentBlock::text("response")],
             tool_calls: vec![],
             usage: Some(TokenUsage {
                 prompt_tokens: Some(input),
