@@ -38,4 +38,8 @@ pub enum StateError {
     UnknownEffectHandler { key: String },
     #[error("parallel merge conflict on exclusive key: {key}")]
     ParallelMergeConflict { key: String },
+    #[error("thread already has an active run: {thread_id}")]
+    ThreadAlreadyRunning { thread_id: String },
+    #[error("agent not found: {agent_id}")]
+    AgentNotFound { agent_id: String },
 }
