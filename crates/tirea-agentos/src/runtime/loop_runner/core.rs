@@ -257,16 +257,18 @@ pub(super) fn apply_context_messages_to_prompt(
 
     let mut prefix = Vec::new();
     let mut session = Vec::new();
+    let mut conversation = Vec::new();
     let mut suffix = Vec::new();
     let mut consumed_context_keys = Vec::new();
     for entry in filtered {
         if entry.consume_after_emit {
             consumed_context_keys.push(entry.key.clone());
         }
-        let msg = Message::system(entry.content);
+        let msg = entry.to_message();
         match entry.target {
             ContextMessageTarget::System => prefix.push(msg),
             ContextMessageTarget::Session => session.push(msg),
+            ContextMessageTarget::Conversation => conversation.push(msg),
             ContextMessageTarget::SuffixSystem => suffix.push(msg),
         }
     }
@@ -284,6 +286,14 @@ pub(super) fn apply_context_messages_to_prompt(
         messages.insert(session_insert_pos + offset, msg);
     }
 
+    let conversation_insert_pos = messages
+        .iter()
+        .take_while(|m| m.role == Role::System)
+        .count();
+    for (offset, msg) in conversation.into_iter().enumerate() {
+        messages.insert(conversation_insert_pos + offset, msg);
+    }
+
     messages.extend(suffix);
     consumed_context_keys
 }
@@ -294,7 +304,7 @@ fn normalize_context_messages(
     let mut seen = HashSet::new();
     let mut deduped = Vec::with_capacity(entries.len());
     for entry in entries.into_iter().rev() {
-        if seen.insert(entry.key.clone()) {
+        if !entry.should_throttle() || seen.insert(entry.key.clone()) {
             deduped.push(entry);
         }
     }
@@ -374,6 +384,10 @@ impl ContextThrottleTracker {
     ) -> Vec<tirea_contract::runtime::inference::ContextMessage> {
         let mut result = Vec::new();
         for entry in entries {
+            if !entry.should_throttle() {
+                result.push(entry);
+                continue;
+            }
             let content_hash = Self::hash_content(&entry.content);
             let should_inject = match self.last_injected.get(&entry.key) {
                 None => true,
@@ -736,7 +750,9 @@ mod tests {
     ) -> tirea_contract::runtime::inference::ContextMessage {
         tirea_contract::runtime::inference::ContextMessage {
             key: key.into(),
+            role: tirea_contract::thread::Role::System,
             content: content.into(),
+            visibility: tirea_contract::thread::Visibility::Internal,
             cooldown_turns: cooldown,
             target: tirea_contract::runtime::inference::ContextMessageTarget::System,
             consume_after_emit: false,
@@ -820,21 +836,27 @@ mod tests {
             vec![
                 ContextMessage {
                     key: "prefix".into(),
+                    role: tirea_contract::thread::Role::System,
                     content: "prefix".into(),
+                    visibility: tirea_contract::thread::Visibility::Internal,
                     cooldown_turns: 0,
                     target: ContextMessageTarget::System,
                     consume_after_emit: false,
                 },
                 ContextMessage {
                     key: "session".into(),
+                    role: tirea_contract::thread::Role::System,
                     content: "session".into(),
+                    visibility: tirea_contract::thread::Visibility::Internal,
                     cooldown_turns: 0,
                     target: ContextMessageTarget::Session,
                     consume_after_emit: false,
                 },
                 ContextMessage {
                     key: "suffix".into(),
+                    role: tirea_contract::thread::Role::System,
                     content: "suffix".into(),
+                    visibility: tirea_contract::thread::Visibility::Internal,
                     cooldown_turns: 0,
                     target: ContextMessageTarget::SuffixSystem,
                     consume_after_emit: false,
@@ -864,14 +886,18 @@ mod tests {
             vec![
                 ContextMessage {
                     key: "prefix".into(),
+                    role: tirea_contract::thread::Role::System,
                     content: "prefix".into(),
+                    visibility: tirea_contract::thread::Visibility::Internal,
                     cooldown_turns: 0,
                     target: ContextMessageTarget::System,
                     consume_after_emit: false,
                 },
                 ContextMessage {
                     key: "session".into(),
+                    role: tirea_contract::thread::Role::System,
                     content: "session".into(),
+                    visibility: tirea_contract::thread::Visibility::Internal,
                     cooldown_turns: 0,
                     target: ContextMessageTarget::Session,
                     consume_after_emit: false,
@@ -883,6 +909,40 @@ mod tests {
 
         let contents: Vec<_> = messages.iter().map(|m| m.content.as_str()).collect();
         assert_eq!(contents, vec!["prefix", "session", "hello"]);
+    }
+
+    #[test]
+    fn conversation_target_bypasses_throttle_and_preserves_role() {
+        use tirea_contract::runtime::inference::{ContextMessage, ContextMessageTarget};
+
+        let mut tracker = ContextThrottleTracker::new();
+        let mut messages = vec![Message::user("hello")];
+
+        let entry = ContextMessage {
+            key: "prompt_message".into(),
+            role: tirea_contract::thread::Role::Assistant,
+            content: "from prompt message".into(),
+            visibility: tirea_contract::thread::Visibility::All,
+            cooldown_turns: 999,
+            target: ContextMessageTarget::Conversation,
+            consume_after_emit: false,
+        };
+
+        let _ = apply_context_messages_to_prompt(
+            &mut messages,
+            &mut tracker,
+            vec![entry.clone()],
+            0,
+            false,
+        );
+        let _ =
+            apply_context_messages_to_prompt(&mut messages, &mut tracker, vec![entry], 1, false);
+
+        let conversation: Vec<_> = messages.iter().filter(|m| m.role != Role::System).collect();
+        assert_eq!(conversation.len(), 3);
+        assert_eq!(conversation[0].role, Role::Assistant);
+        assert_eq!(conversation[1].role, Role::Assistant);
+        assert_eq!(conversation[2].role, Role::User);
     }
 
     #[test]

@@ -1778,7 +1778,9 @@ impl AgentBehavior for TestPlugin {
         ActionSet::single(BeforeInferenceAction::AddContextMessage(
             tirea_contract::runtime::inference::ContextMessage {
                 key: format!("plugin_{}", self.0),
+                role: tirea_contract::thread::Role::System,
                 content: format!("<plugin id=\"{}\"/>", self.0),
+                visibility: tirea_contract::thread::Visibility::Internal,
                 cooldown_turns: 0,
                 target: Default::default(),
                 consume_after_emit: false,

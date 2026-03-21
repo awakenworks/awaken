@@ -12,7 +12,9 @@ use super::*;
 fn test_cm(key: &str, content: &str) -> crate::runtime::inference::ContextMessage {
     crate::runtime::inference::ContextMessage {
         key: key.into(),
+        role: crate::thread::Role::System,
         content: content.into(),
+        visibility: crate::thread::Visibility::Internal,
         cooldown_turns: 0,
         target: Default::default(),
         consume_after_emit: false,
@@ -94,7 +96,7 @@ fn test_step_context_reset() {
 
     ctx.inference.context_messages.push(test_cm("test", "test"));
     ctx.inference.session_context.push("test".into());
-    ctx.messaging.reminders.push("test".into());
+    ctx.messaging.add_system_reminder("test");
     ctx.flow.run_action = Some(RunAction::Terminate(TerminationReason::BehaviorRequested));
 
     ctx.reset();
@@ -102,7 +104,7 @@ fn test_step_context_reset() {
     assert!(ctx.inference.context_messages.is_empty());
     assert!(ctx.inference.session_context.is_empty());
     assert_eq!(ctx.inference.tools.len(), 3); // tools preserved
-    assert!(ctx.messaging.reminders.is_empty() && ctx.messaging.user_messages.is_empty());
+    assert!(ctx.messaging.messages.is_empty());
     assert!(ctx.flow.run_action.is_none());
     assert!(ctx.pending_patches.is_empty());
 }
@@ -200,10 +202,10 @@ fn test_reminder() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.messaging.reminders.push("Reminder 1".into());
-    ctx.messaging.reminders.push("Reminder 2".into());
+    ctx.messaging.add_system_reminder("Reminder 1");
+    ctx.messaging.add_system_reminder("Reminder 2");
 
-    assert_eq!(ctx.messaging.reminders.len(), 2);
+    assert_eq!(ctx.messaging.messages.len(), 2);
 }
 
 #[test]
@@ -211,10 +213,10 @@ fn test_clear_reminders() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.messaging.reminders.push("Reminder 1".into());
-    ctx.messaging.reminders.clear();
+    ctx.messaging.add_system_reminder("Reminder 1");
+    ctx.messaging.messages.clear();
 
-    assert!(ctx.messaging.reminders.is_empty());
+    assert!(ctx.messaging.messages.is_empty());
 }
 
 // =========================================================================
@@ -606,11 +608,11 @@ fn test_step_context_multiple_reminders() {
     let fix = TestFixture::new();
     let mut ctx = fix.step(vec![]);
 
-    ctx.messaging.reminders.push("Reminder 1".into());
-    ctx.messaging.reminders.push("Reminder 2".into());
-    ctx.messaging.reminders.push("Reminder 3".into());
+    ctx.messaging.add_system_reminder("Reminder 1");
+    ctx.messaging.add_system_reminder("Reminder 2");
+    ctx.messaging.add_system_reminder("Reminder 3");
 
-    assert_eq!(ctx.messaging.reminders.len(), 3);
+    assert_eq!(ctx.messaging.messages.len(), 3);
 }
 
 #[test]

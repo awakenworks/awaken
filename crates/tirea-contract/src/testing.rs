@@ -287,7 +287,9 @@ pub fn typed_context_message(
 ) -> BeforeInferenceAction {
     BeforeInferenceAction::AddContextMessage(crate::runtime::inference::ContextMessage {
         key: key.into(),
+        role: crate::thread::Role::System,
         content: content.into(),
+        visibility: crate::thread::Visibility::Internal,
         cooldown_turns: 0,
         target: Default::default(),
         consume_after_emit: false,
@@ -308,6 +310,12 @@ pub fn typed_system_reminder(text: impl Into<String>) -> AfterToolExecuteAction 
 
 pub fn typed_user_message(text: impl Into<String>) -> AfterToolExecuteAction {
     AfterToolExecuteAction::AddUserMessage(text.into())
+}
+
+pub fn typed_runtime_message(
+    message: crate::runtime::inference::ContextMessage,
+) -> AfterToolExecuteAction {
+    AfterToolExecuteAction::AddMessage(message)
 }
 
 pub fn typed_terminate_before(reason: TerminationReason) -> BeforeInferenceAction {
@@ -426,11 +434,18 @@ pub fn apply_after_tool_for_test(
 ) {
     for action in actions {
         match action {
+            AfterToolExecuteAction::AddMessage(message) => {
+                step.messaging.push(
+                    message
+                        .with_target(crate::runtime::inference::ContextMessageTarget::Conversation)
+                        .with_consume_after_emit(false),
+                );
+            }
             AfterToolExecuteAction::AddSystemReminder(text) => {
-                step.messaging.reminders.push(text);
+                step.messaging.add_system_reminder(text);
             }
             AfterToolExecuteAction::AddUserMessage(text) => {
-                step.messaging.user_messages.push(text);
+                step.messaging.add_user_message(text);
             }
             AfterToolExecuteAction::State(sa) => step.emit_state_action(sa),
         }

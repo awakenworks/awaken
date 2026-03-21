@@ -180,16 +180,27 @@ async fn test_skill_activation_effect_does_not_emit_user_messages() {
     let mut step = fixture.step(vec![]);
     for action in actions {
         match action {
+            tirea_contract::runtime::phase::AfterToolExecuteAction::AddMessage(message) => {
+                step.messaging.push(message);
+            }
             tirea_contract::runtime::phase::AfterToolExecuteAction::AddSystemReminder(text) => {
-                step.messaging.reminders.push(text);
+                step.messaging.add_system_reminder(text);
             }
             tirea_contract::runtime::phase::AfterToolExecuteAction::AddUserMessage(text) => {
-                step.messaging.user_messages.push(text);
+                step.messaging.add_user_message(text);
             }
             tirea_contract::runtime::phase::AfterToolExecuteAction::State(_) => {}
         }
     }
-    let user_messages = step.messaging.user_messages.clone();
+    let user_messages: Vec<_> = step
+        .messaging
+        .messages
+        .iter()
+        .filter(|m| {
+            m.target == tirea_contract::runtime::inference::ContextMessageTarget::Conversation
+                && m.role == tirea_contract::thread::Role::User
+        })
+        .collect();
     assert!(user_messages.is_empty());
 }
 
@@ -511,16 +522,27 @@ async fn test_skill_activation_effect_keeps_skill_instructions_hidden() {
     let mut step = fixture.step(vec![]);
     for action in actions {
         match action {
+            tirea_contract::runtime::phase::AfterToolExecuteAction::AddMessage(message) => {
+                step.messaging.push(message);
+            }
             tirea_contract::runtime::phase::AfterToolExecuteAction::AddSystemReminder(text) => {
-                step.messaging.reminders.push(text);
+                step.messaging.add_system_reminder(text);
             }
             tirea_contract::runtime::phase::AfterToolExecuteAction::AddUserMessage(text) => {
-                step.messaging.user_messages.push(text);
+                step.messaging.add_user_message(text);
             }
             tirea_contract::runtime::phase::AfterToolExecuteAction::State(_) => {}
         }
     }
-    let user_messages = step.messaging.user_messages.clone();
+    let user_messages: Vec<_> = step
+        .messaging
+        .messages
+        .iter()
+        .filter(|m| {
+            m.target == tirea_contract::runtime::inference::ContextMessageTarget::Conversation
+                && m.role == tirea_contract::thread::Role::User
+        })
+        .collect();
     assert!(user_messages.is_empty());
 }
 

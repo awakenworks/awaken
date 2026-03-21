@@ -164,6 +164,7 @@ mod tests {
             },
             outcome: ToolCallOutcome::Succeeded,
             suspended_call: None,
+            messages: Vec::new(),
             reminders: Vec::new(),
             user_messages: Vec::new(),
             pending_patches,
