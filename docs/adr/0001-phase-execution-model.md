@@ -8,6 +8,84 @@
 
 We evaluated two execution models: pure queue-based (plugins schedule actions externally, runtime consumes per phase) and pure hook-return (plugins return typed action sets per phase, runtime matches directly). Neither alone is sufficient — queue lacks plugin autonomy, hooks lack extensibility and convergence.
 
+## Architecture Invariants
+
+The system has exactly four mechanisms. Every plugin interaction, every control flow decision, and every external operation must use one of them. No mechanism may be invented that circumvents these four.
+
+### State: persistent observable data
+
+State is the single source of truth for all shared data. Values stored via `StateKey` persist across phases and steps until explicitly modified by a reducer. State is **never used as a transient queue** — if a value is written only to be read once and cleared, it should be an Action instead.
+
+Invariants:
+
+- All state mutations go through `StateCommand.update::<K>(update)` → `MutationBatch` → `StateStore.commit()`.
+- Reads always go through immutable `Snapshot` — no mutable reference to the live store is exposed.
+- Snapshots are `Arc<StateMap>`: multiple readers (hooks, action handlers) can hold snapshots without blocking writers.
+- Each `StateKey` declares a `MergeStrategy` (`Exclusive` or `Commutative`) that governs how concurrent writes to the same key are reconciled.
+- Merge is deterministic: given the same set of `StateCommand`s and the same strategy function, `merge_parallel` always produces the same result. This is the foundation for replay safety.
+- During GATHER, all hooks see the **same frozen snapshot**. No hook can observe another hook's writes within the same phase. This snapshot isolation eliminates read-write dependencies between concurrent hooks and is the correctness prerequisite for auto-fallback.
+- State is not a message queue. The write-read-clear pattern violates state semantics. If something needs to be consumed exactly once, use an Action.
+
+### Action: deferred one-shot work
+
+Actions are the mechanism for scheduling work at a specific phase. They are enqueued via `StateCommand.schedule_action::<A>(payload)` and stored in the `PendingScheduledActions` queue (itself a `StateKey`). Each action carries a `phase` field that determines when it becomes eligible for processing.
+
+There are two classes of actions, distinguished by whether a handler is registered:
+
+- **Handler-consumed actions**: A `TypedScheduledActionHandler` is registered via `PluginRegistrar`. During the EXECUTE stage of the target phase, the runtime dequeues matching actions, calls their handlers, commits the resulting `StateCommand`, and removes the action from the queue. Handlers may have side effects (I/O, tokens, external calls).
+- **Loop-consumed actions**: No handler is registered. EXECUTE skips these actions — they remain in the queue. The loop runner reads and removes them at a specific point in its execution path (e.g., before building `InferenceRequest`). This is for operations that require loop-runner-local context (message assembly, request construction) that action handlers cannot access.
+
+Invariants:
+
+- EXECUTE only processes actions that have a registered handler AND match the current phase. Unhandled actions stay in the queue.
+- Actions are consumed exactly once. After processing, the action is removed from `PendingScheduledActions` (either by the EXECUTE stage or by the loop runner).
+- The convergence loop terminates when no processable actions remain for the current phase, or after `max_rounds` (default 16).
+- Action handlers return `StateCommand`, which can contain further state mutations, new actions, and effects. This enables action chaining within a phase.
+
+Current loop-consumed action types:
+
+| Action | Consumed when | Purpose |
+|--------|--------------|---------|
+| `SetInferenceOverride` | Before building `InferenceRequest` | Per-inference model/parameter overrides |
+
+### Effect: fire-and-forget external I/O
+
+Effects are for irreversible external operations where the system does not need to observe the result. They are emitted via `StateCommand.emit::<E>(payload)` and dispatched immediately after each commit, inline within `submit_command`.
+
+Invariants:
+
+- Effect handlers are **terminal**: they do not return `StateCommand`, do not produce new actions, and do not produce new effects. This prevents feedback loops through the effect path.
+- Effect handlers observe the **post-commit snapshot** — they see the state after the commit that triggered their dispatch.
+- The core framework defines **no built-in effect types**. All effects are plugin-defined via the `EffectSpec` trait. This keeps the core free of domain-specific concerns.
+- Effects are NOT for control flow. Terminate, suspend, block, and similar signals are state mutations (via `RunLifecycle`), not effects. Using effects for control flow would reintroduce side channels.
+- Effects are NOT for data that the loop runner needs to read back. If the loop needs to observe the result, use State or Action instead.
+
+### State machines: lifecycle control
+
+Run and tool-call lifecycles are modeled as `StateKey`s with well-defined state machines. The loop runner checks these at phase boundaries to make control flow decisions.
+
+**RunLifecycle** (`__runtime.run_lifecycle`):
+
+```
+Running ←→ Waiting → Done
+```
+
+- `Running`: actively executing steps.
+- `Waiting`: suspended, awaiting external decisions (tool approval, user input).
+- `Done`: terminal, with a `done_reason` string encoding the termination cause.
+
+The loop runner checks `RunLifecycle.status` after every phase. If status is no longer `Running`, the loop breaks with a `TerminationReason` reconstructed from `done_reason`. Stop condition plugins trigger termination by writing `RunLifecycleUpdate::Done` via `StateCommand` — no special effect or flag needed.
+
+**ToolCallStates** (`__runtime.tool_call_states`):
+
+```
+New → Running → Succeeded / Failed
+                → Suspended → Resumed → Running (re-execute)
+                              → Cancelled
+```
+
+Per-tool-call lifecycle within a step. Cleared at step boundaries via `ToolCallStatesUpdate::Clear`.
+
 ## Decision
 
 Each phase executes in two stages:
@@ -22,12 +100,10 @@ GATHER  — run hooks concurrently against the same frozen snapshot;
           effects: dispatched after the merged commit
 
 EXECUTE — convergence loop (max 16 rounds)
-          dequeue all actions matching this phase
-          run handlers concurrently against the same frozen snapshot
-          merge commands by MergeStrategy
-          on Exclusive conflict: hard error (no auto-retry)
-          commit once per round, enqueue new actions
-          loop until queue empty or max_rounds exceeded
+          dequeue actions matching this phase that have registered handlers
+          run handlers, commit results, enqueue new actions
+          actions without handlers remain in queue (for loop consumption)
+          loop until no processable actions remain or max_rounds exceeded
 ```
 
 ### GATHER: parallel hooks with conflict auto-fallback
@@ -42,15 +118,9 @@ On Exclusive conflict, the runtime automatically falls back: the conflicting hoo
 
 This means plugin authors never need to think about scheduling. Marking a `StateKey` as `Exclusive` does not sacrifice parallelism — it only means the runtime will serialize if contention actually occurs (which is rare in practice when hooks target different keys).
 
-### EXECUTE: parallel actions with merge-or-fail
+### EXECUTE: handler-consumed actions with merge-or-fail
 
-Currently EXECUTE processes actions serially. The target design parallelizes same-phase actions:
-
-1. Dequeue all actions matching the current phase.
-2. Run their handlers concurrently against the same frozen snapshot.
-3. Merge resulting `StateCommand`s via `MergeStrategy`.
-4. On success: commit once, enqueue any new actions, next round.
-5. On Exclusive conflict: **hard error** — no automatic retry.
+EXECUTE processes only actions that match the current phase **and** have a registered handler. Actions without handlers are left in the queue for the loop runner to consume at the appropriate time.
 
 Unlike hooks, scheduled action handlers are not constrained to be pure functions. `TypedScheduledActionHandler::handle_typed` may perform external I/O, generate one-time tokens, or trigger side effects. Automatic retry would risk duplicating these effects. Therefore conflicts in EXECUTE are treated as errors, surfaced to the caller.
 
@@ -58,35 +128,23 @@ Future extension: if a handler is known to be replay-safe (pure, idempotent), a 
 
 ### Effect dispatch
 
-Both GATHER and EXECUTE produce effects via `StateCommand`. Effects are dispatched immediately after each commit (inline within `submit_command`), not deferred. During GATHER there is one merged commit, so effect handlers observe the post-merge snapshot. Effect handlers are terminal — they do not produce new actions or effects. This separation prevents feedback loops through the effect path.
-
-Effects are reserved for true fire-and-forget external I/O (e.g. `PublishJson`). Control flow signals (terminate, suspend, block) and per-inference configuration (inference overrides) are modeled as `StateKey` mutations, not effects. The loop runner reads state at phase boundaries to make control flow decisions. This eliminates side channels (`TerminationFlag`, collectors) and keeps all observable state in the `StateStore`.
+Both GATHER and EXECUTE produce effects via `StateCommand`. Effects are dispatched immediately after each commit (inline within `submit_command`), not deferred. During GATHER there is one merged commit, so effect handlers observe the post-merge snapshot. Effect handlers are terminal — they do not produce new actions or effects.
 
 ### Phase-scoped consumption
 
-`ScheduledAction` carries a `phase` field. EXECUTE only dequeues actions matching the current phase; others remain queued. Cross-phase communication prefers state keys over cross-phase action scheduling.
+`ScheduledAction` carries a `phase` field. EXECUTE only dequeues actions matching the current phase (and having handlers); others remain queued. Cross-phase communication prefers state keys over cross-phase action scheduling.
 
 ### ToolCall parallelism (deferred)
 
 Tool calls involve external resources (files, network, git worktrees) whose conflicts are not captured by `StateKey` merge strategies. Parallelizing tool execution requires a resource/object declaration mechanism beyond `MergeStrategy`. This is out of scope for the current design; tool calls remain governed by the execution mode in ADR-0007.
 
-## Incremental scope
-
-Guiding principle: maximize parallelism on pure-data paths first; stay conservative on side-effectful paths.
-
-- **GATHER Exclusive auto-fallback** — pure-data path, no new concepts for plugin authors.
-- **InferenceOverride via StateKey** — `BeforeInference` hooks write to an override key; `loop_runner` reads and applies to `InferenceRequest`.
-- **CancellationToken** — cooperative cancellation through `PhaseContext`, `ToolCallContext`, `InferenceRequest`; `LlmExecutor` and `Tool` check token.
-- **InferenceRequestTransform** — evaluate whether `BeforeInference` hooks + `StateKey` suffice or a dedicated transform pipeline is needed.
-- **EXECUTE parallel actions** — frozen-snapshot parallel + merge-or-fail; no auto-retry. Optional `replay_safe` marker later.
-- **ToolCall parallelism** — requires resource/object declaration beyond `MergeStrategy`; deferred.
-
 ## Implementation Status
 
 - GATHER parallel hooks: implemented
 - GATHER Exclusive auto-fallback: implemented
-- InferenceOverride wiring: implemented via `InferenceOverrides` StateKey
-- State-driven termination: implemented (replaces `TerminationFlag` + `RuntimeEffect::Terminate`)
+- State-driven termination via RunLifecycle: implemented
+- InferenceOverride via loop-consumed action: implemented
+- RuntimeEffect enum: deleted (all variants replaced by State/Action)
 - CancellationToken: not implemented
 - EXECUTE parallel actions: not implemented (currently serial)
 
@@ -98,3 +156,4 @@ Guiding principle: maximize parallelism on pure-data paths first; stay conservat
 - Plugin authors only interact with `MergeStrategy` on `StateKey`; scheduling is fully automated by the runtime
 - GATHER auto-fallback maximizes parallelism without sacrificing correctness for hooks
 - EXECUTE merge-or-fail is conservative: no silent re-execution of side-effectful handlers
+- Four mechanisms (State, Action, Effect, State Machine) cover all interaction patterns; no side channels needed
