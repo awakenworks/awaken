@@ -36,6 +36,9 @@ pub struct ToolResult {
     pub data: Value,
     /// Optional message.
     pub message: Option<String>,
+    /// Optional suspension ticket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspension: Option<Box<crate::contract::suspension::SuspendTicket>>,
 }
 
 impl ToolResult {
@@ -46,6 +49,8 @@ impl ToolResult {
             status: ToolStatus::Success,
             data: data.into(),
             message: None,
+
+            suspension: None,
         }
     }
 
@@ -60,6 +65,8 @@ impl ToolResult {
             status: ToolStatus::Success,
             data: data.into(),
             message: Some(message.into()),
+
+            suspension: None,
         }
     }
 
@@ -70,6 +77,8 @@ impl ToolResult {
             status: ToolStatus::Error,
             data: Value::Null,
             message: Some(message.into()),
+
+            suspension: None,
         }
     }
 
@@ -91,6 +100,8 @@ impl ToolResult {
                 }
             }),
             message: Some(format!("[{code}] {message}")),
+
+            suspension: None,
         }
     }
 
@@ -101,6 +112,24 @@ impl ToolResult {
             status: ToolStatus::Pending,
             data: Value::Null,
             message: Some(message.into()),
+
+            suspension: None,
+        }
+    }
+
+    /// Create a suspended result with a suspension ticket.
+    pub fn suspended_with(
+        tool_name: impl Into<String>,
+        message: impl Into<String>,
+        ticket: crate::contract::suspension::SuspendTicket,
+    ) -> Self {
+        Self {
+            tool_name: tool_name.into(),
+            status: ToolStatus::Pending,
+            data: Value::Null,
+            message: Some(message.into()),
+
+            suspension: Some(Box::new(ticket)),
         }
     }
 
@@ -115,6 +144,8 @@ impl ToolResult {
             status: ToolStatus::Warning,
             data: data.into(),
             message: Some(message.into()),
+
+            suspension: None,
         }
     }
 

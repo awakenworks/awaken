@@ -53,9 +53,35 @@ pub enum AgentEvent {
     /// Tool call completed.
     ToolCallDone {
         id: String,
+        message_id: String,
         result: ToolResult,
         outcome: ToolCallOutcome,
     },
+
+    /// Encrypted reasoning delta (opaque token).
+    ReasoningEncryptedValue { encrypted_value: String },
+
+    /// Snapshot of all messages in the thread.
+    MessagesSnapshot { messages: Vec<Value> },
+
+    /// Activity state snapshot (e.g. tool progress).
+    ActivitySnapshot {
+        message_id: String,
+        activity_type: String,
+        content: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        replace: Option<bool>,
+    },
+
+    /// Incremental activity update.
+    ActivityDelta {
+        message_id: String,
+        activity_type: String,
+        patch: Vec<Value>,
+    },
+
+    /// Tool call resumed from suspension.
+    ToolCallResumed { target_id: String, result: Value },
 
     /// Step started.
     StepStart {
@@ -199,6 +225,7 @@ mod tests {
     fn tool_call_done_serde_roundtrip() {
         let event = AgentEvent::ToolCallDone {
             id: "c1".into(),
+            message_id: "m1".into(),
             result: ToolResult::success("calc", json!(42)),
             outcome: ToolCallOutcome::Succeeded,
         };
@@ -348,8 +375,30 @@ mod tests {
             },
             AgentEvent::ToolCallDone {
                 id: "c".into(),
+                message_id: "m".into(),
                 result: ToolResult::success("t", json!(null)),
                 outcome: ToolCallOutcome::Succeeded,
+            },
+            AgentEvent::ReasoningEncryptedValue {
+                encrypted_value: "enc".into(),
+            },
+            AgentEvent::MessagesSnapshot {
+                messages: vec![json!({"role": "user"})],
+            },
+            AgentEvent::ActivitySnapshot {
+                message_id: "m".into(),
+                activity_type: "tool".into(),
+                content: json!({}),
+                replace: None,
+            },
+            AgentEvent::ActivityDelta {
+                message_id: "m".into(),
+                activity_type: "tool".into(),
+                patch: vec![json!({"op": "add"})],
+            },
+            AgentEvent::ToolCallResumed {
+                target_id: "c".into(),
+                result: json!({}),
             },
             AgentEvent::StepStart {
                 message_id: "m".into(),
@@ -373,6 +422,100 @@ mod tests {
         for event in events {
             let json = serde_json::to_string(&event).unwrap();
             let _parsed: AgentEvent = serde_json::from_str(&json).unwrap();
+        }
+    }
+
+    #[test]
+    fn reasoning_encrypted_value_serde_roundtrip() {
+        let event = AgentEvent::ReasoningEncryptedValue {
+            encrypted_value: "opaque-token-abc".into(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"event_type\":\"reasoning_encrypted_value\""));
+        let parsed: AgentEvent = serde_json::from_str(&json).unwrap();
+        assert!(
+            matches!(parsed, AgentEvent::ReasoningEncryptedValue { encrypted_value } if encrypted_value == "opaque-token-abc")
+        );
+    }
+
+    #[test]
+    fn messages_snapshot_serde_roundtrip() {
+        let event = AgentEvent::MessagesSnapshot {
+            messages: vec![json!({"role": "user", "content": "hi"})],
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: AgentEvent = serde_json::from_str(&json).unwrap();
+        if let AgentEvent::MessagesSnapshot { messages } = parsed {
+            assert_eq!(messages.len(), 1);
+            assert_eq!(messages[0]["role"], "user");
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn activity_snapshot_serde_roundtrip() {
+        let event = AgentEvent::ActivitySnapshot {
+            message_id: "m1".into(),
+            activity_type: "tool_progress".into(),
+            content: json!({"percent": 50}),
+            replace: Some(true),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: AgentEvent = serde_json::from_str(&json).unwrap();
+        if let AgentEvent::ActivitySnapshot {
+            message_id,
+            activity_type,
+            content,
+            replace,
+        } = parsed
+        {
+            assert_eq!(message_id, "m1");
+            assert_eq!(activity_type, "tool_progress");
+            assert_eq!(content["percent"], 50);
+            assert_eq!(replace, Some(true));
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn activity_delta_serde_roundtrip() {
+        let event = AgentEvent::ActivityDelta {
+            message_id: "m1".into(),
+            activity_type: "tool_progress".into(),
+            patch: vec![json!({"op": "replace", "path": "/percent", "value": 75})],
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: AgentEvent = serde_json::from_str(&json).unwrap();
+        if let AgentEvent::ActivityDelta {
+            message_id,
+            activity_type,
+            patch,
+        } = parsed
+        {
+            assert_eq!(message_id, "m1");
+            assert_eq!(activity_type, "tool_progress");
+            assert_eq!(patch.len(), 1);
+            assert_eq!(patch[0]["op"], "replace");
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn tool_call_resumed_serde_roundtrip() {
+        let event = AgentEvent::ToolCallResumed {
+            target_id: "c1".into(),
+            result: json!({"approved": true}),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: AgentEvent = serde_json::from_str(&json).unwrap();
+        if let AgentEvent::ToolCallResumed { target_id, result } = parsed {
+            assert_eq!(target_id, "c1");
+            assert_eq!(result["approved"], true);
+        } else {
+            panic!("wrong variant");
         }
     }
 }

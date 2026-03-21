@@ -29,6 +29,8 @@ pub struct TokenUsage {
     pub cache_read_tokens: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_creation_tokens: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_tokens: Option<i32>,
 }
 
 /// Result of stream collection used by runtime and plugin phase contracts.

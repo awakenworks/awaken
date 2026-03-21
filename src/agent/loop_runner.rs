@@ -355,6 +355,7 @@ pub async fn run_agent_loop(
 
             sink.emit(AgentEvent::ToolCallDone {
                 id: call.id.clone(),
+                message_id: String::new(),
                 result: tool_result.clone(),
                 outcome: exec_result.outcome,
             })
