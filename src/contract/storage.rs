@@ -46,6 +46,14 @@ pub trait ThreadStore: Send + Sync {
         messages: &[Message],
     ) -> Result<(), StorageError>;
 
+    /// Replace all messages in a thread. Used at checkpoints (step end, run end)
+    /// to persist compacted message history.
+    async fn replace_messages(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+    ) -> Result<(), StorageError>;
+
     /// Delete a thread and all its messages.
     async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError>;
 }

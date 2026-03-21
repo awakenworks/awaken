@@ -84,6 +84,7 @@ pub async fn run_agent_loop(
     runtime: &PhaseRuntime,
     env: &ExecutionEnv,
     sink: &dyn EventSink,
+    thread_store: Option<&dyn crate::contract::storage::ThreadStore>,
     initial_messages: Vec<Message>,
     run_identity: RunIdentity,
 ) -> Result<AgentRunResult, AgentLoopError> {
@@ -221,7 +222,16 @@ pub async fn run_agent_loop(
 
         if !stream_result.needs_tools() {
             messages.push(Arc::new(Message::assistant(&stream_result.text())));
-            complete_step(store, runtime, env, sink, &messages, &run_identity).await?;
+            complete_step(
+                store,
+                runtime,
+                env,
+                sink,
+                thread_store,
+                &messages,
+                &run_identity,
+            )
+            .await?;
             break TerminationReason::NaturalEnd;
         }
 
@@ -383,11 +393,29 @@ pub async fn run_agent_loop(
                     updated_at: now_ms(),
                 },
             )?;
-            complete_step(store, runtime, env, sink, &messages, &run_identity).await?;
+            complete_step(
+                store,
+                runtime,
+                env,
+                sink,
+                thread_store,
+                &messages,
+                &run_identity,
+            )
+            .await?;
             break TerminationReason::Suspended;
         }
 
-        complete_step(store, runtime, env, sink, &messages, &run_identity).await?;
+        complete_step(
+            store,
+            runtime,
+            env,
+            sink,
+            thread_store,
+            &messages,
+            &run_identity,
+        )
+        .await?;
         if let Some(reason) = check_termination(store) {
             break reason;
         }
@@ -451,6 +479,7 @@ pub async fn resume_agent_loop(
     runtime: &PhaseRuntime,
     env: &ExecutionEnv,
     sink: &dyn EventSink,
+    thread_store: Option<&dyn crate::contract::storage::ThreadStore>,
     messages: Vec<Message>,
     run_identity: RunIdentity,
     input: ResumeInput,
@@ -624,6 +653,7 @@ pub async fn resume_agent_loop(
         runtime,
         env,
         sink,
+        thread_store,
         resume_messages.into_iter().map(|m| (*m).clone()).collect(),
         run_identity,
     )
@@ -657,6 +687,7 @@ async fn complete_step(
     runtime: &PhaseRuntime,
     env: &ExecutionEnv,
     sink: &dyn EventSink,
+    thread_store: Option<&dyn crate::contract::storage::ThreadStore>,
     messages: &[Arc<Message>],
     run_identity: &RunIdentity,
 ) -> Result<(), AgentLoopError> {
@@ -670,6 +701,13 @@ async fn complete_step(
         .with_run_identity(run_identity.clone())
         .with_messages(messages.to_vec());
     runtime.run_phase_with_context(env, ctx).await?;
+
+    // Checkpoint: persist current messages (includes compaction if it happened)
+    if let Some(ts) = thread_store {
+        let msgs: Vec<Message> = messages.iter().map(|m| (**m).clone()).collect();
+        let _ = ts.replace_messages(&run_identity.thread_id, &msgs).await;
+    }
+
     sink.emit(AgentEvent::StepEnd).await;
     Ok(())
 }

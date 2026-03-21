@@ -194,9 +194,17 @@ async fn sequential_partial_failure_both_produce_results() {
     let rt = make_runtime();
     let env = build_agent_env(&[], &agent).unwrap();
     let sink = VecEventSink::new();
-    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &sink,
+        None,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     let events = sink.take();
     let tool_dones: Vec<_> = events
@@ -226,9 +234,17 @@ async fn sequential_stops_after_first_suspension_in_loop() {
     let rt = make_runtime();
     let env = build_agent_env(&[], &agent).unwrap();
     let sink = VecEventSink::new();
-    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &sink,
+        None,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(result.termination, TerminationReason::Suspended);
     let lifecycle = rt.store().read::<RunLifecycle>().unwrap();
@@ -262,9 +278,17 @@ async fn parallel_both_tools_execute() {
     let rt = make_runtime();
     let env = build_agent_env(&[], &agent).unwrap();
     let sink = VecEventSink::new();
-    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &sink,
+        None,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     let events = sink.take();
     let tool_dones: Vec<_> = events
@@ -291,9 +315,17 @@ async fn parallel_partial_failure() {
     let rt = make_runtime();
     let env = build_agent_env(&[], &agent).unwrap();
     let sink = VecEventSink::new();
-    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &sink,
+        None,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     let events = sink.take();
     let outcomes: Vec<_> = events
@@ -326,9 +358,17 @@ async fn parallel_does_not_stop_on_suspension() {
     let rt = make_runtime();
     let env = build_agent_env(&[], &agent).unwrap();
     let sink = VecEventSink::new();
-    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &sink,
+        None,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     // Both tools executed (parallel doesn't stop on suspension)
     assert_eq!(
@@ -361,9 +401,17 @@ async fn suspension_sets_run_to_waiting() {
     let rt = make_runtime();
     let env = build_agent_env(&[], &agent).unwrap();
     let sink = NullEventSink;
-    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &sink,
+        None,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(result.termination, TerminationReason::Suspended);
     let lifecycle = rt.store().read::<RunLifecycle>().unwrap();
@@ -381,9 +429,17 @@ async fn suspension_tool_call_state_is_suspended() {
     let rt = make_runtime();
     let env = build_agent_env(&[], &agent).unwrap();
     let sink = NullEventSink;
-    run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &sink,
+        None,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     let tool_states = rt.store().read::<ToolCallStates>().unwrap_or_default();
     let c1 = tool_states.calls.get("c1").expect("c1 should exist");
@@ -467,9 +523,17 @@ async fn hook_state_mutation_is_not_visible_to_sibling_hook() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![hook_plugin];
     let env = build_agent_env(&user_plugins, &agent).unwrap();
     let sink = NullEventSink;
-    run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("hi")], id())
-        .await
-        .unwrap();
+    run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &sink,
+        None,
+        vec![Message::user("hi")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(*observed.lock().unwrap(), Some(0));
     assert_eq!(rt.store().read::<TestCounter>(), Some(1));
@@ -498,9 +562,17 @@ async fn max_rounds_precise_count() {
     let rt = make_runtime();
     let env = build_agent_env(&[], &agent).unwrap();
     let sink = NullEventSink;
-    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &sink,
+        None,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     assert!(
         matches!(result.termination, TerminationReason::Stopped(ref s) if s.code == "max_rounds")
@@ -550,9 +622,17 @@ async fn terminate_via_state_in_after_inference_hook() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(TermHookPlugin)];
     let env = build_agent_env(&user_plugins, &agent).unwrap();
     let sink = NullEventSink;
-    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &sink,
+        None,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     assert!(
         matches!(result.termination, TerminationReason::Stopped(ref s) if s.code == "custom_stop")
@@ -600,9 +680,17 @@ async fn phase_sequence_with_tool_call() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(LogPlugin(phases.clone()))];
     let env = build_agent_env(&user_plugins, &agent).unwrap();
     let sink = NullEventSink;
-    run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &sink,
+        None,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     let p = phases.lock().unwrap();
     assert_eq!(p[0], Phase::RunStart);
@@ -656,9 +744,17 @@ async fn phase_sequence_on_suspension() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(LogPlugin(phases.clone()))];
     let env = build_agent_env(&user_plugins, &agent).unwrap();
     let sink = NullEventSink;
-    run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &sink,
+        None,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     let p = phases.lock().unwrap();
     assert_eq!(p[0], Phase::RunStart);
@@ -747,9 +843,17 @@ async fn empty_tool_calls_treated_as_natural_end() {
     let rt = make_runtime();
     let env = build_agent_env(&[], &agent).unwrap();
     let sink = NullEventSink;
-    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("hi")], id())
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &sink,
+        None,
+        vec![Message::user("hi")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(result.termination, TerminationReason::NaturalEnd);
     assert_eq!(result.response, "Just text.");
@@ -774,9 +878,17 @@ async fn multiple_steps_accumulate_messages() {
     let rt = make_runtime();
     let env = build_agent_env(&[], &agent).unwrap();
     let sink = NullEventSink;
-    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &sink,
+        None,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(result.steps, 3);
     assert_eq!(result.response, "Final answer.");
@@ -804,6 +916,7 @@ async fn run_lifecycle_run_id_matches_identity() {
         &rt,
         &env,
         &sink,
+        None,
         vec![Message::user("hi")],
         custom_id,
     )
@@ -832,9 +945,17 @@ async fn batch_approval_both_tools_execute_in_loop() {
     let rt = make_runtime();
     let env = build_agent_env(&[], &agent).unwrap();
     let sink = VecEventSink::new();
-    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &sink,
+        None,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     let events = sink.take();
     let tool_dones: Vec<_> = events
@@ -861,9 +982,17 @@ async fn batch_approval_suspension_still_executes_all() {
     let rt = make_runtime();
     let env = build_agent_env(&[], &agent).unwrap();
     let sink = NullEventSink;
-    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &sink,
+        None,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(
         call_count.load(Ordering::SeqCst),
@@ -893,9 +1022,17 @@ async fn streaming_partial_failure_in_loop() {
     let rt = make_runtime();
     let env = build_agent_env(&[], &agent).unwrap();
     let sink = VecEventSink::new();
-    let result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &sink,
+        None,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     let events = sink.take();
     let outcomes: Vec<_> = events
@@ -981,9 +1118,17 @@ async fn before_inference_hook_override_reaches_request() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OverridePlugin)];
     let env = build_agent_env(&user_plugins, &agent).unwrap();
     let sink = NullEventSink;
-    let _result = run_agent_loop(&agent, &rt, &env, &sink, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let _result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &sink,
+        None,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     let captured = llm.captured.lock().unwrap();
     assert_eq!(captured.len(), 1);
@@ -1085,6 +1230,7 @@ async fn multiple_hooks_merge_inference_overrides_last_wins() {
         &rt,
         &env,
         &NullEventSink,
+        None,
         vec![Message::user("go")],
         id(),
     )
@@ -1143,6 +1289,7 @@ async fn no_override_hook_leaves_overrides_none() {
         &rt,
         &env,
         &NullEventSink,
+        None,
         vec![Message::user("go")],
         id(),
     )
@@ -1247,6 +1394,7 @@ async fn override_consumed_each_step_not_leaked() {
         &rt,
         &env,
         &NullEventSink,
+        None,
         vec![Message::user("go")],
         id(),
     )
@@ -1342,6 +1490,7 @@ async fn context_message_injected_into_request() {
         &rt,
         &env,
         &NullEventSink,
+        None,
         vec![Message::user("hello")],
         id(),
     )
@@ -1471,6 +1620,7 @@ async fn context_messages_not_leaked_to_next_step() {
         &rt,
         &env,
         &NullEventSink,
+        None,
         vec![Message::user("go")],
         id(),
     )

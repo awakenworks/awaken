@@ -204,6 +204,7 @@ async fn single_step_natural_end() {
         &runtime,
         &env,
         &sink,
+        None,
         vec![Message::user("hi")],
         test_identity(),
     )
@@ -249,6 +250,7 @@ async fn tool_call_then_response() {
         &runtime,
         &env,
         &sink,
+        None,
         vec![Message::user("echo hello")],
         test_identity(),
     )
@@ -289,6 +291,7 @@ async fn tool_call_state_machine_transitions() {
         &runtime,
         &env,
         &sink,
+        None,
         vec![Message::user("test")],
         test_identity(),
     )
@@ -334,6 +337,7 @@ async fn multiple_tool_calls_in_one_step() {
         &runtime,
         &env,
         &sink,
+        None,
         vec![Message::user("multi-tool")],
         test_identity(),
     )
@@ -378,6 +382,7 @@ async fn max_rounds_exceeded() {
         &runtime,
         &env,
         &sink,
+        None,
         vec![Message::user("loop")],
         test_identity(),
     )
@@ -427,6 +432,7 @@ async fn unknown_tool_returns_error_result_not_crash() {
         &runtime,
         &env,
         &sink,
+        None,
         vec![Message::user("call unknown")],
         test_identity(),
     )
@@ -476,6 +482,7 @@ async fn failing_tool_produces_error_result_continues_loop() {
         &runtime,
         &env,
         &sink,
+        None,
         vec![Message::user("use fail tool")],
         test_identity(),
     )
@@ -505,6 +512,7 @@ async fn events_have_correct_sequence_for_single_step() {
         &runtime,
         &env,
         &sink,
+        None,
         vec![Message::user("hi")],
         test_identity(),
     )
@@ -563,6 +571,7 @@ async fn events_have_correct_sequence_with_tool_call() {
         &runtime,
         &env,
         &sink,
+        None,
         vec![Message::user("echo")],
         test_identity(),
     )
@@ -631,6 +640,7 @@ async fn lifecycle_state_reflects_custom_run_id() {
         &runtime,
         &env,
         &sink,
+        None,
         vec![Message::user("hi")],
         identity,
     )
@@ -691,6 +701,7 @@ async fn phase_hooks_fire_during_loop() {
         &runtime,
         &env,
         &sink,
+        None,
         vec![Message::user("hi")],
         test_identity(),
     )
@@ -742,6 +753,7 @@ async fn tool_suspension_transitions_run_to_waiting() {
         &runtime,
         &env,
         &sink,
+        None,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -778,6 +790,7 @@ async fn resume_with_use_decision_as_tool_result() {
         &runtime,
         &env,
         &sink,
+        None,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -805,6 +818,7 @@ async fn resume_with_use_decision_as_tool_result() {
         &runtime,
         &env,
         &sink,
+        None,
         messages,
         test_identity(),
         ResumeInput {
@@ -854,6 +868,7 @@ async fn resume_with_cancel_marks_tool_cancelled() {
         &runtime,
         &env,
         &sink,
+        None,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -880,6 +895,7 @@ async fn resume_with_cancel_marks_tool_cancelled() {
         &runtime,
         &env,
         &sink,
+        None,
         messages,
         test_identity(),
         ResumeInput {
@@ -927,6 +943,7 @@ async fn resume_with_replay_tool_call() {
         &runtime,
         &env,
         &sink,
+        None,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -973,6 +990,7 @@ async fn resume_with_replay_tool_call() {
         &runtime,
         &env2,
         &sink,
+        None,
         messages,
         test_identity(),
         ResumeInput {
@@ -1019,6 +1037,7 @@ async fn resume_with_pass_decision_to_tool() {
         &runtime,
         &env,
         &sink,
+        None,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -1042,6 +1061,7 @@ async fn resume_with_pass_decision_to_tool() {
         &runtime2,
         &env2,
         &sink,
+        None,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -1084,6 +1104,7 @@ async fn resume_with_pass_decision_to_tool() {
         &runtime2,
         &env3,
         &sink,
+        None,
         messages,
         test_identity(),
         ResumeInput {
@@ -1120,6 +1141,7 @@ async fn resume_rejects_non_waiting_run() {
         &runtime,
         &env,
         &sink,
+        None,
         vec![Message::user("hi")],
         test_identity(),
     )
@@ -1132,6 +1154,7 @@ async fn resume_rejects_non_waiting_run() {
         &runtime,
         &env,
         &sink,
+        None,
         vec![Message::user("hi")],
         test_identity(),
         ResumeInput {
@@ -1163,6 +1186,7 @@ async fn resume_rejects_unknown_call_id() {
         &runtime,
         &env,
         &sink,
+        None,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -1176,6 +1200,7 @@ async fn resume_rejects_unknown_call_id() {
         &runtime,
         &env,
         &sink,
+        None,
         messages,
         test_identity(),
         ResumeInput {

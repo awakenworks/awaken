@@ -47,6 +47,19 @@ impl ThreadStore for InMemoryThreadStore {
         Ok(())
     }
 
+    async fn replace_messages(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+    ) -> Result<(), StorageError> {
+        let mut guard = self
+            .threads
+            .write()
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        guard.insert(thread_id.to_owned(), messages.to_vec());
+        Ok(())
+    }
+
     async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError> {
         let mut guard = self
             .threads
