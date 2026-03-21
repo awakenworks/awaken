@@ -1196,7 +1196,7 @@ async fn hooks_from_different_plugins_do_not_see_sibling_mutations() {
 }
 
 #[tokio::test]
-async fn parallel_hook_conflict_fails_before_commit() {
+async fn exclusive_hook_conflict_auto_fallback() {
     struct PluginA;
     impl Plugin for PluginA {
         fn descriptor(&self) -> PluginDescriptor {
@@ -1249,13 +1249,134 @@ async fn parallel_hook_conflict_fails_before_commit() {
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(PluginA), Arc::new(PluginB)];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    let err = app
-        .run_phase(&env, Phase::BeforeInference)
+    // Auto-fallback: first hook committed in batch, second re-run serially
+    app.run_phase(&env, Phase::BeforeInference)
         .await
-        .expect_err("exclusive parallel hook writes should conflict");
+        .expect("exclusive conflict should auto-fallback, not error");
 
-    assert!(matches!(err, StateError::ParallelMergeConflict { .. }));
-    assert_eq!(app.store().read::<Counter>(), None);
+    // Both hooks applied: 10 + 20 = 30
+    assert_eq!(app.store().read::<Counter>(), Some(30));
+}
+
+#[tokio::test]
+async fn exclusive_hook_conflict_deferred_sees_fresh_snapshot() {
+    /// Hook that reads Counter and writes Label based on what it sees.
+    struct PluginReader;
+    impl Plugin for PluginReader {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "reader" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_key::<Counter>(StateKeyOptions::default())?;
+            r.register_key::<Label>(StateKeyOptions::default())?;
+
+            struct Hook;
+            #[async_trait]
+            impl PhaseHook for Hook {
+                async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+                    let val = ctx.snapshot.get::<Counter>().copied().unwrap_or(0);
+                    let mut cmd = StateCommand::new();
+                    cmd.update::<Counter>(1);
+                    cmd.update::<Label>(format!("saw:{val}"));
+                    Ok(cmd)
+                }
+            }
+            r.register_phase_hook("reader", Phase::StepStart, Hook)?;
+            Ok(())
+        }
+    }
+
+    struct PluginWriter;
+    impl Plugin for PluginWriter {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "writer" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            struct Hook;
+            #[async_trait]
+            impl PhaseHook for Hook {
+                async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+                    let mut cmd = StateCommand::new();
+                    cmd.update::<Counter>(100);
+                    Ok(cmd)
+                }
+            }
+            r.register_phase_hook("writer", Phase::StepStart, Hook)?;
+            Ok(())
+        }
+    }
+
+    let app = AppRuntime::new().unwrap();
+    app.store().install_plugin(PluginReader).unwrap();
+
+    // Writer registered first → goes into batch; Reader deferred (Exclusive conflict on Counter)
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(PluginWriter), Arc::new(PluginReader)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+
+    app.run_phase(&env, Phase::StepStart).await.unwrap();
+
+    // Writer (batch) committed Counter += 100 → Counter = 100
+    // Reader (deferred, re-run against fresh snapshot) saw Counter = 100, then added 1
+    assert_eq!(app.store().read::<Counter>(), Some(101));
+    assert_eq!(app.store().read::<Label>().as_deref(), Some("saw:100"));
+}
+
+#[tokio::test]
+async fn collect_commands_still_fails_on_exclusive_conflict() {
+    struct PluginA;
+    impl Plugin for PluginA {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "plugin-a" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_key::<Counter>(StateKeyOptions::default())?;
+            struct Hook;
+            #[async_trait]
+            impl PhaseHook for Hook {
+                async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+                    let mut cmd = StateCommand::new();
+                    cmd.update::<Counter>(10);
+                    Ok(cmd)
+                }
+            }
+            r.register_phase_hook("plugin-a", Phase::RunStart, Hook)?;
+            Ok(())
+        }
+    }
+
+    struct PluginB;
+    impl Plugin for PluginB {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "plugin-b" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            struct Hook;
+            #[async_trait]
+            impl PhaseHook for Hook {
+                async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+                    let mut cmd = StateCommand::new();
+                    cmd.update::<Counter>(20);
+                    Ok(cmd)
+                }
+            }
+            r.register_phase_hook("plugin-b", Phase::RunStart, Hook)?;
+            Ok(())
+        }
+    }
+
+    let app = AppRuntime::new().unwrap();
+    app.store().install_plugin(PluginA).unwrap();
+
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(PluginA), Arc::new(PluginB)];
+    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+
+    let ctx = PhaseContext::new(Phase::RunStart, app.snapshot());
+    let result = app.phase_runtime().collect_commands(&env, ctx).await;
+
+    assert!(
+        matches!(result, Err(StateError::ParallelMergeConflict { .. })),
+        "collect_commands should still fail on exclusive conflict"
+    );
 }
 
 #[tokio::test]

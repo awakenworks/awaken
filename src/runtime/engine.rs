@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -10,10 +11,10 @@ use crate::model::{
     PendingScheduledActions, Phase, ScheduledActionEnvelope, ScheduledActionQueueUpdate,
     TypedEffect,
 };
-use crate::state::{MutationBatch, Snapshot, StateCommand, StateStore};
+use crate::state::{MergeStrategy, MutationBatch, Snapshot, StateCommand, StateStore};
 
 use super::PhaseContext;
-use super::env::ExecutionEnv;
+use super::env::{ExecutionEnv, TaggedPhaseHook};
 use super::handlers::{ToolPermissionResult, aggregate_tool_permissions};
 use super::registry::RuntimeQueuePlugin;
 use super::reports::{
@@ -111,17 +112,12 @@ impl PhaseRuntime {
         };
         let mut rounds = 0;
 
-        let hook_snapshot = self.store.snapshot();
-        let hook_command = self
-            .gather_hook_commands(env, base_ctx.clone(), hook_snapshot)
-            .await?;
-        if !hook_command.is_empty() {
-            total_effects += hook_command.effects.len();
-            let report = self.submit_command_inner(env, hook_command).await?;
-            effect_report.attempted += report.effect_report.attempted;
-            effect_report.dispatched += report.effect_report.dispatched;
-            effect_report.failed += report.effect_report.failed;
-        }
+        let (hook_effects, hook_effect_report) =
+            self.gather_and_commit_hooks(env, &base_ctx).await?;
+        total_effects += hook_effects;
+        effect_report.attempted += hook_effect_report.attempted;
+        effect_report.dispatched += hook_effect_report.dispatched;
+        effect_report.failed += hook_effect_report.failed;
 
         loop {
             rounds += 1;
@@ -309,31 +305,142 @@ impl PhaseRuntime {
     }
 
     /// Run phase hooks, collecting their commands without committing.
+    /// Returns a single merged command; fails on Exclusive conflicts (no auto-fallback).
     async fn run_hooks_collect(
         &self,
         env: &ExecutionEnv,
         ctx: PhaseContext,
     ) -> Result<StateCommand, StateError> {
-        self.gather_hook_commands(env, ctx, self.store.snapshot())
-            .await
+        let snapshot = self.store.snapshot();
+        let hooks = Self::filter_hooks(env, &ctx);
+        let indexed = Self::run_hooks_indexed(&hooks, &ctx, &snapshot).await?;
+        let commands = indexed.into_iter().map(|(_, cmd)| cmd).collect();
+        self.store.merge_all_commands(commands)
     }
 
-    async fn gather_hook_commands(
+    /// Run phase hooks with Exclusive conflict auto-fallback.
+    ///
+    /// Hooks are pure functions (frozen snapshot in, `StateCommand` out, no side effects),
+    /// so re-execution on conflict is always safe.
+    ///
+    /// Algorithm:
+    /// 1. Run all hooks in parallel against a frozen snapshot.
+    /// 2. If no Exclusive key overlaps, merge all and commit once.
+    /// 3. On conflict: greedily partition into a compatible batch + deferred set.
+    ///    Commit the batch, then re-run deferred hooks serially against fresh snapshots.
+    async fn gather_and_commit_hooks(
         &self,
         env: &ExecutionEnv,
-        base_ctx: PhaseContext,
-        snapshot: Snapshot,
-    ) -> Result<StateCommand, StateError> {
-        let hooks = env.hooks_for_phase(base_ctx.phase);
-        let active_plugins = &base_ctx.profile.active_plugins;
-        let filtered_hooks: Vec<_> = hooks
+        base_ctx: &PhaseContext,
+    ) -> Result<(usize, EffectDispatchReport), StateError> {
+        let hooks = Self::filter_hooks(env, base_ctx);
+        if hooks.is_empty() {
+            return Ok((
+                0,
+                EffectDispatchReport {
+                    attempted: 0,
+                    dispatched: 0,
+                    failed: 0,
+                },
+            ));
+        }
+
+        let snapshot = self.store.snapshot();
+        let indexed = Self::run_hooks_indexed(&hooks, base_ctx, &snapshot).await?;
+
+        if indexed.is_empty() {
+            return Ok((
+                0,
+                EffectDispatchReport {
+                    attempted: 0,
+                    dispatched: 0,
+                    failed: 0,
+                },
+            ));
+        }
+
+        // Fast path: no Exclusive key overlap → merge all, commit once
+        let has_conflicts = {
+            let registry = self.store.registry.lock().expect("registry lock poisoned");
+            has_exclusive_key_overlap(&indexed, |k| registry.merge_strategy(k))
+        };
+
+        let mut total_effects = 0;
+        let mut effect_report = EffectDispatchReport {
+            attempted: 0,
+            dispatched: 0,
+            failed: 0,
+        };
+
+        if !has_conflicts {
+            let commands = indexed.into_iter().map(|(_, cmd)| cmd).collect();
+            let merged = self.store.merge_all_commands(commands)?;
+            if !merged.is_empty() {
+                total_effects += merged.effects.len();
+                let r = self.submit_command_inner(env, merged).await?;
+                effect_report.attempted += r.effect_report.attempted;
+                effect_report.dispatched += r.effect_report.dispatched;
+                effect_report.failed += r.effect_report.failed;
+            }
+            return Ok((total_effects, effect_report));
+        }
+
+        // Conflict fallback: partition into compatible batch + deferred
+        let (batch_commands, deferred_indices) = {
+            let registry = self.store.registry.lock().expect("registry lock poisoned");
+            partition_commands(indexed, |k| registry.merge_strategy(k))
+        };
+
+        // Commit the compatible batch
+        if !batch_commands.is_empty() {
+            let merged = self.store.merge_all_commands(batch_commands)?;
+            if !merged.is_empty() {
+                total_effects += merged.effects.len();
+                let r = self.submit_command_inner(env, merged).await?;
+                effect_report.attempted += r.effect_report.attempted;
+                effect_report.dispatched += r.effect_report.dispatched;
+                effect_report.failed += r.effect_report.failed;
+            }
+        }
+
+        // Re-run deferred hooks serially, each against a fresh snapshot
+        for hook_idx in deferred_indices {
+            let snap = self.store.snapshot();
+            let ctx = base_ctx.clone().with_snapshot(snap.clone());
+            let mut cmd = hooks[hook_idx].hook.run(&ctx).await?;
+            if cmd.base_revision().is_none() {
+                cmd = cmd.with_base_revision(snap.revision());
+            }
+            if !cmd.is_empty() {
+                total_effects += cmd.effects.len();
+                let r = self.submit_command_inner(env, cmd).await?;
+                effect_report.attempted += r.effect_report.attempted;
+                effect_report.dispatched += r.effect_report.dispatched;
+                effect_report.failed += r.effect_report.failed;
+            }
+        }
+
+        Ok((total_effects, effect_report))
+    }
+
+    fn filter_hooks<'a>(env: &'a ExecutionEnv, ctx: &PhaseContext) -> Vec<&'a TaggedPhaseHook> {
+        let hooks = env.hooks_for_phase(ctx.phase);
+        let active_plugins = &ctx.profile.active_plugins;
+        hooks
             .iter()
             .filter(|tagged| {
                 active_plugins.is_empty() || active_plugins.contains(&tagged.plugin_id)
             })
-            .collect();
+            .collect()
+    }
 
-        let results = join_all(filtered_hooks.into_iter().map(|tagged| {
+    /// Run hooks in parallel, returning (hook_index, command) pairs for non-empty results.
+    async fn run_hooks_indexed(
+        hooks: &[&TaggedPhaseHook],
+        base_ctx: &PhaseContext,
+        snapshot: &Snapshot,
+    ) -> Result<Vec<(usize, StateCommand)>, StateError> {
+        let results = join_all(hooks.iter().enumerate().map(|(i, tagged)| {
             let hook = tagged.hook.clone();
             let hook_snapshot = snapshot.clone();
             let hook_ctx = base_ctx.clone().with_snapshot(hook_snapshot.clone());
@@ -342,20 +449,19 @@ impl PhaseRuntime {
                 if cmd.base_revision().is_none() {
                     cmd = cmd.with_base_revision(hook_snapshot.revision());
                 }
-                Ok::<StateCommand, StateError>(cmd)
+                Ok::<(usize, StateCommand), StateError>((i, cmd))
             }
         }))
         .await;
 
-        let mut commands = Vec::new();
+        let mut indexed = Vec::new();
         for result in results {
-            let cmd = result?;
+            let (i, cmd) = result?;
             if !cmd.is_empty() {
-                commands.push(cmd);
+                indexed.push((i, cmd));
             }
         }
-
-        self.store.merge_all_commands(commands)
+        Ok(indexed)
     }
 
     fn dead_letter(
@@ -376,4 +482,53 @@ impl PhaseRuntime {
         ));
         self.store.commit(patch).map(|_| ())
     }
+}
+
+/// Check whether any Exclusive key appears in more than one command.
+fn has_exclusive_key_overlap(
+    commands: &[(usize, StateCommand)],
+    strategy: impl Fn(&str) -> MergeStrategy,
+) -> bool {
+    let mut seen: HashSet<&str> = HashSet::new();
+    for (_, cmd) in commands {
+        for key in &cmd.patch.touched_keys {
+            if strategy(key) == MergeStrategy::Exclusive && !seen.insert(key.as_str()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Greedily partition commands into a compatible batch and deferred hook indices.
+///
+/// Walks commands in registration order. A command is added to the batch if none
+/// of its Exclusive keys overlap with keys already in the batch; otherwise its
+/// hook index is deferred for serial re-execution.
+fn partition_commands(
+    commands: Vec<(usize, StateCommand)>,
+    strategy: impl Fn(&str) -> MergeStrategy,
+) -> (Vec<StateCommand>, Vec<usize>) {
+    let mut batch_exclusive_keys: HashSet<String> = HashSet::new();
+    let mut batch = Vec::new();
+    let mut deferred = Vec::new();
+
+    for (hook_idx, cmd) in commands {
+        let conflicts = cmd.patch.touched_keys.iter().any(|k| {
+            strategy(k) == MergeStrategy::Exclusive && batch_exclusive_keys.contains(k.as_str())
+        });
+
+        if conflicts {
+            deferred.push(hook_idx);
+        } else {
+            for k in &cmd.patch.touched_keys {
+                if strategy(k) == MergeStrategy::Exclusive {
+                    batch_exclusive_keys.insert(k.clone());
+                }
+            }
+            batch.push(cmd);
+        }
+    }
+
+    (batch, deferred)
 }
