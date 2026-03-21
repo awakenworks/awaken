@@ -3,7 +3,7 @@ use std::ops::{Deref, DerefMut};
 use crate::error::StateError;
 use crate::model::{EffectSpec, RuntimeEffect, ScheduledAction, ScheduledActionSpec, TypedEffect};
 
-use super::MutationBatch;
+use super::{MergeStrategy, MutationBatch};
 
 pub struct StateCommand {
     pub(crate) patch: MutationBatch,
@@ -57,6 +57,23 @@ impl StateCommand {
         self.scheduled_actions.append(&mut other.scheduled_actions);
         self.effects.append(&mut other.effects);
         Ok(())
+    }
+
+    /// Merge two commands from parallel execution using the given merge strategy.
+    pub fn merge_parallel<F>(self, other: Self, strategy: F) -> Result<Self, StateError>
+    where
+        F: Fn(&str) -> MergeStrategy,
+    {
+        let patch = self.patch.merge_parallel(other.patch, strategy)?;
+        let mut scheduled_actions = self.scheduled_actions;
+        scheduled_actions.extend(other.scheduled_actions);
+        let mut effects = self.effects;
+        effects.extend(other.effects);
+        Ok(Self {
+            patch,
+            scheduled_actions,
+            effects,
+        })
     }
 }
 

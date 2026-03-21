@@ -6,19 +6,21 @@ use crate::model::{FailedScheduledActions, PendingScheduledActions, Phase};
 use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use crate::state::StateKeyOptions;
 
-use super::{EffectHandlerArc, PhaseHookArc, ScheduledActionHandlerArc};
+use super::{EffectHandlerArc, PhaseHookArc, ScheduledActionHandlerArc, ToolPermissionCheckerArc};
 
 #[derive(Default)]
 pub(crate) struct InstalledRuntimePlugin {
     pub(crate) scheduled_action_keys: Vec<String>,
     pub(crate) effect_keys: Vec<String>,
     pub(crate) phase_hook_ids: Vec<(Phase, u64)>,
+    pub(crate) tool_permission_ids: Vec<u64>,
 }
 
 pub(crate) struct RuntimeRegistry {
     pub(crate) scheduled_action_handlers: HashMap<String, ScheduledActionHandlerArc>,
     pub(crate) effect_handlers: HashMap<String, EffectHandlerArc>,
     pub(crate) phase_hooks: HashMap<Phase, Vec<(u64, String, PhaseHookArc)>>,
+    pub(crate) tool_permission_checkers: Vec<(u64, String, ToolPermissionCheckerArc)>,
     pub(crate) installed_plugins: HashMap<TypeId, InstalledRuntimePlugin>,
     pub(crate) next_hook_id: u64,
 }
@@ -29,6 +31,7 @@ impl Default for RuntimeRegistry {
             scheduled_action_handlers: HashMap::new(),
             effect_handlers: HashMap::new(),
             phase_hooks: HashMap::new(),
+            tool_permission_checkers: Vec::new(),
             installed_plugins: HashMap::new(),
             next_hook_id: 1,
         }

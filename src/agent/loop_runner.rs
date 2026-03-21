@@ -19,11 +19,12 @@ use crate::contract::suspension::{
 use crate::contract::tool::ToolResult;
 use crate::model::{Phase, RuntimeEffect};
 use crate::runtime::{PhaseContext, PhaseRuntime, TypedEffectHandler};
-use crate::state::{MutationBatch, Snapshot};
+use crate::state::{MutationBatch, Snapshot, StateCommand};
 
 use super::config::AgentConfig;
 use super::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
 use super::stop_conditions::MaxRoundsPlugin;
+use super::tool_permission::AllowAllToolsPlugin;
 
 /// Errors from the agent loop.
 #[derive(Debug, thiserror::Error)]
@@ -62,13 +63,6 @@ struct TerminationFlag {
 }
 
 impl TerminationFlag {
-    fn is_set(&self) -> bool {
-        self.inner
-            .lock()
-            .expect("termination flag poisoned")
-            .is_some()
-    }
-
     fn take(&self) -> Option<TerminationReason> {
         self.inner.lock().expect("termination flag poisoned").take()
     }
@@ -114,6 +108,11 @@ pub async fn run_agent_loop(
         Err(e) => return Err(e.into()),
     }
     match runtime.install_plugin(MaxRoundsPlugin::new(agent.max_rounds)) {
+        Ok(()) => {}
+        Err(crate::error::StateError::PluginAlreadyInstalled { .. }) => {}
+        Err(e) => return Err(e.into()),
+    }
+    match runtime.install_plugin(AllowAllToolsPlugin) {
         Ok(()) => {}
         Err(crate::error::StateError::PluginAlreadyInstalled { .. }) => {}
         Err(e) => return Err(e.into()),
@@ -212,42 +211,106 @@ pub async fn run_agent_loop(
             stream_result.tool_calls.clone(),
         )));
 
-        // Execute tool calls via ToolExecutor
+        // Check tool permissions and execute allowed tool calls.
+        //
+        // Permission check runs per tool call before execution:
+        // - Allow → execute the tool
+        // - Deny → skip execution, add error message
+        // - Suspend → skip execution, mark as suspended
+        let mut allowed_calls = Vec::new();
+        let mut suspended = false;
+        let mut tool_commands = Vec::new();
+
+        for call in &stream_result.tool_calls {
+            let perm_ctx = make_ctx(Phase::BeforeToolExecute, &messages, &run_identity)
+                .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
+            let perm_result = runtime.check_tool_permission(&perm_ctx).await?;
+
+            match perm_result {
+                crate::runtime::ToolPermissionResult::Allow => {
+                    allowed_calls.push(call.clone());
+                }
+                crate::runtime::ToolPermissionResult::Deny { reason } => {
+                    let mut lifecycle_cmd = StateCommand::new();
+                    lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
+                        call_id: call.id.clone(),
+                        tool_name: call.name.clone(),
+                        arguments: call.arguments.clone(),
+                        status: ToolCallStatus::Failed,
+                        updated_at: now_ms(),
+                    });
+                    tool_commands.push(lifecycle_cmd);
+                    messages.push(Arc::new(Message::tool(
+                        &call.id,
+                        format!("Permission denied: {reason}"),
+                    )));
+                }
+                crate::runtime::ToolPermissionResult::Suspend => {
+                    let mut lifecycle_cmd = StateCommand::new();
+                    lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
+                        call_id: call.id.clone(),
+                        tool_name: call.name.clone(),
+                        arguments: call.arguments.clone(),
+                        status: ToolCallStatus::Suspended,
+                        updated_at: now_ms(),
+                    });
+                    tool_commands.push(lifecycle_cmd);
+                    messages.push(Arc::new(Message::tool(
+                        &call.id,
+                        "Tool call suspended: awaiting approval".to_string(),
+                    )));
+                    suspended = true;
+                }
+            }
+        }
+
+        // Execute allowed tool calls via ToolExecutor
         let exec_results = agent
             .tool_executor
-            .execute(&agent.tools, &stream_result.tool_calls)
+            .execute(&agent.tools, &allowed_calls)
             .await
             .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
 
-        // Process each result: state transitions, phase hooks, events, messages
-        let mut suspended = false;
+        // Process tool results: collect phase commands, merge, commit once.
         for exec_result in &exec_results {
             let call = &exec_result.call;
+            let tool_result = &exec_result.result;
 
             events.push(AgentEvent::ToolCallStart {
                 id: call.id.clone(),
                 name: call.name.clone(),
             });
 
-            // Tool call lifecycle: New → Running
-            commit_tool_call_transition(store, call, ToolCallStatus::Running)?;
-
+            // Collect BeforeToolExecute hook commands (no commit)
             let before_ctx = make_ctx(Phase::BeforeToolExecute, &messages, &run_identity)
                 .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
-            runtime.run_phase_with_context(before_ctx).await?;
-            if termination_flag.is_set() {
-                break;
+            let before_cmd = runtime.collect_commands(before_ctx).await?;
+            if !before_cmd.is_empty() {
+                tool_commands.push(before_cmd);
             }
 
-            let tool_result = &exec_result.result;
-
-            // Tool call lifecycle: Running → terminal status
-            let status = match exec_result.outcome {
+            // Build tool call state transitions as a command
+            let terminal_status = match exec_result.outcome {
                 ToolCallOutcome::Suspended => ToolCallStatus::Suspended,
                 ToolCallOutcome::Succeeded => ToolCallStatus::Succeeded,
                 ToolCallOutcome::Failed => ToolCallStatus::Failed,
             };
-            commit_tool_call_transition(store, call, status)?;
+            let mut lifecycle_cmd = StateCommand::new();
+            lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
+                call_id: call.id.clone(),
+                tool_name: call.name.clone(),
+                arguments: call.arguments.clone(),
+                status: ToolCallStatus::Running,
+                updated_at: now_ms(),
+            });
+            lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
+                call_id: call.id.clone(),
+                tool_name: call.name.clone(),
+                arguments: call.arguments.clone(),
+                status: terminal_status,
+                updated_at: now_ms(),
+            });
+            tool_commands.push(lifecycle_cmd);
 
             events.push(AgentEvent::ToolCallDone {
                 id: call.id.clone(),
@@ -255,12 +318,13 @@ pub async fn run_agent_loop(
                 outcome: exec_result.outcome,
             });
 
+            // Collect AfterToolExecute hook commands (no commit)
             let after_ctx = make_ctx(Phase::AfterToolExecute, &messages, &run_identity)
                 .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()))
                 .with_tool_result(tool_result.clone());
-            runtime.run_phase_with_context(after_ctx).await?;
-            if termination_flag.is_set() {
-                break;
+            let after_cmd = runtime.collect_commands(after_ctx).await?;
+            if !after_cmd.is_empty() {
+                tool_commands.push(after_cmd);
             }
 
             let tool_content = tool_result_to_content(tool_result);
@@ -271,7 +335,13 @@ pub async fn run_agent_loop(
             }
         }
 
-        // Check termination after tool loop
+        // Merge all tool call commands and submit once
+        if !tool_commands.is_empty() {
+            let merged = store.merge_all_commands(tool_commands)?;
+            runtime.submit_command(merged).await?;
+        }
+
+        // Check termination after tool execution
         if let Some(reason) = termination_flag.take() {
             break reason;
         }
@@ -564,23 +634,6 @@ fn commit_update<S: crate::state::StateKey>(
     patch.update::<S>(update);
     store.commit(patch)?;
     Ok(())
-}
-
-fn commit_tool_call_transition(
-    store: &crate::state::StateStore,
-    call: &ToolCall,
-    status: ToolCallStatus,
-) -> Result<(), crate::error::StateError> {
-    commit_update::<ToolCallStates>(
-        store,
-        ToolCallStatesUpdate::Upsert {
-            call_id: call.id.clone(),
-            tool_name: call.name.clone(),
-            arguments: call.arguments.clone(),
-            status,
-            updated_at: now_ms(),
-        },
-    )
 }
 
 fn tool_result_to_content(result: &ToolResult) -> String {

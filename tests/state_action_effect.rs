@@ -1597,6 +1597,303 @@ fn merge_parallel_commutative_multiple_updates_per_batch() {
     assert_eq!(store.read::<SharedCounter>(), Some(36));
 }
 
+// ===========================================================================
+// 16. StateCommand::merge_parallel
+// ===========================================================================
+
+#[tokio::test]
+async fn command_merge_parallel_disjoint_keys() {
+    let app = AppRuntime::new().unwrap();
+    app.install_plugin(ParallelPlugin).unwrap();
+
+    let mut a = StateCommand::new();
+    a.update::<Counter>(10);
+    let mut b = StateCommand::new();
+    b.update::<Label>("hello".into());
+
+    let merged = app.store().merge_all_commands(vec![a, b]).unwrap();
+    app.submit_command(merged).await.unwrap();
+
+    assert_eq!(app.store().read::<Counter>(), Some(10));
+    assert_eq!(app.store().read::<Label>().as_deref(), Some("hello"));
+}
+
+#[tokio::test]
+async fn command_merge_parallel_commutative_overlap() {
+    let app = AppRuntime::new().unwrap();
+    app.install_plugin(ParallelPlugin).unwrap();
+
+    let mut a = StateCommand::new();
+    a.update::<SharedCounter>(3);
+    let mut b = StateCommand::new();
+    b.update::<SharedCounter>(7);
+
+    let merged = app.store().merge_all_commands(vec![a, b]).unwrap();
+    app.submit_command(merged).await.unwrap();
+
+    assert_eq!(app.store().read::<SharedCounter>(), Some(10));
+}
+
+#[test]
+fn command_merge_parallel_exclusive_conflict() {
+    let store = StateStore::new();
+    store.install_plugin(ParallelPlugin).unwrap();
+
+    let mut a = StateCommand::new();
+    a.update::<Counter>(1);
+    let mut b = StateCommand::new();
+    b.update::<Counter>(2);
+
+    let err = store
+        .merge_all_commands(vec![a, b])
+        .err()
+        .expect("should fail");
+    assert!(matches!(err, StateError::ParallelMergeConflict { .. }));
+}
+
+#[test]
+fn command_merge_parallel_accumulates_effects() {
+    let mut a = StateCommand::new();
+    a.effect(RuntimeEffect::Suspend { reason: "a".into() })
+        .unwrap();
+
+    let mut b = StateCommand::new();
+    b.effect(RuntimeEffect::Block { reason: "b".into() })
+        .unwrap();
+
+    let merged = a.merge_parallel(b, |_| MergeStrategy::Commutative).unwrap();
+    assert!(!merged.is_empty());
+}
+
+#[test]
+fn command_merge_parallel_empty_commands() {
+    let store = StateStore::new();
+    let merged = store.merge_all_commands(vec![]).unwrap();
+    assert!(merged.is_empty());
+}
+
+// ===========================================================================
+// 17. PhaseRuntime::collect_commands
+// ===========================================================================
+
+#[tokio::test]
+async fn collect_commands_returns_combined_hook_output() {
+    struct WriterHook;
+    #[async_trait]
+    impl PhaseHook for WriterHook {
+        async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+            let mut cmd = StateCommand::new();
+            cmd.update::<Counter>(5);
+            Ok(cmd)
+        }
+    }
+
+    struct WriterPlugin;
+    impl Plugin for WriterPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "writer" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_key::<Counter>(StateKeyOptions::default())?;
+            r.register_phase_hook("writer", Phase::AfterToolExecute, WriterHook)?;
+            Ok(())
+        }
+    }
+
+    let app = AppRuntime::new().unwrap();
+    app.install_plugin(WriterPlugin).unwrap();
+
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, app.snapshot());
+    let cmd = app.phase_runtime().collect_commands(ctx).await.unwrap();
+
+    // Command collected but NOT committed
+    assert!(!cmd.is_empty());
+    assert!(app.store().read::<Counter>().is_none());
+
+    // Now submit
+    app.submit_command(cmd).await.unwrap();
+    assert_eq!(app.store().read::<Counter>(), Some(5));
+}
+
+#[tokio::test]
+async fn collect_commands_from_multiple_hooks_combined() {
+    struct HookA;
+    #[async_trait]
+    impl PhaseHook for HookA {
+        async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+            let mut cmd = StateCommand::new();
+            cmd.update::<SharedCounter>(10);
+            Ok(cmd)
+        }
+    }
+    struct HookB;
+    #[async_trait]
+    impl PhaseHook for HookB {
+        async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+            let mut cmd = StateCommand::new();
+            cmd.update::<SharedCounter>(20);
+            Ok(cmd)
+        }
+    }
+
+    struct DualHookPlugin;
+    impl Plugin for DualHookPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "dual-hook" }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_key::<SharedCounter>(StateKeyOptions::default())?;
+            r.register_phase_hook("dual-hook", Phase::AfterToolExecute, HookA)?;
+            r.register_phase_hook("dual-hook", Phase::AfterToolExecute, HookB)?;
+            Ok(())
+        }
+    }
+
+    let app = AppRuntime::new().unwrap();
+    app.install_plugin(DualHookPlugin).unwrap();
+
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, app.snapshot());
+    let cmd = app.phase_runtime().collect_commands(ctx).await.unwrap();
+
+    app.submit_command(cmd).await.unwrap();
+    assert_eq!(app.store().read::<SharedCounter>(), Some(30));
+}
+
+#[tokio::test]
+async fn collect_commands_no_hooks_returns_empty() {
+    let app = AppRuntime::new().unwrap();
+
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, app.snapshot());
+    let cmd = app.phase_runtime().collect_commands(ctx).await.unwrap();
+
+    assert!(cmd.is_empty());
+}
+
+// ===========================================================================
+// 18. End-to-end parallel tool call pipeline
+// ===========================================================================
+
+#[tokio::test]
+async fn parallel_tool_calls_merge_hook_commands() {
+    struct ToolCounterHook;
+    #[async_trait]
+    impl PhaseHook for ToolCounterHook {
+        async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+            let mut cmd = StateCommand::new();
+            cmd.update::<SharedCounter>(1);
+            Ok(cmd)
+        }
+    }
+
+    struct ToolCounterPlugin;
+    impl Plugin for ToolCounterPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "tool-counter",
+            }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_key::<SharedCounter>(StateKeyOptions::default())?;
+            r.register_phase_hook("tool-counter", Phase::AfterToolExecute, ToolCounterHook)?;
+            Ok(())
+        }
+    }
+
+    let app = AppRuntime::new().unwrap();
+    app.install_plugin(ToolCounterPlugin).unwrap();
+
+    // Simulate two parallel tool calls, each collecting commands independently
+    let ctx1 = PhaseContext::new(Phase::AfterToolExecute, app.snapshot());
+    let ctx2 = PhaseContext::new(Phase::AfterToolExecute, app.snapshot());
+
+    let cmd1 = app.phase_runtime().collect_commands(ctx1).await.unwrap();
+    let cmd2 = app.phase_runtime().collect_commands(ctx2).await.unwrap();
+
+    // Merge and commit
+    let merged = app.store().merge_all_commands(vec![cmd1, cmd2]).unwrap();
+    app.submit_command(merged).await.unwrap();
+
+    assert_eq!(app.store().read::<SharedCounter>(), Some(2));
+}
+
+#[tokio::test]
+async fn parallel_pipeline_with_effects() {
+    #[derive(Clone, Default)]
+    struct Recorder(Arc<Mutex<Vec<RuntimeEffect>>>);
+    #[async_trait]
+    impl TypedEffectHandler<RuntimeEffect> for Recorder {
+        async fn handle_typed(
+            &self,
+            payload: RuntimeEffect,
+            _snapshot: &Snapshot,
+        ) -> Result<(), String> {
+            self.0.lock().unwrap().push(payload);
+            Ok(())
+        }
+    }
+
+    struct EffectHook {
+        msg: &'static str,
+    }
+    #[async_trait]
+    impl PhaseHook for EffectHook {
+        async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+            let mut cmd = StateCommand::new();
+            cmd.effect(RuntimeEffect::AddSystemReminder {
+                message: self.msg.into(),
+            })?;
+            Ok(cmd)
+        }
+    }
+
+    struct EffectPlugin;
+    impl Plugin for EffectPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "effect-hook",
+            }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_phase_hook(
+                "effect-hook",
+                Phase::AfterToolExecute,
+                EffectHook { msg: "tool done" },
+            )?;
+            Ok(())
+        }
+    }
+
+    let recorder = Recorder::default();
+    let app = AppRuntime::new().unwrap();
+    app.phase_runtime()
+        .register_effect::<RuntimeEffect, _>(recorder.clone())
+        .unwrap();
+    app.install_plugin(EffectPlugin).unwrap();
+
+    // Two tool calls, each producing an effect
+    let cmd1 = app
+        .phase_runtime()
+        .collect_commands(PhaseContext::new(Phase::AfterToolExecute, app.snapshot()))
+        .await
+        .unwrap();
+    let cmd2 = app
+        .phase_runtime()
+        .collect_commands(PhaseContext::new(Phase::AfterToolExecute, app.snapshot()))
+        .await
+        .unwrap();
+
+    let merged = app.store().merge_all_commands(vec![cmd1, cmd2]).unwrap();
+    app.submit_command(merged).await.unwrap();
+
+    let effects = recorder.0.lock().unwrap();
+    assert_eq!(effects.len(), 2);
+    assert!(
+        effects
+            .iter()
+            .all(|e| matches!(e, RuntimeEffect::AddSystemReminder { .. }))
+    );
+}
+
 #[test]
 fn merge_parallel_commutative_negative_deltas() {
     let store = StateStore::new();

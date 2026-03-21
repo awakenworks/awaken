@@ -2,7 +2,7 @@
 
 use crate::contract::lifecycle::RunStatus;
 use crate::contract::suspension::ToolCallStatus;
-use crate::state::StateKey;
+use crate::state::{MergeStrategy, StateKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -135,6 +135,7 @@ pub struct ToolCallStates;
 
 impl StateKey for ToolCallStates {
     const KEY: &'static str = "__runtime.tool_call_states";
+    const MERGE: MergeStrategy = MergeStrategy::Commutative;
 
     type Value = ToolCallStateMap;
     type Update = ToolCallStatesUpdate;

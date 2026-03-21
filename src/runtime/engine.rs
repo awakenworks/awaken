@@ -16,7 +16,10 @@ use crate::plugins::{Plugin, PluginRegistrar};
 use crate::state::{MutationBatch, Snapshot, StateCommand, StateStore};
 
 use super::PhaseContext;
-use super::handlers::{TypedEffectHandler, TypedScheduledActionHandler};
+use super::handlers::{
+    PhaseHook, ToolPermissionResult, TypedEffectHandler, TypedScheduledActionHandler,
+    aggregate_tool_permissions,
+};
 use super::registry::{InstalledRuntimePlugin, RuntimeQueuePlugin, RuntimeRegistry};
 use super::reports::{
     DEFAULT_MAX_PHASE_ROUNDS, EffectDispatchReport, PhaseRunReport, SubmitCommandReport,
@@ -153,6 +156,16 @@ impl PhaseRuntime {
             .await
     }
 
+    /// Run phase hooks without committing — return the combined StateCommand.
+    ///
+    /// Used for parallel tool execution: collect commands from each tool call's
+    /// phase hooks independently, merge them via `StateStore::merge_all_commands`,
+    /// then submit once.
+    pub async fn collect_commands(&self, ctx: PhaseContext) -> Result<StateCommand, StateError> {
+        let resolved = self.resolve_config(None);
+        self.run_hooks_collect(ctx, &resolved).await
+    }
+
     pub async fn run_phase_with_limit(
         &self,
         phase: Phase,
@@ -183,30 +196,9 @@ impl PhaseRuntime {
         // Resolve config at boundary (determines active_plugins + config snapshot)
         let resolved = self.resolve_config(None);
 
-        // Phase hooks run once before the action processing loop
-        // Filtered by resolved active_plugins
-        let hooks: Vec<_> = {
-            let registry = self
-                .runtime_registry
-                .read()
-                .expect("runtime registry lock poisoned");
-            registry
-                .phase_hooks
-                .get(&phase)
-                .map(|hooks| {
-                    hooks
-                        .iter()
-                        .filter(|(_, plugin_id, _)| {
-                            resolved.active_plugins.is_empty()
-                                || resolved.active_plugins.contains(plugin_id)
-                        })
-                        .map(|(_, _, hook)| Arc::clone(hook))
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-
-        for hook in hooks {
+        // Phase hooks: run sequentially, commit each immediately so next hook sees updated state
+        let hooks = self.resolve_hooks(base_ctx.phase, &resolved);
+        for hook in &hooks {
             let ctx = base_ctx
                 .clone()
                 .with_snapshot(self.store.snapshot())
@@ -409,6 +401,15 @@ impl PhaseRuntime {
             ));
         }
 
+        for entry in registrar.tool_permissions.drain(..) {
+            let checker_id = registry.next_hook_id;
+            registry.next_hook_id += 1;
+            installed_plugin.tool_permission_ids.push(checker_id);
+            registry
+                .tool_permission_checkers
+                .push((checker_id, entry.plugin_id, entry.checker));
+        }
+
         if let Some(plugin_type_id) = plugin_type_id {
             registry
                 .installed_plugins
@@ -440,6 +441,11 @@ impl PhaseRuntime {
             if let Some(hooks) = registry.phase_hooks.get_mut(&phase) {
                 hooks.retain(|(id, _, _)| *id != hook_id);
             }
+        }
+        for checker_id in installed.tool_permission_ids {
+            registry
+                .tool_permission_checkers
+                .retain(|(id, _, _)| *id != checker_id);
         }
     }
 
@@ -479,6 +485,96 @@ impl PhaseRuntime {
         }
 
         report
+    }
+
+    /// Check tool permission by running all registered ToolPermissionCheckers.
+    ///
+    /// All checkers run (no short-circuit), results are aggregated:
+    /// - Any Deny → Deny (highest priority)
+    /// - Any Allow (no Deny) → Allow
+    /// - All Abstain → Suspend (no checker approved)
+    pub async fn check_tool_permission(
+        &self,
+        ctx: &PhaseContext,
+    ) -> Result<ToolPermissionResult, StateError> {
+        let resolved = self.resolve_config(None);
+        let checkers: Vec<_> = {
+            let registry = self
+                .runtime_registry
+                .read()
+                .expect("runtime registry lock poisoned");
+            registry
+                .tool_permission_checkers
+                .iter()
+                .filter(|(_, plugin_id, _)| {
+                    resolved.active_plugins.is_empty()
+                        || resolved.active_plugins.contains(plugin_id)
+                })
+                .map(|(_, _, checker)| Arc::clone(checker))
+                .collect()
+        };
+
+        let mut decisions = Vec::with_capacity(checkers.len());
+        for checker in &checkers {
+            let check_ctx = ctx
+                .clone()
+                .with_snapshot(self.store.snapshot())
+                .with_config(Arc::clone(&resolved.config));
+            decisions.push(checker.check(&check_ctx).await?);
+        }
+
+        Ok(aggregate_tool_permissions(&decisions))
+    }
+
+    /// Resolve hooks for a phase, filtered by active plugins.
+    fn resolve_hooks(
+        &self,
+        phase: Phase,
+        resolved: &ResolvedPhaseConfig,
+    ) -> Vec<Arc<dyn PhaseHook>> {
+        let registry = self
+            .runtime_registry
+            .read()
+            .expect("runtime registry lock poisoned");
+        registry
+            .phase_hooks
+            .get(&phase)
+            .map(|hooks| {
+                hooks
+                    .iter()
+                    .filter(|(_, plugin_id, _)| {
+                        resolved.active_plugins.is_empty()
+                            || resolved.active_plugins.contains(plugin_id)
+                    })
+                    .map(|(_, _, hook)| Arc::clone(hook))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Run phase hooks, collecting their commands without committing.
+    ///
+    /// All hooks see the same snapshot (no intermediate commits).
+    /// Used for parallel tool execution where each tool call's hooks
+    /// are independent.
+    async fn run_hooks_collect(
+        &self,
+        ctx: PhaseContext,
+        resolved: &ResolvedPhaseConfig,
+    ) -> Result<StateCommand, StateError> {
+        let hooks = self.resolve_hooks(ctx.phase, resolved);
+        let mut combined = StateCommand::new();
+        for hook in hooks {
+            let hook_ctx = ctx
+                .clone()
+                .with_snapshot(self.store.snapshot())
+                .with_config(Arc::clone(&resolved.config));
+            let cmd = hook.run(&hook_ctx).await?;
+            if !cmd.is_empty() {
+                combined.extend(cmd)?;
+            }
+        }
+        Ok(combined)
     }
 
     fn dead_letter(

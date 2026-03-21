@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use crate::error::StateError;
 use crate::plugins::{InstalledPlugin, KeyRegistration, Plugin, PluginRegistrar, PluginRegistry};
 
-use super::{MutationBatch, Snapshot, StateKey, StateMap};
+use super::{MutationBatch, Snapshot, StateCommand, StateKey, StateMap};
 
 #[derive(Clone)]
 pub struct CommitEvent {
@@ -84,6 +84,19 @@ impl StateStore {
     ) -> Result<MutationBatch, StateError> {
         let registry = self.registry.lock().expect("registry lock poisoned");
         left.merge_parallel(right, |key| registry.merge_strategy(key))
+    }
+
+    /// Merge multiple commands from parallel execution into one.
+    pub fn merge_all_commands(
+        &self,
+        commands: Vec<StateCommand>,
+    ) -> Result<StateCommand, StateError> {
+        let registry = self.registry.lock().expect("registry lock poisoned");
+        commands
+            .into_iter()
+            .try_fold(StateCommand::new(), |acc, cmd| {
+                acc.merge_parallel(cmd, |key| registry.merge_strategy(key))
+            })
     }
 
     pub fn commit(&self, patch: MutationBatch) -> Result<u64, StateError> {

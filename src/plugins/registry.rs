@@ -5,8 +5,9 @@ use std::sync::Arc;
 use crate::error::StateError;
 use crate::model::{EffectSpec, JsonValue, Phase, ScheduledActionSpec};
 use crate::runtime::{
-    EffectHandlerArc, PhaseHook, PhaseHookArc, ScheduledActionHandlerArc, TypedEffectAdapter,
-    TypedEffectHandler, TypedScheduledActionAdapter, TypedScheduledActionHandler,
+    EffectHandlerArc, PhaseHook, PhaseHookArc, ScheduledActionHandlerArc, ToolPermissionChecker,
+    ToolPermissionCheckerArc, TypedEffectAdapter, TypedEffectHandler, TypedScheduledActionAdapter,
+    TypedScheduledActionHandler,
 };
 use crate::state::{MergeStrategy, StateKey, StateKeyOptions, StateMap};
 
@@ -62,6 +63,11 @@ pub(crate) struct PhaseHookRegistration {
     pub(crate) hook: PhaseHookArc,
 }
 
+pub(crate) struct ToolPermissionRegistration {
+    pub(crate) plugin_id: String,
+    pub(crate) checker: ToolPermissionCheckerArc,
+}
+
 #[derive(Default)]
 pub struct PluginRegistry {
     pub(crate) plugins: HashMap<TypeId, InstalledPlugin>,
@@ -100,6 +106,7 @@ pub struct PluginRegistrar {
     pub(crate) effects: Vec<EffectHandlerRegistration>,
     effect_keys: HashSet<String>,
     pub(crate) phase_hooks: Vec<PhaseHookRegistration>,
+    pub(crate) tool_permissions: Vec<ToolPermissionRegistration>,
 }
 
 impl PluginRegistrar {
@@ -113,6 +120,7 @@ impl PluginRegistrar {
             effects: Vec::new(),
             effect_keys: HashSet::new(),
             phase_hooks: Vec::new(),
+            tool_permissions: Vec::new(),
         }
     }
 
@@ -185,6 +193,21 @@ impl PluginRegistrar {
             phase,
             plugin_id: plugin_id.into(),
             hook: Arc::new(hook),
+        });
+        Ok(())
+    }
+
+    pub fn register_tool_permission<C>(
+        &mut self,
+        plugin_id: impl Into<String>,
+        checker: C,
+    ) -> Result<(), StateError>
+    where
+        C: ToolPermissionChecker,
+    {
+        self.tool_permissions.push(ToolPermissionRegistration {
+            plugin_id: plugin_id.into(),
+            checker: Arc::new(checker),
         });
         Ok(())
     }
