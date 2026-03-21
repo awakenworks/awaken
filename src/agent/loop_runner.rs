@@ -79,6 +79,11 @@ pub fn build_agent_env(
     Ok(env)
 }
 
+/// Unified agent loop entry point for both fresh runs and resumed runs.
+///
+/// - `resume`: `None` = fresh run, `Some` = resume from suspension.
+///   When resuming, the loop validates the run is in `Waiting` state, applies
+///   decisions to suspended tool calls, and re-enters the step loop.
 pub async fn run_agent_loop(
     agent: &AgentConfig,
     runtime: &PhaseRuntime,
@@ -87,6 +92,7 @@ pub async fn run_agent_loop(
     thread_store: Option<&dyn crate::contract::storage::ThreadStore>,
     initial_messages: Vec<Message>,
     run_identity: RunIdentity,
+    resume: Option<ResumeInput>,
 ) -> Result<AgentRunResult, AgentLoopError> {
     let store = runtime.store();
     let mut messages: Vec<Arc<Message>> = initial_messages.into_iter().map(Arc::new).collect();
@@ -94,6 +100,11 @@ pub async fn run_agent_loop(
     // Trim to latest compaction boundary — skip already-summarized history
     if agent.context_policy.is_some() {
         super::context::trim_to_compaction_boundary(&mut messages);
+    }
+
+    // --- Resume from suspension (optional pre-step) ---
+    if let Some(input) = resume {
+        apply_resume_decisions(agent, store, &run_identity, &mut messages, input).await?;
     }
 
     let mut steps: usize = 0;
@@ -467,25 +478,17 @@ pub struct ResumeInput {
     pub resume_mode: ToolCallResumeMode,
 }
 
-/// Resume a suspended agent run.
+/// Apply resume decisions to suspended tool calls.
 ///
-/// Transitions Waiting → Running, applies decisions to suspended tool calls,
-/// and re-enters the step loop. The three resume modes:
-/// - **ReplayToolCall**: re-execute the tool with original arguments
-/// - **UseDecisionAsToolResult**: use the decision payload as the tool result
-/// - **PassDecisionToTool**: re-execute the tool with decision payload as new arguments
-pub async fn resume_agent_loop(
+/// Validates Waiting state, transitions each tool call, executes resumed calls,
+/// and appends tool result messages.
+async fn apply_resume_decisions(
     agent: &AgentConfig,
-    runtime: &PhaseRuntime,
-    env: &ExecutionEnv,
-    sink: &dyn EventSink,
-    thread_store: Option<&dyn crate::contract::storage::ThreadStore>,
-    messages: Vec<Message>,
-    run_identity: RunIdentity,
+    store: &crate::state::StateStore,
+    run_identity: &RunIdentity,
+    messages: &mut Vec<Arc<Message>>,
     input: ResumeInput,
-) -> Result<AgentRunResult, AgentLoopError> {
-    let store = runtime.store();
-
+) -> Result<(), AgentLoopError> {
     // Validate: run must be in Waiting state
     let lifecycle = store
         .read::<RunLifecycle>()
@@ -497,16 +500,6 @@ pub async fn resume_agent_loop(
         )));
     }
 
-    // Transition Waiting → Running
-    commit_update::<RunLifecycle>(
-        store,
-        RunLifecycleUpdate::Start {
-            run_id: run_identity.run_id.clone(),
-            updated_at: now_ms(),
-        },
-    )?;
-
-    // Apply decisions: transition each suspended tool call
     let tool_call_states = store.read::<ToolCallStates>().unwrap_or_default();
     let resume_tool_ctx = ToolCallContext {
         call_id: String::new(),
@@ -514,8 +507,6 @@ pub async fn resume_agent_loop(
         profile: std::sync::Arc::new(crate::contract::profile::AgentProfile::default()),
         snapshot: store.snapshot(),
     };
-
-    let mut resume_messages: Vec<Arc<Message>> = messages.into_iter().map(Arc::new).collect();
 
     for (call_id, decision) in &input.decisions {
         let call_state = tool_call_states.calls.get(call_id).ok_or_else(|| {
@@ -530,7 +521,6 @@ pub async fn resume_agent_loop(
 
         match decision.action {
             ResumeDecisionAction::Cancel => {
-                // Suspended → Cancelled
                 commit_update::<ToolCallStates>(
                     store,
                     ToolCallStatesUpdate::Upsert {
@@ -541,7 +531,7 @@ pub async fn resume_agent_loop(
                         updated_at: now_ms(),
                     },
                 )?;
-                resume_messages.push(Arc::new(Message::tool(
+                messages.push(Arc::new(Message::tool(
                     call_id,
                     format!(
                         "Tool call cancelled: {}",
@@ -550,7 +540,6 @@ pub async fn resume_agent_loop(
                 )));
             }
             ResumeDecisionAction::Resume => {
-                // Suspended → Resuming
                 commit_update::<ToolCallStates>(
                     store,
                     ToolCallStatesUpdate::Upsert {
@@ -562,16 +551,13 @@ pub async fn resume_agent_loop(
                     },
                 )?;
 
-                // Apply resume mode
                 let tool_result = match input.resume_mode {
                     ToolCallResumeMode::UseDecisionAsToolResult => {
-                        // Decision payload becomes the tool result directly
                         let content = if decision.result.is_null() {
                             "approved".to_string()
                         } else {
                             serde_json::to_string(&decision.result).unwrap_or_default()
                         };
-
                         commit_update::<ToolCallStates>(
                             store,
                             ToolCallStatesUpdate::Upsert {
@@ -582,11 +568,9 @@ pub async fn resume_agent_loop(
                                 updated_at: now_ms(),
                             },
                         )?;
-
                         content
                     }
                     ToolCallResumeMode::ReplayToolCall => {
-                        // Re-execute with original arguments
                         let call = ToolCall::new(
                             call_id,
                             &call_state.tool_name,
@@ -595,7 +579,6 @@ pub async fn resume_agent_loop(
                         let mut tool_ctx = resume_tool_ctx.clone();
                         tool_ctx.call_id = call_id.to_string();
                         let result = execute_single_tool(agent, &call, &tool_ctx).await;
-
                         let status = if result.is_success() {
                             ToolCallStatus::Succeeded
                         } else {
@@ -611,17 +594,14 @@ pub async fn resume_agent_loop(
                                 updated_at: now_ms(),
                             },
                         )?;
-
                         tool_result_to_content(&result)
                     }
                     ToolCallResumeMode::PassDecisionToTool => {
-                        // Re-execute with decision payload as new arguments
                         let call =
                             ToolCall::new(call_id, &call_state.tool_name, decision.result.clone());
                         let mut tool_ctx = resume_tool_ctx.clone();
                         tool_ctx.call_id = call_id.to_string();
                         let result = execute_single_tool(agent, &call, &tool_ctx).await;
-
                         let status = if result.is_success() {
                             ToolCallStatus::Succeeded
                         } else {
@@ -637,27 +617,16 @@ pub async fn resume_agent_loop(
                                 updated_at: now_ms(),
                             },
                         )?;
-
                         tool_result_to_content(&result)
                     }
                 };
 
-                resume_messages.push(Arc::new(Message::tool(call_id, tool_result)));
+                messages.push(Arc::new(Message::tool(call_id, tool_result)));
             }
         }
     }
 
-    // Continue the main loop from where we left off
-    run_agent_loop(
-        agent,
-        runtime,
-        env,
-        sink,
-        thread_store,
-        resume_messages.into_iter().map(|m| (*m).clone()).collect(),
-        run_identity,
-    )
-    .await
+    Ok(())
 }
 
 // -- Helpers --

@@ -2,9 +2,7 @@
 
 use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
-use awaken::agent::loop_runner::{
-    AgentRunResult, ResumeInput, build_agent_env, resume_agent_loop, run_agent_loop,
-};
+use awaken::agent::loop_runner::{AgentRunResult, ResumeInput, build_agent_env, run_agent_loop};
 use awaken::agent::state::{ContextThrottleState, RunLifecycle, RunLifecycleState, ToolCallStates};
 use awaken::contract::content::ContentBlock;
 use awaken::contract::event::AgentEvent;
@@ -207,6 +205,7 @@ async fn single_step_natural_end() {
         None,
         vec![Message::user("hi")],
         test_identity(),
+        None,
     )
     .await
     .unwrap();
@@ -253,6 +252,7 @@ async fn tool_call_then_response() {
         None,
         vec![Message::user("echo hello")],
         test_identity(),
+        None,
     )
     .await
     .unwrap();
@@ -294,6 +294,7 @@ async fn tool_call_state_machine_transitions() {
         None,
         vec![Message::user("test")],
         test_identity(),
+        None,
     )
     .await
     .unwrap();
@@ -340,6 +341,7 @@ async fn multiple_tool_calls_in_one_step() {
         None,
         vec![Message::user("multi-tool")],
         test_identity(),
+        None,
     )
     .await
     .unwrap();
@@ -385,6 +387,7 @@ async fn max_rounds_exceeded() {
         None,
         vec![Message::user("loop")],
         test_identity(),
+        None,
     )
     .await
     .unwrap();
@@ -435,6 +438,7 @@ async fn unknown_tool_returns_error_result_not_crash() {
         None,
         vec![Message::user("call unknown")],
         test_identity(),
+        None,
     )
     .await
     .unwrap(); // Should NOT error — unknown tool produces ToolResult::error
@@ -485,6 +489,7 @@ async fn failing_tool_produces_error_result_continues_loop() {
         None,
         vec![Message::user("use fail tool")],
         test_identity(),
+        None,
     )
     .await
     .unwrap();
@@ -515,6 +520,7 @@ async fn events_have_correct_sequence_for_single_step() {
         None,
         vec![Message::user("hi")],
         test_identity(),
+        None,
     )
     .await
     .unwrap();
@@ -574,6 +580,7 @@ async fn events_have_correct_sequence_with_tool_call() {
         None,
         vec![Message::user("echo")],
         test_identity(),
+        None,
     )
     .await
     .unwrap();
@@ -643,6 +650,7 @@ async fn lifecycle_state_reflects_custom_run_id() {
         None,
         vec![Message::user("hi")],
         identity,
+        None,
     )
     .await
     .unwrap();
@@ -704,6 +712,7 @@ async fn phase_hooks_fire_during_loop() {
         None,
         vec![Message::user("hi")],
         test_identity(),
+        None,
     )
     .await
     .unwrap();
@@ -756,6 +765,7 @@ async fn tool_suspension_transitions_run_to_waiting() {
         None,
         vec![Message::user("do it")],
         test_identity(),
+        None,
     )
     .await
     .unwrap();
@@ -793,6 +803,7 @@ async fn resume_with_use_decision_as_tool_result() {
         None,
         vec![Message::user("do it")],
         test_identity(),
+        None,
     )
     .await
     .unwrap();
@@ -813,7 +824,7 @@ async fn resume_with_use_decision_as_tool_result() {
     ];
 
     // Resume with decision
-    let resume_result = resume_agent_loop(
+    let resume_result = run_agent_loop(
         &agent,
         &runtime,
         &env,
@@ -821,7 +832,7 @@ async fn resume_with_use_decision_as_tool_result() {
         None,
         messages,
         test_identity(),
-        ResumeInput {
+        Some(ResumeInput {
             decisions: vec![(
                 "c1".into(),
                 ToolCallResume {
@@ -833,7 +844,7 @@ async fn resume_with_use_decision_as_tool_result() {
                 },
             )],
             resume_mode: ToolCallResumeMode::UseDecisionAsToolResult,
-        },
+        }),
     )
     .await
     .unwrap();
@@ -871,6 +882,7 @@ async fn resume_with_cancel_marks_tool_cancelled() {
         None,
         vec![Message::user("do it")],
         test_identity(),
+        None,
     )
     .await
     .unwrap();
@@ -890,7 +902,7 @@ async fn resume_with_cancel_marks_tool_cancelled() {
     ];
 
     // Resume with cancel
-    let resume_result = resume_agent_loop(
+    let resume_result = run_agent_loop(
         &agent,
         &runtime,
         &env,
@@ -898,7 +910,7 @@ async fn resume_with_cancel_marks_tool_cancelled() {
         None,
         messages,
         test_identity(),
-        ResumeInput {
+        Some(ResumeInput {
             decisions: vec![(
                 "c1".into(),
                 ToolCallResume {
@@ -910,7 +922,7 @@ async fn resume_with_cancel_marks_tool_cancelled() {
                 },
             )],
             resume_mode: ToolCallResumeMode::ReplayToolCall,
-        },
+        }),
     )
     .await
     .unwrap();
@@ -946,6 +958,7 @@ async fn resume_with_replay_tool_call() {
         None,
         vec![Message::user("do it")],
         test_identity(),
+        None,
     )
     .await
     .unwrap();
@@ -985,7 +998,7 @@ async fn resume_with_replay_tool_call() {
         Message::tool("c1", "needs user approval"),
     ];
 
-    let resume_result = resume_agent_loop(
+    let resume_result = run_agent_loop(
         &agent2,
         &runtime,
         &env2,
@@ -993,7 +1006,7 @@ async fn resume_with_replay_tool_call() {
         None,
         messages,
         test_identity(),
-        ResumeInput {
+        Some(ResumeInput {
             decisions: vec![(
                 "c1".into(),
                 ToolCallResume {
@@ -1005,7 +1018,7 @@ async fn resume_with_replay_tool_call() {
                 },
             )],
             resume_mode: ToolCallResumeMode::ReplayToolCall,
-        },
+        }),
     )
     .await
     .unwrap();
@@ -1040,6 +1053,7 @@ async fn resume_with_pass_decision_to_tool() {
         None,
         vec![Message::user("do it")],
         test_identity(),
+        None,
     )
     .await;
     // This might not work because tool_call name is "passthrough" but we only have "dangerous".
@@ -1064,6 +1078,7 @@ async fn resume_with_pass_decision_to_tool() {
         None,
         vec![Message::user("do it")],
         test_identity(),
+        None,
     )
     .await
     .unwrap();
@@ -1099,7 +1114,7 @@ async fn resume_with_pass_decision_to_tool() {
         Message::tool("c1", "needs user approval"),
     ];
 
-    let resume_result = resume_agent_loop(
+    let resume_result = run_agent_loop(
         &agent3,
         &runtime2,
         &env3,
@@ -1107,7 +1122,7 @@ async fn resume_with_pass_decision_to_tool() {
         None,
         messages,
         test_identity(),
-        ResumeInput {
+        Some(ResumeInput {
             decisions: vec![(
                 "c1".into(),
                 ToolCallResume {
@@ -1119,7 +1134,7 @@ async fn resume_with_pass_decision_to_tool() {
                 },
             )],
             resume_mode: ToolCallResumeMode::PassDecisionToTool,
-        },
+        }),
     )
     .await
     .unwrap();
@@ -1144,12 +1159,13 @@ async fn resume_rejects_non_waiting_run() {
         None,
         vec![Message::user("hi")],
         test_identity(),
+        None,
     )
     .await
     .unwrap();
 
     // Attempt resume on a Done run
-    let err = resume_agent_loop(
+    let err = run_agent_loop(
         &agent,
         &runtime,
         &env,
@@ -1157,10 +1173,10 @@ async fn resume_rejects_non_waiting_run() {
         None,
         vec![Message::user("hi")],
         test_identity(),
-        ResumeInput {
+        Some(ResumeInput {
             decisions: vec![],
             resume_mode: ToolCallResumeMode::ReplayToolCall,
-        },
+        }),
     )
     .await
     .unwrap_err();
@@ -1189,13 +1205,14 @@ async fn resume_rejects_unknown_call_id() {
         None,
         vec![Message::user("do it")],
         test_identity(),
+        None,
     )
     .await
     .unwrap();
 
     let messages = vec![Message::user("do it")];
 
-    let err = resume_agent_loop(
+    let err = run_agent_loop(
         &agent,
         &runtime,
         &env,
@@ -1203,7 +1220,7 @@ async fn resume_rejects_unknown_call_id() {
         None,
         messages,
         test_identity(),
-        ResumeInput {
+        Some(ResumeInput {
             decisions: vec![(
                 "nonexistent".into(),
                 ToolCallResume {
@@ -1215,7 +1232,7 @@ async fn resume_rejects_unknown_call_id() {
                 },
             )],
             resume_mode: ToolCallResumeMode::ReplayToolCall,
-        },
+        }),
     )
     .await
     .unwrap_err();
