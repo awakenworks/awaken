@@ -1,4 +1,5 @@
 pub mod event;
+pub mod event_sink;
 pub mod executor;
 pub mod identity;
 pub mod inference;
