@@ -199,7 +199,9 @@ impl AgentBehavior for BackgroundTasksPlugin {
             actions = actions.and(AfterToolExecuteAction::State(state));
         }
         if let Some(reminder) = Self::render_task_view(&view) {
-            actions = actions.and(AfterToolExecuteAction::AddSystemReminder(reminder));
+            actions = actions.and(AfterToolExecuteAction::AddMessage(
+                tirea_contract::runtime::inference::ContextMessage::system_reminder(reminder),
+            ));
         }
         actions
     }

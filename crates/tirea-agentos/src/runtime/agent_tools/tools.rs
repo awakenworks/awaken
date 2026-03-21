@@ -1343,7 +1343,9 @@ impl Tool for AgentHandoffTool {
         .with_action(AfterToolExecuteAction::State(state_action));
 
         if let Some(message) = optional_string(&args, "message") {
-            effect = effect.with_action(AfterToolExecuteAction::AddUserMessage(message));
+            effect = effect.with_action(AfterToolExecuteAction::AddMessage(
+                crate::contracts::runtime::inference::ContextMessage::conversation_user(message),
+            ));
         }
 
         Ok(effect)

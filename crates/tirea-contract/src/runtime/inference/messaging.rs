@@ -17,11 +17,7 @@ impl MessagingContext {
     }
 
     pub fn add_system_reminder(&mut self, text: impl Into<String>) {
-        self.messages
-            .push(ContextMessage::conversation_internal_system(format!(
-                "<system-reminder>{}</system-reminder>",
-                text.into()
-            )));
+        self.messages.push(ContextMessage::system_reminder(text));
     }
 
     pub fn add_user_message(&mut self, text: impl Into<String>) {

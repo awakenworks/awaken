@@ -174,6 +174,14 @@ impl ContextMessage {
         Self::conversation(key, Role::System, Visibility::Internal, content)
     }
 
+    #[must_use]
+    pub fn system_reminder(text: impl Into<String>) -> Self {
+        Self::conversation_internal_system(format!(
+            "<system-reminder>{}</system-reminder>",
+            text.into()
+        ))
+    }
+
     /// Build a session-scoped context entry using a deterministic key derived
     /// from the content. Intended for legacy session-context callers that lack
     /// an explicit stable key but still need unified throttle/placement logic.

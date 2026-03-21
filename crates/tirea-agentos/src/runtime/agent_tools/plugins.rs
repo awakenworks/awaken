@@ -315,7 +315,9 @@ impl AgentBehavior for AgentToolsPlugin {
         ctx: &ReadOnlyContext<'_>,
     ) -> ActionSet<AfterToolExecuteAction> {
         match self.render_reminder(ctx.thread_id()).await {
-            Some(s) => ActionSet::single(AfterToolExecuteAction::AddSystemReminder(s)),
+            Some(s) => ActionSet::single(AfterToolExecuteAction::AddMessage(
+                tirea_contract::runtime::inference::ContextMessage::system_reminder(s),
+            )),
             None => ActionSet::empty(),
         }
     }
