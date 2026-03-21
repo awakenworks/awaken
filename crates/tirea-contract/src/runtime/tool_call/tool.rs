@@ -535,7 +535,6 @@ impl<T: TypedTool> Tool for T {
 fn typed_tool_schema<T: JsonSchema>() -> Value {
     let mut v = serde_json::to_value(schemars::schema_for!(T))
         .unwrap_or_else(|_| serde_json::json!({"type": "object", "properties": {}}));
-    // Strip the $schema key — LLM providers don't need it.
     if let Some(obj) = v.as_object_mut() {
         obj.remove("$schema");
     }

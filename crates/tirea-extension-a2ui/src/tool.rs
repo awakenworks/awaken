@@ -10,7 +10,7 @@
 use crate::validate::validate_a2ui_messages;
 use async_trait::async_trait;
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tirea_contract::runtime::tool_call::{ToolCallContext, ToolError, ToolResult, TypedTool};
 use tracing::debug;
@@ -68,14 +68,115 @@ impl Default for A2uiRenderTool {
     }
 }
 
+/// A single A2UI v0.9 message.
+///
+/// Must contain `"version": "v0.9"` and exactly one of:
+/// `createSurface`, `updateComponents`, `updateDataModel`, or `deleteSurface`.
+/// Additional fields are passed through to the renderer.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct A2uiMessage {
+    /// Protocol version, must be "v0.9".
+    pub version: String,
+    /// Create a new surface (mutually exclusive with other message types).
+    #[serde(
+        rename = "createSurface",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub create_surface: Option<A2uiCreateSurface>,
+    /// Update components on an existing surface.
+    #[serde(
+        rename = "updateComponents",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub update_components: Option<A2uiUpdateComponents>,
+    /// Update the data model of a surface.
+    #[serde(
+        rename = "updateDataModel",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub update_data_model: Option<A2uiUpdateDataModel>,
+    /// Delete a surface.
+    #[serde(
+        rename = "deleteSurface",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub delete_surface: Option<A2uiDeleteSurface>,
+}
+
+/// Parameters for creating a new A2UI surface.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct A2uiCreateSurface {
+    /// Unique identifier for this surface.
+    #[serde(rename = "surfaceId")]
+    pub surface_id: String,
+    /// Catalog URL or identifier for available components.
+    #[serde(rename = "catalogId")]
+    pub catalog_id: String,
+}
+
+/// Parameters for updating components on a surface.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct A2uiUpdateComponents {
+    /// Target surface identifier.
+    #[serde(rename = "surfaceId")]
+    pub surface_id: String,
+    /// Array of component definitions to render.
+    pub components: Vec<A2uiComponent>,
+}
+
+/// A single A2UI component definition.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct A2uiComponent {
+    /// Unique component identifier within the surface.
+    pub id: String,
+    /// Component type name from the catalog (e.g. "Card", "TextField", "Button").
+    pub component: String,
+    /// Optional single child component ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child: Option<String>,
+    /// Optional ordered child component IDs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub children: Option<Vec<String>>,
+    /// Display text or label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Display label for form fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Chart/data field configurations and other component-specific properties.
+    #[serde(flatten)]
+    pub extra: std::collections::HashMap<String, Value>,
+}
+
+/// Parameters for updating the data model of a surface.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct A2uiUpdateDataModel {
+    /// Target surface identifier.
+    #[serde(rename = "surfaceId")]
+    pub surface_id: String,
+    /// JSON path within the data model to update.
+    pub path: String,
+    /// New value at the given path.
+    pub value: Value,
+}
+
+/// Parameters for deleting a surface.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct A2uiDeleteSurface {
+    /// Surface identifier to delete.
+    #[serde(rename = "surfaceId")]
+    pub surface_id: String,
+}
+
 /// Arguments for the A2UI render tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct A2uiRenderArgs {
     /// Array of A2UI v0.9 messages to send to the client.
-    ///
-    /// Each message must contain `"version": "v0.9"` and exactly one of:
-    /// `createSurface`, `updateComponents`, `updateDataModel`, or `deleteSurface`.
-    pub messages: Vec<Value>,
+    pub messages: Vec<A2uiMessage>,
 }
 
 #[async_trait]
@@ -101,7 +202,8 @@ impl TypedTool for A2uiRenderTool {
         if args.messages.is_empty() {
             return Err("messages array must not be empty".to_string());
         }
-        let errors = validate_a2ui_messages(&args.messages);
+        let values = messages_to_values(&args.messages);
+        let errors = validate_a2ui_messages(&values);
         if errors.is_empty() {
             Ok(())
         } else {
@@ -121,14 +223,22 @@ impl TypedTool for A2uiRenderTool {
             args.messages.len()
         );
 
+        let values = messages_to_values(&args.messages);
         Ok(ToolResult::success(
             TOOL_NAME,
             json!({
-                "a2ui": args.messages,
+                "a2ui": values,
                 "rendered": true,
             }),
         ))
     }
+}
+
+fn messages_to_values(messages: &[A2uiMessage]) -> Vec<Value> {
+    messages
+        .iter()
+        .map(|m| serde_json::to_value(m).unwrap_or_default())
+        .collect()
 }
 
 #[cfg(test)]
@@ -137,16 +247,16 @@ mod tests {
     use serde_json::json;
     use tirea_contract::testing::TestFixture;
 
-    fn contact_form_messages() -> Vec<Value> {
-        vec![
-            json!({
+    fn contact_form_messages() -> Vec<A2uiMessage> {
+        serde_json::from_value(json!([
+            {
                 "version": "v0.9",
                 "createSurface": {
                     "surfaceId": "form_1",
                     "catalogId": "https://a2ui.org/specification/v0_9/basic_catalog.json"
                 }
-            }),
-            json!({
+            },
+            {
                 "version": "v0.9",
                 "updateComponents": {
                     "surfaceId": "form_1",
@@ -158,16 +268,16 @@ mod tests {
                         {"id": "btn", "component": "Button", "text": "Submit", "action": {"event": {"name": "submit"}}}
                     ]
                 }
-            }),
-            json!({
+            },
+            {
                 "version": "v0.9",
                 "updateDataModel": {
                     "surfaceId": "form_1",
                     "path": "/contact",
                     "value": {"name": ""}
                 }
-            }),
-        ]
+            }
+        ])).expect("valid test messages")
     }
 
     #[test]
@@ -201,7 +311,13 @@ mod tests {
     fn validate_rejects_invalid_a2ui() {
         let tool = A2uiRenderTool::new();
         let args = A2uiRenderArgs {
-            messages: vec![json!({"version": "v0.9"})],
+            messages: vec![A2uiMessage {
+                version: "v0.9".to_string(),
+                create_surface: None,
+                update_components: None,
+                update_data_model: None,
+                delete_surface: None,
+            }],
         };
         let err = tool.validate(&args).unwrap_err();
         assert!(err.contains("missing message type"));
