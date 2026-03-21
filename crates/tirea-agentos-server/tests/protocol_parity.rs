@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tirea_agentos::composition::{AgentDefinition, AgentDefinitionSpec, AgentOsBuilder};
 use tirea_agentos::contracts::storage::MailboxStore;
 use tirea_agentos::contracts::{AgentEvent, RunRequest};
-use tirea_agentos::runtime::{AgentOs, RunStream};
+use tirea_agentos::runtime::{AgentOs, RunLaunchSpec, RunStream};
 use tirea_agentos_server::protocol::ag_ui::apply_agui_extensions;
 use tirea_agentos_server::service::{AppState, MailboxService};
 use tirea_contract::{Message as CoreMessage, RunOrigin, ThreadReader, ThreadWriter};
@@ -77,7 +77,7 @@ async fn start_active_run(
         initial_decisions: vec![],
         source_mailbox_entry_id: None,
     };
-    os.start_active_run_with_persistence(agent_id, request, resolved, false, false)
+    os.start_active_run_with_spec(agent_id, request, resolved, RunLaunchSpec::TRANSIENT)
         .await
         .expect("start active run")
 }

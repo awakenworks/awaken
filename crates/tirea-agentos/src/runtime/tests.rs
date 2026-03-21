@@ -1963,6 +1963,48 @@ async fn prepare_run_sets_parent_thread_id_for_existing_thread_without_lineage()
 }
 
 #[tokio::test]
+async fn prepare_run_with_spec_strips_lineage_for_dialog_launches() {
+    use tirea_store_adapters::MemoryStore;
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = AgentOs::builder()
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "a1",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
+        .build()
+        .unwrap();
+
+    let resolved = os.resolve("a1").unwrap();
+    let prepared = os
+        .prepare_run_with_spec(
+            RunRequest {
+                agent_id: "a1".to_string(),
+                thread_id: Some("t-dialog".to_string()),
+                run_id: Some("run-from-client".to_string()),
+                parent_run_id: Some("run-parent".to_string()),
+                parent_thread_id: Some("thread-parent".to_string()),
+                resource_id: None,
+                origin: RunOrigin::default(),
+                state: None,
+                messages: vec![crate::contracts::thread::Message::user("hello")],
+                initial_decisions: vec![],
+                source_mailbox_entry_id: None,
+            },
+            resolved,
+            RunLaunchSpec::HTTP_DIALOG,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(prepared.thread_id(), "t-dialog");
+    assert_ne!(prepared.run_id(), "run-from-client");
+    assert_eq!(prepared.run_ctx.run_identity().parent_run_id_opt(), None);
+    assert_eq!(prepared.run_ctx.run_identity().parent_thread_id_opt(), None);
+}
+
+#[tokio::test]
 async fn prepare_run_rejects_parent_thread_id_mismatch_for_existing_thread() {
     use tirea_store_adapters::MemoryStore;
 

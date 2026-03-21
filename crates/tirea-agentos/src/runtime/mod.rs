@@ -35,7 +35,7 @@ pub use background_tasks::{
 };
 pub use context::{ContextPlugin, CONTEXT_PLUGIN_ID};
 pub use errors::{AgentOsResolveError, AgentOsRunError};
-pub use launch::{RunLaunchSpec, RunLineageMode, RunPersistence};
+pub use launch::RunLaunchSpec;
 pub use stop_policy::{
     ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds, StopOnTool, StopPolicy,
     StopPolicyInput, StopPolicyPlugin, StopPolicyStats, Timeout, TokenBudget,

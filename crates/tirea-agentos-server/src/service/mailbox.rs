@@ -501,14 +501,7 @@ pub async fn start_streaming_run_via_mailbox(
         ))
     })?;
 
-    match start_agent_run_for_entry(
-        os,
-        mailbox_store,
-        &entry,
-        RunLaunchSpec::THREAD_ONLY_STRIP_LINEAGE,
-    )
-    .await
-    {
+    match start_agent_run_for_entry(os, mailbox_store, &entry, RunLaunchSpec::DETACHED).await {
         Ok(run) => {
             ack_claimed_entry(mailbox_store, &entry.entry_id, &claim_token).await?;
             Ok(run)

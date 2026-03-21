@@ -82,16 +82,10 @@ impl AgentOs {
     pub(crate) async fn prepare_active_run_with_spec(
         &self,
         owner_agent_id: &str,
-        mut run_request: RunRequest,
+        run_request: RunRequest,
         resolved: ResolvedRun,
         launch: RunLaunchSpec,
     ) -> Result<(PreparedRun, String, String), AgentOsRunError> {
-        if launch.strip_lineage() {
-            run_request.run_id = None;
-            run_request.parent_run_id = None;
-            run_request.parent_thread_id = None;
-        }
-
         let previous_run_id = if !run_request.messages.is_empty() {
             if let Some(thread_id) = run_request.thread_id.as_deref() {
                 self.current_run_id_for_thread(owner_agent_id, thread_id)
@@ -103,11 +97,8 @@ impl AgentOs {
             None
         };
 
-        self.clear_suspended_calls_before_user_run_input(&mut run_request)
-            .await?;
-
         let prepared = self
-            .prepare_run_with_persistence(run_request, resolved, launch.persist_run_mapping())
+            .prepare_run_with_spec(run_request, resolved, launch)
             .await?;
         let thread_id = prepared.thread_id().to_string();
         let run_id = prepared.run_id().to_string();
@@ -152,30 +143,6 @@ impl AgentOs {
             ))));
         }
         Ok(self.wrap_run_stream_with_active_handle_cleanup(run))
-    }
-
-    pub async fn start_active_run_with_persistence(
-        &self,
-        owner_agent_id: &str,
-        run_request: RunRequest,
-        resolved: ResolvedRun,
-        persist_run: bool,
-        strip_lineage: bool,
-    ) -> Result<RunStream, AgentOsRunError> {
-        let launch = RunLaunchSpec::new(
-            if persist_run {
-                super::RunPersistence::DurableRunRecord
-            } else {
-                super::RunPersistence::ThreadOnly
-            },
-            if strip_lineage {
-                super::RunLineageMode::Strip
-            } else {
-                super::RunLineageMode::Preserve
-            },
-        );
-        self.start_active_run_with_spec(owner_agent_id, run_request, resolved, launch)
-            .await
     }
 
     pub async fn start_active_run_with_spec(
@@ -244,22 +211,34 @@ impl AgentOs {
         request: RunRequest,
         resolved: ResolvedRun,
     ) -> Result<PreparedRun, AgentOsRunError> {
-        let owner_agent_id = request.agent_id.clone();
-        self.prepare_active_run_with_spec(
-            &owner_agent_id,
-            request,
-            resolved,
-            RunLaunchSpec::DURABLE_PRESERVE_LINEAGE,
-        )
-        .await
-        .map(|(prepared, _thread_id, _run_id)| prepared)
+        self.prepare_run_with_spec(request, resolved, RunLaunchSpec::DURABLE)
+            .await
     }
 
-    /// Prepare a resolved run and control whether the run should be persisted.
+    /// Prepare a resolved run using an explicit launch policy.
     ///
-    /// This powers dialog-style runs where short-lived execution state is needed
-    /// but we intentionally do not keep durable run records.
-    pub async fn prepare_run_with_persistence(
+    /// This powers both durable runs and thread-only/dialog-style runs while
+    /// keeping launch semantics in a named value object instead of boolean
+    /// parameters.
+    pub async fn prepare_run_with_spec(
+        &self,
+        mut request: RunRequest,
+        resolved: ResolvedRun,
+        launch: RunLaunchSpec,
+    ) -> Result<PreparedRun, AgentOsRunError> {
+        if launch.strip_lineage() {
+            request.run_id = None;
+            request.parent_run_id = None;
+            request.parent_thread_id = None;
+        }
+        self.clear_suspended_calls_before_user_run_input(&mut request)
+            .await?;
+
+        self.prepare_run_with_persistence_flag(request, resolved, launch.persist_run_mapping())
+            .await
+    }
+
+    async fn prepare_run_with_persistence_flag(
         &self,
         mut request: RunRequest,
         resolved: ResolvedRun,

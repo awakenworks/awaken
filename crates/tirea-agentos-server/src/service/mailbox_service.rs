@@ -384,7 +384,7 @@ impl MailboxService {
             &self.os,
             &self.mailbox_store,
             &claimed,
-            RunLaunchSpec::THREAD_ONLY_STRIP_LINEAGE,
+            RunLaunchSpec::DETACHED,
         )
         .await
         {

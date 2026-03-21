@@ -569,7 +569,7 @@ where
                         &agent_id,
                         run_request,
                         resolved,
-                        RunLaunchSpec::DURABLE_PRESERVE_LINEAGE,
+                        RunLaunchSpec::DURABLE,
                     )
                     .await
                 {
@@ -715,7 +715,7 @@ where
                         &agent_id,
                         run_request,
                         resolved,
-                        RunLaunchSpec::DURABLE_PRESERVE_LINEAGE,
+                        RunLaunchSpec::DURABLE,
                     )
                     .await
                 {
