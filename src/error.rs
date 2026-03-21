@@ -36,4 +36,6 @@ pub enum StateError {
     UnknownScheduledActionHandler { key: String },
     #[error("no effect handler registered for {key}")]
     UnknownEffectHandler { key: String },
+    #[error("parallel merge conflict on exclusive key: {key}")]
+    ParallelMergeConflict { key: String },
 }

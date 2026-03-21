@@ -8,7 +8,7 @@ use crate::runtime::{
     EffectHandlerArc, PhaseHook, PhaseHookArc, ScheduledActionHandlerArc, TypedEffectAdapter,
     TypedEffectHandler, TypedScheduledActionAdapter, TypedScheduledActionHandler,
 };
-use crate::state::{StateKey, StateKeyOptions, StateMap};
+use crate::state::{MergeStrategy, StateKey, StateKeyOptions, StateMap};
 
 use super::Plugin;
 
@@ -17,6 +17,7 @@ pub(crate) struct KeyRegistration {
     pub(crate) type_id: TypeId,
     pub(crate) key: String,
     pub(crate) options: StateKeyOptions,
+    pub(crate) merge_strategy: MergeStrategy,
     pub(crate) export: fn(&StateMap) -> Result<Option<JsonValue>, StateError>,
     pub(crate) import: fn(&mut StateMap, JsonValue) -> Result<(), StateError>,
     pub(crate) clear: fn(&mut StateMap),
@@ -28,6 +29,7 @@ impl KeyRegistration {
             type_id: TypeId::of::<K>(),
             key: K::KEY.into(),
             options,
+            merge_strategy: K::MERGE,
             export: |map| match map.get::<K>() {
                 Some(value) => K::encode(value).map(Some),
                 None => Ok(None),
@@ -73,6 +75,13 @@ pub struct InstalledPlugin {
 }
 
 impl PluginRegistry {
+    pub(crate) fn merge_strategy(&self, key: &str) -> MergeStrategy {
+        self.keys_by_name
+            .get(key)
+            .map(|reg| reg.merge_strategy)
+            .unwrap_or(MergeStrategy::Exclusive)
+    }
+
     pub(crate) fn ensure_key(&self, key: &str) -> Result<(), StateError> {
         if self.keys_by_name.contains_key(key) {
             Ok(())

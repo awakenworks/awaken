@@ -1,8 +1,10 @@
 use std::marker::PhantomData;
 
+use std::collections::HashSet;
+
 use crate::error::StateError;
 
-use super::{Snapshot, StateKey, StateMap};
+use super::{MergeStrategy, Snapshot, StateKey, StateMap};
 
 pub(crate) trait MutationOp: Send {
     fn apply(self: Box<Self>, state: &mut Snapshot);
@@ -131,6 +133,41 @@ impl MutationBatch {
 
     pub(crate) fn op_len(&self) -> usize {
         self.ops.len()
+    }
+
+    /// Merge two batches produced by parallel execution.
+    ///
+    /// - Disjoint keys: always merged.
+    /// - Overlapping keys with `Commutative` strategy: merged (order irrelevant).
+    /// - Overlapping keys with `Exclusive` strategy: returns `ParallelMergeConflict`.
+    ///
+    /// The `strategy` function resolves the merge strategy for a given key name.
+    pub fn merge_parallel<F>(mut self, mut other: Self, strategy: F) -> Result<Self, StateError>
+    where
+        F: Fn(&str) -> MergeStrategy,
+    {
+        // Reconcile base revisions
+        self.base_revision = match (self.base_revision, other.base_revision) {
+            (Some(left), Some(right)) if left != right => {
+                return Err(StateError::MutationBaseRevisionMismatch { left, right });
+            }
+            (Some(left), _) => Some(left),
+            (None, Some(right)) => Some(right),
+            (None, None) => None,
+        };
+
+        // Check overlapping keys
+        let self_keys: HashSet<&str> = self.touched_keys.iter().map(|s| s.as_str()).collect();
+        for key in &other.touched_keys {
+            if self_keys.contains(key.as_str()) && strategy(key) == MergeStrategy::Exclusive {
+                return Err(StateError::ParallelMergeConflict { key: key.clone() });
+            }
+        }
+
+        // Merge ops and keys
+        self.ops.append(&mut other.ops);
+        self.touched_keys.append(&mut other.touched_keys);
+        Ok(self)
     }
 }
 

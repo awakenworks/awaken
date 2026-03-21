@@ -76,6 +76,16 @@ impl StateStore {
         MutationBatch::new()
     }
 
+    /// Merge two batches from parallel execution using registered merge strategies.
+    pub fn merge_parallel(
+        &self,
+        left: MutationBatch,
+        right: MutationBatch,
+    ) -> Result<MutationBatch, StateError> {
+        let registry = self.registry.lock().expect("registry lock poisoned");
+        left.merge_parallel(right, |key| registry.merge_strategy(key))
+    }
+
     pub fn commit(&self, patch: MutationBatch) -> Result<u64, StateError> {
         if patch.is_empty() {
             return Ok(self.revision());

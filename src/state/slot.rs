@@ -99,6 +99,22 @@ impl StateMap {
     }
 }
 
+/// Parallel merge strategy for a state key.
+///
+/// Determines how concurrent updates to the same key are handled
+/// when merging `MutationBatch`es from parallel tool execution.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MergeStrategy {
+    /// Concurrent updates to this key are mutually exclusive.
+    /// Parallel batches that both touch this key cannot be merged.
+    #[default]
+    Exclusive,
+    /// Updates to this key are commutative — they can be applied
+    /// in any order and produce the same result. Parallel batches
+    /// that both touch this key will have their ops concatenated.
+    Commutative,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateKeyOptions {
     pub persistent: bool,
@@ -116,6 +132,9 @@ impl Default for StateKeyOptions {
 
 pub trait StateKey: 'static + Send + Sync {
     const KEY: &'static str;
+
+    /// Parallel merge strategy. Default: `Exclusive` (conflict on concurrent writes).
+    const MERGE: MergeStrategy = MergeStrategy::Exclusive;
 
     type Value: Clone + Default + Serialize + DeserializeOwned + Send + Sync + 'static;
     type Update: Send + 'static;
