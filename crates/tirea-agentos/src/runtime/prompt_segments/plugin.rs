@@ -1,9 +1,7 @@
 use super::PROMPT_SEGMENTS_PLUGIN_ID;
 use async_trait::async_trait;
 use tirea_contract::runtime::behavior::{AgentBehavior, ReadOnlyContext};
-use tirea_contract::runtime::inference::{
-    consume_after_emit_prompt_segments_action, PromptSegmentConsumePolicy, PromptSegmentState,
-};
+use tirea_contract::runtime::inference::PromptSegmentState;
 use tirea_contract::runtime::phase::{ActionSet, BeforeInferenceAction};
 
 /// Bridges durable prompt-segment state into per-inference hidden context.
@@ -30,19 +28,9 @@ impl AgentBehavior for PromptSegmentsPlugin {
         }
 
         let mut actions = ActionSet::empty();
-        let mut has_after_emit = false;
         for item in state.items {
-            if item.consume == PromptSegmentConsumePolicy::AfterEmit {
-                has_after_emit = true;
-            }
             actions = actions.and(BeforeInferenceAction::AddContextMessage(
                 item.to_context_message(),
-            ));
-        }
-
-        if has_after_emit {
-            actions = actions.and(BeforeInferenceAction::State(
-                consume_after_emit_prompt_segments_action(),
             ));
         }
 

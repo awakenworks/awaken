@@ -50,6 +50,10 @@ pub struct ContextMessage {
     /// Where to inject the content in the message sequence.
     #[serde(default)]
     pub target: ContextMessageTarget,
+    /// Whether a durable backing entry should be consumed after this message is
+    /// actually emitted into the prompt.
+    #[serde(default)]
+    pub consume_after_emit: bool,
 }
 
 impl ContextMessage {
@@ -60,6 +64,7 @@ impl ContextMessage {
             content: content.into(),
             cooldown_turns: 0,
             target: ContextMessageTarget::System,
+            consume_after_emit: false,
         }
     }
 
@@ -72,6 +77,12 @@ impl ContextMessage {
     #[must_use]
     pub fn with_cooldown_turns(mut self, cooldown_turns: u32) -> Self {
         self.cooldown_turns = cooldown_turns;
+        self
+    }
+
+    #[must_use]
+    pub fn with_consume_after_emit(mut self, consume_after_emit: bool) -> Self {
+        self.consume_after_emit = consume_after_emit;
         self
     }
 
@@ -113,12 +124,14 @@ mod tests {
             content: "<skills>...</skills>".into(),
             cooldown_turns: 10,
             target: ContextMessageTarget::System,
+            consume_after_emit: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         let restored: ContextMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.key, "skills");
         assert_eq!(restored.cooldown_turns, 10);
         assert_eq!(restored.target, ContextMessageTarget::System);
+        assert!(!restored.consume_after_emit);
     }
 
     #[test]
@@ -127,6 +140,7 @@ mod tests {
         let entry: ContextMessage = serde_json::from_str(json).unwrap();
         assert_eq!(entry.cooldown_turns, 0);
         assert_eq!(entry.target, ContextMessageTarget::System);
+        assert!(!entry.consume_after_emit);
     }
 
     #[test]
@@ -136,6 +150,7 @@ mod tests {
             content: "branch: main".into(),
             cooldown_turns: 3,
             target: ContextMessageTarget::Session,
+            consume_after_emit: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"session\""));
@@ -150,6 +165,7 @@ mod tests {
             content: "Do X".into(),
             cooldown_turns: 0,
             target: ContextMessageTarget::SuffixSystem,
+            consume_after_emit: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"suffix_system\""));
@@ -165,5 +181,13 @@ mod tests {
         assert_eq!(a.target, ContextMessageTarget::Session);
         assert_eq!(a.key, b.key);
         assert_ne!(a.key, c.key);
+    }
+
+    #[test]
+    fn consume_after_emit_roundtrip() {
+        let entry = ContextMessage::session("reminder", "Remember").with_consume_after_emit(true);
+        let json = serde_json::to_string(&entry).unwrap();
+        let restored: ContextMessage = serde_json::from_str(&json).unwrap();
+        assert!(restored.consume_after_emit);
     }
 }

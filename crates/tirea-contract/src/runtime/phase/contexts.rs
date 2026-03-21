@@ -94,6 +94,7 @@ impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
                 content: content.into(),
                 cooldown_turns: 0,
                 target: Default::default(),
+                consume_after_emit: false,
             });
     }
 

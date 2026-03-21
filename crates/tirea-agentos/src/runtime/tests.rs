@@ -1781,6 +1781,7 @@ impl AgentBehavior for TestPlugin {
                 content: format!("<plugin id=\"{}\"/>", self.0),
                 cooldown_turns: 0,
                 target: Default::default(),
+                consume_after_emit: false,
             },
         ))
     }

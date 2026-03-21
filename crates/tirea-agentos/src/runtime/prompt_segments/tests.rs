@@ -44,7 +44,7 @@ async fn injects_persisted_segments_as_context_messages() {
 }
 
 #[tokio::test]
-async fn emits_consume_action_for_after_emit_segments() {
+async fn marks_after_emit_segments_on_context_messages() {
     let plugin = PromptSegmentsPlugin;
     let config = RunPolicy::new();
     let state = PromptSegmentState {
@@ -56,11 +56,11 @@ async fn emits_consume_action_for_after_emit_segments() {
     let ctx = ReadOnlyContext::new(Phase::BeforeInference, "t1", &[], &config, &doc);
 
     let actions: Vec<_> = plugin.before_inference(&ctx).await.into_iter().collect();
-    assert_eq!(actions.len(), 2);
-    assert!(actions
-        .iter()
-        .any(|a| matches!(a, BeforeInferenceAction::AddContextMessage(_))));
-    assert!(actions
-        .iter()
-        .any(|a| matches!(a, BeforeInferenceAction::State(_))));
+    assert_eq!(actions.len(), 1);
+    match &actions[0] {
+        BeforeInferenceAction::AddContextMessage(entry) => {
+            assert!(entry.consume_after_emit);
+        }
+        _ => panic!("expected AddContextMessage"),
+    }
 }

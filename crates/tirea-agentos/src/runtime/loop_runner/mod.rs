@@ -95,9 +95,9 @@ pub use config::{StepToolInput, StepToolProvider, StepToolSnapshot};
 #[cfg(test)]
 use core::build_messages;
 use core::{
-    build_request_for_filtered_tools, inference_inputs_from_step, suspended_calls_from_ctx,
-    tool_call_states_from_ctx, transition_tool_call_state, upsert_tool_call_state,
-    ContextThrottleTracker, ToolCallStateSeed, ToolCallStateTransition,
+    build_request_for_filtered_tools, consume_emitted_prompt_segments, inference_inputs_from_step,
+    suspended_calls_from_ctx, tool_call_states_from_ctx, transition_tool_call_state,
+    upsert_tool_call_state, ContextThrottleTracker, ToolCallStateSeed, ToolCallStateTransition,
 };
 pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
 pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
@@ -2205,13 +2205,21 @@ pub async fn run_loop_with_context(
         let request_transforms = prepared.request_transforms;
         let step_inference_override = prepared.inference_override;
 
-        apply_context_messages_to_prompt(
+        let consumed_prompt_segments = apply_context_messages_to_prompt(
             &mut messages,
             &mut context_tracker,
             prepared.context_messages,
             step_counter,
             !agent.system_prompt().is_empty(),
         );
+        if let Err(e) = consume_emitted_prompt_segments(&mut run_ctx, consumed_prompt_segments) {
+            let msg = e.to_string();
+            terminate_run!(
+                TerminationReason::Error(msg.clone()),
+                None,
+                Some(outcome::LoopFailure::State(msg))
+            );
+        }
         step_counter = step_counter.saturating_add(1);
         let chat_options =
             apply_inference_override(agent.chat_options(), step_inference_override.as_ref());

@@ -1,5 +1,6 @@
 use super::AgentLoopError;
 use crate::contracts::runtime::phase::StepContext;
+use crate::contracts::runtime::state::AnyStateAction;
 use crate::contracts::runtime::state::{reduce_state_actions, ScopeContext};
 use crate::contracts::runtime::tool_call::tool_call_states_from_state;
 use crate::contracts::runtime::tool_call::Tool;
@@ -246,18 +247,22 @@ pub(super) fn apply_context_messages_to_prompt(
     entries: Vec<tirea_contract::runtime::inference::ContextMessage>,
     current_step: usize,
     has_base_system_prompt: bool,
-) {
+) -> Vec<String> {
     use tirea_contract::runtime::inference::ContextMessageTarget;
 
     let filtered = tracker.filter(normalize_context_messages(entries), current_step);
     if filtered.is_empty() {
-        return;
+        return Vec::new();
     }
 
     let mut prefix = Vec::new();
     let mut session = Vec::new();
     let mut suffix = Vec::new();
+    let mut consumed_context_keys = Vec::new();
     for entry in filtered {
+        if entry.consume_after_emit {
+            consumed_context_keys.push(entry.key.clone());
+        }
         let msg = Message::system(entry.content);
         match entry.target {
             ContextMessageTarget::System => prefix.push(msg),
@@ -280,6 +285,7 @@ pub(super) fn apply_context_messages_to_prompt(
     }
 
     messages.extend(suffix);
+    consumed_context_keys
 }
 
 fn normalize_context_messages(
@@ -294,6 +300,42 @@ fn normalize_context_messages(
     }
     deduped.reverse();
     deduped
+}
+
+pub(super) fn consume_emitted_prompt_segments(
+    run_ctx: &mut RunContext,
+    context_keys: Vec<String>,
+) -> Result<(), AgentLoopError> {
+    if context_keys.is_empty() {
+        return Ok(());
+    }
+
+    let actions = context_keys
+        .into_iter()
+        .map(tirea_contract::runtime::inference::remove_prompt_segment_context_key_action)
+        .collect::<Vec<AnyStateAction>>();
+    let serialized_actions = actions
+        .iter()
+        .map(AnyStateAction::to_serialized_state_action)
+        .collect::<Vec<_>>();
+    run_ctx.add_serialized_state_actions(serialized_actions);
+
+    let base_state = run_ctx
+        .snapshot()
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    let patches = reduce_state_actions(
+        actions,
+        &base_state,
+        "agent_loop:prompt_segments",
+        &ScopeContext::run(),
+    )
+    .map_err(|e| {
+        AgentLoopError::StateError(format!(
+            "failed to reduce emitted prompt segment actions: {e}"
+        ))
+    })?;
+    run_ctx.add_thread_patches(patches);
+    Ok(())
 }
 
 #[allow(dead_code)]
@@ -697,6 +739,7 @@ mod tests {
             content: content.into(),
             cooldown_turns: cooldown,
             target: tirea_contract::runtime::inference::ContextMessageTarget::System,
+            consume_after_emit: false,
         }
     }
 
@@ -771,7 +814,7 @@ mod tests {
             Message::assistant("world"),
         ];
 
-        apply_context_messages_to_prompt(
+        let _ = apply_context_messages_to_prompt(
             &mut messages,
             &mut tracker,
             vec![
@@ -780,18 +823,21 @@ mod tests {
                     content: "prefix".into(),
                     cooldown_turns: 0,
                     target: ContextMessageTarget::System,
+                    consume_after_emit: false,
                 },
                 ContextMessage {
                     key: "session".into(),
                     content: "session".into(),
                     cooldown_turns: 0,
                     target: ContextMessageTarget::Session,
+                    consume_after_emit: false,
                 },
                 ContextMessage {
                     key: "suffix".into(),
                     content: "suffix".into(),
                     cooldown_turns: 0,
                     target: ContextMessageTarget::SuffixSystem,
+                    consume_after_emit: false,
                 },
             ],
             0,
@@ -812,7 +858,7 @@ mod tests {
         let mut tracker = ContextThrottleTracker::new();
         let mut messages = vec![Message::user("hello")];
 
-        apply_context_messages_to_prompt(
+        let _ = apply_context_messages_to_prompt(
             &mut messages,
             &mut tracker,
             vec![
@@ -821,12 +867,14 @@ mod tests {
                     content: "prefix".into(),
                     cooldown_turns: 0,
                     target: ContextMessageTarget::System,
+                    consume_after_emit: false,
                 },
                 ContextMessage {
                     key: "session".into(),
                     content: "session".into(),
                     cooldown_turns: 0,
                     target: ContextMessageTarget::Session,
+                    consume_after_emit: false,
                 },
             ],
             0,

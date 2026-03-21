@@ -219,6 +219,7 @@ impl AgentBehavior for ContextInjectionPlugin {
                 content: self.addendum.clone(),
                 cooldown_turns: 0,
                 target: Default::default(),
+                consume_after_emit: false,
             },
         ))
     }

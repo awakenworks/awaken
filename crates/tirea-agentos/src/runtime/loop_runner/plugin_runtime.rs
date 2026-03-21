@@ -476,6 +476,7 @@ mod tests {
                     content: "injected by action".into(),
                     cooldown_turns: 0,
                     target: Default::default(),
+                    consume_after_emit: false,
                 },
             ))
         }

@@ -91,6 +91,7 @@ impl AgentOverlay {
                     content: prompt,
                     cooldown_turns: 0,
                     target: Default::default(),
+                    consume_after_emit: false,
                 },
             )));
         }
