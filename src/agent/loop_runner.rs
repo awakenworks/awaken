@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use crate::contract::event::AgentEvent;
+use crate::contract::event_sink::EventSink;
 use crate::contract::executor::InferenceRequest;
 use crate::contract::identity::RunIdentity;
 use crate::contract::inference::LLMResponse;
@@ -41,7 +42,6 @@ pub enum AgentLoopError {
 pub struct AgentRunResult {
     pub response: String,
     pub termination: TerminationReason,
-    pub events: Vec<AgentEvent>,
     pub steps: usize,
 }
 
@@ -138,11 +138,11 @@ pub async fn run_agent_loop(
     runtime: &PhaseRuntime,
     env: &ExecutionEnv,
     termination_flag: &TerminationFlag,
+    sink: &dyn EventSink,
     initial_messages: Vec<Message>,
     run_identity: RunIdentity,
 ) -> Result<AgentRunResult, AgentLoopError> {
     let store = runtime.store();
-    let mut events = Vec::new();
     let mut messages: Vec<Arc<Message>> = initial_messages.into_iter().map(Arc::new).collect();
     let mut steps: usize = 0;
 
@@ -162,11 +162,12 @@ pub async fn run_agent_loop(
         },
     )?;
 
-    events.push(AgentEvent::RunStart {
+    sink.emit(AgentEvent::RunStart {
         thread_id: run_identity.thread_id.clone(),
         run_id: run_identity.run_id.clone(),
         parent_run_id: run_identity.parent_run_id.clone(),
-    });
+    })
+    .await;
 
     runtime
         .run_phase_with_context(env, make_ctx(Phase::RunStart, &messages, &run_identity))
@@ -175,9 +176,10 @@ pub async fn run_agent_loop(
     let termination = loop {
         steps += 1;
 
-        events.push(AgentEvent::StepStart {
+        sink.emit(AgentEvent::StepStart {
             message_id: gen_message_id(),
-        });
+        })
+        .await;
 
         // Clear tool call states from previous step
         commit_update::<ToolCallStates>(store, ToolCallStatesUpdate::Clear)?;
@@ -216,11 +218,12 @@ pub async fn run_agent_loop(
             .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
-        events.push(AgentEvent::InferenceComplete {
+        sink.emit(AgentEvent::InferenceComplete {
             model: agent.model.clone(),
             usage: stream_result.usage.clone(),
             duration_ms,
-        });
+        })
+        .await;
 
         let llm_response = LLMResponse::success(stream_result.clone());
         let after_inf_ctx = make_ctx(Phase::AfterInference, &messages, &run_identity)
@@ -232,7 +235,7 @@ pub async fn run_agent_loop(
 
         if !stream_result.needs_tools() {
             messages.push(Arc::new(Message::assistant(&stream_result.text)));
-            complete_step(store, runtime, env, &mut events, &messages, &run_identity).await?;
+            complete_step(store, runtime, env, sink, &messages, &run_identity).await?;
             break TerminationReason::NaturalEnd;
         }
 
@@ -307,10 +310,11 @@ pub async fn run_agent_loop(
             let call = &exec_result.call;
             let tool_result = &exec_result.result;
 
-            events.push(AgentEvent::ToolCallStart {
+            sink.emit(AgentEvent::ToolCallStart {
                 id: call.id.clone(),
                 name: call.name.clone(),
-            });
+            })
+            .await;
 
             // Collect BeforeToolExecute hook commands (no commit)
             let before_ctx = make_ctx(Phase::BeforeToolExecute, &messages, &run_identity)
@@ -343,11 +347,12 @@ pub async fn run_agent_loop(
             });
             tool_commands.push(lifecycle_cmd);
 
-            events.push(AgentEvent::ToolCallDone {
+            sink.emit(AgentEvent::ToolCallDone {
                 id: call.id.clone(),
                 result: tool_result.clone(),
                 outcome: exec_result.outcome,
-            });
+            })
+            .await;
 
             // Collect AfterToolExecute hook commands (no commit)
             let after_ctx = make_ctx(Phase::AfterToolExecute, &messages, &run_identity)
@@ -385,11 +390,11 @@ pub async fn run_agent_loop(
                     updated_at: now_ms(),
                 },
             )?;
-            complete_step(store, runtime, env, &mut events, &messages, &run_identity).await?;
+            complete_step(store, runtime, env, sink, &messages, &run_identity).await?;
             break TerminationReason::Suspended;
         }
 
-        complete_step(store, runtime, env, &mut events, &messages, &run_identity).await?;
+        complete_step(store, runtime, env, sink, &messages, &run_identity).await?;
         if let Some(reason) = termination_flag.take() {
             break reason;
         }
@@ -418,17 +423,17 @@ pub async fn run_agent_loop(
         .map(|m| m.content.clone())
         .unwrap_or_default();
 
-    events.push(AgentEvent::RunFinish {
+    sink.emit(AgentEvent::RunFinish {
         thread_id: run_identity.thread_id.clone(),
         run_id: run_identity.run_id.clone(),
         result: Some(serde_json::json!({"response": response})),
         termination: termination.clone(),
-    });
+    })
+    .await;
 
     Ok(AgentRunResult {
         response,
         termination,
-        events,
         steps,
     })
 }
@@ -453,6 +458,7 @@ pub async fn resume_agent_loop(
     runtime: &PhaseRuntime,
     env: &ExecutionEnv,
     termination_flag: &TerminationFlag,
+    sink: &dyn EventSink,
     messages: Vec<Message>,
     run_identity: RunIdentity,
     input: ResumeInput,
@@ -616,6 +622,7 @@ pub async fn resume_agent_loop(
         runtime,
         env,
         termination_flag,
+        sink,
         resume_messages.into_iter().map(|m| (*m).clone()).collect(),
         run_identity,
     )
@@ -644,7 +651,7 @@ async fn complete_step(
     store: &crate::state::StateStore,
     runtime: &PhaseRuntime,
     env: &ExecutionEnv,
-    events: &mut Vec<AgentEvent>,
+    sink: &dyn EventSink,
     messages: &[Arc<Message>],
     run_identity: &RunIdentity,
 ) -> Result<(), AgentLoopError> {
@@ -658,7 +665,7 @@ async fn complete_step(
         .with_run_identity(run_identity.clone())
         .with_messages(messages.to_vec());
     runtime.run_phase_with_context(env, ctx).await?;
-    events.push(AgentEvent::StepEnd);
+    sink.emit(AgentEvent::StepEnd).await;
     Ok(())
 }
 

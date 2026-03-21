@@ -7,6 +7,7 @@ use awaken::agent::loop_runner::{
 };
 use awaken::agent::state::{RunLifecycle, RunLifecycleState, ToolCallStates};
 use awaken::contract::event::AgentEvent;
+use awaken::contract::event_sink::{NullEventSink, VecEventSink};
 use awaken::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken::contract::identity::{RunIdentity, RunOrigin};
 use awaken::contract::inference::{StopReason, StreamResult, TokenUsage};
@@ -195,11 +196,13 @@ async fn single_step_natural_end() {
     let runtime = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
+    let sink = NullEventSink;
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
         &flag,
+        &sink,
         vec![Message::user("hi")],
         test_identity(),
     )
@@ -239,11 +242,13 @@ async fn tool_call_then_response() {
     let runtime = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
+    let sink = NullEventSink;
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
         &flag,
+        &sink,
         vec![Message::user("echo hello")],
         test_identity(),
     )
@@ -278,11 +283,13 @@ async fn tool_call_state_machine_transitions() {
     let runtime = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
+    let sink = NullEventSink;
     run_agent_loop(
         &agent,
         &runtime,
         &env,
         &flag,
+        &sink,
         vec![Message::user("test")],
         test_identity(),
     )
@@ -322,11 +329,13 @@ async fn multiple_tool_calls_in_one_step() {
     let runtime = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
+    let sink = VecEventSink::new();
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
         &flag,
+        &sink,
         vec![Message::user("multi-tool")],
         test_identity(),
     )
@@ -334,8 +343,8 @@ async fn multiple_tool_calls_in_one_step() {
     .unwrap();
 
     assert_eq!(result.steps, 2);
-    let tool_done_count = result
-        .events
+    let events = sink.take();
+    let tool_done_count = events
         .iter()
         .filter(|e| matches!(e, AgentEvent::ToolCallDone { .. }))
         .count();
@@ -365,11 +374,13 @@ async fn max_rounds_exceeded() {
     let runtime = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
+    let sink = NullEventSink;
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
         &flag,
+        &sink,
         vec![Message::user("loop")],
         test_identity(),
     )
@@ -413,11 +424,13 @@ async fn unknown_tool_returns_error_result_not_crash() {
     let runtime = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
+    let sink = VecEventSink::new();
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
         &flag,
+        &sink,
         vec![Message::user("call unknown")],
         test_identity(),
     )
@@ -429,8 +442,8 @@ async fn unknown_tool_returns_error_result_not_crash() {
 
     // The tool call should have Failed status
     // (cleared by step 2, but the event shows it)
-    let tool_fail_events: Vec<_> = result
-        .events
+    let events = sink.take();
+    let tool_fail_events: Vec<_> = events
         .iter()
         .filter(|e| {
             matches!(e, AgentEvent::ToolCallDone { outcome, .. }
@@ -461,11 +474,13 @@ async fn failing_tool_produces_error_result_continues_loop() {
     let runtime = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
+    let sink = NullEventSink;
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
         &flag,
+        &sink,
         vec![Message::user("use fail tool")],
         test_identity(),
     )
@@ -489,19 +504,21 @@ async fn events_have_correct_sequence_for_single_step() {
     let runtime = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
+    let sink = VecEventSink::new();
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
         &flag,
+        &sink,
         vec![Message::user("hi")],
         test_identity(),
     )
     .await
     .unwrap();
 
-    let event_types: Vec<&str> = result
-        .events
+    let events = sink.take();
+    let event_types: Vec<&str> = events
         .iter()
         .map(|e| match e {
             AgentEvent::RunStart { .. } => "RunStart",
@@ -546,19 +563,21 @@ async fn events_have_correct_sequence_with_tool_call() {
     let runtime = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
+    let sink = VecEventSink::new();
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
         &flag,
+        &sink,
         vec![Message::user("echo")],
         test_identity(),
     )
     .await
     .unwrap();
 
-    let event_types: Vec<&str> = result
-        .events
+    let events = sink.take();
+    let event_types: Vec<&str> = events
         .iter()
         .map(|e| match e {
             AgentEvent::RunStart { .. } => "RunStart",
@@ -613,11 +632,13 @@ async fn lifecycle_state_reflects_custom_run_id() {
         RunOrigin::Internal,
     );
 
+    let sink = NullEventSink;
     run_agent_loop(
         &agent,
         &runtime,
         &env,
         &flag,
+        &sink,
         vec![Message::user("hi")],
         identity,
     )
@@ -672,11 +693,13 @@ async fn phase_hooks_fire_during_loop() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![tracker_plugin];
     let (env, flag) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
 
+    let sink = NullEventSink;
     run_agent_loop(
         &agent,
         &runtime,
         &env,
         &flag,
+        &sink,
         vec![Message::user("hi")],
         test_identity(),
     )
@@ -722,11 +745,13 @@ async fn tool_suspension_transitions_run_to_waiting() {
     let runtime = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
+    let sink = NullEventSink;
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
         &flag,
+        &sink,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -757,11 +782,13 @@ async fn resume_with_use_decision_as_tool_result() {
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     // Run until suspension
+    let sink = NullEventSink;
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
         &flag,
+        &sink,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -789,6 +816,7 @@ async fn resume_with_use_decision_as_tool_result() {
         &runtime,
         &env,
         &flag,
+        &sink,
         messages,
         test_identity(),
         ResumeInput {
@@ -832,11 +860,13 @@ async fn resume_with_cancel_marks_tool_cancelled() {
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     // Run until suspension
+    let sink = NullEventSink;
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
         &flag,
+        &sink,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -863,6 +893,7 @@ async fn resume_with_cancel_marks_tool_cancelled() {
         &runtime,
         &env,
         &flag,
+        &sink,
         messages,
         test_identity(),
         ResumeInput {
@@ -904,11 +935,13 @@ async fn resume_with_replay_tool_call() {
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     // Run until suspension
+    let sink = NullEventSink;
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
         &flag,
+        &sink,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -951,6 +984,7 @@ async fn resume_with_replay_tool_call() {
         &runtime,
         &env2,
         &flag2,
+        &sink,
         messages,
         test_identity(),
         ResumeInput {
@@ -991,11 +1025,13 @@ async fn resume_with_pass_decision_to_tool() {
     // Simpler: just use SuspendingTool for suspension, then on resume use passthrough.
 
     // First run: suspend
+    let sink = NullEventSink;
     let result = run_agent_loop(
         &agent,
         &runtime,
         &env,
         &flag,
+        &sink,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -1019,6 +1055,7 @@ async fn resume_with_pass_decision_to_tool() {
         &runtime2,
         &env2,
         &flag2,
+        &sink,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -1057,6 +1094,7 @@ async fn resume_with_pass_decision_to_tool() {
         &runtime2,
         &env3,
         &flag3,
+        &sink,
         messages,
         test_identity(),
         ResumeInput {
@@ -1087,11 +1125,13 @@ async fn resume_rejects_non_waiting_run() {
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
     // Run to completion (not suspended)
+    let sink = NullEventSink;
     run_agent_loop(
         &agent,
         &runtime,
         &env,
         &flag,
+        &sink,
         vec![Message::user("hi")],
         test_identity(),
     )
@@ -1104,6 +1144,7 @@ async fn resume_rejects_non_waiting_run() {
         &runtime,
         &env,
         &flag,
+        &sink,
         vec![Message::user("hi")],
         test_identity(),
         ResumeInput {
@@ -1129,11 +1170,13 @@ async fn resume_rejects_unknown_call_id() {
     let runtime = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
 
+    let sink = NullEventSink;
     run_agent_loop(
         &agent,
         &runtime,
         &env,
         &flag,
+        &sink,
         vec![Message::user("do it")],
         test_identity(),
     )
@@ -1147,6 +1190,7 @@ async fn resume_rejects_unknown_call_id() {
         &runtime,
         &env,
         &flag,
+        &sink,
         messages,
         test_identity(),
         ResumeInput {

@@ -9,6 +9,7 @@ use awaken::agent::executor::{ParallelToolExecutor, SequentialToolExecutor, Tool
 use awaken::agent::loop_runner::{build_agent_env, run_agent_loop};
 use awaken::agent::state::{RunLifecycle, ToolCallStates};
 use awaken::contract::event::AgentEvent;
+use awaken::contract::event_sink::{NullEventSink, VecEventSink};
 use awaken::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken::contract::identity::{RunIdentity, RunOrigin};
 use awaken::contract::inference::{StopReason, StreamResult};
@@ -188,12 +189,21 @@ async fn sequential_partial_failure_both_produce_results() {
         .with_tool(Arc::new(FailingTool));
     let rt = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
-    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let sink = VecEventSink::new();
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &flag,
+        &sink,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
-    let tool_dones: Vec<_> = result
-        .events
+    let events = sink.take();
+    let tool_dones: Vec<_> = events
         .iter()
         .filter_map(|e| {
             if let AgentEvent::ToolCallDone { id, outcome, .. } = e {
@@ -219,17 +229,26 @@ async fn sequential_stops_after_first_suspension_in_loop() {
         .with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
-    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let sink = VecEventSink::new();
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &flag,
+        &sink,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(result.termination, TerminationReason::Suspended);
     let lifecycle = rt.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.status, RunStatus::Waiting);
 
     // Only 1 ToolCallDone (second tool should not have executed)
-    let tool_dones: Vec<_> = result
-        .events
+    let events = sink.take();
+    let tool_dones: Vec<_> = events
         .iter()
         .filter(|e| matches!(e, AgentEvent::ToolCallDone { .. }))
         .collect();
@@ -254,12 +273,21 @@ async fn parallel_both_tools_execute() {
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
-    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let sink = VecEventSink::new();
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &flag,
+        &sink,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
-    let tool_dones: Vec<_> = result
-        .events
+    let events = sink.take();
+    let tool_dones: Vec<_> = events
         .iter()
         .filter(|e| matches!(e, AgentEvent::ToolCallDone { .. }))
         .collect();
@@ -282,12 +310,21 @@ async fn parallel_partial_failure() {
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
-    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let sink = VecEventSink::new();
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &flag,
+        &sink,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
-    let outcomes: Vec<_> = result
-        .events
+    let events = sink.take();
+    let outcomes: Vec<_> = events
         .iter()
         .filter_map(|e| {
             if let AgentEvent::ToolCallDone { outcome, .. } = e {
@@ -316,9 +353,18 @@ async fn parallel_does_not_stop_on_suspension() {
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
-    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let sink = VecEventSink::new();
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &flag,
+        &sink,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     // Both tools executed (parallel doesn't stop on suspension)
     assert_eq!(
@@ -326,8 +372,8 @@ async fn parallel_does_not_stop_on_suspension() {
         1,
         "counting tool should have executed"
     );
-    let tool_dones: Vec<_> = result
-        .events
+    let events = sink.take();
+    let tool_dones: Vec<_> = events
         .iter()
         .filter(|e| matches!(e, AgentEvent::ToolCallDone { .. }))
         .collect();
@@ -350,9 +396,18 @@ async fn suspension_sets_run_to_waiting() {
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let rt = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
-    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let sink = NullEventSink;
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &flag,
+        &sink,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(result.termination, TerminationReason::Suspended);
     let lifecycle = rt.store().read::<RunLifecycle>().unwrap();
@@ -369,9 +424,18 @@ async fn suspension_tool_call_state_is_suspended() {
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let rt = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
-    run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let sink = NullEventSink;
+    run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &flag,
+        &sink,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     let tool_states = rt.store().read::<ToolCallStates>().unwrap_or_default();
     let c1 = tool_states.calls.get("c1").expect("c1 should exist");
@@ -455,9 +519,18 @@ async fn hook_state_mutation_visible_to_next_hook() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![hook_plugin];
     let (env, flag) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
 
-    run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("hi")], id())
-        .await
-        .unwrap();
+    let sink = NullEventSink;
+    run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &flag,
+        &sink,
+        vec![Message::user("hi")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     // Reader should see the value written by Writer in the same phase
     assert_eq!(*observed.lock().unwrap(), Some(1));
@@ -485,9 +558,18 @@ async fn max_rounds_precise_count() {
         .with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
-    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let sink = NullEventSink;
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &flag,
+        &sink,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     assert!(
         matches!(result.termination, TerminationReason::Stopped(ref s) if s.code == "max_rounds")
@@ -535,9 +617,18 @@ async fn terminate_via_effect_in_after_inference_hook() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(TermHookPlugin)];
     let (env, flag) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
 
-    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let sink = NullEventSink;
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &flag,
+        &sink,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     assert!(
         matches!(result.termination, TerminationReason::Stopped(ref s) if s.code == "custom_stop")
@@ -585,9 +676,18 @@ async fn phase_sequence_with_tool_call() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(LogPlugin(phases.clone()))];
     let (env, flag) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
 
-    run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let sink = NullEventSink;
+    run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &flag,
+        &sink,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     let p = phases.lock().unwrap();
     assert_eq!(p[0], Phase::RunStart);
@@ -641,9 +741,18 @@ async fn phase_sequence_on_suspension() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(LogPlugin(phases.clone()))];
     let (env, flag) = build_agent_env(&user_plugins, agent.max_rounds).unwrap();
 
-    run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let sink = NullEventSink;
+    run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &flag,
+        &sink,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     let p = phases.lock().unwrap();
     assert_eq!(p[0], Phase::RunStart);
@@ -731,9 +840,18 @@ async fn empty_tool_calls_treated_as_natural_end() {
     let agent = AgentConfig::new("test", "m", "sys", llm);
     let rt = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
-    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("hi")], id())
-        .await
-        .unwrap();
+    let sink = NullEventSink;
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &flag,
+        &sink,
+        vec![Message::user("hi")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(result.termination, TerminationReason::NaturalEnd);
     assert_eq!(result.response, "Just text.");
@@ -757,9 +875,18 @@ async fn multiple_steps_accumulate_messages() {
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
-    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let sink = NullEventSink;
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &flag,
+        &sink,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(result.steps, 3);
     assert_eq!(result.response, "Final answer.");
@@ -781,11 +908,13 @@ async fn run_lifecycle_run_id_matches_identity() {
         "a-x".into(),
         RunOrigin::Internal,
     );
+    let sink = NullEventSink;
     run_agent_loop(
         &agent,
         &rt,
         &env,
         &flag,
+        &sink,
         vec![Message::user("hi")],
         custom_id,
     )
@@ -813,12 +942,21 @@ async fn batch_approval_both_tools_execute_in_loop() {
         .with_tool_executor(Arc::new(ParallelToolExecutor::batch_approval()));
     let rt = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
-    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let sink = VecEventSink::new();
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &flag,
+        &sink,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
-    let tool_dones: Vec<_> = result
-        .events
+    let events = sink.take();
+    let tool_dones: Vec<_> = events
         .iter()
         .filter(|e| matches!(e, AgentEvent::ToolCallDone { .. }))
         .collect();
@@ -841,9 +979,18 @@ async fn batch_approval_suspension_still_executes_all() {
         .with_tool_executor(Arc::new(ParallelToolExecutor::batch_approval()));
     let rt = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
-    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let sink = NullEventSink;
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &flag,
+        &sink,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(
         call_count.load(Ordering::SeqCst),
@@ -872,12 +1019,21 @@ async fn streaming_partial_failure_in_loop() {
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
     let (env, flag) = build_agent_env(&[], agent.max_rounds).unwrap();
-    let result = run_agent_loop(&agent, &rt, &env, &flag, vec![Message::user("go")], id())
-        .await
-        .unwrap();
+    let sink = VecEventSink::new();
+    let result = run_agent_loop(
+        &agent,
+        &rt,
+        &env,
+        &flag,
+        &sink,
+        vec![Message::user("go")],
+        id(),
+    )
+    .await
+    .unwrap();
 
-    let outcomes: Vec<_> = result
-        .events
+    let events = sink.take();
+    let outcomes: Vec<_> = events
         .iter()
         .filter_map(|e| {
             if let AgentEvent::ToolCallDone { outcome, .. } = e {
