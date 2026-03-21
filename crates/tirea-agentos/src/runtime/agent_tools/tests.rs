@@ -208,10 +208,10 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
     plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
     let reminder = step
         .messaging
-        .reminders
+        .messages
         .first()
         .expect("running reminder should be present");
-    assert!(reminder.contains("status=\"running\""));
+    assert!(reminder.content.contains("status=\"running\""));
 
     handles.stop_owned_tree("owner-1", "run-1").await.unwrap();
     let fixture2 = TestFixture::new();
@@ -219,10 +219,10 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
     plugin.run_phase(Phase::AfterToolExecute, &mut step2).await;
     let reminder2 = step2
         .messaging
-        .reminders
+        .messages
         .first()
         .expect("stopped reminder should be present");
-    assert!(reminder2.contains("status=\"stopped\""));
+    assert!(reminder2.content.contains("status=\"stopped\""));
 }
 
 // ── Handle table tests ───────────────────────────────────────────────────────
@@ -4042,7 +4042,7 @@ async fn plugin_no_reminder_when_no_handles() {
     let mut step = StepContext::new(fixture.ctx(), "owner-1", &fixture.messages, vec![]);
     plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
     assert!(
-        step.messaging.reminders.is_empty(),
+        step.messaging.messages.is_empty(),
         "no reminder should be emitted when there are no handles"
     );
 }
@@ -4078,14 +4078,14 @@ async fn plugin_reminder_shows_multiple_runs() {
     plugin.run_phase(Phase::AfterToolExecute, &mut step).await;
     let reminder = step
         .messaging
-        .reminders
+        .messages
         .first()
         .expect("should have a reminder for multiple running sub-agents");
-    assert!(reminder.contains("run-1"));
-    assert!(reminder.contains("run-2"));
-    assert!(reminder.contains("worker-a"));
-    assert!(reminder.contains("worker-b"));
-    assert!(reminder.contains("agent_output"));
+    assert!(reminder.content.contains("run-1"));
+    assert!(reminder.content.contains("run-2"));
+    assert!(reminder.content.contains("worker-a"));
+    assert!(reminder.content.contains("worker-b"));
+    assert!(reminder.content.contains("agent_output"));
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

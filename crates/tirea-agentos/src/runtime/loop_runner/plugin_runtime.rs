@@ -121,11 +121,20 @@ fn apply_after_tool_actions(
 ) {
     for action in actions {
         match action {
+            AfterToolExecuteAction::AddMessage(message) => {
+                step.messaging.push(
+                    message
+                        .with_target(
+                            crate::contracts::runtime::inference::ContextMessageTarget::Conversation,
+                        )
+                        .with_consume_after_emit(false),
+                );
+            }
             AfterToolExecuteAction::AddSystemReminder(text) => {
-                step.messaging.reminders.push(text);
+                step.messaging.add_system_reminder(text);
             }
             AfterToolExecuteAction::AddUserMessage(text) => {
-                step.messaging.user_messages.push(text);
+                step.messaging.add_user_message(text);
             }
             AfterToolExecuteAction::State(sa) => step.emit_state_action(sa),
         }
@@ -473,7 +482,9 @@ mod tests {
             ActionSet::single(BeforeInferenceAction::AddContextMessage(
                 tirea_contract::runtime::inference::ContextMessage {
                     key: "test_action".into(),
+                    role: tirea_contract::thread::Role::System,
                     content: "injected by action".into(),
+                    visibility: tirea_contract::thread::Visibility::Internal,
                     cooldown_turns: 0,
                     target: Default::default(),
                     consume_after_emit: false,

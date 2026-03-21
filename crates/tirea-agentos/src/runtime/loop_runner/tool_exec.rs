@@ -366,7 +366,7 @@ pub(super) fn apply_tool_results_impl(
     let mut state_changed = !patches.is_empty();
     run_ctx.add_thread_patches(patches);
 
-    // Add tool result messages for all executions.
+    // Add tool result messages and emitted runtime messages for all executions.
     let tool_messages: Vec<Arc<Message>> = results
         .iter()
         .flat_map(|r| {
@@ -383,11 +383,14 @@ pub(super) fn apply_tool_results_impl(
                 }
                 vec![tool_msg]
             };
-            for reminder in &r.reminders {
-                msgs.push(Message::internal_system(format!(
-                    "<system-reminder>{}</system-reminder>",
-                    reminder
-                )));
+            for emitted in &r.messages {
+                if emitted.target
+                    == tirea_contract::runtime::inference::ContextMessageTarget::Conversation
+                    && emitted.content.trim().is_empty()
+                {
+                    continue;
+                }
+                msgs.push(emitted.to_message());
             }
             if let Some(ref meta) = metadata {
                 for msg in &mut msgs {
@@ -399,28 +402,6 @@ pub(super) fn apply_tool_results_impl(
         .collect();
 
     run_ctx.add_messages(tool_messages);
-
-    // Append user messages produced by tool effects and AfterToolExecute plugins.
-    let user_messages: Vec<Arc<Message>> = results
-        .iter()
-        .flat_map(|r| {
-            r.user_messages
-                .iter()
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .map(|text| {
-                    let mut msg = Message::user(text.to_string());
-                    if let Some(ref meta) = metadata {
-                        msg.metadata = Some(meta.clone());
-                    }
-                    Arc::new(msg)
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect();
-    if !user_messages.is_empty() {
-        run_ctx.add_messages(user_messages);
-    }
     if !suspended.is_empty() {
         let state = run_ctx
             .snapshot()
@@ -1049,11 +1030,20 @@ async fn execute_single_tool_with_phases_impl(
     for action in tool_actions {
         match action {
             AfterToolExecuteAction::State(sa) => tool_state_actions.push(sa),
+            AfterToolExecuteAction::AddMessage(message) => {
+                step.messaging.push(
+                    message
+                        .with_target(
+                            tirea_contract::runtime::inference::ContextMessageTarget::Conversation,
+                        )
+                        .with_consume_after_emit(false),
+                );
+            }
             AfterToolExecuteAction::AddSystemReminder(text) => {
-                step.messaging.reminders.push(text);
+                step.messaging.add_system_reminder(text);
             }
             AfterToolExecuteAction::AddUserMessage(text) => {
-                step.messaging.user_messages.push(text);
+                step.messaging.add_user_message(text);
             }
         }
     }
@@ -1135,8 +1125,33 @@ async fn execute_single_tool_with_phases_impl(
         &call.id,
     )?;
 
-    let reminders = step.messaging.reminders.clone();
-    let user_messages = std::mem::take(&mut step.messaging.user_messages);
+    let messages = std::mem::take(&mut step.messaging.messages);
+    let reminders = messages
+        .iter()
+        .filter(|m| {
+            m.target == tirea_contract::runtime::inference::ContextMessageTarget::Conversation
+                && m.role == tirea_contract::thread::Role::System
+                && m.visibility == tirea_contract::thread::Visibility::Internal
+                && m.content.starts_with("<system-reminder>")
+                && m.content.ends_with("</system-reminder>")
+        })
+        .map(|m| {
+            m.content
+                .strip_prefix("<system-reminder>")
+                .and_then(|rest| rest.strip_suffix("</system-reminder>"))
+                .unwrap_or(m.content.as_str())
+                .to_string()
+        })
+        .collect();
+    let user_messages = messages
+        .iter()
+        .filter(|m| {
+            m.target == tirea_contract::runtime::inference::ContextMessageTarget::Conversation
+                && m.role == tirea_contract::thread::Role::User
+                && m.visibility == tirea_contract::thread::Visibility::All
+        })
+        .map(|m| m.content.clone())
+        .collect();
 
     // Merge plugin-phase serialized actions with tool-level ones.
     serialized_state_actions.extend(step.take_pending_serialized_state_actions());
@@ -1145,6 +1160,7 @@ async fn execute_single_tool_with_phases_impl(
         execution,
         outcome,
         suspended_call,
+        messages,
         reminders,
         user_messages,
         pending_patches,

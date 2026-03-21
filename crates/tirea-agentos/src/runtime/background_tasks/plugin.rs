@@ -173,7 +173,9 @@ impl AgentBehavior for BackgroundTasksPlugin {
                 BeforeInferenceAction::AddContextMessage(
                     tirea_contract::runtime::inference::ContextMessage {
                         key: "background_tasks".into(),
+                        role: tirea_contract::thread::Role::System,
                         content,
+                        visibility: tirea_contract::thread::Visibility::Internal,
                         cooldown_turns: 0,
                         target: Default::default(),
                         consume_after_emit: false,
@@ -341,6 +343,13 @@ mod tests {
         for action in actions {
             match action {
                 AfterToolExecuteAction::State(action) => state_actions.push(action),
+                AfterToolExecuteAction::AddMessage(message) => {
+                    if message.role == tirea_contract::thread::Role::System
+                        && message.visibility == tirea_contract::thread::Visibility::Internal
+                    {
+                        reminders.push(message.content);
+                    }
+                }
                 AfterToolExecuteAction::AddSystemReminder(text) => reminders.push(text),
                 AfterToolExecuteAction::AddUserMessage(_) => {}
             }

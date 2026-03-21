@@ -247,7 +247,9 @@ mod tests {
             ActionSet::single(BeforeInferenceAction::AddContextMessage(
                 tirea_contract::runtime::inference::ContextMessage {
                     key: self.id.clone(),
+                    role: tirea_contract::thread::Role::System,
                     content: self.text.clone(),
+                    visibility: tirea_contract::thread::Visibility::Internal,
                     cooldown_turns: 0,
                     target: Default::default(),
                     consume_after_emit: false,

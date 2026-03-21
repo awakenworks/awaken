@@ -78,7 +78,9 @@ impl StoredPromptSegment {
     pub fn into_context_message(self) -> ContextMessage {
         ContextMessage {
             key: self.context_key(),
+            role: crate::thread::Role::System,
             content: self.content,
+            visibility: crate::thread::Visibility::Internal,
             cooldown_turns: self.cooldown_turns,
             target: self.target,
             consume_after_emit: self.consume == PromptSegmentConsumePolicy::AfterEmit,

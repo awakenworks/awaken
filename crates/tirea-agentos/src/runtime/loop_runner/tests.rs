@@ -1032,6 +1032,7 @@ fn tool_execution_result(call_id: &str, patch: Option<TrackedPatch>) -> ToolExec
             result: ToolResult::success("test_tool", json!({"ok": true})),
             patch,
         },
+        messages: Vec::new(),
         reminders: Vec::new(),
         user_messages: Vec::new(),
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
@@ -1054,6 +1055,7 @@ fn skill_activation_result(call_id: &str, skill_id: &str) -> ToolExecutionResult
             result,
             patch: None,
         },
+        messages: Vec::new(),
         reminders: Vec::new(),
         user_messages: Vec::new(),
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
@@ -1959,7 +1961,9 @@ impl AgentBehavior for TestPhasePlugin {
         ActionSet::single(BeforeInferenceAction::AddContextMessage(
             tirea_contract::runtime::inference::ContextMessage {
                 key: "test_system".into(),
+                role: tirea_contract::thread::Role::System,
                 content: "Test system context".into(),
+                visibility: tirea_contract::thread::Visibility::Internal,
                 cooldown_turns: 0,
                 target: Default::default(),
                 consume_after_emit: false,
@@ -2778,7 +2782,9 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
             ActionSet::single(BeforeInferenceAction::AddContextMessage(
                 tirea_contract::runtime::inference::ContextMessage {
                     key: "from_before_inference".into(),
+                    role: tirea_contract::thread::Role::System,
                     content: "from_before_inference".into(),
+                    visibility: tirea_contract::thread::Visibility::Internal,
                     cooldown_turns: 0,
                     target: Default::default(),
                     consume_after_emit: false,
@@ -3314,6 +3320,10 @@ fn test_apply_tool_results_appends_user_messages_from_effect() {
             result: ToolResult::success("any_tool", json!({"ok": true})),
             patch: None,
         },
+        messages: vec![
+            tirea_contract::runtime::inference::ContextMessage::conversation_user("first"),
+            tirea_contract::runtime::inference::ContextMessage::conversation_user("second"),
+        ],
         reminders: Vec::new(),
         user_messages: vec!["first".to_string(), "second".to_string()],
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
@@ -3353,6 +3363,10 @@ fn test_apply_tool_results_ignores_blank_user_messages() {
             result: ToolResult::success("any_tool", json!({"ok": true})),
             patch: None,
         },
+        messages: vec![
+            tirea_contract::runtime::inference::ContextMessage::conversation_user(""),
+            tirea_contract::runtime::inference::ContextMessage::conversation_user("   "),
+        ],
         reminders: Vec::new(),
         user_messages: vec!["".to_string(), "   ".to_string()],
         outcome: crate::contracts::ToolCallOutcome::Succeeded,
@@ -3369,6 +3383,45 @@ fn test_apply_tool_results_ignores_blank_user_messages() {
         run_ctx.messages()[0].role,
         crate::contracts::thread::Role::Tool
     );
+}
+
+#[test]
+fn test_apply_tool_results_preserves_internal_visibility_for_unified_messages() {
+    let thread = Thread::with_initial_state("test", json!({}));
+    let mut run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
+    let result = ToolExecutionResult {
+        execution: crate::engine::tool_execution::ToolExecution {
+            call: crate::contracts::thread::ToolCall::new("call_1", "any_tool", json!({})),
+            result: ToolResult::success("any_tool", json!({"ok": true})),
+            patch: None,
+        },
+        messages: vec![
+            tirea_contract::runtime::inference::ContextMessage::conversation_internal_system(
+                "<system-reminder>check status</system-reminder>",
+            ),
+        ],
+        reminders: vec!["check status".to_string()],
+        user_messages: Vec::new(),
+        outcome: crate::contracts::ToolCallOutcome::Succeeded,
+        suspended_call: None,
+        pending_patches: Vec::new(),
+        serialized_state_actions: vec![],
+    };
+
+    let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
+        .expect("apply should succeed");
+
+    assert_eq!(run_ctx.messages().len(), 2);
+    assert_eq!(
+        run_ctx.messages()[1].role,
+        crate::contracts::thread::Role::System
+    );
+    assert_eq!(
+        run_ctx.messages()[1].visibility,
+        crate::contracts::thread::Visibility::Internal
+    );
+    assert!(run_ctx.messages()[1].content.contains("<system-reminder>"));
 }
 
 #[test]
@@ -5523,7 +5576,9 @@ async fn test_run_loop_multiple_prompt_context_behaviors_are_additive() {
             ActionSet::single(BeforeInferenceAction::AddContextMessage(
                 tirea_contract::runtime::inference::ContextMessage {
                     key: "base".into(),
+                    role: tirea_contract::thread::Role::System,
                     content: "base".into(),
+                    visibility: tirea_contract::thread::Visibility::Internal,
                     cooldown_turns: 0,
                     target: Default::default(),
                     consume_after_emit: false,
@@ -5549,7 +5604,9 @@ async fn test_run_loop_multiple_prompt_context_behaviors_are_additive() {
             ActionSet::single(BeforeInferenceAction::AddContextMessage(
                 tirea_contract::runtime::inference::ContextMessage {
                     key: "replaced".into(),
+                    role: tirea_contract::thread::Role::System,
                     content: "replaced".into(),
+                    visibility: tirea_contract::thread::Visibility::Internal,
                     cooldown_turns: 0,
                     target: Default::default(),
                     consume_after_emit: false,

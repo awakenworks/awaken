@@ -243,6 +243,12 @@ impl From<AnyStateAction> for ActionSet<BeforeToolExecuteAction> {
 
 /// Actions valid in `AfterToolExecute`.
 pub enum AfterToolExecuteAction {
+    /// Append a conversation message after the tool result.
+    ///
+    /// This is the unified message path aligned with reverts-style
+    /// `newMessages`. Conversation messages are not subject to prompt context
+    /// throttling.
+    AddMessage(ContextMessage),
     /// Append a system-role reminder after the tool result.
     AddSystemReminder(String),
     /// Append a user-role message after the tool result.
@@ -255,6 +261,7 @@ impl AfterToolExecuteAction {
     /// Human-readable label for diagnostics.
     pub fn label(&self) -> &'static str {
         match self {
+            Self::AddMessage(_) => "add_message",
             Self::AddSystemReminder(_) => "add_system_reminder",
             Self::AddUserMessage(_) => "add_user_message",
             Self::State(_) => "state_action",

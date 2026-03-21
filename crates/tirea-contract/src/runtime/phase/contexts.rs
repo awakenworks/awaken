@@ -91,7 +91,9 @@ impl<'s, 'a> BeforeInferenceContext<'s, 'a> {
             .context_messages
             .push(crate::runtime::inference::ContextMessage {
                 key: key.into(),
+                role: crate::thread::Role::System,
                 content: content.into(),
+                visibility: crate::thread::Visibility::Internal,
                 cooldown_turns: 0,
                 target: Default::default(),
                 consume_after_emit: false,
@@ -283,7 +285,15 @@ impl<'s, 'a> AfterToolExecuteContext<'s, 'a> {
     }
 
     pub fn add_system_reminder(&mut self, text: impl Into<String>) {
-        self.step.messaging.reminders.push(text.into());
+        self.step.messaging.add_system_reminder(text);
+    }
+
+    pub fn add_user_message(&mut self, text: impl Into<String>) {
+        self.step.messaging.add_user_message(text);
+    }
+
+    pub fn add_message(&mut self, message: crate::runtime::inference::ContextMessage) {
+        self.step.messaging.push(message);
     }
 }
 

@@ -216,7 +216,9 @@ impl AgentBehavior for ContextInjectionPlugin {
         ActionSet::single(BeforeInferenceAction::AddContextMessage(
             tirea_contract::runtime::inference::ContextMessage {
                 key: "ag_ui_addendum".into(),
+                role: tirea_contract::thread::Role::System,
                 content: self.addendum.clone(),
+                visibility: tirea_contract::thread::Visibility::Internal,
                 cooldown_turns: 0,
                 target: Default::default(),
                 consume_after_emit: false,

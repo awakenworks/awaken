@@ -144,7 +144,9 @@ impl AgentBehavior for SkillDiscoveryPlugin {
         ActionSet::single(BeforeInferenceAction::AddContextMessage(
             tirea_contract::runtime::inference::ContextMessage {
                 key: "skill_catalog".into(),
+                role: tirea_contract::thread::Role::System,
                 content: rendered,
+                visibility: tirea_contract::thread::Visibility::Internal,
                 cooldown_turns: 0,
                 target: Default::default(),
                 consume_after_emit: false,
