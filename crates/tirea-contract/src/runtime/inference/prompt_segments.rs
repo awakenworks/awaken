@@ -36,6 +36,11 @@ pub struct StoredPromptSegment {
 
 impl StoredPromptSegment {
     #[must_use]
+    pub fn context_key(&self) -> String {
+        format!("{}:{}", self.namespace, self.key)
+    }
+
+    #[must_use]
     pub fn new(
         namespace: impl Into<String>,
         key: impl Into<String>,
@@ -72,10 +77,11 @@ impl StoredPromptSegment {
     #[must_use]
     pub fn into_context_message(self) -> ContextMessage {
         ContextMessage {
-            key: format!("{}:{}", self.namespace, self.key),
+            key: self.context_key(),
             content: self.content,
             cooldown_turns: self.cooldown_turns,
             target: self.target,
+            consume_after_emit: self.consume == PromptSegmentConsumePolicy::AfterEmit,
         }
     }
 
@@ -107,6 +113,8 @@ pub enum PromptSegmentAction {
     Remove { namespace: String, key: String },
     /// Remove every segment in a namespace.
     RemoveNamespace { namespace: String },
+    /// Remove one segment by its derived context-message key.
+    RemoveContextKey { context_key: String },
     /// Remove every segment flagged `after_emit`.
     ConsumeAfterEmit,
     /// Clear all prompt segments.
@@ -133,6 +141,9 @@ impl PromptSegmentState {
             }
             PromptSegmentAction::RemoveNamespace { namespace } => {
                 self.items.retain(|item| item.namespace != namespace);
+            }
+            PromptSegmentAction::RemoveContextKey { context_key } => {
+                self.items.retain(|item| item.context_key() != context_key);
             }
             PromptSegmentAction::ConsumeAfterEmit => self
                 .items
@@ -162,6 +173,13 @@ pub fn remove_prompt_segment_action(
 pub fn clear_prompt_segment_namespace_action(namespace: impl Into<String>) -> AnyStateAction {
     AnyStateAction::new::<PromptSegmentState>(PromptSegmentAction::RemoveNamespace {
         namespace: namespace.into(),
+    })
+}
+
+#[must_use]
+pub fn remove_prompt_segment_context_key_action(context_key: impl Into<String>) -> AnyStateAction {
+    AnyStateAction::new::<PromptSegmentState>(PromptSegmentAction::RemoveContextKey {
+        context_key: context_key.into(),
     })
 }
 
@@ -261,6 +279,28 @@ mod tests {
     }
 
     #[test]
+    fn remove_context_key_matches_namespaced_projection() {
+        let mut state = PromptSegmentState {
+            items: vec![
+                segment(
+                    "reminder",
+                    "a",
+                    "one",
+                    PromptSegmentConsumePolicy::AfterEmit,
+                ),
+                segment("skill", "b", "two", PromptSegmentConsumePolicy::Persistent),
+            ],
+        };
+
+        state.reduce(PromptSegmentAction::RemoveContextKey {
+            context_key: "reminder:a".into(),
+        });
+
+        assert_eq!(state.items.len(), 1);
+        assert_eq!(state.items[0].namespace, "skill");
+    }
+
+    #[test]
     fn stored_segment_maps_to_context_message_with_namespaced_key() {
         let entry = segment(
             "reminder",
@@ -272,5 +312,6 @@ mod tests {
         assert_eq!(context.key, "reminder:abc");
         assert_eq!(context.content, "hello");
         assert_eq!(context.target, ContextMessageTarget::Session);
+        assert!(context.consume_after_emit);
     }
 }

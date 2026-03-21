@@ -1962,6 +1962,7 @@ impl AgentBehavior for TestPhasePlugin {
                 content: "Test system context".into(),
                 cooldown_turns: 0,
                 target: Default::default(),
+                consume_after_emit: false,
             },
         ))
         .and(ActionSet::single(BeforeInferenceAction::AddSessionContext(
@@ -2780,6 +2781,7 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
                     content: "from_before_inference".into(),
                     cooldown_turns: 0,
                     target: Default::default(),
+                    consume_after_emit: false,
                 },
             ))
             .and(ActionSet::single(BeforeInferenceAction::Terminate(
@@ -5524,6 +5526,7 @@ async fn test_run_loop_multiple_prompt_context_behaviors_are_additive() {
                     content: "base".into(),
                     cooldown_turns: 0,
                     target: Default::default(),
+                    consume_after_emit: false,
                 },
             ))
             .and(ActionSet::single(BeforeInferenceAction::Terminate(
@@ -5549,6 +5552,7 @@ async fn test_run_loop_multiple_prompt_context_behaviors_are_additive() {
                     content: "replaced".into(),
                     cooldown_turns: 0,
                     target: Default::default(),
+                    consume_after_emit: false,
                 },
             ))
         }

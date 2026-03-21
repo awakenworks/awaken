@@ -147,6 +147,7 @@ impl AgentBehavior for SkillDiscoveryPlugin {
                 content: rendered,
                 cooldown_turns: 0,
                 target: Default::default(),
+                consume_after_emit: false,
             },
         ))
     }

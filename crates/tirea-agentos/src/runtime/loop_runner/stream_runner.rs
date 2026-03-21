@@ -1,4 +1,4 @@
-use super::core::apply_context_messages_to_prompt;
+use super::core::{apply_context_messages_to_prompt, consume_emitted_prompt_segments};
 use super::state_commit::PendingDeltaCommitContext;
 use super::stream_core::preallocate_tool_result_message_ids;
 use super::*;
@@ -436,13 +436,17 @@ pub(super) fn run_stream(
             let request_transforms = prepared.request_transforms;
             let step_inference_override = prepared.inference_override;
 
-            apply_context_messages_to_prompt(
+            let consumed_prompt_segments = apply_context_messages_to_prompt(
                 &mut messages,
                 &mut context_tracker,
                 prepared.context_messages,
                 step_counter,
                 !agent.system_prompt().is_empty(),
             );
+            if let Err(e) = consume_emitted_prompt_segments(&mut run_ctx, consumed_prompt_segments) {
+                let message = e.to_string();
+                terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
+            }
             step_counter = step_counter.saturating_add(1);
 
             match prepared.run_action {
