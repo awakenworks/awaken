@@ -4,8 +4,6 @@ use std::sync::{Arc, RwLock};
 
 use futures::lock::Mutex;
 
-use crate::config::profile::{ActiveConfig, OsConfig, RunOverrides};
-use crate::config::resolve::{ResolvedPhaseConfig, resolve_config};
 use crate::error::StateError;
 use crate::model::{
     EffectSpec, FailedScheduledAction, FailedScheduledActionUpdate, FailedScheduledActions,
@@ -31,8 +29,6 @@ pub struct PhaseRuntime {
     runtime_registry: Arc<RwLock<RuntimeRegistry>>,
     execution_lock: Arc<Mutex<()>>,
     next_id: Arc<AtomicU64>,
-    os_config: Arc<RwLock<OsConfig>>,
-    active_config: Arc<RwLock<ActiveConfig>>,
 }
 
 impl PhaseRuntime {
@@ -48,38 +44,7 @@ impl PhaseRuntime {
             runtime_registry: Arc::new(RwLock::new(RuntimeRegistry::default())),
             execution_lock: Arc::new(Mutex::new(())),
             next_id: Arc::new(AtomicU64::new(1)),
-            os_config: Arc::new(RwLock::new(OsConfig::default())),
-            active_config: Arc::new(RwLock::new(ActiveConfig::default())),
         })
-    }
-
-    /// Atomically modify the runtime baseline configuration.
-    pub fn configure<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&mut ActiveConfig) -> R,
-    {
-        let mut active = self
-            .active_config
-            .write()
-            .expect("active config lock poisoned");
-        f(&mut active)
-    }
-
-    /// Set the OS-level configuration (defaults + profiles).
-    pub fn set_os_config(&self, config: OsConfig) {
-        let mut os = self.os_config.write().expect("os config lock poisoned");
-        *os = config;
-    }
-
-    /// Resolve current effective configuration from all sources.
-    pub fn resolve_config(&self, overrides: Option<&RunOverrides>) -> ResolvedPhaseConfig {
-        let os = self.os_config.read().expect("os config lock poisoned");
-        let active = self
-            .active_config
-            .read()
-            .expect("active config lock poisoned");
-        let snapshot = self.store.snapshot();
-        resolve_config(&os, &active, &snapshot, overrides)
     }
 
     pub fn store(&self) -> &StateStore {
@@ -157,13 +122,8 @@ impl PhaseRuntime {
     }
 
     /// Run phase hooks without committing — return the combined StateCommand.
-    ///
-    /// Used for parallel tool execution: collect commands from each tool call's
-    /// phase hooks independently, merge them via `StateStore::merge_all_commands`,
-    /// then submit once.
     pub async fn collect_commands(&self, ctx: PhaseContext) -> Result<StateCommand, StateError> {
-        let resolved = self.resolve_config(None);
-        self.run_hooks_collect(ctx, &resolved).await
+        self.run_hooks_collect(ctx).await
     }
 
     pub async fn run_phase_with_limit(
@@ -193,16 +153,10 @@ impl PhaseRuntime {
         };
         let mut rounds = 0;
 
-        // Resolve config at boundary (determines active_plugins + config snapshot)
-        let resolved = self.resolve_config(None);
-
-        // Phase hooks: run sequentially, commit each immediately so next hook sees updated state
-        let hooks = self.resolve_hooks(base_ctx.phase, &resolved);
+        // Phase hooks: filtered by ctx.profile.active_plugins
+        let hooks = self.resolve_hooks(base_ctx.phase, &base_ctx.profile.active_plugins);
         for hook in &hooks {
-            let ctx = base_ctx
-                .clone()
-                .with_snapshot(self.store.snapshot())
-                .with_config(Arc::clone(&resolved.config));
+            let ctx = base_ctx.clone().with_snapshot(self.store.snapshot());
             let command = hook.run(&ctx).await?;
             if !command.is_empty() {
                 total_effects += command.effects.len();
@@ -488,16 +442,11 @@ impl PhaseRuntime {
     }
 
     /// Check tool permission by running all registered ToolPermissionCheckers.
-    ///
-    /// All checkers run (no short-circuit), results are aggregated:
-    /// - Any Deny → Deny (highest priority)
-    /// - Any Allow (no Deny) → Allow
-    /// - All Abstain → Suspend (no checker approved)
     pub async fn check_tool_permission(
         &self,
         ctx: &PhaseContext,
     ) -> Result<ToolPermissionResult, StateError> {
-        let resolved = self.resolve_config(None);
+        let active = &ctx.profile.active_plugins;
         let checkers: Vec<_> = {
             let registry = self
                 .runtime_registry
@@ -506,20 +455,14 @@ impl PhaseRuntime {
             registry
                 .tool_permission_checkers
                 .iter()
-                .filter(|(_, plugin_id, _)| {
-                    resolved.active_plugins.is_empty()
-                        || resolved.active_plugins.contains(plugin_id)
-                })
+                .filter(|(_, plugin_id, _)| active.is_empty() || active.contains(plugin_id))
                 .map(|(_, _, checker)| Arc::clone(checker))
                 .collect()
         };
 
         let mut decisions = Vec::with_capacity(checkers.len());
         for checker in &checkers {
-            let check_ctx = ctx
-                .clone()
-                .with_snapshot(self.store.snapshot())
-                .with_config(Arc::clone(&resolved.config));
+            let check_ctx = ctx.clone().with_snapshot(self.store.snapshot());
             decisions.push(checker.check(&check_ctx).await?);
         }
 
@@ -530,7 +473,7 @@ impl PhaseRuntime {
     fn resolve_hooks(
         &self,
         phase: Phase,
-        resolved: &ResolvedPhaseConfig,
+        active_plugins: &std::collections::HashSet<String>,
     ) -> Vec<Arc<dyn PhaseHook>> {
         let registry = self
             .runtime_registry
@@ -543,8 +486,7 @@ impl PhaseRuntime {
                 hooks
                     .iter()
                     .filter(|(_, plugin_id, _)| {
-                        resolved.active_plugins.is_empty()
-                            || resolved.active_plugins.contains(plugin_id)
+                        active_plugins.is_empty() || active_plugins.contains(plugin_id)
                     })
                     .map(|(_, _, hook)| Arc::clone(hook))
                     .collect()
@@ -553,22 +495,11 @@ impl PhaseRuntime {
     }
 
     /// Run phase hooks, collecting their commands without committing.
-    ///
-    /// All hooks see the same snapshot (no intermediate commits).
-    /// Used for parallel tool execution where each tool call's hooks
-    /// are independent.
-    async fn run_hooks_collect(
-        &self,
-        ctx: PhaseContext,
-        resolved: &ResolvedPhaseConfig,
-    ) -> Result<StateCommand, StateError> {
-        let hooks = self.resolve_hooks(ctx.phase, resolved);
+    async fn run_hooks_collect(&self, ctx: PhaseContext) -> Result<StateCommand, StateError> {
+        let hooks = self.resolve_hooks(ctx.phase, &ctx.profile.active_plugins);
         let mut combined = StateCommand::new();
         for hook in hooks {
-            let hook_ctx = ctx
-                .clone()
-                .with_snapshot(self.store.snapshot())
-                .with_config(Arc::clone(&resolved.config));
+            let hook_ctx = ctx.clone().with_snapshot(self.store.snapshot());
             let cmd = hook.run(&hook_ctx).await?;
             if !cmd.is_empty() {
                 combined.extend(cmd)?;

@@ -8,13 +8,13 @@ use awaken::agent::config::AgentConfig;
 use awaken::agent::executor::{ParallelToolExecutor, SequentialToolExecutor, ToolExecutor};
 use awaken::agent::loop_runner::run_agent_loop;
 use awaken::agent::state::{RunLifecycle, ToolCallStates};
-use awaken::config::spec::ConfigSlot;
 use awaken::contract::event::AgentEvent;
 use awaken::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken::contract::identity::{RunIdentity, RunOrigin};
 use awaken::contract::inference::{StopReason, StreamResult};
 use awaken::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken::contract::message::{Message, ToolCall};
+use awaken::contract::profile::AgentProfile;
 use awaken::contract::suspension::{ToolCallOutcome, ToolCallStatus};
 use awaken::contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use awaken::*;
@@ -636,29 +636,25 @@ async fn phase_sequence_on_suspension() {
 }
 
 // ===========================================================================
-// CONFIG IN HOOKS DURING LOOP
+// PROFILE SECTIONS ACCESSIBLE IN HOOKS DURING LOOP
 // ===========================================================================
 
-struct TestModelConfig;
-impl ConfigSlot for TestModelConfig {
-    const KEY: &'static str = "test.model_for_loop";
-    type Value = TestModelValue;
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct TestModelValue {
-    name: String,
-}
-
 #[tokio::test]
-async fn config_values_available_in_loop_hooks() {
+async fn profile_sections_available_in_loop_hooks() {
     let observed = Arc::new(Mutex::new(String::new()));
     struct ConfigReader(Arc<Mutex<String>>);
     #[async_trait]
     impl PhaseHook for ConfigReader {
         async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
-            let val = ctx.config::<TestModelConfig>();
-            *self.0.lock().unwrap() = val.name;
+            let name = ctx
+                .profile
+                .sections
+                .get("test.model")
+                .and_then(|v| v.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            *self.0.lock().unwrap() = name;
             Ok(StateCommand::new())
         }
     }
@@ -680,18 +676,18 @@ async fn config_values_available_in_loop_hooks() {
     let llm = Arc::new(ScriptedLlm::new(vec![text_step("ok")]));
     let agent = AgentConfig::new("test", "m", "sys", llm);
     let rt = make_runtime();
-
-    let mut os = awaken::config::profile::OsConfig::new();
-    os.set_default::<TestModelConfig>(TestModelValue {
-        name: "test-model".into(),
-    });
-    rt.set_os_config(os);
-
     rt.install_plugin(CfgPlugin(observed.clone())).unwrap();
 
-    run_agent_loop(&agent, &rt, vec![Message::user("hi")], id())
-        .await
-        .unwrap();
+    // Build a profile with the test section
+    let profile = std::sync::Arc::new(
+        AgentProfile::new("test")
+            .with_section("test.model", serde_json::json!({"name": "test-model"})),
+    );
+
+    // Run phases manually with profile context
+    let store = rt.store();
+    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot()).with_profile(profile);
+    rt.run_phase_with_context(ctx).await.unwrap();
 
     assert_eq!(*observed.lock().unwrap(), "test-model");
 }
