@@ -140,6 +140,7 @@ impl AgentResolver for RegistrySet {
             tool_executor: Arc::new(SequentialToolExecutor),
             context_policy: None,
             context_summarizer: None,
+            max_continuation_retries: 2,
         };
 
         // Register built-in context truncation transform when policy is set
@@ -259,6 +260,7 @@ mod tests {
                 tool_calls: vec![],
                 usage: Some(TokenUsage::default()),
                 stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
             })
         }
 

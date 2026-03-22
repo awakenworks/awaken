@@ -20,6 +20,8 @@ pub struct InferenceRequest {
     pub system: Vec<ContentBlock>,
     /// Per-inference overrides (temperature, max_tokens, etc).
     pub overrides: Option<InferenceOverride>,
+    /// Whether to apply prompt cache hints (e.g. `CacheControl::Ephemeral`) to system messages.
+    pub enable_prompt_cache: bool,
 }
 
 /// Errors from LLM inference.
@@ -101,7 +103,7 @@ pub trait LlmExecutor: Send + Sync {
 }
 
 /// Convert a collected `StreamResult` into a sequence of `StreamEvent`s.
-fn collected_to_stream_events(
+pub(crate) fn collected_to_stream_events(
     result: StreamResult,
 ) -> Vec<Result<StreamEvent, InferenceExecutionError>> {
     use super::content::ContentBlock;
@@ -198,6 +200,7 @@ mod tests {
                 } else {
                     Some(StopReason::ToolUse)
                 },
+                has_incomplete_tool_calls: false,
             })
         }
 
@@ -218,6 +221,7 @@ mod tests {
             tools: vec![],
             system: vec![],
             overrides: None,
+            enable_prompt_cache: false,
         };
         let result = llm.execute(request).await.unwrap();
         assert_eq!(result.text(), "Hello!");
@@ -237,6 +241,7 @@ mod tests {
             tools: vec![ToolDescriptor::new("search", "search", "Web search")],
             system: vec![ContentBlock::text("You are helpful.")],
             overrides: None,
+            enable_prompt_cache: false,
         };
         let result = llm.execute(request).await.unwrap();
         assert!(result.needs_tools());
@@ -261,6 +266,7 @@ mod tests {
                 temperature: Some(0.7),
                 ..Default::default()
             }),
+            enable_prompt_cache: false,
         };
         let result = llm.execute(request).await.unwrap();
         assert_eq!(result.text(), "ok");

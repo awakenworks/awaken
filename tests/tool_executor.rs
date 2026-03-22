@@ -57,6 +57,7 @@ impl LlmExecutor for ScriptedLlm {
                 tool_calls: vec![],
                 usage: None,
                 stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
             })
         } else {
             Ok(responses.remove(0))
@@ -196,6 +197,7 @@ fn tool_step(calls: Vec<ToolCall>) -> StreamResult {
         tool_calls: calls,
         usage: None,
         stop_reason: Some(StopReason::ToolUse),
+        has_incomplete_tool_calls: false,
     }
 }
 
@@ -205,6 +207,7 @@ fn text_step(text: &str) -> StreamResult {
         tool_calls: vec![],
         usage: None,
         stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
     }
 }
 
@@ -884,6 +887,7 @@ async fn empty_tool_calls_treated_as_natural_end() {
         tool_calls: vec![],
         usage: None,
         stop_reason: Some(StopReason::ToolUse), // misleading stop_reason
+        has_incomplete_tool_calls: false,
     }]));
     let agent = AgentConfig::new("test", "m", "sys", llm);
     let rt = make_runtime();
@@ -1127,6 +1131,7 @@ async fn before_inference_hook_override_reaches_request() {
                 tool_calls: vec![],
                 usage: None,
                 stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
             })
         }
         fn name(&self) -> &str {
@@ -1211,6 +1216,7 @@ async fn multiple_hooks_merge_inference_overrides_last_wins() {
                 tool_calls: vec![],
                 usage: None,
                 stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
             })
         }
         fn name(&self) -> &str {
@@ -1322,6 +1328,7 @@ async fn no_override_hook_leaves_overrides_none() {
                 tool_calls: vec![],
                 usage: None,
                 stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
             })
         }
         fn name(&self) -> &str {
@@ -1382,6 +1389,7 @@ async fn override_consumed_each_step_not_leaked() {
                     tool_calls: vec![ToolCall::new("c1", "echo", json!({}))],
                     usage: None,
                     stop_reason: Some(StopReason::ToolUse),
+                    has_incomplete_tool_calls: false,
                 })
             } else {
                 Ok(StreamResult {
@@ -1389,6 +1397,7 @@ async fn override_consumed_each_step_not_leaked() {
                     tool_calls: vec![],
                     usage: None,
                     stop_reason: Some(StopReason::EndTurn),
+                    has_incomplete_tool_calls: false,
                 })
             }
         }
@@ -1495,6 +1504,7 @@ async fn context_message_injected_into_request() {
                 tool_calls: vec![],
                 usage: None,
                 stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
             })
         }
         fn name(&self) -> &str {
@@ -1611,6 +1621,7 @@ async fn context_messages_not_leaked_to_next_step() {
                     tool_calls: vec![ToolCall::new("c1", "echo", json!({}))],
                     usage: None,
                     stop_reason: Some(StopReason::ToolUse),
+                    has_incomplete_tool_calls: false,
                 })
             } else {
                 Ok(StreamResult {
@@ -1618,6 +1629,7 @@ async fn context_messages_not_leaked_to_next_step() {
                     tool_calls: vec![],
                     usage: None,
                     stop_reason: Some(StopReason::EndTurn),
+                    has_incomplete_tool_calls: false,
                 })
             }
         }

@@ -152,6 +152,7 @@ impl Plugin for EphemeralPlugin {
         registrar.register_key::<EphemeralCounter>(StateKeyOptions {
             persistent: false,
             retain_on_uninstall: false,
+            ..Default::default()
         })?;
         Ok(())
     }
@@ -170,6 +171,7 @@ impl Plugin for RetainedPlugin {
         registrar.register_key::<RetainedSummary>(StateKeyOptions {
             persistent: true,
             retain_on_uninstall: true,
+            ..Default::default()
         })?;
         Ok(())
     }
@@ -477,4 +479,144 @@ fn restore_persisted_reports_decode_errors() {
         .restore_persisted(persisted, UnknownKeyPolicy::Error)
         .unwrap_err();
     assert!(matches!(err, StateError::KeyDecode { .. }));
+}
+
+// ---------------------------------------------------------------------------
+// Session memory: KeyScope tests
+// ---------------------------------------------------------------------------
+
+/// A thread-scoped counter that persists across runs.
+struct SessionCounter;
+
+impl StateKey for SessionCounter {
+    const KEY: &'static str = "test.session_counter";
+    const SCOPE: KeyScope = KeyScope::Thread;
+
+    type Value = usize;
+    type Update = usize;
+
+    fn apply(value: &mut Self::Value, update: Self::Update) {
+        *value += update;
+    }
+}
+
+/// A run-scoped scratch value cleared at each run start.
+struct RunScratch;
+
+impl StateKey for RunScratch {
+    const KEY: &'static str = "test.run_scratch";
+    // SCOPE defaults to KeyScope::Run
+
+    type Value = String;
+    type Update = String;
+
+    fn apply(value: &mut Self::Value, update: Self::Update) {
+        *value = update;
+    }
+}
+
+struct SessionMemoryPlugin;
+
+impl Plugin for SessionMemoryPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
+            name: "session_memory_test",
+        }
+    }
+
+    fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+        r.register_key::<SessionCounter>(StateKeyOptions {
+            persistent: true,
+            retain_on_uninstall: false,
+            scope: KeyScope::Thread,
+        })?;
+        r.register_key::<RunScratch>(StateKeyOptions::default())?;
+        Ok(())
+    }
+}
+
+#[test]
+fn thread_scoped_state_survives_run_boundary() {
+    // --- Run 1: write a thread-scoped value and checkpoint ---
+    let store1 = StateStore::new();
+    store1.install_plugin(SessionMemoryPlugin).unwrap();
+
+    let mut batch = store1.begin_mutation();
+    batch.update::<SessionCounter>(42);
+    store1.commit(batch).unwrap();
+
+    assert_eq!(store1.read::<SessionCounter>(), Some(42));
+
+    // Export state (simulates checkpoint at end of run 1)
+    let persisted = store1.export_persisted().unwrap();
+
+    // --- Run 2: new store, restore only thread-scoped keys ---
+    let store2 = StateStore::new();
+    store2.install_plugin(SessionMemoryPlugin).unwrap();
+
+    store2
+        .restore_thread_scoped(persisted, UnknownKeyPolicy::Skip)
+        .unwrap();
+
+    // Thread-scoped value survives
+    assert_eq!(store2.read::<SessionCounter>(), Some(42));
+
+    // Can continue accumulating
+    let mut batch = store2.begin_mutation();
+    batch.update::<SessionCounter>(8);
+    store2.commit(batch).unwrap();
+    assert_eq!(store2.read::<SessionCounter>(), Some(50));
+}
+
+#[test]
+fn run_scoped_state_cleared_at_run_start() {
+    // --- Run 1: write both run-scoped and thread-scoped values ---
+    let store1 = StateStore::new();
+    store1.install_plugin(SessionMemoryPlugin).unwrap();
+
+    let mut batch = store1.begin_mutation();
+    batch.update::<SessionCounter>(10);
+    batch.update::<RunScratch>("hello".to_string());
+    store1.commit(batch).unwrap();
+
+    assert_eq!(store1.read::<SessionCounter>(), Some(10));
+    assert_eq!(store1.read::<RunScratch>(), Some("hello".to_string()));
+
+    // Export state (simulates checkpoint at end of run 1)
+    let persisted = store1.export_persisted().unwrap();
+
+    // --- Run 2: new store, restore only thread-scoped keys ---
+    let store2 = StateStore::new();
+    store2.install_plugin(SessionMemoryPlugin).unwrap();
+
+    store2
+        .restore_thread_scoped(persisted, UnknownKeyPolicy::Skip)
+        .unwrap();
+
+    // Thread-scoped value survives
+    assert_eq!(store2.read::<SessionCounter>(), Some(10));
+    // Run-scoped value is NOT restored
+    assert_eq!(store2.read::<RunScratch>(), None);
+}
+
+#[test]
+fn clear_run_scoped_preserves_thread_keys() {
+    let store = StateStore::new();
+    store.install_plugin(SessionMemoryPlugin).unwrap();
+
+    let mut batch = store.begin_mutation();
+    batch.update::<SessionCounter>(7);
+    batch.update::<RunScratch>("temp".to_string());
+    store.commit(batch).unwrap();
+
+    assert_eq!(store.read::<SessionCounter>(), Some(7));
+    assert_eq!(store.read::<RunScratch>(), Some("temp".to_string()));
+
+    // Simulate run boundary: clear run-scoped keys only
+    store.clear_run_scoped();
+
+    // Thread-scoped key preserved
+    assert_eq!(store.read::<SessionCounter>(), Some(7));
+    // Run-scoped key cleared
+    assert_eq!(store.read::<RunScratch>(), None);
 }

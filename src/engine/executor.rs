@@ -100,7 +100,12 @@ impl LlmExecutor for GenaiExecutor {
     ) -> Result<StreamResult, InferenceExecutionError> {
         let model = request.model.clone();
         let tools: Vec<_> = request.tools.clone();
-        let chat_req = build_chat_request(&request.system, &request.messages, &tools, false);
+        let chat_req = build_chat_request(
+            &request.system,
+            &request.messages,
+            &tools,
+            request.enable_prompt_cache,
+        );
         let opts = self.build_options(&request);
 
         let response = self
@@ -137,6 +142,7 @@ impl LlmExecutor for GenaiExecutor {
             tool_calls,
             usage,
             stop_reason,
+            has_incomplete_tool_calls: false,
         })
     }
 
@@ -153,7 +159,12 @@ impl LlmExecutor for GenaiExecutor {
         Box::pin(async move {
             let model = request.model.clone();
             let tools: Vec<_> = request.tools.clone();
-            let chat_req = build_chat_request(&request.system, &request.messages, &tools, false);
+            let chat_req = build_chat_request(
+                &request.system,
+                &request.messages,
+                &tools,
+                request.enable_prompt_cache,
+            );
             let mut opts = self.build_options(&request);
             opts = opts.with_capture_content(true);
 

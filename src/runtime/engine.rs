@@ -142,6 +142,8 @@ impl PhaseRuntime {
                 })
                 .collect();
 
+            tracing::debug!(phase = ?phase, actions = matching.len(), "execute_start");
+
             if matching.is_empty() {
                 if rounds == 1 {
                     total_skipped = self
@@ -349,6 +351,8 @@ impl PhaseRuntime {
             ));
         }
 
+        tracing::debug!(phase = ?base_ctx.phase, hooks = hooks.len(), "gather_start");
+
         let snapshot = self.store.snapshot();
         let indexed = Self::run_hooks_indexed(&hooks, base_ctx, &snapshot).await?;
 
@@ -390,6 +394,7 @@ impl PhaseRuntime {
         }
 
         // Conflict fallback: partition into compatible batch + deferred
+        tracing::warn!(phase = ?base_ctx.phase, "exclusive_conflict_fallback");
         let (batch_commands, deferred_indices) = {
             let registry = self.store.registry.lock().expect("registry lock poisoned");
             partition_commands(indexed, |k| registry.merge_strategy(k))

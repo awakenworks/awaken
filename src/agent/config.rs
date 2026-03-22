@@ -23,6 +23,9 @@ pub struct AgentConfig {
     /// Context summarizer for LLM-based compaction. `None` disables LLM compaction
     /// (hard truncation still works if `context_policy` is set).
     pub context_summarizer: Option<Arc<dyn super::context::ContextSummarizer>>,
+    /// Maximum number of continuation retries when the LLM response is truncated
+    /// at `MaxTokens` with incomplete tool calls. `0` disables truncation recovery.
+    pub max_continuation_retries: usize,
 }
 
 impl AgentConfig {
@@ -42,6 +45,7 @@ impl AgentConfig {
             tool_executor: Arc::new(SequentialToolExecutor),
             context_policy: None,
             context_summarizer: None,
+            max_continuation_retries: 2,
         }
     }
 
@@ -85,6 +89,12 @@ impl AgentConfig {
         summarizer: Arc<dyn super::context::ContextSummarizer>,
     ) -> Self {
         self.context_summarizer = Some(summarizer);
+        self
+    }
+
+    #[must_use]
+    pub fn with_max_continuation_retries(mut self, n: usize) -> Self {
+        self.max_continuation_retries = n;
         self
     }
 

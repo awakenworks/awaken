@@ -50,6 +50,7 @@ impl LlmExecutor for ScriptedLlm {
                 tool_calls: vec![],
                 usage: None,
                 stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
             })
         } else {
             Ok(responses.remove(0))
@@ -223,6 +224,7 @@ async fn single_step_natural_end() {
             ..Default::default()
         }),
         stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
     }]));
 
     let agent = AgentConfig::new("test", "gpt-4o", "You are helpful.", llm);
@@ -263,12 +265,14 @@ async fn tool_call_then_response() {
             tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "hello"}))],
             usage: None,
             stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
         },
         StreamResult {
             content: vec![ContentBlock::text("The echo said: hello")],
             tool_calls: vec![],
             usage: None,
             stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
         },
     ]));
 
@@ -305,12 +309,14 @@ async fn tool_call_state_machine_transitions() {
             tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "hi"}))],
             usage: None,
             stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
         },
         StreamResult {
             content: vec![ContentBlock::text("Done.")],
             tool_calls: vec![],
             usage: None,
             stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
         },
     ]));
 
@@ -350,12 +356,14 @@ async fn multiple_tool_calls_in_one_step() {
             ],
             usage: None,
             stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
         },
         StreamResult {
             content: vec![ContentBlock::text("Done.")],
             tool_calls: vec![],
             usage: None,
             stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
         },
     ]));
 
@@ -401,6 +409,7 @@ async fn max_rounds_exceeded() {
                 )],
                 usage: None,
                 stop_reason: Some(StopReason::ToolUse),
+                has_incomplete_tool_calls: false,
             })
             .collect(),
     ));
@@ -449,12 +458,14 @@ async fn unknown_tool_returns_error_result_not_crash() {
             tool_calls: vec![ToolCall::new("c1", "nonexistent", json!({}))],
             usage: None,
             stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
         },
         StreamResult {
             content: vec![ContentBlock::text("Sorry, that tool doesn't exist.")],
             tool_calls: vec![],
             usage: None,
             stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
         },
     ]));
 
@@ -500,12 +511,14 @@ async fn failing_tool_produces_error_result_continues_loop() {
             tool_calls: vec![ToolCall::new("c1", "fail", json!({}))],
             usage: None,
             stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
         },
         StreamResult {
             content: vec![ContentBlock::text("Tool failed, sorry.")],
             tool_calls: vec![],
             usage: None,
             stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
         },
     ]));
 
@@ -538,6 +551,7 @@ async fn events_have_correct_sequence_for_single_step() {
         tool_calls: vec![],
         usage: None,
         stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
     }]));
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
@@ -600,12 +614,14 @@ async fn events_have_correct_sequence_with_tool_call() {
             tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "x"}))],
             usage: None,
             stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
         },
         StreamResult {
             content: vec![ContentBlock::text("Done")],
             tool_calls: vec![],
             usage: None,
             stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
         },
     ]));
 
@@ -670,6 +686,7 @@ async fn lifecycle_state_reflects_custom_run_id() {
         tool_calls: vec![],
         usage: None,
         stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
     }]));
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
@@ -738,6 +755,7 @@ async fn phase_hooks_fire_during_loop() {
         tool_calls: vec![],
         usage: None,
         stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
     }]));
 
     let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
@@ -785,6 +803,7 @@ fn make_tool_call_response(tool_name: &str, call_id: &str, args: Value) -> Strea
         tool_calls: vec![ToolCall::new(call_id, tool_name, args)],
         usage: None,
         stop_reason: Some(StopReason::ToolUse),
+        has_incomplete_tool_calls: false,
     }
 }
 
@@ -1322,6 +1341,7 @@ impl LlmExecutor for SlowStreamingLlm {
             tool_calls: vec![],
             usage: None,
             stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
         })
     }
 
@@ -1440,5 +1460,110 @@ async fn cancel_before_inference_terminates_immediately() {
     assert_eq!(
         result.steps, 1,
         "only one step entry before cancellation detected"
+    );
+}
+
+#[tokio::test]
+async fn state_snapshot_emitted_after_phase() {
+    // Run a loop with a tool call (which modifies state) and verify StateSnapshot events
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "ping"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("Done!")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = VecEventSink::new();
+    let result = run_agent_loop(
+        &resolver,
+        "test",
+        &runtime,
+        &sink,
+        None,
+        vec![Message::user("hi")],
+        test_identity(),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+
+    let events = sink.take();
+
+    // Collect all StateSnapshot events
+    let snapshots: Vec<&Value> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::StateSnapshot { snapshot } => Some(snapshot),
+            _ => None,
+        })
+        .collect();
+
+    // Should have at least 2 snapshots: one per complete_step + one at run end
+    assert!(
+        snapshots.len() >= 2,
+        "expected at least 2 state snapshots, got {}",
+        snapshots.len()
+    );
+
+    // Each snapshot should contain revision and extensions fields
+    for snap in &snapshots {
+        assert!(
+            snap.get("revision").is_some(),
+            "snapshot should contain revision field"
+        );
+        assert!(
+            snap.get("extensions").is_some(),
+            "snapshot should contain extensions field"
+        );
+    }
+
+    // Verify snapshots appear before StepEnd and RunFinish in event order
+    let lifecycle_types: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::StepStart { .. } => Some("StepStart"),
+            AgentEvent::StateSnapshot { .. } => Some("StateSnapshot"),
+            AgentEvent::StepEnd => Some("StepEnd"),
+            AgentEvent::RunFinish { .. } => Some("RunFinish"),
+            _ => None,
+        })
+        .collect();
+
+    // StateSnapshot should appear before each StepEnd and before RunFinish
+    for (i, &event_type) in lifecycle_types.iter().enumerate() {
+        if event_type == "StepEnd" {
+            assert!(
+                i > 0 && lifecycle_types[i - 1] == "StateSnapshot",
+                "StateSnapshot should precede StepEnd, got: {:?}",
+                lifecycle_types
+            );
+        }
+    }
+    // Last RunFinish should be preceded by StateSnapshot (possibly with other events between)
+    let last_snapshot_idx = lifecycle_types
+        .iter()
+        .rposition(|&t| t == "StateSnapshot")
+        .expect("should have a StateSnapshot");
+    let run_finish_idx = lifecycle_types
+        .iter()
+        .rposition(|&t| t == "RunFinish")
+        .expect("should have a RunFinish");
+    assert!(
+        last_snapshot_idx < run_finish_idx,
+        "final StateSnapshot should precede RunFinish"
     );
 }

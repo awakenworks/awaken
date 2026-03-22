@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+use super::event::AgentEvent;
+use super::event_sink::EventSink;
 use super::identity::RunIdentity;
 use super::profile::AgentProfile;
 use crate::state::{Snapshot, StateKey};
@@ -228,6 +230,7 @@ impl ToolDescriptor {
 ///
 /// Gives the tool access to call identity, run identity, state snapshot,
 /// and agent profile. All read-only — tools produce results, not state mutations.
+/// Tools can optionally report activity progress via [`activity_sink`](Self::activity_sink).
 #[derive(Clone)]
 pub struct ToolCallContext {
     /// Unique ID of this tool call.
@@ -238,12 +241,50 @@ pub struct ToolCallContext {
     pub profile: Arc<AgentProfile>,
     /// State snapshot at the time of tool execution.
     pub snapshot: Snapshot,
+    /// Optional sink for reporting activity progress during execution.
+    pub activity_sink: Option<Arc<dyn EventSink>>,
 }
 
 impl ToolCallContext {
     /// Read a state key from the snapshot.
     pub fn state<K: StateKey>(&self) -> Option<&K::Value> {
         self.snapshot.get::<K>()
+    }
+
+    /// Report an activity snapshot (full state replacement) for this tool call.
+    ///
+    /// Emits an [`AgentEvent::ActivitySnapshot`] with `message_id` set to this
+    /// context's `call_id`. No-op if no `activity_sink` is configured.
+    pub async fn report_activity(&self, activity_type: &str, content: &str) {
+        if let Some(sink) = &self.activity_sink {
+            sink.emit(AgentEvent::ActivitySnapshot {
+                message_id: self.call_id.clone(),
+                activity_type: activity_type.to_string(),
+                content: serde_json::Value::String(content.to_string()),
+                replace: Some(true),
+            })
+            .await;
+        }
+    }
+
+    /// Report an incremental activity delta for this tool call.
+    ///
+    /// Emits an [`AgentEvent::ActivityDelta`] with `message_id` set to this
+    /// context's `call_id`. No-op if no `activity_sink` is configured.
+    pub async fn report_activity_delta(&self, activity_type: &str, patch: serde_json::Value) {
+        if let Some(sink) = &self.activity_sink {
+            let patches = if let serde_json::Value::Array(arr) = patch {
+                arr
+            } else {
+                vec![patch]
+            };
+            sink.emit(AgentEvent::ActivityDelta {
+                message_id: self.call_id.clone(),
+                activity_type: activity_type.to_string(),
+                patch: patches,
+            })
+            .await;
+        }
     }
 
     /// Create a minimal context for testing.
@@ -253,6 +294,7 @@ impl ToolCallContext {
             run_identity: RunIdentity::default(),
             profile: Arc::new(AgentProfile::default()),
             snapshot: Snapshot::new(0, Arc::new(crate::state::StateMap::default())),
+            activity_sink: None,
         }
     }
 }
@@ -471,5 +513,121 @@ mod tests {
             .await
             .unwrap();
         assert!(result.is_success());
+    }
+
+    /// A mock tool that reports activity during execution.
+    struct ActivityReportingTool;
+
+    #[async_trait]
+    impl Tool for ActivityReportingTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("reporter", "reporter", "Reports activity")
+        }
+
+        async fn execute(
+            &self,
+            _args: Value,
+            ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
+            ctx.report_activity("progress", "50% done").await;
+            ctx.report_activity_delta(
+                "progress",
+                json!({"op": "replace", "path": "/percent", "value": 100}),
+            )
+            .await;
+            Ok(ToolResult::success("reporter", json!(null)))
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_can_report_activity_snapshot() {
+        use crate::contract::event::AgentEvent;
+        use crate::contract::event_sink::VecEventSink;
+
+        let sink = Arc::new(VecEventSink::new());
+        let mut ctx = ToolCallContext::test_default();
+        ctx.call_id = "call-1".into();
+        ctx.activity_sink = Some(sink.clone() as Arc<dyn super::super::event_sink::EventSink>);
+
+        let tool = ActivityReportingTool;
+        let result = tool.execute(json!({}), &ctx).await.unwrap();
+        assert!(result.is_success());
+
+        let events = sink.events();
+        assert_eq!(events.len(), 2);
+
+        // First event: ActivitySnapshot
+        match &events[0] {
+            AgentEvent::ActivitySnapshot {
+                message_id,
+                activity_type,
+                content,
+                replace,
+            } => {
+                assert_eq!(message_id, "call-1");
+                assert_eq!(activity_type, "progress");
+                assert_eq!(content, &json!("50% done"));
+                assert_eq!(*replace, Some(true));
+            }
+            other => panic!("expected ActivitySnapshot, got: {other:?}"),
+        }
+
+        // Second event: ActivityDelta
+        match &events[1] {
+            AgentEvent::ActivityDelta {
+                message_id,
+                activity_type,
+                patch,
+            } => {
+                assert_eq!(message_id, "call-1");
+                assert_eq!(activity_type, "progress");
+                assert_eq!(patch.len(), 1);
+                assert_eq!(patch[0]["op"], "replace");
+            }
+            other => panic!("expected ActivityDelta, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_activity_events_include_call_id() {
+        use crate::contract::event::AgentEvent;
+        use crate::contract::event_sink::VecEventSink;
+
+        let sink = Arc::new(VecEventSink::new());
+        let mut ctx = ToolCallContext::test_default();
+        ctx.call_id = "unique-call-42".into();
+        ctx.activity_sink = Some(sink.clone() as Arc<dyn super::super::event_sink::EventSink>);
+
+        ctx.report_activity("status", "running").await;
+        ctx.report_activity_delta(
+            "status",
+            json!([{"op": "add", "path": "/step", "value": 1}]),
+        )
+        .await;
+
+        let events = sink.events();
+        assert_eq!(events.len(), 2);
+
+        // Both events must carry the call_id as message_id
+        for event in &events {
+            match event {
+                AgentEvent::ActivitySnapshot { message_id, .. } => {
+                    assert_eq!(message_id, "unique-call-42");
+                }
+                AgentEvent::ActivityDelta { message_id, .. } => {
+                    assert_eq!(message_id, "unique-call-42");
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn report_activity_noop_without_sink() {
+        let ctx = ToolCallContext::test_default();
+        // Should not panic when no sink is configured
+        ctx.report_activity("status", "test").await;
+        ctx.report_activity_delta("status", json!({"op": "add"}))
+            .await;
     }
 }

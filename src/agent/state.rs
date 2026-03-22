@@ -274,6 +274,33 @@ impl crate::model::ScheduledActionSpec for SetInferenceOverride {
     type Payload = InferenceOverride;
 }
 
+/// Action spec for excluding a specific tool from the current inference step.
+///
+/// Scheduled by `BeforeInference` hooks via `cmd.schedule_action::<ExcludeTool>(...)`.
+/// The loop runner consumes all matching actions and removes matching tool IDs
+/// from the tool descriptors before building the `InferenceRequest`.
+pub struct ExcludeTool;
+
+impl crate::model::ScheduledActionSpec for ExcludeTool {
+    const KEY: &'static str = "runtime.exclude_tool";
+    const PHASE: crate::model::Phase = crate::model::Phase::BeforeInference;
+    type Payload = String;
+}
+
+/// Action spec for restricting tools to an explicit allow-list for the current inference step.
+///
+/// Scheduled by `BeforeInference` hooks via `cmd.schedule_action::<IncludeOnlyTools>(...)`.
+/// The loop runner consumes all matching actions and intersects the tool descriptors
+/// with the union of all provided tool ID lists. If any `IncludeOnlyTools` action exists,
+/// only tools whose IDs appear in the combined list are kept.
+pub struct IncludeOnlyTools;
+
+impl crate::model::ScheduledActionSpec for IncludeOnlyTools {
+    const KEY: &'static str = "runtime.include_only_tools";
+    const PHASE: crate::model::Phase = crate::model::Phase::BeforeInference;
+    type Payload = Vec<String>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

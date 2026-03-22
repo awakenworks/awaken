@@ -49,6 +49,24 @@ impl EventSink for VecEventSink {
     }
 }
 
+/// Delegates all events to an inner `Arc<dyn EventSink>`.
+///
+/// Useful when the same sink needs to be shared across cloneable contexts
+/// (e.g., [`ToolCallContext`](super::tool::ToolCallContext)).
+#[derive(Clone)]
+pub struct SharedEventSink(pub std::sync::Arc<dyn EventSink>);
+
+#[async_trait]
+impl EventSink for SharedEventSink {
+    async fn emit(&self, event: AgentEvent) {
+        self.0.emit(event).await;
+    }
+
+    async fn close(&self) {
+        self.0.close().await;
+    }
+}
+
 /// Discards all events (useful in tests where events are not needed).
 pub struct NullEventSink;
 

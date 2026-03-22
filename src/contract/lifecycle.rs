@@ -41,6 +41,8 @@ pub enum TerminationReason {
     Stopped(StoppedReason),
     /// External run cancellation signal was received.
     Cancelled,
+    /// A tool permission checker blocked the run.
+    Blocked(String),
     /// Run paused waiting for external suspended tool-call resolution.
     Suspended,
     /// Run ended due to an error path.
@@ -64,6 +66,9 @@ impl TerminationReason {
             "natural" => Self::NaturalEnd,
             "behavior_requested" => Self::BehaviorRequested,
             "cancelled" => Self::Cancelled,
+            s if s.starts_with("blocked:") => {
+                Self::Blocked(s.trim_start_matches("blocked:").to_string())
+            }
             s if s.starts_with("stopped:") => {
                 Self::Stopped(StoppedReason::new(s.trim_start_matches("stopped:")))
             }
@@ -79,6 +84,7 @@ impl TerminationReason {
             Self::NaturalEnd => (RunStatus::Done, Some("natural".to_string())),
             Self::BehaviorRequested => (RunStatus::Done, Some("behavior_requested".to_string())),
             Self::Cancelled => (RunStatus::Done, Some("cancelled".to_string())),
+            Self::Blocked(reason) => (RunStatus::Done, Some(format!("blocked:{reason}"))),
             Self::Error(_) => (RunStatus::Done, Some("error".to_string())),
             Self::Stopped(stopped) => (RunStatus::Done, Some(format!("stopped:{}", stopped.code))),
         }
@@ -176,6 +182,11 @@ mod tests {
                 Some("cancelled"),
             ),
             (
+                TerminationReason::Blocked("unsafe tool".to_string()),
+                RunStatus::Done,
+                Some("blocked:unsafe tool"),
+            ),
+            (
                 TerminationReason::Error("test error".to_string()),
                 RunStatus::Done,
                 Some("error"),
@@ -204,6 +215,7 @@ mod tests {
             TerminationReason::BehaviorRequested,
             TerminationReason::stopped_with_detail("max_turns", "reached 10 rounds"),
             TerminationReason::Cancelled,
+            TerminationReason::Blocked("unsafe".into()),
             TerminationReason::Suspended,
             TerminationReason::Error("oops".into()),
         ];

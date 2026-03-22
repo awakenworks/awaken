@@ -197,6 +197,7 @@ mod tests {
                 ..Default::default()
             }),
             stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
         }
     }
 
@@ -207,6 +208,7 @@ mod tests {
             tools: vec![],
             system: vec![],
             overrides: None,
+            enable_prompt_cache: false,
         }
     }
 

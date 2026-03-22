@@ -45,6 +45,9 @@ pub struct StreamResult {
     pub usage: Option<TokenUsage>,
     /// Why the model stopped generating.
     pub stop_reason: Option<StopReason>,
+    /// True when tool calls were started but their argument JSON was truncated
+    /// (e.g. the response hit `MaxTokens` mid-generation).
+    pub has_incomplete_tool_calls: bool,
 }
 
 impl StreamResult {
@@ -56,6 +59,12 @@ impl StreamResult {
     /// Extract concatenated text from content blocks.
     pub fn text(&self) -> String {
         extract_text(&self.content)
+    }
+
+    /// Whether this result was truncated mid-generation and has incomplete tool
+    /// calls that should be recovered via a continuation prompt.
+    pub fn needs_truncation_recovery(&self) -> bool {
+        self.stop_reason == Some(StopReason::MaxTokens) && self.has_incomplete_tool_calls
     }
 }
 
@@ -358,6 +367,7 @@ mod tests {
             tool_calls: vec![ToolCall::new("c1", "search", json!({}))],
             usage: None,
             stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
         };
         assert!(with_tools.needs_tools());
 
@@ -366,6 +376,7 @@ mod tests {
             tool_calls: vec![],
             usage: None,
             stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
         };
         assert!(!without.needs_tools());
     }
@@ -382,6 +393,7 @@ mod tests {
                 ..Default::default()
             }),
             stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
         });
         assert!(success.outcome.is_ok());
 

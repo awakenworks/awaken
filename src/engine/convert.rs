@@ -419,4 +419,35 @@ mod tests {
             Some(StopReason::StopSequence)
         );
     }
+
+    #[test]
+    fn prompt_cache_hints_applied_to_system_messages() {
+        let system = vec![ContentBlock::text("You are a helpful assistant.")];
+        let messages = vec![Message::user("hello")];
+        let req = build_chat_request(&system, &messages, &[], true);
+
+        // The system message (first) should have CacheControl::Ephemeral in options
+        let system_msg = &req.messages[0];
+        assert!(matches!(system_msg.role, chat::ChatRole::System));
+        let opts = system_msg
+            .options
+            .as_ref()
+            .expect("system message should have options when prompt cache is enabled");
+        assert_eq!(opts.cache_control, Some(chat::CacheControl::Ephemeral));
+    }
+
+    #[test]
+    fn prompt_cache_hints_not_applied_when_disabled() {
+        let system = vec![ContentBlock::text("You are a helpful assistant.")];
+        let messages = vec![Message::user("hello")];
+        let req = build_chat_request(&system, &messages, &[], false);
+
+        // The system message should NOT have options set
+        let system_msg = &req.messages[0];
+        assert!(matches!(system_msg.role, chat::ChatRole::System));
+        assert!(
+            system_msg.options.is_none(),
+            "system message should not have options when prompt cache is disabled"
+        );
+    }
 }

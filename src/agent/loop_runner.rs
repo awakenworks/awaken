@@ -102,6 +102,8 @@ pub fn build_agent_env(
     let mut env = ExecutionEnv::from_plugins(&all_plugins)?;
     env.register_loop_consumed_action::<super::state::SetInferenceOverride>();
     env.register_loop_consumed_action::<super::state::AddContextMessage>();
+    env.register_loop_consumed_action::<super::state::ExcludeTool>();
+    env.register_loop_consumed_action::<super::state::IncludeOnlyTools>();
 
     // Register built-in context truncation transform when policy is set
     if let Some(ref policy) = agent.context_policy {
@@ -145,6 +147,7 @@ pub async fn run_agent_loop(
 /// Agent loop implementation with runtime control channels.
 ///
 /// Prefer calling through `AgentRuntime::run()` in production code.
+#[tracing::instrument(skip_all, fields(agent_id = %initial_agent_id, run_id = %run_identity.run_id))]
 pub async fn run_agent_loop_controlled(
     resolver: &dyn AgentResolver,
     initial_agent_id: &str,
@@ -213,6 +216,7 @@ pub async fn run_agent_loop_controlled(
 
     let termination = loop {
         steps += 1;
+        tracing::info!(step = steps, "step_start");
 
         // --- Cancellation check ---
         if cancellation_token
@@ -300,7 +304,8 @@ pub async fn run_agent_loop_controlled(
         }
 
         // Apply request transforms (e.g., hard truncation to token budget)
-        let tools = agent.tool_descriptors();
+        let mut tools = agent.tool_descriptors();
+        apply_tool_filter_actions(store, &mut tools)?;
         let request_messages = crate::contract::transform::apply_transforms(
             request_messages,
             &tools,
@@ -308,15 +313,20 @@ pub async fn run_agent_loop_controlled(
         );
 
         let start = std::time::Instant::now();
+        let enable_prompt_cache = agent
+            .context_policy
+            .as_ref()
+            .map_or(false, |p| p.enable_prompt_cache);
         let request = InferenceRequest {
             model: agent.model.clone(),
             messages: request_messages,
             tools,
             system: vec![],
             overrides,
+            enable_prompt_cache,
         };
 
-        let stream_result = execute_streaming(
+        let mut stream_result = execute_streaming(
             &agent,
             request,
             sink,
@@ -326,7 +336,67 @@ pub async fn run_agent_loop_controlled(
         )
         .await?;
 
+        // --- Truncation recovery ---
+        // When the LLM hits MaxTokens mid-response with incomplete tool calls,
+        // inject a continuation prompt and re-invoke inference up to
+        // `max_continuation_retries` times.
+        if stream_result.needs_truncation_recovery() && agent.max_continuation_retries > 0 {
+            let mut continuation_attempts = 0;
+            while stream_result.needs_truncation_recovery()
+                && continuation_attempts < agent.max_continuation_retries
+            {
+                continuation_attempts += 1;
+
+                // Add the partial assistant message to the conversation
+                let partial_text = stream_result.text();
+                messages.push(Arc::new(Message::assistant(&partial_text)));
+
+                // Add a continuation user message
+                messages.push(Arc::new(Message::user(
+                    "Please continue from where you left off.",
+                )));
+
+                // Rebuild request with updated messages
+                let has_sys = !agent.system_prompt.is_empty();
+                let mut cont_messages: Vec<Message> = Vec::new();
+                if has_sys {
+                    cont_messages.push(Message::system(&agent.system_prompt));
+                }
+                cont_messages.extend(messages.iter().map(|m| (**m).clone()));
+                let cont_messages = crate::contract::transform::apply_transforms(
+                    cont_messages,
+                    &agent.tool_descriptors(),
+                    &env.request_transforms,
+                );
+
+                let cont_request = InferenceRequest {
+                    model: agent.model.clone(),
+                    messages: cont_messages,
+                    tools: agent.tool_descriptors(),
+                    system: vec![],
+                    overrides: run_overrides.clone(),
+                };
+
+                stream_result = execute_streaming(
+                    &agent,
+                    cont_request,
+                    sink,
+                    cancellation_token.as_ref(),
+                    &mut total_input_tokens,
+                    &mut total_output_tokens,
+                )
+                .await?;
+            }
+        }
+
         let duration_ms = start.elapsed().as_millis() as u64;
+        tracing::info!(
+            model = %agent.model,
+            input_tokens = total_input_tokens,
+            output_tokens = total_output_tokens,
+            duration_ms,
+            "inference_complete"
+        );
 
         // Check if cancellation occurred mid-stream
         if cancellation_token
@@ -395,6 +465,7 @@ pub async fn run_agent_loop_controlled(
         // - Suspend → skip execution, mark as suspended
         let mut allowed_calls = Vec::new();
         let mut suspended = false;
+        let mut blocked: Option<String> = None;
         let mut tool_commands = Vec::new();
 
         for call in &stream_result.tool_calls {
@@ -406,7 +477,7 @@ pub async fn run_agent_loop_controlled(
                 crate::runtime::ToolPermissionResult::Allow => {
                     allowed_calls.push(call.clone());
                 }
-                crate::runtime::ToolPermissionResult::Deny { reason } => {
+                crate::runtime::ToolPermissionResult::Deny { reason, message } => {
                     let mut lifecycle_cmd = StateCommand::new();
                     lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
                         call_id: call.id.clone(),
@@ -416,10 +487,22 @@ pub async fn run_agent_loop_controlled(
                         updated_at: now_ms(),
                     });
                     tool_commands.push(lifecycle_cmd);
-                    messages.push(Arc::new(Message::tool(
-                        &call.id,
-                        format!("Permission denied: {reason}"),
-                    )));
+                    let tool_msg =
+                        message.unwrap_or_else(|| format!("Permission denied: {reason}"));
+                    messages.push(Arc::new(Message::tool(&call.id, tool_msg)));
+                }
+                crate::runtime::ToolPermissionResult::Block { reason } => {
+                    let mut lifecycle_cmd = StateCommand::new();
+                    lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
+                        call_id: call.id.clone(),
+                        tool_name: call.name.clone(),
+                        arguments: call.arguments.clone(),
+                        status: ToolCallStatus::Failed,
+                        updated_at: now_ms(),
+                    });
+                    tool_commands.push(lifecycle_cmd);
+                    blocked = Some(reason);
+                    break;
                 }
                 crate::runtime::ToolPermissionResult::Suspend => {
                     let mut lifecycle_cmd = StateCommand::new();
@@ -440,18 +523,42 @@ pub async fn run_agent_loop_controlled(
             }
         }
 
+        // If a tool call was blocked, submit state updates and terminate the run.
+        if let Some(block_reason) = blocked {
+            if !tool_commands.is_empty() {
+                let merged = store.merge_all_commands(tool_commands)?;
+                runtime.submit_command(&env, merged).await?;
+            }
+            commit_update::<RunLifecycle>(
+                store,
+                RunLifecycleUpdate::Done {
+                    done_reason: format!("blocked:{block_reason}"),
+                    updated_at: now_ms(),
+                },
+            )?;
+            break TerminationReason::Blocked(block_reason);
+        }
+
         // Execute allowed tool calls via ToolExecutor
+        let activity_buffer = Arc::new(crate::contract::event_sink::VecEventSink::new());
         let tool_ctx = ToolCallContext {
             call_id: String::new(), // filled per-call by executor
             run_identity: run_identity.clone(),
             profile: make_ctx(Phase::BeforeToolExecute, &messages, &run_identity).profile,
             snapshot: store.snapshot(),
+            activity_sink: Some(
+                activity_buffer.clone() as Arc<dyn crate::contract::event_sink::EventSink>
+            ),
         };
         let exec_results = agent
             .tool_executor
             .execute(&agent.tools, &allowed_calls, &tool_ctx)
             .await
             .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
+        // Flush buffered activity events to the real sink
+        for activity_event in activity_buffer.take() {
+            sink.emit(activity_event).await;
+        }
 
         // Process tool results: collect phase commands, merge, commit once.
         for exec_result in &exec_results {
@@ -494,6 +601,13 @@ pub async fn run_agent_loop_controlled(
                 updated_at: now_ms(),
             });
             tool_commands.push(lifecycle_cmd);
+
+            tracing::info!(
+                tool_name = %call.name,
+                call_id = %call.id,
+                outcome = ?exec_result.outcome,
+                "tool_call_done"
+            );
 
             sink.emit(AgentEvent::ToolCallDone {
                 id: call.id.clone(),
@@ -595,6 +709,8 @@ pub async fn run_agent_loop_controlled(
         }
     };
 
+    tracing::warn!(reason = ?termination, "run_terminated");
+
     // --- Run lifecycle: Done (unless Suspended → Waiting, not Done) ---
     let (target_status, done_reason) = termination.to_run_status();
     if target_status.is_terminal() {
@@ -621,6 +737,8 @@ pub async fn run_agent_loop_controlled(
         total_output_tokens,
     )
     .await?;
+
+    emit_state_snapshot(store, sink).await;
 
     let response = messages
         .iter()
@@ -718,6 +836,7 @@ async fn detect_and_replay_resume(
         run_identity: run_identity.clone(),
         profile: std::sync::Arc::new(crate::contract::profile::AgentProfile::default()),
         snapshot: store.snapshot(),
+        activity_sink: None,
     };
 
     for (call_id, call_state) in resuming {
@@ -855,6 +974,8 @@ async fn complete_step(
     )
     .await?;
 
+    emit_state_snapshot(store, sink).await;
+
     sink.emit(AgentEvent::StepEnd).await;
     Ok(())
 }
@@ -909,6 +1030,20 @@ fn commit_update<S: crate::state::StateKey>(
     patch.update::<S>(update);
     store.commit(patch)?;
     Ok(())
+}
+
+/// Emit a `StateSnapshot` event with the current persisted state.
+async fn emit_state_snapshot(store: &crate::state::StateStore, sink: &dyn EventSink) {
+    match store.export_persisted() {
+        Ok(persisted) => {
+            if let Ok(snapshot) = serde_json::to_value(persisted) {
+                sink.emit(AgentEvent::StateSnapshot { snapshot }).await;
+            }
+        }
+        Err(_) => {
+            // State export failed; skip snapshot emission rather than breaking the loop.
+        }
+    }
 }
 
 /// Check if the run lifecycle has left Running state.
@@ -1065,6 +1200,74 @@ fn consume_context_messages(
     Ok(accepted)
 }
 
+/// Consume `ExcludeTool` and `IncludeOnlyTools` actions, then filter tool descriptors.
+///
+/// - All `ExcludeTool` payloads are collected; matching tool IDs are removed.
+/// - If any `IncludeOnlyTools` payloads exist, their union forms an allow-list;
+///   only tools whose IDs appear in the allow-list are kept.
+/// - Exclusions are applied after inclusion filtering.
+fn apply_tool_filter_actions(
+    store: &crate::state::StateStore,
+    tools: &mut Vec<crate::contract::tool::ToolDescriptor>,
+) -> Result<(), crate::error::StateError> {
+    use super::state::{ExcludeTool, IncludeOnlyTools};
+    use crate::model::ScheduledActionSpec;
+    use std::collections::HashSet;
+
+    let pending = store.read::<PendingScheduledActions>().unwrap_or_default();
+
+    // Collect ExcludeTool actions
+    let exclude_matching: Vec<_> = pending
+        .iter()
+        .filter(|e| e.action.key == ExcludeTool::KEY)
+        .collect();
+
+    let mut exclude_ids: HashSet<String> = HashSet::new();
+    let mut action_ids: Vec<u64> = Vec::new();
+
+    for envelope in &exclude_matching {
+        let payload = ExcludeTool::decode_payload(envelope.action.payload.clone())?;
+        exclude_ids.insert(payload);
+        action_ids.push(envelope.id);
+    }
+
+    // Collect IncludeOnlyTools actions
+    let include_matching: Vec<_> = pending
+        .iter()
+        .filter(|e| e.action.key == IncludeOnlyTools::KEY)
+        .collect();
+
+    let mut include_ids: Option<HashSet<String>> = None;
+
+    for envelope in &include_matching {
+        let payload = IncludeOnlyTools::decode_payload(envelope.action.payload.clone())?;
+        let set = include_ids.get_or_insert_with(HashSet::new);
+        set.extend(payload);
+        action_ids.push(envelope.id);
+    }
+
+    // Dequeue all consumed actions
+    if !action_ids.is_empty() {
+        let mut patch = MutationBatch::new();
+        for id in action_ids {
+            patch.update::<PendingScheduledActions>(ScheduledActionQueueUpdate::Remove { id });
+        }
+        store.commit(patch)?;
+    }
+
+    // Apply include-only filter first
+    if let Some(ref allowed) = include_ids {
+        tools.retain(|t| allowed.contains(&t.id));
+    }
+
+    // Apply exclusions
+    if !exclude_ids.is_empty() {
+        tools.retain(|t| !exclude_ids.contains(&t.id));
+    }
+
+    Ok(())
+}
+
 /// Insert context messages into the message list at their declared target positions.
 fn apply_context_messages(
     messages: &mut Vec<Message>,
@@ -1189,12 +1392,20 @@ async fn compact_with_llm(
         .map_err(|e| AgentLoopError::InferenceFailed(format!("compaction failed: {e}")))?;
 
     // Replace messages up to boundary with the summary
+    let post_tokens = crate::contract::transform::estimate_tokens_arc(&messages[boundary + 1..]);
     messages.drain(..=boundary);
     messages.insert(
         0,
         Arc::new(Message::internal_system(format!(
             "<conversation-summary>\n{summary_text}\n</conversation-summary>"
         ))),
+    );
+
+    tracing::info!(
+        pre_tokens = compactable_tokens,
+        post_tokens,
+        boundary,
+        "compaction_complete"
     );
 
     Ok(())
@@ -1308,11 +1519,13 @@ async fn execute_streaming(
     }
 
     // Collect tool calls from accumulated args (drop incomplete on cancel)
+    let mut has_incomplete_tool_calls = false;
     if !cancelled {
         for (id, args_json) in current_tool_args {
             let name = tool_names.get(&id).cloned().unwrap_or_default();
             let arguments = serde_json::from_str(&args_json).unwrap_or(serde_json::Value::Null);
             if arguments.is_null() && !args_json.is_empty() {
+                has_incomplete_tool_calls = true;
                 continue; // truncated JSON, skip
             }
             tool_calls.push(ToolCall::new(id, name, arguments));
@@ -1328,6 +1541,7 @@ async fn execute_streaming(
         } else {
             stop_reason
         },
+        has_incomplete_tool_calls,
     })
 }
 
@@ -1587,6 +1801,67 @@ mod tests {
         assert_eq!(text_of_ctx(&accepted[0]), "updated content");
     }
 
+    /// Verify that tracing instrumentation does not panic when no subscriber is installed.
+    ///
+    /// Exercises the context transform (which emits `truncation_applied`) and
+    /// direct tracing macro calls matching those added to the loop runner and engine.
+    #[test]
+    fn tracing_does_not_panic_without_subscriber() {
+        use crate::agent::context::ContextTransform;
+        use crate::contract::inference::ContextWindowPolicy;
+        use crate::contract::transform::InferenceRequestTransform;
+
+        // Exercise ContextTransform truncation path (emits tracing::debug!)
+        let policy = ContextWindowPolicy {
+            max_context_tokens: 40,
+            max_output_tokens: 0,
+            min_recent_messages: 1,
+            enable_prompt_cache: false,
+            autocompact_threshold: None,
+            compaction_mode: Default::default(),
+            compaction_raw_suffix_messages: 2,
+        };
+        let transform = ContextTransform::new(policy);
+        let mut msgs = vec![Message::system("sys")];
+        for i in 0..10 {
+            msgs.push(Message::user(format!("msg {i}")));
+            msgs.push(Message::assistant(format!("reply {i}")));
+        }
+        // This triggers the truncation_applied tracing call — must not panic
+        let _output = transform.transform(msgs, &[]);
+
+        // Exercise loop-runner-style tracing macros directly — must not panic
+        tracing::info!(step = 1u64, "step_start");
+        tracing::info!(
+            model = "test-model",
+            input_tokens = 100u64,
+            output_tokens = 50u64,
+            duration_ms = 42u64,
+            "inference_complete"
+        );
+        tracing::info!(
+            tool_name = "calculator",
+            call_id = "c1",
+            outcome = "Succeeded",
+            "tool_call_done"
+        );
+        tracing::warn!(reason = "NaturalEnd", "run_terminated");
+
+        // Exercise engine-style tracing macros — must not panic
+        tracing::debug!(phase = "StepStart", hooks = 3usize, "gather_start");
+        tracing::debug!(phase = "StepStart", actions = 2usize, "execute_start");
+        tracing::warn!(phase = "StepStart", "exclusive_conflict_fallback");
+
+        // Exercise context compaction tracing — must not panic
+        tracing::info!(
+            pre_tokens = 2000usize,
+            post_tokens = 500usize,
+            boundary = 10usize,
+            "compaction_complete"
+        );
+        tracing::debug!(dropped = 5usize, kept = 8usize, "truncation_applied");
+    }
+
     /// Helper: extract text from a ContextMessage's content blocks.
     fn text_of_ctx(msg: &ContextMessage) -> String {
         msg.content
@@ -1597,5 +1872,146 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("")
+    }
+
+    // -----------------------------------------------------------------------
+    // Tool filter action tests (ExcludeTool / IncludeOnlyTools)
+    // -----------------------------------------------------------------------
+
+    use super::super::state::{ExcludeTool, IncludeOnlyTools};
+    use crate::contract::tool::ToolDescriptor;
+
+    /// Helper: push an ExcludeTool action into the pending queue.
+    fn enqueue_exclude_tool(store: &StateStore, id: u64, tool_id: &str) {
+        let payload = ExcludeTool::encode_payload(&tool_id.to_string()).expect("encode");
+        let mut batch = crate::state::MutationBatch::new();
+        batch.update::<PendingScheduledActions>(ScheduledActionQueueUpdate::Push(
+            ScheduledActionEnvelope {
+                id,
+                action: ScheduledAction::new(ExcludeTool::PHASE, ExcludeTool::KEY, payload),
+            },
+        ));
+        store.commit(batch).expect("commit enqueue");
+    }
+
+    /// Helper: push an IncludeOnlyTools action into the pending queue.
+    fn enqueue_include_only_tools(store: &StateStore, id: u64, tool_ids: Vec<String>) {
+        let payload = IncludeOnlyTools::encode_payload(&tool_ids).expect("encode");
+        let mut batch = crate::state::MutationBatch::new();
+        batch.update::<PendingScheduledActions>(ScheduledActionQueueUpdate::Push(
+            ScheduledActionEnvelope {
+                id,
+                action: ScheduledAction::new(
+                    IncludeOnlyTools::PHASE,
+                    IncludeOnlyTools::KEY,
+                    payload,
+                ),
+            },
+        ));
+        store.commit(batch).expect("commit enqueue");
+    }
+
+    /// Helper: create a simple tool descriptor with the given id.
+    fn tool(id: &str) -> ToolDescriptor {
+        ToolDescriptor::new(id, id, format!("{id} tool"))
+    }
+
+    #[test]
+    fn exclude_tool_removes_from_request() {
+        let store = test_store();
+        let mut tools = vec![tool("search"), tool("calculator"), tool("browser")];
+
+        enqueue_exclude_tool(&store, 1, "search");
+
+        apply_tool_filter_actions(&store, &mut tools).expect("apply");
+
+        let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
+        assert!(!ids.contains(&"search"), "search should be excluded");
+        assert!(ids.contains(&"calculator"));
+        assert!(ids.contains(&"browser"));
+        assert_eq!(tools.len(), 2);
+
+        // Actions should be consumed from the queue
+        let pending = store.read::<PendingScheduledActions>().unwrap_or_default();
+        assert!(
+            pending.is_empty(),
+            "actions should be dequeued after consumption"
+        );
+    }
+
+    #[test]
+    fn include_only_tools_filters_to_subset() {
+        let store = test_store();
+        let mut tools = vec![
+            tool("search"),
+            tool("calculator"),
+            tool("browser"),
+            tool("code_exec"),
+        ];
+
+        enqueue_include_only_tools(&store, 1, vec!["calculator".into(), "browser".into()]);
+
+        apply_tool_filter_actions(&store, &mut tools).expect("apply");
+
+        let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"calculator"));
+        assert!(ids.contains(&"browser"));
+        assert!(!ids.contains(&"search"));
+        assert!(!ids.contains(&"code_exec"));
+    }
+
+    #[test]
+    fn exclude_and_include_only_combined() {
+        let store = test_store();
+        let mut tools = vec![tool("search"), tool("calculator"), tool("browser")];
+
+        // Include only search + calculator, then exclude search
+        enqueue_include_only_tools(&store, 1, vec!["search".into(), "calculator".into()]);
+        enqueue_exclude_tool(&store, 2, "search");
+
+        apply_tool_filter_actions(&store, &mut tools).expect("apply");
+
+        let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["calculator"]);
+    }
+
+    #[test]
+    fn multiple_exclude_tool_actions() {
+        let store = test_store();
+        let mut tools = vec![tool("a"), tool("b"), tool("c"), tool("d")];
+
+        enqueue_exclude_tool(&store, 1, "a");
+        enqueue_exclude_tool(&store, 2, "c");
+
+        apply_tool_filter_actions(&store, &mut tools).expect("apply");
+
+        let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["b", "d"]);
+    }
+
+    #[test]
+    fn no_filter_actions_leaves_tools_unchanged() {
+        let store = test_store();
+        let mut tools = vec![tool("search"), tool("calculator")];
+
+        apply_tool_filter_actions(&store, &mut tools).expect("apply");
+
+        assert_eq!(tools.len(), 2);
+    }
+
+    #[test]
+    fn multiple_include_only_actions_union() {
+        let store = test_store();
+        let mut tools = vec![tool("a"), tool("b"), tool("c"), tool("d")];
+
+        // Two separate include-only actions; their union should be used
+        enqueue_include_only_tools(&store, 1, vec!["a".into()]);
+        enqueue_include_only_tools(&store, 2, vec!["c".into()]);
+
+        apply_tool_filter_actions(&store, &mut tools).expect("apply");
+
+        let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "c"]);
     }
 }

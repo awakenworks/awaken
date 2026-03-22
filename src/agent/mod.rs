@@ -2,6 +2,7 @@ pub mod config;
 pub mod context;
 pub mod executor;
 pub mod loop_runner;
+pub mod permission_rules;
 pub mod retry_policy;
 pub mod state;
 pub mod stop_conditions;

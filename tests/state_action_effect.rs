@@ -638,6 +638,7 @@ fn plugin_with_retained_key_survives_uninstall() {
             r.register_key::<Counter>(StateKeyOptions {
                 persistent: true,
                 retain_on_uninstall: true,
+                ..Default::default()
             })
         }
     }
@@ -756,6 +757,7 @@ fn persistence_non_persistent_key_excluded_from_export() {
             r.register_key::<Counter>(StateKeyOptions {
                 persistent: false,
                 retain_on_uninstall: false,
+                ..Default::default()
             })
         }
     }

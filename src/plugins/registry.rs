@@ -9,7 +9,7 @@ use crate::runtime::{
     ToolPermissionCheckerArc, TypedEffectAdapter, TypedEffectHandler, TypedScheduledActionAdapter,
     TypedScheduledActionHandler,
 };
-use crate::state::{MergeStrategy, StateKey, StateKeyOptions, StateMap};
+use crate::state::{KeyScope, MergeStrategy, StateKey, StateKeyOptions, StateMap};
 
 #[derive(Clone)]
 pub(crate) struct KeyRegistration {
@@ -17,6 +17,7 @@ pub(crate) struct KeyRegistration {
     pub(crate) key: String,
     pub(crate) options: StateKeyOptions,
     pub(crate) merge_strategy: MergeStrategy,
+    pub(crate) scope: KeyScope,
     pub(crate) export: fn(&StateMap) -> Result<Option<JsonValue>, StateError>,
     pub(crate) import: fn(&mut StateMap, JsonValue) -> Result<(), StateError>,
     pub(crate) clear: fn(&mut StateMap),
@@ -29,6 +30,7 @@ impl KeyRegistration {
             key: K::KEY.into(),
             options,
             merge_strategy: K::MERGE,
+            scope: options.scope,
             export: |map| match map.get::<K>() {
                 Some(value) => K::encode(value).map(Some),
                 None => Ok(None),

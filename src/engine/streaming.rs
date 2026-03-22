@@ -154,6 +154,7 @@ impl StreamCollector {
     /// Finalize the collector into a `StreamResult`.
     pub fn finish(self) -> StreamResult {
         let mut tool_calls: Vec<ToolCall> = Vec::with_capacity(self.tool_call_order.len());
+        let mut has_incomplete_tool_calls = false;
 
         let mut remaining = self.tool_calls;
         for call_id in &self.tool_call_order {
@@ -161,11 +162,13 @@ impl StreamCollector {
                 continue;
             };
             if p.name.is_empty() {
+                has_incomplete_tool_calls = true;
                 continue;
             }
             let arguments: Value = serde_json::from_str(&p.arguments).unwrap_or(Value::Null);
             // Drop tool calls with unparseable arguments (truncated JSON)
             if arguments.is_null() && !p.arguments.is_empty() {
+                has_incomplete_tool_calls = true;
                 continue;
             }
             tool_calls.push(ToolCall::new(p.id, p.name, arguments));
@@ -182,6 +185,7 @@ impl StreamCollector {
             tool_calls,
             usage: self.usage,
             stop_reason: self.stop_reason,
+            has_incomplete_tool_calls,
         }
     }
 }

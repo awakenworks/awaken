@@ -19,6 +19,7 @@ impl Plugin for RuntimeQueuePlugin {
         let runtime_options = StateKeyOptions {
             persistent: true,
             retain_on_uninstall: false,
+            scope: crate::state::KeyScope::Run,
         };
         registrar.register_key::<PendingScheduledActions>(runtime_options)?;
         registrar.register_key::<FailedScheduledActions>(runtime_options)?;

@@ -99,6 +99,18 @@ impl StateMap {
     }
 }
 
+/// Lifetime scope for a state key.
+///
+/// Controls when the key's value is cleared relative to run boundaries.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KeyScope {
+    /// Cleared at run start (default, current behavior).
+    #[default]
+    Run,
+    /// Persists across runs on the same thread.
+    Thread,
+}
+
 /// Parallel merge strategy for a state key.
 ///
 /// Determines how concurrent updates to the same key are handled
@@ -119,6 +131,7 @@ pub enum MergeStrategy {
 pub struct StateKeyOptions {
     pub persistent: bool,
     pub retain_on_uninstall: bool,
+    pub scope: KeyScope,
 }
 
 impl Default for StateKeyOptions {
@@ -126,6 +139,7 @@ impl Default for StateKeyOptions {
         Self {
             persistent: true,
             retain_on_uninstall: false,
+            scope: KeyScope::Run,
         }
     }
 }
@@ -135,6 +149,9 @@ pub trait StateKey: 'static + Send + Sync {
 
     /// Parallel merge strategy. Default: `Exclusive` (conflict on concurrent writes).
     const MERGE: MergeStrategy = MergeStrategy::Exclusive;
+
+    /// Lifetime scope. Default: `Run` (cleared at run start).
+    const SCOPE: KeyScope = KeyScope::Run;
 
     type Value: Clone + Default + Serialize + DeserializeOwned + Send + Sync + 'static;
     type Update: Send + 'static;

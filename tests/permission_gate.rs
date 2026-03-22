@@ -48,6 +48,7 @@ impl ToolPermissionChecker for DenyToolChecker {
             if self.blocked_tools.contains(tool_name) {
                 return Ok(ToolPermission::Deny {
                     reason: format!("tool '{}' is blocked", tool_name),
+                    message: None,
                 });
             }
         }
@@ -92,6 +93,7 @@ impl ToolPermissionChecker for ThresholdChecker {
         if counter.0 >= self.max {
             Ok(ToolPermission::Deny {
                 reason: format!("counter {} exceeds threshold {}", counter.0, self.max),
+                message: None,
             })
         } else {
             Ok(ToolPermission::Allow)
@@ -235,6 +237,7 @@ fn aggregate_deny_wins_over_allow() {
         ToolPermission::Allow,
         ToolPermission::Deny {
             reason: "blocked".into(),
+            message: None,
         },
         ToolPermission::Allow,
     ]);
@@ -248,6 +251,7 @@ fn aggregate_deny_wins_over_abstain() {
         ToolPermission::Abstain,
         ToolPermission::Deny {
             reason: "no".into(),
+            message: None,
         },
     ]);
     assert!(result.is_deny());
@@ -263,9 +267,18 @@ fn aggregate_single_allow() {
 #[test]
 fn aggregate_single_deny() {
     use awaken::aggregate_tool_permissions;
-    let result = aggregate_tool_permissions(&[ToolPermission::Deny { reason: "x".into() }]);
+    let result = aggregate_tool_permissions(&[ToolPermission::Deny {
+        reason: "x".into(),
+        message: None,
+    }]);
     assert!(result.is_deny());
-    assert_eq!(result, ToolPermissionResult::Deny { reason: "x".into() });
+    assert_eq!(
+        result,
+        ToolPermissionResult::Deny {
+            reason: "x".into(),
+            message: None
+        }
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -279,7 +292,10 @@ fn tool_permission_helpers() {
     assert!(!allow.is_deny());
     assert!(!allow.is_abstain());
 
-    let deny = ToolPermission::Deny { reason: "x".into() };
+    let deny = ToolPermission::Deny {
+        reason: "x".into(),
+        message: None,
+    };
     assert!(!deny.is_allow());
     assert!(deny.is_deny());
     assert!(!deny.is_abstain());
@@ -297,7 +313,10 @@ fn tool_permission_result_helpers() {
     assert!(!allow.is_deny());
     assert!(!allow.is_suspend());
 
-    let deny = ToolPermissionResult::Deny { reason: "x".into() };
+    let deny = ToolPermissionResult::Deny {
+        reason: "x".into(),
+        message: None,
+    };
     assert!(!deny.is_allow());
     assert!(deny.is_deny());
     assert!(!deny.is_suspend());
@@ -361,6 +380,7 @@ async fn deny_plugin_blocks_specific_tool() {
         result,
         ToolPermissionResult::Deny {
             reason: "tool 'rm' is blocked".into(),
+            message: None,
         }
     );
 

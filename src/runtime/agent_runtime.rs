@@ -246,8 +246,20 @@ impl AgentRuntime {
             .install_plugin(crate::agent::loop_runner::LoopStatePlugin)
             .map_err(AgentLoopError::PhaseError)?;
 
-        // Load existing thread messages
+        // Load existing thread messages and restore thread-scoped state
         let mut messages = if let Some(ref ts) = self.storage {
+            // Restore thread-scoped state from the latest run checkpoint
+            if let Some(prev_run) = ts
+                .latest_run(&thread_id)
+                .await
+                .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
+            {
+                if let Some(persisted) = prev_run.state {
+                    store
+                        .restore_thread_scoped(persisted, crate::error::UnknownKeyPolicy::Skip)
+                        .map_err(AgentLoopError::PhaseError)?;
+                }
+            }
             ts.load_messages(&thread_id)
                 .await
                 .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
@@ -438,6 +450,7 @@ mod tests {
                     tool_calls: vec![],
                     usage: None,
                     stop_reason: Some(StopReason::EndTurn),
+                    has_incomplete_tool_calls: false,
                 })
             } else {
                 Ok(responses.remove(0))
@@ -502,6 +515,7 @@ mod tests {
                 ..Default::default()
             }),
             stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
         }]));
         let resolver = Arc::new(FixedResolver {
             agent: AgentConfig::new("agent", "m", "sys", llm.clone()),
@@ -552,12 +566,14 @@ mod tests {
                 )],
                 usage: None,
                 stop_reason: Some(StopReason::ToolUse),
+                has_incomplete_tool_calls: false,
             },
             StreamResult {
                 content: vec![ContentBlock::text("finished")],
                 tool_calls: vec![],
                 usage: None,
                 stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
             },
         ]));
         let tool = Arc::new(ToggleSuspendTool {
@@ -625,6 +641,7 @@ mod tests {
                 ..Default::default()
             }),
             stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
         }]));
         let resolver = Arc::new(FixedResolver {
             agent: AgentConfig::new("agent", "m", "sys", llm),
@@ -662,5 +679,230 @@ mod tests {
             .expect("load messages")
             .expect("thread should exist");
         assert!(!msgs.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Truncation recovery tests
+    // -----------------------------------------------------------------------
+
+    /// LLM executor that emits truncated tool call JSON on the first call,
+    /// then a normal response on subsequent calls.
+    struct TruncatingLlm {
+        call_count: AtomicUsize,
+        /// Responses to return after the first (truncated) call.
+        followup_responses: Mutex<Vec<StreamResult>>,
+    }
+
+    impl TruncatingLlm {
+        fn new(followup_responses: Vec<StreamResult>) -> Self {
+            Self {
+                call_count: AtomicUsize::new(0),
+                followup_responses: Mutex::new(followup_responses),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmExecutor for TruncatingLlm {
+        async fn execute(
+            &self,
+            _request: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            unreachable!("execute_stream is overridden");
+        }
+
+        fn execute_stream(
+            &self,
+            _request: InferenceRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            crate::contract::executor::InferenceStream,
+                            InferenceExecutionError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            use crate::contract::executor::{InferenceStream, StreamEvent};
+            use crate::contract::inference::TokenUsage;
+
+            Box::pin(async move {
+                let n = self.call_count.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    // First call: emit a tool call with truncated JSON, then MaxTokens
+                    let events: Vec<Result<StreamEvent, InferenceExecutionError>> = vec![
+                        Ok(StreamEvent::TextDelta("partial ".into())),
+                        Ok(StreamEvent::ToolCallStart {
+                            id: "tc1".into(),
+                            name: "calculator".into(),
+                        }),
+                        // Truncated JSON: missing closing brace
+                        Ok(StreamEvent::ToolCallDelta {
+                            id: "tc1".into(),
+                            args_delta: r#"{"expr": "1+1"#.into(),
+                        }),
+                        Ok(StreamEvent::Usage(TokenUsage {
+                            prompt_tokens: Some(50),
+                            completion_tokens: Some(100),
+                            ..Default::default()
+                        })),
+                        Ok(StreamEvent::Stop(StopReason::MaxTokens)),
+                    ];
+                    Ok(Box::pin(futures::stream::iter(events)) as InferenceStream)
+                } else {
+                    // Subsequent calls: return from followup queue
+                    let mut followups = self.followup_responses.lock().expect("lock poisoned");
+                    let result = if followups.is_empty() {
+                        StreamResult {
+                            content: vec![ContentBlock::text("final response")],
+                            tool_calls: vec![],
+                            usage: None,
+                            stop_reason: Some(StopReason::EndTurn),
+                            has_incomplete_tool_calls: false,
+                        }
+                    } else {
+                        followups.remove(0)
+                    };
+                    let events = crate::contract::executor::collected_to_stream_events(result);
+                    Ok(Box::pin(futures::stream::iter(events)) as InferenceStream)
+                }
+            })
+        }
+
+        fn name(&self) -> &str {
+            "truncating"
+        }
+    }
+
+    #[tokio::test]
+    async fn truncation_recovery_continues_on_max_tokens() {
+        // First call returns MaxTokens with truncated tool call
+        // Second call returns EndTurn with final text
+        let llm = Arc::new(TruncatingLlm::new(vec![StreamResult {
+            content: vec![ContentBlock::text("completed response")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        }]));
+        let resolver = Arc::new(FixedResolver {
+            agent: AgentConfig::new("agent", "m", "sys", llm.clone())
+                .with_max_continuation_retries(2),
+        });
+        let runtime = AgentRuntime::new(resolver);
+        let sink = NullEventSink;
+
+        let (_handle, result) = runtime
+            .run(
+                RunRequest::new("thread-trunc", vec![Message::user("hi")]).with_agent_id("agent"),
+                &sink,
+            )
+            .await
+            .expect("run should succeed");
+
+        assert_eq!(
+            result.termination,
+            crate::contract::lifecycle::TerminationReason::NaturalEnd
+        );
+        // The final response should be from the second (continuation) call
+        assert_eq!(result.response, "completed response");
+        // Two calls total: truncated + continuation
+        assert_eq!(llm.call_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn truncation_recovery_gives_up_after_max_retries() {
+        // All calls return MaxTokens with truncated tool calls
+        // (the TruncatingLlm always returns truncated on first call,
+        //  and we provide followups that are also truncated)
+        struct AlwaysTruncatingLlm {
+            call_count: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl LlmExecutor for AlwaysTruncatingLlm {
+            async fn execute(
+                &self,
+                _request: InferenceRequest,
+            ) -> Result<StreamResult, InferenceExecutionError> {
+                unreachable!("execute_stream is overridden");
+            }
+
+            fn execute_stream(
+                &self,
+                _request: InferenceRequest,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                            Output = Result<
+                                crate::contract::executor::InferenceStream,
+                                InferenceExecutionError,
+                            >,
+                        > + Send
+                        + '_,
+                >,
+            > {
+                use crate::contract::executor::{InferenceStream, StreamEvent};
+                use crate::contract::inference::TokenUsage;
+
+                Box::pin(async move {
+                    self.call_count.fetch_add(1, Ordering::SeqCst);
+                    // Always return truncated tool call
+                    let events: Vec<Result<StreamEvent, InferenceExecutionError>> = vec![
+                        Ok(StreamEvent::TextDelta("truncated ".into())),
+                        Ok(StreamEvent::ToolCallStart {
+                            id: format!("tc{}", self.call_count.load(Ordering::SeqCst)),
+                            name: "calculator".into(),
+                        }),
+                        Ok(StreamEvent::ToolCallDelta {
+                            id: format!("tc{}", self.call_count.load(Ordering::SeqCst)),
+                            args_delta: r#"{"incomplete"#.into(),
+                        }),
+                        Ok(StreamEvent::Usage(TokenUsage {
+                            prompt_tokens: Some(50),
+                            completion_tokens: Some(100),
+                            ..Default::default()
+                        })),
+                        Ok(StreamEvent::Stop(StopReason::MaxTokens)),
+                    ];
+                    Ok(Box::pin(futures::stream::iter(events)) as InferenceStream)
+                })
+            }
+
+            fn name(&self) -> &str {
+                "always_truncating"
+            }
+        }
+
+        let llm = Arc::new(AlwaysTruncatingLlm {
+            call_count: AtomicUsize::new(0),
+        });
+        let resolver = Arc::new(FixedResolver {
+            agent: AgentConfig::new("agent", "m", "sys", llm.clone())
+                .with_max_continuation_retries(2),
+        });
+        let runtime = AgentRuntime::new(resolver);
+        let sink = NullEventSink;
+
+        let (_handle, result) = runtime
+            .run(
+                RunRequest::new("thread-trunc-max", vec![Message::user("hi")])
+                    .with_agent_id("agent"),
+                &sink,
+            )
+            .await
+            .expect("run should succeed");
+
+        // Should give up after 1 initial + 2 retries = 3 calls total
+        assert_eq!(llm.call_count.load(Ordering::SeqCst), 3);
+        // After giving up, the result has no tools, so it ends naturally
+        // with the text from the last truncated response
+        assert_eq!(
+            result.termination,
+            crate::contract::lifecycle::TerminationReason::NaturalEnd
+        );
+        assert_eq!(result.response, "truncated ");
     }
 }
