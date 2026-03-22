@@ -3427,6 +3427,87 @@ fn test_apply_tool_results_preserves_internal_visibility_for_unified_messages() 
 }
 
 #[test]
+fn test_apply_tool_results_mixed_message_types_preserves_order_and_roles() {
+    let thread = Thread::with_initial_state("test", json!({}));
+    let mut run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
+    let result = ToolExecutionResult {
+        execution: crate::engine::tool_execution::ToolExecution {
+            call: crate::contracts::thread::ToolCall::new("call_1", "any_tool", json!({})),
+            result: ToolResult::success("any_tool", json!({"ok": true})),
+            patch: None,
+        },
+        messages: vec![
+            tirea_contract::runtime::inference::ContextMessage::conversation_user("user note"),
+            tirea_contract::runtime::inference::ContextMessage::conversation_internal_system(
+                "<system-reminder>remember this</system-reminder>",
+            ),
+            tirea_contract::runtime::inference::ContextMessage::conversation_user("second note"),
+        ],
+        outcome: crate::contracts::ToolCallOutcome::Succeeded,
+        suspended_call: None,
+        pending_patches: Vec::new(),
+        serialized_state_actions: vec![],
+    };
+
+    let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
+        .expect("apply should succeed");
+
+    // tool response + 3 messages = 4
+    assert_eq!(run_ctx.messages().len(), 4);
+    assert_eq!(
+        run_ctx.messages()[0].role,
+        crate::contracts::thread::Role::Tool
+    );
+    assert_eq!(
+        run_ctx.messages()[1].role,
+        crate::contracts::thread::Role::User
+    );
+    assert_eq!(run_ctx.messages()[1].content, "user note");
+    assert_eq!(
+        run_ctx.messages()[2].role,
+        crate::contracts::thread::Role::System
+    );
+    assert_eq!(
+        run_ctx.messages()[2].visibility,
+        crate::contracts::thread::Visibility::Internal
+    );
+    assert_eq!(
+        run_ctx.messages()[3].role,
+        crate::contracts::thread::Role::User
+    );
+    assert_eq!(run_ctx.messages()[3].content, "second note");
+}
+
+#[test]
+fn test_apply_tool_results_empty_messages_only_produces_tool_response() {
+    let thread = Thread::with_initial_state("test", json!({}));
+    let mut run_ctx =
+        RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
+    let result = ToolExecutionResult {
+        execution: crate::engine::tool_execution::ToolExecution {
+            call: crate::contracts::thread::ToolCall::new("call_1", "any_tool", json!({})),
+            result: ToolResult::success("any_tool", json!({"ok": true})),
+            patch: None,
+        },
+        messages: Vec::new(),
+        outcome: crate::contracts::ToolCallOutcome::Succeeded,
+        suspended_call: None,
+        pending_patches: Vec::new(),
+        serialized_state_actions: vec![],
+    };
+
+    let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
+        .expect("apply should succeed");
+
+    assert_eq!(run_ctx.messages().len(), 1);
+    assert_eq!(
+        run_ctx.messages()[0].role,
+        crate::contracts::thread::Role::Tool
+    );
+}
+
+#[test]
 fn test_apply_tool_results_keeps_skill_activation_tool_message_order_stable() {
     let thread = Thread::with_initial_state("test", json!({}));
     let mut run_ctx =
