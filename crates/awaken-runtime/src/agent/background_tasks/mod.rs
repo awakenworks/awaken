@@ -416,6 +416,49 @@ impl BackgroundTaskManager {
             completed_at_ms: t.completed_at_ms,
         })
     }
+
+    /// Restore persisted task metadata into the in-memory manager for a thread.
+    ///
+    /// Only missing task IDs are inserted; existing live tasks are preserved.
+    async fn restore_for_thread(
+        &self,
+        owner_thread_id: &str,
+        snapshot: &BackgroundTaskStateSnapshot,
+    ) {
+        let mut tasks = self.tasks.lock().await;
+        for (task_id, meta) in &snapshot.tasks {
+            if tasks.contains_key(task_id) {
+                continue;
+            }
+
+            if let Some(n) = task_id
+                .strip_prefix("bg_")
+                .and_then(|s| s.parse::<u64>().ok())
+            {
+                self.counter
+                    .fetch_max(n.saturating_add(1), std::sync::atomic::Ordering::Relaxed);
+            }
+
+            let (cancel_handle, _cancel_token) = CancellationHandle::new();
+            let join_handle = tokio::spawn(async {});
+            tasks.insert(
+                task_id.clone(),
+                LiveTask {
+                    task_id: meta.task_id.clone(),
+                    owner_thread_id: owner_thread_id.to_string(),
+                    task_type: meta.task_type.clone(),
+                    description: meta.description.clone(),
+                    status: meta.status,
+                    error: meta.error.clone(),
+                    result: None,
+                    created_at_ms: meta.created_at_ms,
+                    completed_at_ms: meta.completed_at_ms,
+                    cancel_handle,
+                    _join_handle: join_handle,
+                },
+            );
+        }
+    }
 }
 
 impl Default for BackgroundTaskManager {
@@ -438,30 +481,44 @@ struct BackgroundTaskSyncHook {
 
 #[async_trait::async_trait]
 impl PhaseHook for BackgroundTaskSyncHook {
-    async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
-        let tasks = self.manager.tasks.lock().await;
-        let persisted: HashMap<TaskId, PersistedTaskMeta> = tasks
-            .values()
-            .map(|t| {
-                let meta = PersistedTaskMeta {
-                    task_id: t.task_id.clone(),
-                    task_type: t.task_type.clone(),
-                    description: t.description.clone(),
-                    status: t.status,
-                    error: t.error.clone(),
-                    created_at_ms: t.created_at_ms,
-                    completed_at_ms: t.completed_at_ms,
-                };
-                (t.task_id.clone(), meta)
-            })
-            .collect();
-        drop(tasks);
+    async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        match ctx.phase {
+            Phase::RunStart => {
+                let thread_id = &ctx.run_input.identity.thread_id;
+                let snapshot = ctx
+                    .state::<BackgroundTaskStateKey>()
+                    .cloned()
+                    .unwrap_or_default();
+                self.manager.restore_for_thread(thread_id, &snapshot).await;
+                Ok(StateCommand::new())
+            }
+            Phase::RunEnd => {
+                let tasks = self.manager.tasks.lock().await;
+                let persisted: HashMap<TaskId, PersistedTaskMeta> = tasks
+                    .values()
+                    .map(|t| {
+                        let meta = PersistedTaskMeta {
+                            task_id: t.task_id.clone(),
+                            task_type: t.task_type.clone(),
+                            description: t.description.clone(),
+                            status: t.status,
+                            error: t.error.clone(),
+                            created_at_ms: t.created_at_ms,
+                            completed_at_ms: t.completed_at_ms,
+                        };
+                        (t.task_id.clone(), meta)
+                    })
+                    .collect();
+                drop(tasks);
 
-        let mut cmd = StateCommand::new();
-        cmd.update::<BackgroundTaskStateKey>(BackgroundTaskStateAction::ReplaceAll {
-            tasks: persisted,
-        });
-        Ok(cmd)
+                let mut cmd = StateCommand::new();
+                cmd.update::<BackgroundTaskStateKey>(BackgroundTaskStateAction::ReplaceAll {
+                    tasks: persisted,
+                });
+                Ok(cmd)
+            }
+            _ => Ok(StateCommand::new()),
+        }
     }
 }
 
@@ -535,7 +592,10 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::{ExecutionEnv, PhaseContext, PhaseRuntime};
     use crate::state::StateStore;
+    use awaken_contract::contract::identity::RunIdentity;
+    use awaken_contract::model::Phase;
 
     #[test]
     fn task_status_terminal_check() {
@@ -654,6 +714,44 @@ mod tests {
         let registry = store.registry.lock();
         assert!(registry.keys_by_name.contains_key("background_tasks"));
         assert!(registry.keys_by_name.contains_key("background_task_state"));
+    }
+
+    #[tokio::test]
+    async fn run_start_restores_persisted_metadata_into_manager() {
+        let store = StateStore::new();
+        let runtime = PhaseRuntime::new(store.clone()).unwrap();
+        let manager = Arc::new(BackgroundTaskManager::new());
+        let plugin: Arc<dyn Plugin> = Arc::new(BackgroundTaskPlugin::new(manager.clone()));
+        let env = ExecutionEnv::from_plugins(&[plugin]).unwrap();
+        store.register_keys(&env.key_registrations).unwrap();
+
+        let mut persisted = HashMap::new();
+        persisted.insert(
+            "bg_restored".to_string(),
+            PersistedTaskMeta {
+                task_id: "bg_restored".into(),
+                task_type: "shell".into(),
+                description: "restored".into(),
+                status: TaskStatus::Completed,
+                error: None,
+                created_at_ms: 100,
+                completed_at_ms: Some(200),
+            },
+        );
+        let mut patch = store.begin_mutation();
+        patch.update::<BackgroundTaskStateKey>(BackgroundTaskStateAction::ReplaceAll {
+            tasks: persisted,
+        });
+        store.commit(patch).unwrap();
+
+        let ctx = PhaseContext::new(Phase::RunStart, store.snapshot())
+            .with_run_identity(RunIdentity::for_thread("thread-restore"));
+        runtime.run_phase_with_context(&env, ctx).await.unwrap();
+
+        let restored = manager.list("thread-restore").await;
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].task_id, "bg_restored");
+        assert_eq!(restored[0].status, TaskStatus::Completed);
     }
 
     #[test]
