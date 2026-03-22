@@ -13,8 +13,11 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
+use crate::runtime::{PhaseContext, PhaseHook};
 use crate::state::{MutationBatch, StateKey, StateKeyOptions};
 use awaken_contract::StateError;
+use awaken_contract::contract::profile::ActiveAgentIdKey;
+use awaken_contract::model::Phase;
 use awaken_contract::registry_spec::AgentSpec;
 
 /// Stable plugin ID for handoff.
@@ -136,6 +139,34 @@ impl HandoffPlugin {
     }
 }
 
+struct HandoffSyncHook;
+
+#[async_trait::async_trait]
+impl PhaseHook for HandoffSyncHook {
+    async fn run(&self, ctx: &PhaseContext) -> Result<crate::state::StateCommand, StateError> {
+        let handoff = ctx.state::<ActiveAgentKey>().cloned().unwrap_or_default();
+        let current_active = ctx.state::<ActiveAgentIdKey>().cloned().unwrap_or(None);
+        let mut cmd = crate::state::StateCommand::new();
+
+        if let Some(requested) = handoff.requested_agent {
+            if handoff.active_agent.as_deref() != Some(requested.as_str()) {
+                cmd.update::<ActiveAgentKey>(HandoffAction::Activate {
+                    agent: requested.clone(),
+                });
+            }
+            if current_active.as_deref() != Some(requested.as_str()) {
+                cmd.update::<ActiveAgentIdKey>(Some(requested));
+            }
+            return Ok(cmd);
+        }
+
+        if current_active != handoff.active_agent {
+            cmd.update::<ActiveAgentIdKey>(handoff.active_agent);
+        }
+        Ok(cmd)
+    }
+}
+
 impl Plugin for HandoffPlugin {
     fn descriptor(&self) -> PluginDescriptor {
         PluginDescriptor {
@@ -145,6 +176,9 @@ impl Plugin for HandoffPlugin {
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
         registrar.register_key::<ActiveAgentKey>(StateKeyOptions::default())?;
+        registrar.register_key::<ActiveAgentIdKey>(StateKeyOptions::default())?;
+        registrar.register_phase_hook(HANDOFF_PLUGIN_ID, Phase::RunStart, HandoffSyncHook)?;
+        registrar.register_phase_hook(HANDOFF_PLUGIN_ID, Phase::StepEnd, HandoffSyncHook)?;
         Ok(())
     }
 
@@ -158,6 +192,7 @@ impl Plugin for HandoffPlugin {
 
     fn on_deactivate(&self, patch: &mut MutationBatch) -> Result<(), StateError> {
         patch.update::<ActiveAgentKey>(HandoffAction::Clear);
+        patch.update::<ActiveAgentIdKey>(None);
         Ok(())
     }
 }
@@ -192,7 +227,11 @@ pub fn clear_handoff() -> HandoffAction {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::{ExecutionEnv, PhaseRuntime};
     use crate::state::StateStore;
+    use awaken_contract::contract::profile::ActiveAgentIdKey;
+    use awaken_contract::model::Phase;
+    use std::sync::Arc;
 
     #[test]
     fn default_state_is_all_none() {
@@ -271,6 +310,9 @@ mod tests {
         // Key should be registered
         let registry = store.registry.lock();
         assert!(registry.keys_by_name.contains_key("agent_handoff"));
+        assert!(registry.keys_by_name.contains_key(
+            <awaken_contract::contract::profile::ActiveAgentIdKey as crate::state::StateKey>::KEY,
+        ));
     }
 
     #[test]
@@ -350,6 +392,30 @@ mod tests {
 
         let state = store.read::<ActiveAgentKey>().unwrap();
         assert!(state.active_agent.is_none());
+        assert!(state.requested_agent.is_none());
+    }
+
+    #[tokio::test]
+    async fn run_start_syncs_requested_handoff_to_active_agent_id_key() {
+        let store = StateStore::new();
+        let runtime = PhaseRuntime::new(store.clone()).unwrap();
+        let plugin: Arc<dyn Plugin> = Arc::new(HandoffPlugin::new(HashMap::new()));
+        let env = ExecutionEnv::from_plugins(&[plugin]).unwrap();
+        store.register_keys(&env.key_registrations).unwrap();
+
+        let mut patch = store.begin_mutation();
+        patch.update::<ActiveAgentKey>(request_handoff("reviewer"));
+        store.commit(patch).unwrap();
+
+        runtime.run_phase(&env, Phase::RunStart).await.unwrap();
+
+        assert_eq!(
+            store.read::<ActiveAgentIdKey>(),
+            Some(Some("reviewer".into()))
+        );
+
+        let state = store.read::<ActiveAgentKey>().unwrap();
+        assert_eq!(state.active_agent.as_deref(), Some("reviewer"));
         assert!(state.requested_agent.is_none());
     }
 
