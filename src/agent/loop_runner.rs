@@ -24,7 +24,32 @@ use crate::runtime::{
 use crate::state::{MutationBatch, StateCommand};
 
 use super::config::AgentConfig;
-use super::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
+use super::state::{
+    ContextThrottleState, RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate,
+};
+
+/// Plugin that registers the core state keys required by the loop runner.
+///
+/// Must be installed on the `StateStore` before running the loop.
+pub struct LoopStatePlugin;
+
+impl crate::plugins::Plugin for LoopStatePlugin {
+    fn descriptor(&self) -> crate::plugins::PluginDescriptor {
+        crate::plugins::PluginDescriptor {
+            name: "__loop_state",
+        }
+    }
+
+    fn register(
+        &self,
+        r: &mut crate::plugins::PluginRegistrar,
+    ) -> Result<(), crate::error::StateError> {
+        r.register_key::<RunLifecycle>(crate::state::StateKeyOptions::default())?;
+        r.register_key::<ToolCallStates>(crate::state::StateKeyOptions::default())?;
+        r.register_key::<ContextThrottleState>(crate::state::StateKeyOptions::default())?;
+        Ok(())
+    }
+}
 
 /// Errors from the agent loop.
 #[derive(Debug, thiserror::Error)]
@@ -56,6 +81,7 @@ fn now_ms() -> u64 {
 ///
 /// Adds internal plugins (stop conditions, default permission) and registers
 /// built-in request transforms (context truncation when a policy is provided).
+/// Build an execution environment. Prefer `AgentRuntime::run()` for production use.
 pub fn build_agent_env(
     plugins: &[Arc<dyn crate::plugins::Plugin>],
     agent: &super::config::AgentConfig,
@@ -81,7 +107,7 @@ pub fn build_agent_env(
     Ok(env)
 }
 
-/// Unified agent loop entry point.
+/// Agent loop implementation. Prefer `AgentRuntime::run()` for production use.
 ///
 /// Handles both fresh runs and resumed runs (state-driven detection).
 /// Supports dynamic agent handoff via `ActiveAgentKey` re-resolve at step boundaries.

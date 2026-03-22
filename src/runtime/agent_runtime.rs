@@ -3,13 +3,17 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock, mpsc};
 
+use crate::agent::loop_runner::{AgentLoopError, AgentRunResult, prepare_resume};
+use crate::contract::event_sink::EventSink;
+use crate::contract::identity::RunIdentity;
 use crate::contract::inference::InferenceOverride;
 use crate::contract::message::Message;
 use crate::contract::storage::{RunStore, ThreadStore};
-use crate::contract::suspension::ToolCallResume;
+use crate::contract::suspension::{ToolCallResume, ToolCallResumeMode};
 use crate::error::StateError;
 
 use super::cancellation::CancellationToken;
+use super::engine::PhaseRuntime;
 use super::resolver::AgentResolver;
 
 // ---------------------------------------------------------------------------
@@ -160,6 +164,97 @@ impl AgentRuntime {
 
     pub fn thread_store(&self) -> Option<&dyn ThreadStore> {
         self.thread_store.as_deref()
+    }
+
+    /// Run an agent loop.
+    ///
+    /// This is the single production entry point. It:
+    /// 1. Resolves the agent from the registry
+    /// 2. Loads thread messages from storage (if configured)
+    /// 3. Applies resume decisions (if present in request)
+    /// 4. Creates a PhaseRuntime and StateStore
+    /// 5. Registers the active run
+    /// 6. Calls `run_agent_loop` internally
+    /// 7. Unregisters the run when complete
+    ///
+    /// Returns a `RunHandle` for external control (cancel, send decisions)
+    /// and the `AgentRunResult` when the run completes.
+    pub async fn run(
+        &self,
+        request: RunRequest,
+        sink: &dyn EventSink,
+    ) -> Result<(RunHandle, AgentRunResult), AgentLoopError> {
+        let agent_id = request.agent_id.unwrap_or_else(|| "default".to_string());
+
+        // Create runtime infrastructure
+        let store = crate::state::StateStore::new();
+        let phase_runtime = PhaseRuntime::new(store.clone()).map_err(AgentLoopError::PhaseError)?;
+
+        // Install state keys needed by the loop (RunLifecycle, ToolCallStates, etc.)
+        // These are registered via the resolved agent's plugins during resolve.
+        // For keys needed by the loop itself, install a minimal plugin.
+        store
+            .install_plugin(crate::agent::loop_runner::LoopStatePlugin)
+            .map_err(AgentLoopError::PhaseError)?;
+
+        // Load existing thread messages
+        let mut messages = if let Some(ref ts) = self.thread_store {
+            ts.load_messages(&request.thread_id)
+                .await
+                .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?
+                .unwrap_or_default()
+        } else {
+            vec![]
+        };
+        messages.extend(request.messages);
+
+        // Apply resume decisions to state if present
+        if !request.decisions.is_empty() {
+            prepare_resume(
+                &store,
+                request.decisions,
+                ToolCallResumeMode::ReplayToolCall,
+            )
+            .map_err(AgentLoopError::PhaseError)?;
+        }
+
+        // Create run identity
+        let run_id = uuid::Uuid::now_v7().to_string();
+        let run_identity = RunIdentity::new(
+            request.thread_id.clone(),
+            None,
+            run_id.clone(),
+            None,
+            agent_id.clone(),
+            crate::contract::identity::RunOrigin::User,
+        );
+
+        // Create channels for external control
+        let (handle, cancellation_token, _decision_rx) =
+            self.create_run_channels(run_id, request.thread_id.clone(), agent_id.clone());
+
+        // Register active run
+        self.register_run(&request.thread_id, handle.clone())
+            .map_err(AgentLoopError::PhaseError)?;
+
+        // Execute the loop
+        let thread_store_ref = self.thread_store.as_deref();
+        let result = crate::agent::loop_runner::run_agent_loop(
+            self.resolver.as_ref(),
+            &agent_id,
+            &phase_runtime,
+            sink,
+            thread_store_ref,
+            messages,
+            run_identity,
+            Some(cancellation_token),
+        )
+        .await;
+
+        // Unregister active run
+        self.unregister_run(&request.thread_id);
+
+        Ok((handle, result?))
     }
 
     /// Cancel an active run by thread ID.

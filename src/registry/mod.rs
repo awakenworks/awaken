@@ -10,7 +10,8 @@ pub mod traits;
 pub use memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,
 };
-pub use resolve::{ResolveError, ResolvedRun, resolve};
+pub use resolve::ResolveError;
+pub(crate) use resolve::{ResolvedRun, resolve};
 pub use spec::AgentSpec;
 pub use traits::{
     AgentSpecRegistry, ModelEntry, ModelRegistry, PluginSource, ProviderRegistry, RegistrySet,

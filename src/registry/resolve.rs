@@ -33,7 +33,7 @@ impl std::fmt::Debug for ResolvedRun {
     }
 }
 
-pub struct ResolvedRun {
+pub(crate) struct ResolvedRun {
     /// The source agent definition.
     pub spec: AgentSpec,
     /// Resolved LLM executor.
@@ -79,7 +79,10 @@ pub enum ResolveError {
 /// 4. Resolve tools with allow/exclude filtering.
 /// 5. Resolve plugins by ID.
 /// 6. Build `ExecutionEnv` from plugins.
-pub fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, ResolveError> {
+pub(crate) fn resolve(
+    registries: &RegistrySet,
+    agent_id: &str,
+) -> Result<ResolvedRun, ResolveError> {
     let spec = registries
         .agents
         .get_agent(agent_id)

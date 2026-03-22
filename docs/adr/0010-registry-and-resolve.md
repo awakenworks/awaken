@@ -206,24 +206,13 @@ Parse flow: `JSON/TOML → AgentSystemConfig → build registries → resolve ag
 
 Plugins are not in the config file — they are registered programmatically (they hold trait object implementations). The config file covers data-only definitions (agents, models, providers).
 
-### D8: run_agent_loop accepts ResolvedRun
+### D8: ~~run_agent_loop accepts ResolvedRun~~ (superseded by ADR-0011 D6)
 
-```rust
-pub async fn run_agent_loop(
-    resolved: &ResolvedRun,
-    runtime: &PhaseRuntime,
-    messages: Vec<Message>,
-    run_input: RunInput,
-) -> Result<AgentRunResult, AgentLoopError>
-```
+The loop runner accepts `&dyn AgentResolver` and resolves dynamically at startup and step boundaries. `ResolvedRun` is an internal type. The production entry point is `AgentRuntime::run(RunRequest)`.
 
-`AgentConfig` (current) is replaced by `ResolvedRun`. The loop runner no longer needs to know about registries — it receives a fully resolved snapshot.
+### D9: ~~Handoff via orchestration layer~~ (superseded by ADR-0011 D6)
 
-### D9: Handoff via AgentRegistry
-
-HandoffPlugin writes `ActiveAgentKey` with a new agent_id. The **orchestration layer** (above loop_runner) detects the change, calls `resolve(new_agent_id)` to get a new `ResolvedRun`, and starts a new run with it.
-
-Loop runner itself does not do resolution — it runs one agent to completion (or suspension). Profile switching across agents is the orchestrator's responsibility.
+Handoff is resolved inside the loop at step boundaries via `ActiveAgentKey` check + `AgentResolver::resolve()`. No external orchestration needed.
 
 ## Consequences
 
@@ -233,16 +222,19 @@ Loop runner itself does not do resolution — it runs one agent to completion (o
 - Ad-hoc tool HashMap on agent → `ToolRegistry` + allow/exclude filtering
 - Separate Behavior/Extension registries → unified `PluginRegistry`
 
+### Implemented
+- Registry traits (5): implemented
+- `MapXxxRegistry` implementations (5): implemented
+- `RegistrySet`: implemented
+- `AgentSpec`: implemented
+- `ModelEntry`: implemented (without ChatOptions)
+- `resolve()` → `ResolvedRun` (internal): implemented
+- `RegistrySet` implements `AgentResolver`: implemented
+- `AgentRuntime::run(RunRequest)`: implemented
+
 ### To implement
-- Registry traits: `ToolRegistry`, `ModelRegistry`, `ProviderRegistry`, `AgentRegistry`, `PluginRegistry`
-- `MapXxxRegistry` implementations
-- `RegistrySet` + `RegistrySetBuilder`
-- `AgentSpec` (serializable agent definition)
-- `ModelEntry`, `ChatOptions`
-- `resolve()` function
-- `ResolvedRun` struct
 - `AgentSystemConfig` (JSON config format)
-- Rewrite `run_agent_loop` to accept `ResolvedRun`
+- `ChatOptions` on `ModelEntry`
 
 ### Deferred
 - `CompositeXxxRegistry` (merge multiple sources)
