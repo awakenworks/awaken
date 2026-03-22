@@ -15,11 +15,10 @@ use awaken_contract::contract::context_message::ContextMessage;
 use awaken_contract::contract::message::{Message, Role};
 
 use super::super::state::{
-    AccumulatedContextMessages, AccumulatedContextMessagesUpdate, AccumulatedOverrides,
-    AccumulatedOverridesUpdate, AccumulatedToolExclusions, AccumulatedToolExclusionsUpdate,
-    AccumulatedToolInclusions, AccumulatedToolInclusionsUpdate, AddContextMessage,
-    ContextThrottleState, ContextThrottleUpdate, ExcludeTool, IncludeOnlyTools, RunLifecycle,
-    SetInferenceOverride,
+    AccumulatedOverrides, AccumulatedOverridesUpdate, AccumulatedToolExclusions,
+    AccumulatedToolExclusionsUpdate, AccumulatedToolInclusions, AccumulatedToolInclusionsUpdate,
+    AddContextMessage, ContextMessageAction, ContextMessageStore, ContextThrottleState,
+    ContextThrottleUpdate, ExcludeTool, IncludeOnlyTools, RunLifecycle, SetInferenceOverride,
 };
 
 // ---------------------------------------------------------------------------
@@ -42,8 +41,8 @@ impl TypedScheduledActionHandler<SetInferenceOverride> for InferenceOverrideHand
     }
 }
 
-/// Handler for `AddContextMessage` — applies throttle logic, pushes accepted
-/// messages to [`AccumulatedContextMessages`], updates [`ContextThrottleState`].
+/// Handler for `AddContextMessage` — applies throttle logic, upserts accepted
+/// messages into [`ContextMessageStore`], updates [`ContextThrottleState`].
 pub(super) struct ContextMessageHandler;
 
 #[async_trait]
@@ -95,9 +94,7 @@ impl TypedScheduledActionHandler<AddContextMessage> for ContextMessageHandler {
                 step: current_step,
                 content_hash,
             });
-            cmd.update::<AccumulatedContextMessages>(AccumulatedContextMessagesUpdate::Push(
-                payload,
-            ));
+            cmd.update::<ContextMessageStore>(ContextMessageAction::Upsert(payload));
         }
 
         Ok(cmd)
@@ -183,18 +180,30 @@ pub(super) fn take_accumulated_overrides(
     Ok(result)
 }
 
-/// Read and clear accumulated context messages from the state store.
-pub(super) fn take_accumulated_context_messages(
+/// Read context messages from the store, return sorted list, then apply lifecycle cleanup.
+///
+/// Lifecycle rules applied after injection:
+/// - Non-persistent (ephemeral) messages are removed.
+/// - Messages with `consume_after_emit` are removed.
+/// - Persistent messages remain for subsequent steps.
+pub(super) fn take_context_messages(
     store: &crate::state::StateStore,
 ) -> Result<Vec<ContextMessage>, StateError> {
-    let result = store
-        .read::<AccumulatedContextMessages>()
-        .unwrap_or_default();
-    if !result.is_empty() {
-        let mut patch = crate::state::MutationBatch::new();
-        patch.update::<AccumulatedContextMessages>(AccumulatedContextMessagesUpdate::Clear);
-        store.commit(patch)?;
+    let store_value = store.read::<ContextMessageStore>().unwrap_or_default();
+
+    if store_value.messages.is_empty() {
+        return Ok(Vec::new());
     }
+
+    // Collect all messages sorted by (target, priority, key)
+    let result: Vec<ContextMessage> = store_value.sorted_messages().into_iter().cloned().collect();
+
+    // Apply lifecycle: remove ephemeral + consume-after-emit
+    let mut patch = crate::state::MutationBatch::new();
+    patch.update::<ContextMessageStore>(ContextMessageAction::RemoveEphemeral);
+    patch.update::<ContextMessageStore>(ContextMessageAction::ConsumeAfterEmit);
+    store.commit(patch)?;
+
     Ok(result)
 }
 

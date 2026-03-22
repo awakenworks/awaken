@@ -5,7 +5,6 @@ pub(crate) mod context;
 pub mod executor;
 pub(crate) mod loop_runner;
 pub(crate) mod permission_rules;
-pub(crate) mod prompt_segments;
 pub(crate) mod retry_policy;
 pub(crate) mod state;
 pub mod stop_conditions;

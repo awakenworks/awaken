@@ -127,6 +127,7 @@ pub mod agent {
             AccumulatedContextMessages, AccumulatedContextMessagesUpdate, AccumulatedOverrides,
             AccumulatedOverridesUpdate, AccumulatedToolExclusions, AccumulatedToolExclusionsUpdate,
             AccumulatedToolInclusions, AccumulatedToolInclusionsUpdate, AddContextMessage,
+            ContextMessageAction, ContextMessageStore, ContextMessageStoreValue,
             ContextThrottleMap, ContextThrottleState, ContextThrottleUpdate, ExcludeTool,
             IncludeOnlyTools, RunLifecycle, RunLifecycleState, RunLifecycleUpdate,
             SetInferenceOverride, ToolCallState, ToolCallStateMap, ToolCallStates,

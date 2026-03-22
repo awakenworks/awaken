@@ -19,8 +19,8 @@ use futures::channel::mpsc::UnboundedReceiver;
 
 use super::super::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
 use super::actions::{
-    apply_context_messages, take_accumulated_context_messages, take_accumulated_overrides,
-    take_and_apply_tool_filters,
+    apply_context_messages, take_accumulated_overrides, take_and_apply_tool_filters,
+    take_context_messages,
 };
 use super::checkpoint::{
     check_termination, complete_step, emit_state_snapshot, persist_checkpoint,
@@ -175,7 +175,7 @@ pub async fn run_agent_loop_controlled(
                 overrides = Some(runtime_overrides);
             }
         }
-        let context_msgs = take_accumulated_context_messages(store)?;
+        let context_msgs = take_context_messages(store)?;
 
         // Build message list: system prompt + conversation history
         let has_system_prompt = !agent.system_prompt.is_empty();

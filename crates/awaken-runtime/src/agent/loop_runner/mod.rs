@@ -48,8 +48,8 @@ impl crate::plugins::Plugin for LoopStatePlugin {
         r: &mut crate::plugins::PluginRegistrar,
     ) -> Result<(), awaken_contract::StateError> {
         use super::state::{
-            AccumulatedContextMessages, AccumulatedOverrides, AccumulatedToolExclusions,
-            AccumulatedToolInclusions, ContextThrottleState,
+            AccumulatedOverrides, AccumulatedToolExclusions, AccumulatedToolInclusions,
+            ContextMessageStore, ContextThrottleState,
         };
         use crate::state::StateKeyOptions;
 
@@ -57,7 +57,7 @@ impl crate::plugins::Plugin for LoopStatePlugin {
         r.register_key::<ToolCallStates>(StateKeyOptions::default())?;
         r.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
         r.register_key::<AccumulatedOverrides>(StateKeyOptions::default())?;
-        r.register_key::<AccumulatedContextMessages>(StateKeyOptions::default())?;
+        r.register_key::<ContextMessageStore>(StateKeyOptions::default())?;
         r.register_key::<AccumulatedToolExclusions>(StateKeyOptions::default())?;
         r.register_key::<AccumulatedToolInclusions>(StateKeyOptions::default())?;
         Ok(())

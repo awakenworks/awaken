@@ -16,8 +16,8 @@ use super::super::state::{
     SetInferenceOverride,
 };
 use super::actions::{
-    LoopActionHandlersPlugin, apply_context_messages, take_accumulated_context_messages,
-    take_accumulated_overrides, take_and_apply_tool_filters,
+    LoopActionHandlersPlugin, apply_context_messages, take_accumulated_overrides,
+    take_and_apply_tool_filters, take_context_messages,
 };
 use crate::runtime::PhaseRuntime;
 
@@ -160,7 +160,7 @@ async fn throttle_zero_cooldown_always_injects() {
             .run_phase_with_context(&env, ctx)
             .await
             .expect("run phase");
-        let accepted = take_accumulated_context_messages(store).expect("take");
+        let accepted = take_context_messages(store).expect("take");
         assert_eq!(
             accepted.len(),
             1,
@@ -185,7 +185,7 @@ async fn throttle_skips_within_cooldown() {
         .run_phase_with_context(&env, ctx)
         .await
         .expect("step 1");
-    let accepted = take_accumulated_context_messages(store).expect("take step 1");
+    let accepted = take_context_messages(store).expect("take step 1");
     assert_eq!(accepted.len(), 1, "first injection should pass");
 
     // Steps 2 and 3: within cooldown, should be skipped
@@ -204,8 +204,7 @@ async fn throttle_skips_within_cooldown() {
             .run_phase_with_context(&env, ctx)
             .await
             .expect(&format!("step {step}"));
-        let accepted =
-            take_accumulated_context_messages(store).unwrap_or_else(|e| panic!("step {step}: {e}"));
+        let accepted = take_context_messages(store).unwrap_or_else(|e| panic!("step {step}: {e}"));
         assert_eq!(
             accepted.len(),
             0,
@@ -228,7 +227,7 @@ async fn throttle_skips_within_cooldown() {
         .run_phase_with_context(&env, ctx)
         .await
         .expect("step 4");
-    let accepted = take_accumulated_context_messages(store).expect("take step 4");
+    let accepted = take_context_messages(store).expect("take step 4");
     assert_eq!(
         accepted.len(),
         1,
@@ -252,7 +251,7 @@ async fn throttle_bypassed_on_content_change() {
         .run_phase_with_context(&env, ctx)
         .await
         .expect("step 1");
-    let accepted = take_accumulated_context_messages(store).expect("take step 1");
+    let accepted = take_context_messages(store).expect("take step 1");
     assert_eq!(accepted.len(), 1);
 
     // Step 2: same content, within cooldown — should be throttled
@@ -270,7 +269,7 @@ async fn throttle_bypassed_on_content_change() {
         .run_phase_with_context(&env, ctx)
         .await
         .expect("step 2");
-    let accepted = take_accumulated_context_messages(store).expect("take step 2");
+    let accepted = take_context_messages(store).expect("take step 2");
     assert_eq!(
         accepted.len(),
         0,
@@ -292,7 +291,7 @@ async fn throttle_bypassed_on_content_change() {
         .run_phase_with_context(&env, ctx)
         .await
         .expect("step 3");
-    let accepted = take_accumulated_context_messages(store).expect("take step 3");
+    let accepted = take_context_messages(store).expect("take step 3");
     assert_eq!(
         accepted.len(),
         1,

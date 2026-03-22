@@ -10,7 +10,7 @@ use super::content::ContentBlock;
 use super::message::{Role, Visibility};
 
 /// Where in the prompt a context message should be inserted.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextMessageTarget {
     /// Immediately after the base system prompt.
@@ -45,6 +45,17 @@ pub struct ContextMessage {
     /// Minimum number of steps between injections of this key.
     /// `0` means inject every time (no throttling).
     pub cooldown_turns: u32,
+    /// If true, message persists across steps until explicitly removed.
+    /// If false (default), message is consumed after one injection.
+    #[serde(default)]
+    pub persistent: bool,
+    /// If true, remove this message after it has been emitted once.
+    /// Only meaningful when `persistent` is true.
+    #[serde(default)]
+    pub consume_after_emit: bool,
+    /// Priority for ordering within same target (lower = earlier). Default 0.
+    #[serde(default)]
+    pub priority: i32,
 }
 
 impl ContextMessage {
@@ -57,6 +68,9 @@ impl ContextMessage {
             visibility: Visibility::Internal,
             target: ContextMessageTarget::System,
             cooldown_turns: 0,
+            persistent: false,
+            consume_after_emit: false,
+            priority: 0,
         }
     }
 
@@ -69,6 +83,9 @@ impl ContextMessage {
             visibility: Visibility::Internal,
             target: ContextMessageTarget::SuffixSystem,
             cooldown_turns: 0,
+            persistent: false,
+            consume_after_emit: false,
+            priority: 0,
         }
     }
 
@@ -81,6 +98,9 @@ impl ContextMessage {
             visibility: Visibility::Internal,
             target: ContextMessageTarget::Session,
             cooldown_turns: 0,
+            persistent: false,
+            consume_after_emit: false,
+            priority: 0,
         }
     }
 
@@ -93,6 +113,43 @@ impl ContextMessage {
             visibility: Visibility::All,
             target: ContextMessageTarget::Conversation,
             cooldown_turns: 0,
+            persistent: false,
+            consume_after_emit: false,
+            priority: 0,
+        }
+    }
+
+    /// Create a persistent system-level instruction.
+    pub fn system_persistent(key: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            role: Role::System,
+            content: vec![ContentBlock::text(text)],
+            visibility: Visibility::Internal,
+            target: ContextMessageTarget::System,
+            cooldown_turns: 0,
+            persistent: true,
+            consume_after_emit: false,
+            priority: 0,
+        }
+    }
+
+    /// Create a persistent message that auto-removes after first injection.
+    pub fn emit_once(
+        key: impl Into<String>,
+        text: impl Into<String>,
+        target: ContextMessageTarget,
+    ) -> Self {
+        Self {
+            key: key.into(),
+            role: Role::System,
+            content: vec![ContentBlock::text(text)],
+            visibility: Visibility::Internal,
+            target,
+            cooldown_turns: 0,
+            persistent: true,
+            consume_after_emit: true,
+            priority: 0,
         }
     }
 
@@ -100,6 +157,27 @@ impl ContextMessage {
     #[must_use]
     pub fn with_cooldown(mut self, turns: u32) -> Self {
         self.cooldown_turns = turns;
+        self
+    }
+
+    /// Set persistent flag (builder pattern).
+    #[must_use]
+    pub fn with_persistent(mut self, persistent: bool) -> Self {
+        self.persistent = persistent;
+        self
+    }
+
+    /// Set consume-after-emit flag (builder pattern).
+    #[must_use]
+    pub fn with_consume_after_emit(mut self, consume: bool) -> Self {
+        self.consume_after_emit = consume;
+        self
+    }
+
+    /// Set priority (builder pattern). Lower = earlier within same target.
+    #[must_use]
+    pub fn with_priority(mut self, priority: i32) -> Self {
+        self.priority = priority;
         self
     }
 }
@@ -116,6 +194,9 @@ mod tests {
         assert_eq!(msg.target, ContextMessageTarget::System);
         assert_eq!(msg.visibility, Visibility::Internal);
         assert_eq!(msg.cooldown_turns, 0);
+        assert!(!msg.persistent);
+        assert!(!msg.consume_after_emit);
+        assert_eq!(msg.priority, 0);
     }
 
     #[test]
@@ -133,6 +214,9 @@ mod tests {
             visibility: Visibility::All,
             target: ContextMessageTarget::Conversation,
             cooldown_turns: 3,
+            persistent: true,
+            consume_after_emit: false,
+            priority: 10,
         };
         let json = serde_json::to_value(&msg).unwrap();
         let parsed: ContextMessage = serde_json::from_value(json).unwrap();
@@ -170,5 +254,50 @@ mod tests {
         assert_eq!(msg.role, Role::User);
         assert_eq!(msg.target, ContextMessageTarget::Conversation);
         assert_eq!(msg.visibility, Visibility::All);
+    }
+
+    #[test]
+    fn system_persistent_constructor() {
+        let msg = ContextMessage::system_persistent("sys.persist", "always here");
+        assert!(msg.persistent);
+        assert!(!msg.consume_after_emit);
+        assert_eq!(msg.target, ContextMessageTarget::System);
+        assert_eq!(msg.role, Role::System);
+    }
+
+    #[test]
+    fn emit_once_constructor() {
+        let msg = ContextMessage::emit_once("once.key", "one shot", ContextMessageTarget::Session);
+        assert!(msg.persistent);
+        assert!(msg.consume_after_emit);
+        assert_eq!(msg.target, ContextMessageTarget::Session);
+    }
+
+    #[test]
+    fn builder_chain_new_fields() {
+        let msg = ContextMessage::system("k", "v")
+            .with_persistent(true)
+            .with_consume_after_emit(true)
+            .with_priority(42);
+        assert!(msg.persistent);
+        assert!(msg.consume_after_emit);
+        assert_eq!(msg.priority, 42);
+    }
+
+    #[test]
+    fn context_message_target_ordering() {
+        assert!(ContextMessageTarget::System < ContextMessageTarget::Session);
+        assert!(ContextMessageTarget::Session < ContextMessageTarget::Conversation);
+        assert!(ContextMessageTarget::Conversation < ContextMessageTarget::SuffixSystem);
+    }
+
+    #[test]
+    fn serde_defaults_for_new_fields() {
+        // Deserializing without new fields should use defaults
+        let json = r#"{"key":"k","role":"system","content":[{"type":"text","text":"hi"}],"visibility":"internal","target":"system","cooldown_turns":0}"#;
+        let msg: ContextMessage = serde_json::from_str(json).unwrap();
+        assert!(!msg.persistent);
+        assert!(!msg.consume_after_emit);
+        assert_eq!(msg.priority, 0);
     }
 }

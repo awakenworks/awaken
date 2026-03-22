@@ -22,10 +22,11 @@ pub use agent::state::AddContextMessage;
 pub use agent::state::{
     AccumulatedContextMessages, AccumulatedContextMessagesUpdate, AccumulatedOverrides,
     AccumulatedOverridesUpdate, AccumulatedToolExclusions, AccumulatedToolExclusionsUpdate,
-    AccumulatedToolInclusions, AccumulatedToolInclusionsUpdate, ContextThrottleMap,
-    ContextThrottleState, ContextThrottleUpdate, ExcludeTool, IncludeOnlyTools, RunLifecycle,
-    RunLifecycleState, RunLifecycleUpdate, SetInferenceOverride, ToolCallState, ToolCallStateMap,
-    ToolCallStates, ToolCallStatesUpdate, ToolInclusionSet,
+    AccumulatedToolInclusions, AccumulatedToolInclusionsUpdate, ContextMessageAction,
+    ContextMessageStore, ContextMessageStoreValue, ContextThrottleMap, ContextThrottleState,
+    ContextThrottleUpdate, ExcludeTool, IncludeOnlyTools, RunLifecycle, RunLifecycleState,
+    RunLifecycleUpdate, SetInferenceOverride, ToolCallState, ToolCallStateMap, ToolCallStates,
+    ToolCallStatesUpdate, ToolInclusionSet,
 };
 pub use agent::tool_permission::AllowAllToolsPlugin;
 
