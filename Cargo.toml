@@ -10,6 +10,7 @@ members = [
     "crates/awaken",
     "crates/awaken-ext-skills",
     "crates/awaken-server",
+    "examples",
 ]
 
 [workspace.package]
@@ -22,6 +23,10 @@ awaken-contract = { version = "0.1.0", path = "crates/awaken-contract" }
 awaken-stores = { version = "0.1.0", path = "crates/awaken-stores" }
 awaken-runtime = { version = "0.1.0", path = "crates/awaken-runtime" }
 awaken-ext-permission = { version = "0.1.0", path = "crates/awaken-ext-permission" }
+awaken-ext-observability = { version = "0.1.0", path = "crates/awaken-ext-observability" }
+awaken-ext-mcp = { version = "0.1.0", path = "crates/awaken-ext-mcp" }
+awaken-ext-skills = { version = "0.1.0", path = "crates/awaken-ext-skills" }
+awaken-server = { version = "0.1.0", path = "crates/awaken-server" }
 glob-match = "0.2"
 regex = "1"
 serde = { version = "1", features = ["derive", "rc"] }

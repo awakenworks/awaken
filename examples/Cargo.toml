@@ -1,0 +1,36 @@
+[package]
+name = "awaken-examples"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+awaken-contract = { workspace = true }
+awaken-runtime = { workspace = true }
+awaken-server = { workspace = true }
+awaken-stores = { workspace = true, features = ["file"] }
+awaken-ext-permission = { workspace = true }
+awaken-ext-observability = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+uuid = { version = "1", features = ["v4"] }
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio"] }
+
+[[example]]
+name = "travel"
+path = "examples/travel.rs"
+
+[[example]]
+name = "research"
+path = "examples/research.rs"
+
+[[example]]
+name = "starter_backend"
+path = "examples/starter_backend/main.rs"
+
+[lints]
+workspace = true

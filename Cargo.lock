@@ -160,7 +160,13 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "awaken-contract",
+ "awaken-ext-mcp",
+ "awaken-ext-observability",
+ "awaken-ext-permission",
+ "awaken-ext-skills",
  "awaken-runtime",
+ "awaken-server",
+ "awaken-stores",
  "futures",
  "serde",
  "serde_json",
@@ -181,6 +187,26 @@ dependencies = [
  "tokio",
  "tracing",
  "typedmap",
+ "uuid",
+]
+
+[[package]]
+name = "awaken-examples"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "awaken-contract",
+ "awaken-ext-observability",
+ "awaken-ext-permission",
+ "awaken-runtime",
+ "awaken-server",
+ "awaken-stores",
+ "axum",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 

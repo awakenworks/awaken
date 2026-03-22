@@ -6,6 +6,21 @@ edition.workspace = true
 [dependencies]
 awaken-contract = { workspace = true }
 awaken-runtime = { workspace = true }
+awaken-ext-permission = { workspace = true, optional = true }
+awaken-ext-observability = { workspace = true, optional = true }
+awaken-ext-mcp = { workspace = true, optional = true }
+awaken-ext-skills = { workspace = true, optional = true }
+awaken-stores = { workspace = true }
+awaken-server = { workspace = true, optional = true }
+
+[features]
+default = ["permission", "observability"]
+permission = ["dep:awaken-ext-permission"]
+observability = ["dep:awaken-ext-observability"]
+mcp = ["dep:awaken-ext-mcp"]
+skills = ["dep:awaken-ext-skills"]
+server = ["dep:awaken-server"]
+full = ["permission", "observability", "mcp", "skills", "server"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "sync"] }

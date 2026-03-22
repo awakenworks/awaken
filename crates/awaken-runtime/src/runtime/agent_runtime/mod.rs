@@ -87,6 +87,11 @@ impl AgentRuntime {
         self.resolver.as_ref()
     }
 
+    /// Return a cloned `Arc` of the agent resolver.
+    pub fn resolver_arc(&self) -> Arc<dyn AgentResolver> {
+        Arc::clone(&self.resolver)
+    }
+
     pub fn thread_run_store(&self) -> Option<&dyn ThreadRunStore> {
         self.storage.as_deref()
     }
