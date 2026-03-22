@@ -326,6 +326,24 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_subject_with_special_chars() {
+        assert_eq!(
+            checkpoint_subject("t-1_abc"),
+            "awaken.threads.t-1_abc.messages"
+        );
+    }
+
+    #[test]
+    fn stream_name_constant() {
+        assert_eq!(STREAM_NAME, "AWAKEN_CHECKPOINTS");
+    }
+
+    #[test]
+    fn subject_prefix_constant() {
+        assert_eq!(SUBJECT_PREFIX, "awaken.threads");
+    }
+
+    #[test]
     fn checkpoint_envelope_serde_roundtrip() {
         let envelope = CheckpointEnvelope {
             thread_id: "t-1".to_string(),

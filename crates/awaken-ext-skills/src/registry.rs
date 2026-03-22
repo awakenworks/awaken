@@ -1146,4 +1146,243 @@ mod tests {
         assert_eq!(composite.ids(), initial_ids);
         assert!(composite.get("s2").is_some());
     }
+
+    // ── InMemorySkillRegistry additional tests ──
+
+    #[test]
+    fn in_memory_registry_add_get_list() {
+        let mut registry = InMemorySkillRegistry::new();
+        assert!(registry.is_empty());
+
+        registry
+            .register(Arc::new(MockSkill::new("alpha")) as Arc<dyn Skill>)
+            .unwrap();
+        registry
+            .register(Arc::new(MockSkill::new("beta")) as Arc<dyn Skill>)
+            .unwrap();
+
+        assert_eq!(registry.len(), 2);
+        assert!(registry.get("alpha").is_some());
+        assert!(registry.get("gamma").is_none());
+        assert_eq!(
+            registry.ids(),
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
+    }
+
+    #[test]
+    fn in_memory_registry_rejects_duplicate_id() {
+        let mut registry = InMemorySkillRegistry::new();
+        registry
+            .register(Arc::new(MockSkill::new("s1")) as Arc<dyn Skill>)
+            .unwrap();
+        let err = registry
+            .register(Arc::new(MockSkill::new("s1")) as Arc<dyn Skill>)
+            .unwrap_err();
+        assert!(matches!(err, SkillRegistryError::DuplicateSkillId(ref id) if id == "s1"));
+    }
+
+    #[test]
+    fn in_memory_registry_rejects_empty_id() {
+        let mut registry = InMemorySkillRegistry::new();
+        let skill = Arc::new(MockSkill {
+            meta: SkillMeta {
+                id: "  ".to_string(),
+                name: "empty".to_string(),
+                description: "empty".to_string(),
+                allowed_tools: Vec::new(),
+            },
+        });
+        let err = registry.register(skill as Arc<dyn Skill>).unwrap_err();
+        assert!(matches!(err, SkillRegistryError::EmptySkillId));
+    }
+
+    #[test]
+    fn in_memory_registry_extend_upsert_overwrites() {
+        let mut registry = InMemorySkillRegistry::new();
+        registry
+            .register(Arc::new(MockSkill::new("s1")) as Arc<dyn Skill>)
+            .unwrap();
+        registry.extend_upsert(vec![Arc::new(MockSkill::new("s1")) as Arc<dyn Skill>]);
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn in_memory_registry_extend_registry_detects_duplicates() {
+        let mut reg_a = InMemorySkillRegistry::new();
+        reg_a
+            .register(Arc::new(MockSkill::new("dup")) as Arc<dyn Skill>)
+            .unwrap();
+
+        let mut reg_b = InMemorySkillRegistry::new();
+        reg_b
+            .register(Arc::new(MockSkill::new("dup")) as Arc<dyn Skill>)
+            .unwrap();
+
+        let err = reg_a.extend_registry(&reg_b).unwrap_err();
+        assert!(matches!(err, SkillRegistryError::DuplicateSkillId(_)));
+    }
+
+    #[test]
+    fn in_memory_registry_snapshot_is_clone() {
+        let mut registry = InMemorySkillRegistry::new();
+        registry
+            .register(Arc::new(MockSkill::new("a")) as Arc<dyn Skill>)
+            .unwrap();
+
+        let snap = registry.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert!(snap.contains_key("a"));
+    }
+
+    // ── CompositeSkillRegistry additional tests ──
+
+    #[test]
+    fn composite_registry_delegation_through_get() {
+        let mut inner = InMemorySkillRegistry::new();
+        inner
+            .register(Arc::new(MockSkill::new("s1")) as Arc<dyn Skill>)
+            .unwrap();
+
+        let composite =
+            CompositeSkillRegistry::try_new(vec![Arc::new(inner) as Arc<dyn SkillRegistry>])
+                .unwrap();
+
+        assert!(composite.get("s1").is_some());
+        assert!(composite.get("missing").is_none());
+        assert_eq!(composite.len(), 1);
+        assert!(!composite.is_empty());
+    }
+
+    #[test]
+    fn composite_registry_fallback_uses_cached_on_conflict() {
+        let reg_a = Arc::new(MutableSkillRegistry::default());
+        reg_a.replace_ids(&["x"]);
+
+        let composite =
+            CompositeSkillRegistry::try_new(vec![reg_a.clone() as Arc<dyn SkillRegistry>]).unwrap();
+
+        assert_eq!(composite.ids(), vec!["x".to_string()]);
+        // Cached snapshot is used when refresh succeeds
+        assert!(composite.get("x").is_some());
+    }
+
+    #[test]
+    fn composite_registry_priority_first_registry_wins() {
+        let mut reg_a = InMemorySkillRegistry::new();
+        reg_a
+            .register(Arc::new(MockSkill::new("shared")) as Arc<dyn Skill>)
+            .unwrap();
+        let mut reg_b = InMemorySkillRegistry::new();
+        reg_b
+            .register(Arc::new(MockSkill::new("unique")) as Arc<dyn Skill>)
+            .unwrap();
+
+        let composite = CompositeSkillRegistry::try_new(vec![
+            Arc::new(reg_a) as Arc<dyn SkillRegistry>,
+            Arc::new(reg_b) as Arc<dyn SkillRegistry>,
+        ])
+        .unwrap();
+
+        assert!(composite.get("shared").is_some());
+        assert!(composite.get("unique").is_some());
+        assert_eq!(composite.len(), 2);
+    }
+
+    #[test]
+    fn composite_registry_rejects_duplicate_across_registries() {
+        let mut reg_a = InMemorySkillRegistry::new();
+        reg_a
+            .register(Arc::new(MockSkill::new("dup")) as Arc<dyn Skill>)
+            .unwrap();
+        let mut reg_b = InMemorySkillRegistry::new();
+        reg_b
+            .register(Arc::new(MockSkill::new("dup")) as Arc<dyn Skill>)
+            .unwrap();
+
+        let err = CompositeSkillRegistry::try_new(vec![
+            Arc::new(reg_a) as Arc<dyn SkillRegistry>,
+            Arc::new(reg_b) as Arc<dyn SkillRegistry>,
+        ])
+        .unwrap_err();
+        assert!(matches!(err, SkillRegistryError::DuplicateSkillId(_)));
+    }
+
+    // ── FsSkillRegistryManager additional tests ──
+
+    #[test]
+    fn fs_registry_manager_empty_roots_error() {
+        let err = FsSkillRegistryManager::discover_roots(Vec::new()).unwrap_err();
+        assert!(matches!(err, SkillRegistryManagerError::EmptyRoots));
+    }
+
+    #[test]
+    fn fs_registry_manager_empty_directory() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        fs::create_dir_all(&root).unwrap();
+
+        let manager = FsSkillRegistryManager::discover_roots(vec![root]).unwrap();
+        assert!(manager.is_empty());
+        assert_eq!(manager.version(), 1);
+        assert!(manager.warnings().is_empty());
+    }
+
+    #[tokio::test]
+    async fn fs_registry_manager_refresh_picks_up_changes() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        fs::create_dir_all(&root).unwrap();
+
+        let manager = FsSkillRegistryManager::discover_roots(vec![root.clone()]).unwrap();
+        assert!(manager.is_empty());
+
+        fs::create_dir_all(root.join("new-skill")).unwrap();
+        fs::write(
+            root.join("new-skill").join("SKILL.md"),
+            "---\nname: new-skill\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+
+        let version = manager.refresh().await.unwrap();
+        assert_eq!(version, 2);
+        assert_eq!(manager.len(), 1);
+        assert!(manager.get("new-skill").is_some());
+    }
+
+    #[test]
+    fn fs_registry_manager_periodic_refresh_zero_interval_error() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        fs::create_dir_all(&root).unwrap();
+
+        let manager = FsSkillRegistryManager::discover_roots(vec![root]).unwrap();
+        let err = manager
+            .start_periodic_refresh(Duration::from_secs(0))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            SkillRegistryManagerError::InvalidRefreshInterval
+        ));
+    }
+
+    // ── validate_dir_name ──
+
+    #[test]
+    fn validate_dir_name_accepts_valid_names() {
+        assert!(validate_dir_name("hello").is_ok());
+        assert!(validate_dir_name("hello-world").is_ok());
+        assert!(validate_dir_name("a1b2").is_ok());
+    }
+
+    #[test]
+    fn validate_dir_name_rejects_invalid() {
+        assert!(validate_dir_name("").is_err());
+        assert!(validate_dir_name("-start").is_err());
+        assert!(validate_dir_name("end-").is_err());
+        assert!(validate_dir_name("a--b").is_err());
+        assert!(validate_dir_name("Hello").is_err());
+        assert!(validate_dir_name("a/b").is_err());
+        assert!(validate_dir_name(&"a".repeat(65)).is_err());
+    }
 }

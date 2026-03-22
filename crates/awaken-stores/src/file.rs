@@ -412,5 +412,309 @@ impl ThreadRunStore for FileStore {
     }
 }
 
-// Unit tests removed: all scenarios are covered by integration tests
-// in `tests/file_store.rs`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_contract::contract::lifecycle::RunStatus;
+    use awaken_contract::contract::message::Message;
+    use awaken_contract::contract::storage::{
+        MailboxEntry, RunQuery, RunRecord, RunStore, ThreadRunStore, ThreadStore,
+    };
+    use awaken_contract::thread::Thread;
+    use tempfile::TempDir;
+
+    fn make_run(run_id: &str, thread_id: &str) -> RunRecord {
+        RunRecord {
+            run_id: run_id.to_string(),
+            thread_id: thread_id.to_string(),
+            agent_id: "agent".to_string(),
+            parent_run_id: None,
+            status: RunStatus::Running,
+            termination_code: None,
+            created_at: 100,
+            updated_at: 100,
+            steps: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            state: None,
+        }
+    }
+
+    // ── validate_id ──
+
+    #[test]
+    fn validate_id_rejects_slash() {
+        assert!(validate_id("a/b", "id").is_err());
+    }
+
+    #[test]
+    fn validate_id_rejects_backslash() {
+        assert!(validate_id("a\\b", "id").is_err());
+    }
+
+    #[test]
+    fn validate_id_rejects_null_char() {
+        assert!(validate_id("a\0b", "id").is_err());
+    }
+
+    #[test]
+    fn validate_id_rejects_dot_dot() {
+        assert!(validate_id("a..b", "id").is_err());
+    }
+
+    #[test]
+    fn validate_id_rejects_empty() {
+        assert!(validate_id("", "id").is_err());
+        assert!(validate_id("  ", "id").is_err());
+    }
+
+    #[test]
+    fn validate_id_rejects_control_chars() {
+        assert!(validate_id("a\tb", "id").is_err());
+        assert!(validate_id("a\nb", "id").is_err());
+    }
+
+    #[test]
+    fn validate_id_accepts_valid() {
+        assert!(validate_id("abc-123", "id").is_ok());
+        assert!(validate_id("thread_001", "id").is_ok());
+    }
+
+    // ── atomic_write ──
+
+    #[tokio::test]
+    async fn atomic_write_creates_parent_dirs() {
+        let td = TempDir::new().unwrap();
+        let dir = td.path().join("deep").join("nested");
+        atomic_write(&dir, "test.json", r#"{"ok": true}"#)
+            .await
+            .unwrap();
+        assert!(dir.join("test.json").exists());
+    }
+
+    #[tokio::test]
+    async fn atomic_write_overwrites_existing() {
+        let td = TempDir::new().unwrap();
+        let dir = td.path().to_path_buf();
+        atomic_write(&dir, "test.json", r#"{"v": 1}"#)
+            .await
+            .unwrap();
+        atomic_write(&dir, "test.json", r#"{"v": 2}"#)
+            .await
+            .unwrap();
+        let content = tokio::fs::read_to_string(dir.join("test.json"))
+            .await
+            .unwrap();
+        assert!(content.contains("\"v\": 2"));
+    }
+
+    // ── Corrupted JSON handling ──
+
+    #[tokio::test]
+    async fn read_json_returns_error_for_corrupted_json() {
+        let td = TempDir::new().unwrap();
+        let path = td.path().join("bad.json");
+        tokio::fs::write(&path, "not valid json{{{").await.unwrap();
+        let result: Result<Option<Thread>, StorageError> = read_json(&path).await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            StorageError::Serialization(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn read_json_returns_none_for_missing_file() {
+        let td = TempDir::new().unwrap();
+        let path = td.path().join("nonexistent.json");
+        let result: Result<Option<Thread>, StorageError> = read_json(&path).await;
+        assert!(result.unwrap().is_none());
+    }
+
+    // ── FileStore::new ──
+
+    #[test]
+    fn file_store_new_does_not_create_dirs_eagerly() {
+        let td = TempDir::new().unwrap();
+        let path = td.path().join("store");
+        let _store = FileStore::new(&path);
+        // Dirs are NOT created at construction time
+        assert!(!path.exists());
+    }
+
+    // ── ThreadStore ──
+
+    #[tokio::test]
+    async fn file_store_thread_save_load_delete() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+        let thread = Thread::new();
+        store.save_thread(&thread).await.unwrap();
+
+        let loaded = store.load_thread(&thread.id).await.unwrap().unwrap();
+        assert_eq!(loaded.id, thread.id);
+
+        store.delete_thread(&thread.id).await.unwrap();
+        assert!(store.load_thread(&thread.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn file_store_thread_load_missing() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+        assert!(store.load_thread("no-such").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn file_store_list_threads() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+        for i in 0..3 {
+            let mut t = Thread::new();
+            t.id = format!("t-{i:02}");
+            store.save_thread(&t).await.unwrap();
+        }
+        let ids = store.list_threads(0, 100).await.unwrap();
+        assert_eq!(ids.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn file_store_messages_save_load_delete() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+        let thread = Thread::new();
+        store.save_thread(&thread).await.unwrap();
+
+        let msgs = vec![Message::user("hello")];
+        store.save_messages(&thread.id, &msgs).await.unwrap();
+
+        let loaded = store.load_messages(&thread.id).await.unwrap().unwrap();
+        assert_eq!(loaded.len(), 1);
+
+        store.delete_messages(&thread.id).await.unwrap();
+        assert!(store.load_messages(&thread.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn file_store_delete_messages_missing_thread_returns_not_found() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+        let err = store.delete_messages("no-such").await.unwrap_err();
+        assert!(matches!(err, StorageError::NotFound(_)));
+    }
+
+    // ── RunStore ──
+
+    #[tokio::test]
+    async fn file_store_run_create_load() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+        let run = make_run("r-1", "t-1");
+        store.create_run(&run).await.unwrap();
+        let loaded = store.load_run("r-1").await.unwrap().unwrap();
+        assert_eq!(loaded.thread_id, "t-1");
+    }
+
+    #[tokio::test]
+    async fn file_store_run_create_duplicate_returns_already_exists() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+        let run = make_run("r-1", "t-1");
+        store.create_run(&run).await.unwrap();
+        let err = store.create_run(&run).await.unwrap_err();
+        assert!(matches!(err, StorageError::AlreadyExists(_)));
+    }
+
+    #[tokio::test]
+    async fn file_store_run_latest() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+        let mut r1 = make_run("r-1", "t-1");
+        r1.updated_at = 100;
+        let mut r2 = make_run("r-2", "t-1");
+        r2.updated_at = 200;
+        store.create_run(&r1).await.unwrap();
+        store.create_run(&r2).await.unwrap();
+
+        let latest = store.latest_run("t-1").await.unwrap().unwrap();
+        assert_eq!(latest.run_id, "r-2");
+    }
+
+    // ── MailboxStore ──
+
+    #[tokio::test]
+    async fn file_store_mailbox_push_pop() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+        let entry = MailboxEntry {
+            entry_id: "e-1".to_string(),
+            mailbox_id: "m-1".to_string(),
+            payload: serde_json::json!({"msg": "hi"}),
+            created_at: 100,
+        };
+        store.push_message(&entry).await.unwrap();
+
+        let popped = store.pop_messages("m-1", 10).await.unwrap();
+        assert_eq!(popped.len(), 1);
+
+        // After pop, should be empty
+        let popped = store.pop_messages("m-1", 10).await.unwrap();
+        assert!(popped.is_empty());
+    }
+
+    #[tokio::test]
+    async fn file_store_mailbox_pop_empty() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+        let popped = store.pop_messages("no-such", 10).await.unwrap();
+        assert!(popped.is_empty());
+    }
+
+    // ── Checkpoint ──
+
+    #[tokio::test]
+    async fn file_store_checkpoint_saves_messages_and_run() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+        let msgs = vec![Message::user("cp")];
+        let run = make_run("r-cp", "t-1");
+
+        store.checkpoint("t-1", &msgs, &run).await.unwrap();
+
+        let loaded_msgs = store.load_messages("t-1").await.unwrap().unwrap();
+        assert_eq!(loaded_msgs.len(), 1);
+        let loaded_run = store.load_run("r-cp").await.unwrap().unwrap();
+        assert_eq!(loaded_run.thread_id, "t-1");
+    }
+
+    // ── Missing directory recovery ──
+
+    #[tokio::test]
+    async fn file_store_operations_create_dirs_on_demand() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path().join("fresh"));
+        // This should work even though the dirs don't exist yet
+        let thread = Thread::new();
+        store.save_thread(&thread).await.unwrap();
+        let loaded = store.load_thread(&thread.id).await.unwrap();
+        assert!(loaded.is_some());
+    }
+
+    // ── validate_id edge cases for IDs used in operations ──
+
+    #[tokio::test]
+    async fn file_store_rejects_traversal_thread_id() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+        let err = store.load_thread("../escape").await.unwrap_err();
+        assert!(matches!(err, StorageError::Io(_)));
+    }
+
+    #[tokio::test]
+    async fn file_store_rejects_slash_in_run_id() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+        let err = store.load_run("a/b").await.unwrap_err();
+        assert!(matches!(err, StorageError::Io(_)));
+    }
+}

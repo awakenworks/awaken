@@ -1416,4 +1416,232 @@ mod tests {
         assert_eq!(format_resource_size(1_048_576), "1.0 MiB");
         assert_eq!(format_resource_size(1_073_741_824), "1.0 GiB");
     }
+
+    // ── McpPromptSkill activation and instructions ──
+
+    #[tokio::test]
+    async fn mcp_prompt_skill_activation_with_no_args() {
+        let transport = Arc::new(MutablePromptTransport::new(vec![prompt(
+            "simple",
+            Vec::new(),
+        )]));
+        let manager = make_manager(transport.clone()).await;
+        let registry = McpPromptSkillRegistryManager::discover(manager)
+            .await
+            .unwrap();
+        let skill = registry.get("mcp:github:simple").unwrap();
+
+        let activation = skill.activate(None).await.unwrap();
+        assert!(activation.instructions.contains("prompt=simple"));
+        let calls = transport.prompt_calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].1.is_none());
+    }
+
+    #[tokio::test]
+    async fn mcp_prompt_skill_read_instructions_contains_frontmatter() {
+        let transport = Arc::new(MutablePromptTransport::new(vec![prompt(
+            "review",
+            vec![prompt_arg("path", true)],
+        )]));
+        let manager = make_manager(transport).await;
+        let registry = McpPromptSkillRegistryManager::discover(manager)
+            .await
+            .unwrap();
+        let skill = registry.get("mcp:github:review").unwrap();
+
+        let instructions = skill.read_instructions().await.unwrap();
+        assert!(instructions.starts_with("---\n"));
+        assert!(instructions.contains("name:"));
+        assert!(instructions.contains("MCP prompt"));
+        assert!(instructions.contains("path (required)"));
+    }
+
+    #[tokio::test]
+    async fn mcp_prompt_skill_run_script_returns_unsupported() {
+        let transport = Arc::new(MutablePromptTransport::new(vec![prompt(
+            "review",
+            Vec::new(),
+        )]));
+        let manager = make_manager(transport).await;
+        let registry = McpPromptSkillRegistryManager::discover(manager)
+            .await
+            .unwrap();
+        let skill = registry.get("mcp:github:review").unwrap();
+
+        let err = skill.run_script("scripts/run.sh", &[]).await.unwrap_err();
+        assert!(matches!(err, SkillError::Unsupported(_)));
+    }
+
+    #[tokio::test]
+    async fn mcp_prompt_skill_load_resource_bad_path_prefix() {
+        let transport = Arc::new(MutablePromptTransport::new(vec![prompt(
+            "review",
+            Vec::new(),
+        )]));
+        let manager = make_manager(transport).await;
+        let registry = McpPromptSkillRegistryManager::discover(manager)
+            .await
+            .unwrap();
+        let skill = registry.get("mcp:github:review").unwrap();
+
+        let err = skill
+            .load_resource(SkillResourceKind::Reference, "bad/path.md")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SkillError::InvalidArguments(_)));
+    }
+
+    #[tokio::test]
+    async fn mcp_prompt_skill_load_resource_empty_uri() {
+        let transport = Arc::new(MutablePromptTransport::new(vec![prompt(
+            "review",
+            Vec::new(),
+        )]));
+        let manager = make_manager(transport).await;
+        let registry = McpPromptSkillRegistryManager::discover(manager)
+            .await
+            .unwrap();
+        let skill = registry.get("mcp:github:review").unwrap();
+
+        let err = skill
+            .load_resource(SkillResourceKind::Reference, "references/")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SkillError::InvalidArguments(_)));
+    }
+
+    // ── McpPromptSkillRegistryManager ──
+
+    #[tokio::test]
+    async fn mcp_prompt_skill_registry_list_returns_sorted_ids() {
+        let transport = Arc::new(MutablePromptTransport::new(vec![
+            prompt("beta", Vec::new()),
+            prompt("alpha", Vec::new()),
+        ]));
+        let manager = make_manager(transport).await;
+        let registry = McpPromptSkillRegistryManager::discover(manager)
+            .await
+            .unwrap();
+
+        let ids = registry.ids();
+        assert_eq!(
+            ids,
+            vec![
+                "mcp:github:alpha".to_string(),
+                "mcp:github:beta".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_prompt_skill_registry_version_increments_on_refresh() {
+        let transport = Arc::new(MutablePromptTransport::new(vec![prompt(
+            "review",
+            Vec::new(),
+        )]));
+        let manager = make_manager(transport.clone()).await;
+        let registry = McpPromptSkillRegistryManager::discover(manager)
+            .await
+            .unwrap();
+
+        assert_eq!(registry.version(), 1);
+        registry.refresh().await.unwrap();
+        assert_eq!(registry.version(), 2);
+    }
+
+    #[tokio::test]
+    async fn mcp_prompt_skill_registry_empty_when_no_prompts() {
+        let transport = Arc::new(MutablePromptTransport::new(Vec::new()));
+        let manager = make_manager(transport).await;
+        let registry = McpPromptSkillRegistryManager::discover(manager)
+            .await
+            .unwrap();
+
+        assert!(registry.is_empty());
+        assert_eq!(registry.ids(), Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn mcp_prompt_skill_registry_concurrent_access_is_safe() {
+        let transport = Arc::new(MutablePromptTransport::new(vec![prompt(
+            "review",
+            Vec::new(),
+        )]));
+        let manager = make_manager(transport.clone()).await;
+        let registry = McpPromptSkillRegistryManager::discover(manager)
+            .await
+            .unwrap();
+
+        let reg1 = registry.clone();
+        let reg2 = registry.clone();
+
+        let (ids1, ids2) = tokio::join!(
+            tokio::spawn(async move { reg1.ids() }),
+            tokio::spawn(async move { reg2.ids() }),
+        );
+
+        assert_eq!(ids1.unwrap(), ids2.unwrap());
+    }
+
+    // ── Helper function tests ──
+
+    #[test]
+    fn enrich_description_with_args_and_resources() {
+        let args = vec![prompt_arg("path", true), prompt_arg("focus", false)];
+        let resources = vec![McpResourceHint {
+            uri: "file://a.md".to_string(),
+            title: Some("A".to_string()),
+            description: None,
+            mime_type: None,
+            size: None,
+        }];
+        let desc = enrich_description("Base desc", &args, &resources);
+        assert!(desc.contains("Args: path (required), focus."));
+        assert!(desc.contains("Resources: file://a.md (A)."));
+    }
+
+    #[test]
+    fn enrich_description_with_more_than_3_resources_shows_count() {
+        let resources: Vec<McpResourceHint> = (0..5)
+            .map(|i| McpResourceHint {
+                uri: format!("file://{i}.md"),
+                title: None,
+                description: None,
+                mime_type: None,
+                size: None,
+            })
+            .collect();
+        let desc = enrich_description("Base", &[], &resources);
+        assert!(desc.contains("+2 more"));
+    }
+
+    #[test]
+    fn is_prompt_support_error_detects_transport_message() {
+        let err = McpError::Transport("list_prompts not supported".to_string());
+        assert!(is_prompt_support_error(&err));
+
+        let err = McpError::Transport("other error".to_string());
+        assert!(!is_prompt_support_error(&err));
+
+        let err = McpError::EmptyServerName;
+        assert!(!is_prompt_support_error(&err));
+    }
+
+    #[test]
+    fn map_mcp_error_maps_unsupported_capability() {
+        let err = McpError::UnsupportedCapability {
+            server_name: "s".to_string(),
+            capability: "prompts",
+        };
+        let skill_err = map_mcp_error(err);
+        assert!(matches!(skill_err, SkillError::Unsupported(_)));
+    }
+
+    #[test]
+    fn map_mcp_error_maps_other_to_io() {
+        let err = McpError::Transport("fail".to_string());
+        let skill_err = map_mcp_error(err);
+        assert!(matches!(skill_err, SkillError::Io(_)));
+    }
 }

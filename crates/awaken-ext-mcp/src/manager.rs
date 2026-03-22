@@ -767,3 +767,423 @@ impl McpToolRegistry {
         read_lock(&self.state.refresh_health).clone()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::McpServerConnectionConfig;
+    use crate::progress::McpProgressUpdate;
+    use crate::transport::McpToolTransport;
+    use async_trait::async_trait;
+    use mcp::transport::{McpTransportError, ServerCapabilities, TransportTypeId};
+    use mcp::{CallToolResult, McpToolDefinition};
+    use serde_json::json;
+    use tokio::sync::mpsc;
+
+    // ── Mock transport ──
+
+    #[derive(Debug, Default)]
+    struct MockTransport {
+        tools: Vec<McpToolDefinition>,
+        capabilities: Option<ServerCapabilities>,
+    }
+
+    impl MockTransport {
+        fn with_tools(tools: Vec<McpToolDefinition>) -> Self {
+            Self {
+                tools,
+                capabilities: None,
+            }
+        }
+
+        fn tool_def(name: &str) -> McpToolDefinition {
+            McpToolDefinition {
+                name: name.to_string(),
+                title: Some(format!("{name} title")),
+                description: Some(format!("{name} desc")),
+                input_schema: json!({"type": "object"}),
+                group: None,
+                meta: None,
+                icons: None,
+                output_schema: None,
+                execution: None,
+                annotations: None,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl McpToolTransport for MockTransport {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            Ok(self.tools.clone())
+        }
+
+        async fn call_tool(
+            &self,
+            name: &str,
+            _args: Value,
+            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        ) -> Result<CallToolResult, McpTransportError> {
+            Ok(CallToolResult {
+                content: vec![mcp::ToolContent::Text {
+                    text: format!("called {name}"),
+                    annotations: None,
+                    meta: None,
+                }],
+                structured_content: None,
+                is_error: None,
+            })
+        }
+
+        fn transport_type(&self) -> TransportTypeId {
+            TransportTypeId::Stdio
+        }
+
+        async fn server_capabilities(
+            &self,
+        ) -> Result<Option<ServerCapabilities>, McpTransportError> {
+            Ok(self.capabilities.clone())
+        }
+    }
+
+    fn cfg(name: &str) -> McpServerConnectionConfig {
+        McpServerConnectionConfig::stdio(name, "echo", vec!["ok".to_string()])
+    }
+
+    async fn make_manager_with(
+        entries: Vec<(&str, Vec<McpToolDefinition>)>,
+    ) -> McpToolRegistryManager {
+        let transports: Vec<(McpServerConnectionConfig, Arc<dyn McpToolTransport>)> = entries
+            .into_iter()
+            .map(|(name, tools)| {
+                (
+                    cfg(name),
+                    Arc::new(MockTransport::with_tools(tools)) as Arc<dyn McpToolTransport>,
+                )
+            })
+            .collect();
+        McpToolRegistryManager::from_transports(transports)
+            .await
+            .unwrap()
+    }
+
+    // ── McpTool descriptor format ──
+
+    #[tokio::test]
+    async fn mcp_tool_descriptor_encodes_server_and_tool_name() {
+        let mgr = make_manager_with(vec![("srv", vec![MockTransport::tool_def("echo")])]).await;
+        let registry = mgr.registry();
+        let tool = registry.get("mcp__srv__echo").unwrap();
+        let desc = tool.descriptor();
+        assert_eq!(desc.id, "mcp__srv__echo");
+        assert!(desc.description.contains("mcp.server=srv"));
+        assert!(desc.description.contains("mcp.tool=echo"));
+    }
+
+    // ── McpToolRegistry ──
+
+    #[tokio::test]
+    async fn mcp_tool_registry_ids_sorted() {
+        let mgr = make_manager_with(vec![(
+            "srv",
+            vec![
+                MockTransport::tool_def("beta"),
+                MockTransport::tool_def("alpha"),
+            ],
+        )])
+        .await;
+        let registry = mgr.registry();
+        let ids = registry.ids();
+        assert_eq!(
+            ids,
+            vec!["mcp__srv__alpha".to_string(), "mcp__srv__beta".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_registry_get_returns_correct_tool() {
+        let mgr = make_manager_with(vec![("srv", vec![MockTransport::tool_def("echo")])]).await;
+        let registry = mgr.registry();
+        assert!(registry.get("mcp__srv__echo").is_some());
+        assert!(registry.get("mcp__srv__missing").is_none());
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_registry_empty() {
+        let mgr = make_manager_with(vec![("srv", Vec::new())]).await;
+        let registry = mgr.registry();
+        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
+        assert!(registry.ids().is_empty());
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_registry_version_starts_at_one() {
+        let mgr = make_manager_with(vec![("srv", Vec::new())]).await;
+        assert_eq!(mgr.version(), 1);
+        assert_eq!(mgr.registry().version(), 1);
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_registry_snapshot_matches_ids() {
+        let mgr = make_manager_with(vec![("srv", vec![MockTransport::tool_def("t1")])]).await;
+        let registry = mgr.registry();
+        let snap = registry.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert!(snap.contains_key("mcp__srv__t1"));
+    }
+
+    // ── McpToolRegistryManager error cases ──
+
+    #[tokio::test]
+    async fn manager_rejects_empty_server_name() {
+        let result = McpToolRegistryManager::from_transports(vec![(
+            cfg(""),
+            Arc::new(MockTransport::default()) as Arc<dyn McpToolTransport>,
+        )])
+        .await;
+        // cfg("") still has name="" but validate_server_name checks after
+        // The config struct sets name to empty string
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn manager_rejects_duplicate_server_names() {
+        let result = McpToolRegistryManager::from_transports(vec![
+            (
+                cfg("dup"),
+                Arc::new(MockTransport::default()) as Arc<dyn McpToolTransport>,
+            ),
+            (
+                cfg("dup"),
+                Arc::new(MockTransport::default()) as Arc<dyn McpToolTransport>,
+            ),
+        ])
+        .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, McpError::DuplicateServerName(_)));
+    }
+
+    #[tokio::test]
+    async fn manager_rejects_tool_id_conflict() {
+        // Two servers with tools that map to the same tool_id after sanitization
+        // Create a transport that returns tool "a_b" and another with "a-b"
+        // Both sanitize to "a_b", so they'd conflict if on the same server
+        // But tool_id includes server name, so we need same server+tool
+
+        #[derive(Debug)]
+        struct DupToolTransport;
+
+        #[async_trait]
+        impl McpToolTransport for DupToolTransport {
+            async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+                Ok(vec![
+                    MockTransport::tool_def("echo"),
+                    MockTransport::tool_def("echo"),
+                ])
+            }
+            async fn call_tool(
+                &self,
+                _name: &str,
+                _args: Value,
+                _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            ) -> Result<CallToolResult, McpTransportError> {
+                unreachable!()
+            }
+            fn transport_type(&self) -> TransportTypeId {
+                TransportTypeId::Stdio
+            }
+            async fn server_capabilities(
+                &self,
+            ) -> Result<Option<ServerCapabilities>, McpTransportError> {
+                Ok(None)
+            }
+        }
+
+        let result = McpToolRegistryManager::from_transports(vec![(
+            cfg("srv"),
+            Arc::new(DupToolTransport) as Arc<dyn McpToolTransport>,
+        )])
+        .await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), McpError::ToolIdConflict(_)));
+    }
+
+    // ── Refresh ──
+
+    #[tokio::test]
+    async fn manager_refresh_increments_version() {
+        let mgr = make_manager_with(vec![("srv", vec![MockTransport::tool_def("t1")])]).await;
+        assert_eq!(mgr.version(), 1);
+
+        let v = mgr.refresh().await.unwrap();
+        assert_eq!(v, 2);
+        assert_eq!(mgr.version(), 2);
+    }
+
+    #[tokio::test]
+    async fn manager_refresh_health_tracks_success() {
+        let mgr = make_manager_with(vec![("srv", Vec::new())]).await;
+        let health = mgr.refresh_health();
+        assert!(health.last_success_at.is_some());
+        assert_eq!(health.consecutive_failures, 0);
+        assert!(health.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn manager_servers_returns_names_and_types() {
+        let mgr = make_manager_with(vec![("alpha", Vec::new()), ("beta", Vec::new())]).await;
+        let servers = mgr.servers();
+        let names: Vec<&str> = servers.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"alpha"));
+        assert!(names.contains(&"beta"));
+    }
+
+    // ── Periodic refresh ──
+
+    #[tokio::test]
+    async fn manager_periodic_refresh_zero_interval_error() {
+        let mgr = make_manager_with(vec![("srv", Vec::new())]).await;
+        let err = mgr
+            .start_periodic_refresh(std::time::Duration::ZERO)
+            .unwrap_err();
+        assert!(matches!(err, McpError::InvalidRefreshInterval));
+    }
+
+    #[tokio::test]
+    async fn manager_periodic_refresh_double_start_error() {
+        let mgr = make_manager_with(vec![("srv", Vec::new())]).await;
+        mgr.start_periodic_refresh(std::time::Duration::from_secs(60))
+            .unwrap();
+        let err = mgr
+            .start_periodic_refresh(std::time::Duration::from_secs(60))
+            .unwrap_err();
+        assert!(matches!(err, McpError::PeriodicRefreshAlreadyRunning));
+        mgr.stop_periodic_refresh().await;
+    }
+
+    #[tokio::test]
+    async fn manager_stop_periodic_refresh_when_not_running() {
+        let mgr = make_manager_with(vec![("srv", Vec::new())]).await;
+        assert!(!mgr.stop_periodic_refresh().await);
+    }
+
+    // ── McpTool execute ──
+
+    #[tokio::test]
+    async fn mcp_tool_execute_returns_enriched_result() {
+        let mgr = make_manager_with(vec![("srv", vec![MockTransport::tool_def("echo")])]).await;
+        let registry = mgr.registry();
+        let tool = registry.get("mcp__srv__echo").unwrap();
+        let ctx = awaken_contract::contract::tool::ToolCallContext::test_default();
+
+        let result = tool.execute(json!({}), &ctx).await.unwrap();
+        assert!(result.is_success());
+        // Should have _mcp metadata
+        assert!(result.data.get("_mcp").is_some());
+        assert_eq!(result.data["_mcp"]["mcp.server"], "srv");
+        assert_eq!(result.data["_mcp"]["mcp.tool"], "echo");
+    }
+
+    // ── Helper function tests ──
+
+    #[test]
+    fn validate_server_name_rejects_empty() {
+        assert!(validate_server_name("").is_err());
+        assert!(validate_server_name("   ").is_err());
+    }
+
+    #[test]
+    fn validate_server_name_accepts_valid() {
+        assert!(validate_server_name("my-server").is_ok());
+        assert!(validate_server_name("a").is_ok());
+    }
+
+    #[test]
+    fn server_supports_prompts_none_capabilities() {
+        assert!(server_supports_prompts(None));
+    }
+
+    #[test]
+    fn server_supports_resources_none_capabilities() {
+        assert!(server_supports_resources(None));
+    }
+
+    #[test]
+    fn is_unsupported_transport_message_detects_pattern() {
+        assert!(is_unsupported_transport_message(
+            "list_prompts not supported by this server",
+            "list_prompts"
+        ));
+        assert!(!is_unsupported_transport_message(
+            "some other error",
+            "list_prompts"
+        ));
+    }
+
+    #[test]
+    fn map_mcp_error_unknown_tool() {
+        let err = map_mcp_error(McpTransportError::UnknownTool("t".to_string()));
+        assert!(matches!(err, ToolError::NotFound(_)));
+    }
+
+    #[test]
+    fn map_mcp_error_timeout() {
+        let err = map_mcp_error(McpTransportError::Timeout("30s".to_string()));
+        assert!(matches!(err, ToolError::ExecutionFailed(msg) if msg.contains("timeout")));
+    }
+
+    #[test]
+    fn map_mcp_error_other() {
+        let err = map_mcp_error(McpTransportError::TransportError("fail".to_string()));
+        assert!(matches!(err, ToolError::ExecutionFailed(_)));
+    }
+
+    #[test]
+    fn build_mcp_metadata_includes_server_and_tool() {
+        let result = CallToolResult {
+            content: Vec::new(),
+            structured_content: None,
+            is_error: None,
+        };
+        let meta = build_mcp_metadata("my-srv", "my-tool", &result);
+        assert_eq!(meta["mcp.server"], "my-srv");
+        assert_eq!(meta["mcp.tool"], "my-tool");
+    }
+
+    #[test]
+    fn build_mcp_metadata_includes_content_when_present() {
+        let result = CallToolResult {
+            content: vec![mcp::ToolContent::Text {
+                text: "hello".to_string(),
+                annotations: None,
+                meta: None,
+            }],
+            structured_content: Some(json!({"key": "value"})),
+            is_error: None,
+        };
+        let meta = build_mcp_metadata("s", "t", &result);
+        assert!(meta.get(MCP_META_RESULT_CONTENT).is_some());
+        assert!(meta.get(MCP_META_RESULT_STRUCTURED_CONTENT).is_some());
+    }
+
+    // ── Progress emission ──
+
+    #[test]
+    fn progress_emit_gate_default_state() {
+        let gate = ProgressEmitGate::default();
+        assert!(gate.last_emit_at.is_none());
+        assert!(gate.last_progress.is_none());
+        assert!(gate.last_message.is_none());
+    }
+
+    #[test]
+    fn mcp_refresh_health_default() {
+        let health = McpRefreshHealth::default();
+        assert!(health.last_attempt_at.is_none());
+        assert!(health.last_success_at.is_none());
+        assert!(health.last_error.is_none());
+        assert_eq!(health.consecutive_failures, 0);
+    }
+}

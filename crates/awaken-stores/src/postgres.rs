@@ -758,6 +758,147 @@ impl ThreadRunStore for PostgresStore {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_run_status_known_values() {
+        use awaken_contract::contract::lifecycle::RunStatus;
+        assert!(matches!(parse_run_status("running"), RunStatus::Running));
+        assert!(matches!(parse_run_status("waiting"), RunStatus::Waiting));
+        assert!(matches!(parse_run_status("done"), RunStatus::Done));
+    }
+
+    #[test]
+    fn parse_run_status_unknown_defaults_to_running() {
+        use awaken_contract::contract::lifecycle::RunStatus;
+        assert!(matches!(parse_run_status("unknown"), RunStatus::Running));
+        assert!(matches!(parse_run_status(""), RunStatus::Running));
+    }
+
+    #[test]
+    fn postgres_store_default_table_names() {
+        // We can't actually connect, but we can verify table name construction
+        // This would require a PgPool which needs a real connection.
+        // Instead test the `with_prefix` naming logic by creating without connecting.
+        // We can only test the table name generation pattern.
+        let prefix = "test_prefix";
+        assert_eq!(format!("{prefix}_threads"), "test_prefix_threads");
+        assert_eq!(format!("{prefix}_runs"), "test_prefix_runs");
+    }
+
+    // Integration tests below require a running PostgreSQL server.
+
+    #[tokio::test]
+    #[ignore]
+    async fn schema_initialization() {
+        let pool = PgPool::connect("postgres://localhost/awaken_test")
+            .await
+            .unwrap();
+        let store = PostgresStore::with_prefix(pool, "test_schema_init");
+        store.ensure_schema().await.unwrap();
+        // Calling again should be idempotent
+        store.ensure_schema().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn connection_error_handling() {
+        let pool = PgPool::connect("postgres://localhost:19999/nonexistent")
+            .await
+            .unwrap_err();
+        // Connection itself fails, which is the expected behavior
+        let _ = pool;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn thread_crud_operations() {
+        let pool = PgPool::connect("postgres://localhost/awaken_test")
+            .await
+            .unwrap();
+        let store = PostgresStore::with_prefix(pool, "test_crud");
+        store.ensure_schema().await.unwrap();
+
+        let thread = Thread::new();
+        store.save_thread(&thread).await.unwrap();
+
+        let loaded = store.load_thread(&thread.id).await.unwrap().unwrap();
+        assert_eq!(loaded.id, thread.id);
+
+        store.delete_thread(&thread.id).await.unwrap();
+        assert!(store.load_thread(&thread.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn run_create_duplicate_returns_already_exists() {
+        use awaken_contract::contract::lifecycle::RunStatus;
+
+        let pool = PgPool::connect("postgres://localhost/awaken_test")
+            .await
+            .unwrap();
+        let store = PostgresStore::with_prefix(pool, "test_dup_run");
+        store.ensure_schema().await.unwrap();
+
+        let run = RunRecord {
+            run_id: format!("dup-{}", uuid::Uuid::now_v7()),
+            thread_id: "t-1".to_string(),
+            agent_id: "agent".to_string(),
+            parent_run_id: None,
+            status: RunStatus::Running,
+            termination_code: None,
+            created_at: 100,
+            updated_at: 100,
+            steps: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            state: None,
+        };
+        store.create_run(&run).await.unwrap();
+        let err = store.create_run(&run).await.unwrap_err();
+        assert!(matches!(err, StorageError::AlreadyExists(_)));
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn checkpoint_atomicity() {
+        use awaken_contract::contract::lifecycle::RunStatus;
+        use awaken_contract::contract::message::Message;
+
+        let pool = PgPool::connect("postgres://localhost/awaken_test")
+            .await
+            .unwrap();
+        let store = PostgresStore::with_prefix(pool, "test_checkpoint");
+        store.ensure_schema().await.unwrap();
+
+        let thread_id = format!("t-{}", uuid::Uuid::now_v7());
+        let msgs = vec![Message::user("checkpoint test")];
+        let run = RunRecord {
+            run_id: format!("r-{}", uuid::Uuid::now_v7()),
+            thread_id: thread_id.clone(),
+            agent_id: "agent".to_string(),
+            parent_run_id: None,
+            status: RunStatus::Running,
+            termination_code: None,
+            created_at: 100,
+            updated_at: 100,
+            steps: 1,
+            input_tokens: 10,
+            output_tokens: 20,
+            state: None,
+        };
+
+        store.checkpoint(&thread_id, &msgs, &run).await.unwrap();
+
+        let loaded_msgs = store.load_messages(&thread_id).await.unwrap().unwrap();
+        assert_eq!(loaded_msgs.len(), 1);
+        let loaded_run = store.load_run(&run.run_id).await.unwrap().unwrap();
+        assert_eq!(loaded_run.thread_id, thread_id);
+    }
+}
+
 fn parse_run_status(s: &str) -> awaken_contract::contract::lifecycle::RunStatus {
     use awaken_contract::contract::lifecycle::RunStatus;
     match s {

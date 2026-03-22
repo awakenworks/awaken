@@ -701,4 +701,342 @@ mod tests {
             .unwrap();
         assert!(result.is_error());
     }
+
+    // ── SkillActivateTool descriptor ──
+
+    #[test]
+    fn skill_activate_descriptor_has_required_skill_field() {
+        let registry = Arc::new(InMemorySkillRegistry::new());
+        let tool = SkillActivateTool::new(registry);
+        let desc = tool.descriptor();
+        assert_eq!(desc.id, SKILL_ACTIVATE_TOOL_ID);
+        let required = desc.parameters["required"].as_array().unwrap();
+        assert!(required.iter().any(|v: &Value| v.as_str() == Some("skill")));
+    }
+
+    #[tokio::test]
+    async fn skill_activate_empty_skill_id_returns_error() {
+        let registry = Arc::new(InMemorySkillRegistry::new());
+        let tool = SkillActivateTool::new(registry);
+        let ctx = ToolCallContext::test_default();
+
+        let result = tool.execute(json!({"skill": ""}), &ctx).await.unwrap();
+        assert!(result.is_error());
+    }
+
+    #[tokio::test]
+    async fn skill_activate_whitespace_only_skill_id_returns_error() {
+        let registry = Arc::new(InMemorySkillRegistry::new());
+        let tool = SkillActivateTool::new(registry);
+        let ctx = ToolCallContext::test_default();
+
+        let result = tool.execute(json!({"skill": "   "}), &ctx).await.unwrap();
+        assert!(result.is_error());
+    }
+
+    // ── LoadSkillResourceTool descriptor ──
+
+    #[test]
+    fn load_resource_descriptor_requires_skill_and_path() {
+        let registry = Arc::new(InMemorySkillRegistry::new());
+        let tool = LoadSkillResourceTool::new(registry);
+        let desc = tool.descriptor();
+        assert_eq!(desc.id, SKILL_LOAD_RESOURCE_TOOL_ID);
+        let required = desc.parameters["required"].as_array().unwrap().clone();
+        let names: Vec<&str> = required.iter().filter_map(|v: &Value| v.as_str()).collect();
+        assert!(names.contains(&"skill"));
+        assert!(names.contains(&"path"));
+    }
+
+    #[tokio::test]
+    async fn load_resource_missing_path_returns_error() {
+        let registry = Arc::new(InMemorySkillRegistry::new());
+        let tool = LoadSkillResourceTool::new(registry);
+        let ctx = ToolCallContext::test_default();
+
+        let result = tool.execute(json!({"skill": "s"}), &ctx).await.unwrap();
+        assert!(result.is_error());
+    }
+
+    #[tokio::test]
+    async fn load_resource_absolute_path_returns_error() {
+        let registry = Arc::new(InMemorySkillRegistry::new());
+        let tool = LoadSkillResourceTool::new(registry);
+        let ctx = ToolCallContext::test_default();
+
+        let result = tool
+            .execute(json!({"skill": "s", "path": "/etc/passwd"}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.is_error());
+    }
+
+    #[tokio::test]
+    async fn load_resource_kind_mismatch_returns_error() {
+        let registry = Arc::new(InMemorySkillRegistry::new());
+        let tool = LoadSkillResourceTool::new(registry);
+        let ctx = ToolCallContext::test_default();
+
+        let result = tool
+            .execute(
+                json!({"skill": "s", "path": "references/a.md", "kind": "asset"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(result.is_error());
+    }
+
+    #[tokio::test]
+    async fn load_resource_valid_skill_returns_skill_error() {
+        // A valid skill that returns Unsupported for load_resource
+        let skill = Arc::new(RecordingSkill {
+            meta: SkillMeta {
+                id: "record".to_string(),
+                name: "record".to_string(),
+                description: "record".to_string(),
+                allowed_tools: Vec::new(),
+            },
+            seen_args: Mutex::new(Vec::new()),
+        });
+        let registry = Arc::new(InMemorySkillRegistry::from_skills(vec![
+            skill as Arc<dyn Skill>,
+        ]));
+        let tool = LoadSkillResourceTool::new(registry);
+        let ctx = ToolCallContext::test_default();
+
+        let result = tool
+            .execute(json!({"skill": "record", "path": "references/a.md"}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.is_error());
+    }
+
+    // ── SkillScriptTool descriptor ──
+
+    #[test]
+    fn script_tool_descriptor_requires_skill_and_script() {
+        let registry = Arc::new(InMemorySkillRegistry::new());
+        let tool = SkillScriptTool::new(registry);
+        let desc = tool.descriptor();
+        assert_eq!(desc.id, SKILL_SCRIPT_TOOL_ID);
+        let required = desc.parameters["required"].as_array().unwrap().clone();
+        let names: Vec<&str> = required.iter().filter_map(|v: &Value| v.as_str()).collect();
+        assert!(names.contains(&"skill"));
+        assert!(names.contains(&"script"));
+    }
+
+    #[tokio::test]
+    async fn script_tool_missing_script_returns_error() {
+        let registry = Arc::new(InMemorySkillRegistry::new());
+        let tool = SkillScriptTool::new(registry);
+        let ctx = ToolCallContext::test_default();
+
+        let result = tool.execute(json!({"skill": "s"}), &ctx).await.unwrap();
+        assert!(result.is_error());
+    }
+
+    #[tokio::test]
+    async fn script_tool_valid_skill_unsupported_returns_error() {
+        let skill = Arc::new(RecordingSkill {
+            meta: SkillMeta {
+                id: "record".to_string(),
+                name: "record".to_string(),
+                description: "record".to_string(),
+                allowed_tools: Vec::new(),
+            },
+            seen_args: Mutex::new(Vec::new()),
+        });
+        let registry = Arc::new(InMemorySkillRegistry::from_skills(vec![
+            skill as Arc<dyn Skill>,
+        ]));
+        let tool = SkillScriptTool::new(registry);
+        let ctx = ToolCallContext::test_default();
+
+        let result = tool
+            .execute(json!({"skill": "record", "script": "scripts/run.sh"}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.is_error());
+    }
+
+    // ── Script tool with actual output ──
+
+    #[tokio::test]
+    async fn script_tool_success_returns_ok_data() {
+        #[derive(Debug)]
+        struct ScriptSkill(SkillMeta);
+
+        #[async_trait]
+        impl Skill for ScriptSkill {
+            fn meta(&self) -> &SkillMeta {
+                &self.0
+            }
+            async fn read_instructions(&self) -> Result<String, crate::error::SkillError> {
+                Ok(String::new())
+            }
+            async fn activate(
+                &self,
+                _args: Option<&Value>,
+            ) -> Result<crate::skill::SkillActivation, crate::error::SkillError> {
+                Ok(crate::skill::SkillActivation {
+                    instructions: "ok".to_string(),
+                })
+            }
+            async fn load_resource(
+                &self,
+                _kind: SkillResourceKind,
+                _path: &str,
+            ) -> Result<SkillResource, crate::error::SkillError> {
+                Err(crate::error::SkillError::Unsupported("mock".into()))
+            }
+            async fn run_script(
+                &self,
+                script: &str,
+                _args: &[String],
+            ) -> Result<ScriptResult, crate::error::SkillError> {
+                Ok(ScriptResult {
+                    skill: "script-skill".to_string(),
+                    script: script.to_string(),
+                    sha256: "abc".to_string(),
+                    truncated_stdout: false,
+                    truncated_stderr: false,
+                    exit_code: 0,
+                    stdout: "hello world".to_string(),
+                    stderr: String::new(),
+                })
+            }
+        }
+
+        let skill = Arc::new(ScriptSkill(SkillMeta {
+            id: "script-skill".to_string(),
+            name: "script-skill".to_string(),
+            description: "runs scripts".to_string(),
+            allowed_tools: Vec::new(),
+        }));
+        let registry = Arc::new(InMemorySkillRegistry::from_skills(vec![
+            skill as Arc<dyn Skill>,
+        ]));
+        let tool = SkillScriptTool::new(registry);
+        let ctx = ToolCallContext::test_default();
+
+        let result = tool
+            .execute(
+                json!({"skill": "script-skill", "script": "scripts/run.sh"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(result.is_success());
+        assert_eq!(result.data["ok"], true);
+        assert_eq!(result.data["stdout"], "hello world");
+        assert_eq!(result.data["exit_code"], 0);
+    }
+
+    // ── Helper function tests ──
+
+    #[test]
+    fn required_string_arg_returns_err_for_null() {
+        let args = json!({"key": null});
+        assert!(required_string_arg(&args, "key").is_err());
+    }
+
+    #[test]
+    fn required_string_arg_returns_err_for_empty_string() {
+        let args = json!({"key": ""});
+        assert!(required_string_arg(&args, "key").is_err());
+    }
+
+    #[test]
+    fn required_string_arg_trims_whitespace() {
+        let args = json!({"key": "  hello  "});
+        let result = required_string_arg(&args, "key").unwrap();
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn activation_args_prefers_arguments_over_args() {
+        let args = json!({"arguments": {"a": 1}, "args": "fallback"});
+        let result = activation_args(&args);
+        assert_eq!(result, Some(&json!({"a": 1})));
+    }
+
+    #[test]
+    fn activation_args_falls_back_to_args() {
+        let args = json!({"args": "fallback"});
+        let result = activation_args(&args);
+        assert_eq!(result, Some(&json!("fallback")));
+    }
+
+    #[test]
+    fn activation_args_returns_none_when_absent() {
+        let args = json!({"skill": "s"});
+        assert!(activation_args(&args).is_none());
+    }
+
+    #[test]
+    fn is_pattern_like_recognizes_wildcards() {
+        assert!(is_pattern_like_tool_matcher("mcp__*"));
+        assert!(is_pattern_like_tool_matcher("foo?"));
+        assert!(is_pattern_like_tool_matcher("[abc]"));
+        assert!(is_pattern_like_tool_matcher("/regex/"));
+        assert!(!is_pattern_like_tool_matcher("plain_tool_id"));
+    }
+
+    #[test]
+    fn parse_resource_kind_from_path_prefix() {
+        let kind = parse_resource_kind(None, "references/a.md").unwrap();
+        assert_eq!(kind, SkillResourceKind::Reference);
+
+        let kind = parse_resource_kind(None, "assets/logo.png").unwrap();
+        assert_eq!(kind, SkillResourceKind::Asset);
+    }
+
+    #[test]
+    fn parse_resource_kind_rejects_empty_path() {
+        assert!(parse_resource_kind(None, "").is_err());
+        assert!(parse_resource_kind(None, "   ").is_err());
+    }
+
+    #[test]
+    fn parse_resource_kind_rejects_invalid_kind_string() {
+        let kind_val = json!("invalid");
+        assert!(parse_resource_kind(Some(&kind_val), "references/a.md").is_err());
+    }
+
+    #[test]
+    fn is_obviously_invalid_relative_path_catches_traversal() {
+        assert!(is_obviously_invalid_relative_path("../etc/passwd"));
+        assert!(is_obviously_invalid_relative_path("/absolute"));
+        assert!(is_obviously_invalid_relative_path(""));
+        assert!(!is_obviously_invalid_relative_path("references/a.md"));
+    }
+
+    #[test]
+    fn map_skill_error_covers_all_variants() {
+        let e = SkillError::UnknownSkill("x".into());
+        let r = map_skill_error("t", e);
+        assert!(r.is_error());
+
+        let e = SkillError::InvalidSkillMd("bad".into());
+        let r = map_skill_error("t", e);
+        assert!(r.is_error());
+
+        let e = SkillError::Materialize(crate::error::SkillMaterializeError::Timeout(30));
+        let r = map_skill_error("t", e);
+        assert!(r.is_error());
+        assert!(r.data.to_string().contains("script_timeout"));
+
+        let e = SkillError::Io("io".into());
+        let r = map_skill_error("t", e);
+        assert!(r.is_error());
+
+        let e = SkillError::DuplicateSkillId("dup".into());
+        let r = map_skill_error("t", e);
+        assert!(r.is_error());
+
+        let e = SkillError::Unsupported("nope".into());
+        let r = map_skill_error("t", e);
+        assert!(r.is_error());
+    }
 }
