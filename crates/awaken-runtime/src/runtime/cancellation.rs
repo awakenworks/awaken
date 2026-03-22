@@ -74,4 +74,78 @@ mod tests {
         token.cancel();
         assert!(clone.is_cancelled());
     }
+
+    #[test]
+    fn cancel_is_idempotent() {
+        let token = CancellationToken::new();
+        token.cancel();
+        token.cancel();
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn default_creates_uncancelled_token() {
+        let token = CancellationToken::default();
+        assert!(!token.is_cancelled());
+    }
+
+    #[test]
+    fn multiple_clones_all_see_cancellation() {
+        let token = CancellationToken::new();
+        let c1 = token.clone();
+        let c2 = token.clone();
+        let c3 = c1.clone();
+        token.cancel();
+        assert!(c1.is_cancelled());
+        assert!(c2.is_cancelled());
+        assert!(c3.is_cancelled());
+    }
+
+    #[test]
+    fn cancel_from_clone_visible_to_original() {
+        let token = CancellationToken::new();
+        let clone = token.clone();
+        clone.cancel();
+        assert!(token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn cancelled_resolves_immediately_if_already_cancelled() {
+        let token = CancellationToken::new();
+        token.cancel();
+        token.cancelled().await;
+        assert!(token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn cancelled_resolves_when_cancel_called() {
+        let token = CancellationToken::new();
+        let clone = token.clone();
+        let handle = tokio::spawn(async move {
+            clone.cancelled().await;
+            true
+        });
+        tokio::task::yield_now().await;
+        token.cancel();
+        let result = handle.await.unwrap();
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn cancellation_works_with_select() {
+        let token = CancellationToken::new();
+        let clone = token.clone();
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            clone.cancel();
+        });
+        tokio::select! {
+            _ = token.cancelled() => {
+                assert!(token.is_cancelled());
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                panic!("cancellation should have fired before timeout");
+            }
+        }
+    }
 }

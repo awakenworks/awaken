@@ -1035,4 +1035,342 @@ mod tests {
             "non-tool messages should be unchanged"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Migrated from uncarve: additional context management tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compact_artifact_below_threshold_unchanged() {
+        let content = "short content";
+        let result = compact_artifact(content);
+        assert_eq!(result, content);
+    }
+
+    #[test]
+    fn compact_artifact_above_threshold_truncates() {
+        let content = "x".repeat(10_000);
+        let result = compact_artifact(&content);
+        assert!(result.len() < content.len());
+        assert!(result.contains("[Content compacted:"));
+    }
+
+    #[test]
+    fn compact_artifact_respects_line_limit() {
+        // Create content with many lines that exceeds threshold
+        let content: String = (0..100)
+            .map(|i| format!("line {}: {}", i, "x".repeat(200)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let result = compact_artifact(&content);
+        // Count lines in the preview part (before the compaction indicator)
+        let lines_before_indicator = result
+            .split("[Content compacted:")
+            .next()
+            .unwrap_or("")
+            .lines()
+            .count();
+        assert!(
+            lines_before_indicator <= ARTIFACT_PREVIEW_MAX_LINES + 1,
+            "should respect line limit, got {} lines",
+            lines_before_indicator
+        );
+    }
+
+    #[test]
+    fn compact_tool_results_multiple_tool_messages() {
+        let small = "x".repeat(100);
+        let large = "y".repeat(10_000);
+        let mut messages = vec![
+            Message::user("go"),
+            Message::assistant_with_tool_calls(
+                "",
+                vec![
+                    ToolCall::new("c1", "small", json!({})),
+                    ToolCall::new("c2", "large", json!({})),
+                ],
+            ),
+            Message::tool("c1", &small),
+            Message::tool("c2", &large),
+        ];
+        compact_tool_results(&mut messages);
+
+        // Small tool result unchanged
+        assert_eq!(messages[2].text(), small);
+        // Large tool result compacted
+        assert!(messages[3].text().len() < large.len());
+        assert!(messages[3].text().contains("[Content compacted:"));
+    }
+
+    #[test]
+    fn find_compaction_boundary_multiple_complete_tool_rounds() {
+        use std::sync::Arc;
+
+        let messages: Vec<Arc<Message>> = vec![
+            Arc::new(Message::user("start")),
+            Arc::new(Message::assistant_with_tool_calls(
+                "",
+                vec![ToolCall::new("c1", "search", json!({}))],
+            )),
+            Arc::new(Message::tool("c1", "found it")),
+            Arc::new(Message::user("next")),
+            Arc::new(Message::assistant_with_tool_calls(
+                "",
+                vec![ToolCall::new("c2", "read", json!({}))],
+            )),
+            Arc::new(Message::tool("c2", "content")),
+            Arc::new(Message::user("last")),
+            Arc::new(Message::assistant("done")),
+        ];
+
+        let boundary = find_compaction_boundary(&messages, 0, messages.len());
+        assert!(boundary.is_some());
+        // Should be at or after idx 6 (after second tool round)
+        let b = boundary.unwrap();
+        assert!(
+            b >= 6,
+            "boundary should be after all tool rounds: got {}",
+            b
+        );
+    }
+
+    #[test]
+    fn find_compaction_boundary_empty_range() {
+        use std::sync::Arc;
+
+        let messages: Vec<Arc<Message>> = vec![
+            Arc::new(Message::user("hello")),
+            Arc::new(Message::assistant("hi")),
+        ];
+        let boundary = find_compaction_boundary(&messages, 0, 0);
+        assert!(boundary.is_none(), "empty range should yield no boundary");
+    }
+
+    #[test]
+    fn find_compaction_boundary_range_start_equals_end() {
+        use std::sync::Arc;
+
+        let messages: Vec<Arc<Message>> = vec![Arc::new(Message::user("only"))];
+        let boundary = find_compaction_boundary(&messages, 1, 1);
+        assert!(boundary.is_none());
+    }
+
+    #[test]
+    fn render_transcript_empty_messages() {
+        use std::sync::Arc;
+
+        let messages: Vec<Arc<Message>> = vec![];
+        let transcript = render_transcript(&messages);
+        assert!(transcript.is_empty());
+    }
+
+    #[test]
+    fn render_transcript_skips_empty_text_messages() {
+        use std::sync::Arc;
+
+        let messages = vec![
+            Arc::new(Message::user("hello")),
+            Arc::new(Message::assistant_with_tool_calls(
+                "",
+                vec![ToolCall::new("c1", "search", json!({}))],
+            )),
+            Arc::new(Message::assistant("visible")),
+        ];
+        let transcript = render_transcript(&messages);
+        // The tool call message has empty text, should be skipped
+        assert!(transcript.contains("[User]: hello"));
+        assert!(transcript.contains("[Assistant]: visible"));
+        // Count entries
+        let entries: Vec<&str> = transcript.split("\n\n").filter(|s| !s.is_empty()).collect();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn extract_previous_summary_empty_summary_ignored() {
+        use std::sync::Arc;
+
+        let messages = vec![Arc::new(Message::internal_system(
+            "<conversation-summary>   \n  \n  </conversation-summary>",
+        ))];
+        let summary = extract_previous_summary(&messages);
+        assert!(
+            summary.is_none(),
+            "whitespace-only summary should be treated as empty"
+        );
+    }
+
+    #[test]
+    fn trim_to_compaction_boundary_uses_last_summary() {
+        use std::sync::Arc;
+
+        let mut messages = vec![
+            Arc::new(Message::user("old msg 1")),
+            Arc::new(Message::internal_system(
+                "<conversation-summary>\nFirst summary\n</conversation-summary>",
+            )),
+            Arc::new(Message::user("mid msg")),
+            Arc::new(Message::internal_system(
+                "<conversation-summary>\nSecond summary\n</conversation-summary>",
+            )),
+            Arc::new(Message::user("new msg")),
+        ];
+
+        trim_to_compaction_boundary(&mut messages);
+        // Should trim to the LAST summary (index 3)
+        assert_eq!(messages.len(), 2);
+        assert!(messages[0].text().contains("Second summary"));
+        assert_eq!(messages[1].text(), "new msg");
+    }
+
+    #[test]
+    fn truncation_empty_messages() {
+        let transform = ContextTransform::new(make_policy(100, 2));
+        let messages = vec![];
+        let output = transform.transform(messages, &[]);
+        assert!(output.messages.is_empty());
+    }
+
+    #[test]
+    fn truncation_system_only() {
+        let transform = ContextTransform::new(make_policy(100, 2));
+        let messages = vec![Message::system("system only")];
+        let output = transform.transform(messages, &[]);
+        assert_eq!(output.messages.len(), 1);
+        assert_eq!(output.messages[0].role, Role::System);
+    }
+
+    #[test]
+    fn truncation_preserves_message_order() {
+        let transform = ContextTransform::new(make_policy(100_000, 2));
+        let messages = vec![
+            Message::system("sys"),
+            Message::user("u1"),
+            Message::assistant("a1"),
+            Message::user("u2"),
+            Message::assistant("a2"),
+        ];
+        let output = transform.transform(messages.clone(), &[]);
+        for (i, msg) in output.messages.iter().enumerate() {
+            assert_eq!(msg.role, messages[i].role);
+            assert_eq!(msg.text(), messages[i].text());
+        }
+    }
+
+    #[test]
+    fn truncation_with_only_tool_messages() {
+        let transform = ContextTransform::new(make_policy(100, 1));
+        let messages = vec![
+            Message::system("sys"),
+            Message::user("go"),
+            Message::assistant_with_tool_calls("", vec![ToolCall::new("c1", "t", json!({}))]),
+            Message::tool("c1", "result"),
+        ];
+        let output = transform.transform(messages, &[]);
+        // Should have at least system and something
+        assert!(!output.messages.is_empty());
+        assert_eq!(output.messages[0].role, Role::System);
+    }
+
+    #[test]
+    fn compact_artifact_boundary_just_under_threshold() {
+        // Exactly at threshold: 2048 * 4 = 8192 chars
+        let content = "a".repeat(8191);
+        let result = compact_artifact(&content);
+        // 8191 / 4 = 2047, which is < 2048 threshold
+        assert_eq!(result, content, "just under threshold should not compact");
+    }
+
+    #[test]
+    fn compact_artifact_boundary_at_threshold() {
+        // At threshold: 2048 * 4 = 8192 chars
+        let content = "a".repeat(8192);
+        let result = compact_artifact(&content);
+        // 8192 / 4 = 2048, which is NOT < 2048
+        assert!(result.len() < content.len(), "at threshold should compact");
+    }
+
+    #[test]
+    fn find_compaction_boundary_with_multiple_tool_calls_in_one_round() {
+        use std::sync::Arc;
+
+        let messages: Vec<Arc<Message>> = vec![
+            Arc::new(Message::user("do things")),
+            Arc::new(Message::assistant_with_tool_calls(
+                "",
+                vec![
+                    ToolCall::new("c1", "search", json!({})),
+                    ToolCall::new("c2", "read", json!({})),
+                ],
+            )),
+            Arc::new(Message::tool("c1", "found")),
+            Arc::new(Message::tool("c2", "content")),
+            Arc::new(Message::user("thanks")),
+        ];
+
+        let boundary = find_compaction_boundary(&messages, 0, messages.len());
+        assert!(boundary.is_some());
+        // Both tool results are present, so boundary can be after them
+        let b = boundary.unwrap();
+        assert!(
+            b >= 3,
+            "boundary should be after all tool results: got {}",
+            b
+        );
+    }
+
+    #[test]
+    fn find_compaction_boundary_partial_tool_results() {
+        use std::sync::Arc;
+
+        // Two tool calls but only one result
+        let messages: Vec<Arc<Message>> = vec![
+            Arc::new(Message::user("start")),
+            Arc::new(Message::assistant_with_tool_calls(
+                "",
+                vec![
+                    ToolCall::new("c1", "search", json!({})),
+                    ToolCall::new("c2", "read", json!({})),
+                ],
+            )),
+            Arc::new(Message::tool("c1", "found")),
+            // c2 result missing
+        ];
+
+        let boundary = find_compaction_boundary(&messages, 0, messages.len());
+        // Should not place boundary after the incomplete tool round
+        match boundary {
+            Some(b) => assert!(b < 1, "boundary should not include incomplete tool round"),
+            None => {} // also valid
+        }
+    }
+
+    #[test]
+    fn render_transcript_tool_messages_show_content() {
+        use std::sync::Arc;
+
+        let messages = vec![
+            Arc::new(Message::user("search for something")),
+            Arc::new(Message::tool("c1", "search result: found 5 items")),
+        ];
+        let transcript = render_transcript(&messages);
+        assert!(transcript.contains("[Tool]: search result: found 5 items"));
+    }
+
+    #[test]
+    fn extract_previous_summary_ignores_non_internal_system() {
+        use std::sync::Arc;
+
+        // Regular system message with summary tags should not be picked up
+        let messages = vec![
+            Arc::new(Message::system(
+                "<conversation-summary>\nShould be ignored\n</conversation-summary>",
+            )),
+            Arc::new(Message::user("hello")),
+        ];
+        let summary = extract_previous_summary(&messages);
+        assert!(
+            summary.is_none(),
+            "non-internal system message should not be extracted"
+        );
+    }
 }

@@ -235,4 +235,147 @@ mod tests {
 
         assert_eq!(snapshot.get::<Counter>().copied(), Some(4));
     }
+
+    // -----------------------------------------------------------------------
+    // Migrated from uncarve: parallel merge, base revision, edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn mutation_batch_is_empty_when_new() {
+        let batch = MutationBatch::new();
+        assert!(batch.is_empty());
+        assert_eq!(batch.op_len(), 0);
+        assert!(batch.base_revision().is_none());
+    }
+
+    #[test]
+    fn mutation_batch_not_empty_after_update() {
+        let mut batch = MutationBatch::new();
+        batch.update::<Counter>(1);
+        assert!(!batch.is_empty());
+        assert_eq!(batch.op_len(), 1);
+    }
+
+    #[test]
+    fn mutation_batch_base_revision_set() {
+        let batch = MutationBatch::new().with_base_revision(5);
+        assert_eq!(batch.base_revision(), Some(5));
+    }
+
+    #[test]
+    fn mutation_batch_extend_none_none_revisions() {
+        let mut left = MutationBatch::new();
+        left.update::<Counter>(1);
+        let mut right = MutationBatch::new();
+        right.update::<Counter>(2);
+
+        left.extend(right).expect("both None should merge");
+        assert_eq!(left.base_revision(), None);
+        assert_eq!(left.op_len(), 2);
+    }
+
+    #[test]
+    fn mutation_batch_extend_some_none_revisions() {
+        let mut left = MutationBatch::new().with_base_revision(3);
+        left.update::<Counter>(1);
+        let mut right = MutationBatch::new();
+        right.update::<Counter>(2);
+
+        left.extend(right).expect("Some+None should merge");
+        assert_eq!(left.base_revision(), Some(3));
+    }
+
+    #[test]
+    fn mutation_batch_extend_none_some_revisions() {
+        let mut left = MutationBatch::new();
+        left.update::<Counter>(1);
+        let mut right = MutationBatch::new().with_base_revision(7);
+        right.update::<Counter>(2);
+
+        left.extend(right).expect("None+Some should merge");
+        assert_eq!(left.base_revision(), Some(7));
+    }
+
+    #[test]
+    fn mutation_batch_parallel_merge_disjoint_keys() {
+        struct OtherKey;
+
+        impl StateKey for OtherKey {
+            const KEY: &'static str = "other";
+            type Value = String;
+            type Update = String;
+
+            fn apply(value: &mut Self::Value, update: Self::Update) {
+                *value = update;
+            }
+        }
+
+        let mut left = MutationBatch::new();
+        left.update::<Counter>(1);
+        let mut right = MutationBatch::new();
+        right.update::<OtherKey>("hello".into());
+
+        let merged = left
+            .merge_parallel(right, |_| MergeStrategy::Exclusive)
+            .expect("disjoint keys should merge even with exclusive strategy");
+        assert_eq!(merged.op_len(), 2);
+    }
+
+    #[test]
+    fn mutation_batch_parallel_merge_commutative_overlap() {
+        let mut left = MutationBatch::new();
+        left.update::<Counter>(10);
+        let mut right = MutationBatch::new();
+        right.update::<Counter>(20);
+
+        let merged = left
+            .merge_parallel(right, |_| MergeStrategy::Commutative)
+            .expect("commutative overlap should merge");
+        assert_eq!(merged.op_len(), 2);
+    }
+
+    #[test]
+    fn mutation_batch_parallel_merge_exclusive_conflict() {
+        let mut left = MutationBatch::new();
+        left.update::<Counter>(10);
+        let mut right = MutationBatch::new();
+        right.update::<Counter>(20);
+
+        let result = left.merge_parallel(right, |_| MergeStrategy::Exclusive);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn mutation_batch_parallel_merge_mismatched_revisions() {
+        let left = MutationBatch::new().with_base_revision(1);
+        let right = MutationBatch::new().with_base_revision(2);
+
+        let result = left.merge_parallel(right, |_| MergeStrategy::Commutative);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn mutation_batch_multiple_ops_apply_in_order() {
+        let mut batch = MutationBatch::new();
+        batch.update::<Counter>(10);
+        batch.update::<Counter>(20);
+        batch.update::<Counter>(30);
+
+        let mut snapshot = Snapshot {
+            revision: 0,
+            ext: std::sync::Arc::new(StateMap::default()),
+        };
+
+        for op in batch.ops.drain(..) {
+            op.apply(&mut snapshot);
+        }
+
+        assert_eq!(snapshot.get::<Counter>().copied(), Some(60));
+    }
+
+    #[test]
+    fn mutation_batch_default_is_empty() {
+        let batch = MutationBatch::default();
+        assert!(batch.is_empty());
+    }
 }

@@ -246,4 +246,144 @@ mod tests {
         assert!(glob_matches("a*z", "az"));
         assert!(!glob_matches("a*z", "abcd"));
     }
+
+    // -----------------------------------------------------------------------
+    // Migrated from uncarve: additional permission rule tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn glob_empty_pattern_matches_empty_name() {
+        assert!(glob_matches("", ""));
+    }
+
+    #[test]
+    fn glob_empty_pattern_does_not_match_nonempty() {
+        assert!(!glob_matches("", "foo"));
+    }
+
+    #[test]
+    fn glob_star_matches_empty_string() {
+        assert!(glob_matches("*", ""));
+    }
+
+    #[test]
+    fn glob_prefix_star_empty_suffix() {
+        assert!(glob_matches("read_*", "read_"));
+    }
+
+    #[test]
+    fn glob_star_suffix_empty_prefix() {
+        assert!(glob_matches("*_tool", "_tool"));
+    }
+
+    #[test]
+    fn glob_no_partial_match() {
+        assert!(!glob_matches("foo", "foobar"));
+        assert!(!glob_matches("foo", "afoo"));
+    }
+
+    #[tokio::test]
+    async fn no_tool_name_in_context_abstains() {
+        let checker =
+            RulesPermissionChecker::new(vec![PermissionRule::new("*", PermissionAction::Allow)]);
+        let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot());
+        // No with_tool_info call
+        let result = checker.check(&ctx).await.unwrap();
+        assert_eq!(result, ToolPermission::Abstain);
+    }
+
+    #[tokio::test]
+    async fn multiple_rules_first_match_only() {
+        let checker = RulesPermissionChecker::new(vec![
+            PermissionRule::new("read_*", PermissionAction::Allow),
+            PermissionRule::new("read_secret", PermissionAction::Deny),
+            PermissionRule::new("*", PermissionAction::Ask),
+        ]);
+        // read_secret matches "read_*" first (Allow), not "read_secret" (Deny)
+        let result = checker.check(&ctx_with_tool("read_secret")).await.unwrap();
+        assert_eq!(result, ToolPermission::Allow);
+    }
+
+    #[tokio::test]
+    async fn deny_with_default_reason() {
+        let checker = RulesPermissionChecker::new(vec![PermissionRule::new(
+            "rm_file",
+            PermissionAction::Deny,
+        )]);
+        let result = checker.check(&ctx_with_tool("rm_file")).await.unwrap();
+        match result {
+            ToolPermission::Deny { reason, .. } => {
+                assert!(reason.contains("rm_file"));
+            }
+            _ => panic!("expected Deny"),
+        }
+    }
+
+    #[tokio::test]
+    async fn allow_all_with_wildcard() {
+        let checker =
+            RulesPermissionChecker::new(vec![PermissionRule::new("*", PermissionAction::Allow)]);
+
+        for tool_name in ["search", "read_file", "execute_code", "rm_everything"] {
+            let result = checker.check(&ctx_with_tool(tool_name)).await.unwrap();
+            assert_eq!(
+                result,
+                ToolPermission::Allow,
+                "wildcard should allow {}",
+                tool_name
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn deny_all_with_wildcard() {
+        let checker = RulesPermissionChecker::new(vec![
+            PermissionRule::new("*", PermissionAction::Deny).with_reason("all denied"),
+        ]);
+
+        let result = checker.check(&ctx_with_tool("anything")).await.unwrap();
+        match result {
+            ToolPermission::Deny { reason, .. } => {
+                assert_eq!(reason, "all denied");
+            }
+            _ => panic!("expected Deny"),
+        }
+    }
+
+    #[tokio::test]
+    async fn complex_rule_chain() {
+        let checker = RulesPermissionChecker::new(vec![
+            PermissionRule::new("rm_*", PermissionAction::Deny).with_reason("destructive"),
+            PermissionRule::new("write_*", PermissionAction::Ask),
+            PermissionRule::new("read_*", PermissionAction::Allow),
+            PermissionRule::new("*", PermissionAction::Ask),
+        ]);
+
+        let rm = checker.check(&ctx_with_tool("rm_file")).await.unwrap();
+        assert!(rm.is_deny());
+
+        let write = checker.check(&ctx_with_tool("write_file")).await.unwrap();
+        assert_eq!(write, ToolPermission::Abstain);
+
+        let read = checker.check(&ctx_with_tool("read_file")).await.unwrap();
+        assert_eq!(read, ToolPermission::Allow);
+
+        let other = checker.check(&ctx_with_tool("execute")).await.unwrap();
+        assert_eq!(other, ToolPermission::Abstain); // wildcard Ask
+    }
+
+    #[test]
+    fn permission_rule_builder() {
+        let rule =
+            PermissionRule::new("test_*", PermissionAction::Deny).with_reason("testing only");
+        assert_eq!(rule.tool_pattern, "test_*");
+        assert_eq!(rule.action, PermissionAction::Deny);
+        assert_eq!(rule.reason.as_deref(), Some("testing only"));
+    }
+
+    #[test]
+    fn rules_permission_plugin_descriptor() {
+        let plugin = RulesPermissionPlugin::new(vec![]);
+        assert_eq!(plugin.descriptor().name, "tool-permission:rules");
+    }
 }

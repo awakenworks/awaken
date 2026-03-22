@@ -1155,4 +1155,462 @@ mod tests {
                 .contains("max_rounds")
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Migrated from uncarve: stop policy edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn max_rounds_policy_step_zero_does_not_fire() {
+        let policy = MaxRoundsPolicy::new(5);
+        let stats = StopPolicyStats {
+            step_count: 0,
+            ..base_stats()
+        };
+        assert_eq!(policy.evaluate(&stats), StopDecision::Continue);
+    }
+
+    #[test]
+    fn max_rounds_policy_fires_above_limit() {
+        let policy = MaxRoundsPolicy::new(5);
+        for step in [6, 10, 100] {
+            let stats = StopPolicyStats {
+                step_count: step,
+                ..base_stats()
+            };
+            assert!(
+                matches!(policy.evaluate(&stats), StopDecision::Stop { .. }),
+                "should fire at step_count={}",
+                step
+            );
+        }
+    }
+
+    #[test]
+    fn token_budget_policy_boundary_exact_at_limit() {
+        let policy = TokenBudgetPolicy::new(1000);
+        // Exactly at limit — should not fire (> not >=)
+        let stats = StopPolicyStats {
+            total_input_tokens: 500,
+            total_output_tokens: 500,
+            ..base_stats()
+        };
+        assert_eq!(
+            policy.evaluate(&stats),
+            StopDecision::Continue,
+            "exactly at limit should continue"
+        );
+    }
+
+    #[test]
+    fn token_budget_policy_fires_one_over() {
+        let policy = TokenBudgetPolicy::new(1000);
+        let stats = StopPolicyStats {
+            total_input_tokens: 501,
+            total_output_tokens: 500,
+            ..base_stats()
+        };
+        assert!(matches!(
+            policy.evaluate(&stats),
+            StopDecision::Stop { code, .. } if code == "token_budget"
+        ));
+    }
+
+    #[test]
+    fn timeout_policy_boundary_exact_at_limit() {
+        let policy = TimeoutPolicy::new(5000);
+        let stats = StopPolicyStats {
+            elapsed_ms: 5000,
+            ..base_stats()
+        };
+        assert_eq!(
+            policy.evaluate(&stats),
+            StopDecision::Continue,
+            "exactly at limit should continue"
+        );
+    }
+
+    #[test]
+    fn timeout_policy_fires_one_over() {
+        let policy = TimeoutPolicy::new(5000);
+        let stats = StopPolicyStats {
+            elapsed_ms: 5001,
+            ..base_stats()
+        };
+        assert!(matches!(
+            policy.evaluate(&stats),
+            StopDecision::Stop { code, .. } if code == "timeout"
+        ));
+    }
+
+    #[test]
+    fn consecutive_errors_policy_boundary_one_below() {
+        let policy = ConsecutiveErrorsPolicy::new(3);
+        let stats = StopPolicyStats {
+            consecutive_errors: 2,
+            ..base_stats()
+        };
+        assert_eq!(policy.evaluate(&stats), StopDecision::Continue);
+    }
+
+    #[test]
+    fn consecutive_errors_policy_fires_above_limit() {
+        let policy = ConsecutiveErrorsPolicy::new(3);
+        for errs in [3, 4, 100] {
+            let stats = StopPolicyStats {
+                consecutive_errors: errs,
+                ..base_stats()
+            };
+            assert!(
+                matches!(policy.evaluate(&stats), StopDecision::Stop { .. }),
+                "should fire at consecutive_errors={}",
+                errs
+            );
+        }
+    }
+
+    #[test]
+    fn stop_decision_eq_and_debug() {
+        let d1 = StopDecision::Continue;
+        let d2 = StopDecision::Continue;
+        assert_eq!(d1, d2);
+
+        let d3 = StopDecision::Stop {
+            code: "max_rounds".into(),
+            detail: "exceeded 5 rounds".into(),
+        };
+        let d4 = StopDecision::Stop {
+            code: "max_rounds".into(),
+            detail: "exceeded 5 rounds".into(),
+        };
+        assert_eq!(d3, d4);
+        assert_ne!(d1, d3);
+
+        // Debug should not panic
+        let _ = format!("{:?}", d3);
+    }
+
+    #[test]
+    fn stop_policy_stats_clone() {
+        let stats = StopPolicyStats {
+            step_count: 5,
+            total_input_tokens: 100,
+            total_output_tokens: 50,
+            elapsed_ms: 1000,
+            consecutive_errors: 2,
+            last_tool_names: vec!["echo".into()],
+            last_response_text: "hello".into(),
+        };
+        let cloned = stats.clone();
+        assert_eq!(cloned.step_count, 5);
+        assert_eq!(cloned.last_tool_names, vec!["echo"]);
+    }
+
+    #[test]
+    fn multiple_policies_max_rounds_fires_first() {
+        let policies: Vec<Arc<dyn StopPolicy>> = vec![
+            Arc::new(MaxRoundsPolicy::new(5)),
+            Arc::new(TokenBudgetPolicy::new(100_000)),
+        ];
+
+        let stats = StopPolicyStats {
+            step_count: 10,
+            total_input_tokens: 50,
+            total_output_tokens: 50,
+            ..base_stats()
+        };
+
+        let mut result = StopDecision::Continue;
+        for policy in &policies {
+            let decision = policy.evaluate(&stats);
+            if matches!(decision, StopDecision::Stop { .. }) {
+                result = decision;
+                break;
+            }
+        }
+        assert!(
+            matches!(result, StopDecision::Stop { code, .. } if code == "max_rounds"),
+            "max_rounds should fire first"
+        );
+    }
+
+    #[test]
+    fn multiple_policies_timeout_fires_first() {
+        let policies: Vec<Arc<dyn StopPolicy>> = vec![
+            Arc::new(MaxRoundsPolicy::new(1000)),
+            Arc::new(TimeoutPolicy::new(5000)),
+            Arc::new(TokenBudgetPolicy::new(100_000)),
+        ];
+
+        let stats = StopPolicyStats {
+            step_count: 3,
+            elapsed_ms: 6000,
+            total_input_tokens: 100,
+            total_output_tokens: 100,
+            ..base_stats()
+        };
+
+        let mut result = StopDecision::Continue;
+        for policy in &policies {
+            let decision = policy.evaluate(&stats);
+            if matches!(decision, StopDecision::Stop { .. }) {
+                result = decision;
+                break;
+            }
+        }
+        assert!(
+            matches!(result, StopDecision::Stop { code, .. } if code == "timeout"),
+            "timeout should fire first"
+        );
+    }
+
+    #[test]
+    fn policies_from_specs_mixed_known_and_unknown() {
+        let specs = vec![
+            StopConditionSpec::MaxRounds { rounds: 10 },
+            StopConditionSpec::StopOnTool {
+                tool_name: "done".into(),
+            },
+            StopConditionSpec::Timeout { seconds: 60 },
+            StopConditionSpec::LoopDetection { window: 5 },
+            StopConditionSpec::ConsecutiveErrors { max: 3 },
+        ];
+        let policies = policies_from_specs(&specs);
+        // Only MaxRounds, Timeout, ConsecutiveErrors should be created
+        assert_eq!(policies.len(), 3);
+        assert_eq!(policies[0].id(), "max_rounds");
+        assert_eq!(policies[1].id(), "timeout");
+        assert_eq!(policies[2].id(), "consecutive_errors");
+    }
+
+    #[test]
+    fn policies_from_specs_empty_input() {
+        let policies = policies_from_specs(&[]);
+        assert!(policies.is_empty());
+    }
+
+    #[test]
+    fn stop_condition_spec_serialization_roundtrip() {
+        let specs = vec![
+            StopConditionSpec::MaxRounds { rounds: 5 },
+            StopConditionSpec::Timeout { seconds: 30 },
+            StopConditionSpec::TokenBudget { max_total: 1000 },
+            StopConditionSpec::ConsecutiveErrors { max: 3 },
+            StopConditionSpec::StopOnTool {
+                tool_name: "finish".to_string(),
+            },
+            StopConditionSpec::ContentMatch {
+                pattern: "DONE".to_string(),
+            },
+            StopConditionSpec::LoopDetection { window: 4 },
+        ];
+        for spec in specs {
+            let encoded = serde_json::to_string(&spec).unwrap();
+            let restored: StopConditionSpec = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(restored, spec);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // StopConditionPlugin integration: combined policies
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn combined_policies_token_budget_fires_before_max_rounds() {
+        let (store, runtime, env) = make_test_env(vec![
+            Arc::new(MaxRoundsPolicy::new(100)),
+            Arc::new(TokenBudgetPolicy::new(500)),
+        ]);
+
+        // 2 steps with 300 tokens each => 600 total > 500 budget
+        let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
+            .with_llm_response(make_llm_response_with_tokens(200, 100));
+        runtime.run_phase_with_context(&env, ctx).await.unwrap();
+        assert_eq!(
+            store.read::<RunLifecycle>().unwrap().status,
+            RunStatus::Running,
+            "first step under budget"
+        );
+
+        let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
+            .with_llm_response(make_llm_response_with_tokens(200, 100));
+        runtime.run_phase_with_context(&env, ctx).await.unwrap();
+        let lifecycle = store.read::<RunLifecycle>().unwrap();
+        assert_eq!(lifecycle.status, RunStatus::Done);
+        assert!(
+            lifecycle
+                .done_reason
+                .as_ref()
+                .unwrap()
+                .contains("token_budget")
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_condition_not_affected_by_empty_llm_response() {
+        let (store, runtime, env) = make_test_env(vec![Arc::new(ConsecutiveErrorsPolicy::new(3))]);
+
+        // Run phase without LLM response (no with_llm_response)
+        let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot());
+        runtime.run_phase_with_context(&env, ctx).await.unwrap();
+
+        // Should still be running (no error counted since no response)
+        assert_eq!(
+            store.read::<RunLifecycle>().unwrap().status,
+            RunStatus::Running
+        );
+    }
+
+    #[tokio::test]
+    async fn max_rounds_exact_boundary_step_equals_max() {
+        // MaxRounds(3): step 1, 2, 3 should continue; step 4 should fire
+        let (store, runtime, env) = make_test_env(vec![Arc::new(MaxRoundsPolicy::new(3))]);
+
+        for i in 1..=3 {
+            let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
+                .with_llm_response(make_llm_response_with_tokens(10, 10));
+            runtime.run_phase_with_context(&env, ctx).await.unwrap();
+            assert_eq!(
+                store.read::<RunLifecycle>().unwrap().status,
+                RunStatus::Running,
+                "step {} should continue",
+                i
+            );
+        }
+
+        let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
+            .with_llm_response(make_llm_response_with_tokens(10, 10));
+        runtime.run_phase_with_context(&env, ctx).await.unwrap();
+        assert_eq!(
+            store.read::<RunLifecycle>().unwrap().status,
+            RunStatus::Done,
+            "step 4 should trigger stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn consecutive_errors_exact_threshold() {
+        let (store, runtime, env) = make_test_env(vec![Arc::new(ConsecutiveErrorsPolicy::new(1))]);
+
+        // First error should trigger immediately
+        let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
+            .with_llm_response(make_llm_error());
+        runtime.run_phase_with_context(&env, ctx).await.unwrap();
+
+        let lifecycle = store.read::<RunLifecycle>().unwrap();
+        assert_eq!(lifecycle.status, RunStatus::Done);
+        assert!(
+            lifecycle
+                .done_reason
+                .as_ref()
+                .unwrap()
+                .contains("consecutive_errors")
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_condition_interleaved_error_success_error() {
+        let (store, runtime, env) = make_test_env(vec![Arc::new(ConsecutiveErrorsPolicy::new(2))]);
+
+        // Error
+        let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
+            .with_llm_response(make_llm_error());
+        runtime.run_phase_with_context(&env, ctx).await.unwrap();
+        assert_eq!(
+            store.read::<RunLifecycle>().unwrap().status,
+            RunStatus::Running
+        );
+
+        // Success resets
+        let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
+            .with_llm_response(make_llm_response_with_tokens(10, 10));
+        runtime.run_phase_with_context(&env, ctx).await.unwrap();
+        assert_eq!(
+            store.read::<RunLifecycle>().unwrap().status,
+            RunStatus::Running
+        );
+
+        // Error again
+        let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
+            .with_llm_response(make_llm_error());
+        runtime.run_phase_with_context(&env, ctx).await.unwrap();
+        assert_eq!(
+            store.read::<RunLifecycle>().unwrap().status,
+            RunStatus::Running,
+            "1 error after reset < 2 limit"
+        );
+
+        // Second consecutive error
+        let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
+            .with_llm_response(make_llm_error());
+        runtime.run_phase_with_context(&env, ctx).await.unwrap();
+        assert_eq!(
+            store.read::<RunLifecycle>().unwrap().status,
+            RunStatus::Done,
+            "2 consecutive errors should trigger"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // LLM response with tool call names
+    // -----------------------------------------------------------------------
+
+    fn make_llm_response_with_tool_calls(tool_names: &[&str]) -> LLMResponse {
+        use awaken_contract::contract::message::ToolCall;
+        LLMResponse::success(StreamResult {
+            content: vec![ContentBlock::text("calling tools")],
+            tool_calls: tool_names
+                .iter()
+                .enumerate()
+                .map(|(i, name)| ToolCall::new(format!("c{}", i), *name, serde_json::json!({})))
+                .collect(),
+            usage: Some(TokenUsage {
+                prompt_tokens: Some(50),
+                completion_tokens: Some(20),
+                total_tokens: Some(70),
+                ..Default::default()
+            }),
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        })
+    }
+
+    #[tokio::test]
+    async fn stop_condition_with_tool_calls_resets_errors() {
+        let (store, runtime, env) = make_test_env(vec![Arc::new(ConsecutiveErrorsPolicy::new(3))]);
+
+        // 2 errors
+        for _ in 0..2 {
+            let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
+                .with_llm_response(make_llm_error());
+            runtime.run_phase_with_context(&env, ctx).await.unwrap();
+        }
+
+        // Success with tool calls should reset
+        let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
+            .with_llm_response(make_llm_response_with_tool_calls(&["echo", "search"]));
+        runtime.run_phase_with_context(&env, ctx).await.unwrap();
+
+        assert_eq!(
+            store.read::<RunLifecycle>().unwrap().status,
+            RunStatus::Running,
+            "success with tool calls should reset errors"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // MaxRoundsPlugin convenience tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn max_rounds_plugin_descriptor_name() {
+        let plugin = MaxRoundsPlugin::new(5);
+        assert_eq!(plugin.descriptor().name, "stop-condition:max-rounds");
+    }
+
+    #[test]
+    fn stop_condition_plugin_descriptor_name() {
+        let plugin = StopConditionPlugin::new(vec![]);
+        assert_eq!(plugin.descriptor().name, "stop-condition");
+    }
 }

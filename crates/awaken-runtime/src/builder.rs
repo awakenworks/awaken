@@ -321,4 +321,138 @@ mod tests {
         let err = runtime.resolver().resolve("nonexistent");
         assert!(err.is_err());
     }
+
+    // -----------------------------------------------------------------------
+    // Migrated from uncarve: additional builder tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn builder_with_store() {
+        let store = StateStore::new();
+        let runtime = AgentRuntimeBuilder::new()
+            .with_store(store)
+            .build()
+            .unwrap();
+        // Should work without error
+        let _ = runtime;
+    }
+
+    #[test]
+    fn builder_with_plugin() {
+        use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
+
+        struct TestPlugin;
+        impl Plugin for TestPlugin {
+            fn descriptor(&self) -> PluginDescriptor {
+                PluginDescriptor {
+                    name: "test-builder-plugin",
+                }
+            }
+            fn register(
+                &self,
+                _registrar: &mut PluginRegistrar,
+            ) -> Result<(), awaken_contract::StateError> {
+                Ok(())
+            }
+        }
+
+        let runtime = AgentRuntimeBuilder::new()
+            .with_plugin("test-builder-plugin", Arc::new(TestPlugin))
+            .build()
+            .unwrap();
+        let _ = runtime;
+    }
+
+    #[test]
+    fn builder_with_stop_policy() {
+        use crate::agent::stop_conditions::MaxRoundsPolicy;
+
+        let runtime = AgentRuntimeBuilder::new()
+            .with_stop_policy("max_rounds", Arc::new(MaxRoundsPolicy::new(10)))
+            .build()
+            .unwrap();
+        let _ = runtime;
+    }
+
+    #[test]
+    fn builder_with_agent_registry_entry() {
+        let spec = AgentSpec {
+            id: "worker".into(),
+            model: "m".into(),
+            system_prompt: "sys".into(),
+            ..Default::default()
+        };
+        let runtime = AgentRuntimeBuilder::new()
+            .with_agent_registry_entry("worker", spec)
+            .build()
+            .unwrap();
+        let _ = runtime;
+    }
+
+    #[test]
+    fn builder_chained_tools_all_registered() {
+        let spec = AgentSpec {
+            id: "agent".into(),
+            model: "m".into(),
+            system_prompt: "sys".into(),
+            ..Default::default()
+        };
+
+        let runtime = AgentRuntimeBuilder::new()
+            .with_agent_spec(spec)
+            .with_tool("t1", Arc::new(MockTool { id: "t1".into() }))
+            .with_tool("t2", Arc::new(MockTool { id: "t2".into() }))
+            .with_tool("t3", Arc::new(MockTool { id: "t3".into() }))
+            .with_model(
+                "m",
+                ModelEntry {
+                    provider: "p".into(),
+                    model_name: "n".into(),
+                },
+            )
+            .with_provider("p", Arc::new(MockExecutor))
+            .build()
+            .unwrap();
+
+        let resolved = runtime.resolver().resolve("agent").unwrap();
+        assert!(resolved.config.tools.contains_key("t1"));
+        assert!(resolved.config.tools.contains_key("t2"));
+        assert!(resolved.config.tools.contains_key("t3"));
+    }
+
+    #[test]
+    fn builder_error_display() {
+        let err = BuildError::AgentRegistryConflict("duplicate agent".into());
+        assert!(err.to_string().contains("duplicate agent"));
+
+        let err = BuildError::StopPolicyConflict("duplicate policy".into());
+        assert!(err.to_string().contains("duplicate policy"));
+    }
+
+    #[test]
+    fn builder_model_entry_provider_name() {
+        let spec = AgentSpec {
+            id: "agent".into(),
+            model: "gpt-4".into(),
+            system_prompt: "sys".into(),
+            ..Default::default()
+        };
+
+        let runtime = AgentRuntimeBuilder::new()
+            .with_agent_spec(spec)
+            .with_model(
+                "gpt-4",
+                ModelEntry {
+                    provider: "openai".into(),
+                    model_name: "gpt-4-turbo".into(),
+                },
+            )
+            .with_provider("openai", Arc::new(MockExecutor))
+            .build()
+            .unwrap();
+
+        let resolved = runtime.resolver().resolve("agent").unwrap();
+        // The model should be resolved to the actual model name
+        assert_eq!(resolved.config.model, "gpt-4-turbo");
+    }
 }

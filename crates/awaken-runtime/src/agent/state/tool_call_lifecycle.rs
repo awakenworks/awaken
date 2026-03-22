@@ -228,4 +228,128 @@ mod tests {
         assert_eq!(states.calls["c1"].status, ToolCallStatus::Succeeded);
         assert_eq!(states.calls["c1"].updated_at, 500);
     }
+
+    // -----------------------------------------------------------------------
+    // Migrated from uncarve: additional tool call lifecycle tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tool_call_new_can_transition_to_any() {
+        // New status is open — transitions to any status are valid
+        let mut states = ToolCallStateMap::default();
+        upsert(&mut states, "c1", "echo", ToolCallStatus::Succeeded, 100);
+        assert_eq!(states.calls["c1"].status, ToolCallStatus::Succeeded);
+    }
+
+    #[test]
+    fn tool_call_new_to_running_is_typical_path() {
+        let mut states = ToolCallStateMap::default();
+        upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
+        assert_eq!(states.calls["c1"].status, ToolCallStatus::Running);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid tool call transition")]
+    fn tool_call_suspended_to_succeeded_not_allowed() {
+        let mut states = ToolCallStateMap::default();
+        upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
+        upsert(&mut states, "c1", "echo", ToolCallStatus::Suspended, 200);
+        // Suspended -> Succeeded should fail (must go through Resuming -> Running)
+        upsert(&mut states, "c1", "echo", ToolCallStatus::Succeeded, 300);
+    }
+
+    #[test]
+    fn tool_call_map_default_is_empty() {
+        let states = ToolCallStateMap::default();
+        assert!(states.calls.is_empty());
+    }
+
+    #[test]
+    fn tool_call_preserves_tool_name_and_arguments() {
+        let mut states = ToolCallStateMap::default();
+        ToolCallStates::apply(
+            &mut states,
+            ToolCallStatesUpdate::Upsert {
+                call_id: "c1".into(),
+                tool_name: "search".into(),
+                arguments: serde_json::json!({"query": "test"}),
+                status: ToolCallStatus::Running,
+                updated_at: 100,
+            },
+        );
+        let call = &states.calls["c1"];
+        assert_eq!(call.tool_name, "search");
+        assert_eq!(call.arguments["query"], "test");
+    }
+
+    #[test]
+    fn tool_call_clear_then_reuse() {
+        let mut states = ToolCallStateMap::default();
+        upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
+        upsert(&mut states, "c1", "echo", ToolCallStatus::Succeeded, 200);
+
+        ToolCallStates::apply(&mut states, ToolCallStatesUpdate::Clear);
+        assert!(states.calls.is_empty());
+
+        // After clear, can create new calls from scratch
+        upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 300);
+        assert_eq!(states.calls["c1"].status, ToolCallStatus::Running);
+    }
+
+    #[test]
+    fn tool_call_cancelled_is_terminal() {
+        let mut states = ToolCallStateMap::default();
+        upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
+        upsert(&mut states, "c1", "echo", ToolCallStatus::Suspended, 200);
+        upsert(&mut states, "c1", "echo", ToolCallStatus::Cancelled, 300);
+        assert!(states.calls["c1"].status.is_terminal());
+    }
+
+    #[test]
+    fn tool_call_succeeded_is_terminal() {
+        let mut states = ToolCallStateMap::default();
+        upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
+        upsert(&mut states, "c1", "echo", ToolCallStatus::Succeeded, 200);
+        assert!(states.calls["c1"].status.is_terminal());
+    }
+
+    #[test]
+    fn tool_call_failed_is_terminal() {
+        let mut states = ToolCallStateMap::default();
+        upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
+        upsert(&mut states, "c1", "echo", ToolCallStatus::Failed, 200);
+        assert!(states.calls["c1"].status.is_terminal());
+    }
+
+    #[test]
+    fn tool_call_running_is_not_terminal() {
+        let mut states = ToolCallStateMap::default();
+        upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
+        assert!(!states.calls["c1"].status.is_terminal());
+    }
+
+    #[test]
+    fn tool_call_many_calls_independent_lifecycle() {
+        let mut states = ToolCallStateMap::default();
+
+        // c1: Running -> Succeeded
+        upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
+        upsert(&mut states, "c1", "echo", ToolCallStatus::Succeeded, 200);
+
+        // c2: Running -> Failed
+        upsert(&mut states, "c2", "calc", ToolCallStatus::Running, 100);
+        upsert(&mut states, "c2", "calc", ToolCallStatus::Failed, 200);
+
+        // c3: Running -> Suspended -> Resuming -> Running -> Succeeded
+        upsert(&mut states, "c3", "search", ToolCallStatus::Running, 100);
+        upsert(&mut states, "c3", "search", ToolCallStatus::Suspended, 200);
+        upsert(&mut states, "c3", "search", ToolCallStatus::Resuming, 300);
+        upsert(&mut states, "c3", "search", ToolCallStatus::Running, 400);
+        upsert(&mut states, "c3", "search", ToolCallStatus::Succeeded, 500);
+
+        assert_eq!(states.calls.len(), 3);
+        assert_eq!(states.calls["c1"].status, ToolCallStatus::Succeeded);
+        assert_eq!(states.calls["c2"].status, ToolCallStatus::Failed);
+        assert_eq!(states.calls["c3"].status, ToolCallStatus::Succeeded);
+    }
 }

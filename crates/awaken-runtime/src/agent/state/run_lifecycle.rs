@@ -316,4 +316,236 @@ mod tests {
         let parsed: RunLifecycleState = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, state);
     }
+
+    // -----------------------------------------------------------------------
+    // Migrated from uncarve: additional lifecycle tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn run_lifecycle_default_state() {
+        let state = RunLifecycleState::default();
+        assert!(state.run_id.is_empty());
+        assert_eq!(state.status, RunStatus::default());
+        assert!(state.done_reason.is_none());
+        assert_eq!(state.step_count, 0);
+        assert_eq!(state.updated_at, 0);
+    }
+
+    #[test]
+    fn run_lifecycle_multiple_steps_then_done() {
+        let mut state = RunLifecycleState::default();
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::Start {
+                run_id: "r1".into(),
+                updated_at: 100,
+            },
+        );
+
+        for step in 1..=10u64 {
+            RunLifecycle::apply(
+                &mut state,
+                RunLifecycleUpdate::StepCompleted {
+                    updated_at: 100 + step,
+                },
+            );
+        }
+        assert_eq!(state.step_count, 10);
+        assert_eq!(state.status, RunStatus::Running);
+
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::Done {
+                done_reason: "max_rounds".into(),
+                updated_at: 200,
+            },
+        );
+        assert_eq!(state.status, RunStatus::Done);
+        assert_eq!(state.step_count, 10);
+    }
+
+    #[test]
+    fn run_lifecycle_waiting_to_done() {
+        let mut state = RunLifecycleState::default();
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::Start {
+                run_id: "r1".into(),
+                updated_at: 100,
+            },
+        );
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::SetWaiting { updated_at: 150 },
+        );
+        assert_eq!(state.status, RunStatus::Waiting);
+
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::Done {
+                done_reason: "cancelled".into(),
+                updated_at: 200,
+            },
+        );
+        assert_eq!(state.status, RunStatus::Done);
+    }
+
+    #[test]
+    fn run_lifecycle_waiting_to_running_to_waiting() {
+        let mut state = RunLifecycleState::default();
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::Start {
+                run_id: "r1".into(),
+                updated_at: 100,
+            },
+        );
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::SetWaiting { updated_at: 150 },
+        );
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::SetRunning { updated_at: 200 },
+        );
+        assert_eq!(state.status, RunStatus::Running);
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::SetWaiting { updated_at: 250 },
+        );
+        assert_eq!(state.status, RunStatus::Waiting);
+    }
+
+    #[test]
+    fn run_lifecycle_update_target_status() {
+        assert_eq!(
+            RunLifecycleUpdate::Start {
+                run_id: "r".into(),
+                updated_at: 0,
+            }
+            .target_status(),
+            RunStatus::Running
+        );
+        assert_eq!(
+            RunLifecycleUpdate::StepCompleted { updated_at: 0 }.target_status(),
+            RunStatus::Running
+        );
+        assert_eq!(
+            RunLifecycleUpdate::SetWaiting { updated_at: 0 }.target_status(),
+            RunStatus::Waiting
+        );
+        assert_eq!(
+            RunLifecycleUpdate::SetRunning { updated_at: 0 }.target_status(),
+            RunStatus::Running
+        );
+        assert_eq!(
+            RunLifecycleUpdate::Done {
+                done_reason: "done".into(),
+                updated_at: 0,
+            }
+            .target_status(),
+            RunStatus::Done
+        );
+    }
+
+    #[test]
+    fn run_lifecycle_start_resets_step_count() {
+        let mut state = RunLifecycleState::default();
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::Start {
+                run_id: "r1".into(),
+                updated_at: 100,
+            },
+        );
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::StepCompleted { updated_at: 200 },
+        );
+        assert_eq!(state.step_count, 1);
+
+        // Transition to waiting, then start a new run
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::SetWaiting { updated_at: 250 },
+        );
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::Start {
+                run_id: "r2".into(),
+                updated_at: 300,
+            },
+        );
+        assert_eq!(state.step_count, 0, "step count should reset on new start");
+        assert_eq!(state.run_id, "r2");
+    }
+
+    #[test]
+    fn run_lifecycle_done_preserves_step_count() {
+        let mut state = RunLifecycleState::default();
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::Start {
+                run_id: "r1".into(),
+                updated_at: 100,
+            },
+        );
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::StepCompleted { updated_at: 200 },
+        );
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::StepCompleted { updated_at: 300 },
+        );
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::Done {
+                done_reason: "finished".into(),
+                updated_at: 400,
+            },
+        );
+        assert_eq!(state.step_count, 2, "done should not reset step count");
+    }
+
+    #[test]
+    fn run_lifecycle_state_equality() {
+        let s1 = RunLifecycleState {
+            run_id: "r1".into(),
+            status: RunStatus::Running,
+            done_reason: None,
+            updated_at: 100,
+            step_count: 3,
+        };
+        let s2 = s1.clone();
+        assert_eq!(s1, s2);
+
+        let s3 = RunLifecycleState {
+            step_count: 4,
+            ..s1.clone()
+        };
+        assert_ne!(s1, s3);
+    }
+
+    #[test]
+    fn run_lifecycle_status_is_terminal() {
+        let mut state = RunLifecycleState::default();
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::Start {
+                run_id: "r1".into(),
+                updated_at: 100,
+            },
+        );
+        assert!(!state.status.is_terminal());
+
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::Done {
+                done_reason: "done".into(),
+                updated_at: 200,
+            },
+        );
+        assert!(state.status.is_terminal());
+    }
 }

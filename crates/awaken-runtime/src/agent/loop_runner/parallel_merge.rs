@@ -273,4 +273,163 @@ mod tests {
         assert!(msg.contains("a"));
         assert!(msg.contains("b"));
     }
+
+    // -----------------------------------------------------------------------
+    // Migrated from uncarve: additional parallel merge tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn many_batches_disjoint() {
+        let batches: Vec<ToolStateBatch> = (0..10)
+            .map(|i| ToolStateBatch {
+                call_id: format!("call_{i}"),
+                touched_keys: vec![format!("key_{i}")],
+            })
+            .collect();
+        let result = validate_parallel_state_batches(&batches, |_| MergeStrategy::Exclusive);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn batch_with_multiple_keys_one_conflicting() {
+        let batches = vec![
+            ToolStateBatch {
+                call_id: "call_1".into(),
+                touched_keys: vec!["a".into(), "b".into(), "c".into()],
+            },
+            ToolStateBatch {
+                call_id: "call_2".into(),
+                touched_keys: vec!["d".into(), "b".into(), "e".into()],
+            },
+        ];
+
+        // "b" is shared, exclusive => conflict
+        let err =
+            validate_parallel_state_batches(&batches, |_| MergeStrategy::Exclusive).unwrap_err();
+        match err {
+            ParallelMergeError::ExclusiveConflict { key, .. } => {
+                assert_eq!(key, "b");
+            }
+        }
+    }
+
+    #[test]
+    fn per_key_strategy_allows_mixed() {
+        let batches = vec![
+            ToolStateBatch {
+                call_id: "call_1".into(),
+                touched_keys: vec!["counter".into(), "config".into()],
+            },
+            ToolStateBatch {
+                call_id: "call_2".into(),
+                touched_keys: vec!["counter".into()],
+            },
+        ];
+
+        // counter is commutative, config is exclusive but not shared => OK
+        let result = validate_parallel_state_batches(&batches, |key| {
+            if key == "counter" {
+                MergeStrategy::Commutative
+            } else {
+                MergeStrategy::Exclusive
+            }
+        });
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn collect_keys_empty_batches() {
+        let keys = collect_all_touched_keys(&[]);
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn collect_keys_preserves_first_occurrence_order() {
+        let batches = vec![
+            ToolStateBatch {
+                call_id: "c1".into(),
+                touched_keys: vec!["z".into(), "a".into()],
+            },
+            ToolStateBatch {
+                call_id: "c2".into(),
+                touched_keys: vec!["m".into(), "a".into()],
+            },
+        ];
+        let keys = collect_all_touched_keys(&batches);
+        // z, a, m — "a" only appears once
+        assert_eq!(keys.len(), 3);
+        assert_eq!(keys[0], "z");
+        assert_eq!(keys[1], "a");
+        assert_eq!(keys[2], "m");
+    }
+
+    #[test]
+    fn single_batch_with_many_keys() {
+        let batch = ToolStateBatch {
+            call_id: "c1".into(),
+            touched_keys: (0..20).map(|i| format!("key_{i}")).collect(),
+        };
+        let result = validate_parallel_state_batches(&[batch], |_| MergeStrategy::Exclusive);
+        assert!(result.is_ok(), "single batch never conflicts with itself");
+    }
+
+    #[test]
+    fn commutative_three_way_overlap() {
+        let batches = vec![
+            ToolStateBatch {
+                call_id: "c1".into(),
+                touched_keys: vec!["shared".into()],
+            },
+            ToolStateBatch {
+                call_id: "c2".into(),
+                touched_keys: vec!["shared".into()],
+            },
+            ToolStateBatch {
+                call_id: "c3".into(),
+                touched_keys: vec!["shared".into()],
+            },
+        ];
+        let result = validate_parallel_state_batches(&batches, |_| MergeStrategy::Commutative);
+        assert!(result.is_ok(), "commutative allows any number of writers");
+    }
+
+    #[test]
+    fn collect_keys_single_batch() {
+        let batches = vec![ToolStateBatch {
+            call_id: "c1".into(),
+            touched_keys: vec!["a".into(), "b".into()],
+        }];
+        let keys = collect_all_touched_keys(&batches);
+        assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn exclusive_conflict_first_pair_reported() {
+        let batches = vec![
+            ToolStateBatch {
+                call_id: "c1".into(),
+                touched_keys: vec!["shared".into()],
+            },
+            ToolStateBatch {
+                call_id: "c2".into(),
+                touched_keys: vec!["shared".into()],
+            },
+            ToolStateBatch {
+                call_id: "c3".into(),
+                touched_keys: vec!["shared".into()],
+            },
+        ];
+        let err =
+            validate_parallel_state_batches(&batches, |_| MergeStrategy::Exclusive).unwrap_err();
+        match err {
+            ParallelMergeError::ExclusiveConflict {
+                left_call_id,
+                right_call_id,
+                ..
+            } => {
+                assert_eq!(left_call_id, "c1");
+                assert_eq!(right_call_id, "c2");
+            }
+        }
+    }
 }

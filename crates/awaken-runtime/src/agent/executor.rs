@@ -517,4 +517,260 @@ mod tests {
             .unwrap();
         assert_eq!(results.len(), 2);
     }
+
+    // -----------------------------------------------------------------------
+    // Migrated from uncarve: additional tool executor tests
+    // -----------------------------------------------------------------------
+
+    /// A tool that counts how many times it's been called.
+    struct CountingTool {
+        count: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl CountingTool {
+        fn new() -> Self {
+            Self {
+                count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.count.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl Tool for CountingTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("counting", "counting", "Counts calls")
+        }
+
+        async fn execute(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
+            let n = self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(ToolResult::success(
+                "counting",
+                json!({"call_number": n + 1}),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn sequential_multiple_calls_ordered() {
+        let counting = Arc::new(CountingTool::new());
+        let tools = tool_map(vec![counting.clone() as Arc<dyn Tool>]);
+        let calls = vec![
+            ToolCall::new("c1", "counting", json!({})),
+            ToolCall::new("c2", "counting", json!({})),
+            ToolCall::new("c3", "counting", json!({})),
+        ];
+        let executor = SequentialToolExecutor;
+
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 3);
+        assert_eq!(counting.call_count(), 3);
+        // Verify order is preserved
+        for (i, result) in results.iter().enumerate() {
+            assert_eq!(result.call.id, format!("c{}", i + 1));
+            assert_eq!(result.outcome, ToolCallOutcome::Succeeded);
+        }
+    }
+
+    #[tokio::test]
+    async fn sequential_failure_does_not_stop_execution() {
+        // Unlike suspension, failures do NOT stop sequential execution
+        let tools = tool_map(vec![Arc::new(FailingTool), Arc::new(EchoTool)]);
+        let calls = vec![
+            ToolCall::new("c1", "failing", json!({})),
+            ToolCall::new("c2", "echo", json!({"message": "still runs"})),
+        ];
+        let executor = SequentialToolExecutor;
+
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].outcome, ToolCallOutcome::Failed);
+        assert_eq!(results[1].outcome, ToolCallOutcome::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn sequential_suspension_in_middle_stops_remaining() {
+        let tools = tool_map(vec![
+            Arc::new(EchoTool),
+            Arc::new(SuspendingTool),
+            Arc::new(EchoTool),
+        ]);
+        let calls = vec![
+            ToolCall::new("c1", "echo", json!({"message": "first"})),
+            ToolCall::new("c2", "suspending", json!({})),
+            ToolCall::new("c3", "echo", json!({"message": "should not run"})),
+        ];
+        let executor = SequentialToolExecutor;
+
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2, "should stop after suspension");
+        assert_eq!(results[0].outcome, ToolCallOutcome::Succeeded);
+        assert_eq!(results[1].outcome, ToolCallOutcome::Suspended);
+    }
+
+    #[tokio::test]
+    async fn parallel_all_fail() {
+        let tools = tool_map(vec![Arc::new(FailingTool)]);
+        let calls = vec![
+            ToolCall::new("c1", "failing", json!({})),
+            ToolCall::new("c2", "failing", json!({})),
+        ];
+        let executor = ParallelToolExecutor::streaming();
+
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.outcome == ToolCallOutcome::Failed));
+    }
+
+    #[tokio::test]
+    async fn parallel_unknown_tool_returns_error() {
+        let tools = tool_map(vec![]);
+        let calls = vec![
+            ToolCall::new("c1", "nonexistent_a", json!({})),
+            ToolCall::new("c2", "nonexistent_b", json!({})),
+        ];
+        let executor = ParallelToolExecutor::streaming();
+
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.outcome == ToolCallOutcome::Failed));
+        for r in &results {
+            assert!(r.result.is_error());
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_counting_tool_all_called() {
+        let counting = Arc::new(CountingTool::new());
+        let tools = tool_map(vec![counting.clone() as Arc<dyn Tool>]);
+        let calls = vec![
+            ToolCall::new("c1", "counting", json!({})),
+            ToolCall::new("c2", "counting", json!({})),
+            ToolCall::new("c3", "counting", json!({})),
+        ];
+        let executor = ParallelToolExecutor::streaming();
+
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 3);
+        assert_eq!(counting.call_count(), 3);
+    }
+
+    /// Validate that tool args are validated before execution.
+    struct StrictArgsTool;
+
+    #[async_trait]
+    impl Tool for StrictArgsTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("strict", "strict", "Validates args")
+        }
+
+        fn validate_args(&self, args: &Value) -> Result<(), ToolError> {
+            if args.get("required_field").is_none() {
+                return Err(ToolError::InvalidArguments("missing required_field".into()));
+            }
+            Ok(())
+        }
+
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("strict", args))
+        }
+    }
+
+    #[tokio::test]
+    async fn sequential_validates_args_before_execute() {
+        let tools = tool_map(vec![Arc::new(StrictArgsTool)]);
+        let calls = vec![ToolCall::new("c1", "strict", json!({}))]; // missing required_field
+        let executor = SequentialToolExecutor;
+
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].outcome, ToolCallOutcome::Failed);
+        assert!(results[0].result.is_error());
+    }
+
+    #[tokio::test]
+    async fn sequential_valid_args_succeeds() {
+        let tools = tool_map(vec![Arc::new(StrictArgsTool)]);
+        let calls = vec![ToolCall::new(
+            "c1",
+            "strict",
+            json!({"required_field": "present"}),
+        )];
+        let executor = SequentialToolExecutor;
+
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].outcome, ToolCallOutcome::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn parallel_validates_args_before_execute() {
+        let tools = tool_map(vec![Arc::new(StrictArgsTool)]);
+        let calls = vec![ToolCall::new("c1", "strict", json!({}))];
+        let executor = ParallelToolExecutor::streaming();
+
+        let results = executor
+            .execute(&tools, &calls, &ToolCallContext::test_default())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].outcome, ToolCallOutcome::Failed);
+    }
+
+    #[test]
+    fn tool_execution_result_clone_and_debug() {
+        // Ensure types are debuggable
+        let result = ToolExecutionResult {
+            call: ToolCall::new("c1", "echo", json!({})),
+            result: ToolResult::success("echo", json!({"ok": true})),
+            outcome: ToolCallOutcome::Succeeded,
+        };
+        let cloned = result.clone();
+        assert_eq!(cloned.call.id, "c1");
+        assert_eq!(cloned.outcome, ToolCallOutcome::Succeeded);
+        let _ = format!("{:?}", result);
+    }
+
+    #[test]
+    fn tool_executor_error_display() {
+        let err = ToolExecutorError::Cancelled;
+        assert!(err.to_string().contains("cancelled"));
+        let err2 = ToolExecutorError::Failed("some reason".into());
+        assert!(err2.to_string().contains("some reason"));
+    }
 }

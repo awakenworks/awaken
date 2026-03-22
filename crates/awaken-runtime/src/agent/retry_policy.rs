@@ -478,4 +478,107 @@ mod tests {
         assert_eq!(policy.max_retries, 5);
         assert_eq!(policy.fallback_models, vec!["model-a", "model-b"]);
     }
+
+    // -----------------------------------------------------------------------
+    // Migrated from uncarve: additional retry policy tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn retry_on_rate_limit_then_succeed() {
+        let inner = Arc::new(
+            FailNThenSucceed::new(2)
+                .with_error(|_| InferenceExecutionError::RateLimited("rate limited".into())),
+        );
+        let policy = LlmRetryPolicy::default().with_max_retries(3);
+        let executor = RetryingExecutor::new(inner.clone(), policy);
+
+        let result = executor.execute(test_request()).await;
+        assert!(result.is_ok());
+        assert_eq!(inner.call_count(), 3); // 2 failures + 1 success
+    }
+
+    #[tokio::test]
+    async fn retry_on_timeout_then_succeed() {
+        let inner = Arc::new(
+            FailNThenSucceed::new(1)
+                .with_error(|_| InferenceExecutionError::Timeout("timed out".into())),
+        );
+        let policy = LlmRetryPolicy::default().with_max_retries(2);
+        let executor = RetryingExecutor::new(inner.clone(), policy);
+
+        let result = executor.execute(test_request()).await;
+        assert!(result.is_ok());
+        assert_eq!(inner.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn zero_retries_with_fallback_tries_fallback_once() {
+        let inner = Arc::new(FailNThenSucceed::new(1)); // primary fails, fallback succeeds
+        let policy = LlmRetryPolicy::default()
+            .with_max_retries(0)
+            .with_fallback_model("fallback");
+        let executor = RetryingExecutor::new(inner.clone(), policy);
+
+        let result = executor.execute(test_request()).await;
+        assert!(result.is_ok());
+        assert_eq!(inner.call_count(), 2); // primary once + fallback once
+    }
+
+    #[tokio::test]
+    async fn no_fallbacks_configured_returns_primary_error() {
+        let inner = Arc::new(FailNThenSucceed::new(100));
+        let policy = LlmRetryPolicy::default().with_max_retries(1);
+        // No fallback models
+        let executor = RetryingExecutor::new(inner.clone(), policy);
+
+        let result = executor.execute(test_request()).await;
+        assert!(result.is_err());
+        assert_eq!(inner.call_count(), 2); // initial + 1 retry
+    }
+
+    #[tokio::test]
+    async fn all_error_types_handled() {
+        // Test each retryable error type
+        for error_fn in [
+            (|_: u32| InferenceExecutionError::Provider("down".into())) as fn(u32) -> _,
+            |_| InferenceExecutionError::RateLimited("429".into()),
+            |_| InferenceExecutionError::Timeout("timeout".into()),
+        ] {
+            let inner = Arc::new(FailNThenSucceed::new(1).with_error(error_fn));
+            let policy = LlmRetryPolicy::default().with_max_retries(2);
+            let executor = RetryingExecutor::new(inner.clone(), policy);
+
+            let result = executor.execute(test_request()).await;
+            assert!(result.is_ok(), "should recover from retryable error");
+        }
+    }
+
+    #[tokio::test]
+    async fn max_retries_zero_and_no_fallback_just_one_attempt() {
+        let inner = Arc::new(FailNThenSucceed::new(100));
+        let policy = LlmRetryPolicy::no_retry();
+        let executor = RetryingExecutor::new(inner.clone(), policy);
+
+        let result = executor.execute(test_request()).await;
+        assert!(result.is_err());
+        assert_eq!(inner.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn success_on_first_try_no_fallback_attempted() {
+        let recorder = Arc::new(ModelRecorder::always_fail_with(
+            InferenceExecutionError::Provider("down".into()),
+        ));
+        // This will always fail, but let's use a different mock that succeeds
+        let inner = Arc::new(FailNThenSucceed::new(0)); // never fails
+        let policy = LlmRetryPolicy::default()
+            .with_max_retries(3)
+            .with_fallback_model("fallback-a");
+        let executor = RetryingExecutor::new(inner.clone(), policy);
+
+        let result = executor.execute(test_request()).await;
+        assert!(result.is_ok());
+        assert_eq!(inner.call_count(), 1, "should not attempt fallback");
+        let _ = recorder; // suppress unused warning
+    }
 }

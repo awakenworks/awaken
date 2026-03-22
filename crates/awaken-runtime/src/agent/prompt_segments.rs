@@ -316,4 +316,165 @@ mod tests {
         assert_eq!(m.content, "hello");
         assert!(m.consume_after_emit);
     }
+
+    // -----------------------------------------------------------------------
+    // Migrated from uncarve: additional prompt segment tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn remove_nonexistent_key_is_noop() {
+        let mut state = PromptSegmentState {
+            items: vec![msg("a", "one", false)],
+        };
+        state.reduce(PromptSegmentAction::Remove {
+            key: "nonexistent".into(),
+        });
+        assert_eq!(state.items.len(), 1);
+        assert_eq!(state.items[0].key, "a");
+    }
+
+    #[test]
+    fn remove_by_prefix_no_match() {
+        let mut state = PromptSegmentState {
+            items: vec![msg("skill:a", "one", false), msg("skill:b", "two", false)],
+        };
+        state.reduce(PromptSegmentAction::RemoveByKeyPrefix {
+            prefix: "reminder:".into(),
+        });
+        assert_eq!(state.items.len(), 2);
+    }
+
+    #[test]
+    fn remove_by_prefix_removes_all_matching() {
+        let mut state = PromptSegmentState {
+            items: vec![
+                msg("mcp:tool1", "t1", false),
+                msg("mcp:tool2", "t2", false),
+                msg("skill:a", "s1", false),
+            ],
+        };
+        state.reduce(PromptSegmentAction::RemoveByKeyPrefix {
+            prefix: "mcp:".into(),
+        });
+        assert_eq!(state.items.len(), 1);
+        assert_eq!(state.items[0].key, "skill:a");
+    }
+
+    #[test]
+    fn consume_after_emit_with_no_ephemeral() {
+        let mut state = PromptSegmentState {
+            items: vec![msg("a", "one", false), msg("b", "two", false)],
+        };
+        state.reduce(PromptSegmentAction::ConsumeAfterEmit);
+        assert_eq!(state.items.len(), 2);
+    }
+
+    #[test]
+    fn consume_after_emit_removes_all_ephemeral() {
+        let mut state = PromptSegmentState {
+            items: vec![
+                msg("a", "one", true),
+                msg("b", "two", true),
+                msg("c", "three", false),
+            ],
+        };
+        state.reduce(PromptSegmentAction::ConsumeAfterEmit);
+        assert_eq!(state.items.len(), 1);
+        assert_eq!(state.items[0].key, "c");
+    }
+
+    #[test]
+    fn clear_on_empty_state() {
+        let mut state = PromptSegmentState::default();
+        state.reduce(PromptSegmentAction::Clear);
+        assert!(state.items.is_empty());
+    }
+
+    #[test]
+    fn upsert_preserves_ordering_of_other_items() {
+        let mut state = PromptSegmentState {
+            items: vec![
+                msg("a", "one", false),
+                msg("b", "two", false),
+                msg("c", "three", false),
+            ],
+        };
+        state.reduce(PromptSegmentAction::Upsert {
+            message: msg("b", "updated", false),
+        });
+        assert_eq!(state.items.len(), 3);
+        assert_eq!(state.items[0].key, "a");
+        assert_eq!(state.items[1].key, "b");
+        assert_eq!(state.items[1].content, "updated");
+        assert_eq!(state.items[2].key, "c");
+    }
+
+    #[test]
+    fn multiple_operations_in_sequence() {
+        let mut state = PromptSegmentState::default();
+
+        // Add three items
+        for i in 0..3 {
+            state.reduce(PromptSegmentAction::Upsert {
+                message: msg(&format!("k{i}"), &format!("v{i}"), i % 2 == 0),
+            });
+        }
+        assert_eq!(state.items.len(), 3);
+
+        // Remove one
+        state.reduce(PromptSegmentAction::Remove { key: "k1".into() });
+        assert_eq!(state.items.len(), 2);
+
+        // Consume ephemeral (k0 and k2 are ephemeral)
+        state.reduce(PromptSegmentAction::ConsumeAfterEmit);
+        assert_eq!(state.items.len(), 0);
+    }
+
+    #[test]
+    fn state_serde_roundtrip() {
+        let state = PromptSegmentState {
+            items: vec![msg("a", "hello", false), msg("b", "world", true)],
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let parsed: PromptSegmentState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.items.len(), 2);
+        assert_eq!(parsed.items[0].key, "a");
+        assert!(parsed.items[1].consume_after_emit);
+    }
+
+    #[test]
+    fn action_serde_roundtrip() {
+        let actions = vec![
+            PromptSegmentAction::Upsert {
+                message: msg("k", "v", true),
+            },
+            PromptSegmentAction::Remove { key: "k".into() },
+            PromptSegmentAction::RemoveByKeyPrefix {
+                prefix: "p:".into(),
+            },
+            PromptSegmentAction::ConsumeAfterEmit,
+            PromptSegmentAction::Clear,
+        ];
+        for action in actions {
+            let json = serde_json::to_string(&action).unwrap();
+            let parsed: PromptSegmentAction = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, action);
+        }
+    }
+
+    #[test]
+    fn context_message_default_not_ephemeral() {
+        let m = ContextMessage::session("test", "content");
+        assert!(!m.consume_after_emit);
+    }
+
+    #[test]
+    fn context_message_equality() {
+        let m1 = ContextMessage::session("test", "content");
+        let m2 = ContextMessage::session("test", "content");
+        assert_eq!(m1, m2);
+
+        let m3 = ContextMessage::session("test", "different");
+        assert_ne!(m1, m3);
+    }
 }

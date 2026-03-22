@@ -195,3 +195,143 @@ fn a2a_endpoint_builder() {
     assert_eq!(endpoint.bearer_token.as_deref(), Some("tok_123"));
     assert_eq!(endpoint.poll_interval_ms, 5000);
 }
+
+// -----------------------------------------------------------------------
+// Migrated from uncarve: additional agent tool and remote A2A tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn agent_tool_descriptor_format() {
+    let resolver = Arc::new(MockResolver::with_agent("researcher"));
+    let tool = AgentTool::new("researcher", "Research specialist", resolver);
+    let desc = tool.descriptor();
+
+    assert_eq!(desc.id, "agent_run_researcher");
+    assert!(desc.description.contains("Research specialist"));
+}
+
+#[tokio::test]
+async fn agent_tool_validates_empty_object_rejected() {
+    let resolver = Arc::new(MockResolver::with_agent("worker"));
+    let tool = AgentTool::new("worker", "desc", resolver);
+
+    // Empty object should be rejected (needs "prompt")
+    assert!(tool.validate_args(&json!({})).is_err());
+}
+
+#[tokio::test]
+async fn agent_tool_validates_non_string_prompt_rejected() {
+    let resolver = Arc::new(MockResolver::with_agent("worker"));
+    let tool = AgentTool::new("worker", "desc", resolver);
+
+    // Non-string prompt should be rejected
+    assert!(tool.validate_args(&json!({"prompt": 42})).is_err());
+}
+
+#[tokio::test]
+async fn agent_tool_validates_string_prompt_accepted() {
+    let resolver = Arc::new(MockResolver::with_agent("worker"));
+    let tool = AgentTool::new("worker", "desc", resolver);
+
+    assert!(
+        tool.validate_args(&json!({"prompt": "do something"}))
+            .is_ok()
+    );
+}
+
+#[test]
+fn a2a_endpoint_default_poll_interval() {
+    let endpoint = A2aEndpoint::new("https://api.example.com", "agent-1");
+    assert_eq!(endpoint.base_url, "https://api.example.com");
+    assert_eq!(endpoint.remote_agent_id, "agent-1");
+    assert!(endpoint.bearer_token.is_none());
+    // Default poll interval should be something reasonable
+    assert!(endpoint.poll_interval_ms > 0);
+}
+
+#[test]
+fn a2a_endpoint_without_bearer_token() {
+    let endpoint = A2aEndpoint::new("https://api.example.com", "worker");
+    assert!(endpoint.bearer_token.is_none());
+}
+
+#[test]
+fn remote_a2a_tool_validates_non_string_prompt() {
+    let endpoint = A2aEndpoint::new("https://api.example.com", "worker");
+    let tool = RemoteA2aTool::new("rw", "desc", endpoint);
+
+    assert!(tool.validate_args(&json!({"prompt": 42})).is_err());
+}
+
+#[tokio::test]
+async fn remote_a2a_tool_result_contains_endpoint_info() {
+    let endpoint = A2aEndpoint::new("https://api.example.com/v1/a2a", "specialist")
+        .with_bearer_token("token123");
+    let tool = RemoteA2aTool::new("remote_specialist", "A remote specialist", endpoint);
+    let ctx = ToolCallContext::test_default();
+
+    let result = tool
+        .execute(json!({"prompt": "analyze this"}), &ctx)
+        .await
+        .unwrap();
+
+    assert!(result.is_success());
+    assert_eq!(result.data["remote_agent_id"], "specialist");
+    assert_eq!(result.data["status"], "submitted");
+    assert_eq!(result.data["prompt"], "analyze this");
+}
+
+#[tokio::test]
+async fn remote_a2a_tool_rejects_whitespace_only_prompt() {
+    let endpoint = A2aEndpoint::new("https://api.example.com", "worker");
+    let tool = RemoteA2aTool::new("rw", "desc", endpoint);
+    let ctx = ToolCallContext::test_default();
+
+    let err = tool.execute(json!({"prompt": "\t\n  "}), &ctx).await;
+    assert!(err.is_err());
+}
+
+#[tokio::test]
+async fn agent_tool_result_structure() {
+    let resolver = Arc::new(MockResolver::with_agent("analyst"));
+    let tool = AgentTool::new("analyst", "Data analyst", resolver);
+    let ctx = ToolCallContext::test_default();
+
+    let result = tool
+        .execute(json!({"prompt": "analyze data"}), &ctx)
+        .await
+        .unwrap();
+
+    assert!(result.is_success());
+    // Check expected fields
+    assert_eq!(result.data["agent_id"], "analyst");
+    assert_eq!(result.data["status"], "delegated");
+}
+
+#[test]
+fn mock_resolver_with_multiple_agents() {
+    let mut agents = std::collections::HashMap::new();
+    agents.insert(
+        "writer".to_string(),
+        AgentSpec {
+            id: "writer".into(),
+            model: "test-model".into(),
+            system_prompt: "sys".into(),
+            ..Default::default()
+        },
+    );
+    agents.insert(
+        "reviewer".to_string(),
+        AgentSpec {
+            id: "reviewer".into(),
+            model: "test-model".into(),
+            system_prompt: "sys".into(),
+            ..Default::default()
+        },
+    );
+    let resolver = MockResolver { agents };
+
+    assert!(resolver.resolve("writer").is_ok());
+    assert!(resolver.resolve("reviewer").is_ok());
+    assert!(resolver.resolve("nonexistent").is_err());
+}

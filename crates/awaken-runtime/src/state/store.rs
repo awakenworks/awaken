@@ -261,3 +261,257 @@ impl Default for StateStore {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
+    use crate::state::StateKey;
+    use std::sync::atomic::AtomicU64;
+
+    struct TestCounter;
+
+    impl StateKey for TestCounter {
+        const KEY: &'static str = "test.store_counter";
+        type Value = i64;
+        type Update = i64;
+
+        fn apply(value: &mut Self::Value, update: Self::Update) {
+            *value += update;
+        }
+    }
+
+    struct TestStorePlugin;
+
+    impl Plugin for TestStorePlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "test-store-plugin",
+            }
+        }
+
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_key::<TestCounter>(crate::state::StateKeyOptions::default())
+        }
+    }
+
+    #[test]
+    fn store_new_starts_at_revision_zero() {
+        let store = StateStore::new();
+        assert_eq!(store.revision(), 0);
+    }
+
+    #[test]
+    fn store_commit_increments_revision() {
+        let store = StateStore::new();
+        store.install_plugin(TestStorePlugin).unwrap();
+
+        let mut batch = store.begin_mutation();
+        batch.update::<TestCounter>(1);
+        let rev = store.commit(batch).unwrap();
+        assert_eq!(rev, 1);
+
+        let mut batch = store.begin_mutation();
+        batch.update::<TestCounter>(2);
+        let rev = store.commit(batch).unwrap();
+        assert_eq!(rev, 2);
+    }
+
+    #[test]
+    fn store_empty_commit_returns_current_revision() {
+        let store = StateStore::new();
+        let batch = store.begin_mutation();
+        let rev = store.commit(batch).unwrap();
+        assert_eq!(rev, 0);
+    }
+
+    #[test]
+    fn store_read_returns_none_before_write() {
+        let store = StateStore::new();
+        store.install_plugin(TestStorePlugin).unwrap();
+        let val = store.read::<TestCounter>();
+        assert!(val.is_none());
+    }
+
+    #[test]
+    fn store_read_after_write() {
+        let store = StateStore::new();
+        store.install_plugin(TestStorePlugin).unwrap();
+
+        let mut batch = store.begin_mutation();
+        batch.update::<TestCounter>(42);
+        store.commit(batch).unwrap();
+
+        let val = store.read::<TestCounter>().unwrap();
+        assert_eq!(val, 42);
+    }
+
+    #[test]
+    fn store_multiple_updates_accumulate() {
+        let store = StateStore::new();
+        store.install_plugin(TestStorePlugin).unwrap();
+
+        let mut batch = store.begin_mutation();
+        batch.update::<TestCounter>(10);
+        store.commit(batch).unwrap();
+
+        let mut batch = store.begin_mutation();
+        batch.update::<TestCounter>(20);
+        store.commit(batch).unwrap();
+
+        let val = store.read::<TestCounter>().unwrap();
+        assert_eq!(val, 30);
+    }
+
+    #[test]
+    fn store_snapshot_is_independent_copy() {
+        let store = StateStore::new();
+        store.install_plugin(TestStorePlugin).unwrap();
+
+        let mut batch = store.begin_mutation();
+        batch.update::<TestCounter>(10);
+        store.commit(batch).unwrap();
+
+        let snap = store.snapshot();
+        assert_eq!(snap.revision, 1);
+
+        let mut batch = store.begin_mutation();
+        batch.update::<TestCounter>(20);
+        store.commit(batch).unwrap();
+
+        assert_eq!(snap.revision, 1);
+        assert_eq!(store.revision(), 2);
+    }
+
+    #[test]
+    fn store_clone_shares_state() {
+        let store = StateStore::new();
+        store.install_plugin(TestStorePlugin).unwrap();
+
+        let mut batch = store.begin_mutation();
+        batch.update::<TestCounter>(100);
+        store.commit(batch).unwrap();
+
+        let store2 = store.clone();
+        assert_eq!(store2.read::<TestCounter>().unwrap(), 100);
+        assert_eq!(store2.revision(), 1);
+
+        let mut batch = store2.begin_mutation();
+        batch.update::<TestCounter>(50);
+        store2.commit(batch).unwrap();
+        assert_eq!(store.read::<TestCounter>().unwrap(), 150);
+    }
+
+    #[test]
+    fn store_install_plugin_duplicate_rejected() {
+        let store = StateStore::new();
+        store.install_plugin(TestStorePlugin).unwrap();
+        let err = store.install_plugin(TestStorePlugin);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn store_commit_hook_fires() {
+        use std::sync::atomic::Ordering;
+
+        struct TestHook {
+            revision: Arc<AtomicU64>,
+        }
+
+        impl CommitHook for TestHook {
+            fn on_commit(&self, event: &CommitEvent) {
+                self.revision.store(event.new_revision, Ordering::SeqCst);
+            }
+        }
+
+        let store = StateStore::new();
+        store.install_plugin(TestStorePlugin).unwrap();
+
+        let rev = Arc::new(AtomicU64::new(0));
+        store.add_hook(TestHook {
+            revision: rev.clone(),
+        });
+
+        let mut batch = store.begin_mutation();
+        batch.update::<TestCounter>(1);
+        store.commit(batch).unwrap();
+
+        assert_eq!(rev.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn store_base_revision_conflict() {
+        let store = StateStore::new();
+        store.install_plugin(TestStorePlugin).unwrap();
+
+        let mut batch = store.begin_mutation();
+        batch.update::<TestCounter>(1);
+        store.commit(batch).unwrap();
+
+        let mut batch = MutationBatch::new().with_base_revision(0);
+        batch.update::<TestCounter>(2);
+        let err = store.commit(batch);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn store_uninstall_plugin() {
+        let store = StateStore::new();
+        store.install_plugin(TestStorePlugin).unwrap();
+        store.uninstall_plugin::<TestStorePlugin>().unwrap();
+        let err = store.uninstall_plugin::<TestStorePlugin>();
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn store_multiple_updates_in_single_batch() {
+        let store = StateStore::new();
+        store.install_plugin(TestStorePlugin).unwrap();
+
+        let mut batch = store.begin_mutation();
+        batch.update::<TestCounter>(10);
+        batch.update::<TestCounter>(20);
+        batch.update::<TestCounter>(30);
+        store.commit(batch).unwrap();
+
+        let val = store.read::<TestCounter>().unwrap();
+        assert_eq!(val, 60);
+        assert_eq!(store.revision(), 1);
+    }
+
+    #[test]
+    fn store_commit_event_has_correct_metadata() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct MetadataHook {
+            op_count: Arc<AtomicUsize>,
+            prev_rev: Arc<AtomicU64>,
+        }
+
+        impl CommitHook for MetadataHook {
+            fn on_commit(&self, event: &CommitEvent) {
+                self.op_count.store(event.op_count, Ordering::SeqCst);
+                self.prev_rev
+                    .store(event.previous_revision, Ordering::SeqCst);
+            }
+        }
+
+        let store = StateStore::new();
+        store.install_plugin(TestStorePlugin).unwrap();
+
+        let op_count = Arc::new(AtomicUsize::new(0));
+        let prev_rev = Arc::new(AtomicU64::new(999));
+        store.add_hook(MetadataHook {
+            op_count: op_count.clone(),
+            prev_rev: prev_rev.clone(),
+        });
+
+        let mut batch = store.begin_mutation();
+        batch.update::<TestCounter>(1);
+        batch.update::<TestCounter>(2);
+        store.commit(batch).unwrap();
+
+        assert_eq!(op_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(prev_rev.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+}

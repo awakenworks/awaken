@@ -157,4 +157,90 @@ mod tests {
             .expect("custom effect should decode");
         assert_eq!(decoded, "payload");
     }
+
+    // -----------------------------------------------------------------------
+    // Migrated from uncarve: additional command tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn state_command_new_is_empty() {
+        let cmd = StateCommand::new();
+        assert!(cmd.is_empty());
+    }
+
+    #[test]
+    fn state_command_default_is_empty() {
+        let cmd = StateCommand::default();
+        assert!(cmd.is_empty());
+    }
+
+    #[test]
+    fn state_command_with_base_revision() {
+        let cmd = StateCommand::new().with_base_revision(42);
+        assert_eq!(cmd.base_revision(), Some(42));
+    }
+
+    #[test]
+    fn state_command_not_empty_after_schedule_action() {
+        let mut cmd = StateCommand::new();
+        cmd.schedule_action::<TestAction>("action".into()).unwrap();
+        assert!(!cmd.is_empty());
+    }
+
+    #[test]
+    fn state_command_not_empty_after_emit() {
+        let mut cmd = StateCommand::new();
+        cmd.emit::<CustomEffect>("effect".into()).unwrap();
+        assert!(!cmd.is_empty());
+    }
+
+    #[test]
+    fn state_command_extend_mismatched_revisions_fails() {
+        let left = StateCommand::new().with_base_revision(1);
+        let right = StateCommand::new().with_base_revision(2);
+        let mut cmd = left;
+        let err = cmd.extend(right);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn state_command_extend_accumulates_actions() {
+        let mut left = StateCommand::new();
+        left.schedule_action::<TestAction>("a1".into()).unwrap();
+
+        let mut right = StateCommand::new();
+        right.schedule_action::<TestAction>("a2".into()).unwrap();
+        right.emit::<CustomEffect>("e1".into()).unwrap();
+
+        left.extend(right).unwrap();
+        assert_eq!(left.scheduled_actions.len(), 2);
+        assert_eq!(left.effects.len(), 1);
+    }
+
+    #[test]
+    fn state_command_deref_accesses_mutation_batch() {
+        let cmd = StateCommand::new().with_base_revision(10);
+        // Deref gives us access to MutationBatch methods
+        assert_eq!(cmd.base_revision(), Some(10));
+        assert!(cmd.is_empty()); // no ops yet
+    }
+
+    #[test]
+    fn state_command_multiple_scheduled_actions() {
+        let mut cmd = StateCommand::new();
+        for i in 0..5 {
+            cmd.schedule_action::<TestAction>(format!("action_{}", i))
+                .unwrap();
+        }
+        assert_eq!(cmd.scheduled_actions.len(), 5);
+    }
+
+    #[test]
+    fn state_command_multiple_effects() {
+        let mut cmd = StateCommand::new();
+        for i in 0..5 {
+            cmd.emit::<CustomEffect>(format!("effect_{}", i)).unwrap();
+        }
+        assert_eq!(cmd.effects.len(), 5);
+    }
 }

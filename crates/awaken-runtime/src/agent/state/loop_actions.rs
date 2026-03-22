@@ -201,3 +201,236 @@ impl StateKey for AccumulatedToolInclusions {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_contract::contract::context_message::ContextMessage as ContractContextMessage;
+    use awaken_contract::contract::inference::InferenceOverride;
+
+    // -----------------------------------------------------------------------
+    // AccumulatedOverrides tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn accumulated_overrides_default_is_none() {
+        let val: Option<InferenceOverride> = None;
+        assert!(val.is_none());
+    }
+
+    #[test]
+    fn accumulated_overrides_merge_first() {
+        let mut val: Option<InferenceOverride> = None;
+        AccumulatedOverrides::apply(
+            &mut val,
+            AccumulatedOverridesUpdate::Merge(InferenceOverride {
+                model: Some("gpt-4".into()),
+                ..Default::default()
+            }),
+        );
+        assert!(val.is_some());
+        assert_eq!(val.as_ref().unwrap().model.as_deref(), Some("gpt-4"));
+    }
+
+    #[test]
+    fn accumulated_overrides_merge_second_last_wins() {
+        let mut val: Option<InferenceOverride> = None;
+        AccumulatedOverrides::apply(
+            &mut val,
+            AccumulatedOverridesUpdate::Merge(InferenceOverride {
+                model: Some("gpt-4".into()),
+                temperature: Some(0.5),
+                ..Default::default()
+            }),
+        );
+        AccumulatedOverrides::apply(
+            &mut val,
+            AccumulatedOverridesUpdate::Merge(InferenceOverride {
+                temperature: Some(0.9),
+                max_tokens: Some(1000),
+                ..Default::default()
+            }),
+        );
+        let ovr = val.unwrap();
+        assert_eq!(ovr.model.as_deref(), Some("gpt-4")); // from first
+        assert_eq!(ovr.temperature, Some(0.9)); // last wins
+        assert_eq!(ovr.max_tokens, Some(1000)); // from second
+    }
+
+    #[test]
+    fn accumulated_overrides_clear() {
+        let mut val = Some(InferenceOverride {
+            model: Some("test".into()),
+            ..Default::default()
+        });
+        AccumulatedOverrides::apply(&mut val, AccumulatedOverridesUpdate::Clear);
+        assert!(val.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // AccumulatedContextMessages tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn accumulated_context_messages_push() {
+        let mut val: Vec<ContractContextMessage> = Vec::new();
+        AccumulatedContextMessages::apply(
+            &mut val,
+            AccumulatedContextMessagesUpdate::Push(ContractContextMessage::system("k1", "msg1")),
+        );
+        assert_eq!(val.len(), 1);
+    }
+
+    #[test]
+    fn accumulated_context_messages_push_multiple() {
+        let mut val: Vec<ContractContextMessage> = Vec::new();
+        for i in 0..5 {
+            AccumulatedContextMessages::apply(
+                &mut val,
+                AccumulatedContextMessagesUpdate::Push(ContractContextMessage::system(
+                    format!("k{i}"),
+                    format!("msg{i}"),
+                )),
+            );
+        }
+        assert_eq!(val.len(), 5);
+    }
+
+    #[test]
+    fn accumulated_context_messages_clear() {
+        let mut val = vec![
+            ContractContextMessage::system("k1", "msg1"),
+            ContractContextMessage::system("k2", "msg2"),
+        ];
+        AccumulatedContextMessages::apply(&mut val, AccumulatedContextMessagesUpdate::Clear);
+        assert!(val.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // AccumulatedToolExclusions tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn accumulated_tool_exclusions_add() {
+        let mut val = HashSet::new();
+        AccumulatedToolExclusions::apply(
+            &mut val,
+            AccumulatedToolExclusionsUpdate::Add("search".into()),
+        );
+        assert!(val.contains("search"));
+        assert_eq!(val.len(), 1);
+    }
+
+    #[test]
+    fn accumulated_tool_exclusions_add_deduplicates() {
+        let mut val = HashSet::new();
+        AccumulatedToolExclusions::apply(
+            &mut val,
+            AccumulatedToolExclusionsUpdate::Add("search".into()),
+        );
+        AccumulatedToolExclusions::apply(
+            &mut val,
+            AccumulatedToolExclusionsUpdate::Add("search".into()),
+        );
+        assert_eq!(val.len(), 1);
+    }
+
+    #[test]
+    fn accumulated_tool_exclusions_add_multiple() {
+        let mut val = HashSet::new();
+        for tool in ["search", "calc", "browser"] {
+            AccumulatedToolExclusions::apply(
+                &mut val,
+                AccumulatedToolExclusionsUpdate::Add(tool.into()),
+            );
+        }
+        assert_eq!(val.len(), 3);
+    }
+
+    #[test]
+    fn accumulated_tool_exclusions_clear() {
+        let mut val: HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+        AccumulatedToolExclusions::apply(&mut val, AccumulatedToolExclusionsUpdate::Clear);
+        assert!(val.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // AccumulatedToolInclusions tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn accumulated_tool_inclusions_default_is_none() {
+        let val = ToolInclusionSet::default();
+        assert!(val.0.is_none());
+    }
+
+    #[test]
+    fn accumulated_tool_inclusions_extend_creates_set() {
+        let mut val = ToolInclusionSet::default();
+        AccumulatedToolInclusions::apply(
+            &mut val,
+            AccumulatedToolInclusionsUpdate::Extend(vec!["search".into(), "calc".into()]),
+        );
+        assert!(val.0.is_some());
+        let set = val.0.as_ref().unwrap();
+        assert_eq!(set.len(), 2);
+        assert!(set.contains("search"));
+        assert!(set.contains("calc"));
+    }
+
+    #[test]
+    fn accumulated_tool_inclusions_extend_merges() {
+        let mut val = ToolInclusionSet::default();
+        AccumulatedToolInclusions::apply(
+            &mut val,
+            AccumulatedToolInclusionsUpdate::Extend(vec!["a".into()]),
+        );
+        AccumulatedToolInclusions::apply(
+            &mut val,
+            AccumulatedToolInclusionsUpdate::Extend(vec!["b".into(), "c".into()]),
+        );
+        let set = val.0.as_ref().unwrap();
+        assert_eq!(set.len(), 3);
+    }
+
+    #[test]
+    fn accumulated_tool_inclusions_extend_deduplicates() {
+        let mut val = ToolInclusionSet::default();
+        AccumulatedToolInclusions::apply(
+            &mut val,
+            AccumulatedToolInclusionsUpdate::Extend(vec!["a".into()]),
+        );
+        AccumulatedToolInclusions::apply(
+            &mut val,
+            AccumulatedToolInclusionsUpdate::Extend(vec!["a".into(), "b".into()]),
+        );
+        let set = val.0.as_ref().unwrap();
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn accumulated_tool_inclusions_clear() {
+        let mut val = ToolInclusionSet(Some(["x", "y"].iter().map(|s| s.to_string()).collect()));
+        AccumulatedToolInclusions::apply(&mut val, AccumulatedToolInclusionsUpdate::Clear);
+        assert!(val.0.is_none());
+    }
+
+    #[test]
+    fn accumulated_tool_inclusions_serde_roundtrip() {
+        let val = ToolInclusionSet(Some(
+            ["search", "calc"].iter().map(|s| s.to_string()).collect(),
+        ));
+        let json = serde_json::to_string(&val).unwrap();
+        let parsed: ToolInclusionSet = serde_json::from_str(&json).unwrap();
+        assert_eq!(val, parsed);
+    }
+
+    #[test]
+    fn accumulated_tool_inclusions_empty_extend() {
+        let mut val = ToolInclusionSet::default();
+        AccumulatedToolInclusions::apply(&mut val, AccumulatedToolInclusionsUpdate::Extend(vec![]));
+        // Should create a Some(empty set), not remain None
+        assert!(val.0.is_some());
+        assert!(val.0.as_ref().unwrap().is_empty());
+    }
+}
