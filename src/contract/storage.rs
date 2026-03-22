@@ -99,3 +99,26 @@ pub trait RunStore: Send + Sync {
     /// Find the latest run for a thread (by `updated_at`).
     async fn latest_run(&self, thread_id: &str) -> Result<Option<RunRecord>, StorageError>;
 }
+
+/// Atomic thread+run checkpoint persistence.
+///
+/// Implementations must persist thread messages and run record in one transaction.
+#[async_trait]
+pub trait ThreadRunStore: Send + Sync {
+    /// Load all messages for a thread. Returns `None` if the thread does not exist.
+    async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError>;
+
+    /// Persist thread messages and run record atomically.
+    async fn checkpoint(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+        run: &RunRecord,
+    ) -> Result<(), StorageError>;
+
+    /// Load a run record by `run_id`.
+    async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, StorageError>;
+
+    /// Find the latest run for a thread (by `updated_at`).
+    async fn latest_run(&self, thread_id: &str) -> Result<Option<RunRecord>, StorageError>;
+}

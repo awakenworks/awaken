@@ -4,6 +4,8 @@
 - **Date**: 2026-03-24
 - **Depends on**: ADR-0001, ADR-0006, ADR-0010
 
+> Storage persistence details in this ADR are partially superseded by ADR-0012 (transactional thread+run checkpoint).
+
 ## Context
 
 ADR-0010 defines registries and resolution (`AgentSpec → resolve() → ResolvedAgent`). ADR-0006 defines the run lifecycle state machine. What's missing is the layer that orchestrates runs: routing requests to agents, managing active runs, handling resume/cancel, and supporting handoff.

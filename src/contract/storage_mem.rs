@@ -6,7 +6,7 @@ use std::sync::RwLock;
 use async_trait::async_trait;
 
 use super::message::Message;
-use super::storage::{RunRecord, RunStore, StorageError, ThreadStore};
+use super::storage::{RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore};
 
 /// In-memory thread store backed by a `HashMap` behind a `RwLock`.
 #[derive(Debug, Default)]
@@ -76,6 +76,25 @@ pub struct InMemoryRunStore {
     runs: RwLock<HashMap<String, RunRecord>>,
 }
 
+#[derive(Debug, Default)]
+struct ThreadRunData {
+    threads: HashMap<String, Vec<Message>>,
+    runs: HashMap<String, RunRecord>,
+}
+
+/// In-memory transactional thread+run store.
+#[derive(Debug, Default)]
+pub struct InMemoryThreadRunStore {
+    inner: RwLock<ThreadRunData>,
+}
+
+impl InMemoryThreadRunStore {
+    /// Create a new empty transactional store.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 impl InMemoryRunStore {
     /// Create a new empty run store.
     pub fn new() -> Self {
@@ -108,6 +127,56 @@ impl RunStore for InMemoryRunStore {
             .read()
             .map_err(|e| StorageError::Io(e.to_string()))?;
         let latest = guard
+            .values()
+            .filter(|r| r.thread_id == thread_id)
+            .max_by_key(|r| r.updated_at)
+            .cloned();
+        Ok(latest)
+    }
+}
+
+#[async_trait]
+impl ThreadRunStore for InMemoryThreadRunStore {
+    async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        Ok(guard.threads.get(thread_id).cloned())
+    }
+
+    async fn checkpoint(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+        run: &RunRecord,
+    ) -> Result<(), StorageError> {
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        guard
+            .threads
+            .insert(thread_id.to_owned(), messages.to_vec());
+        guard.runs.insert(run.run_id.clone(), run.clone());
+        Ok(())
+    }
+
+    async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, StorageError> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        Ok(guard.runs.get(run_id).cloned())
+    }
+
+    async fn latest_run(&self, thread_id: &str) -> Result<Option<RunRecord>, StorageError> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        let latest = guard
+            .runs
             .values()
             .filter(|r| r.thread_id == thread_id)
             .max_by_key(|r| r.updated_at)
@@ -300,5 +369,33 @@ mod tests {
         let parsed: RunRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.run_id, "run-1");
         assert_eq!(parsed.thread_id, "thread-1");
+    }
+
+    #[tokio::test]
+    async fn thread_run_checkpoint_persists_both_atomically() {
+        let store = InMemoryThreadRunStore::new();
+        let run = make_run("run-x", "thread-x", 42);
+        let messages = vec![Message::user("u1"), Message::assistant("a1")];
+
+        store
+            .checkpoint("thread-x", &messages, &run)
+            .await
+            .expect("checkpoint should succeed");
+
+        let loaded_messages = store
+            .load_messages("thread-x")
+            .await
+            .expect("load messages")
+            .expect("thread exists");
+        assert_eq!(loaded_messages.len(), 2);
+        assert_eq!(loaded_messages[0].text(), "u1");
+
+        let loaded_run = store
+            .load_run("run-x")
+            .await
+            .expect("load run")
+            .expect("run exists");
+        assert_eq!(loaded_run.thread_id, "thread-x");
+        assert_eq!(loaded_run.updated_at, 42);
     }
 }

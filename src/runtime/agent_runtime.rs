@@ -1,16 +1,19 @@
 //! Agent runtime: top-level orchestrator for run management, routing, and control.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock, mpsc};
+use std::sync::{Arc, RwLock};
 
-use crate::agent::loop_runner::{AgentLoopError, AgentRunResult, prepare_resume};
+use crate::agent::loop_runner::{
+    AgentLoopError, AgentRunResult, prepare_resume, run_agent_loop_controlled,
+};
 use crate::contract::event_sink::EventSink;
 use crate::contract::identity::RunIdentity;
 use crate::contract::inference::InferenceOverride;
 use crate::contract::message::Message;
-use crate::contract::storage::{RunStore, ThreadStore};
+use crate::contract::storage::ThreadRunStore;
 use crate::contract::suspension::{ToolCallResume, ToolCallResumeMode};
 use crate::error::StateError;
+use futures::channel::mpsc;
 
 use super::cancellation::CancellationToken;
 use super::engine::PhaseRuntime;
@@ -48,7 +51,7 @@ pub struct RunHandle {
     pub thread_id: String,
     pub agent_id: String,
     cancellation_token: CancellationToken,
-    decision_tx: mpsc::Sender<(String, ToolCallResume)>,
+    decision_tx: mpsc::UnboundedSender<(String, ToolCallResume)>,
 }
 
 impl RunHandle {
@@ -62,8 +65,8 @@ impl RunHandle {
         &self,
         call_id: String,
         resume: ToolCallResume,
-    ) -> Result<(), mpsc::SendError<(String, ToolCallResume)>> {
-        self.decision_tx.send((call_id, resume))
+    ) -> Result<(), mpsc::TrySendError<(String, ToolCallResume)>> {
+        self.decision_tx.unbounded_send((call_id, resume))
     }
 }
 
@@ -91,21 +94,21 @@ impl ActiveRunRegistry {
         }
     }
 
-    pub(crate) fn insert(&self, thread_id: String, entry: RunEntry) {
+    fn insert(&self, thread_id: String, entry: RunEntry) {
         self.by_thread_id
             .write()
             .expect("active runs lock poisoned")
             .insert(thread_id, entry);
     }
 
-    pub(crate) fn remove(&self, thread_id: &str) {
+    fn remove(&self, thread_id: &str) {
         self.by_thread_id
             .write()
             .expect("active runs lock poisoned")
             .remove(thread_id);
     }
 
-    pub(crate) fn get_handle(&self, thread_id: &str) -> Option<RunHandle> {
+    fn get_handle(&self, thread_id: &str) -> Option<RunHandle> {
         self.by_thread_id
             .read()
             .expect("active runs lock poisoned")
@@ -113,7 +116,7 @@ impl ActiveRunRegistry {
             .map(|e| e.handle.clone())
     }
 
-    pub(crate) fn has_active_run(&self, thread_id: &str) -> bool {
+    fn has_active_run(&self, thread_id: &str) -> bool {
         self.by_thread_id
             .read()
             .expect("active runs lock poisoned")
@@ -131,8 +134,7 @@ impl ActiveRunRegistry {
 /// to active agent runs. Enforces one active run per thread.
 pub struct AgentRuntime {
     resolver: Arc<dyn AgentResolver>,
-    thread_store: Option<Arc<dyn ThreadStore>>,
-    run_store: Option<Arc<dyn RunStore>>,
+    storage: Option<Arc<dyn ThreadRunStore>>,
     active_runs: ActiveRunRegistry,
 }
 
@@ -140,21 +142,14 @@ impl AgentRuntime {
     pub fn new(resolver: Arc<dyn AgentResolver>) -> Self {
         Self {
             resolver,
-            thread_store: None,
-            run_store: None,
+            storage: None,
             active_runs: ActiveRunRegistry::new(),
         }
     }
 
     #[must_use]
-    pub fn with_thread_store(mut self, store: Arc<dyn ThreadStore>) -> Self {
-        self.thread_store = Some(store);
-        self
-    }
-
-    #[must_use]
-    pub fn with_run_store(mut self, store: Arc<dyn RunStore>) -> Self {
-        self.run_store = Some(store);
+    pub fn with_thread_run_store(mut self, store: Arc<dyn ThreadRunStore>) -> Self {
+        self.storage = Some(store);
         self
     }
 
@@ -162,8 +157,8 @@ impl AgentRuntime {
         self.resolver.as_ref()
     }
 
-    pub fn thread_store(&self) -> Option<&dyn ThreadStore> {
-        self.thread_store.as_deref()
+    pub fn thread_run_store(&self) -> Option<&dyn ThreadRunStore> {
+        self.storage.as_deref()
     }
 
     /// Run an agent loop.
@@ -184,7 +179,14 @@ impl AgentRuntime {
         request: RunRequest,
         sink: &dyn EventSink,
     ) -> Result<(RunHandle, AgentRunResult), AgentLoopError> {
-        let agent_id = request.agent_id.unwrap_or_else(|| "default".to_string());
+        let RunRequest {
+            agent_id,
+            thread_id,
+            messages: request_messages,
+            overrides,
+            decisions,
+        } = request;
+        let agent_id = agent_id.unwrap_or_else(|| "default".to_string());
 
         // Create runtime infrastructure
         let store = crate::state::StateStore::new();
@@ -198,30 +200,26 @@ impl AgentRuntime {
             .map_err(AgentLoopError::PhaseError)?;
 
         // Load existing thread messages
-        let mut messages = if let Some(ref ts) = self.thread_store {
-            ts.load_messages(&request.thread_id)
+        let mut messages = if let Some(ref ts) = self.storage {
+            ts.load_messages(&thread_id)
                 .await
-                .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?
+                .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
                 .unwrap_or_default()
         } else {
             vec![]
         };
-        messages.extend(request.messages);
+        messages.extend(request_messages);
 
         // Apply resume decisions to state if present
-        if !request.decisions.is_empty() {
-            prepare_resume(
-                &store,
-                request.decisions,
-                ToolCallResumeMode::ReplayToolCall,
-            )
-            .map_err(AgentLoopError::PhaseError)?;
+        if !decisions.is_empty() {
+            prepare_resume(&store, decisions, ToolCallResumeMode::ReplayToolCall)
+                .map_err(AgentLoopError::PhaseError)?;
         }
 
         // Create run identity
         let run_id = uuid::Uuid::now_v7().to_string();
         let run_identity = RunIdentity::new(
-            request.thread_id.clone(),
+            thread_id.clone(),
             None,
             run_id.clone(),
             None,
@@ -230,29 +228,31 @@ impl AgentRuntime {
         );
 
         // Create channels for external control
-        let (handle, cancellation_token, _decision_rx) =
-            self.create_run_channels(run_id, request.thread_id.clone(), agent_id.clone());
+        let (handle, cancellation_token, decision_rx) =
+            self.create_run_channels(run_id, thread_id.clone(), agent_id.clone());
 
         // Register active run
-        self.register_run(&request.thread_id, handle.clone())
+        self.register_run(&thread_id, handle.clone())
             .map_err(AgentLoopError::PhaseError)?;
 
         // Execute the loop
-        let thread_store_ref = self.thread_store.as_deref();
-        let result = crate::agent::loop_runner::run_agent_loop(
+        let checkpoint_store_ref = self.storage.as_deref();
+        let result = run_agent_loop_controlled(
             self.resolver.as_ref(),
             &agent_id,
             &phase_runtime,
             sink,
-            thread_store_ref,
+            checkpoint_store_ref,
             messages,
             run_identity,
             Some(cancellation_token),
+            Some(decision_rx),
+            overrides,
         )
         .await;
 
         // Unregister active run
-        self.unregister_run(&request.thread_id);
+        self.unregister_run(&thread_id);
 
         Ok((handle, result?))
     }
@@ -296,10 +296,10 @@ impl AgentRuntime {
     ) -> (
         RunHandle,
         CancellationToken,
-        mpsc::Receiver<(String, ToolCallResume)>,
+        mpsc::UnboundedReceiver<(String, ToolCallResume)>,
     ) {
         let token = CancellationToken::new();
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::unbounded();
 
         let handle = RunHandle {
             run_id,
@@ -337,5 +337,288 @@ impl AgentRuntime {
     /// Unregister an active run when it completes.
     pub(crate) fn unregister_run(&self, thread_id: &str) {
         self.active_runs.remove(thread_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::config::AgentConfig;
+    use crate::agent::loop_runner::build_agent_env;
+    use crate::contract::content::ContentBlock;
+    use crate::contract::event_sink::NullEventSink;
+    use crate::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
+    use crate::contract::inference::{StopReason, StreamResult};
+    use crate::contract::message::Message;
+    use crate::contract::storage::ThreadRunStore;
+    use crate::contract::storage_mem::InMemoryThreadRunStore;
+    use crate::contract::suspension::ResumeDecisionAction;
+    use crate::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
+    use crate::runtime::ResolvedAgent;
+    use async_trait::async_trait;
+    use serde_json::{Value, json};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct ScriptedLlm {
+        responses: Mutex<Vec<StreamResult>>,
+        seen_overrides: Mutex<Vec<Option<InferenceOverride>>>,
+    }
+
+    impl ScriptedLlm {
+        fn new(responses: Vec<StreamResult>) -> Self {
+            Self {
+                responses: Mutex::new(responses),
+                seen_overrides: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmExecutor for ScriptedLlm {
+        async fn execute(
+            &self,
+            request: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            self.seen_overrides
+                .lock()
+                .expect("lock poisoned")
+                .push(request.overrides.clone());
+            let mut responses = self.responses.lock().expect("lock poisoned");
+            if responses.is_empty() {
+                Ok(StreamResult {
+                    content: vec![ContentBlock::text("done")],
+                    tool_calls: vec![],
+                    usage: None,
+                    stop_reason: Some(StopReason::EndTurn),
+                })
+            } else {
+                Ok(responses.remove(0))
+            }
+        }
+
+        fn name(&self) -> &str {
+            "scripted"
+        }
+    }
+
+    struct ToggleSuspendTool {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Tool for ToggleSuspendTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("dangerous", "dangerous", "suspend then succeed")
+        }
+
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Ok(ToolResult::suspended("dangerous", "needs approval"))
+            } else {
+                Ok(ToolResult::success_with_message(
+                    "dangerous",
+                    args,
+                    "approved",
+                ))
+            }
+        }
+    }
+
+    struct FixedResolver {
+        agent: AgentConfig,
+    }
+
+    impl AgentResolver for FixedResolver {
+        fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, StateError> {
+            let env = build_agent_env(&[], &self.agent)?;
+            Ok(ResolvedAgent {
+                config: self.agent.clone(),
+                env,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn run_request_overrides_are_forwarded_to_inference() {
+        let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+            content: vec![ContentBlock::text("ok")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+        }]));
+        let resolver = Arc::new(FixedResolver {
+            agent: AgentConfig::new("agent", "m", "sys", llm.clone()),
+        });
+        let runtime = AgentRuntime::new(resolver);
+        let sink = NullEventSink;
+        let override_req = InferenceOverride {
+            temperature: Some(0.3),
+            max_tokens: Some(77),
+            ..Default::default()
+        };
+
+        let (_handle, result) = runtime
+            .run(
+                RunRequest {
+                    agent_id: Some("agent".into()),
+                    thread_id: "thread-ovr".into(),
+                    messages: vec![Message::user("hi")],
+                    overrides: Some(override_req.clone()),
+                    decisions: vec![],
+                },
+                &sink,
+            )
+            .await
+            .expect("run should succeed");
+
+        assert_eq!(
+            result.termination,
+            crate::contract::lifecycle::TerminationReason::NaturalEnd
+        );
+        let seen = llm.seen_overrides.lock().expect("lock poisoned");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            seen[0].as_ref().and_then(|o| o.temperature),
+            override_req.temperature
+        );
+        assert_eq!(
+            seen[0].as_ref().and_then(|o| o.max_tokens),
+            override_req.max_tokens
+        );
+    }
+
+    #[tokio::test]
+    async fn send_decisions_resumes_waiting_run() {
+        let llm = Arc::new(ScriptedLlm::new(vec![
+            StreamResult {
+                content: vec![ContentBlock::text("calling tool")],
+                tool_calls: vec![crate::contract::message::ToolCall::new(
+                    "c1",
+                    "dangerous",
+                    json!({"x": 1}),
+                )],
+                usage: None,
+                stop_reason: Some(StopReason::ToolUse),
+            },
+            StreamResult {
+                content: vec![ContentBlock::text("finished")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+            },
+        ]));
+        let tool = Arc::new(ToggleSuspendTool {
+            calls: AtomicUsize::new(0),
+        });
+        let resolver = Arc::new(FixedResolver {
+            agent: AgentConfig::new("agent", "m", "sys", llm).with_tool(tool),
+        });
+        let runtime = Arc::new(AgentRuntime::new(resolver));
+
+        let run_task = {
+            let runtime = Arc::clone(&runtime);
+            tokio::spawn(async move {
+                let sink = NullEventSink;
+                runtime
+                    .run(
+                        RunRequest {
+                            agent_id: Some("agent".into()),
+                            thread_id: "thread-live".into(),
+                            messages: vec![Message::user("go")],
+                            overrides: None,
+                            decisions: vec![],
+                        },
+                        &sink,
+                    )
+                    .await
+            })
+        };
+
+        let mut sent = false;
+        for _ in 0..40 {
+            if runtime.send_decisions(
+                "thread-live",
+                vec![(
+                    "c1".into(),
+                    ToolCallResume {
+                        decision_id: "d1".into(),
+                        action: ResumeDecisionAction::Resume,
+                        result: Value::Null,
+                        reason: None,
+                        updated_at: 1,
+                    },
+                )],
+            ) {
+                sent = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(sent, "should send decision while run is active");
+
+        let (_handle, result) = run_task
+            .await
+            .expect("join should succeed")
+            .expect("run should succeed");
+        assert_eq!(
+            result.termination,
+            crate::contract::lifecycle::TerminationReason::NaturalEnd
+        );
+    }
+
+    #[tokio::test]
+    async fn checkpoint_persists_state_and_thread_together() {
+        let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+            content: vec![ContentBlock::text("ok")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+        }]));
+        let resolver = Arc::new(FixedResolver {
+            agent: AgentConfig::new("agent", "m", "sys", llm),
+        });
+        let store = Arc::new(InMemoryThreadRunStore::new());
+        let runtime = AgentRuntime::new(resolver)
+            .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>);
+        let sink = NullEventSink;
+
+        let (_handle, result) = runtime
+            .run(
+                RunRequest {
+                    agent_id: Some("agent".into()),
+                    thread_id: "thread-tx".into(),
+                    messages: vec![Message::user("hi")],
+                    overrides: None,
+                    decisions: vec![],
+                },
+                &sink,
+            )
+            .await
+            .expect("run should succeed");
+        assert_eq!(
+            result.termination,
+            crate::contract::lifecycle::TerminationReason::NaturalEnd
+        );
+
+        let latest = store
+            .latest_run("thread-tx")
+            .await
+            .expect("latest run lookup")
+            .expect("run persisted");
+        assert_eq!(latest.thread_id, "thread-tx");
+        assert!(latest.state.is_some(), "state snapshot should be persisted");
+
+        let msgs = store
+            .load_messages("thread-tx")
+            .await
+            .expect("load messages")
+            .expect("thread should exist");
+        assert!(!msgs.is_empty());
     }
 }

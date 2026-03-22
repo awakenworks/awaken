@@ -9,9 +9,10 @@ use crate::contract::event::AgentEvent;
 use crate::contract::event_sink::EventSink;
 use crate::contract::executor::InferenceRequest;
 use crate::contract::identity::RunIdentity;
-use crate::contract::inference::LLMResponse;
+use crate::contract::inference::{InferenceOverride, LLMResponse};
 use crate::contract::lifecycle::{RunStatus, TerminationReason};
 use crate::contract::message::{Message, Role, ToolCall, gen_message_id};
+use crate::contract::storage::{RunRecord, ThreadRunStore};
 use crate::contract::suspension::{
     ResumeDecisionAction, ToolCallOutcome, ToolCallResume, ToolCallResumeMode, ToolCallStatus,
 };
@@ -22,6 +23,8 @@ use crate::runtime::{
     AgentResolver, CancellationToken, ExecutionEnv, PhaseContext, PhaseRuntime, ResolvedAgent,
 };
 use crate::state::{MutationBatch, StateCommand};
+use futures::StreamExt;
+use futures::channel::mpsc::UnboundedReceiver;
 
 use super::config::AgentConfig;
 use super::state::{
@@ -56,6 +59,8 @@ impl crate::plugins::Plugin for LoopStatePlugin {
 pub enum AgentLoopError {
     #[error("inference failed: {0}")]
     InferenceFailed(String),
+    #[error("storage failed: {0}")]
+    StorageError(String),
     #[error("phase error: {0}")]
     PhaseError(#[from] crate::error::StateError),
     #[error("invalid resume: {0}")]
@@ -117,13 +122,46 @@ pub async fn run_agent_loop(
     initial_agent_id: &str,
     runtime: &PhaseRuntime,
     sink: &dyn EventSink,
-    thread_store: Option<&dyn crate::contract::storage::ThreadStore>,
+    checkpoint_store: Option<&dyn ThreadRunStore>,
     initial_messages: Vec<Message>,
     run_identity: RunIdentity,
     cancellation_token: Option<CancellationToken>,
 ) -> Result<AgentRunResult, AgentLoopError> {
+    run_agent_loop_controlled(
+        resolver,
+        initial_agent_id,
+        runtime,
+        sink,
+        checkpoint_store,
+        initial_messages,
+        run_identity,
+        cancellation_token,
+        None,
+        None,
+    )
+    .await
+}
+
+/// Agent loop implementation with runtime control channels.
+///
+/// Prefer calling through `AgentRuntime::run()` in production code.
+pub async fn run_agent_loop_controlled(
+    resolver: &dyn AgentResolver,
+    initial_agent_id: &str,
+    runtime: &PhaseRuntime,
+    sink: &dyn EventSink,
+    checkpoint_store: Option<&dyn ThreadRunStore>,
+    initial_messages: Vec<Message>,
+    run_identity: RunIdentity,
+    cancellation_token: Option<CancellationToken>,
+    decision_rx: Option<UnboundedReceiver<(String, ToolCallResume)>>,
+    initial_overrides: Option<InferenceOverride>,
+) -> Result<AgentRunResult, AgentLoopError> {
     let store = runtime.store();
     let mut messages: Vec<Arc<Message>> = initial_messages.into_iter().map(Arc::new).collect();
+    let run_overrides = initial_overrides;
+    let mut decision_rx = decision_rx;
+    let run_created_at = now_ms();
 
     // Resolve initial agent
     let ResolvedAgent {
@@ -236,7 +274,14 @@ pub async fn run_agent_loop(
         }
 
         // Consume loop actions from PendingScheduledActions before building request
-        let overrides = consume_inference_overrides(store)?;
+        let mut overrides = run_overrides.clone();
+        if let Some(runtime_overrides) = consume_inference_overrides(store)? {
+            if let Some(merged) = overrides.as_mut() {
+                merged.merge(runtime_overrides);
+            } else {
+                overrides = Some(runtime_overrides);
+            }
+        }
         let context_msgs = consume_context_messages(store, steps)?;
 
         // Build message list: system prompt + conversation history
@@ -298,9 +343,10 @@ pub async fn run_agent_loop(
                 runtime,
                 &env,
                 sink,
-                thread_store,
+                checkpoint_store,
                 &messages,
                 &run_identity,
+                run_created_at,
             )
             .await?;
             break TerminationReason::NaturalEnd;
@@ -469,12 +515,35 @@ pub async fn run_agent_loop(
                 runtime,
                 &env,
                 sink,
-                thread_store,
+                checkpoint_store,
                 &messages,
                 &run_identity,
+                run_created_at,
             )
             .await?;
-            break TerminationReason::Suspended;
+
+            match wait_for_resume_or_cancel(
+                decision_rx.as_mut(),
+                cancellation_token.as_ref(),
+                store,
+                &agent,
+                &run_identity,
+                &mut messages,
+            )
+            .await?
+            {
+                WaitOutcome::Resumed => {
+                    commit_update::<RunLifecycle>(
+                        store,
+                        RunLifecycleUpdate::SetRunning {
+                            updated_at: now_ms(),
+                        },
+                    )?;
+                    continue;
+                }
+                WaitOutcome::Cancelled => break TerminationReason::Cancelled,
+                WaitOutcome::NoDecisionChannel => break TerminationReason::Suspended,
+            }
         }
 
         complete_step(
@@ -482,9 +551,10 @@ pub async fn run_agent_loop(
             runtime,
             &env,
             sink,
-            thread_store,
+            checkpoint_store,
             &messages,
             &run_identity,
+            run_created_at,
         )
         .await?;
         if let Some(reason) = check_termination(store) {
@@ -508,6 +578,15 @@ pub async fn run_agent_loop(
         .run_phase_with_context(&env, make_ctx(Phase::RunEnd, &messages, &run_identity))
         .await?;
 
+    persist_checkpoint(
+        store,
+        checkpoint_store,
+        messages.as_slice(),
+        &run_identity,
+        run_created_at,
+    )
+    .await?;
+
     let response = messages
         .iter()
         .rev()
@@ -528,6 +607,12 @@ pub async fn run_agent_loop(
         termination,
         steps,
     })
+}
+
+enum WaitOutcome {
+    Resumed,
+    Cancelled,
+    NoDecisionChannel,
 }
 
 /// Prepare tool call states for resume. Call before `run_agent_loop`.
@@ -632,6 +717,53 @@ async fn detect_and_replay_resume(
     Ok(())
 }
 
+async fn wait_for_resume_or_cancel(
+    decision_rx: Option<&mut UnboundedReceiver<(String, ToolCallResume)>>,
+    cancellation_token: Option<&CancellationToken>,
+    store: &crate::state::StateStore,
+    agent: &AgentConfig,
+    run_identity: &RunIdentity,
+    messages: &mut Vec<Arc<Message>>,
+) -> Result<WaitOutcome, AgentLoopError> {
+    let Some(rx) = decision_rx else {
+        return Ok(WaitOutcome::NoDecisionChannel);
+    };
+
+    loop {
+        if cancellation_token.is_some_and(|t| t.is_cancelled()) {
+            return Ok(WaitOutcome::Cancelled);
+        }
+
+        let Some(first) = rx.next().await else {
+            return Ok(WaitOutcome::NoDecisionChannel);
+        };
+        let mut decisions = vec![first];
+        loop {
+            match rx.try_recv() {
+                Ok(v) => decisions.push(v),
+                Err(_) => break,
+            }
+        }
+
+        prepare_resume(store, decisions, ToolCallResumeMode::ReplayToolCall)?;
+        detect_and_replay_resume(agent, store, run_identity, messages).await?;
+        if !has_suspended_calls(store) {
+            return Ok(WaitOutcome::Resumed);
+        }
+    }
+}
+
+fn has_suspended_calls(store: &crate::state::StateStore) -> bool {
+    store
+        .read::<ToolCallStates>()
+        .map(|s| {
+            s.calls
+                .values()
+                .any(|v| v.status == ToolCallStatus::Suspended)
+        })
+        .unwrap_or(false)
+}
+
 // -- Helpers --
 
 /// Execute a single tool, returning ToolResult (never crashes the loop).
@@ -659,9 +791,10 @@ async fn complete_step(
     runtime: &PhaseRuntime,
     env: &ExecutionEnv,
     sink: &dyn EventSink,
-    thread_store: Option<&dyn crate::contract::storage::ThreadStore>,
+    checkpoint_store: Option<&dyn ThreadRunStore>,
     messages: &[Arc<Message>],
     run_identity: &RunIdentity,
+    run_created_at: u64,
 ) -> Result<(), AgentLoopError> {
     commit_update::<RunLifecycle>(
         store,
@@ -674,14 +807,57 @@ async fn complete_step(
         .with_messages(messages.to_vec());
     runtime.run_phase_with_context(&env, ctx).await?;
 
-    // Checkpoint: persist current messages (includes compaction if it happened)
-    if let Some(ts) = thread_store {
-        let msgs: Vec<Message> = messages.iter().map(|m| (**m).clone()).collect();
-        let _ = ts.replace_messages(&run_identity.thread_id, &msgs).await;
-    }
+    persist_checkpoint(
+        store,
+        checkpoint_store,
+        messages,
+        run_identity,
+        run_created_at,
+    )
+    .await?;
 
     sink.emit(AgentEvent::StepEnd).await;
     Ok(())
+}
+
+async fn persist_checkpoint(
+    store: &crate::state::StateStore,
+    checkpoint_store: Option<&dyn ThreadRunStore>,
+    messages: &[Arc<Message>],
+    run_identity: &RunIdentity,
+    run_created_at: u64,
+) -> Result<(), AgentLoopError> {
+    let Some(storage) = checkpoint_store else {
+        return Ok(());
+    };
+
+    let lifecycle = store.read::<RunLifecycle>().unwrap_or_default();
+    let state = store
+        .export_persisted()
+        .map_err(AgentLoopError::PhaseError)?;
+    let record = RunRecord {
+        run_id: run_identity.run_id.clone(),
+        thread_id: run_identity.thread_id.clone(),
+        agent_id: run_identity.agent_id.clone(),
+        parent_run_id: run_identity.parent_run_id.clone(),
+        status: lifecycle.status,
+        termination_code: lifecycle.done_reason.clone(),
+        created_at: run_created_at / 1000,
+        updated_at: if lifecycle.updated_at == 0 {
+            run_created_at / 1000
+        } else {
+            lifecycle.updated_at / 1000
+        },
+        steps: lifecycle.step_count as usize,
+        input_tokens: 0,
+        output_tokens: 0,
+        state: Some(state),
+    };
+    let msgs: Vec<Message> = messages.iter().map(|m| (**m).clone()).collect();
+    storage
+        .checkpoint(&run_identity.thread_id, &msgs, &record)
+        .await
+        .map_err(|e| AgentLoopError::StorageError(e.to_string()))
 }
 
 fn commit_update<S: crate::state::StateKey>(

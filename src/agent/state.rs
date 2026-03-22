@@ -35,6 +35,9 @@ pub enum RunLifecycleUpdate {
     SetWaiting {
         updated_at: u64,
     },
+    SetRunning {
+        updated_at: u64,
+    },
     Done {
         done_reason: String,
         updated_at: u64,
@@ -45,7 +48,9 @@ impl RunLifecycleUpdate {
     /// The target `RunStatus` this update will produce.
     pub fn target_status(&self) -> RunStatus {
         match self {
-            Self::Start { .. } | Self::StepCompleted { .. } => RunStatus::Running,
+            Self::Start { .. } | Self::StepCompleted { .. } | Self::SetRunning { .. } => {
+                RunStatus::Running
+            }
             Self::SetWaiting { .. } => RunStatus::Waiting,
             Self::Done { .. } => RunStatus::Done,
         }
@@ -83,6 +88,10 @@ impl StateKey for RunLifecycle {
             }
             RunLifecycleUpdate::SetWaiting { updated_at } => {
                 value.status = RunStatus::Waiting;
+                value.updated_at = updated_at;
+            }
+            RunLifecycleUpdate::SetRunning { updated_at } => {
+                value.status = RunStatus::Running;
                 value.updated_at = updated_at;
             }
             RunLifecycleUpdate::Done {
