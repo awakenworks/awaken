@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use awaken_contract::contract::storage::{MailboxStore, RunStore, ThreadRunStore, ThreadStore};
+use awaken_contract::contract::storage::{MailboxStore, RunStore, ThreadStore};
 use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
 };
@@ -154,7 +154,6 @@ async fn main() {
         store.clone() as Arc<dyn ThreadStore>,
         store.clone() as Arc<dyn RunStore>,
         store.clone() as Arc<dyn MailboxStore>,
-        store.clone() as Arc<dyn ThreadRunStore>,
         resolver,
         ServerConfig {
             address: addr.clone(),

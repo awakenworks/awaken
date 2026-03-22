@@ -157,13 +157,14 @@ async fn get_thread_messages(
     Path(id): Path<String>,
     Query(params): Query<MessageQueryParams>,
 ) -> Result<Json<Value>, ApiError> {
-    let messages = st
-        .thread_run_store
-        .load_messages(&id)
+    let thread = st
+        .thread_store
+        .load_thread(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or(ApiError::ThreadNotFound(id))?;
 
+    let messages = thread.messages;
     let offset = params.offset.unwrap_or(0);
     let limit = params.limit.clamp(1, 200);
     let total = messages.len();
@@ -284,9 +285,7 @@ async fn get_run(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let record = st
-        .run_store
-        .load_run(&id)
+    let record = crate::services::run_service::get_run(st.run_store.as_ref(), &id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or(ApiError::RunNotFound(id))?;

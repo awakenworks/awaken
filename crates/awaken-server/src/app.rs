@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use awaken_contract::contract::storage::{MailboxStore, RunStore, ThreadRunStore, ThreadStore};
+use awaken_contract::contract::storage::{MailboxStore, RunStore, ThreadStore};
 use awaken_runtime::{AgentResolver, AgentRuntime};
 use serde::{Deserialize, Serialize};
 
@@ -40,8 +40,6 @@ pub struct AppState {
     pub run_store: Arc<dyn RunStore>,
     /// Mailbox persistence.
     pub mailbox_store: Arc<dyn MailboxStore>,
-    /// Thread+Run checkpoint store (atomic operations).
-    pub thread_run_store: Arc<dyn ThreadRunStore>,
     /// Agent resolver for protocol-specific lookups.
     pub resolver: Arc<dyn AgentResolver>,
     /// Server configuration.
@@ -55,7 +53,6 @@ impl AppState {
         thread_store: Arc<dyn ThreadStore>,
         run_store: Arc<dyn RunStore>,
         mailbox_store: Arc<dyn MailboxStore>,
-        thread_run_store: Arc<dyn ThreadRunStore>,
         resolver: Arc<dyn AgentResolver>,
         config: ServerConfig,
     ) -> Self {
@@ -64,7 +61,6 @@ impl AppState {
             thread_store,
             run_store,
             mailbox_store,
-            thread_run_store,
             resolver,
             config,
         }
