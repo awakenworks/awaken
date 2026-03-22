@@ -338,14 +338,17 @@ mod tests {
 
         // Checkpoint should go to NATS, not inner store
         writer.checkpoint("t-1", &messages, &run).await.unwrap();
-        let loaded = inner.load_messages("t-1").await.unwrap();
+        let loaded = ThreadRunStore::load_messages(&*inner, "t-1").await.unwrap();
         assert!(loaded.is_none(), "inner store should not have data yet");
 
         // Flush should persist to inner store
         let flushed = writer.flush("t-1").await.unwrap();
         assert!(flushed > 0);
 
-        let loaded = inner.load_messages("t-1").await.unwrap().unwrap();
+        let loaded = ThreadRunStore::load_messages(&*inner, "t-1")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.len(), 2);
 
         let loaded_run = inner.load_run("run-1").await.unwrap().unwrap();
@@ -389,7 +392,10 @@ mod tests {
         let recovered = writer2.recover().await.unwrap();
         assert!(recovered > 0);
 
-        let loaded = inner.load_messages("t-recover").await.unwrap().unwrap();
+        let loaded = ThreadRunStore::load_messages(&*inner, "t-recover")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].text(), "recover-me");
     }

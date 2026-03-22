@@ -175,6 +175,68 @@ impl ThreadStore for PostgresStore {
             .map_err(|e| StorageError::Io(e.to_string()))?;
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
+
+    async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
+        self.ensure_schema().await?;
+        let sql = format!(
+            "SELECT data FROM {} WHERE thread_id = $1 ORDER BY updated_at DESC LIMIT 1",
+            self.messages_table
+        );
+        let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
+            .bind(thread_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        match row {
+            Some((data,)) => {
+                let messages: Vec<Message> = serde_json::from_value(data)
+                    .map_err(|e| StorageError::Serialization(e.to_string()))?;
+                Ok(Some(messages))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn save_messages(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+    ) -> Result<(), StorageError> {
+        self.ensure_schema().await?;
+        let msg_data = serde_json::to_value(messages)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+
+        let delete_sql = format!("DELETE FROM {} WHERE thread_id = $1", self.messages_table);
+        let insert_sql = format!(
+            "INSERT INTO {} (thread_id, data) VALUES ($1, $2)",
+            self.messages_table
+        );
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        sqlx::query(&delete_sql)
+            .bind(thread_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        sqlx::query(&insert_sql)
+            .bind(thread_id)
+            .bind(&msg_data)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // ── RunStore ────────────────────────────────────────────────────────
@@ -541,25 +603,7 @@ impl MailboxStore for PostgresStore {
 #[async_trait]
 impl ThreadRunStore for PostgresStore {
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
-        self.ensure_schema().await?;
-        let sql = format!(
-            "SELECT data FROM {} WHERE thread_id = $1 ORDER BY updated_at DESC LIMIT 1",
-            self.messages_table
-        );
-        let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
-            .bind(thread_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| StorageError::Io(e.to_string()))?;
-
-        match row {
-            Some((data,)) => {
-                let messages: Vec<Message> = serde_json::from_value(data)
-                    .map_err(|e| StorageError::Serialization(e.to_string()))?;
-                Ok(Some(messages))
-            }
-            None => Ok(None),
-        }
+        ThreadStore::load_messages(self, thread_id).await
     }
 
     async fn checkpoint(

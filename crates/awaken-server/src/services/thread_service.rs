@@ -68,6 +68,9 @@ mod tests {
     #[derive(Default)]
     struct MockThreadStore {
         threads: std::sync::RwLock<std::collections::HashMap<String, Thread>>,
+        messages: std::sync::RwLock<
+            std::collections::HashMap<String, Vec<awaken_contract::contract::message::Message>>,
+        >,
     }
 
     #[async_trait::async_trait]
@@ -93,6 +96,26 @@ mod tests {
             let mut ids: Vec<String> = guard.keys().cloned().collect();
             ids.sort();
             Ok(ids.into_iter().skip(offset).take(limit).collect())
+        }
+
+        async fn load_messages(
+            &self,
+            thread_id: &str,
+        ) -> Result<Option<Vec<awaken_contract::contract::message::Message>>, StorageError>
+        {
+            Ok(self.messages.read().unwrap().get(thread_id).cloned())
+        }
+
+        async fn save_messages(
+            &self,
+            thread_id: &str,
+            messages: &[awaken_contract::contract::message::Message],
+        ) -> Result<(), StorageError> {
+            self.messages
+                .write()
+                .unwrap()
+                .insert(thread_id.to_owned(), messages.to_vec());
+            Ok(())
         }
     }
 

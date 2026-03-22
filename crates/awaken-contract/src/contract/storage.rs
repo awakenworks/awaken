@@ -123,6 +123,9 @@ pub struct RunPage {
 // ── ThreadStore ─────────────────────────────────────────────────────
 
 /// Thread read/write persistence.
+///
+/// Thread metadata and messages are stored separately. Messages have a
+/// single source of truth through `load_messages` / `save_messages`.
 #[async_trait]
 pub trait ThreadStore: Send + Sync {
     /// Load a thread by ID. Returns `None` if not found.
@@ -133,6 +136,16 @@ pub trait ThreadStore: Send + Sync {
 
     /// List thread IDs with pagination.
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError>;
+
+    /// Load all messages for a thread. Returns `None` if no messages exist.
+    async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError>;
+
+    /// Persist messages for a thread (full overwrite).
+    async fn save_messages(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+    ) -> Result<(), StorageError>;
 }
 
 // ── RunStore ────────────────────────────────────────────────────────
@@ -226,6 +239,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct MockThreadStore {
         threads: RwLock<HashMap<String, Thread>>,
+        messages: RwLock<HashMap<String, Vec<Message>>>,
     }
 
     #[async_trait]
@@ -260,17 +274,40 @@ mod tests {
             ids.sort();
             Ok(ids.into_iter().skip(offset).take(limit).collect())
         }
+
+        async fn load_messages(
+            &self,
+            thread_id: &str,
+        ) -> Result<Option<Vec<Message>>, StorageError> {
+            let guard = self
+                .messages
+                .read()
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+            Ok(guard.get(thread_id).cloned())
+        }
+
+        async fn save_messages(
+            &self,
+            thread_id: &str,
+            messages: &[Message],
+        ) -> Result<(), StorageError> {
+            let mut guard = self
+                .messages
+                .write()
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+            guard.insert(thread_id.to_owned(), messages.to_vec());
+            Ok(())
+        }
     }
 
     #[tokio::test]
     async fn thread_store_save_and_load() {
         let store = MockThreadStore::default();
-        let thread = Thread::with_id("t-1").with_message(Message::user("hello"));
+        let thread = Thread::with_id("t-1");
 
         store.save_thread(&thread).await.unwrap();
         let loaded = store.load_thread("t-1").await.unwrap().unwrap();
         assert_eq!(loaded.id, "t-1");
-        assert_eq!(loaded.message_count(), 1);
     }
 
     #[tokio::test]
@@ -291,6 +328,24 @@ mod tests {
         assert_eq!(page1.len(), 3);
         let page2 = store.list_threads(3, 3).await.unwrap();
         assert_eq!(page2.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn thread_store_save_and_load_messages() {
+        let store = MockThreadStore::default();
+        let msgs = vec![Message::user("hello"), Message::assistant("hi")];
+        store.save_messages("t-1", &msgs).await.unwrap();
+
+        let loaded = store.load_messages("t-1").await.unwrap().unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].text(), "hello");
+    }
+
+    #[tokio::test]
+    async fn thread_store_load_messages_nonexistent() {
+        let store = MockThreadStore::default();
+        let result = store.load_messages("missing").await.unwrap();
+        assert!(result.is_none());
     }
 
     // ── Mock RunStore ──

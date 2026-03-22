@@ -63,12 +63,11 @@ async fn save_load_thread() {
     let Some(store) = make_store().await else {
         return;
     };
-    let thread = Thread::with_id("pg-t-1").with_message(Message::user("Hello"));
+    let thread = Thread::with_id("pg-t-1");
     store.save_thread(&thread).await.unwrap();
 
     let loaded = store.load_thread("pg-t-1").await.unwrap().unwrap();
     assert_eq!(loaded.id, "pg-t-1");
-    assert_eq!(loaded.message_count(), 1);
 }
 
 #[tokio::test]
@@ -103,16 +102,14 @@ async fn overwrite_thread() {
     let Some(store) = make_store().await else {
         return;
     };
-    let thread = Thread::with_id("pg-overwrite").with_message(Message::user("v1"));
+    let thread = Thread::with_id("pg-overwrite").with_title("v1");
     store.save_thread(&thread).await.unwrap();
 
-    let updated = Thread::with_id("pg-overwrite")
-        .with_message(Message::user("v1"))
-        .with_message(Message::assistant("v2"));
+    let updated = Thread::with_id("pg-overwrite").with_title("v2");
     store.save_thread(&updated).await.unwrap();
 
     let loaded = store.load_thread("pg-overwrite").await.unwrap().unwrap();
-    assert_eq!(loaded.message_count(), 2);
+    assert_eq!(loaded.metadata.title.as_deref(), Some("v2"));
 }
 
 // ========================================================================
@@ -250,7 +247,10 @@ async fn checkpoint_and_load() {
         .await
         .unwrap();
 
-    let loaded = store.load_messages("pg-cp-thread").await.unwrap().unwrap();
+    let loaded = ThreadRunStore::load_messages(&store, "pg-cp-thread")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(loaded.len(), 2);
 
     let loaded_run = ThreadRunStore::load_run(&store, "pg-cp-run")
@@ -284,7 +284,10 @@ async fn checkpoint_overwrites() {
         .await
         .unwrap();
 
-    let msgs = store.load_messages("pg-cp-ow").await.unwrap().unwrap();
+    let msgs = ThreadRunStore::load_messages(&store, "pg-cp-ow")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0].text(), "new");
 }

@@ -160,14 +160,20 @@ async fn get_thread_messages(
     Path(id): Path<String>,
     Query(params): Query<MessageQueryParams>,
 ) -> Result<Json<Value>, ApiError> {
-    let thread = st
-        .thread_store
+    // Verify thread exists
+    st.thread_store
         .load_thread(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or(ApiError::ThreadNotFound(id))?;
+        .ok_or(ApiError::ThreadNotFound(id.clone()))?;
 
-    let messages = thread.messages;
+    let messages = st
+        .thread_store
+        .load_messages(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .unwrap_or_default();
+
     let offset = params.offset.unwrap_or(0);
     let limit = params.limit.clamp(1, 200);
     let total = messages.len();

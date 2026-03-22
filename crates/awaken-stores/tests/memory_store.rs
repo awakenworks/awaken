@@ -44,13 +44,12 @@ fn make_mailbox_entry(id: &str, mailbox: &str) -> MailboxEntry {
 #[tokio::test]
 async fn save_load_thread() {
     let store = InMemoryStore::new();
-    let thread = Thread::with_id("t-1").with_message(Message::user("Hello"));
+    let thread = Thread::with_id("t-1");
 
     store.save_thread(&thread).await.unwrap();
     let loaded = store.load_thread("t-1").await.unwrap().unwrap();
 
     assert_eq!(loaded.id, "t-1");
-    assert_eq!(loaded.message_count(), 1);
 }
 
 #[tokio::test]
@@ -98,14 +97,14 @@ async fn list_threads_sorted() {
 #[tokio::test]
 async fn overwrite_thread() {
     let store = InMemoryStore::new();
-    let thread = Thread::with_id("t-1").with_message(Message::user("hello"));
+    let thread = Thread::with_id("t-1").with_title("v1");
     store.save_thread(&thread).await.unwrap();
 
-    let updated = thread.with_message(Message::assistant("hi"));
+    let updated = Thread::with_id("t-1").with_title("v2");
     store.save_thread(&updated).await.unwrap();
 
     let loaded = store.load_thread("t-1").await.unwrap().unwrap();
-    assert_eq!(loaded.message_count(), 2);
+    assert_eq!(loaded.metadata.title.as_deref(), Some("v2"));
 }
 
 #[tokio::test]
@@ -121,16 +120,12 @@ async fn thread_with_title() {
 #[tokio::test]
 async fn thread_serde_roundtrip_through_store() {
     let store = InMemoryStore::new();
-    let thread = Thread::with_id("t-1")
-        .with_title("Test")
-        .with_message(Message::user("hello"))
-        .with_message(Message::assistant("world"));
+    let thread = Thread::with_id("t-1").with_title("Test");
     store.save_thread(&thread).await.unwrap();
 
     let loaded = store.load_thread("t-1").await.unwrap().unwrap();
     assert_eq!(loaded.id, "t-1");
     assert_eq!(loaded.metadata.title.as_deref(), Some("Test"));
-    assert_eq!(loaded.message_count(), 2);
 }
 
 // ========================================================================
@@ -465,7 +460,10 @@ async fn checkpoint_persists_messages_and_run() {
 
     store.checkpoint("thread-x", &messages, &run).await.unwrap();
 
-    let loaded_messages = store.load_messages("thread-x").await.unwrap().unwrap();
+    let loaded_messages = ThreadRunStore::load_messages(&store, "thread-x")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(loaded_messages.len(), 2);
     assert_eq!(loaded_messages[0].text(), "u1");
     assert_eq!(loaded_messages[1].text(), "a1");
@@ -493,7 +491,10 @@ async fn checkpoint_overwrites_previous_messages() {
         .await
         .unwrap();
 
-    let msgs = store.load_messages("t-1").await.unwrap().unwrap();
+    let msgs = ThreadRunStore::load_messages(&store, "t-1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0].text(), "new");
 }
@@ -501,7 +502,9 @@ async fn checkpoint_overwrites_previous_messages() {
 #[tokio::test]
 async fn load_messages_nonexistent() {
     let store = InMemoryStore::new();
-    let result = store.load_messages("missing").await.unwrap();
+    let result = ThreadRunStore::load_messages(&store, "missing")
+        .await
+        .unwrap();
     assert!(result.is_none());
 }
 
@@ -632,7 +635,10 @@ async fn concurrent_checkpoint() {
     }
 
     // Messages should be from the last checkpoint (non-deterministic due to concurrency)
-    let msgs = store.load_messages("t-1").await.unwrap().unwrap();
+    let msgs = ThreadRunStore::load_messages(&*store, "t-1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(msgs.len(), 1);
 }
 
@@ -697,15 +703,15 @@ async fn checkpoint_run_visible_via_run_store() {
 }
 
 #[tokio::test]
-async fn thread_store_and_messages_are_independent() {
+async fn thread_store_and_checkpoint_share_messages() {
     let store = InMemoryStore::new();
 
     // Save a thread (ThreadStore)
-    let thread = Thread::with_id("t-1").with_message(Message::user("hello"));
+    let thread = Thread::with_id("t-1");
     store.save_thread(&thread).await.unwrap();
 
-    // ThreadRunStore messages are separate
-    let msgs = store.load_messages("t-1").await.unwrap();
+    // No messages yet
+    let msgs = ThreadStore::load_messages(&store, "t-1").await.unwrap();
     assert!(msgs.is_none());
 
     // Save messages via checkpoint
@@ -718,12 +724,17 @@ async fn thread_store_and_messages_are_independent() {
         .await
         .unwrap();
 
-    // Thread still has original message
-    let loaded = store.load_thread("t-1").await.unwrap().unwrap();
-    assert_eq!(loaded.messages[0].text(), "hello");
+    // Messages visible via both ThreadStore and ThreadRunStore
+    let msgs = ThreadStore::load_messages(&store, "t-1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(msgs[0].text(), "checkpoint msg");
 
-    // ThreadRunStore has checkpoint message
-    let msgs = store.load_messages("t-1").await.unwrap().unwrap();
+    let msgs = ThreadRunStore::load_messages(&store, "t-1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(msgs[0].text(), "checkpoint msg");
 }
 
@@ -740,41 +751,33 @@ async fn tool_call_message_roundtrip_via_save() {
         "search",
         serde_json::json!({"query": "rust"}),
     );
-    let thread = Thread::with_id("tool-rt")
-        .with_message(Message::user("Find info about Rust"))
-        .with_message(Message::assistant_with_tool_calls(
-            "Let me search for that.",
-            vec![tool_call],
-        ))
-        .with_message(Message::tool(
-            "call_1",
-            r#"{"result": "Rust is a language"}"#,
-        ))
-        .with_message(Message::assistant(
-            "Rust is a systems programming language.",
-        ));
+    let messages = vec![
+        Message::user("Find info about Rust"),
+        Message::assistant_with_tool_calls("Let me search for that.", vec![tool_call]),
+        Message::tool("call_1", r#"{"result": "Rust is a language"}"#),
+        Message::assistant("Rust is a systems programming language."),
+    ];
 
-    store.save_thread(&thread).await.unwrap();
-    let loaded = store.load_thread("tool-rt").await.unwrap().unwrap();
+    ThreadStore::save_messages(&store, "tool-rt", &messages)
+        .await
+        .unwrap();
+    let loaded = ThreadStore::load_messages(&store, "tool-rt")
+        .await
+        .unwrap()
+        .unwrap();
 
-    assert_eq!(loaded.message_count(), 4);
+    assert_eq!(loaded.len(), 4);
 
     // Assistant message with tool_calls
-    let calls = loaded.messages[1]
-        .tool_calls
-        .as_ref()
-        .expect("tool_calls lost");
+    let calls = loaded[1].tool_calls.as_ref().expect("tool_calls lost");
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].id, "call_1");
     assert_eq!(calls[0].name, "search");
     assert_eq!(calls[0].arguments, serde_json::json!({"query": "rust"}));
 
     // Tool response message
-    assert_eq!(loaded.messages[2].tool_call_id.as_deref(), Some("call_1"));
-    assert_eq!(
-        loaded.messages[2].text(),
-        r#"{"result": "Rust is a language"}"#
-    );
+    assert_eq!(loaded[2].tool_call_id.as_deref(), Some("call_1"));
+    assert_eq!(loaded[2].text(), r#"{"result": "Rust is a language"}"#);
 }
 
 #[tokio::test]
@@ -796,7 +799,10 @@ async fn tool_call_message_roundtrip_via_checkpoint() {
         .await
         .unwrap();
 
-    let loaded = store.load_messages("t-1").await.unwrap().unwrap();
+    let loaded = ThreadRunStore::load_messages(&store, "t-1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(loaded.len(), 2);
 
     let calls = loaded[0]
@@ -826,24 +832,27 @@ async fn multi_tool_call_roundtrip() {
             serde_json::json!({"url": "https://example.com"}),
         ),
     ];
-    let thread = Thread::with_id("multi-tool")
-        .with_message(Message::assistant_with_tool_calls("multi-tool call", calls))
-        .with_message(Message::tool("call_a", "search result"))
-        .with_message(Message::tool("call_b", "fetch result"));
+    let messages = vec![
+        Message::assistant_with_tool_calls("multi-tool call", calls),
+        Message::tool("call_a", "search result"),
+        Message::tool("call_b", "fetch result"),
+    ];
 
-    store.save_thread(&thread).await.unwrap();
-    let loaded = store.load_thread("multi-tool").await.unwrap().unwrap();
+    ThreadStore::save_messages(&store, "multi-tool", &messages)
+        .await
+        .unwrap();
+    let loaded = ThreadStore::load_messages(&store, "multi-tool")
+        .await
+        .unwrap()
+        .unwrap();
 
-    let tool_calls = loaded.messages[0]
-        .tool_calls
-        .as_ref()
-        .expect("tool_calls lost");
+    let tool_calls = loaded[0].tool_calls.as_ref().expect("tool_calls lost");
     assert_eq!(tool_calls.len(), 2);
     assert_eq!(tool_calls[0].id, "call_a");
     assert_eq!(tool_calls[1].id, "call_b");
 
-    assert_eq!(loaded.messages[1].tool_call_id.as_deref(), Some("call_a"));
-    assert_eq!(loaded.messages[2].tool_call_id.as_deref(), Some("call_b"));
+    assert_eq!(loaded[1].tool_call_id.as_deref(), Some("call_a"));
+    assert_eq!(loaded[2].tool_call_id.as_deref(), Some("call_b"));
 }
 
 // ========================================================================
@@ -1002,7 +1011,10 @@ async fn full_agent_run_via_checkpoint() {
         .unwrap();
 
     // Verify final state
-    let msgs = store.load_messages("t-1").await.unwrap().unwrap();
+    let msgs = ThreadRunStore::load_messages(&store, "t-1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(msgs.len(), 4);
     assert_eq!(msgs[0].text(), "What is 2+2?");
     assert_eq!(msgs[3].text(), "2 + 2 = 4");

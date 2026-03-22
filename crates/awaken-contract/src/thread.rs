@@ -5,8 +5,6 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::contract::message::Message;
-
 /// Thread metadata.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ThreadMetadata {
@@ -24,7 +22,10 @@ pub struct ThreadMetadata {
     pub custom: HashMap<String, Value>,
 }
 
-/// A persistent conversation thread.
+/// A persistent conversation thread (metadata only).
+///
+/// Messages are stored separately via `ThreadStore::load_messages` /
+/// `ThreadStore::save_messages` to maintain a single source of truth.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Thread {
     /// Unique thread identifier (UUID v7).
@@ -32,8 +33,6 @@ pub struct Thread {
     /// Thread metadata (timestamps, title, custom data).
     #[serde(default)]
     pub metadata: ThreadMetadata,
-    /// Ordered message history.
-    pub messages: Vec<Message>,
 }
 
 impl Thread {
@@ -42,7 +41,6 @@ impl Thread {
         Self {
             id: uuid::Uuid::now_v7().to_string(),
             metadata: ThreadMetadata::default(),
-            messages: Vec::new(),
         }
     }
 
@@ -51,7 +49,6 @@ impl Thread {
         Self {
             id: id.into(),
             metadata: ThreadMetadata::default(),
-            messages: Vec::new(),
         }
     }
 
@@ -60,25 +57,6 @@ impl Thread {
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.metadata.title = Some(title.into());
         self
-    }
-
-    /// Add a message.
-    #[must_use]
-    pub fn with_message(mut self, msg: Message) -> Self {
-        self.messages.push(msg);
-        self
-    }
-
-    /// Add multiple messages.
-    #[must_use]
-    pub fn with_messages(mut self, msgs: impl IntoIterator<Item = Message>) -> Self {
-        self.messages.extend(msgs);
-        self
-    }
-
-    /// Get the number of messages.
-    pub fn message_count(&self) -> usize {
-        self.messages.len()
     }
 }
 
@@ -98,7 +76,6 @@ mod tests {
         let thread = Thread::new();
         assert_eq!(thread.id.len(), 36);
         assert_eq!(&thread.id[14..15], "7", "should be UUID v7");
-        assert!(thread.messages.is_empty());
         assert!(thread.metadata.title.is_none());
     }
 
@@ -115,25 +92,6 @@ mod tests {
     }
 
     #[test]
-    fn thread_with_messages() {
-        let thread = Thread::new()
-            .with_message(Message::user("hello"))
-            .with_message(Message::assistant("hi"));
-        assert_eq!(thread.message_count(), 2);
-    }
-
-    #[test]
-    fn thread_with_messages_batch() {
-        let msgs = vec![
-            Message::user("a"),
-            Message::assistant("b"),
-            Message::user("c"),
-        ];
-        let thread = Thread::new().with_messages(msgs);
-        assert_eq!(thread.message_count(), 3);
-    }
-
-    #[test]
     fn thread_serialization_roundtrip() {
         let mut thread = Thread::with_id("t-1").with_title("My Thread");
         thread.metadata.created_at = Some(1000);
@@ -142,9 +100,6 @@ mod tests {
             .metadata
             .custom
             .insert("env".to_string(), json!("prod"));
-        let thread = thread
-            .with_message(Message::user("hello"))
-            .with_message(Message::assistant("world"));
 
         let json_str = serde_json::to_string(&thread).unwrap();
         let restored: Thread = serde_json::from_str(&json_str).unwrap();
@@ -154,7 +109,6 @@ mod tests {
         assert_eq!(restored.metadata.created_at, Some(1000));
         assert_eq!(restored.metadata.updated_at, Some(2000));
         assert_eq!(restored.metadata.custom["env"], json!("prod"));
-        assert_eq!(restored.message_count(), 2);
     }
 
     #[test]
@@ -180,7 +134,6 @@ mod tests {
     fn thread_default_is_new() {
         let thread = Thread::default();
         assert_eq!(thread.id.len(), 36);
-        assert!(thread.messages.is_empty());
     }
 
     #[test]
@@ -205,27 +158,9 @@ mod tests {
     }
 
     #[test]
-    fn thread_message_count_starts_at_zero() {
-        let thread = Thread::with_id("t-1");
-        assert_eq!(thread.message_count(), 0);
-    }
-
-    #[test]
-    fn thread_chained_with_message_accumulates() {
-        let thread = Thread::with_id("t-1")
-            .with_message(Message::user("a"))
-            .with_message(Message::assistant("b"))
-            .with_message(Message::user("c"));
-        assert_eq!(thread.message_count(), 3);
-    }
-
-    #[test]
     fn thread_with_title_chaining() {
-        let thread = Thread::with_id("t-1")
-            .with_title("Test")
-            .with_message(Message::user("hello"));
+        let thread = Thread::with_id("t-1").with_title("Test");
         assert_eq!(thread.metadata.title.as_deref(), Some("Test"));
-        assert_eq!(thread.message_count(), 1);
     }
 
     #[test]
@@ -243,32 +178,5 @@ mod tests {
         let json_str = serde_json::to_string(&thread).unwrap();
         // Empty custom map should be omitted
         assert!(!json_str.contains("custom"));
-    }
-
-    #[test]
-    fn thread_tool_call_messages_serde_roundtrip() {
-        let thread = Thread::with_id("t-1")
-            .with_message(Message::user("search for rust"))
-            .with_message(Message::assistant_with_tool_calls(
-                "Searching...",
-                vec![crate::contract::message::ToolCall::new(
-                    "call_1",
-                    "search",
-                    json!({"q": "rust"}),
-                )],
-            ))
-            .with_message(Message::tool("call_1", "Found results"));
-
-        let json_str = serde_json::to_string(&thread).unwrap();
-        let restored: Thread = serde_json::from_str(&json_str).unwrap();
-
-        assert_eq!(restored.message_count(), 3);
-        let tc = restored.messages[1]
-            .tool_calls
-            .as_ref()
-            .expect("tool_calls should survive roundtrip");
-        assert_eq!(tc[0].id, "call_1");
-        assert_eq!(tc[0].name, "search");
-        assert_eq!(restored.messages[2].tool_call_id.as_deref(), Some("call_1"));
     }
 }

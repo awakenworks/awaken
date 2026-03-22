@@ -19,8 +19,8 @@ use tokio::sync::RwLock;
 pub struct InMemoryStore {
     threads: RwLock<HashMap<String, Thread>>,
     runs: RwLock<HashMap<String, RunRecord>>,
-    /// Thread ID -> ordered messages (for ThreadRunStore).
-    thread_messages: RwLock<HashMap<String, Vec<Message>>>,
+    /// Thread ID -> ordered messages (single source of truth).
+    messages: RwLock<HashMap<String, Vec<Message>>>,
     /// Mailbox ID -> ordered queue of entries.
     mailbox: RwLock<BTreeMap<String, Vec<MailboxEntry>>>,
 }
@@ -52,6 +52,21 @@ impl ThreadStore for InMemoryStore {
         let mut ids: Vec<String> = guard.keys().cloned().collect();
         ids.sort();
         Ok(ids.into_iter().skip(offset).take(limit).collect())
+    }
+
+    async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
+        let guard = self.messages.read().await;
+        Ok(guard.get(thread_id).cloned())
+    }
+
+    async fn save_messages(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+    ) -> Result<(), StorageError> {
+        let mut guard = self.messages.write().await;
+        guard.insert(thread_id.to_owned(), messages.to_vec());
+        Ok(())
     }
 }
 
@@ -149,7 +164,7 @@ impl MailboxStore for InMemoryStore {
 #[async_trait]
 impl ThreadRunStore for InMemoryStore {
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
-        let guard = self.thread_messages.read().await;
+        let guard = self.messages.read().await;
         Ok(guard.get(thread_id).cloned())
     }
 
@@ -159,7 +174,7 @@ impl ThreadRunStore for InMemoryStore {
         messages: &[Message],
         run: &RunRecord,
     ) -> Result<(), StorageError> {
-        let mut msg_guard = self.thread_messages.write().await;
+        let mut msg_guard = self.messages.write().await;
         let mut run_guard = self.runs.write().await;
         msg_guard.insert(thread_id.to_owned(), messages.to_vec());
         run_guard.insert(run.run_id.clone(), run.clone());
@@ -217,12 +232,11 @@ mod tests {
     #[tokio::test]
     async fn thread_store_save_and_load() {
         let store = InMemoryStore::new();
-        let thread = Thread::with_id("t-1").with_message(Message::user("hello"));
+        let thread = Thread::with_id("t-1");
         store.save_thread(&thread).await.unwrap();
 
         let loaded = store.load_thread("t-1").await.unwrap().unwrap();
         assert_eq!(loaded.id, "t-1");
-        assert_eq!(loaded.message_count(), 1);
     }
 
     #[tokio::test]
@@ -248,14 +262,14 @@ mod tests {
     #[tokio::test]
     async fn thread_store_overwrite() {
         let store = InMemoryStore::new();
-        let thread = Thread::with_id("t-1").with_message(Message::user("hello"));
+        let thread = Thread::with_id("t-1").with_title("v1");
         store.save_thread(&thread).await.unwrap();
 
-        let updated = thread.with_message(Message::assistant("hi"));
+        let updated = Thread::with_id("t-1").with_title("v2");
         store.save_thread(&updated).await.unwrap();
 
         let loaded = store.load_thread("t-1").await.unwrap().unwrap();
-        assert_eq!(loaded.message_count(), 2);
+        assert_eq!(loaded.metadata.title.as_deref(), Some("v2"));
     }
 
     #[tokio::test]
@@ -496,7 +510,10 @@ mod tests {
 
         store.checkpoint("thread-x", &messages, &run).await.unwrap();
 
-        let loaded_messages = store.load_messages("thread-x").await.unwrap().unwrap();
+        let loaded_messages = ThreadRunStore::load_messages(&store, "thread-x")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded_messages.len(), 2);
         assert_eq!(loaded_messages[0].text(), "u1");
 
@@ -523,7 +540,10 @@ mod tests {
             .await
             .unwrap();
 
-        let msgs = store.load_messages("t-1").await.unwrap().unwrap();
+        let msgs = ThreadRunStore::load_messages(&store, "t-1")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].text(), "new");
     }
@@ -560,7 +580,9 @@ mod tests {
     #[tokio::test]
     async fn load_messages_nonexistent_thread() {
         let store = InMemoryStore::new();
-        let result = store.load_messages("missing").await.unwrap();
+        let result = ThreadRunStore::load_messages(&store, "missing")
+            .await
+            .unwrap();
         assert!(result.is_none());
     }
 

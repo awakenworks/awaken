@@ -200,6 +200,23 @@ impl ThreadStore for FileStore {
         stems.sort();
         Ok(stems.into_iter().skip(offset).take(limit).collect())
     }
+
+    async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
+        validate_id(thread_id, "thread id")?;
+        let path = self.messages_dir().join(format!("{thread_id}.json"));
+        read_json(&path).await
+    }
+
+    async fn save_messages(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+    ) -> Result<(), StorageError> {
+        validate_id(thread_id, "thread id")?;
+        let payload = serde_json::to_string_pretty(messages)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        atomic_write(&self.messages_dir(), &format!("{thread_id}.json"), &payload).await
+    }
 }
 
 // ── RunStore ────────────────────────────────────────────────────────
@@ -315,9 +332,7 @@ impl MailboxStore for FileStore {
 #[async_trait]
 impl ThreadRunStore for FileStore {
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
-        validate_id(thread_id, "thread id")?;
-        let path = self.messages_dir().join(format!("{thread_id}.json"));
-        read_json(&path).await
+        ThreadStore::load_messages(self, thread_id).await
     }
 
     async fn checkpoint(
@@ -403,12 +418,11 @@ mod tests {
     async fn thread_store_save_and_load() {
         let tmp = TempDir::new().unwrap();
         let store = FileStore::new(tmp.path());
-        let thread = Thread::with_id("t-1").with_message(Message::user("hello"));
+        let thread = Thread::with_id("t-1");
         store.save_thread(&thread).await.unwrap();
 
         let loaded = store.load_thread("t-1").await.unwrap().unwrap();
         assert_eq!(loaded.id, "t-1");
-        assert_eq!(loaded.message_count(), 1);
     }
 
     #[tokio::test]
@@ -439,14 +453,14 @@ mod tests {
     async fn thread_store_overwrite() {
         let tmp = TempDir::new().unwrap();
         let store = FileStore::new(tmp.path());
-        let thread = Thread::with_id("t-1").with_message(Message::user("hello"));
+        let thread = Thread::with_id("t-1").with_title("v1");
         store.save_thread(&thread).await.unwrap();
 
-        let updated = thread.with_message(Message::assistant("hi"));
+        let updated = Thread::with_id("t-1").with_title("v2");
         store.save_thread(&updated).await.unwrap();
 
         let loaded = store.load_thread("t-1").await.unwrap().unwrap();
-        assert_eq!(loaded.message_count(), 2);
+        assert_eq!(loaded.metadata.title.as_deref(), Some("v2"));
     }
 
     #[tokio::test]
@@ -566,7 +580,10 @@ mod tests {
 
         store.checkpoint("thread-x", &messages, &run).await.unwrap();
 
-        let loaded_messages = store.load_messages("thread-x").await.unwrap().unwrap();
+        let loaded_messages = ThreadRunStore::load_messages(&store, "thread-x")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded_messages.len(), 2);
 
         let loaded_run = ThreadRunStore::load_run(&store, "run-x")
@@ -592,7 +609,10 @@ mod tests {
             .await
             .unwrap();
 
-        let msgs = store.load_messages("t-1").await.unwrap().unwrap();
+        let msgs = ThreadRunStore::load_messages(&store, "t-1")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].text(), "new");
     }
@@ -601,7 +621,9 @@ mod tests {
     async fn load_messages_nonexistent() {
         let tmp = TempDir::new().unwrap();
         let store = FileStore::new(tmp.path());
-        let result = store.load_messages("missing").await.unwrap();
+        let result = ThreadRunStore::load_messages(&store, "missing")
+            .await
+            .unwrap();
         assert!(result.is_none());
     }
 
