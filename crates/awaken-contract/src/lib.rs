@@ -6,6 +6,7 @@ pub mod model;
 pub mod registry_spec;
 pub mod state;
 pub mod thread;
+pub mod tool_pattern;
 
 // ── error ──
 pub use error::{StateError, UnknownKeyPolicy};

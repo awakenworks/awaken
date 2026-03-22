@@ -16,9 +16,10 @@ pub use config::{
 };
 pub use plugin::PermissionPlugin;
 pub use rules::{
-    ArgMatcher, FieldCondition, MatchOp, PathSegment, PermissionEvaluation, PermissionRule,
-    PermissionRuleScope, PermissionRuleSource, PermissionRuleset, PermissionSubject,
-    ToolCallPattern, ToolMatcher, ToolPermissionBehavior, evaluate_tool_permission, parse_pattern,
+    ArgMatcher, FieldCondition, MatchOp, PathSegment, PatternParseError, PermissionEvaluation,
+    PermissionRule, PermissionRuleScope, PermissionRuleSource, PermissionRuleset,
+    PermissionSubject, ToolCallPattern, ToolMatcher, ToolPermissionBehavior,
+    evaluate_tool_permission, parse_pattern,
 };
 pub use state::{
     PermissionAction, PermissionOverrides, PermissionOverridesKey, PermissionPolicy,

@@ -1,0 +1,19 @@
+[package]
+name = "awaken-ext-reminder"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+awaken-contract = { workspace = true }
+awaken-runtime = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+
+[lints]
+workspace = true

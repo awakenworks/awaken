@@ -15,6 +15,8 @@ schemars = { workspace = true }
 jsonschema = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+glob-match = { workspace = true }
+regex = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "sync"] }

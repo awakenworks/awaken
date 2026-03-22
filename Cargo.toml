@@ -9,6 +9,7 @@ members = [
     "crates/awaken-ext-mcp",
     "crates/awaken",
     "crates/awaken-ext-skills",
+    "crates/awaken-ext-reminder",
     "crates/awaken-server",
     "examples",
 ]
@@ -26,6 +27,7 @@ awaken-ext-permission = { version = "0.1.0", path = "crates/awaken-ext-permissio
 awaken-ext-observability = { version = "0.1.0", path = "crates/awaken-ext-observability" }
 awaken-ext-mcp = { version = "0.1.0", path = "crates/awaken-ext-mcp" }
 awaken-ext-skills = { version = "0.1.0", path = "crates/awaken-ext-skills" }
+awaken-ext-reminder = { version = "0.1.0", path = "crates/awaken-ext-reminder" }
 awaken-server = { version = "0.1.0", path = "crates/awaken-server" }
 glob-match = "0.2"
 regex = "1"
