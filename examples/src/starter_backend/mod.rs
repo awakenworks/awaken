@@ -9,7 +9,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tirea_agentos::composition::StopConditionSpec;
 use tirea_agentos::composition::{
-    AgentDefinition, AgentDefinitionSpec, AgentOsBuilder, ToolExecutionMode, ToolRegistry,
+    AgentDefinition, AgentDefinitionSpec, AgentOsBuilder, SkillsConfig, ToolExecutionMode,
+    ToolRegistry,
 };
 use tirea_agentos::contracts::runtime::behavior::AgentBehavior;
 use tirea_agentos::contracts::runtime::tool_call::Tool;
@@ -224,7 +225,7 @@ Deterministic compatibility directives:\n\
     let tool_map: HashMap<String, Arc<dyn Tool>> = tool_map_from_arc(tools);
     let mut mcp_tool_registry: Option<Arc<dyn ToolRegistry>> = None;
 
-    let _mcp_manager = if let Some(ref cmd_str) = args.mcp_server_cmd {
+    let mcp_manager = if let Some(ref cmd_str) = args.mcp_server_cmd {
         let parts: Vec<&str> = cmd_str.split_whitespace().collect();
         let (command, cmd_args) = parts
             .split_first()
@@ -257,6 +258,18 @@ Deterministic compatibility directives:\n\
         .with_agent_state_store(file_store.clone() as Arc<dyn ThreadStore>);
     if let Some(registry) = mcp_tool_registry {
         builder = builder.with_tool_registry(registry);
+    }
+    if let Some(manager) = mcp_manager.clone() {
+        builder = builder
+            .with_mcp_prompt_skills(Arc::new(manager))
+            .await
+            .expect("failed to wire MCP prompt skills")
+            .with_skills_config(SkillsConfig {
+                enabled: true,
+                advertise_catalog: true,
+                discovery_max_entries: 32,
+                discovery_max_chars: 8 * 1024,
+            });
     }
 
     if default_id != "permission" {

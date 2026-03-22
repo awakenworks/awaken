@@ -11,6 +11,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 #[cfg(feature = "skills")]
 use std::time::Duration;
+#[cfg(all(feature = "skills", feature = "mcp"))]
+use tirea_extension_mcp::McpToolRegistryManager;
+#[cfg(all(feature = "skills", feature = "mcp"))]
+use tirea_extension_skills::McpPromptSkillRegistryManager;
 #[cfg(feature = "skills")]
 use tirea_extension_skills::{
     CompositeSkillRegistry, InMemorySkillRegistry, Skill, SkillRegistry, SkillRegistryManagerError,
@@ -286,6 +290,17 @@ impl AgentOsBuilder {
     pub fn with_skill_registry(mut self, registry: Arc<dyn SkillRegistry>) -> Self {
         self.skill_registries.push(registry);
         self
+    }
+
+    #[cfg(all(feature = "skills", feature = "mcp"))]
+    pub async fn with_mcp_prompt_skills(
+        mut self,
+        manager: Arc<McpToolRegistryManager>,
+    ) -> Result<Self, SkillRegistryManagerError> {
+        let registry: Arc<dyn SkillRegistry> =
+            Arc::new(McpPromptSkillRegistryManager::discover(manager).await?);
+        self.skill_registries.push(registry);
+        Ok(self)
     }
 
     #[cfg(feature = "skills")]

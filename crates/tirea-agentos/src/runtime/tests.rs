@@ -25,6 +25,11 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tirea_contract::testing::{apply_before_inference_for_test, TestFixture};
 use tirea_contract::TerminationReason;
+#[cfg(all(feature = "skills", feature = "mcp"))]
+use tirea_extension_mcp::{
+    McpProgressUpdate, McpPromptDefinition, McpPromptMessage, McpPromptResult,
+    McpToolRegistryManager, McpToolTransport,
+};
 use tirea_extension_permission::{resolve_permission_behavior, ToolPermissionBehavior};
 #[cfg(feature = "skills")]
 use tirea_extension_skills::{
@@ -1000,6 +1005,112 @@ fn build_skill_registry_refresh_interval_starts_periodic_refresh() {
     std::thread::sleep(Duration::from_millis(150));
     assert!(manager.get("s2").is_some());
     assert!(manager.stop_periodic_refresh());
+}
+
+#[cfg(all(feature = "skills", feature = "mcp"))]
+#[tokio::test]
+async fn build_with_mcp_prompt_skills_wires_skill_activation() {
+    #[derive(Debug)]
+    struct PromptTransport;
+
+    #[async_trait]
+    impl McpToolTransport for PromptTransport {
+        async fn list_tools(
+            &self,
+        ) -> Result<Vec<mcp::McpToolDefinition>, mcp::transport::McpTransportError> {
+            Ok(Vec::new())
+        }
+
+        async fn list_prompts(
+            &self,
+        ) -> Result<Vec<McpPromptDefinition>, mcp::transport::McpTransportError> {
+            Ok(vec![McpPromptDefinition {
+                name: "review".to_string(),
+                title: Some("Review".to_string()),
+                description: Some("Review prompt".to_string()),
+                arguments: Vec::new(),
+            }])
+        }
+
+        async fn get_prompt(
+            &self,
+            name: &str,
+            _arguments: Option<HashMap<String, String>>,
+        ) -> Result<McpPromptResult, mcp::transport::McpTransportError> {
+            Ok(McpPromptResult {
+                description: Some("Review prompt".to_string()),
+                messages: vec![McpPromptMessage {
+                    role: "user".to_string(),
+                    content: json!({
+                        "type": "text",
+                        "text": format!("MCP prompt: {name}")
+                    }),
+                }],
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _args: Value,
+            _progress_tx: Option<tokio::sync::mpsc::UnboundedSender<McpProgressUpdate>>,
+        ) -> Result<mcp::CallToolResult, mcp::transport::McpTransportError> {
+            Ok(mcp::CallToolResult {
+                content: Vec::new(),
+                structured_content: None,
+                is_error: None,
+            })
+        }
+
+        fn transport_type(&self) -> mcp::transport::TransportTypeId {
+            mcp::transport::TransportTypeId::Stdio
+        }
+    }
+
+    let manager = Arc::new(
+        McpToolRegistryManager::from_transports([(
+            mcp::transport::McpServerConnectionConfig::stdio(
+                "github",
+                "node",
+                vec!["server.js".to_string()],
+            ),
+            Arc::new(PromptTransport) as Arc<dyn McpToolTransport>,
+        )])
+        .await
+        .unwrap(),
+    );
+
+    let os = AgentOs::builder()
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "root",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
+        .with_mcp_prompt_skills(manager)
+        .await
+        .unwrap()
+        .with_skills_config(SkillsConfig {
+            enabled: true,
+            advertise_catalog: true,
+            discovery_max_entries: 32,
+            discovery_max_chars: 8 * 1024,
+        })
+        .build()
+        .expect("build agent os");
+
+    let resolved = os.resolve("root").expect("resolve");
+    let activate = resolved.tools.get("skill").cloned().expect("skill tool");
+
+    let fix = TestFixture::new();
+    let result = activate
+        .execute(
+            json!({"skill": "mcp:github:review"}),
+            &fix.ctx_with("call-mcp-skill", "tool:skill"),
+        )
+        .await
+        .expect("execute skill tool");
+
+    assert!(result.is_success());
+    assert_eq!(result.data["skill_id"], json!("mcp:github:review"));
 }
 
 #[tokio::test]
