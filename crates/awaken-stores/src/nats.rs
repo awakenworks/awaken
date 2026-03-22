@@ -246,6 +246,22 @@ impl ThreadStore for NatsBufferedWriter {
     ) -> Result<(), StorageError> {
         self.inner.save_messages(thread_id, messages).await
     }
+
+    async fn delete_thread(&self, id: &str) -> Result<(), StorageError> {
+        self.inner.delete_thread(id).await
+    }
+
+    async fn delete_messages(&self, thread_id: &str) -> Result<(), StorageError> {
+        self.inner.delete_messages(thread_id).await
+    }
+
+    async fn update_thread_metadata(
+        &self,
+        id: &str,
+        metadata: awaken_contract::thread::ThreadMetadata,
+    ) -> Result<(), StorageError> {
+        self.inner.update_thread_metadata(id, metadata).await
+    }
 }
 
 #[async_trait]

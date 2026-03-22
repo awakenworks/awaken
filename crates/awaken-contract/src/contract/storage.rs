@@ -146,6 +146,20 @@ pub trait ThreadStore: Send + Sync {
         thread_id: &str,
         messages: &[Message],
     ) -> Result<(), StorageError>;
+
+    /// Delete a thread by ID. Returns `NotFound` if the thread does not exist.
+    async fn delete_thread(&self, id: &str) -> Result<(), StorageError>;
+
+    /// Delete all messages for a thread. Returns `NotFound` if the thread does not exist.
+    async fn delete_messages(&self, thread_id: &str) -> Result<(), StorageError>;
+
+    /// Update only the metadata of an existing thread.
+    /// Returns `NotFound` if the thread does not exist.
+    async fn update_thread_metadata(
+        &self,
+        id: &str,
+        metadata: crate::thread::ThreadMetadata,
+    ) -> Result<(), StorageError>;
 }
 
 // ── RunStore ────────────────────────────────────────────────────────
@@ -289,6 +303,50 @@ mod tests {
                 .write()
                 .map_err(|e| StorageError::Io(e.to_string()))?;
             guard.insert(thread_id.to_owned(), messages.to_vec());
+            Ok(())
+        }
+
+        async fn delete_thread(&self, id: &str) -> Result<(), StorageError> {
+            let mut guard = self
+                .threads
+                .write()
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+            guard
+                .remove(id)
+                .ok_or_else(|| StorageError::NotFound(id.to_owned()))?;
+            Ok(())
+        }
+
+        async fn delete_messages(&self, thread_id: &str) -> Result<(), StorageError> {
+            let threads = self
+                .threads
+                .read()
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+            if !threads.contains_key(thread_id) {
+                return Err(StorageError::NotFound(thread_id.to_owned()));
+            }
+            drop(threads);
+            let mut guard = self
+                .messages
+                .write()
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+            guard.remove(thread_id);
+            Ok(())
+        }
+
+        async fn update_thread_metadata(
+            &self,
+            id: &str,
+            metadata: crate::thread::ThreadMetadata,
+        ) -> Result<(), StorageError> {
+            let mut guard = self
+                .threads
+                .write()
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+            let thread = guard
+                .get_mut(id)
+                .ok_or_else(|| StorageError::NotFound(id.to_owned()))?;
+            thread.metadata = metadata;
             Ok(())
         }
     }

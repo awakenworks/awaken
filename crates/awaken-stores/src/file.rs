@@ -217,6 +217,48 @@ impl ThreadStore for FileStore {
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
         atomic_write(&self.messages_dir(), &format!("{thread_id}.json"), &payload).await
     }
+
+    async fn delete_thread(&self, id: &str) -> Result<(), StorageError> {
+        validate_id(id, "thread id")?;
+        let path = self.threads_dir().join(format!("{id}.json"));
+        if !path.exists() {
+            return Err(StorageError::NotFound(id.to_owned()));
+        }
+        tokio::fs::remove_file(&path)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))
+    }
+
+    async fn delete_messages(&self, thread_id: &str) -> Result<(), StorageError> {
+        validate_id(thread_id, "thread id")?;
+        let thread_path = self.threads_dir().join(format!("{thread_id}.json"));
+        if !thread_path.exists() {
+            return Err(StorageError::NotFound(thread_id.to_owned()));
+        }
+        let msg_path = self.messages_dir().join(format!("{thread_id}.json"));
+        if msg_path.exists() {
+            tokio::fs::remove_file(&msg_path)
+                .await
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn update_thread_metadata(
+        &self,
+        id: &str,
+        metadata: awaken_contract::thread::ThreadMetadata,
+    ) -> Result<(), StorageError> {
+        validate_id(id, "thread id")?;
+        let path = self.threads_dir().join(format!("{id}.json"));
+        let mut thread: Thread = read_json(&path)
+            .await?
+            .ok_or_else(|| StorageError::NotFound(id.to_owned()))?;
+        thread.metadata = metadata;
+        let payload = serde_json::to_string_pretty(&thread)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        atomic_write(&self.threads_dir(), &format!("{id}.json"), &payload).await
+    }
 }
 
 // ── RunStore ────────────────────────────────────────────────────────

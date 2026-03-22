@@ -237,6 +237,57 @@ impl ThreadStore for PostgresStore {
             .map_err(|e| StorageError::Io(e.to_string()))?;
         Ok(())
     }
+
+    async fn delete_thread(&self, id: &str) -> Result<(), StorageError> {
+        self.ensure_schema().await?;
+        let sql = format!("DELETE FROM {} WHERE id = $1", self.threads_table);
+        let result = sqlx::query(&sql)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::NotFound(id.to_owned()));
+        }
+        Ok(())
+    }
+
+    async fn delete_messages(&self, thread_id: &str) -> Result<(), StorageError> {
+        self.ensure_schema().await?;
+        // Verify thread exists
+        let check_sql = format!("SELECT 1 FROM {} WHERE id = $1", self.threads_table);
+        let exists: Option<(i32,)> = sqlx::query_as(&check_sql)
+            .bind(thread_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        if exists.is_none() {
+            return Err(StorageError::NotFound(thread_id.to_owned()));
+        }
+        let sql = format!("DELETE FROM {} WHERE thread_id = $1", self.messages_table);
+        sqlx::query(&sql)
+            .bind(thread_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn update_thread_metadata(
+        &self,
+        id: &str,
+        metadata: awaken_contract::thread::ThreadMetadata,
+    ) -> Result<(), StorageError> {
+        self.ensure_schema().await?;
+        // Load existing thread, update metadata, save back
+        let thread = self
+            .load_thread(id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound(id.to_owned()))?;
+        let mut updated = thread;
+        updated.metadata = metadata;
+        self.save_thread(&updated).await
+    }
 }
 
 // ── RunStore ────────────────────────────────────────────────────────

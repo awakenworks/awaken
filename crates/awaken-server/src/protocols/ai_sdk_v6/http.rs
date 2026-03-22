@@ -1,8 +1,8 @@
 //! /v1/ai-sdk routes.
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::response::Response;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::Value;
@@ -19,7 +19,9 @@ use super::encoder::AiSdkEncoder;
 
 /// Build AI SDK v6 routes.
 pub fn ai_sdk_routes() -> Router<AppState> {
-    Router::new().route("/v1/ai-sdk/chat", post(ai_sdk_chat))
+    Router::new()
+        .route("/v1/ai-sdk/chat", post(ai_sdk_chat))
+        .route("/v1/ai-sdk/streams/{run_id}", get(resume_stream))
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,6 +68,23 @@ fn convert_messages(msgs: Vec<AiSdkMessage>) -> Vec<Message> {
         msgs.into_iter()
             .filter_map(|m| extract_text(&m.content).map(|text| (m.role, text))),
     )
+}
+
+/// Reconnect to an active run's event stream.
+///
+/// Returns 404 if the run is not found or no longer active. Stream
+/// resumption requires broadcast channel infrastructure in RunDispatcher
+/// which is not yet implemented.
+async fn resume_stream(
+    State(_st): State<AppState>,
+    Path(run_id): Path<String>,
+) -> Result<Response, ApiError> {
+    // Stream resumption requires RunDispatcher to maintain broadcast channels
+    // for active runs. This is a stub that returns a clear error until the
+    // broadcast infrastructure is in place.
+    Err(ApiError::NotFound(format!(
+        "stream resumption not yet available for run {run_id}"
+    )))
 }
 
 async fn ai_sdk_chat(

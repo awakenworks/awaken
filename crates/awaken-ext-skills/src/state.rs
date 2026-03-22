@@ -27,7 +27,7 @@ pub struct SkillState;
 impl StateKey for SkillState {
     const KEY: &'static str = "skills";
     const MERGE: MergeStrategy = MergeStrategy::Commutative;
-    const SCOPE: KeyScope = KeyScope::Run;
+    const SCOPE: KeyScope = KeyScope::Thread;
 
     type Value = SkillStateValue;
     type Update = SkillStateUpdate;
@@ -74,7 +74,26 @@ mod tests {
     fn state_key_constants() {
         assert_eq!(SkillState::KEY, "skills");
         assert_eq!(SkillState::MERGE, MergeStrategy::Commutative);
-        assert_eq!(SkillState::SCOPE, KeyScope::Run);
+        assert_eq!(SkillState::SCOPE, KeyScope::Thread);
+    }
+
+    #[test]
+    fn merge_strategy_is_union() {
+        // When two runs on the same thread both activate skills,
+        // the commutative (grow-only set) merge produces a union.
+        let mut state = SkillStateValue::default();
+        SkillState::apply(&mut state, SkillStateUpdate::Activate("s1".to_string()));
+
+        let mut other = SkillStateValue::default();
+        SkillState::apply(&mut other, SkillStateUpdate::Activate("s2".to_string()));
+
+        // Simulating merge: apply other's activations to state
+        for id in other.active {
+            SkillState::apply(&mut state, SkillStateUpdate::Activate(id));
+        }
+        assert_eq!(state.active.len(), 2);
+        assert!(state.active.contains("s1"));
+        assert!(state.active.contains("s2"));
     }
 
     #[test]

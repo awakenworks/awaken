@@ -117,6 +117,36 @@ mod tests {
                 .insert(thread_id.to_owned(), messages.to_vec());
             Ok(())
         }
+
+        async fn delete_thread(&self, id: &str) -> Result<(), StorageError> {
+            self.threads
+                .write()
+                .unwrap()
+                .remove(id)
+                .ok_or_else(|| StorageError::NotFound(id.to_owned()))?;
+            Ok(())
+        }
+
+        async fn delete_messages(&self, thread_id: &str) -> Result<(), StorageError> {
+            if !self.threads.read().unwrap().contains_key(thread_id) {
+                return Err(StorageError::NotFound(thread_id.to_owned()));
+            }
+            self.messages.write().unwrap().remove(thread_id);
+            Ok(())
+        }
+
+        async fn update_thread_metadata(
+            &self,
+            id: &str,
+            metadata: awaken_contract::thread::ThreadMetadata,
+        ) -> Result<(), StorageError> {
+            let mut guard = self.threads.write().unwrap();
+            let thread = guard
+                .get_mut(id)
+                .ok_or_else(|| StorageError::NotFound(id.to_owned()))?;
+            thread.metadata = metadata;
+            Ok(())
+        }
     }
 
     #[tokio::test]

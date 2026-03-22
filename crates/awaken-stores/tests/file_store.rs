@@ -693,3 +693,93 @@ async fn load_run_nonexistent_via_thread_run_store() {
     let result = RunStore::load_run(&store, "missing").await.unwrap();
     assert!(result.is_none());
 }
+
+// ========================================================================
+// delete_thread / delete_messages / update_thread_metadata
+// ========================================================================
+
+#[tokio::test]
+async fn delete_thread_removes_thread() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    store.save_thread(&Thread::with_id("t-1")).await.unwrap();
+
+    store.delete_thread("t-1").await.unwrap();
+    let loaded = store.load_thread("t-1").await.unwrap();
+    assert!(loaded.is_none());
+}
+
+#[tokio::test]
+async fn delete_thread_not_found() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    let err = store.delete_thread("missing").await.unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn delete_messages_removes_messages() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    store.save_thread(&Thread::with_id("t-1")).await.unwrap();
+    store
+        .save_messages("t-1", &[Message::user("hello")])
+        .await
+        .unwrap();
+
+    store.delete_messages("t-1").await.unwrap();
+    let loaded = store.load_messages("t-1").await.unwrap();
+    assert!(loaded.is_none());
+}
+
+#[tokio::test]
+async fn delete_messages_thread_not_found() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    let err = store.delete_messages("missing").await.unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn delete_messages_no_messages_is_ok() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    store.save_thread(&Thread::with_id("t-1")).await.unwrap();
+    store.delete_messages("t-1").await.unwrap();
+}
+
+#[tokio::test]
+async fn update_thread_metadata_changes_metadata() {
+    use awaken_contract::thread::ThreadMetadata;
+
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    store
+        .save_thread(&Thread::with_id("t-1").with_title("old"))
+        .await
+        .unwrap();
+
+    let new_meta = ThreadMetadata {
+        title: Some("new title".to_string()),
+        updated_at: Some(12345),
+        ..Default::default()
+    };
+    store.update_thread_metadata("t-1", new_meta).await.unwrap();
+
+    let loaded = store.load_thread("t-1").await.unwrap().unwrap();
+    assert_eq!(loaded.metadata.title.as_deref(), Some("new title"));
+    assert_eq!(loaded.metadata.updated_at, Some(12345));
+}
+
+#[tokio::test]
+async fn update_thread_metadata_not_found() {
+    use awaken_contract::thread::ThreadMetadata;
+
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    let err = store
+        .update_thread_metadata("missing", ThreadMetadata::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)));
+}
