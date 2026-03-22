@@ -4,6 +4,7 @@ members = [
     "crates/awaken-contract",
     "crates/awaken-runtime",
     "crates/awaken-ext-permission",
+    "crates/awaken-ext-observability",
     "crates/awaken",
 ]
 
