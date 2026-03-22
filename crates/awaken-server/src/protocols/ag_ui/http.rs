@@ -1,8 +1,8 @@
 //! /v1/ag-ui routes.
 
-use axum::extract::State;
+use axum::extract::{Path, Query, State};
 use axum::response::Response;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::Value;
@@ -16,10 +16,13 @@ use crate::routes::ApiError;
 use crate::run_dispatcher::RunSpec;
 
 use super::encoder::AgUiEncoder;
+use super::types::Role;
 
 /// Build AG-UI routes.
 pub fn ag_ui_routes() -> Router<AppState> {
-    Router::new().route("/v1/ag-ui/run", post(ag_ui_run))
+    Router::new()
+        .route("/v1/ag-ui/run", post(ag_ui_run))
+        .route("/v1/ag-ui/threads/{id}/messages", get(thread_messages))
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,11 +64,65 @@ async fn ag_ui_run(
         agent_id: payload.agent_id,
         messages,
     };
-    let event_rx = st.dispatcher.dispatch(spec);
+    let event_rx = st.dispatcher.dispatch(spec).await;
     let encoder = AgUiEncoder::new();
     let sse_rx = wire_sse_relay(event_rx, encoder, st.config.sse_buffer_size);
 
     Ok(sse_response(sse_body_stream(sse_rx)))
+}
+
+#[derive(Debug, Deserialize)]
+struct MessageQueryParams {
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default = "default_limit")]
+    limit: usize,
+}
+
+fn default_limit() -> usize {
+    50
+}
+
+async fn thread_messages(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<MessageQueryParams>,
+) -> Result<Json<Value>, ApiError> {
+    let messages = st
+        .thread_store
+        .load_messages(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .unwrap_or_default();
+
+    let offset = params.offset.unwrap_or(0);
+    let limit = params.limit.clamp(1, 200);
+    let total = messages.len();
+
+    let encoded: Vec<Value> = messages
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|m| {
+            let role = match m.role {
+                awaken_contract::contract::message::Role::System => Role::System,
+                awaken_contract::contract::message::Role::User => Role::User,
+                awaken_contract::contract::message::Role::Assistant => Role::Assistant,
+                awaken_contract::contract::message::Role::Tool => Role::Tool,
+            };
+            serde_json::json!({
+                "id": m.id,
+                "role": role,
+                "content": m.content,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "messages": encoded,
+        "total": total,
+        "has_more": offset + encoded.len() < total,
+    })))
 }
 
 #[cfg(test)]

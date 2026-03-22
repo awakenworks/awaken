@@ -21,6 +21,19 @@ pub fn a2a_routes() -> Router<AppState> {
         .route("/v1/a2a/tasks/{task_id}", get(a2a_task_status))
         .route("/v1/a2a/tasks/{task_id}/cancel", post(a2a_task_cancel))
         .route("/v1/a2a/.well-known/agent", get(a2a_agent_card))
+        .route("/v1/a2a/agents", get(a2a_list_agents))
+        .route(
+            "/v1/a2a/agents/{agent_id}/agent-card",
+            get(a2a_agent_card_by_id),
+        )
+        .route(
+            "/v1/a2a/agents/{agent_id}/message:send",
+            post(a2a_message_send),
+        )
+        .route(
+            "/v1/a2a/agents/{agent_id}/tasks/{task_action}",
+            get(a2a_task_action_get).post(a2a_task_action_post),
+        )
 }
 
 /// A2A Agent Card — describes agent capabilities for discovery.
@@ -140,7 +153,7 @@ async fn a2a_task_send(
         messages,
     };
     // Fire-and-forget: dispatch the run but don't consume the event stream.
-    let _event_rx = st.dispatcher.dispatch(spec);
+    let _event_rx = st.dispatcher.dispatch(spec).await;
 
     Ok((
         StatusCode::OK,
@@ -153,6 +166,15 @@ async fn a2a_task_send(
         }),
     )
         .into_response())
+}
+
+async fn a2a_message_send(
+    State(st): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(mut payload): Json<A2aTaskSendRequest>,
+) -> Result<Response, ApiError> {
+    payload.agent_id = Some(agent_id);
+    a2a_task_send(State(st), Json(payload)).await
 }
 
 /// GET /v1/a2a/tasks/:task_id — query run status from RunStore.
@@ -222,6 +244,68 @@ async fn a2a_agent_card(State(_st): State<AppState>) -> Json<AgentCard> {
         }),
         skills: Vec::new(),
     })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct A2aAgentListEntry {
+    agent_id: String,
+    name: String,
+}
+
+async fn a2a_list_agents(State(st): State<AppState>) -> Json<Vec<A2aAgentListEntry>> {
+    let mut ids = st.resolver.agent_ids();
+    if ids.is_empty() {
+        ids.push("default".to_string());
+    }
+    ids.sort();
+    ids.dedup();
+    Json(
+        ids.into_iter()
+            .map(|id| A2aAgentListEntry {
+                name: id.clone(),
+                agent_id: id,
+            })
+            .collect(),
+    )
+}
+
+async fn a2a_agent_card_by_id(
+    State(st): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<AgentCard>, ApiError> {
+    if st.resolver.resolve(&agent_id).is_err() {
+        return Err(ApiError::NotFound(format!("agent not found: {agent_id}")));
+    }
+    Ok(Json(AgentCard {
+        id: agent_id.clone(),
+        name: agent_id.clone(),
+        description: Some(format!("Awaken AI Agent '{agent_id}'")),
+        url: format!("/v1/a2a/agents/{agent_id}/message:send"),
+        version: "0.1.0".to_string(),
+        capabilities: Some(AgentCapabilities {
+            streaming: true,
+            push_notifications: false,
+            state_transition_history: false,
+        }),
+        skills: Vec::new(),
+    }))
+}
+
+async fn a2a_task_action_get(
+    State(st): State<AppState>,
+    Path((_agent_id, task_action)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    a2a_task_status(State(st), Path(task_action))
+        .await
+        .map(|json| json.into_response())
+}
+
+async fn a2a_task_action_post(
+    State(st): State<AppState>,
+    Path((_agent_id, task_action)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    a2a_task_cancel(State(st), Path(task_action)).await
 }
 
 #[cfg(test)]

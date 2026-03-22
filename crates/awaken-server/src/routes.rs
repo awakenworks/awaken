@@ -3,7 +3,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -61,11 +61,17 @@ fn health_routes() -> Router<AppState> {
 fn thread_routes() -> Router<AppState> {
     Router::new()
         .route("/v1/threads", get(list_threads).post(create_thread))
+        .route("/v1/threads/summaries", get(list_thread_summaries))
         .route(
             "/v1/threads/{id}",
             get(get_thread).delete(delete_thread).patch(patch_thread),
         )
-        .route("/v1/threads/{id}/messages", get(get_thread_messages))
+        .route("/v1/threads/{id}/interrupt", post(interrupt_thread))
+        .route("/v1/threads/{id}/metadata", patch(patch_thread))
+        .route(
+            "/v1/threads/{id}/messages",
+            get(get_thread_messages).post(post_thread_messages),
+        )
         .route(
             "/v1/threads/{id}/mailbox",
             post(push_mailbox).get(peek_mailbox),
@@ -74,8 +80,9 @@ fn thread_routes() -> Router<AppState> {
 
 fn run_routes() -> Router<AppState> {
     Router::new()
-        .route("/v1/runs", post(start_run))
+        .route("/v1/runs", get(list_runs).post(start_run))
         .route("/v1/runs/{id}", get(get_run))
+        .route("/v1/runs/{id}/inputs", post(push_run_inputs))
         .route("/v1/runs/{id}/cancel", post(cancel_run))
         .route("/v1/runs/{id}/decision", post(submit_decision))
         .route("/v1/threads/{id}/runs", get(list_thread_runs))
@@ -115,6 +122,38 @@ async fn list_threads(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(
         json!({ "items": ids, "offset": offset, "limit": limit }),
+    ))
+}
+
+async fn list_thread_summaries(
+    State(st): State<AppState>,
+    Query(params): Query<ListParams>,
+) -> Result<Json<Value>, ApiError> {
+    let offset = params.offset.unwrap_or(0);
+    let limit = params.limit.clamp(1, 200);
+    let ids = st
+        .thread_store
+        .list_threads(offset, limit)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    let mut items = Vec::with_capacity(ids.len());
+    for id in ids {
+        if let Some(thread) = st
+            .thread_store
+            .load_thread(&id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+        {
+            items.push(json!({
+                "id": thread.id,
+                "title": thread.metadata.title,
+                "updated_at": thread.metadata.updated_at,
+            }));
+        }
+    }
+    Ok(Json(
+        json!({ "items": items, "offset": offset, "limit": limit }),
     ))
 }
 
@@ -213,6 +252,24 @@ async fn patch_thread(
     Ok(Json(value))
 }
 
+async fn interrupt_thread(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    if st.dispatcher.cancel_run(&id) {
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "status": "interrupt_requested",
+                "thread_id": id,
+            })),
+        )
+            .into_response());
+    }
+
+    Err(ApiError::ThreadNotFound(id))
+}
+
 #[derive(Debug, Deserialize)]
 struct MessageQueryParams {
     #[serde(default)]
@@ -272,6 +329,57 @@ async fn get_thread_messages(
         "total": total,
         "has_more": has_more,
     })))
+}
+
+#[derive(Debug, Deserialize)]
+struct PostThreadMessagesPayload {
+    #[serde(rename = "agentId", alias = "agent_id", default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    messages: Vec<RunMessage>,
+}
+
+async fn post_thread_messages(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(payload): Json<PostThreadMessagesPayload>,
+) -> Result<Response, ApiError> {
+    // Require existing thread for thread-centric API semantics.
+    st.thread_store
+        .load_thread(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or(ApiError::ThreadNotFound(id.clone()))?;
+
+    let messages = convert_run_messages(payload.messages);
+    if messages.is_empty() {
+        return Err(ApiError::BadRequest(
+            "at least one message is required".to_string(),
+        ));
+    }
+
+    let (status, _rx) = st
+        .dispatcher
+        .dispatch_with_status(RunSpec {
+            thread_id: id.clone(),
+            agent_id: payload.agent_id,
+            messages,
+        })
+        .await;
+
+    let body = match status {
+        crate::run_dispatcher::DispatchStatus::Running => json!({
+            "status": "running",
+            "thread_id": id,
+        }),
+        crate::run_dispatcher::DispatchStatus::Queued { pending_ahead } => json!({
+            "status": "queued",
+            "thread_id": id,
+            "pending_ahead": pending_ahead,
+        }),
+    };
+
+    Ok((StatusCode::ACCEPTED, Json(body)).into_response())
 }
 
 // ── Mailbox ──
@@ -356,7 +464,7 @@ async fn start_run(
         agent_id: Some(agent_id),
         messages,
     };
-    let event_rx = st.dispatcher.dispatch(spec);
+    let event_rx = st.dispatcher.dispatch(spec).await;
     let encoder = awaken_contract::contract::transport::Identity::default();
     let sse_rx = wire_sse_relay(event_rx, encoder, st.config.sse_buffer_size);
 
@@ -373,6 +481,84 @@ async fn get_run(
         .ok_or(ApiError::RunNotFound(id))?;
     let value = serde_json::to_value(record).map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(value))
+}
+
+async fn list_runs(
+    State(st): State<AppState>,
+    Query(params): Query<ListRunsParams>,
+) -> Result<Json<Value>, ApiError> {
+    use awaken_contract::contract::lifecycle::RunStatus;
+    use awaken_contract::contract::storage::RunQuery;
+
+    let status = params
+        .status
+        .as_deref()
+        .map(|s| match s {
+            "running" => Ok(RunStatus::Running),
+            "waiting" => Ok(RunStatus::Waiting),
+            "done" => Ok(RunStatus::Done),
+            other => Err(ApiError::BadRequest(format!(
+                "invalid status filter: {other}"
+            ))),
+        })
+        .transpose()?;
+
+    let query = RunQuery {
+        offset: params.offset.unwrap_or(0),
+        limit: params.limit.clamp(1, 200),
+        thread_id: None,
+        status,
+    };
+    let page = crate::services::run_service::list_runs(st.run_store.as_ref(), &query)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    let value = serde_json::to_value(&page.items).map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(json!({
+        "items": value,
+        "total": page.total,
+        "has_more": page.has_more,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct PushRunInputsPayload {
+    #[serde(default)]
+    messages: Vec<RunMessage>,
+}
+
+async fn push_run_inputs(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(payload): Json<PushRunInputsPayload>,
+) -> Result<Response, ApiError> {
+    let run = crate::services::run_service::get_run(st.run_store.as_ref(), &id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or(ApiError::RunNotFound(id.clone()))?;
+
+    let messages = convert_run_messages(payload.messages);
+    if messages.is_empty() {
+        return Err(ApiError::BadRequest(
+            "at least one message is required".to_string(),
+        ));
+    }
+
+    let spec = RunSpec {
+        thread_id: run.thread_id,
+        agent_id: Some(run.agent_id),
+        messages,
+    };
+    let _ = st.dispatcher.dispatch(spec).await;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "status": "inputs_accepted",
+            "run_id": id,
+        })),
+    )
+        .into_response())
 }
 
 async fn cancel_run(

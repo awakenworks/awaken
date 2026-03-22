@@ -1,6 +1,6 @@
 //! /v1/ai-sdk routes.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -22,6 +22,8 @@ pub fn ai_sdk_routes() -> Router<AppState> {
     Router::new()
         .route("/v1/ai-sdk/chat", post(ai_sdk_chat))
         .route("/v1/ai-sdk/streams/{run_id}", get(resume_stream))
+        .route("/v1/ai-sdk/runs/{run_id}/stream", get(resume_stream))
+        .route("/v1/ai-sdk/threads/{id}/messages", get(thread_messages))
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,6 +89,62 @@ async fn resume_stream(
     )))
 }
 
+#[derive(Debug, Deserialize)]
+struct MessageQueryParams {
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default = "default_limit")]
+    limit: usize,
+}
+
+fn default_limit() -> usize {
+    50
+}
+
+async fn thread_messages(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<MessageQueryParams>,
+) -> Result<Json<Value>, ApiError> {
+    let messages = st
+        .thread_store
+        .load_messages(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .unwrap_or_default();
+
+    let offset = params.offset.unwrap_or(0);
+    let limit = params.limit.clamp(1, 200);
+    let total = messages.len();
+
+    let encoded: Vec<Value> = messages
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "role": match m.role {
+                    awaken_contract::contract::message::Role::System => "system",
+                    awaken_contract::contract::message::Role::User => "user",
+                    awaken_contract::contract::message::Role::Assistant => "assistant",
+                    awaken_contract::contract::message::Role::Tool => "tool",
+                },
+                "content": [{
+                    "type": "text",
+                    "text": m.content
+                }],
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "messages": encoded,
+        "total": total,
+        "has_more": offset + encoded.len() < total,
+    })))
+}
+
 async fn ai_sdk_chat(
     State(st): State<AppState>,
     Json(payload): Json<AiSdkChatRequest>,
@@ -100,7 +158,7 @@ async fn ai_sdk_chat(
         agent_id: payload.agent_id,
         messages,
     };
-    let event_rx = st.dispatcher.dispatch(spec);
+    let event_rx = st.dispatcher.dispatch(spec).await;
     let encoder = AiSdkEncoder::new();
     let sse_rx = wire_sse_relay(event_rx, encoder, st.config.sse_buffer_size);
 

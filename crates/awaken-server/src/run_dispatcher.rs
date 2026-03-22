@@ -4,7 +4,9 @@
 //! and get back a channel of [`AgentEvent`]s to relay over their transport.
 
 use std::sync::Arc;
+use std::{collections::HashMap, collections::VecDeque};
 
+use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 
 use awaken_contract::contract::event::AgentEvent;
@@ -42,6 +44,17 @@ pub struct RunSpec {
     pub messages: Vec<Message>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchStatus {
+    Running,
+    Queued { pending_ahead: usize },
+}
+
+struct QueuedRun {
+    spec: RunSpec,
+    event_tx: mpsc::UnboundedSender<AgentEvent>,
+}
+
 /// Unified run execution pipeline.
 ///
 /// Protocol handlers build a [`RunSpec`] from their protocol-specific request,
@@ -53,39 +66,83 @@ pub struct RunSpec {
 #[derive(Clone)]
 pub struct RunDispatcher {
     runtime: Arc<AgentRuntime>,
+    state: Arc<Mutex<HashMap<String, VecDeque<QueuedRun>>>>,
 }
 
 impl RunDispatcher {
     pub fn new(runtime: Arc<AgentRuntime>) -> Self {
-        Self { runtime }
+        Self {
+            runtime,
+            state: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     /// Dispatch a run and return a channel receiver for events.
     ///
-    /// Creates an unbounded channel, wraps the sender in a [`ChannelEventSink`],
-    /// builds a [`RunRequest`](awaken_runtime::RunRequest) from the spec, and
-    /// spawns a background task that drives the runtime.
-    pub fn dispatch(&self, spec: RunSpec) -> mpsc::UnboundedReceiver<AgentEvent> {
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
+    /// Runs are serialized per-thread: at most one active run per thread.
+    /// Additional runs for the same thread are queued in FIFO order.
+    pub async fn dispatch(&self, spec: RunSpec) -> mpsc::UnboundedReceiver<AgentEvent> {
+        self.dispatch_with_status(spec).await.1
+    }
 
-        let runtime = self.runtime.clone();
-        tokio::spawn(async move {
-            let sink = ChannelEventSink::new(event_tx);
-            let mut request = awaken_runtime::RunRequest::new(spec.thread_id, spec.messages);
-            if let Some(aid) = spec.agent_id {
-                request = request.with_agent_id(aid);
+    /// Dispatch with queue status, for thread-centric APIs.
+    pub async fn dispatch_with_status(
+        &self,
+        spec: RunSpec,
+    ) -> (DispatchStatus, mpsc::UnboundedReceiver<AgentEvent>) {
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let thread_id = spec.thread_id.clone();
+        let mut state = self.state.lock().await;
+        let queue = state.entry(thread_id.clone()).or_default();
+        let status = if queue.is_empty() {
+            DispatchStatus::Running
+        } else {
+            DispatchStatus::Queued {
+                pending_ahead: queue.len(),
             }
-            match runtime.run(request, &sink).await {
-                Ok((_handle, _result)) => {
-                    // Run completed; unregister already handled inside runtime.run()
+        };
+        let should_spawn = queue.is_empty();
+        queue.push_back(QueuedRun { spec, event_tx });
+        drop(state);
+
+        if should_spawn {
+            self.spawn_thread_worker(thread_id).await;
+        }
+
+        (status, event_rx)
+    }
+
+    async fn spawn_thread_worker(&self, thread_id: String) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            loop {
+                let next = {
+                    let mut state = this.state.lock().await;
+                    let Some(queue) = state.get_mut(&thread_id) else {
+                        break;
+                    };
+                    let next = queue.pop_front();
+                    if queue.is_empty() {
+                        state.remove(&thread_id);
+                    }
+                    next
+                };
+
+                let Some(job) = next else {
+                    break;
+                };
+
+                let sink = ChannelEventSink::new(job.event_tx);
+                let mut request =
+                    awaken_runtime::RunRequest::new(job.spec.thread_id, job.spec.messages);
+                if let Some(aid) = job.spec.agent_id {
+                    request = request.with_agent_id(aid);
                 }
-                Err(e) => {
+                if let Err(e) = this.runtime.run(request, &sink).await {
                     tracing::warn!(error = %e, "run failed");
                 }
             }
         });
-
-        event_rx
     }
 
     /// Cancel an active run. Tries run_id first, then thread_id via dual-index lookup.
@@ -163,5 +220,16 @@ mod tests {
     fn prepare_run_inputs_empty_messages_errors() {
         let result = prepare_run_inputs(None, vec![]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn dispatch_status_enum_smoke() {
+        let running = DispatchStatus::Running;
+        let queued = DispatchStatus::Queued { pending_ahead: 2 };
+        assert!(matches!(running, DispatchStatus::Running));
+        assert!(matches!(
+            queued,
+            DispatchStatus::Queued { pending_ahead: 2 }
+        ));
     }
 }

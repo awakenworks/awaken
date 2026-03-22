@@ -30,4 +30,11 @@ impl std::fmt::Debug for ResolvedAgent {
 /// when handoff is detected (via `ActiveAgentKey`).
 pub trait AgentResolver: Send + Sync {
     fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, RuntimeError>;
+
+    /// List known agent IDs for discovery endpoints.
+    ///
+    /// Implementations that cannot enumerate agents may return an empty list.
+    fn agent_ids(&self) -> Vec<String> {
+        Vec::new()
+    }
 }

@@ -220,6 +220,10 @@ impl AgentResolver for RegistrySet {
 
         Ok(ResolvedAgent { config, env })
     }
+
+    fn agent_ids(&self) -> Vec<String> {
+        self.agents.agent_ids()
+    }
 }
 
 // ---------------------------------------------------------------------------

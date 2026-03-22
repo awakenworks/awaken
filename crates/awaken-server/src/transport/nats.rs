@@ -247,15 +247,17 @@ where
         .map_err(|e| NatsProtocolError::BadRequest(format!("invalid request: {e}")))?;
 
     let messages = convert_nats_messages(request.messages);
-    if messages.is_empty() {
-        return Err(NatsProtocolError::BadRequest(
-            "at least one message is required".to_string(),
-        ));
-    }
-
-    let thread_id = request
-        .thread_id
-        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+    let (thread_id, messages) =
+        crate::run_dispatcher::prepare_run_inputs(request.thread_id, messages).map_err(|e| {
+            let message = match e {
+                crate::routes::ApiError::BadRequest(msg)
+                | crate::routes::ApiError::NotFound(msg)
+                | crate::routes::ApiError::ThreadNotFound(msg)
+                | crate::routes::ApiError::RunNotFound(msg)
+                | crate::routes::ApiError::Internal(msg) => msg,
+            };
+            NatsProtocolError::BadRequest(message)
+        })?;
 
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(transport.config.outbound_buffer);
     let encoder = encoder_factory();
