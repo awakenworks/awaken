@@ -363,6 +363,69 @@ async fn handle_ai_sdk_v6_request(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// NatsFlushPlugin
+// ---------------------------------------------------------------------------
+
+/// Plugin that automatically flushes a [`NatsBufferedWriter`] at run end.
+///
+/// Registers a [`Phase::RunEnd`](awaken_contract::model::Phase::RunEnd) hook
+/// that calls [`NatsBufferedWriter::flush`] for the active thread, ensuring
+/// buffered checkpoint data is persisted to the inner store.
+pub struct NatsFlushPlugin {
+    writer: Arc<awaken_stores::nats::NatsBufferedWriter>,
+}
+
+impl NatsFlushPlugin {
+    /// Create a new flush plugin wrapping the given buffered writer.
+    pub fn new(writer: Arc<awaken_stores::nats::NatsBufferedWriter>) -> Self {
+        Self { writer }
+    }
+}
+
+impl awaken_runtime::Plugin for NatsFlushPlugin {
+    fn descriptor(&self) -> awaken_runtime::PluginDescriptor {
+        awaken_runtime::PluginDescriptor { name: "nats_flush" }
+    }
+
+    fn register(
+        &self,
+        registrar: &mut awaken_runtime::PluginRegistrar,
+    ) -> Result<(), awaken_contract::StateError> {
+        registrar.register_phase_hook(
+            "nats_flush",
+            awaken_contract::model::Phase::RunEnd,
+            NatsFlushHook {
+                writer: self.writer.clone(),
+            },
+        )?;
+        Ok(())
+    }
+}
+
+/// Phase hook that flushes NATS buffered writes at run end.
+struct NatsFlushHook {
+    writer: Arc<awaken_stores::nats::NatsBufferedWriter>,
+}
+
+#[async_trait::async_trait]
+impl awaken_runtime::PhaseHook for NatsFlushHook {
+    async fn run(
+        &self,
+        ctx: &awaken_runtime::PhaseContext,
+    ) -> Result<awaken_runtime::StateCommand, awaken_contract::StateError> {
+        let thread_id = &ctx.run_input.identity.thread_id;
+        if let Err(e) = self.writer.flush(thread_id).await {
+            tracing::warn!(
+                thread_id = %thread_id,
+                error = %e,
+                "NatsFlushPlugin: failed to flush buffered writes at run end"
+            );
+        }
+        Ok(awaken_runtime::StateCommand::new())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -446,5 +509,12 @@ mod tests {
         assert!(req.thread_id.is_none());
         assert!(req.agent_id.is_none());
         assert_eq!(req.messages.len(), 1);
+    }
+
+    /// Compile-time check that `NatsFlushPlugin` implements `Plugin`.
+    /// Runtime integration test requires a NATS server, see `#[ignore]` tests.
+    fn _assert_nats_flush_plugin_is_plugin() {
+        fn _assert_impl<T: awaken_runtime::Plugin>() {}
+        _assert_impl::<NatsFlushPlugin>();
     }
 }

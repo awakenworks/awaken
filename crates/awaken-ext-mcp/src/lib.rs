@@ -19,7 +19,7 @@ pub use manager::{
 };
 pub use plugin::McpPlugin;
 pub use progress::McpProgressUpdate;
-pub use sampling::SamplingHandler;
+pub use sampling::{DefaultSamplingHandler, SamplingHandler};
 pub use transport::{
     McpPromptArgument, McpPromptDefinition, McpPromptMessage, McpPromptResult,
     McpResourceDefinition, McpToolTransport,

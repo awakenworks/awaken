@@ -23,6 +23,7 @@ bytes = "1"
 # Optional
 async-nats = { version = "0.38", optional = true }
 awaken-ext-permission = { workspace = true, optional = true }
+awaken-stores = { workspace = true, features = ["nats"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
@@ -32,7 +33,7 @@ tower = { version = "0.5", features = ["util"] }
 [features]
 default = ["permission"]
 permission = ["dep:awaken-ext-permission"]
-nats = ["dep:async-nats"]
+nats = ["dep:async-nats", "dep:awaken-stores"]
 
 [lints]
 workspace = true

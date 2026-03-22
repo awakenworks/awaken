@@ -310,6 +310,7 @@ dependencies = [
  "awaken-contract",
  "awaken-ext-permission",
  "awaken-runtime",
+ "awaken-stores",
  "axum",
  "bytes",
  "futures",

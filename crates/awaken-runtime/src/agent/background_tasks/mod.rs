@@ -12,8 +12,10 @@ use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 
 use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
-use crate::state::{MutationBatch, StateKey, StateKeyOptions};
+use crate::runtime::{PhaseContext, PhaseHook};
+use crate::state::{KeyScope, MutationBatch, StateCommand, StateKey, StateKeyOptions};
 use awaken_contract::StateError;
+use awaken_contract::model::Phase;
 use awaken_contract::registry_spec::AgentSpec;
 
 /// Unique identifier for a background task.
@@ -140,6 +142,89 @@ impl StateKey for BackgroundTaskViewKey {
     const KEY: &'static str = "background_tasks";
     type Value = BackgroundTaskView;
     type Update = BackgroundTaskViewAction;
+
+    fn apply(value: &mut Self::Value, update: Self::Update) {
+        value.reduce(update);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BackgroundTaskStateKey — persisted task metadata
+// ---------------------------------------------------------------------------
+
+/// Persisted metadata for a single background task.
+///
+/// Task payloads (the actual futures) are NOT persisted — only metadata
+/// (id, name, status, error message, timestamps).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistedTaskMeta {
+    pub task_id: TaskId,
+    pub task_type: String,
+    pub description: String,
+    pub status: TaskStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<u64>,
+}
+
+impl PersistedTaskMeta {
+    /// Build from a [`TaskSummary`].
+    pub fn from_summary(summary: &TaskSummary) -> Self {
+        Self {
+            task_id: summary.task_id.clone(),
+            task_type: summary.task_type.clone(),
+            description: summary.description.clone(),
+            status: summary.status,
+            error: summary.error.clone(),
+            created_at_ms: summary.created_at_ms,
+            completed_at_ms: summary.completed_at_ms,
+        }
+    }
+}
+
+/// Persisted state for all background tasks.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BackgroundTaskStateSnapshot {
+    pub tasks: HashMap<TaskId, PersistedTaskMeta>,
+}
+
+/// Actions applied to the persisted background task state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum BackgroundTaskStateAction {
+    /// Upsert a single task's metadata.
+    Upsert(PersistedTaskMeta),
+    /// Replace the entire task map (used on restore/sync).
+    ReplaceAll {
+        tasks: HashMap<TaskId, PersistedTaskMeta>,
+    },
+}
+
+impl BackgroundTaskStateSnapshot {
+    fn reduce(&mut self, action: BackgroundTaskStateAction) {
+        match action {
+            BackgroundTaskStateAction::Upsert(meta) => {
+                self.tasks.insert(meta.task_id.clone(), meta);
+            }
+            BackgroundTaskStateAction::ReplaceAll { tasks } => {
+                self.tasks = tasks;
+            }
+        }
+    }
+}
+
+/// State key for persisted background task metadata.
+///
+/// Scoped to `Thread` so it survives across runs. On task completion or
+/// failure the manager writes a state update; on resume, the plugin
+/// restores known task metadata from this key.
+pub struct BackgroundTaskStateKey;
+
+impl StateKey for BackgroundTaskStateKey {
+    const KEY: &'static str = "background_task_state";
+    type Value = BackgroundTaskStateSnapshot;
+    type Update = BackgroundTaskStateAction;
 
     fn apply(value: &mut Self::Value, update: Self::Update) {
         value.reduce(update);
@@ -343,8 +428,54 @@ impl Default for BackgroundTaskManager {
 // BackgroundTaskPlugin
 // ---------------------------------------------------------------------------
 
-/// Plugin that registers the background task view state key.
-pub struct BackgroundTaskPlugin;
+/// Phase hook that syncs background task metadata into the persisted state.
+///
+/// Registered for both `RunStart` (restore from persisted state) and
+/// `RunEnd` (persist current task state).
+struct BackgroundTaskSyncHook {
+    manager: Arc<BackgroundTaskManager>,
+}
+
+#[async_trait::async_trait]
+impl PhaseHook for BackgroundTaskSyncHook {
+    async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        let tasks = self.manager.tasks.lock().await;
+        let persisted: HashMap<TaskId, PersistedTaskMeta> = tasks
+            .values()
+            .map(|t| {
+                let meta = PersistedTaskMeta {
+                    task_id: t.task_id.clone(),
+                    task_type: t.task_type.clone(),
+                    description: t.description.clone(),
+                    status: t.status,
+                    error: t.error.clone(),
+                    created_at_ms: t.created_at_ms,
+                    completed_at_ms: t.completed_at_ms,
+                };
+                (t.task_id.clone(), meta)
+            })
+            .collect();
+        drop(tasks);
+
+        let mut cmd = StateCommand::new();
+        cmd.update::<BackgroundTaskStateKey>(BackgroundTaskStateAction::ReplaceAll {
+            tasks: persisted,
+        });
+        Ok(cmd)
+    }
+}
+
+/// Plugin that registers the background task view state key and
+/// the persisted task metadata state key.
+pub struct BackgroundTaskPlugin {
+    manager: Arc<BackgroundTaskManager>,
+}
+
+impl BackgroundTaskPlugin {
+    pub fn new(manager: Arc<BackgroundTaskManager>) -> Self {
+        Self { manager }
+    }
+}
 
 impl Plugin for BackgroundTaskPlugin {
     fn descriptor(&self) -> PluginDescriptor {
@@ -355,6 +486,28 @@ impl Plugin for BackgroundTaskPlugin {
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
         registrar.register_key::<BackgroundTaskViewKey>(StateKeyOptions::default())?;
+        registrar.register_key::<BackgroundTaskStateKey>(StateKeyOptions {
+            persistent: true,
+            scope: KeyScope::Thread,
+            ..StateKeyOptions::default()
+        })?;
+
+        // Sync task metadata into persisted state at run boundaries.
+        registrar.register_phase_hook(
+            BACKGROUND_TASKS_PLUGIN_ID,
+            Phase::RunStart,
+            BackgroundTaskSyncHook {
+                manager: self.manager.clone(),
+            },
+        )?;
+        registrar.register_phase_hook(
+            BACKGROUND_TASKS_PLUGIN_ID,
+            Phase::RunEnd,
+            BackgroundTaskSyncHook {
+                manager: self.manager.clone(),
+            },
+        )?;
+
         Ok(())
     }
 
@@ -494,9 +647,111 @@ mod tests {
     #[test]
     fn plugin_registers_key() {
         let store = StateStore::new();
-        store.install_plugin(BackgroundTaskPlugin).unwrap();
+        let manager = Arc::new(BackgroundTaskManager::new());
+        store
+            .install_plugin(BackgroundTaskPlugin::new(manager))
+            .unwrap();
         let registry = store.registry.lock().unwrap();
         assert!(registry.keys_by_name.contains_key("background_tasks"));
+        assert!(registry.keys_by_name.contains_key("background_task_state"));
+    }
+
+    #[test]
+    fn persisted_task_meta_from_summary() {
+        let summary = TaskSummary {
+            task_id: "bg_0".into(),
+            task_type: "shell".into(),
+            description: "build project".into(),
+            status: TaskStatus::Completed,
+            error: None,
+            result: Some(serde_json::json!({"ok": true})),
+            created_at_ms: 1000,
+            completed_at_ms: Some(2000),
+        };
+        let meta = PersistedTaskMeta::from_summary(&summary);
+        assert_eq!(meta.task_id, "bg_0");
+        assert_eq!(meta.task_type, "shell");
+        assert_eq!(meta.status, TaskStatus::Completed);
+        assert_eq!(meta.completed_at_ms, Some(2000));
+    }
+
+    #[test]
+    fn persisted_task_meta_serde_roundtrip() {
+        let meta = PersistedTaskMeta {
+            task_id: "bg_1".into(),
+            task_type: "http".into(),
+            description: "fetch data".into(),
+            status: TaskStatus::Failed,
+            error: Some("timeout".into()),
+            created_at_ms: 100,
+            completed_at_ms: Some(200),
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        let decoded: PersistedTaskMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, meta);
+    }
+
+    #[test]
+    fn background_task_state_snapshot_reduce_upsert() {
+        let mut snapshot = BackgroundTaskStateSnapshot::default();
+        let meta = PersistedTaskMeta {
+            task_id: "bg_0".into(),
+            task_type: "shell".into(),
+            description: "build".into(),
+            status: TaskStatus::Running,
+            error: None,
+            created_at_ms: 100,
+            completed_at_ms: None,
+        };
+        snapshot.reduce(BackgroundTaskStateAction::Upsert(meta));
+        assert_eq!(snapshot.tasks.len(), 1);
+        assert_eq!(snapshot.tasks["bg_0"].status, TaskStatus::Running);
+
+        // Upsert again with completed status
+        let meta2 = PersistedTaskMeta {
+            task_id: "bg_0".into(),
+            task_type: "shell".into(),
+            description: "build".into(),
+            status: TaskStatus::Completed,
+            error: None,
+            created_at_ms: 100,
+            completed_at_ms: Some(200),
+        };
+        snapshot.reduce(BackgroundTaskStateAction::Upsert(meta2));
+        assert_eq!(snapshot.tasks.len(), 1);
+        assert_eq!(snapshot.tasks["bg_0"].status, TaskStatus::Completed);
+    }
+
+    #[test]
+    fn background_task_state_snapshot_reduce_replace_all() {
+        let mut snapshot = BackgroundTaskStateSnapshot::default();
+        snapshot.reduce(BackgroundTaskStateAction::Upsert(PersistedTaskMeta {
+            task_id: "old".into(),
+            task_type: "shell".into(),
+            description: "old task".into(),
+            status: TaskStatus::Cancelled,
+            error: None,
+            created_at_ms: 50,
+            completed_at_ms: Some(60),
+        }));
+
+        let mut new_tasks = HashMap::new();
+        new_tasks.insert(
+            "new".into(),
+            PersistedTaskMeta {
+                task_id: "new".into(),
+                task_type: "http".into(),
+                description: "new task".into(),
+                status: TaskStatus::Running,
+                error: None,
+                created_at_ms: 100,
+                completed_at_ms: None,
+            },
+        );
+        snapshot.reduce(BackgroundTaskStateAction::ReplaceAll { tasks: new_tasks });
+        assert_eq!(snapshot.tasks.len(), 1);
+        assert!(!snapshot.tasks.contains_key("old"));
+        assert!(snapshot.tasks.contains_key("new"));
     }
 
     #[test]
