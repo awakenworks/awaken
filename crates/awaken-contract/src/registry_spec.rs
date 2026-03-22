@@ -86,44 +86,40 @@ pub struct AgentSpec {
     /// Excluded tool IDs (blacklist). Applied after `allowed_tools`.
     #[serde(default)]
     pub excluded_tools: Option<Vec<String>>,
-    /// Sub-agent delegates this agent can invoke.
+    /// Optional remote endpoint. If set, this agent runs on a remote A2A server.
+    /// If None, this agent runs locally.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<RemoteEndpoint>,
+    /// IDs of sub-agents this agent can delegate to.
+    /// Each ID must be a registered agent in the AgentSpecRegistry.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub delegates: Vec<AgentDelegate>,
+    pub delegates: Vec<String>,
     /// Plugin-specific configuration sections (keyed by PluginConfigKey::KEY).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub sections: HashMap<String, Value>,
 }
 
-/// A sub-agent that this agent can delegate to.
+/// Remote endpoint configuration for agents running on external A2A servers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentDelegate {
-    /// Agent ID for the tool name (`agent_run_{agent_id}`).
-    pub agent_id: String,
-    /// Description shown to the LLM.
+pub struct RemoteEndpoint {
+    pub base_url: String,
     #[serde(default)]
-    pub description: String,
-    /// Binding: local or remote.
-    #[serde(default)]
-    pub binding: AgentBinding,
+    pub bearer_token: Option<String>,
+    #[serde(default = "default_poll_interval")]
+    pub poll_interval_ms: u64,
+    #[serde(default = "default_timeout")]
+    pub timeout_ms: u64,
 }
 
-/// How to reach a delegate agent.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum AgentBinding {
-    /// Agent runs in the same process.
-    #[default]
-    Local,
-    /// Agent runs on a remote A2A endpoint.
-    Remote {
-        base_url: String,
-        #[serde(default)]
-        bearer_token: Option<String>,
-        #[serde(default = "default_poll_interval")]
-        poll_interval_ms: u64,
-        #[serde(default = "default_timeout")]
-        timeout_ms: u64,
-    },
+impl Default for RemoteEndpoint {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            bearer_token: None,
+            poll_interval_ms: default_poll_interval(),
+            timeout_ms: default_timeout(),
+        }
+    }
 }
 
 fn default_poll_interval() -> u64 {
@@ -147,6 +143,7 @@ impl Default for AgentSpec {
             active_plugins: HashSet::new(),
             allowed_tools: None,
             excluded_tools: None,
+            endpoint: None,
             delegates: Vec::new(),
             sections: HashMap::new(),
         }
@@ -229,6 +226,18 @@ impl AgentSpec {
     ) -> Result<Self, StateError> {
         self.set_config::<K>(config)?;
         Ok(self)
+    }
+
+    #[must_use]
+    pub fn with_delegate(mut self, agent_id: impl Into<String>) -> Self {
+        self.delegates.push(agent_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_endpoint(mut self, endpoint: RemoteEndpoint) -> Self {
+        self.endpoint = Some(endpoint);
+        self
     }
 
     /// Set a raw JSON section (for tests or untyped usage).

@@ -113,42 +113,36 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
 
     let mut tools = resolve_tools(registries, &spec);
 
-    // Wire delegate agent tools from spec.delegates
+    // Wire delegate agent tools from spec.delegates (IDs referencing other agents)
     if !spec.delegates.is_empty() {
-        let resolver: Arc<dyn crate::runtime::AgentResolver> = Arc::new(registries.clone());
-        for delegate in &spec.delegates {
-            let description = if delegate.description.is_empty() {
-                format!("Delegate to agent '{}'", delegate.agent_id)
+        for delegate_id in &spec.delegates {
+            let delegate_spec = registries
+                .agents
+                .get_agent(delegate_id)
+                .ok_or_else(|| ResolveError::AgentNotFound(delegate_id.clone()))?;
+
+            let description: String = delegate_spec.system_prompt.chars().take(100).collect();
+
+            let tool: Arc<dyn Tool> = if let Some(endpoint) = &delegate_spec.endpoint {
+                let mut config = crate::agent::agent_tools::A2aConfig::new(&endpoint.base_url);
+                if let Some(token) = &endpoint.bearer_token {
+                    config = config.with_bearer_token(token);
+                }
+                config = config
+                    .with_poll_interval(std::time::Duration::from_millis(endpoint.poll_interval_ms))
+                    .with_timeout(std::time::Duration::from_millis(endpoint.timeout_ms));
+                Arc::new(crate::agent::agent_tools::AgentTool::remote(
+                    delegate_id,
+                    &description,
+                    config,
+                ))
             } else {
-                delegate.description.clone()
-            };
-            let tool: Arc<dyn Tool> = match &delegate.binding {
-                awaken_contract::registry_spec::AgentBinding::Local => {
-                    Arc::new(crate::agent::agent_tools::AgentTool::local(
-                        &delegate.agent_id,
-                        description,
-                        resolver.clone(),
-                    ))
-                }
-                awaken_contract::registry_spec::AgentBinding::Remote {
-                    base_url,
-                    bearer_token,
-                    poll_interval_ms,
-                    timeout_ms,
-                } => {
-                    let mut config = crate::agent::agent_tools::A2aConfig::new(base_url);
-                    if let Some(token) = bearer_token {
-                        config = config.with_bearer_token(token);
-                    }
-                    config = config
-                        .with_poll_interval(std::time::Duration::from_millis(*poll_interval_ms))
-                        .with_timeout(std::time::Duration::from_millis(*timeout_ms));
-                    Arc::new(crate::agent::agent_tools::AgentTool::remote(
-                        &delegate.agent_id,
-                        description,
-                        config,
-                    ))
-                }
+                let resolver: Arc<dyn crate::runtime::AgentResolver> = Arc::new(registries.clone());
+                Arc::new(crate::agent::agent_tools::AgentTool::local(
+                    delegate_id,
+                    &description,
+                    resolver,
+                ))
             };
             let tool_id = tool.descriptor().id;
             tools.insert(tool_id, tool);

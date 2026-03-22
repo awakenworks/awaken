@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::tool::{Tool, ToolCallContext, ToolError, ToolResult};
-use awaken_contract::registry_spec::{AgentBinding, AgentDelegate, AgentSpec};
+use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
 
 use crate::agent::config::AgentConfig;
 use crate::agent::executor::SequentialToolExecutor;
@@ -327,74 +327,54 @@ fn a2a_config_default_poll_interval() {
     assert_eq!(config.timeout, Duration::from_secs(300));
 }
 
-// -- AgentDelegate serialization --
+// -- RemoteEndpoint serialization --
 
 #[test]
-fn agent_delegate_local_serde_roundtrip() {
-    let delegate = AgentDelegate {
-        agent_id: "worker".into(),
-        description: "A worker agent".into(),
-        binding: AgentBinding::Local,
+fn remote_endpoint_serde_roundtrip() {
+    let endpoint = RemoteEndpoint {
+        base_url: "https://api.example.com".into(),
+        bearer_token: Some("tok_123".into()),
+        poll_interval_ms: 3000,
+        timeout_ms: 60000,
     };
-    let json = serde_json::to_string(&delegate).unwrap();
-    let parsed: AgentDelegate = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed.agent_id, "worker");
-    assert!(matches!(parsed.binding, AgentBinding::Local));
+    let json = serde_json::to_string(&endpoint).unwrap();
+    let parsed: RemoteEndpoint = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.base_url, "https://api.example.com");
+    assert_eq!(parsed.bearer_token.as_deref(), Some("tok_123"));
+    assert_eq!(parsed.poll_interval_ms, 3000);
+    assert_eq!(parsed.timeout_ms, 60000);
 }
 
 #[test]
-fn agent_delegate_remote_serde_roundtrip() {
-    let delegate = AgentDelegate {
-        agent_id: "remote-worker".into(),
-        description: "Remote worker".into(),
-        binding: AgentBinding::Remote {
-            base_url: "https://api.example.com".into(),
-            bearer_token: Some("tok_123".into()),
-            poll_interval_ms: 3000,
-            timeout_ms: 60000,
-        },
-    };
-    let json = serde_json::to_string(&delegate).unwrap();
-    let parsed: AgentDelegate = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed.agent_id, "remote-worker");
-    match parsed.binding {
-        AgentBinding::Remote {
-            base_url,
-            bearer_token,
-            poll_interval_ms,
-            timeout_ms,
-        } => {
-            assert_eq!(base_url, "https://api.example.com");
-            assert_eq!(bearer_token.as_deref(), Some("tok_123"));
-            assert_eq!(poll_interval_ms, 3000);
-            assert_eq!(timeout_ms, 60000);
-        }
-        _ => panic!("expected Remote binding"),
-    }
+fn remote_endpoint_defaults() {
+    let json = r#"{"base_url": "https://x.com"}"#;
+    let endpoint: RemoteEndpoint = serde_json::from_str(json).unwrap();
+    assert_eq!(endpoint.base_url, "https://x.com");
+    assert!(endpoint.bearer_token.is_none());
+    assert_eq!(endpoint.poll_interval_ms, 2000);
+    assert_eq!(endpoint.timeout_ms, 300_000);
 }
 
 #[test]
-fn agent_delegate_default_binding_is_local() {
-    let json = r#"{"agent_id": "worker", "description": "test"}"#;
-    let delegate: AgentDelegate = serde_json::from_str(json).unwrap();
-    assert!(matches!(delegate.binding, AgentBinding::Local));
+fn agent_spec_with_delegate_builder() {
+    let spec = AgentSpec::new("main")
+        .with_delegate("worker")
+        .with_delegate("reviewer");
+    assert_eq!(spec.delegates, vec!["worker", "reviewer"]);
 }
 
 #[test]
-fn agent_delegate_remote_defaults() {
-    let json = r#"{"agent_id": "rw", "binding": {"type": "remote", "base_url": "https://x.com"}}"#;
-    let delegate: AgentDelegate = serde_json::from_str(json).unwrap();
-    match delegate.binding {
-        AgentBinding::Remote {
-            poll_interval_ms,
-            timeout_ms,
-            ..
-        } => {
-            assert_eq!(poll_interval_ms, 2000);
-            assert_eq!(timeout_ms, 300_000);
-        }
-        _ => panic!("expected Remote binding"),
-    }
+fn agent_spec_with_endpoint_builder() {
+    let spec = AgentSpec::new("remote-agent").with_endpoint(RemoteEndpoint {
+        base_url: "https://remote.example.com".into(),
+        bearer_token: Some("tok_remote_123".into()),
+        ..Default::default()
+    });
+    let ep = spec.endpoint.unwrap();
+    assert_eq!(ep.base_url, "https://remote.example.com");
+    assert_eq!(ep.bearer_token.as_deref(), Some("tok_remote_123"));
+    assert_eq!(ep.poll_interval_ms, 2000);
+    assert_eq!(ep.timeout_ms, 300_000);
 }
 
 // -- Multiple agent resolver test --
