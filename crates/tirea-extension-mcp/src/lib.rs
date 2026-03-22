@@ -23,6 +23,10 @@ use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
 pub use client_transport::{McpProgressUpdate, McpToolTransport, SamplingHandler};
+pub use client_transport::{
+    McpPromptArgument, McpPromptDefinition, McpPromptMessage, McpPromptResult,
+    McpResourceDefinition,
+};
 
 const MCP_META_SERVER: &str = "mcp.server";
 const MCP_META_TOOL: &str = "mcp.tool";
@@ -57,6 +61,9 @@ pub enum McpToolRegistryError {
 
     #[error("duplicate server name: {0}")]
     DuplicateServerName(String),
+
+    #[error("unknown mcp server: {0}")]
+    UnknownServer(String),
 
     #[error("invalid tool id component after sanitization: {0}")]
     InvalidToolIdComponent(String),
@@ -394,6 +401,20 @@ struct McpServerRuntime {
     transport: Arc<dyn McpToolTransport>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpPromptEntry {
+    pub server_name: String,
+    pub transport_type: TransportTypeId,
+    pub prompt: McpPromptDefinition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpResourceEntry {
+    pub server_name: String,
+    pub transport_type: TransportTypeId,
+    pub resource: McpResourceDefinition,
+}
+
 #[derive(Clone, Default)]
 struct McpRegistrySnapshot {
     version: u64,
@@ -706,6 +727,87 @@ impl McpToolRegistryManager {
     pub fn refresh_health(&self) -> McpRefreshHealth {
         read_lock(&self.state.refresh_health).clone()
     }
+
+    pub async fn list_prompts(&self) -> Result<Vec<McpPromptEntry>, McpToolRegistryError> {
+        let mut prompts = Vec::new();
+
+        for server in &self.state.servers {
+            let mut defs = server.transport.list_prompts().await?;
+            defs.sort_by(|a, b| a.name.cmp(&b.name));
+            prompts.extend(defs.into_iter().map(|prompt| McpPromptEntry {
+                server_name: server.name.clone(),
+                transport_type: server.transport_type,
+                prompt,
+            }));
+        }
+
+        prompts.sort_by(|a, b| {
+            a.server_name
+                .cmp(&b.server_name)
+                .then_with(|| a.prompt.name.cmp(&b.prompt.name))
+        });
+        Ok(prompts)
+    }
+
+    pub async fn get_prompt(
+        &self,
+        server_name: &str,
+        prompt_name: &str,
+        arguments: Option<HashMap<String, String>>,
+    ) -> Result<McpPromptResult, McpToolRegistryError> {
+        let server = self
+            .state
+            .servers
+            .iter()
+            .find(|server| server.name == server_name)
+            .ok_or_else(|| McpToolRegistryError::UnknownServer(server_name.to_string()))?;
+
+        server
+            .transport
+            .get_prompt(prompt_name, arguments)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn list_resources(&self) -> Result<Vec<McpResourceEntry>, McpToolRegistryError> {
+        let mut resources = Vec::new();
+
+        for server in &self.state.servers {
+            let mut defs = server.transport.list_resources().await?;
+            defs.sort_by(|a, b| a.uri.cmp(&b.uri));
+            resources.extend(defs.into_iter().map(|resource| McpResourceEntry {
+                server_name: server.name.clone(),
+                transport_type: server.transport_type,
+                resource,
+            }));
+        }
+
+        resources.sort_by(|a, b| {
+            a.server_name
+                .cmp(&b.server_name)
+                .then_with(|| a.resource.uri.cmp(&b.resource.uri))
+        });
+        Ok(resources)
+    }
+
+    pub async fn read_resource(
+        &self,
+        server_name: &str,
+        uri: &str,
+    ) -> Result<Value, McpToolRegistryError> {
+        let server = self
+            .state
+            .servers
+            .iter()
+            .find(|server| server.name == server_name)
+            .ok_or_else(|| McpToolRegistryError::UnknownServer(server_name.to_string()))?;
+
+        server
+            .transport
+            .read_resource(uri)
+            .await
+            .map_err(Into::into)
+    }
 }
 
 /// Dynamic tool registry view backed by [`McpToolRegistryManager`].
@@ -923,6 +1025,80 @@ mod tests {
 
         fn transport_type(&self) -> TransportTypeId {
             TransportTypeId::Stdio
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct FakeCatalogTransport {
+        prompts: Vec<McpPromptDefinition>,
+        resources: Vec<McpResourceDefinition>,
+        prompt_result: McpPromptResult,
+        read_resource_result: Value,
+        prompt_requests: Arc<Mutex<Vec<(String, Option<HashMap<String, String>>)>>>,
+    }
+
+    impl FakeCatalogTransport {
+        fn new(
+            prompts: Vec<McpPromptDefinition>,
+            resources: Vec<McpResourceDefinition>,
+            prompt_result: McpPromptResult,
+            read_resource_result: Value,
+        ) -> Self {
+            Self {
+                prompts,
+                resources,
+                prompt_result,
+                read_resource_result,
+                prompt_requests: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn prompt_requests(&self) -> Vec<(String, Option<HashMap<String, String>>)> {
+            self.prompt_requests.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl McpToolTransport for FakeCatalogTransport {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            Ok(Vec::new())
+        }
+
+        async fn list_prompts(&self) -> Result<Vec<McpPromptDefinition>, McpTransportError> {
+            Ok(self.prompts.clone())
+        }
+
+        async fn get_prompt(
+            &self,
+            name: &str,
+            arguments: Option<HashMap<String, String>>,
+        ) -> Result<McpPromptResult, McpTransportError> {
+            self.prompt_requests
+                .lock()
+                .unwrap()
+                .push((name.to_string(), arguments));
+            Ok(self.prompt_result.clone())
+        }
+
+        async fn list_resources(&self) -> Result<Vec<McpResourceDefinition>, McpTransportError> {
+            Ok(self.resources.clone())
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _args: Value,
+            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        ) -> Result<CallToolResult, McpTransportError> {
+            Ok(ok_text_result("ok"))
+        }
+
+        fn transport_type(&self) -> TransportTypeId {
+            TransportTypeId::Stdio
+        }
+
+        async fn read_resource(&self, _uri: &str) -> Result<Value, McpTransportError> {
+            Ok(self.read_resource_result.clone())
         }
     }
 
@@ -1322,6 +1498,182 @@ mod tests {
         let version = manager.refresh().await.unwrap();
         assert_eq!(version, 2);
         assert!(reg.ids().into_iter().any(|id| id.contains("sum")));
+    }
+
+    #[tokio::test]
+    async fn manager_lists_prompts_and_resources_across_servers() {
+        let transport_a = Arc::new(FakeCatalogTransport::new(
+            vec![McpPromptDefinition {
+                name: "review".to_string(),
+                title: Some("Review".to_string()),
+                description: Some("Review code".to_string()),
+                arguments: vec![McpPromptArgument {
+                    name: "path".to_string(),
+                    description: Some("Target path".to_string()),
+                    required: true,
+                }],
+            }],
+            vec![McpResourceDefinition {
+                uri: "file://alpha.md".to_string(),
+                name: "alpha".to_string(),
+                title: Some("Alpha".to_string()),
+                description: Some("Alpha doc".to_string()),
+                mime_type: Some("text/markdown".to_string()),
+                size: Some(12),
+            }],
+            McpPromptResult {
+                description: Some("unused".to_string()),
+                messages: Vec::new(),
+            },
+            json!({}),
+        )) as Arc<dyn McpToolTransport>;
+        let transport_b = Arc::new(FakeCatalogTransport::new(
+            vec![McpPromptDefinition {
+                name: "fix".to_string(),
+                title: Some("Fix".to_string()),
+                description: Some("Fix issue".to_string()),
+                arguments: Vec::new(),
+            }],
+            vec![McpResourceDefinition {
+                uri: "file://beta.md".to_string(),
+                name: "beta".to_string(),
+                title: Some("Beta".to_string()),
+                description: Some("Beta doc".to_string()),
+                mime_type: Some("text/markdown".to_string()),
+                size: Some(8),
+            }],
+            McpPromptResult {
+                description: Some("unused".to_string()),
+                messages: Vec::new(),
+            },
+            json!({}),
+        )) as Arc<dyn McpToolTransport>;
+
+        let manager = McpToolRegistryManager::from_transports([
+            (cfg("s2"), transport_b),
+            (cfg("s1"), transport_a),
+        ])
+        .await
+        .unwrap();
+
+        let prompts = manager.list_prompts().await.unwrap();
+        assert_eq!(prompts.len(), 2);
+        assert_eq!(prompts[0].server_name, "s1");
+        assert_eq!(prompts[0].prompt.name, "review");
+        assert_eq!(prompts[1].server_name, "s2");
+        assert_eq!(prompts[1].prompt.name, "fix");
+
+        let resources = manager.list_resources().await.unwrap();
+        assert_eq!(resources.len(), 2);
+        assert_eq!(resources[0].server_name, "s1");
+        assert_eq!(resources[0].resource.uri, "file://alpha.md");
+        assert_eq!(resources[1].server_name, "s2");
+        assert_eq!(resources[1].resource.uri, "file://beta.md");
+    }
+
+    #[tokio::test]
+    async fn manager_get_prompt_and_read_resource_route_to_selected_server() {
+        let transport = Arc::new(FakeCatalogTransport::new(
+            vec![McpPromptDefinition {
+                name: "review".to_string(),
+                title: Some("Review".to_string()),
+                description: Some("Review code".to_string()),
+                arguments: vec![McpPromptArgument {
+                    name: "path".to_string(),
+                    description: None,
+                    required: true,
+                }],
+            }],
+            vec![McpResourceDefinition {
+                uri: "file://alpha.md".to_string(),
+                name: "alpha".to_string(),
+                title: None,
+                description: None,
+                mime_type: Some("text/markdown".to_string()),
+                size: None,
+            }],
+            McpPromptResult {
+                description: Some("Review prompt".to_string()),
+                messages: vec![McpPromptMessage {
+                    role: "user".to_string(),
+                    content: json!({"type": "text", "text": "Review src/lib.rs"}),
+                }],
+            },
+            json!({
+                "contents": [{
+                    "uri": "file://alpha.md",
+                    "text": "# Alpha",
+                    "mimeType": "text/markdown"
+                }]
+            }),
+        ));
+        let manager = McpToolRegistryManager::from_transports([(
+            cfg("s1"),
+            transport.clone() as Arc<dyn McpToolTransport>,
+        )])
+        .await
+        .unwrap();
+
+        let prompt = manager
+            .get_prompt(
+                "s1",
+                "review",
+                Some(HashMap::from([(
+                    "path".to_string(),
+                    "src/lib.rs".to_string(),
+                )])),
+            )
+            .await
+            .unwrap();
+        assert_eq!(prompt.description.as_deref(), Some("Review prompt"));
+        assert_eq!(prompt.messages.len(), 1);
+        assert_eq!(prompt.messages[0].role, "user");
+
+        let prompt_requests = transport.prompt_requests();
+        assert_eq!(prompt_requests.len(), 1);
+        assert_eq!(prompt_requests[0].0, "review");
+        assert_eq!(
+            prompt_requests[0]
+                .1
+                .as_ref()
+                .and_then(|args| args.get("path")),
+            Some(&"src/lib.rs".to_string())
+        );
+
+        let resource = manager
+            .read_resource("s1", "file://alpha.md")
+            .await
+            .unwrap();
+        assert_eq!(resource["contents"][0]["text"], json!("# Alpha"));
+    }
+
+    #[tokio::test]
+    async fn manager_prompt_and_resource_apis_reject_unknown_server() {
+        let manager = McpToolRegistryManager::from_transports([(
+            cfg("s1"),
+            Arc::new(FakeTransport::new(vec![McpToolDefinition::new("echo")]))
+                as Arc<dyn McpToolTransport>,
+        )])
+        .await
+        .unwrap();
+
+        let prompt_err = manager
+            .get_prompt("missing", "review", None)
+            .await
+            .expect_err("unknown server should fail");
+        assert!(matches!(
+            prompt_err,
+            McpToolRegistryError::UnknownServer(name) if name == "missing"
+        ));
+
+        let resource_err = manager
+            .read_resource("missing", "file://alpha.md")
+            .await
+            .expect_err("unknown server should fail");
+        assert!(matches!(
+            resource_err,
+            McpToolRegistryError::UnknownServer(name) if name == "missing"
+        ));
     }
 
     #[tokio::test]

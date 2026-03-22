@@ -9,6 +9,7 @@ use mcp::{
     ListToolsResult, McpToolDefinition, ProgressNotificationParams, ProgressToken,
     MCP_PROTOCOL_VERSION,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -40,9 +41,88 @@ pub trait SamplingHandler: Send + Sync {
     ) -> Result<CreateMessageResult, McpTransportError>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpPromptArgument {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpPromptDefinition {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub arguments: Vec<McpPromptArgument>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpPromptMessage {
+    pub role: String,
+    pub content: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpPromptResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub messages: Vec<McpPromptMessage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpResourceDefinition {
+    pub uri: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ListPromptsResult {
+    #[serde(default)]
+    prompts: Vec<McpPromptDefinition>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ListResourcesResult {
+    #[serde(default)]
+    resources: Vec<McpResourceDefinition>,
+}
+
 #[async_trait]
 pub trait McpToolTransport: Send + Sync {
     async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError>;
+    async fn list_prompts(&self) -> Result<Vec<McpPromptDefinition>, McpTransportError> {
+        Err(McpTransportError::TransportError(
+            "list_prompts not supported".to_string(),
+        ))
+    }
+    async fn get_prompt(
+        &self,
+        _name: &str,
+        _arguments: Option<HashMap<String, String>>,
+    ) -> Result<McpPromptResult, McpTransportError> {
+        Err(McpTransportError::TransportError(
+            "get_prompt not supported".to_string(),
+        ))
+    }
+    async fn list_resources(&self) -> Result<Vec<McpResourceDefinition>, McpTransportError> {
+        Err(McpTransportError::TransportError(
+            "list_resources not supported".to_string(),
+        ))
+    }
     async fn call_tool(
         &self,
         name: &str,
@@ -605,6 +685,40 @@ impl McpToolTransport for ProgressAwareStdioTransport {
         Ok(list_result.tools)
     }
 
+    async fn list_prompts(&self) -> Result<Vec<McpPromptDefinition>, McpTransportError> {
+        let result = self
+            .send_request("prompts/list", Some(json!({})), None)
+            .await?;
+        let list_result: ListPromptsResult = serde_json::from_value(result)?;
+        Ok(list_result.prompts)
+    }
+
+    async fn get_prompt(
+        &self,
+        name: &str,
+        arguments: Option<HashMap<String, String>>,
+    ) -> Result<McpPromptResult, McpTransportError> {
+        let result = self
+            .send_request(
+                "prompts/get",
+                Some(json!({
+                    "name": name,
+                    "arguments": arguments,
+                })),
+                None,
+            )
+            .await?;
+        serde_json::from_value(result).map_err(Into::into)
+    }
+
+    async fn list_resources(&self) -> Result<Vec<McpResourceDefinition>, McpTransportError> {
+        let result = self
+            .send_request("resources/list", Some(json!({})), None)
+            .await?;
+        let list_result: ListResourcesResult = serde_json::from_value(result)?;
+        Ok(list_result.resources)
+    }
+
     async fn call_tool(
         &self,
         name: &str,
@@ -671,6 +785,40 @@ impl McpToolTransport for ProgressAwareHttpTransport {
         Ok(list_result.tools)
     }
 
+    async fn list_prompts(&self) -> Result<Vec<McpPromptDefinition>, McpTransportError> {
+        let result = self
+            .send_request("prompts/list", Some(json!({})), None)
+            .await?;
+        let list_result: ListPromptsResult = serde_json::from_value(result)?;
+        Ok(list_result.prompts)
+    }
+
+    async fn get_prompt(
+        &self,
+        name: &str,
+        arguments: Option<HashMap<String, String>>,
+    ) -> Result<McpPromptResult, McpTransportError> {
+        let result = self
+            .send_request(
+                "prompts/get",
+                Some(json!({
+                    "name": name,
+                    "arguments": arguments,
+                })),
+                None,
+            )
+            .await?;
+        serde_json::from_value(result).map_err(Into::into)
+    }
+
+    async fn list_resources(&self) -> Result<Vec<McpResourceDefinition>, McpTransportError> {
+        let result = self
+            .send_request("resources/list", Some(json!({})), None)
+            .await?;
+        let list_result: ListResourcesResult = serde_json::from_value(result)?;
+        Ok(list_result.resources)
+    }
+
     async fn call_tool(
         &self,
         name: &str,
@@ -731,6 +879,7 @@ impl McpToolTransport for ProgressAwareHttpTransport {
 mod tests {
     use super::*;
     use serde_json::{json, Value};
+    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
@@ -987,6 +1136,122 @@ mod tests {
             result.structured_content,
             Some(json!({"sum": 3, "values": [1, 2]}))
         );
+    }
+
+    #[tokio::test]
+    async fn http_list_prompts_parses_prompt_definitions() {
+        let (endpoint, server) = spawn_http_server(Arc::new(|request| {
+            HttpResponseSpec::json(json!({
+                "jsonrpc": "2.0",
+                "id": request["id"].clone(),
+                "result": {
+                    "prompts": [{
+                        "name": "review",
+                        "title": "Review",
+                        "description": "Review code",
+                        "arguments": [{
+                            "name": "path",
+                            "description": "Target path",
+                            "required": true
+                        }]
+                    }]
+                }
+            }))
+        }))
+        .await;
+        let cfg = McpServerConnectionConfig::http("http_prompts", endpoint);
+        let transport = ProgressAwareHttpTransport::connect(&cfg).expect("connect transport");
+        let prompts = transport.list_prompts().await.expect("prompt list");
+        server.abort();
+
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].name, "review");
+        assert_eq!(prompts[0].arguments.len(), 1);
+        assert!(prompts[0].arguments[0].required);
+    }
+
+    #[tokio::test]
+    async fn http_get_prompt_sends_arguments_and_parses_messages() {
+        let requests: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let requests_handler = Arc::clone(&requests);
+        let (endpoint, server) = spawn_http_server(Arc::new(move |request| {
+            requests_handler
+                .lock()
+                .expect("requests lock")
+                .push(request.clone());
+            HttpResponseSpec::json(json!({
+                "jsonrpc": "2.0",
+                "id": request["id"].clone(),
+                "result": {
+                    "description": "Review prompt",
+                    "messages": [{
+                        "role": "user",
+                        "content": {"type": "text", "text": "Review src/lib.rs"}
+                    }]
+                }
+            }))
+        }))
+        .await;
+        let cfg = McpServerConnectionConfig::http("http_get_prompt", endpoint);
+        let transport = ProgressAwareHttpTransport::connect(&cfg).expect("connect transport");
+        let prompt = transport
+            .get_prompt(
+                "review",
+                Some(HashMap::from([(
+                    "path".to_string(),
+                    "src/lib.rs".to_string(),
+                )])),
+            )
+            .await
+            .expect("prompt result");
+        server.abort();
+
+        assert_eq!(prompt.description.as_deref(), Some("Review prompt"));
+        assert_eq!(prompt.messages.len(), 1);
+        assert_eq!(prompt.messages[0].role, "user");
+        assert_eq!(
+            prompt.messages[0].content["text"],
+            json!("Review src/lib.rs")
+        );
+
+        let captured = requests.lock().expect("requests lock");
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0]["method"], json!("prompts/get"));
+        assert_eq!(captured[0]["params"]["name"], json!("review"));
+        assert_eq!(
+            captured[0]["params"]["arguments"]["path"],
+            json!("src/lib.rs")
+        );
+    }
+
+    #[tokio::test]
+    async fn http_list_resources_parses_resource_definitions() {
+        let (endpoint, server) = spawn_http_server(Arc::new(|request| {
+            HttpResponseSpec::json(json!({
+                "jsonrpc": "2.0",
+                "id": request["id"].clone(),
+                "result": {
+                    "resources": [{
+                        "uri": "file://guide.md",
+                        "name": "guide",
+                        "title": "Guide",
+                        "description": "Guide doc",
+                        "mimeType": "text/markdown",
+                        "size": 42
+                    }]
+                }
+            }))
+        }))
+        .await;
+        let cfg = McpServerConnectionConfig::http("http_resources", endpoint);
+        let transport = ProgressAwareHttpTransport::connect(&cfg).expect("connect transport");
+        let resources = transport.list_resources().await.expect("resource list");
+        server.abort();
+
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].uri, "file://guide.md");
+        assert_eq!(resources[0].mime_type.as_deref(), Some("text/markdown"));
+        assert_eq!(resources[0].size, Some(42));
     }
 
     #[test]

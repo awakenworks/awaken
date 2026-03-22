@@ -11,6 +11,7 @@ categories = ["asynchronous"]
 [dependencies]
 tirea-contract.workspace = true
 async-trait = "0.1"
+serde = { workspace = true, features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }

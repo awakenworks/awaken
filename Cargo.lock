@@ -4759,6 +4759,7 @@ dependencies = [
  "async-trait",
  "model-context-protocol",
  "reqwest 0.12.28",
+ "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tirea-contract",
