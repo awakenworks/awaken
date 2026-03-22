@@ -1,11 +1,8 @@
-//! Agent loop streaming events.
-//!
-//! Simplified from uncarve's macro-generated definition. Wire format
-//! (envelope, seq, timestamp) will be added when protocol adapters are built.
+//! Agent loop streaming events and IO contracts.
 
 use super::inference::TokenUsage;
 use super::lifecycle::TerminationReason;
-use super::suspension::ToolCallOutcome;
+use super::suspension::{ResumeDecisionAction, ToolCallOutcome};
 use super::tool::ToolResult;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -125,6 +122,54 @@ impl AgentEvent {
             .to_string()
     }
 }
+
+// ── Wire format envelope ────────────────────────────────────────────
+
+/// Wire-format envelope wrapping an [`AgentEvent`] with sequence and timestamp.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamEvent {
+    /// Monotonically increasing sequence number within a run.
+    pub seq: u64,
+    /// ISO 8601 timestamp (e.g. "2025-01-15T12:34:56.789Z").
+    pub timestamp: String,
+    /// The wrapped agent event.
+    #[serde(flatten)]
+    pub event: AgentEvent,
+}
+
+impl StreamEvent {
+    /// Create a new stream event envelope.
+    pub fn new(seq: u64, timestamp: impl Into<String>, event: AgentEvent) -> Self {
+        Self {
+            seq,
+            timestamp: timestamp.into(),
+            event,
+        }
+    }
+}
+
+// ── Run IO contracts ────────────────────────────────────────────────
+
+/// Input to start or resume a run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RunInput {
+    /// A new user message to process.
+    UserMessage { text: String },
+    /// Resume a suspended run with a decision.
+    ResumeDecision {
+        /// The tool call ID being resolved.
+        tool_call_id: String,
+        /// Resume or cancel.
+        action: ResumeDecisionAction,
+        /// Optional payload for the decision.
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        payload: Value,
+    },
+}
+
+/// Output stream type alias for a run.
+pub type RunOutput = futures::stream::BoxStream<'static, AgentEvent>;
 
 #[cfg(test)]
 mod tests {
@@ -517,5 +562,93 @@ mod tests {
         } else {
             panic!("wrong variant");
         }
+    }
+
+    // ── StreamEvent tests ──
+
+    #[test]
+    fn stream_event_serde_roundtrip() {
+        let se = StreamEvent::new(
+            1,
+            "2025-01-15T12:34:56.789Z",
+            AgentEvent::TextDelta { delta: "hi".into() },
+        );
+        let json = serde_json::to_string(&se).unwrap();
+        assert!(json.contains("\"seq\":1"));
+        assert!(json.contains("\"timestamp\":\"2025-01-15T12:34:56.789Z\""));
+        assert!(json.contains("\"event_type\":\"text_delta\""));
+
+        let parsed: StreamEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.seq, 1);
+        assert_eq!(parsed.timestamp, "2025-01-15T12:34:56.789Z");
+        assert!(matches!(parsed.event, AgentEvent::TextDelta { .. }));
+    }
+
+    #[test]
+    fn stream_event_with_run_start() {
+        let se = StreamEvent::new(
+            0,
+            "2025-01-15T00:00:00Z",
+            AgentEvent::RunStart {
+                thread_id: "t1".into(),
+                run_id: "r1".into(),
+                parent_run_id: None,
+            },
+        );
+        let json = serde_json::to_string(&se).unwrap();
+        let parsed: StreamEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.seq, 0);
+        assert!(matches!(parsed.event, AgentEvent::RunStart { .. }));
+    }
+
+    // ── RunInput tests ──
+
+    #[test]
+    fn run_input_user_message_serde_roundtrip() {
+        let input = RunInput::UserMessage {
+            text: "hello".into(),
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"type\":\"user_message\""));
+        assert!(json.contains("\"text\":\"hello\""));
+
+        let parsed: RunInput = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, RunInput::UserMessage { text } if text == "hello"));
+    }
+
+    #[test]
+    fn run_input_resume_decision_serde_roundtrip() {
+        let input = RunInput::ResumeDecision {
+            tool_call_id: "c1".into(),
+            action: ResumeDecisionAction::Resume,
+            payload: json!({"approved": true}),
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"type\":\"resume_decision\""));
+
+        let parsed: RunInput = serde_json::from_str(&json).unwrap();
+        if let RunInput::ResumeDecision {
+            tool_call_id,
+            action,
+            payload,
+        } = parsed
+        {
+            assert_eq!(tool_call_id, "c1");
+            assert_eq!(action, ResumeDecisionAction::Resume);
+            assert_eq!(payload["approved"], true);
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn run_input_resume_decision_omits_null_payload() {
+        let input = RunInput::ResumeDecision {
+            tool_call_id: "c1".into(),
+            action: ResumeDecisionAction::Cancel,
+            payload: Value::Null,
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(!json.contains("payload"));
     }
 }

@@ -5,6 +5,7 @@ mod error;
 pub mod model;
 pub mod registry_spec;
 pub mod state;
+pub mod thread;
 
 // ── error ──
 pub use error::{StateError, UnknownKeyPolicy};
@@ -21,3 +22,6 @@ pub use registry_spec::{AgentSpec, PluginConfigKey};
 // ── state ──
 pub use state::{KeyScope, MergeStrategy, StateKey, StateKeyOptions, StateMap};
 pub use state::{PersistedState, Snapshot};
+
+// ── thread ──
+pub use thread::{Thread, ThreadMetadata};
