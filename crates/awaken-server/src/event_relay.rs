@@ -10,19 +10,21 @@ use tokio::sync::mpsc;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::transport::Transcoder;
 
-/// Produce a stream of transcoded output items from an event receiver.
+/// Shared relay logic: prologue -> transcode each event -> epilogue.
 ///
-/// Runs the full prologue → transcode → epilogue pipeline. Each output item
-/// is serialized to a JSON `Vec<u8>`. The stream ends when the event channel
-/// closes and the epilogue has been emitted.
-pub fn relay_events<E>(
-    mut event_rx: mpsc::UnboundedReceiver<AgentEvent>,
+/// The `event_stream` parameter accepts any `futures::Stream` of `AgentEvent`.
+/// Both unbounded and bounded receivers can be adapted via wrapper streams.
+pub fn relay_events_stream<E, S>(
     mut encoder: E,
+    event_stream: S,
 ) -> impl futures::Stream<Item = Vec<u8>> + Send + 'static
 where
     E: Transcoder<Input = AgentEvent> + 'static,
     E::Output: Serialize + Send + 'static,
+    S: futures::Stream<Item = AgentEvent> + Send + Unpin + 'static,
 {
+    use futures::StreamExt;
+    let mut event_stream = event_stream;
     async_stream::stream! {
         // Emit prologue
         for item in encoder.prologue() {
@@ -32,7 +34,7 @@ where
         }
 
         // Transcode each agent event
-        while let Some(event) = event_rx.recv().await {
+        while let Some(event) = event_stream.next().await {
             for item in encoder.transcode(&event) {
                 if let Ok(bytes) = serde_json::to_vec(&item) {
                     yield bytes;
@@ -49,39 +51,41 @@ where
     }
 }
 
-/// Produce a stream of transcoded output items from a **bounded** event receiver.
+/// Produce a stream of transcoded output items from an unbounded event receiver.
 ///
-/// Identical to [`relay_events`] but accepts a bounded channel, suitable for
-/// transports where back-pressure is desired (e.g. NATS).
-pub fn relay_events_bounded<E>(
-    mut event_rx: mpsc::Receiver<AgentEvent>,
-    mut encoder: E,
+/// Runs the full prologue -> transcode -> epilogue pipeline. Each output item
+/// is serialized to a JSON `Vec<u8>`. The stream ends when the event channel
+/// closes and the epilogue has been emitted.
+pub fn relay_events<E>(
+    event_rx: mpsc::UnboundedReceiver<AgentEvent>,
+    encoder: E,
 ) -> impl futures::Stream<Item = Vec<u8>> + Send + 'static
 where
     E: Transcoder<Input = AgentEvent> + 'static,
     E::Output: Serialize + Send + 'static,
 {
-    async_stream::stream! {
-        for item in encoder.prologue() {
-            if let Ok(bytes) = serde_json::to_vec(&item) {
-                yield bytes;
-            }
-        }
+    relay_events_stream(
+        encoder,
+        tokio_stream::wrappers::UnboundedReceiverStream::new(event_rx),
+    )
+}
 
-        while let Some(event) = event_rx.recv().await {
-            for item in encoder.transcode(&event) {
-                if let Ok(bytes) = serde_json::to_vec(&item) {
-                    yield bytes;
-                }
-            }
-        }
-
-        for item in encoder.epilogue() {
-            if let Ok(bytes) = serde_json::to_vec(&item) {
-                yield bytes;
-            }
-        }
-    }
+/// Produce a stream of transcoded output items from a **bounded** event receiver.
+///
+/// Identical to [`relay_events`] but accepts a bounded channel, suitable for
+/// transports where back-pressure is desired (e.g. NATS).
+pub fn relay_events_bounded<E>(
+    event_rx: mpsc::Receiver<AgentEvent>,
+    encoder: E,
+) -> impl futures::Stream<Item = Vec<u8>> + Send + 'static
+where
+    E: Transcoder<Input = AgentEvent> + 'static,
+    E::Output: Serialize + Send + 'static,
+{
+    relay_events_stream(
+        encoder,
+        tokio_stream::wrappers::ReceiverStream::new(event_rx),
+    )
 }
 
 #[cfg(test)]
@@ -160,5 +164,25 @@ mod tests {
         let items: Vec<Vec<u8>> = stream.collect().await;
         // Identity has no prologue/epilogue, no events = empty
         assert!(items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn relay_events_bounded_works() {
+        let (tx, rx) = mpsc::channel::<AgentEvent>(16);
+        let encoder = Identity::<AgentEvent>::default();
+        let stream = relay_events_bounded(rx, encoder);
+        tokio::pin!(stream);
+
+        tx.send(AgentEvent::TextDelta {
+            delta: "bounded".into(),
+        })
+        .await
+        .unwrap();
+        drop(tx);
+
+        let items: Vec<Vec<u8>> = stream.collect().await;
+        assert_eq!(items.len(), 1);
+        let json = String::from_utf8(items[0].clone()).unwrap();
+        assert!(json.contains("bounded"));
     }
 }

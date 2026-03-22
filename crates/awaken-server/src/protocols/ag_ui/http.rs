@@ -43,14 +43,9 @@ struct AgUiMessage {
 }
 
 fn convert_messages(msgs: Vec<AgUiMessage>) -> Vec<Message> {
-    msgs.into_iter()
-        .filter_map(|m| match m.role.as_str() {
-            "user" => Some(Message::user(m.content)),
-            "assistant" => Some(Message::assistant(m.content)),
-            "system" => Some(Message::system(m.content)),
-            _ => None,
-        })
-        .collect()
+    crate::message_convert::convert_role_content_pairs(
+        msgs.into_iter().map(|m| (m.role, m.content)),
+    )
 }
 
 async fn ag_ui_run(
@@ -58,15 +53,8 @@ async fn ag_ui_run(
     Json(payload): Json<AgUiRunRequest>,
 ) -> Result<Response, ApiError> {
     let messages = convert_messages(payload.messages);
-    if messages.is_empty() {
-        return Err(ApiError::BadRequest(
-            "at least one message is required".to_string(),
-        ));
-    }
-
-    let thread_id = payload
-        .thread_id
-        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+    let (thread_id, messages) =
+        crate::run_dispatcher::prepare_run_inputs(payload.thread_id, messages)?;
 
     let spec = RunSpec {
         thread_id,

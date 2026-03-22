@@ -12,7 +12,9 @@ use std::sync::Arc;
 
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{RunRecord, StorageError, ThreadRunStore};
+use awaken_contract::contract::storage::{
+    RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
+};
 use awaken_stores::{InMemoryStore, NatsBufferedWriter};
 
 fn make_run(run_id: &str, thread_id: &str, updated_at: u64) -> RunRecord {
@@ -60,7 +62,7 @@ async fn checkpoint_buffers_to_nats() {
     writer.checkpoint("nats-t1", &messages, &run).await.unwrap();
 
     // Inner store should not have messages yet (they're in NATS)
-    let loaded = ThreadRunStore::load_messages(&*inner, "nats-t1")
+    let loaded = ThreadStore::load_messages(&*inner, "nats-t1")
         .await
         .unwrap();
     assert!(loaded.is_none());
@@ -81,7 +83,7 @@ async fn flush_persists_to_inner() {
     let flushed = writer.flush("nats-t2").await.unwrap();
     assert!(flushed > 0);
 
-    let loaded = ThreadRunStore::load_messages(&*inner, "nats-t2")
+    let loaded = ThreadStore::load_messages(&*inner, "nats-t2")
         .await
         .unwrap()
         .unwrap();
@@ -180,7 +182,7 @@ async fn recover_replays_unacked_checkpoints() {
 
     // Inner should be empty
     assert!(
-        ThreadRunStore::load_messages(&*inner, "nats-t6")
+        ThreadStore::load_messages(&*inner, "nats-t6")
             .await
             .unwrap()
             .is_none()
@@ -191,7 +193,7 @@ async fn recover_replays_unacked_checkpoints() {
     assert!(recovered > 0);
 
     // Inner should now have the messages
-    let loaded = ThreadRunStore::load_messages(&*inner, "nats-t6")
+    let loaded = ThreadStore::load_messages(&*inner, "nats-t6")
         .await
         .unwrap()
         .unwrap();
@@ -243,7 +245,7 @@ async fn multiple_checkpoints_last_wins_on_flush() {
     let flushed = writer.flush("nats-t7").await.unwrap();
     assert_eq!(flushed, 2);
 
-    let loaded = ThreadRunStore::load_messages(&*inner, "nats-t7")
+    let loaded = ThreadStore::load_messages(&*inner, "nats-t7")
         .await
         .unwrap()
         .unwrap();
@@ -284,7 +286,7 @@ async fn concurrent_checkpoints() {
     assert_eq!(flushed, 10);
 
     // Should have the last checkpoint's messages
-    let loaded = ThreadRunStore::load_messages(&*inner, "nats-tc")
+    let loaded = ThreadStore::load_messages(&*inner, "nats-tc")
         .await
         .unwrap()
         .unwrap();

@@ -241,16 +241,13 @@ async fn checkpoint_and_load() {
 
     store.checkpoint("thread-x", &messages, &run).await.unwrap();
 
-    let loaded_messages = ThreadRunStore::load_messages(&store, "thread-x")
+    let loaded_messages = ThreadStore::load_messages(&store, "thread-x")
         .await
         .unwrap()
         .unwrap();
     assert_eq!(loaded_messages.len(), 2);
 
-    let loaded_run = ThreadRunStore::load_run(&store, "run-x")
-        .await
-        .unwrap()
-        .unwrap();
+    let loaded_run = RunStore::load_run(&store, "run-x").await.unwrap().unwrap();
     assert_eq!(loaded_run.thread_id, "thread-x");
 }
 
@@ -270,7 +267,7 @@ async fn checkpoint_overwrites_messages() {
         .await
         .unwrap();
 
-    let msgs = ThreadRunStore::load_messages(&store, "t-1")
+    let msgs = ThreadStore::load_messages(&store, "t-1")
         .await
         .unwrap()
         .unwrap();
@@ -282,9 +279,7 @@ async fn checkpoint_overwrites_messages() {
 async fn load_messages_nonexistent() {
     let tmp = TempDir::new().unwrap();
     let store = FileStore::new(tmp.path());
-    let result = ThreadRunStore::load_messages(&store, "missing")
-        .await
-        .unwrap();
+    let result = ThreadStore::load_messages(&store, "missing").await.unwrap();
     assert!(result.is_none());
 }
 
@@ -302,10 +297,7 @@ async fn latest_run_via_thread_run_store() {
         .await
         .unwrap();
 
-    let latest = ThreadRunStore::latest_run(&store, "t-1")
-        .await
-        .unwrap()
-        .unwrap();
+    let latest = RunStore::latest_run(&store, "t-1").await.unwrap().unwrap();
     assert_eq!(latest.run_id, "r2");
 }
 
@@ -338,7 +330,7 @@ async fn thread_store_and_checkpoint_share_messages() {
         .unwrap();
     assert_eq!(msgs[0].text(), "checkpoint");
 
-    let msgs = ThreadRunStore::load_messages(&store, "t-1")
+    let msgs = ThreadStore::load_messages(&store, "t-1")
         .await
         .unwrap()
         .unwrap();
@@ -653,7 +645,7 @@ async fn tool_call_message_roundtrip_via_checkpoint() {
         .await
         .unwrap();
 
-    let loaded = ThreadRunStore::load_messages(&store, "t-1")
+    let loaded = ThreadStore::load_messages(&store, "t-1")
         .await
         .unwrap()
         .unwrap();
@@ -690,7 +682,7 @@ async fn checkpoint_run_visible_via_run_store() {
 async fn latest_run_nonexistent_thread_via_thread_run_store() {
     let tmp = TempDir::new().unwrap();
     let store = FileStore::new(tmp.path());
-    let result = ThreadRunStore::latest_run(&store, "missing").await.unwrap();
+    let result = RunStore::latest_run(&store, "missing").await.unwrap();
     assert!(result.is_none());
 }
 
@@ -698,6 +690,6 @@ async fn latest_run_nonexistent_thread_via_thread_run_store() {
 async fn load_run_nonexistent_via_thread_run_store() {
     let tmp = TempDir::new().unwrap();
     let store = FileStore::new(tmp.path());
-    let result = ThreadRunStore::load_run(&store, "missing").await.unwrap();
+    let result = RunStore::load_run(&store, "missing").await.unwrap();
     assert!(result.is_none());
 }

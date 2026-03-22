@@ -247,14 +247,9 @@ struct RunMessage {
 }
 
 fn convert_run_messages(msgs: Vec<RunMessage>) -> Vec<Message> {
-    msgs.into_iter()
-        .filter_map(|m| match m.role.as_str() {
-            "user" => Some(Message::user(m.content)),
-            "assistant" => Some(Message::assistant(m.content)),
-            "system" => Some(Message::system(m.content)),
-            _ => None,
-        })
-        .collect()
+    crate::message_convert::convert_role_content_pairs(
+        msgs.into_iter().map(|m| (m.role, m.content)),
+    )
 }
 
 async fn start_run(
@@ -266,13 +261,9 @@ async fn start_run(
         return Err(ApiError::BadRequest("agent_id cannot be empty".to_string()));
     }
 
-    let thread_id = payload
-        .thread_id
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
-
     let messages = convert_run_messages(payload.messages);
+    let (thread_id, messages) =
+        crate::run_dispatcher::prepare_run_inputs(payload.thread_id, messages)?;
 
     let spec = RunSpec {
         thread_id,

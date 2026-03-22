@@ -602,10 +602,6 @@ impl MailboxStore for PostgresStore {
 
 #[async_trait]
 impl ThreadRunStore for PostgresStore {
-    async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
-        ThreadStore::load_messages(self, thread_id).await
-    }
-
     async fn checkpoint(
         &self,
         thread_id: &str,
@@ -617,11 +613,6 @@ impl ThreadRunStore for PostgresStore {
         // Upsert messages
         let msg_data = serde_json::to_value(messages)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        let msg_sql = format!(
-            "INSERT INTO {} (thread_id, data) VALUES ($1, $2)
-             ON CONFLICT (thread_id) DO UPDATE SET data = $2, updated_at = now()",
-            self.messages_table
-        );
 
         // We need a unique constraint on thread_id for messages table.
         // Since we created the table without it, let's use DELETE + INSERT instead.
@@ -685,18 +676,7 @@ impl ThreadRunStore for PostgresStore {
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
 
-        // Suppress unused variable warning
-        let _ = msg_sql;
-
         Ok(())
-    }
-
-    async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, StorageError> {
-        RunStore::load_run(self, run_id).await
-    }
-
-    async fn latest_run(&self, thread_id: &str) -> Result<Option<RunRecord>, StorageError> {
-        RunStore::latest_run(self, thread_id).await
     }
 }
 

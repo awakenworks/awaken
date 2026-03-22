@@ -247,13 +247,13 @@ async fn checkpoint_and_load() {
         .await
         .unwrap();
 
-    let loaded = ThreadRunStore::load_messages(&store, "pg-cp-thread")
+    let loaded = ThreadStore::load_messages(&store, "pg-cp-thread")
         .await
         .unwrap()
         .unwrap();
     assert_eq!(loaded.len(), 2);
 
-    let loaded_run = ThreadRunStore::load_run(&store, "pg-cp-run")
+    let loaded_run = RunStore::load_run(&store, "pg-cp-run")
         .await
         .unwrap()
         .unwrap();
@@ -284,7 +284,7 @@ async fn checkpoint_overwrites() {
         .await
         .unwrap();
 
-    let msgs = ThreadRunStore::load_messages(&store, "pg-cp-ow")
+    let msgs = ThreadStore::load_messages(&store, "pg-cp-ow")
         .await
         .unwrap()
         .unwrap();

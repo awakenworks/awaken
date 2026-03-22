@@ -19,7 +19,10 @@
 use async_nats::jetstream;
 use async_trait::async_trait;
 use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{RunRecord, StorageError, ThreadRunStore};
+use awaken_contract::contract::storage::{
+    RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
+};
+use awaken_contract::thread::Thread;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -219,11 +222,53 @@ impl NatsBufferedWriter {
 }
 
 #[async_trait]
-impl ThreadRunStore for NatsBufferedWriter {
+impl ThreadStore for NatsBufferedWriter {
+    async fn load_thread(&self, thread_id: &str) -> Result<Option<Thread>, StorageError> {
+        self.inner.load_thread(thread_id).await
+    }
+
+    async fn save_thread(&self, thread: &Thread) -> Result<(), StorageError> {
+        self.inner.save_thread(thread).await
+    }
+
+    async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError> {
+        self.inner.list_threads(offset, limit).await
+    }
+
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
         self.inner.load_messages(thread_id).await
     }
 
+    async fn save_messages(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+    ) -> Result<(), StorageError> {
+        self.inner.save_messages(thread_id, messages).await
+    }
+}
+
+#[async_trait]
+impl RunStore for NatsBufferedWriter {
+    async fn create_run(&self, record: &RunRecord) -> Result<(), StorageError> {
+        self.inner.create_run(record).await
+    }
+
+    async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, StorageError> {
+        self.inner.load_run(run_id).await
+    }
+
+    async fn latest_run(&self, thread_id: &str) -> Result<Option<RunRecord>, StorageError> {
+        self.inner.latest_run(thread_id).await
+    }
+
+    async fn list_runs(&self, query: &RunQuery) -> Result<RunPage, StorageError> {
+        self.inner.list_runs(query).await
+    }
+}
+
+#[async_trait]
+impl ThreadRunStore for NatsBufferedWriter {
     /// Publish checkpoint to NATS JetStream instead of writing directly to
     /// the inner store. The envelope is durably stored in JetStream and will
     /// be applied to the inner store when [`flush`](Self::flush) is called.
@@ -249,14 +294,6 @@ impl ThreadRunStore for NatsBufferedWriter {
             .map_err(|e| StorageError::Io(e.to_string()))?;
 
         Ok(())
-    }
-
-    async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, StorageError> {
-        self.inner.load_run(run_id).await
-    }
-
-    async fn latest_run(&self, thread_id: &str) -> Result<Option<RunRecord>, StorageError> {
-        self.inner.latest_run(thread_id).await
     }
 }
 
@@ -338,14 +375,14 @@ mod tests {
 
         // Checkpoint should go to NATS, not inner store
         writer.checkpoint("t-1", &messages, &run).await.unwrap();
-        let loaded = ThreadRunStore::load_messages(&*inner, "t-1").await.unwrap();
+        let loaded = ThreadStore::load_messages(&*inner, "t-1").await.unwrap();
         assert!(loaded.is_none(), "inner store should not have data yet");
 
         // Flush should persist to inner store
         let flushed = writer.flush("t-1").await.unwrap();
         assert!(flushed > 0);
 
-        let loaded = ThreadRunStore::load_messages(&*inner, "t-1")
+        let loaded = ThreadStore::load_messages(&*inner, "t-1")
             .await
             .unwrap()
             .unwrap();
@@ -392,7 +429,7 @@ mod tests {
         let recovered = writer2.recover().await.unwrap();
         assert!(recovered > 0);
 
-        let loaded = ThreadRunStore::load_messages(&*inner, "t-recover")
+        let loaded = ThreadStore::load_messages(&*inner, "t-recover")
             .await
             .unwrap()
             .unwrap();

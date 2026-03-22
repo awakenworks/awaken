@@ -11,7 +11,28 @@ use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::message::Message;
 use awaken_runtime::AgentRuntime;
 
+use crate::routes::ApiError;
 use crate::transport::channel_sink::ChannelEventSink;
+
+/// Validate and normalize run request inputs.
+///
+/// Checks that messages are non-empty, trims/generates thread_id.
+/// Returns `(thread_id, messages)`.
+pub fn prepare_run_inputs(
+    thread_id: Option<String>,
+    messages: Vec<Message>,
+) -> Result<(String, Vec<Message>), ApiError> {
+    if messages.is_empty() {
+        return Err(ApiError::BadRequest(
+            "at least one message is required".to_string(),
+        ));
+    }
+    let thread_id = thread_id
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+    Ok((thread_id, messages))
+}
 
 /// Everything needed to start a run — protocol-agnostic.
 pub struct RunSpec {
@@ -83,5 +104,41 @@ mod tests {
             messages: vec![],
         };
         assert!(spec.agent_id.is_none());
+    }
+
+    #[test]
+    fn prepare_run_inputs_generates_thread_id() {
+        let msgs = vec![Message::user("hi")];
+        let (thread_id, messages) = prepare_run_inputs(None, msgs).unwrap();
+        assert!(!thread_id.is_empty());
+        assert_eq!(messages.len(), 1);
+    }
+
+    #[test]
+    fn prepare_run_inputs_uses_provided_thread_id() {
+        let msgs = vec![Message::user("hi")];
+        let (thread_id, _) = prepare_run_inputs(Some("my-thread".into()), msgs).unwrap();
+        assert_eq!(thread_id, "my-thread");
+    }
+
+    #[test]
+    fn prepare_run_inputs_trims_whitespace() {
+        let msgs = vec![Message::user("hi")];
+        let (thread_id, _) = prepare_run_inputs(Some("  my-thread  ".into()), msgs).unwrap();
+        assert_eq!(thread_id, "my-thread");
+    }
+
+    #[test]
+    fn prepare_run_inputs_empty_thread_id_generates_new() {
+        let msgs = vec![Message::user("hi")];
+        let (thread_id, _) = prepare_run_inputs(Some("  ".into()), msgs).unwrap();
+        assert!(!thread_id.is_empty());
+        assert_ne!(thread_id, "  ");
+    }
+
+    #[test]
+    fn prepare_run_inputs_empty_messages_errors() {
+        let result = prepare_run_inputs(None, vec![]);
+        assert!(result.is_err());
     }
 }

@@ -206,13 +206,12 @@ pub trait MailboxStore: Send + Sync {
 
 /// Atomic thread+run checkpoint persistence.
 ///
-/// Implementations must persist thread messages and run record in one transaction.
-/// This is a convenience trait extending ThreadStore + RunStore for atomic operations.
+/// Extends [`ThreadStore`] + [`RunStore`] with a transactional checkpoint
+/// that persists thread messages and run record together. Read methods
+/// (`load_messages`, `load_run`, `latest_run`) are inherited from the
+/// supertraits — implementations should not duplicate them.
 #[async_trait]
-pub trait ThreadRunStore: Send + Sync {
-    /// Load all messages for a thread. Returns `None` if the thread does not exist.
-    async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError>;
-
+pub trait ThreadRunStore: ThreadStore + RunStore + Send + Sync {
     /// Persist thread messages and run record atomically.
     async fn checkpoint(
         &self,
@@ -220,12 +219,6 @@ pub trait ThreadRunStore: Send + Sync {
         messages: &[Message],
         run: &RunRecord,
     ) -> Result<(), StorageError>;
-
-    /// Load a run record by `run_id`.
-    async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, StorageError>;
-
-    /// Find the latest run for a thread (by `updated_at`).
-    async fn latest_run(&self, thread_id: &str) -> Result<Option<RunRecord>, StorageError>;
 }
 
 #[cfg(test)]

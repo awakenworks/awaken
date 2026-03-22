@@ -460,7 +460,7 @@ async fn checkpoint_persists_messages_and_run() {
 
     store.checkpoint("thread-x", &messages, &run).await.unwrap();
 
-    let loaded_messages = ThreadRunStore::load_messages(&store, "thread-x")
+    let loaded_messages = ThreadStore::load_messages(&store, "thread-x")
         .await
         .unwrap()
         .unwrap();
@@ -468,10 +468,7 @@ async fn checkpoint_persists_messages_and_run() {
     assert_eq!(loaded_messages[0].text(), "u1");
     assert_eq!(loaded_messages[1].text(), "a1");
 
-    let loaded_run = ThreadRunStore::load_run(&store, "run-x")
-        .await
-        .unwrap()
-        .unwrap();
+    let loaded_run = RunStore::load_run(&store, "run-x").await.unwrap().unwrap();
     assert_eq!(loaded_run.thread_id, "thread-x");
     assert_eq!(loaded_run.updated_at, 42);
 }
@@ -491,7 +488,7 @@ async fn checkpoint_overwrites_previous_messages() {
         .await
         .unwrap();
 
-    let msgs = ThreadRunStore::load_messages(&store, "t-1")
+    let msgs = ThreadStore::load_messages(&store, "t-1")
         .await
         .unwrap()
         .unwrap();
@@ -502,9 +499,7 @@ async fn checkpoint_overwrites_previous_messages() {
 #[tokio::test]
 async fn load_messages_nonexistent() {
     let store = InMemoryStore::new();
-    let result = ThreadRunStore::load_messages(&store, "missing")
-        .await
-        .unwrap();
+    let result = ThreadStore::load_messages(&store, "missing").await.unwrap();
     assert!(result.is_none());
 }
 
@@ -525,23 +520,17 @@ async fn latest_run_via_thread_run_store() {
         .await
         .unwrap();
 
-    let latest = ThreadRunStore::latest_run(&store, "t-1")
-        .await
-        .unwrap()
-        .unwrap();
+    let latest = RunStore::latest_run(&store, "t-1").await.unwrap().unwrap();
     assert_eq!(latest.run_id, "r2");
 
-    let latest2 = ThreadRunStore::latest_run(&store, "t-2")
-        .await
-        .unwrap()
-        .unwrap();
+    let latest2 = RunStore::latest_run(&store, "t-2").await.unwrap().unwrap();
     assert_eq!(latest2.run_id, "r3");
 }
 
 #[tokio::test]
 async fn latest_run_nonexistent_thread_via_thread_run_store() {
     let store = InMemoryStore::new();
-    let result = ThreadRunStore::latest_run(&store, "missing").await.unwrap();
+    let result = RunStore::latest_run(&store, "missing").await.unwrap();
     assert!(result.is_none());
 }
 
@@ -554,17 +543,14 @@ async fn load_run_via_thread_run_store() {
         .await
         .unwrap();
 
-    let loaded = ThreadRunStore::load_run(&store, "run-1")
-        .await
-        .unwrap()
-        .unwrap();
+    let loaded = RunStore::load_run(&store, "run-1").await.unwrap().unwrap();
     assert_eq!(loaded.run_id, "run-1");
 }
 
 #[tokio::test]
 async fn load_run_nonexistent_via_thread_run_store() {
     let store = InMemoryStore::new();
-    let result = ThreadRunStore::load_run(&store, "missing").await.unwrap();
+    let result = RunStore::load_run(&store, "missing").await.unwrap();
     assert!(result.is_none());
 }
 
@@ -635,7 +621,7 @@ async fn concurrent_checkpoint() {
     }
 
     // Messages should be from the last checkpoint (non-deterministic due to concurrency)
-    let msgs = ThreadRunStore::load_messages(&*store, "t-1")
+    let msgs = ThreadStore::load_messages(&*store, "t-1")
         .await
         .unwrap()
         .unwrap();
@@ -678,7 +664,7 @@ async fn thread_store_and_thread_run_store_share_runs() {
     store.create_run(&run).await.unwrap();
 
     // Load via ThreadRunStore
-    let loaded = ThreadRunStore::load_run(&store, "run-shared")
+    let loaded = RunStore::load_run(&store, "run-shared")
         .await
         .unwrap()
         .unwrap();
@@ -731,7 +717,7 @@ async fn thread_store_and_checkpoint_share_messages() {
         .unwrap();
     assert_eq!(msgs[0].text(), "checkpoint msg");
 
-    let msgs = ThreadRunStore::load_messages(&store, "t-1")
+    let msgs = ThreadStore::load_messages(&store, "t-1")
         .await
         .unwrap()
         .unwrap();
@@ -799,7 +785,7 @@ async fn tool_call_message_roundtrip_via_checkpoint() {
         .await
         .unwrap();
 
-    let loaded = ThreadRunStore::load_messages(&store, "t-1")
+    let loaded = ThreadStore::load_messages(&store, "t-1")
         .await
         .unwrap()
         .unwrap();
@@ -1011,7 +997,7 @@ async fn full_agent_run_via_checkpoint() {
         .unwrap();
 
     // Verify final state
-    let msgs = ThreadRunStore::load_messages(&store, "t-1")
+    let msgs = ThreadStore::load_messages(&store, "t-1")
         .await
         .unwrap()
         .unwrap();
@@ -1019,10 +1005,7 @@ async fn full_agent_run_via_checkpoint() {
     assert_eq!(msgs[0].text(), "What is 2+2?");
     assert_eq!(msgs[3].text(), "2 + 2 = 4");
 
-    let loaded_run = ThreadRunStore::load_run(&store, "run-1")
-        .await
-        .unwrap()
-        .unwrap();
+    let loaded_run = RunStore::load_run(&store, "run-1").await.unwrap().unwrap();
     assert_eq!(loaded_run.status, RunStatus::Done);
     assert_eq!(loaded_run.steps, 2);
     assert_eq!(loaded_run.input_tokens, 100);

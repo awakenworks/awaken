@@ -39,32 +39,33 @@ struct AiSdkMessage {
     content: Value,
 }
 
+/// Extract text from an AI SDK content value (string or array of parts).
+fn extract_text(content: &Value) -> Option<String> {
+    match content {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(arr) => {
+            let text: String = arr
+                .iter()
+                .filter_map(|p| {
+                    if p.get("type").and_then(Value::as_str) == Some("text") {
+                        p.get("text").and_then(Value::as_str).map(str::to_string)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            Some(text)
+        }
+        _ => None,
+    }
+}
+
 fn convert_messages(msgs: Vec<AiSdkMessage>) -> Vec<Message> {
-    msgs.into_iter()
-        .filter_map(|m| {
-            let text = match &m.content {
-                Value::String(s) => s.clone(),
-                Value::Array(arr) => arr
-                    .iter()
-                    .filter_map(|p| {
-                        if p.get("type").and_then(Value::as_str) == Some("text") {
-                            p.get("text").and_then(Value::as_str).map(str::to_string)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join(""),
-                _ => return None,
-            };
-            match m.role.as_str() {
-                "user" => Some(Message::user(text)),
-                "assistant" => Some(Message::assistant(text)),
-                "system" => Some(Message::system(text)),
-                _ => None,
-            }
-        })
-        .collect()
+    crate::message_convert::convert_role_content_pairs(
+        msgs.into_iter()
+            .filter_map(|m| extract_text(&m.content).map(|text| (m.role, text))),
+    )
 }
 
 async fn ai_sdk_chat(
@@ -72,15 +73,8 @@ async fn ai_sdk_chat(
     Json(payload): Json<AiSdkChatRequest>,
 ) -> Result<Response, ApiError> {
     let messages = convert_messages(payload.messages);
-    if messages.is_empty() {
-        return Err(ApiError::BadRequest(
-            "at least one message is required".to_string(),
-        ));
-    }
-
-    let thread_id = payload
-        .thread_id
-        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+    let (thread_id, messages) =
+        crate::run_dispatcher::prepare_run_inputs(payload.thread_id, messages)?;
 
     let spec = RunSpec {
         thread_id,

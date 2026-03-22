@@ -136,7 +136,7 @@ mod tests {
     };
     use awaken_contract::contract::inference::{InferenceOverride, StopReason, StreamResult};
     use awaken_contract::contract::message::Message;
-    use awaken_contract::contract::storage::ThreadRunStore;
+    use awaken_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
     use awaken_contract::contract::suspension::ResumeDecisionAction;
     use awaken_contract::contract::suspension::ToolCallResume;
     use awaken_contract::contract::tool::{
