@@ -4,6 +4,7 @@ use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::inference::ContextWindowPolicy;
 use awaken_contract::contract::tool::Tool;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::executor::{SequentialToolExecutor, ToolExecutor};
@@ -29,6 +30,10 @@ pub struct AgentConfig {
     /// Maximum number of continuation retries when the LLM response is truncated
     /// at `MaxTokens` with incomplete tool calls. `0` disables truncation recovery.
     pub max_continuation_retries: usize,
+    /// Workspace root for file change tracking. When set, the runtime will
+    /// snapshot filesystem state before each tool execution and emit file
+    /// activity events for any changes detected.
+    pub file_tracking_root: Option<PathBuf>,
 }
 
 impl AgentConfig {
@@ -51,6 +56,7 @@ impl AgentConfig {
             context_policy: None,
             context_summarizer: None,
             max_continuation_retries: 2,
+            file_tracking_root: None,
         }
     }
 
@@ -100,6 +106,12 @@ impl AgentConfig {
     #[must_use]
     pub fn with_max_continuation_retries(mut self, n: usize) -> Self {
         self.max_continuation_retries = n;
+        self
+    }
+
+    #[must_use]
+    pub fn with_file_tracking_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.file_tracking_root = Some(root.into());
         self
     }
 

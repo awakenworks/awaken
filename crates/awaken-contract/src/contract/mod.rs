@@ -10,6 +10,7 @@ pub mod inference;
 pub mod lifecycle;
 pub mod message;
 pub mod profile;
+pub mod progress;
 pub mod storage;
 pub mod suspension;
 pub mod tool;

@@ -207,6 +207,7 @@ impl AgentResolver for RegistrySet {
             context_policy: run.spec.context_policy,
             context_summarizer: None,
             max_continuation_retries: run.spec.max_continuation_retries,
+            file_tracking_root: None,
         };
 
         // Register built-in context truncation transform when policy is set

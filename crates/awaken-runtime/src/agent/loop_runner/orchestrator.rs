@@ -425,18 +425,76 @@ pub async fn run_agent_loop_controlled(
         // Execute allowed tool calls via ToolExecutor
         let activity_buffer = Arc::new(awaken_contract::contract::event_sink::VecEventSink::new());
         let tool_ctx = ToolCallContext {
-            call_id: String::new(), // filled per-call by executor
+            call_id: String::new(),   // filled per-call by executor
+            tool_name: String::new(), // filled per-call by executor
             run_identity: run_identity.clone(),
             agent_spec: make_ctx(Phase::BeforeToolExecute, &messages, &run_identity).agent_spec,
             snapshot: store.snapshot(),
             activity_sink: Some(activity_buffer.clone()
                 as Arc<dyn awaken_contract::contract::event_sink::EventSink>),
         };
+
+        // Opt-in file change tracking: snapshot before tool execution
+        let file_tracker = match agent.file_tracking_root {
+            Some(ref root) => {
+                let mut tracker = crate::agent::file_tracker::FileChangeTracker::new(root);
+                if let Err(e) = tracker.snapshot().await {
+                    tracing::warn!(error = %e, "file tracker snapshot failed, skipping file tracking");
+                    None
+                } else {
+                    Some(tracker)
+                }
+            }
+            None => None,
+        };
+
         let exec_results = agent
             .tool_executor
             .execute(&agent.tools, &allowed_calls, &tool_ctx)
             .await
             .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
+
+        // File change tracking: diff after tool execution and emit file activities
+        if let Some(ref tracker) = file_tracker {
+            match tracker.diff().await {
+                Ok(changes) => {
+                    for change in changes {
+                        let op = match change.operation {
+                            crate::agent::file_tracker::FileChangeOperation::Created => {
+                                awaken_contract::contract::progress::FileOperation::Created
+                            }
+                            crate::agent::file_tracker::FileChangeOperation::Modified => {
+                                awaken_contract::contract::progress::FileOperation::Modified
+                            }
+                            crate::agent::file_tracker::FileChangeOperation::Deleted => {
+                                awaken_contract::contract::progress::FileOperation::Deleted
+                            }
+                        };
+                        let activity = awaken_contract::contract::progress::FileActivity {
+                            path: change.path.clone(),
+                            operation: op,
+                            media_type: None,
+                            size: change.size,
+                        };
+                        let content = serde_json::to_value(&activity).unwrap_or_default();
+                        sink.emit(AgentEvent::ActivitySnapshot {
+                            message_id: format!("file:{}", change.path),
+                            activity_type: awaken_contract::contract::progress::FILE_ACTIVITY_TYPE
+                                .into(),
+                            content,
+                            replace: Some(true),
+                        })
+                        .await;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "file tracker diff failed");
+                }
+            }
+        }
+        // Drop the file tracker to release the snapshot memory
+        drop(file_tracker);
+
         // Flush buffered activity events to the real sink
         for activity_event in activity_buffer.take() {
             sink.emit(activity_event).await;

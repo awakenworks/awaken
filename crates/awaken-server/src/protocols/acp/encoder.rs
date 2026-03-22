@@ -693,4 +693,55 @@ mod tests {
             other => panic!("expected SessionUpdate, got: {other:?}"),
         }
     }
+
+    #[test]
+    fn file_activity_snapshot_forwarded() {
+        let mut enc = AcpEncoder::new();
+        let file_content = json!({
+            "path": "src/main.rs",
+            "operation": "created",
+            "size": 1024
+        });
+        let events = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
+            message_id: "call-1:src/main.rs".into(),
+            activity_type: "file".into(),
+            content: file_content.clone(),
+            replace: Some(true),
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0],
+            AcpEvent::activity_snapshot("call-1:src/main.rs", "file", file_content, Some(true))
+        );
+    }
+
+    #[test]
+    fn tool_call_progress_activity_forwarded() {
+        let mut enc = AcpEncoder::new();
+        let progress_content = json!({
+            "schema": "tool-call-progress.v1",
+            "node_id": "call-1",
+            "call_id": "call-1",
+            "tool_name": "search",
+            "status": "running",
+            "progress": 0.5,
+            "message": "Searching..."
+        });
+        let events = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
+            message_id: "call-1".into(),
+            activity_type: "tool-call-progress".into(),
+            content: progress_content.clone(),
+            replace: Some(true),
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0],
+            AcpEvent::activity_snapshot(
+                "call-1",
+                "tool-call-progress",
+                progress_content,
+                Some(true)
+            )
+        );
+    }
 }

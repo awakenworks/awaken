@@ -50,6 +50,9 @@ pub use agent::background_tasks::{
     TaskSummary,
 };
 
+// ── file tracker ──
+pub use agent::file_tracker::{FileChange, FileChangeOperation, FileChangeTracker};
+
 // ── agent tools ──
 pub use agent::agent_tools::{
     A2aConfig, AgentBackend, AgentBackendError, AgentTool, DelegateRunResult, DelegateRunStatus,

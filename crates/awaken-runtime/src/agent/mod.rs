@@ -3,6 +3,7 @@ pub(crate) mod background_tasks;
 pub(crate) mod compaction;
 pub mod config;
 pub mod executor;
+pub mod file_tracker;
 pub(crate) mod loop_runner;
 pub(crate) mod permission_rules;
 pub(crate) mod retry_policy;

@@ -88,6 +88,7 @@ pub(super) async fn detect_and_replay_resume(
 
     let resume_tool_ctx = ToolCallContext {
         call_id: String::new(),
+        tool_name: String::new(),
         run_identity: run_identity.clone(),
         agent_spec: std::sync::Arc::new(awaken_contract::registry_spec::AgentSpec::default()),
         snapshot: store.snapshot(),
@@ -99,6 +100,7 @@ pub(super) async fn detect_and_replay_resume(
         let call = ToolCall::new(call_id, &call_state.tool_name, call_state.arguments.clone());
         let mut tool_ctx = resume_tool_ctx.clone();
         tool_ctx.call_id = call_id.to_string();
+        tool_ctx.tool_name = call_state.tool_name.clone();
         let result =
             crate::agent::executor::execute_single_tool(&agent.tools, &call, &tool_ctx).await;
 

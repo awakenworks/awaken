@@ -58,6 +58,7 @@ impl ToolExecutor for SequentialToolExecutor {
         for call in calls {
             let mut ctx = base_ctx.clone();
             ctx.call_id = call.id.clone();
+            ctx.tool_name = call.name.clone();
             let result = execute_single_tool(tools, call, &ctx).await;
             let outcome = ToolCallOutcome::from_tool_result(&result);
 
@@ -162,6 +163,7 @@ impl ToolExecutor for ParallelToolExecutor {
                 let call = call.clone();
                 let mut ctx = base_ctx.clone();
                 ctx.call_id = call.id.clone();
+                ctx.tool_name = call.name.clone();
                 async move {
                     let result = execute_single_tool(&tools, &call, &ctx).await;
                     let outcome = ToolCallOutcome::from_tool_result(&result);
