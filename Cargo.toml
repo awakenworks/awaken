@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/awaken-contract",
     "crates/awaken-runtime",
+    "crates/awaken-ext-permission",
     "crates/awaken",
 ]
 
@@ -14,6 +15,9 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 awaken-contract = { version = "0.1.0", path = "crates/awaken-contract" }
 awaken-runtime = { version = "0.1.0", path = "crates/awaken-runtime" }
+awaken-ext-permission = { version = "0.1.0", path = "crates/awaken-ext-permission" }
+glob-match = "0.2"
+regex = "1"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 thiserror = "2"
