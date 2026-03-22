@@ -117,15 +117,22 @@ impl SkillActivateTool {
         let activate_action =
             AnyStateAction::new::<SkillState>(SkillStateAction::Activate(meta.id.clone()));
         let mut applied_tool_ids: Vec<String> = Vec::new();
+        let mut applied_tool_patterns: Vec<String> = Vec::new();
         let mut skipped_tokens: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         let mut grant_tool_ids: Vec<String> = Vec::new();
+        let mut grant_tool_patterns: Vec<String> = Vec::new();
         for token in meta.allowed_tools.iter() {
             match parse_allowed_tool_token(token.clone()) {
                 Ok(parsed) if parsed.scope.is_none() => {
                     if seen.insert(parsed.tool_id.clone()) {
-                        grant_tool_ids.push(parsed.tool_id.clone());
-                        applied_tool_ids.push(parsed.tool_id);
+                        if is_pattern_like_tool_matcher(&parsed.tool_id) {
+                            grant_tool_patterns.push(parsed.tool_id.clone());
+                            applied_tool_patterns.push(parsed.tool_id);
+                        } else {
+                            grant_tool_ids.push(parsed.tool_id.clone());
+                            applied_tool_ids.push(parsed.tool_id);
+                        }
                     }
                 }
                 Ok(parsed) => {
@@ -142,6 +149,7 @@ impl SkillActivateTool {
             call_id = %ctx.call_id(),
             declared_allowed_tools = meta.allowed_tools.len(),
             applied_allowed_tools = applied_tool_ids.len(),
+            applied_allowed_patterns = applied_tool_patterns.len(),
             skipped_allowed_tools = skipped_tokens.len(),
             "skill activated"
         );
@@ -170,6 +178,9 @@ impl SkillActivateTool {
         if let Some(granter) = &self.access_granter {
             for tool_id in &grant_tool_ids {
                 effect = effect.with_action(granter.grant_tool_override(tool_id));
+            }
+            for pattern in &grant_tool_patterns {
+                effect = effect.with_action(granter.grant_tool_rule_override(pattern));
             }
         }
         if !instruction_for_message.trim().is_empty() {
@@ -498,6 +509,13 @@ fn activation_args(args: &Value) -> Option<&Value> {
     args.get("arguments").or_else(|| args.get("args"))
 }
 
+fn is_pattern_like_tool_matcher(tool_id: &str) -> bool {
+    tool_id.contains('*')
+        || tool_id.contains('?')
+        || tool_id.contains('[')
+        || (tool_id.starts_with('/') && tool_id.ends_with('/') && tool_id.len() >= 2)
+}
+
 fn parse_resource_kind(kind: Option<&Value>, path: &str) -> ToolArgResult<SkillResourceKind> {
     let from_kind = kind.and_then(|v| v.as_str()).map(str::trim);
 
@@ -693,5 +711,65 @@ mod tests {
         let calls = skill.seen_args.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0], Some(json!({"path": "src/lib.rs"})));
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingAccessGranter {
+        exact: Mutex<Vec<String>>,
+        patterns: Mutex<Vec<String>>,
+    }
+
+    impl ToolAccessGranter for RecordingAccessGranter {
+        fn grant_tool_override(
+            &self,
+            tool_id: &str,
+        ) -> tirea_contract::runtime::state::AnyStateAction {
+            self.exact.lock().unwrap().push(tool_id.to_string());
+            AnyStateAction::new::<SkillState>(SkillStateAction::Activate(format!(
+                "exact:{tool_id}"
+            )))
+        }
+
+        fn grant_tool_rule_override(
+            &self,
+            pattern: &str,
+        ) -> tirea_contract::runtime::state::AnyStateAction {
+            self.patterns.lock().unwrap().push(pattern.to_string());
+            AnyStateAction::new::<SkillState>(SkillStateAction::Activate(format!(
+                "pattern:{pattern}"
+            )))
+        }
+    }
+
+    #[tokio::test]
+    async fn skill_activate_tool_routes_pattern_allowed_tools_to_pattern_grants() {
+        let skill = Arc::new(RecordingSkill {
+            meta: SkillMeta {
+                id: "record".to_string(),
+                name: "record".to_string(),
+                description: "record".to_string(),
+                allowed_tools: vec!["mcp__github__*".to_string(), "read_file".to_string()],
+            },
+            seen_args: Mutex::new(Vec::new()),
+        });
+        let registry = Arc::new(InMemorySkillRegistry::from_skills(vec![
+            skill as Arc<dyn Skill>,
+        ]));
+        let granter = Arc::new(RecordingAccessGranter::default());
+        let tool = SkillActivateTool::new(registry).with_access_granter(granter.clone());
+
+        let fixture = TestFixture::new();
+        let ctx = fixture.ctx_with("activate-pattern", "test");
+        let effect = tool
+            .execute_effect(json!({"skill": "record"}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(effect.result.is_success());
+        assert_eq!(granter.exact.lock().unwrap().as_slice(), &["read_file"]);
+        assert_eq!(
+            granter.patterns.lock().unwrap().as_slice(),
+            &["mcp__github__*"]
+        );
     }
 }

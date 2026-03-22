@@ -237,6 +237,14 @@ impl From<ToolResult> for ToolExecutionEffect {
 pub trait ToolAccessGranter: Send + Sync {
     /// Construct a run-scoped state action that grants the given tool access.
     fn grant_tool_override(&self, tool_id: &str) -> crate::runtime::state::AnyStateAction;
+
+    /// Construct a run-scoped state action that grants the given tool pattern access.
+    ///
+    /// Default implementation falls back to exact-tool granting for granters
+    /// that only support exact ids.
+    fn grant_tool_rule_override(&self, pattern: &str) -> crate::runtime::state::AnyStateAction {
+        self.grant_tool_override(pattern)
+    }
 }
 
 /// Tool execution errors.

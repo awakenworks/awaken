@@ -197,6 +197,16 @@ impl tirea_contract::runtime::tool_call::ToolAccessGranter for PermissionOverrid
             behavior: ToolPermissionBehavior::Allow,
         })
     }
+
+    fn grant_tool_rule_override(
+        &self,
+        pattern: &str,
+    ) -> tirea_contract::runtime::state::AnyStateAction {
+        permission_override_action(PermissionAction::SetRule {
+            pattern: pattern.to_string(),
+            behavior: ToolPermissionBehavior::Allow,
+        })
+    }
 }
 
 /// Target state for a permission rule change.

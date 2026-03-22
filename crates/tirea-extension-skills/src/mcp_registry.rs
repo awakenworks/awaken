@@ -46,6 +46,25 @@ fn mcp_skill_id(server_name: &str, prompt_name: &str) -> String {
     format!("mcp:{server_name}:{prompt_name}")
 }
 
+fn sanitize_mcp_tool_component(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut prev_underscore = false;
+    for ch in raw.chars() {
+        let keep = ch.is_ascii_alphanumeric();
+        let next = if keep { ch } else { '_' };
+        if next == '_' {
+            if prev_underscore {
+                continue;
+            }
+            prev_underscore = true;
+        } else {
+            prev_underscore = false;
+        }
+        out.push(next);
+    }
+    out.trim_matches('_').to_string()
+}
+
 #[derive(Debug, Clone)]
 pub struct McpPromptSkill {
     meta: SkillMeta,
@@ -66,13 +85,17 @@ impl McpPromptSkill {
                 prompt.name, entry.server_name
             )
         });
+        let server_tool_pattern = format!(
+            "mcp__{}__*",
+            sanitize_mcp_tool_component(&entry.server_name)
+        );
 
         Self {
             meta: SkillMeta {
                 id: skill_id,
                 name: display_name,
                 description,
-                allowed_tools: Vec::new(),
+                allowed_tools: vec![server_tool_pattern],
             },
             server_name: entry.server_name,
             prompt_name: prompt.name,
@@ -619,6 +642,10 @@ mod tests {
         assert_eq!(
             calls[0].1.as_ref().and_then(|args| args.get("path")),
             Some(&"src/lib.rs".to_string())
+        );
+        assert_eq!(
+            skill.meta().allowed_tools,
+            vec!["mcp__github__*".to_string()]
         );
     }
 
