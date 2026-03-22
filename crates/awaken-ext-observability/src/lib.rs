@@ -8,9 +8,15 @@ mod plugin;
 mod sink;
 mod stats;
 
+#[cfg(feature = "otel")]
+pub mod otel;
+
 pub use metrics::{AgentMetrics, GenAISpan, ToolSpan};
 pub use plugin::ObservabilityPlugin;
 pub use sink::{InMemorySink, MetricsSink};
+
+#[cfg(feature = "otel")]
+pub use otel::OtelMetricsSink;
 pub use stats::{ModelStats, ToolStats};
 
 // Make private helpers visible to the test module below.

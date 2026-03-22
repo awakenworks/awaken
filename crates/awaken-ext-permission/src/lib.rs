@@ -5,11 +5,15 @@
 //! priority: Deny > Allow > Ask.
 
 pub mod actions;
+pub mod config;
 pub mod matcher;
 pub mod plugin;
 pub mod rules;
 pub mod state;
 
+pub use config::{
+    PermissionConfigError, PermissionConfigKey, PermissionRuleEntry, PermissionRulesConfig,
+};
 pub use plugin::PermissionPlugin;
 pub use rules::{
     ArgMatcher, FieldCondition, MatchOp, PathSegment, PermissionEvaluation, PermissionRule,

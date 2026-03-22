@@ -8,6 +8,8 @@ awaken-contract = { workspace = true }
 awaken-runtime = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+schemars = { workspace = true }
+thiserror = { workspace = true }
 glob-match = { workspace = true }
 regex = { workspace = true }
 async-trait = { workspace = true }

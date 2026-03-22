@@ -27,6 +27,30 @@ impl EventSink for ChannelEventSink {
     }
 }
 
+/// An EventSink backed by a bounded mpsc channel.
+///
+/// Suitable for NATS transport where back-pressure is desired.
+pub struct BoundedChannelEventSink {
+    tx: mpsc::Sender<AgentEvent>,
+}
+
+impl BoundedChannelEventSink {
+    pub fn new(tx: mpsc::Sender<AgentEvent>) -> Self {
+        Self { tx }
+    }
+}
+
+#[async_trait]
+impl EventSink for BoundedChannelEventSink {
+    async fn emit(&self, event: AgentEvent) {
+        let _ = self.tx.send(event).await;
+    }
+
+    async fn close(&self) {
+        // Dropping sender will close the channel
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

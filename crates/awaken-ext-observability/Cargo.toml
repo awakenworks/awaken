@@ -11,10 +11,18 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 
+# Optional OTel
+opentelemetry = { version = "0.28", optional = true }
+opentelemetry_sdk = { version = "0.28", optional = true }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "time"] }
 futures = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["fmt", "registry"] }
+
+[features]
+default = []
+otel = ["dep:opentelemetry", "dep:opentelemetry_sdk"]
 
 [lints]
 workspace = true

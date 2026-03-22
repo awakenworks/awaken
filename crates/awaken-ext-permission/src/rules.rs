@@ -286,7 +286,9 @@ impl ToolCallPattern {
 // ---------------------------------------------------------------------------
 
 /// Tool permission behavior.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolPermissionBehavior {
     Allow,
@@ -371,7 +373,9 @@ impl PermissionSubject {
 // ---------------------------------------------------------------------------
 
 /// Lifetime of a permission rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionRuleScope {
     Once,

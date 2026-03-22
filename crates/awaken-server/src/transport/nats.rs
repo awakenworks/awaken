@@ -3,13 +3,22 @@
 //! Provides [`NatsTransport`] for serving agent events over NATS publish/subscribe.
 //! Each request arrives on a subscribed subject and events are published to the
 //! reply subject using a protocol encoder (AG-UI or AI SDK).
+//!
+//! # Subject naming conventions
+//!
+//! - AG-UI protocol: `awaken.ag_ui.{thread_id}` (request/reply)
+//! - AI SDK v6 protocol: `awaken.ai_sdk_v6.{thread_id}` (request/reply)
+//!
+//! Clients send a JSON request to the subject with a reply inbox.
+//! The server publishes encoded events to the reply subject.
 
 use std::future::Future;
 use std::sync::Arc;
 
 use awaken_contract::contract::event::AgentEvent;
+use awaken_contract::contract::message::Message;
 use awaken_contract::contract::transport::Transcoder;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// NATS transport configuration.
 #[derive(Clone, Debug)]
@@ -43,6 +52,40 @@ pub enum NatsProtocolError {
 
     #[error("run error: {0}")]
     Run(String),
+}
+
+/// NATS run request sent by clients.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NatsRunRequest {
+    /// Thread ID. New threads are created automatically.
+    #[serde(default)]
+    pub thread_id: Option<String>,
+    /// Target agent ID. `None` = use default.
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    /// Messages for this run.
+    #[serde(default)]
+    pub messages: Vec<NatsRunMessage>,
+}
+
+/// A message in a NATS run request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NatsRunMessage {
+    pub role: String,
+    #[serde(default)]
+    pub content: String,
+}
+
+/// Convert NATS run messages to contract messages.
+pub fn convert_nats_messages(msgs: Vec<NatsRunMessage>) -> Vec<Message> {
+    msgs.into_iter()
+        .filter_map(|m| match m.role.as_str() {
+            "user" => Some(Message::user(m.content)),
+            "assistant" => Some(Message::assistant(m.content)),
+            "system" => Some(Message::system(m.content)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Owns a NATS connection and transport configuration.
@@ -162,6 +205,162 @@ impl NatsTransport {
         }
         Ok(())
     }
+
+    /// Serve AG-UI protocol over NATS.
+    ///
+    /// Subscribes to `awaken.ag_ui.*` and dispatches run requests using
+    /// the AG-UI encoder. Requires a runtime to execute runs.
+    pub async fn serve_ag_ui(
+        &self,
+        runtime: Arc<awaken_runtime::AgentRuntime>,
+    ) -> Result<(), NatsProtocolError> {
+        let rt = runtime;
+        self.serve("awaken.ag_ui.*", "ag-ui", move |transport, msg| {
+            let rt = rt.clone();
+            async move { handle_ag_ui_request(transport, msg, &rt).await }
+        })
+        .await
+    }
+
+    /// Serve AI SDK v6 protocol over NATS.
+    ///
+    /// Subscribes to `awaken.ai_sdk_v6.*` and dispatches run requests using
+    /// the AI SDK v6 encoder. Requires a runtime to execute runs.
+    pub async fn serve_ai_sdk_v6(
+        &self,
+        runtime: Arc<awaken_runtime::AgentRuntime>,
+    ) -> Result<(), NatsProtocolError> {
+        let rt = runtime;
+        self.serve("awaken.ai_sdk_v6.*", "ai-sdk-v6", move |transport, msg| {
+            let rt = rt.clone();
+            async move { handle_ai_sdk_v6_request(transport, msg, &rt).await }
+        })
+        .await
+    }
+}
+
+/// Handle an incoming AG-UI NATS request.
+///
+/// Parses the request, starts a run, and publishes encoded AG-UI events
+/// to the reply subject.
+async fn handle_ag_ui_request(
+    transport: NatsTransport,
+    msg: async_nats::Message,
+    runtime: &awaken_runtime::AgentRuntime,
+) -> Result<(), NatsProtocolError> {
+    let reply = msg
+        .reply
+        .ok_or_else(|| NatsProtocolError::BadRequest("missing reply subject".to_string()))?;
+
+    let request: NatsRunRequest = serde_json::from_slice(&msg.payload)
+        .map_err(|e| NatsProtocolError::BadRequest(format!("invalid request: {e}")))?;
+
+    let messages = convert_nats_messages(request.messages);
+    if messages.is_empty() {
+        return Err(NatsProtocolError::BadRequest(
+            "at least one message is required".to_string(),
+        ));
+    }
+
+    let thread_id = request
+        .thread_id
+        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(transport.config.outbound_buffer);
+    let encoder = crate::protocols::ag_ui::encoder::AgUiEncoder::new();
+
+    // Spawn the event publisher
+    let pub_transport = transport.clone();
+    let pub_reply = reply.clone();
+    let publisher = tokio::spawn(async move {
+        if let Err(e) = pub_transport
+            .publish_events(event_rx, pub_reply, encoder)
+            .await
+        {
+            tracing::warn!(error = %e, "AG-UI NATS event publish failed");
+        }
+    });
+
+    // Execute the run
+    let sink = crate::transport::channel_sink::BoundedChannelEventSink::new(event_tx);
+    let run_request = awaken_runtime::RunRequest::new(thread_id, messages);
+    let run_request = if let Some(aid) = request.agent_id {
+        run_request.with_agent_id(aid)
+    } else {
+        run_request
+    };
+
+    if let Err(e) = runtime.run(run_request, &sink).await {
+        tracing::warn!(error = %e, "AG-UI NATS run failed");
+    }
+
+    // Drop sink to close the channel, then wait for publisher
+    drop(sink);
+    let _ = publisher.await;
+
+    Ok(())
+}
+
+/// Handle an incoming AI SDK v6 NATS request.
+///
+/// Parses the request, starts a run, and publishes encoded AI SDK v6 events
+/// to the reply subject.
+async fn handle_ai_sdk_v6_request(
+    transport: NatsTransport,
+    msg: async_nats::Message,
+    runtime: &awaken_runtime::AgentRuntime,
+) -> Result<(), NatsProtocolError> {
+    let reply = msg
+        .reply
+        .ok_or_else(|| NatsProtocolError::BadRequest("missing reply subject".to_string()))?;
+
+    let request: NatsRunRequest = serde_json::from_slice(&msg.payload)
+        .map_err(|e| NatsProtocolError::BadRequest(format!("invalid request: {e}")))?;
+
+    let messages = convert_nats_messages(request.messages);
+    if messages.is_empty() {
+        return Err(NatsProtocolError::BadRequest(
+            "at least one message is required".to_string(),
+        ));
+    }
+
+    let thread_id = request
+        .thread_id
+        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(transport.config.outbound_buffer);
+    let encoder = crate::protocols::ai_sdk_v6::encoder::AiSdkEncoder::new();
+
+    // Spawn the event publisher
+    let pub_transport = transport.clone();
+    let pub_reply = reply.clone();
+    let publisher = tokio::spawn(async move {
+        if let Err(e) = pub_transport
+            .publish_events(event_rx, pub_reply, encoder)
+            .await
+        {
+            tracing::warn!(error = %e, "AI SDK v6 NATS event publish failed");
+        }
+    });
+
+    // Execute the run
+    let sink = crate::transport::channel_sink::BoundedChannelEventSink::new(event_tx);
+    let run_request = awaken_runtime::RunRequest::new(thread_id, messages);
+    let run_request = if let Some(aid) = request.agent_id {
+        run_request.with_agent_id(aid)
+    } else {
+        run_request
+    };
+
+    if let Err(e) = runtime.run(run_request, &sink).await {
+        tracing::warn!(error = %e, "AI SDK v6 NATS run failed");
+    }
+
+    // Drop sink to close the channel, then wait for publisher
+    drop(sink);
+    let _ = publisher.await;
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -189,5 +388,63 @@ mod tests {
             outbound_buffer: 128,
         };
         assert_eq!(config.outbound_buffer, 128);
+    }
+
+    #[test]
+    fn convert_nats_messages_filters_unknown() {
+        let msgs = vec![
+            NatsRunMessage {
+                role: "user".into(),
+                content: "hello".into(),
+            },
+            NatsRunMessage {
+                role: "assistant".into(),
+                content: "hi".into(),
+            },
+            NatsRunMessage {
+                role: "unknown".into(),
+                content: "x".into(),
+            },
+            NatsRunMessage {
+                role: "system".into(),
+                content: "sys".into(),
+            },
+        ];
+        let converted = convert_nats_messages(msgs);
+        assert_eq!(converted.len(), 3);
+        assert_eq!(converted[0].text(), "hello");
+        assert_eq!(converted[1].text(), "hi");
+        assert_eq!(converted[2].text(), "sys");
+    }
+
+    #[test]
+    fn convert_empty_nats_messages() {
+        assert!(convert_nats_messages(vec![]).is_empty());
+    }
+
+    #[test]
+    fn nats_run_request_serde_roundtrip() {
+        let req = NatsRunRequest {
+            thread_id: Some("t-1".to_string()),
+            agent_id: Some("agent-a".to_string()),
+            messages: vec![NatsRunMessage {
+                role: "user".into(),
+                content: "hello".into(),
+            }],
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let decoded: NatsRunRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.thread_id.unwrap(), "t-1");
+        assert_eq!(decoded.agent_id.unwrap(), "agent-a");
+        assert_eq!(decoded.messages.len(), 1);
+    }
+
+    #[test]
+    fn nats_run_request_optional_fields() {
+        let json = r#"{"messages":[{"role":"user","content":"hi"}]}"#;
+        let req: NatsRunRequest = serde_json::from_str(json).unwrap();
+        assert!(req.thread_id.is_none());
+        assert!(req.agent_id.is_none());
+        assert_eq!(req.messages.len(), 1);
     }
 }
