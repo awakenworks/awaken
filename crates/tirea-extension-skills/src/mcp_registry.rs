@@ -382,31 +382,85 @@ fn resource_uri_from_path<'a>(
     Ok(uri)
 }
 
-fn first_resource_content<'a>(value: &'a Value, uri: &str) -> Result<&'a Value, SkillError> {
-    value
+fn resource_contents<'a>(value: &'a Value, uri: &str) -> Result<Vec<&'a Value>, SkillError> {
+    let contents = value
         .get("contents")
         .and_then(Value::as_array)
-        .and_then(|contents| contents.first())
-        .ok_or_else(|| SkillError::Io(format!("MCP resource '{uri}' returned no contents")))
-}
-
-fn read_text_resource(value: &Value, uri: &str) -> Result<String, SkillError> {
-    let content = first_resource_content(value, uri)?;
-    if let Some(text) = content.get("text").and_then(Value::as_str) {
-        return Ok(text.to_string());
-    }
-    if content.get("blob").and_then(Value::as_str).is_some() {
-        return Err(SkillError::Unsupported(format!(
-            "MCP resource '{uri}' is binary; load it as an asset instead"
+        .ok_or_else(|| SkillError::Io(format!("MCP resource '{uri}' returned no contents")))?;
+    if contents.is_empty() {
+        return Err(SkillError::Io(format!(
+            "MCP resource '{uri}' returned no contents"
         )));
     }
+
+    let mut matched = Vec::new();
+    let mut untagged = Vec::new();
+    let mut tagged_other_uri = false;
+
+    for content in contents {
+        match content.get("uri").and_then(Value::as_str) {
+            Some(content_uri) if content_uri == uri => matched.push(content),
+            Some(_) => tagged_other_uri = true,
+            None => untagged.push(content),
+        }
+    }
+
+    if !matched.is_empty() {
+        matched.extend(untagged);
+        return Ok(matched);
+    }
+
+    if !untagged.is_empty() {
+        return Ok(untagged);
+    }
+
+    if tagged_other_uri {
+        return Err(SkillError::Io(format!(
+            "MCP resource '{uri}' returned contents for a different uri"
+        )));
+    }
+
     Err(SkillError::Io(format!(
-        "MCP resource '{uri}' does not contain text content"
+        "MCP resource '{uri}' returned no contents"
     )))
 }
 
+fn read_text_resource(value: &Value, uri: &str) -> Result<String, SkillError> {
+    let contents = resource_contents(value, uri)?;
+    let mut parts = Vec::new();
+
+    for content in contents {
+        if let Some(text) = content.get("text").and_then(Value::as_str) {
+            parts.push(text);
+            continue;
+        }
+        if content.get("blob").and_then(Value::as_str).is_some() {
+            return Err(SkillError::Unsupported(format!(
+                "MCP resource '{uri}' contains binary content; load it as an asset instead"
+            )));
+        }
+        return Err(SkillError::Io(format!(
+            "MCP resource '{uri}' does not contain text content"
+        )));
+    }
+
+    if parts.is_empty() {
+        return Err(SkillError::Io(format!(
+            "MCP resource '{uri}' does not contain text content"
+        )));
+    }
+
+    Ok(parts.join("\n\n"))
+}
+
 fn read_asset_resource(value: &Value, uri: &str) -> Result<(Vec<u8>, Option<String>), SkillError> {
-    let content = first_resource_content(value, uri)?;
+    let contents = resource_contents(value, uri)?;
+    if contents.len() != 1 {
+        return Err(SkillError::Unsupported(format!(
+            "MCP resource '{uri}' returned multiple content items; load it as a reference instead"
+        )));
+    }
+    let content = contents[0];
     let mime_type = content
         .get("mimeType")
         .and_then(Value::as_str)
@@ -1025,6 +1079,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mcp_prompt_skill_aggregates_multi_content_text_resource_as_reference() {
+        let transport = Arc::new(
+            MutablePromptTransport::new(vec![prompt("review", Vec::new())]).with_resource(
+                "file://guide.md",
+                json!({
+                    "contents": [
+                        {
+                            "uri": "file://other.md",
+                            "text": "ignore me"
+                        },
+                        {
+                            "uri": "file://guide.md",
+                            "text": "# Guide"
+                        },
+                        {
+                            "uri": "file://guide.md",
+                            "text": "## Details"
+                        }
+                    ]
+                }),
+            ),
+        );
+        let manager = make_manager(transport).await;
+        let registry = McpPromptSkillRegistryManager::discover(manager)
+            .await
+            .unwrap();
+        let skill = registry.get("mcp:github:review").unwrap();
+
+        let resource = skill
+            .load_resource(SkillResourceKind::Reference, "references/file://guide.md")
+            .await
+            .unwrap();
+
+        let SkillResource::Reference(reference) = resource else {
+            panic!("expected reference resource");
+        };
+        assert_eq!(reference.content, "# Guide\n\n## Details");
+    }
+
+    #[tokio::test]
     async fn mcp_prompt_skill_metadata_and_instructions_include_resource_hints() {
         let transport = Arc::new(
             MutablePromptTransport::new(vec![prompt("review", vec![prompt_arg("path", true)])])
@@ -1119,6 +1213,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mcp_prompt_skill_rejects_multi_content_resource_loaded_as_asset() {
+        let transport = Arc::new(
+            MutablePromptTransport::new(vec![prompt("review", Vec::new())]).with_resource(
+                "file://logo.bin",
+                json!({
+                    "contents": [
+                        {
+                            "uri": "file://logo.bin",
+                            "blob": "aGVsbG8=",
+                            "mimeType": "application/octet-stream"
+                        },
+                        {
+                            "uri": "file://logo.bin",
+                            "blob": "d29ybGQ=",
+                            "mimeType": "application/octet-stream"
+                        }
+                    ]
+                }),
+            ),
+        );
+        let manager = make_manager(transport).await;
+        let registry = McpPromptSkillRegistryManager::discover(manager)
+            .await
+            .unwrap();
+        let skill = registry.get("mcp:github:review").unwrap();
+
+        let err = skill
+            .load_resource(SkillResourceKind::Asset, "assets/file://logo.bin")
+            .await
+            .expect_err("multi-content asset should be rejected");
+        assert!(
+            matches!(err, SkillError::Unsupported(message) if message.contains("multiple content items"))
+        );
+    }
+
+    #[tokio::test]
     async fn mcp_prompt_skill_rejects_binary_resource_loaded_as_reference() {
         let transport = Arc::new(
             MutablePromptTransport::new(vec![prompt("review", Vec::new())]).with_resource(
@@ -1143,6 +1273,33 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, SkillError::Unsupported(_)));
+    }
+
+    #[tokio::test]
+    async fn mcp_prompt_skill_rejects_resource_contents_for_different_uri() {
+        let transport = Arc::new(
+            MutablePromptTransport::new(vec![prompt("review", Vec::new())]).with_resource(
+                "file://guide.md",
+                json!({
+                    "contents": [{
+                        "uri": "file://other.md",
+                        "text": "wrong resource"
+                    }]
+                }),
+            ),
+        );
+        let manager = make_manager(transport).await;
+        let registry = McpPromptSkillRegistryManager::discover(manager)
+            .await
+            .unwrap();
+        let skill = registry.get("mcp:github:review").unwrap();
+
+        let err = skill
+            .load_resource(SkillResourceKind::Reference, "references/file://guide.md")
+            .await
+            .expect_err("mismatched uri should fail");
+
+        assert!(matches!(err, SkillError::Io(message) if message.contains("different uri")));
     }
 
     #[tokio::test]
