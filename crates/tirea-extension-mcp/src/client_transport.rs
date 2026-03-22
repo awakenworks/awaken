@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use mcp::transport::{
-    ClientInfo, InitializeCapabilities, McpServerConnectionConfig, McpTransportError,
-    SamplingCapabilities, TransportTypeId,
+    ClientInfo, InitializeCapabilities, InitializeResult, McpServerConnectionConfig,
+    McpTransportError, SamplingCapabilities, ServerCapabilities, TransportTypeId,
 };
 use mcp::{
     CallToolParams, CallToolResult, CreateMessageParams, CreateMessageResult, JsonRpcId,
@@ -104,6 +104,9 @@ struct ListResourcesResult {
 #[async_trait]
 pub trait McpToolTransport: Send + Sync {
     async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError>;
+    async fn server_capabilities(&self) -> Result<Option<ServerCapabilities>, McpTransportError> {
+        Ok(None)
+    }
     async fn list_prompts(&self) -> Result<Vec<McpPromptDefinition>, McpTransportError> {
         Err(McpTransportError::TransportError(
             "list_prompts not supported".to_string(),
@@ -183,6 +186,7 @@ pub(crate) struct ProgressAwareHttpTransport {
     client: reqwest::Client,
     next_id: AtomicI64,
     next_progress_token: AtomicI64,
+    capabilities: tokio::sync::Mutex<Option<ServerCapabilities>>,
 }
 
 impl ProgressAwareHttpTransport {
@@ -203,7 +207,37 @@ impl ProgressAwareHttpTransport {
             client,
             next_id: AtomicI64::new(1),
             next_progress_token: AtomicI64::new(1),
+            capabilities: tokio::sync::Mutex::new(None),
         })
+    }
+
+    async fn initialize_if_needed(&self) -> Result<ServerCapabilities, McpTransportError> {
+        {
+            let guard = self.capabilities.lock().await;
+            if let Some(capabilities) = guard.clone() {
+                return Ok(capabilities);
+            }
+        }
+
+        let capabilities = self.initialize().await?;
+        let mut guard = self.capabilities.lock().await;
+        if let Some(existing) = guard.clone() {
+            return Ok(existing);
+        }
+        *guard = Some(capabilities.clone());
+        Ok(capabilities)
+    }
+
+    async fn initialize(&self) -> Result<ServerCapabilities, McpTransportError> {
+        let result: InitializeResult = serde_json::from_value(
+            self.send_request(
+                "initialize",
+                Some(initialize_params(json!({}), Value::Null)),
+                None,
+            )
+            .await?,
+        )?;
+        Ok(result.capabilities)
     }
 
     async fn send_request(
@@ -251,6 +285,7 @@ pub(crate) struct ProgressAwareStdioTransport {
     alive: Arc<AtomicBool>,
     _child: Arc<tokio::sync::Mutex<Child>>,
     timeout: Duration,
+    capabilities: Option<ServerCapabilities>,
 }
 
 impl ProgressAwareStdioTransport {
@@ -405,30 +440,33 @@ impl ProgressAwareStdioTransport {
             alive,
             _child: Arc::new(tokio::sync::Mutex::new(child)),
             timeout: Duration::from_secs(config.timeout_secs),
+            capabilities: None,
         };
 
         let mut capabilities = InitializeCapabilities::default();
         if sampling_handler.is_some() {
             capabilities.sampling = Some(SamplingCapabilities::default());
         }
-        let init_params = json!({
-            "protocolVersion": MCP_PROTOCOL_VERSION,
-            "capabilities": serde_json::to_value(&capabilities)
-                .unwrap_or_else(|_| json!({})),
-            "clientInfo": serde_json::to_value(ClientInfo::new(
-                "tirea-mcp",
-                env!("CARGO_PKG_VERSION"),
-            )).unwrap_or_else(|_| json!({})),
-            "config": config.config,
-        });
-        transport
-            .send_request("initialize", Some(init_params), None)
-            .await?;
+        let init_result: InitializeResult = serde_json::from_value(
+            transport
+                .send_request(
+                    "initialize",
+                    Some(initialize_params(
+                        serde_json::to_value(&capabilities).unwrap_or_else(|_| json!({})),
+                        config.config.clone(),
+                    )),
+                    None,
+                )
+                .await?,
+        )?;
         let _ = transport
             .send_notification("notifications/initialized", Some(json!({})))
             .await;
 
-        Ok(transport)
+        Ok(Self {
+            capabilities: Some(init_result.capabilities),
+            ..transport
+        })
     }
 
     async fn send_notification(
@@ -516,6 +554,18 @@ fn handle_progress_notification(
             subscribers.lock().unwrap().remove(&key);
         }
     }
+}
+
+fn initialize_params(capabilities: Value, config: Value) -> Value {
+    json!({
+        "protocolVersion": MCP_PROTOCOL_VERSION,
+        "capabilities": capabilities,
+        "clientInfo": serde_json::to_value(ClientInfo::new(
+            "tirea-mcp",
+            env!("CARGO_PKG_VERSION"),
+        )).unwrap_or_else(|_| json!({})),
+        "config": config,
+    })
 }
 
 fn decode_progress_notification(
@@ -769,6 +819,10 @@ impl McpToolTransport for ProgressAwareStdioTransport {
         TransportTypeId::Stdio
     }
 
+    async fn server_capabilities(&self) -> Result<Option<ServerCapabilities>, McpTransportError> {
+        Ok(self.capabilities.clone())
+    }
+
     async fn read_resource(&self, uri: &str) -> Result<Value, McpTransportError> {
         self.send_request("resources/read", Some(json!({"uri": uri})), None)
             .await
@@ -867,6 +921,10 @@ impl McpToolTransport for ProgressAwareHttpTransport {
 
     fn transport_type(&self) -> TransportTypeId {
         TransportTypeId::Http
+    }
+
+    async fn server_capabilities(&self) -> Result<Option<ServerCapabilities>, McpTransportError> {
+        Ok(Some(self.initialize_if_needed().await?))
     }
 
     async fn read_resource(&self, uri: &str) -> Result<Value, McpTransportError> {
@@ -1009,6 +1067,21 @@ mod tests {
         }))
     }
 
+    fn initialize_response(request: &Value, capabilities: Value) -> HttpResponseSpec {
+        HttpResponseSpec::json(json!({
+            "jsonrpc": "2.0",
+            "id": request["id"].clone(),
+            "result": {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": capabilities,
+                "serverInfo": {
+                    "name": "test-server",
+                    "version": "1.0.0"
+                }
+            }
+        }))
+    }
+
     #[tokio::test]
     async fn http_call_tool_sets_progress_token_meta_conditionally() {
         let requests: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1041,6 +1114,53 @@ mod tests {
         assert_eq!(captured[0]["method"], json!("tools/call"));
         assert!(captured[0]["params"]["_meta"]["progressToken"].is_number());
         assert!(captured[1]["params"].get("_meta").is_none());
+    }
+
+    #[tokio::test]
+    async fn http_server_capabilities_are_initialized_once_and_cached() {
+        let requests: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let requests_handler = Arc::clone(&requests);
+        let (endpoint, server) = spawn_http_server(Arc::new(move |request| {
+            requests_handler
+                .lock()
+                .expect("requests lock")
+                .push(request.clone());
+            match request["method"].as_str().unwrap_or_default() {
+                "initialize" => initialize_response(
+                    &request,
+                    json!({
+                        "prompts": {},
+                        "resources": {}
+                    }),
+                ),
+                other => panic!("unexpected method: {other}"),
+            }
+        }))
+        .await;
+
+        let cfg = McpServerConnectionConfig::http("http_caps", endpoint);
+        let transport = ProgressAwareHttpTransport::connect(&cfg).expect("connect transport");
+
+        let first = transport
+            .server_capabilities()
+            .await
+            .expect("server capabilities")
+            .expect("capabilities");
+        let second = transport
+            .server_capabilities()
+            .await
+            .expect("server capabilities")
+            .expect("capabilities");
+
+        server.abort();
+        assert!(first.prompts.is_some());
+        assert!(first.resources.is_some());
+        assert!(second.prompts.is_some());
+        assert!(second.resources.is_some());
+
+        let captured = requests.lock().expect("requests lock");
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0]["method"], json!("initialize"));
     }
 
     #[tokio::test]
@@ -1141,29 +1261,39 @@ mod tests {
     #[tokio::test]
     async fn http_list_prompts_parses_prompt_definitions() {
         let (endpoint, server) = spawn_http_server(Arc::new(|request| {
-            HttpResponseSpec::json(json!({
-                "jsonrpc": "2.0",
-                "id": request["id"].clone(),
-                "result": {
-                    "prompts": [{
-                        "name": "review",
-                        "title": "Review",
-                        "description": "Review code",
-                        "arguments": [{
-                            "name": "path",
-                            "description": "Target path",
-                            "required": true
+            match request["method"].as_str().unwrap_or_default() {
+                "initialize" => initialize_response(&request, json!({"prompts": {}})),
+                "prompts/list" => HttpResponseSpec::json(json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"].clone(),
+                    "result": {
+                        "prompts": [{
+                            "name": "review",
+                            "title": "Review",
+                            "description": "Review code",
+                            "arguments": [{
+                                "name": "path",
+                                "description": "Target path",
+                                "required": true
+                            }]
                         }]
-                    }]
-                }
-            }))
+                    }
+                })),
+                other => panic!("unexpected method: {other}"),
+            }
         }))
         .await;
         let cfg = McpServerConnectionConfig::http("http_prompts", endpoint);
         let transport = ProgressAwareHttpTransport::connect(&cfg).expect("connect transport");
+        let capabilities = transport
+            .server_capabilities()
+            .await
+            .expect("server capabilities")
+            .expect("capabilities");
         let prompts = transport.list_prompts().await.expect("prompt list");
         server.abort();
 
+        assert!(capabilities.prompts.is_some());
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].name, "review");
         assert_eq!(prompts[0].arguments.len(), 1);
@@ -1227,27 +1357,37 @@ mod tests {
     #[tokio::test]
     async fn http_list_resources_parses_resource_definitions() {
         let (endpoint, server) = spawn_http_server(Arc::new(|request| {
-            HttpResponseSpec::json(json!({
-                "jsonrpc": "2.0",
-                "id": request["id"].clone(),
-                "result": {
-                    "resources": [{
-                        "uri": "file://guide.md",
-                        "name": "guide",
-                        "title": "Guide",
-                        "description": "Guide doc",
-                        "mimeType": "text/markdown",
-                        "size": 42
-                    }]
-                }
-            }))
+            match request["method"].as_str().unwrap_or_default() {
+                "initialize" => initialize_response(&request, json!({"resources": {}})),
+                "resources/list" => HttpResponseSpec::json(json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"].clone(),
+                    "result": {
+                        "resources": [{
+                            "uri": "file://guide.md",
+                            "name": "guide",
+                            "title": "Guide",
+                            "description": "Guide doc",
+                            "mimeType": "text/markdown",
+                            "size": 42
+                        }]
+                    }
+                })),
+                other => panic!("unexpected method: {other}"),
+            }
         }))
         .await;
         let cfg = McpServerConnectionConfig::http("http_resources", endpoint);
         let transport = ProgressAwareHttpTransport::connect(&cfg).expect("connect transport");
+        let capabilities = transport
+            .server_capabilities()
+            .await
+            .expect("server capabilities")
+            .expect("capabilities");
         let resources = transport.list_resources().await.expect("resource list");
         server.abort();
 
+        assert!(capabilities.resources.is_some());
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].uri, "file://guide.md");
         assert_eq!(resources[0].mime_type.as_deref(), Some("text/markdown"));

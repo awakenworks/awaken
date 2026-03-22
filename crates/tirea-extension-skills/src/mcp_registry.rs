@@ -506,6 +506,8 @@ mod tests {
         prompts: RwLock<Vec<McpPromptDefinition>>,
         prompt_calls: Mutex<Vec<(String, Option<HashMap<String, String>>)>>,
         prompt_counter: AtomicUsize,
+        prompt_list_calls: AtomicUsize,
+        capabilities: Option<mcp::transport::ServerCapabilities>,
     }
 
     impl MutablePromptTransport {
@@ -514,7 +516,14 @@ mod tests {
                 prompts: RwLock::new(prompts),
                 prompt_calls: Mutex::new(Vec::new()),
                 prompt_counter: AtomicUsize::new(0),
+                prompt_list_calls: AtomicUsize::new(0),
+                capabilities: None,
             }
+        }
+
+        fn with_capabilities(mut self, capabilities: mcp::transport::ServerCapabilities) -> Self {
+            self.capabilities = Some(capabilities);
+            self
         }
 
         fn replace_prompts(&self, prompts: Vec<McpPromptDefinition>) {
@@ -523,6 +532,10 @@ mod tests {
 
         fn prompt_calls(&self) -> Vec<(String, Option<HashMap<String, String>>)> {
             mutex_lock(&self.prompt_calls).clone()
+        }
+
+        fn prompt_list_calls(&self) -> usize {
+            self.prompt_list_calls.load(Ordering::SeqCst)
         }
     }
 
@@ -537,6 +550,7 @@ mod tests {
         async fn list_prompts(
             &self,
         ) -> Result<Vec<McpPromptDefinition>, mcp::transport::McpTransportError> {
+            self.prompt_list_calls.fetch_add(1, Ordering::SeqCst);
             Ok(read_lock(&self.prompts).clone())
         }
 
@@ -580,6 +594,13 @@ mod tests {
 
         fn transport_type(&self) -> mcp::transport::TransportTypeId {
             mcp::transport::TransportTypeId::Stdio
+        }
+
+        async fn server_capabilities(
+            &self,
+        ) -> Result<Option<mcp::transport::ServerCapabilities>, mcp::transport::McpTransportError>
+        {
+            Ok(self.capabilities.clone())
         }
     }
 
@@ -714,6 +735,26 @@ mod tests {
                 "mcp:github:review".to_string()
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn mcp_prompt_skill_registry_skips_servers_without_prompt_capability() {
+        let transport = Arc::new(
+            MutablePromptTransport::new(vec![prompt("review", Vec::new())]).with_capabilities(
+                mcp::transport::ServerCapabilities {
+                    prompts: None,
+                    ..mcp::transport::ServerCapabilities::default()
+                },
+            ),
+        );
+        let manager = make_manager(transport.clone()).await;
+
+        let registry = McpPromptSkillRegistryManager::discover(manager)
+            .await
+            .unwrap();
+
+        assert!(registry.ids().is_empty());
+        assert_eq!(transport.prompt_list_calls(), 0);
     }
 
     #[tokio::test]

@@ -7,7 +7,9 @@ mod client_transport;
 
 use async_trait::async_trait;
 use client_transport::connect_transport;
-use mcp::transport::{McpServerConnectionConfig, McpTransportError, TransportTypeId};
+use mcp::transport::{
+    McpServerConnectionConfig, McpTransportError, ServerCapabilities, TransportTypeId,
+};
 use mcp::{CallToolResult, McpToolDefinition, ToolContent};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -92,6 +94,14 @@ impl From<McpTransportError> for McpToolRegistryError {
 
 fn is_unsupported_transport_message(message: &str, operation: &str) -> bool {
     message.contains(operation) && message.contains("not supported")
+}
+
+fn server_supports_prompts(capabilities: Option<&ServerCapabilities>) -> bool {
+    capabilities.is_none_or(|capabilities| capabilities.prompts.is_some())
+}
+
+fn server_supports_resources(capabilities: Option<&ServerCapabilities>) -> bool {
+    capabilities.is_none_or(|capabilities| capabilities.resources.is_some())
 }
 
 fn validate_server_name(name: &str) -> Result<(), McpToolRegistryError> {
@@ -403,6 +413,7 @@ struct McpServerRuntime {
     name: String,
     transport_type: TransportTypeId,
     transport: Arc<dyn McpToolTransport>,
+    capabilities: Option<ServerCapabilities>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -606,7 +617,7 @@ impl McpToolRegistryManager {
     async fn from_tool_transports(
         entries: impl IntoIterator<Item = (McpServerConnectionConfig, Arc<dyn McpToolTransport>)>,
     ) -> Result<Self, McpToolRegistryError> {
-        let servers = Self::build_servers(entries)?;
+        let servers = Self::build_servers(entries).await?;
         let tools = discover_tools(&servers).await?;
 
         let snapshot = McpRegistrySnapshot { version: 1, tools };
@@ -625,7 +636,7 @@ impl McpToolRegistryManager {
         })
     }
 
-    fn build_servers(
+    async fn build_servers(
         entries: impl IntoIterator<Item = (McpServerConnectionConfig, Arc<dyn McpToolTransport>)>,
     ) -> Result<Vec<McpServerRuntime>, McpToolRegistryError> {
         let mut servers: Vec<McpServerRuntime> = Vec::new();
@@ -636,11 +647,13 @@ impl McpToolRegistryManager {
             if !names.insert(cfg.name.clone()) {
                 return Err(McpToolRegistryError::DuplicateServerName(cfg.name));
             }
+            let capabilities = transport.server_capabilities().await?;
 
             servers.push(McpServerRuntime {
                 name: cfg.name,
                 transport_type: transport.transport_type(),
                 transport,
+                capabilities,
             });
         }
 
@@ -736,6 +749,9 @@ impl McpToolRegistryManager {
         let mut prompts = Vec::new();
 
         for server in &self.state.servers {
+            if !server_supports_prompts(server.capabilities.as_ref()) {
+                continue;
+            }
             let mut defs = match server.transport.list_prompts().await {
                 Ok(defs) => defs,
                 Err(McpTransportError::TransportError(message))
@@ -785,6 +801,9 @@ impl McpToolRegistryManager {
         let mut resources = Vec::new();
 
         for server in &self.state.servers {
+            if !server_supports_resources(server.capabilities.as_ref()) {
+                continue;
+            }
             let mut defs = match server.transport.list_resources().await {
                 Ok(defs) => defs,
                 Err(McpTransportError::TransportError(message))
@@ -1055,6 +1074,9 @@ mod tests {
         prompt_result: McpPromptResult,
         read_resource_result: Value,
         prompt_requests: Arc<Mutex<Vec<(String, Option<HashMap<String, String>>)>>>,
+        prompt_list_calls: Arc<AtomicUsize>,
+        resource_list_calls: Arc<AtomicUsize>,
+        capabilities: Option<ServerCapabilities>,
     }
 
     impl FakeCatalogTransport {
@@ -1070,11 +1092,27 @@ mod tests {
                 prompt_result,
                 read_resource_result,
                 prompt_requests: Arc::new(Mutex::new(Vec::new())),
+                prompt_list_calls: Arc::new(AtomicUsize::new(0)),
+                resource_list_calls: Arc::new(AtomicUsize::new(0)),
+                capabilities: None,
             }
+        }
+
+        fn with_capabilities(mut self, capabilities: ServerCapabilities) -> Self {
+            self.capabilities = Some(capabilities);
+            self
         }
 
         fn prompt_requests(&self) -> Vec<(String, Option<HashMap<String, String>>)> {
             self.prompt_requests.lock().unwrap().clone()
+        }
+
+        fn prompt_list_calls(&self) -> usize {
+            self.prompt_list_calls.load(Ordering::SeqCst)
+        }
+
+        fn resource_list_calls(&self) -> usize {
+            self.resource_list_calls.load(Ordering::SeqCst)
         }
     }
 
@@ -1085,6 +1123,7 @@ mod tests {
         }
 
         async fn list_prompts(&self) -> Result<Vec<McpPromptDefinition>, McpTransportError> {
+            self.prompt_list_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.prompts.clone())
         }
 
@@ -1101,6 +1140,7 @@ mod tests {
         }
 
         async fn list_resources(&self) -> Result<Vec<McpResourceDefinition>, McpTransportError> {
+            self.resource_list_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.resources.clone())
         }
 
@@ -1115,6 +1155,12 @@ mod tests {
 
         fn transport_type(&self) -> TransportTypeId {
             TransportTypeId::Stdio
+        }
+
+        async fn server_capabilities(
+            &self,
+        ) -> Result<Option<ServerCapabilities>, McpTransportError> {
+            Ok(self.capabilities.clone())
         }
 
         async fn read_resource(&self, _uri: &str) -> Result<Value, McpTransportError> {
@@ -1366,6 +1412,20 @@ mod tests {
         let (endpoint, server) = spawn_http_server(Arc::new(|request| {
             let method = request["method"].as_str().unwrap_or_default();
             match method {
+                "initialize" => HttpResponseSpec::json(json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"].clone(),
+                    "result": {
+                        "protocolVersion": mcp::MCP_PROTOCOL_VERSION,
+                        "capabilities": {
+                            "tools": {}
+                        },
+                        "serverInfo": {
+                            "name": "http-progress",
+                            "version": "1.0.0"
+                        }
+                    }
+                })),
                 "tools/list" => HttpResponseSpec::json(json!({
                     "jsonrpc": "2.0",
                     "id": request["id"].clone(),
@@ -1589,6 +1649,141 @@ mod tests {
         assert_eq!(resources[0].resource.uri, "file://alpha.md");
         assert_eq!(resources[1].server_name, "s2");
         assert_eq!(resources[1].resource.uri, "file://beta.md");
+    }
+
+    #[tokio::test]
+    async fn manager_skips_prompt_and_resource_listing_for_servers_without_capabilities() {
+        let unsupported = Arc::new(
+            FakeCatalogTransport::new(
+                vec![McpPromptDefinition {
+                    name: "hidden".to_string(),
+                    title: None,
+                    description: None,
+                    arguments: Vec::new(),
+                }],
+                vec![McpResourceDefinition {
+                    uri: "file://hidden.md".to_string(),
+                    name: "hidden".to_string(),
+                    title: None,
+                    description: None,
+                    mime_type: None,
+                    size: None,
+                }],
+                McpPromptResult {
+                    description: None,
+                    messages: Vec::new(),
+                },
+                json!({}),
+            )
+            .with_capabilities(ServerCapabilities {
+                prompts: None,
+                resources: None,
+                ..ServerCapabilities::default()
+            }),
+        );
+        let supported = Arc::new(
+            FakeCatalogTransport::new(
+                vec![McpPromptDefinition {
+                    name: "review".to_string(),
+                    title: None,
+                    description: Some("Review".to_string()),
+                    arguments: Vec::new(),
+                }],
+                vec![McpResourceDefinition {
+                    uri: "file://guide.md".to_string(),
+                    name: "guide".to_string(),
+                    title: None,
+                    description: Some("Guide".to_string()),
+                    mime_type: Some("text/markdown".to_string()),
+                    size: None,
+                }],
+                McpPromptResult {
+                    description: None,
+                    messages: Vec::new(),
+                },
+                json!({}),
+            )
+            .with_capabilities(ServerCapabilities {
+                prompts: Some(mcp::transport::PromptsCapabilities::default()),
+                resources: Some(mcp::transport::ResourcesCapabilities::default()),
+                ..ServerCapabilities::default()
+            }),
+        );
+
+        let manager = McpToolRegistryManager::from_transports([
+            (
+                cfg("unsupported"),
+                unsupported.clone() as Arc<dyn McpToolTransport>,
+            ),
+            (
+                cfg("supported"),
+                supported.clone() as Arc<dyn McpToolTransport>,
+            ),
+        ])
+        .await
+        .unwrap();
+
+        let prompts = manager.list_prompts().await.unwrap();
+        let resources = manager.list_resources().await.unwrap();
+
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].server_name, "supported");
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].server_name, "supported");
+        assert_eq!(unsupported.prompt_list_calls(), 0);
+        assert_eq!(unsupported.resource_list_calls(), 0);
+        assert_eq!(supported.prompt_list_calls(), 1);
+        assert_eq!(supported.resource_list_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn manager_keeps_unsupported_fallback_when_capabilities_are_unknown() {
+        #[derive(Debug, Clone)]
+        struct UnsupportedCatalogTransport;
+
+        #[async_trait]
+        impl McpToolTransport for UnsupportedCatalogTransport {
+            async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+                Ok(Vec::new())
+            }
+
+            async fn list_prompts(&self) -> Result<Vec<McpPromptDefinition>, McpTransportError> {
+                Err(McpTransportError::TransportError(
+                    "list_prompts not supported".to_string(),
+                ))
+            }
+
+            async fn list_resources(
+                &self,
+            ) -> Result<Vec<McpResourceDefinition>, McpTransportError> {
+                Err(McpTransportError::TransportError(
+                    "list_resources not supported".to_string(),
+                ))
+            }
+
+            async fn call_tool(
+                &self,
+                _name: &str,
+                _args: Value,
+                _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            ) -> Result<CallToolResult, McpTransportError> {
+                Ok(ok_text_result("ok"))
+            }
+
+            fn transport_type(&self) -> TransportTypeId {
+                TransportTypeId::Stdio
+            }
+        }
+
+        let manager = McpToolRegistryManager::from_transports([(
+            cfg("unknown"),
+            Arc::new(UnsupportedCatalogTransport) as Arc<dyn McpToolTransport>,
+        )])
+        .await
+        .unwrap();
+
+        assert!(manager.list_prompts().await.unwrap().is_empty());
+        assert!(manager.list_resources().await.unwrap().is_empty());
     }
 
     #[tokio::test]
