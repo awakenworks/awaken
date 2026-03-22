@@ -1,8 +1,10 @@
 use crate::{
+    materialize::{materialize_asset_bytes, materialize_reference_bytes},
     ScriptResult, Skill, SkillActivation, SkillError, SkillMeta, SkillRegistry, SkillRegistryError,
     SkillRegistryManagerError, SkillResource, SkillResourceKind,
 };
 use async_trait::async_trait;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -40,6 +42,15 @@ fn mutex_lock<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 fn is_prompt_support_error(err: &McpToolRegistryError) -> bool {
     matches!(err, McpToolRegistryError::Transport(msg) if msg.contains("list_prompts not supported"))
+}
+
+fn map_mcp_registry_error(err: McpToolRegistryError) -> SkillError {
+    match err {
+        McpToolRegistryError::UnsupportedCapability { .. } => {
+            SkillError::Unsupported(err.to_string())
+        }
+        other => SkillError::Io(other.to_string()),
+    }
 }
 
 fn mcp_skill_id(server_name: &str, prompt_name: &str) -> String {
@@ -222,6 +233,70 @@ fn render_prompt_content(content: &Value) -> String {
     serde_json::to_string_pretty(content).unwrap_or_else(|_| content.to_string())
 }
 
+fn resource_uri_from_path<'a>(
+    kind: SkillResourceKind,
+    path: &'a str,
+) -> Result<&'a str, SkillError> {
+    let prefix = match kind {
+        SkillResourceKind::Reference => "references/",
+        SkillResourceKind::Asset => "assets/",
+    };
+    let uri = path.strip_prefix(prefix).ok_or_else(|| {
+        SkillError::InvalidArguments(format!("resource path must start with '{prefix}'"))
+    })?;
+    if uri.trim().is_empty() {
+        return Err(SkillError::InvalidArguments(
+            "resource uri must be non-empty".to_string(),
+        ));
+    }
+    Ok(uri)
+}
+
+fn first_resource_content<'a>(value: &'a Value, uri: &str) -> Result<&'a Value, SkillError> {
+    value
+        .get("contents")
+        .and_then(Value::as_array)
+        .and_then(|contents| contents.first())
+        .ok_or_else(|| SkillError::Io(format!("MCP resource '{uri}' returned no contents")))
+}
+
+fn read_text_resource(value: &Value, uri: &str) -> Result<String, SkillError> {
+    let content = first_resource_content(value, uri)?;
+    if let Some(text) = content.get("text").and_then(Value::as_str) {
+        return Ok(text.to_string());
+    }
+    if content.get("blob").and_then(Value::as_str).is_some() {
+        return Err(SkillError::Unsupported(format!(
+            "MCP resource '{uri}' is binary; load it as an asset instead"
+        )));
+    }
+    Err(SkillError::Io(format!(
+        "MCP resource '{uri}' does not contain text content"
+    )))
+}
+
+fn read_asset_resource(value: &Value, uri: &str) -> Result<(Vec<u8>, Option<String>), SkillError> {
+    let content = first_resource_content(value, uri)?;
+    let mime_type = content
+        .get("mimeType")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+
+    if let Some(blob) = content.get("blob").and_then(Value::as_str) {
+        let bytes = BASE64.decode(blob).map_err(|e| {
+            SkillError::Io(format!("invalid base64 blob for MCP resource '{uri}': {e}"))
+        })?;
+        return Ok((bytes, mime_type));
+    }
+    if let Some(text) = content.get("text").and_then(Value::as_str) {
+        return Ok((text.as_bytes().to_vec(), mime_type));
+    }
+
+    Err(SkillError::Io(format!(
+        "MCP resource '{uri}' does not contain text or blob content"
+    )))
+}
+
 #[async_trait]
 impl Skill for McpPromptSkill {
     fn meta(&self) -> &SkillMeta {
@@ -236,7 +311,7 @@ impl Skill for McpPromptSkill {
         }
 
         let body = format!(
-            "This skill is backed by MCP prompt '{}' from server '{}'.\n\n{}\nUse the skill tool to activate it. When the prompt requires structured input, pass named arguments via the tool field 'arguments'.\n",
+            "This skill is backed by MCP prompt '{}' from server '{}'.\n\n{}\nUse the skill tool to activate it. When the prompt requires structured input, pass named arguments via the tool field 'arguments'. MCP resources from the same server can be loaded with load_skill_resource using paths like 'references/<resource-uri>' or 'assets/<resource-uri>'.\n",
             self.prompt_name,
             self.server_name,
             self.prompt_arguments_text(),
@@ -256,7 +331,7 @@ impl Skill for McpPromptSkill {
             .manager
             .get_prompt(&self.server_name, &self.prompt_name, arguments)
             .await
-            .map_err(|e| SkillError::Io(e.to_string()))?;
+            .map_err(map_mcp_registry_error)?;
         Ok(SkillActivation {
             instructions: self.render_prompt_result(prompt),
         })
@@ -264,13 +339,30 @@ impl Skill for McpPromptSkill {
 
     async fn load_resource(
         &self,
-        _kind: SkillResourceKind,
-        _path: &str,
+        kind: SkillResourceKind,
+        path: &str,
     ) -> Result<SkillResource, SkillError> {
-        Err(SkillError::Unsupported(format!(
-            "MCP-backed skill '{}' does not expose local skill resources",
-            self.meta.id
-        )))
+        let uri = resource_uri_from_path(kind, path)?;
+        let raw = self
+            .manager
+            .read_resource(&self.server_name, uri)
+            .await
+            .map_err(map_mcp_registry_error)?;
+
+        match kind {
+            SkillResourceKind::Reference => {
+                let text = read_text_resource(&raw, uri)?;
+                materialize_reference_bytes(&self.meta.id, path, text.as_bytes())
+                    .map(SkillResource::Reference)
+                    .map_err(SkillError::from)
+            }
+            SkillResourceKind::Asset => {
+                let (bytes, mime_type) = read_asset_resource(&raw, uri)?;
+                materialize_asset_bytes(&self.meta.id, path, &bytes, mime_type)
+                    .map(SkillResource::Asset)
+                    .map_err(SkillError::from)
+            }
+        }
     }
 
     async fn run_script(&self, script: &str, _args: &[String]) -> Result<ScriptResult, SkillError> {
@@ -504,7 +596,9 @@ mod tests {
     #[derive(Debug)]
     struct MutablePromptTransport {
         prompts: RwLock<Vec<McpPromptDefinition>>,
+        resources: RwLock<HashMap<String, Value>>,
         prompt_calls: Mutex<Vec<(String, Option<HashMap<String, String>>)>>,
+        resource_calls: Mutex<Vec<String>>,
         prompt_counter: AtomicUsize,
         prompt_list_calls: AtomicUsize,
         capabilities: Option<mcp::transport::ServerCapabilities>,
@@ -514,7 +608,9 @@ mod tests {
         fn new(prompts: Vec<McpPromptDefinition>) -> Self {
             Self {
                 prompts: RwLock::new(prompts),
+                resources: RwLock::new(HashMap::new()),
                 prompt_calls: Mutex::new(Vec::new()),
+                resource_calls: Mutex::new(Vec::new()),
                 prompt_counter: AtomicUsize::new(0),
                 prompt_list_calls: AtomicUsize::new(0),
                 capabilities: None,
@@ -530,12 +626,21 @@ mod tests {
             *write_lock(&self.prompts) = prompts;
         }
 
+        fn with_resource(self, uri: &str, value: Value) -> Self {
+            write_lock(&self.resources).insert(uri.to_string(), value);
+            self
+        }
+
         fn prompt_calls(&self) -> Vec<(String, Option<HashMap<String, String>>)> {
             mutex_lock(&self.prompt_calls).clone()
         }
 
         fn prompt_list_calls(&self) -> usize {
             self.prompt_list_calls.load(Ordering::SeqCst)
+        }
+
+        fn resource_calls(&self) -> Vec<String> {
+            mutex_lock(&self.resource_calls).clone()
         }
     }
 
@@ -601,6 +706,18 @@ mod tests {
         ) -> Result<Option<mcp::transport::ServerCapabilities>, mcp::transport::McpTransportError>
         {
             Ok(self.capabilities.clone())
+        }
+
+        async fn read_resource(
+            &self,
+            uri: &str,
+        ) -> Result<Value, mcp::transport::McpTransportError> {
+            mutex_lock(&self.resource_calls).push(uri.to_string());
+            read_lock(&self.resources).get(uri).cloned().ok_or_else(|| {
+                mcp::transport::McpTransportError::TransportError(format!(
+                    "unknown resource: {uri}"
+                ))
+            })
         }
     }
 
@@ -687,6 +804,132 @@ mod tests {
             activation.instructions,
             "prompt=review;args={\"path\":\"src/main.rs\"}"
         );
+    }
+
+    #[tokio::test]
+    async fn mcp_prompt_skill_loads_text_resource_as_reference() {
+        let transport = Arc::new(
+            MutablePromptTransport::new(vec![prompt("review", Vec::new())]).with_resource(
+                "file://guide.md",
+                json!({
+                    "contents": [{
+                        "uri": "file://guide.md",
+                        "text": "# Guide",
+                        "mimeType": "text/markdown"
+                    }]
+                }),
+            ),
+        );
+        let manager = make_manager(transport.clone()).await;
+        let registry = McpPromptSkillRegistryManager::discover(manager)
+            .await
+            .unwrap();
+        let skill = registry.get("mcp:github:review").unwrap();
+
+        let resource = skill
+            .load_resource(SkillResourceKind::Reference, "references/file://guide.md")
+            .await
+            .unwrap();
+
+        let SkillResource::Reference(reference) = resource else {
+            panic!("expected reference resource");
+        };
+        assert_eq!(reference.skill, "mcp:github:review");
+        assert_eq!(reference.path, "references/file://guide.md");
+        assert_eq!(reference.content, "# Guide");
+        assert_eq!(
+            transport.resource_calls(),
+            vec!["file://guide.md".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_prompt_skill_loads_blob_resource_as_asset() {
+        let transport = Arc::new(
+            MutablePromptTransport::new(vec![prompt("review", Vec::new())]).with_resource(
+                "file://logo.bin",
+                json!({
+                    "contents": [{
+                        "uri": "file://logo.bin",
+                        "blob": "aGVsbG8=",
+                        "mimeType": "application/octet-stream"
+                    }]
+                }),
+            ),
+        );
+        let manager = make_manager(transport).await;
+        let registry = McpPromptSkillRegistryManager::discover(manager)
+            .await
+            .unwrap();
+        let skill = registry.get("mcp:github:review").unwrap();
+
+        let resource = skill
+            .load_resource(SkillResourceKind::Asset, "assets/file://logo.bin")
+            .await
+            .unwrap();
+
+        let SkillResource::Asset(asset) = resource else {
+            panic!("expected asset resource");
+        };
+        assert_eq!(asset.skill, "mcp:github:review");
+        assert_eq!(asset.path, "assets/file://logo.bin");
+        assert_eq!(
+            asset.media_type.as_deref(),
+            Some("application/octet-stream")
+        );
+        assert_eq!(asset.content, "aGVsbG8=");
+    }
+
+    #[tokio::test]
+    async fn mcp_prompt_skill_rejects_binary_resource_loaded_as_reference() {
+        let transport = Arc::new(
+            MutablePromptTransport::new(vec![prompt("review", Vec::new())]).with_resource(
+                "file://logo.bin",
+                json!({
+                    "contents": [{
+                        "uri": "file://logo.bin",
+                        "blob": "aGVsbG8="
+                    }]
+                }),
+            ),
+        );
+        let manager = make_manager(transport).await;
+        let registry = McpPromptSkillRegistryManager::discover(manager)
+            .await
+            .unwrap();
+        let skill = registry.get("mcp:github:review").unwrap();
+
+        let err = skill
+            .load_resource(SkillResourceKind::Reference, "references/file://logo.bin")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, SkillError::Unsupported(_)));
+    }
+
+    #[tokio::test]
+    async fn mcp_prompt_skill_load_resource_reports_missing_resource_capability() {
+        let transport = Arc::new(
+            MutablePromptTransport::new(vec![prompt("review", Vec::new())]).with_capabilities(
+                mcp::transport::ServerCapabilities {
+                    prompts: Some(mcp::transport::PromptsCapabilities::default()),
+                    resources: None,
+                    ..mcp::transport::ServerCapabilities::default()
+                },
+            ),
+        );
+        let manager = make_manager(transport).await;
+        let registry = McpPromptSkillRegistryManager::discover(manager)
+            .await
+            .unwrap();
+        let skill = registry.get("mcp:github:review").unwrap();
+
+        let err = skill
+            .load_resource(SkillResourceKind::Reference, "references/file://guide.md")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, SkillError::Unsupported(_)));
     }
 
     #[tokio::test]

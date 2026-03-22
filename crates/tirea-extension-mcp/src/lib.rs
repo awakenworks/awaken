@@ -67,6 +67,12 @@ pub enum McpToolRegistryError {
     #[error("unknown mcp server: {0}")]
     UnknownServer(String),
 
+    #[error("mcp server '{server_name}' does not support {capability}")]
+    UnsupportedCapability {
+        server_name: String,
+        capability: &'static str,
+    },
+
     #[error("invalid tool id component after sanitization: {0}")]
     InvalidToolIdComponent(String),
 
@@ -789,6 +795,12 @@ impl McpToolRegistryManager {
             .iter()
             .find(|server| server.name == server_name)
             .ok_or_else(|| McpToolRegistryError::UnknownServer(server_name.to_string()))?;
+        if !server_supports_prompts(server.capabilities.as_ref()) {
+            return Err(McpToolRegistryError::UnsupportedCapability {
+                server_name: server.name.clone(),
+                capability: "prompts",
+            });
+        }
 
         server
             .transport
@@ -840,6 +852,12 @@ impl McpToolRegistryManager {
             .iter()
             .find(|server| server.name == server_name)
             .ok_or_else(|| McpToolRegistryError::UnknownServer(server_name.to_string()))?;
+        if !server_supports_resources(server.capabilities.as_ref()) {
+            return Err(McpToolRegistryError::UnsupportedCapability {
+                server_name: server.name.clone(),
+                capability: "resources",
+            });
+        }
 
         server
             .transport
@@ -1074,6 +1092,7 @@ mod tests {
         prompt_result: McpPromptResult,
         read_resource_result: Value,
         prompt_requests: Arc<Mutex<Vec<(String, Option<HashMap<String, String>>)>>>,
+        resource_requests: Arc<Mutex<Vec<String>>>,
         prompt_list_calls: Arc<AtomicUsize>,
         resource_list_calls: Arc<AtomicUsize>,
         capabilities: Option<ServerCapabilities>,
@@ -1092,6 +1111,7 @@ mod tests {
                 prompt_result,
                 read_resource_result,
                 prompt_requests: Arc::new(Mutex::new(Vec::new())),
+                resource_requests: Arc::new(Mutex::new(Vec::new())),
                 prompt_list_calls: Arc::new(AtomicUsize::new(0)),
                 resource_list_calls: Arc::new(AtomicUsize::new(0)),
                 capabilities: None,
@@ -1105,6 +1125,10 @@ mod tests {
 
         fn prompt_requests(&self) -> Vec<(String, Option<HashMap<String, String>>)> {
             self.prompt_requests.lock().unwrap().clone()
+        }
+
+        fn resource_requests(&self) -> Vec<String> {
+            self.resource_requests.lock().unwrap().clone()
         }
 
         fn prompt_list_calls(&self) -> usize {
@@ -1164,6 +1188,10 @@ mod tests {
         }
 
         async fn read_resource(&self, _uri: &str) -> Result<Value, McpTransportError> {
+            self.resource_requests
+                .lock()
+                .unwrap()
+                .push(_uri.to_string());
             Ok(self.read_resource_result.clone())
         }
     }
@@ -1784,6 +1812,70 @@ mod tests {
 
         assert!(manager.list_prompts().await.unwrap().is_empty());
         assert!(manager.list_resources().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn manager_get_prompt_and_read_resource_fail_fast_when_capability_missing() {
+        let transport = Arc::new(
+            FakeCatalogTransport::new(
+                vec![McpPromptDefinition {
+                    name: "review".to_string(),
+                    title: None,
+                    description: None,
+                    arguments: Vec::new(),
+                }],
+                vec![McpResourceDefinition {
+                    uri: "file://guide.md".to_string(),
+                    name: "guide".to_string(),
+                    title: None,
+                    description: None,
+                    mime_type: None,
+                    size: None,
+                }],
+                McpPromptResult {
+                    description: None,
+                    messages: Vec::new(),
+                },
+                json!({"contents": []}),
+            )
+            .with_capabilities(ServerCapabilities {
+                prompts: None,
+                resources: None,
+                ..ServerCapabilities::default()
+            }),
+        );
+        let manager = McpToolRegistryManager::from_transports([(
+            cfg("s1"),
+            transport.clone() as Arc<dyn McpToolTransport>,
+        )])
+        .await
+        .unwrap();
+
+        let prompt_err = manager
+            .get_prompt("s1", "review", None)
+            .await
+            .expect_err("unsupported prompt capability should fail");
+        let resource_err = manager
+            .read_resource("s1", "file://guide.md")
+            .await
+            .expect_err("unsupported resource capability should fail");
+
+        assert!(matches!(
+            prompt_err,
+            McpToolRegistryError::UnsupportedCapability {
+                server_name,
+                capability
+            } if server_name == "s1" && capability == "prompts"
+        ));
+        assert!(matches!(
+            resource_err,
+            McpToolRegistryError::UnsupportedCapability {
+                server_name,
+                capability
+            } if server_name == "s1" && capability == "resources"
+        ));
+        assert!(transport.prompt_requests().is_empty());
+        assert!(transport.resource_requests().is_empty());
     }
 
     #[tokio::test]

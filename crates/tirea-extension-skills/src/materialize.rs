@@ -28,34 +28,7 @@ pub(crate) fn load_reference_material(
     ensure_regular_file(&full)?;
 
     let bytes = std::fs::read(&full).map_err(|e| SkillMaterializeError::Io(e.to_string()))?;
-    let original_len = bytes.len() as u64;
-
-    let (stored_bytes, truncated) = if bytes.len() > MAX_REFERENCE_BYTES {
-        (bytes[..MAX_REFERENCE_BYTES].to_vec(), true)
-    } else {
-        (bytes, false)
-    };
-
-    let content = String::from_utf8(stored_bytes.clone())
-        .map_err(|e| SkillMaterializeError::Io(format!("invalid utf-8: {e}")))?;
-    let sha256 = sha256_hex(&stored_bytes);
-
-    debug!(
-        skill_id = %skill_id,
-        path = %rel.to_string_lossy(),
-        bytes = original_len,
-        truncated = truncated,
-        "loaded skill reference material"
-    );
-
-    Ok(LoadedReference {
-        skill: skill_id.to_string(),
-        path: rel.to_string_lossy().to_string(),
-        sha256,
-        truncated,
-        content,
-        bytes: original_len,
-    })
+    materialize_reference_bytes(skill_id, &rel.to_string_lossy(), &bytes)
 }
 
 pub(crate) fn load_asset_material(
@@ -69,21 +42,67 @@ pub(crate) fn load_asset_material(
     ensure_regular_file(&full)?;
 
     let bytes = std::fs::read(&full).map_err(|e| SkillMaterializeError::Io(e.to_string()))?;
+    materialize_asset_bytes(skill_id, &rel.to_string_lossy(), &bytes, None)
+}
+
+pub(crate) fn materialize_reference_bytes(
+    skill_id: &str,
+    relative_path: &str,
+    bytes: &[u8],
+) -> Result<LoadedReference, SkillMaterializeError> {
+    let path = normalize_material_path(relative_path, "references")?;
+    let original_len = bytes.len() as u64;
+
+    let (stored_bytes, truncated) = if bytes.len() > MAX_REFERENCE_BYTES {
+        (bytes[..MAX_REFERENCE_BYTES].to_vec(), true)
+    } else {
+        (bytes.to_vec(), false)
+    };
+
+    let content = String::from_utf8(stored_bytes.clone())
+        .map_err(|e| SkillMaterializeError::Io(format!("invalid utf-8: {e}")))?;
+    let sha256 = sha256_hex(&stored_bytes);
+
+    debug!(
+        skill_id = %skill_id,
+        path = %path,
+        bytes = original_len,
+        truncated = truncated,
+        "loaded skill reference material"
+    );
+
+    Ok(LoadedReference {
+        skill: skill_id.to_string(),
+        path,
+        sha256,
+        truncated,
+        content,
+        bytes: original_len,
+    })
+}
+
+pub(crate) fn materialize_asset_bytes(
+    skill_id: &str,
+    relative_path: &str,
+    bytes: &[u8],
+    media_type: Option<String>,
+) -> Result<LoadedAsset, SkillMaterializeError> {
+    let path = normalize_material_path(relative_path, "assets")?;
     let original_len = bytes.len() as u64;
 
     let (stored_bytes, truncated) = if bytes.len() > MAX_ASSET_BYTES {
         (bytes[..MAX_ASSET_BYTES].to_vec(), true)
     } else {
-        (bytes, false)
+        (bytes.to_vec(), false)
     };
 
     let sha256 = sha256_hex(&stored_bytes);
     let content = BASE64.encode(&stored_bytes);
-    let media_type = infer_media_type(&rel);
+    let media_type = media_type.or_else(|| infer_media_type(Path::new(&path)));
 
     debug!(
         skill_id = %skill_id,
-        path = %rel.to_string_lossy(),
+        path = %path,
         bytes = original_len,
         truncated = truncated,
         media_type = media_type.as_deref().unwrap_or("application/octet-stream"),
@@ -92,7 +111,7 @@ pub(crate) fn load_asset_material(
 
     Ok(LoadedAsset {
         skill: skill_id.to_string(),
-        path: rel.to_string_lossy().to_string(),
+        path,
         sha256,
         truncated,
         bytes: original_len,
@@ -100,6 +119,28 @@ pub(crate) fn load_asset_material(
         encoding: "base64".to_string(),
         content,
     })
+}
+
+fn normalize_material_path(
+    relative_path: &str,
+    required_prefix: &str,
+) -> Result<String, SkillMaterializeError> {
+    if relative_path.contains("://") {
+        let prefix = format!("{required_prefix}/");
+        if !relative_path.starts_with(&prefix) {
+            return Err(SkillMaterializeError::UnsupportedPath(
+                required_prefix.to_string(),
+            ));
+        }
+        if relative_path[prefix.len()..].trim().is_empty() {
+            return Err(SkillMaterializeError::InvalidPath("empty".to_string()));
+        }
+        return Ok(relative_path.to_string());
+    }
+
+    let rel = normalize_relative_path(relative_path)?;
+    require_prefix(&rel, required_prefix)?;
+    Ok(rel.to_string_lossy().to_string())
 }
 
 pub(crate) async fn run_script_material(

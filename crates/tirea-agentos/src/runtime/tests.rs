@@ -1113,6 +1113,135 @@ async fn build_with_mcp_prompt_skills_wires_skill_activation() {
     assert_eq!(result.data["skill_id"], json!("mcp:github:review"));
 }
 
+#[cfg(all(feature = "skills", feature = "mcp"))]
+#[tokio::test]
+async fn build_with_mcp_prompt_skills_wires_skill_resource_loading() {
+    #[derive(Debug)]
+    struct PromptTransport;
+
+    #[async_trait]
+    impl McpToolTransport for PromptTransport {
+        async fn list_tools(
+            &self,
+        ) -> Result<Vec<mcp::McpToolDefinition>, mcp::transport::McpTransportError> {
+            Ok(Vec::new())
+        }
+
+        async fn list_prompts(
+            &self,
+        ) -> Result<Vec<McpPromptDefinition>, mcp::transport::McpTransportError> {
+            Ok(vec![McpPromptDefinition {
+                name: "review".to_string(),
+                title: Some("Review".to_string()),
+                description: Some("Review prompt".to_string()),
+                arguments: Vec::new(),
+            }])
+        }
+
+        async fn get_prompt(
+            &self,
+            name: &str,
+            _arguments: Option<HashMap<String, String>>,
+        ) -> Result<McpPromptResult, mcp::transport::McpTransportError> {
+            Ok(McpPromptResult {
+                description: Some("Review prompt".to_string()),
+                messages: vec![McpPromptMessage {
+                    role: "user".to_string(),
+                    content: json!({
+                        "type": "text",
+                        "text": format!("MCP prompt: {name}")
+                    }),
+                }],
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _args: Value,
+            _progress_tx: Option<tokio::sync::mpsc::UnboundedSender<McpProgressUpdate>>,
+        ) -> Result<mcp::CallToolResult, mcp::transport::McpTransportError> {
+            Ok(mcp::CallToolResult {
+                content: Vec::new(),
+                structured_content: None,
+                is_error: None,
+            })
+        }
+
+        async fn read_resource(
+            &self,
+            uri: &str,
+        ) -> Result<Value, mcp::transport::McpTransportError> {
+            Ok(json!({
+                "contents": [{
+                    "uri": uri,
+                    "text": "# MCP Guide",
+                    "mimeType": "text/markdown"
+                }]
+            }))
+        }
+
+        fn transport_type(&self) -> mcp::transport::TransportTypeId {
+            mcp::transport::TransportTypeId::Stdio
+        }
+    }
+
+    let manager = Arc::new(
+        McpToolRegistryManager::from_transports([(
+            mcp::transport::McpServerConnectionConfig::stdio(
+                "github",
+                "node",
+                vec!["server.js".to_string()],
+            ),
+            Arc::new(PromptTransport) as Arc<dyn McpToolTransport>,
+        )])
+        .await
+        .unwrap(),
+    );
+
+    let os = AgentOs::builder()
+        .with_agent_spec(AgentDefinitionSpec::local_with_id(
+            "root",
+            AgentDefinition::new("gpt-4o-mini"),
+        ))
+        .with_mcp_prompt_skills(manager)
+        .await
+        .unwrap()
+        .with_skills_config(SkillsConfig {
+            enabled: true,
+            advertise_catalog: true,
+            discovery_max_entries: 32,
+            discovery_max_chars: 8 * 1024,
+        })
+        .build()
+        .expect("build agent os");
+
+    let resolved = os.resolve("root").expect("resolve");
+    let load = resolved
+        .tools
+        .get("load_skill_resource")
+        .cloned()
+        .expect("load skill resource tool");
+
+    let fix = TestFixture::new();
+    let result = load
+        .execute(
+            json!({
+                "skill": "mcp:github:review",
+                "path": "references/file://guide.md"
+            }),
+            &fix.ctx_with("call-mcp-resource", "tool:load_skill_resource"),
+        )
+        .await
+        .expect("execute load resource tool");
+
+    assert!(result.is_success());
+    assert_eq!(result.data["skill_id"], json!("mcp:github:review"));
+    assert_eq!(result.data["kind"], json!("reference"));
+    assert_eq!(result.data["path"], json!("references/file://guide.md"));
+    assert_eq!(result.data["content"], json!("# MCP Guide"));
+}
+
 #[tokio::test]
 async fn run_and_run_stream_work_without_llm_when_terminate_behavior_requested() {
     #[derive(Debug)]
