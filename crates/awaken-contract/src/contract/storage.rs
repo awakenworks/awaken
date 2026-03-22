@@ -134,6 +134,9 @@ pub trait ThreadStore: Send + Sync {
     /// Persist a thread (create or overwrite).
     async fn save_thread(&self, thread: &Thread) -> Result<(), StorageError>;
 
+    /// Delete a thread and its associated messages.
+    async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError>;
+
     /// List thread IDs with pagination.
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError>;
 
@@ -265,6 +268,20 @@ mod tests {
                 .write()
                 .map_err(|e| StorageError::Io(e.to_string()))?;
             guard.insert(thread.id.clone(), thread.clone());
+            Ok(())
+        }
+
+        async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError> {
+            let mut threads = self
+                .threads
+                .write()
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+            let mut messages = self
+                .messages
+                .write()
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+            threads.remove(thread_id);
+            messages.remove(thread_id);
             Ok(())
         }
 

@@ -1,6 +1,6 @@
 //! A2A HTTP endpoints and agent card.
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -18,6 +18,8 @@ use crate::run_dispatcher::RunSpec;
 pub fn a2a_routes() -> Router<AppState> {
     Router::new()
         .route("/v1/a2a/tasks/send", post(a2a_task_send))
+        .route("/v1/a2a/tasks/{task_id}", get(a2a_task_status))
+        .route("/v1/a2a/tasks/{task_id}/cancel", post(a2a_task_cancel))
         .route("/v1/a2a/.well-known/agent", get(a2a_agent_card))
 }
 
@@ -151,6 +153,71 @@ async fn a2a_task_send(
         }),
     )
         .into_response())
+}
+
+/// GET /v1/a2a/tasks/:task_id — query run status from RunStore.
+///
+/// In the A2A model, task_id maps to the run's thread_id (set during `a2a_task_send`).
+async fn a2a_task_status(
+    State(st): State<AppState>,
+    Path(task_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    // A2A tasks use task_id as thread_id, so query latest run for that thread.
+    let record = st
+        .run_store
+        .latest_run(&task_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or(ApiError::NotFound(format!("task not found: {task_id}")))?;
+
+    let state = match record.status {
+        awaken_contract::contract::lifecycle::RunStatus::Running => "working",
+        awaken_contract::contract::lifecycle::RunStatus::Waiting => "input-required",
+        awaken_contract::contract::lifecycle::RunStatus::Done => "completed",
+    };
+
+    Ok(Json(serde_json::json!({
+        "taskId": task_id,
+        "status": {
+            "state": state,
+        },
+        "runId": record.run_id,
+        "agentId": record.agent_id,
+        "createdAt": record.created_at,
+        "updatedAt": record.updated_at,
+    })))
+}
+
+/// POST /v1/a2a/tasks/:task_id/cancel — cancel via runtime.
+async fn a2a_task_cancel(
+    State(st): State<AppState>,
+    Path(task_id): Path<String>,
+) -> Result<Response, ApiError> {
+    // Try to cancel via dispatcher (run_id lookup) then fall back to thread_id
+    if st.dispatcher.cancel_run(&task_id) {
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({
+                "taskId": task_id,
+                "status": { "state": "canceled" },
+            })),
+        )
+            .into_response());
+    }
+
+    // Also try as thread_id
+    if st.runtime.cancel_by_thread(&task_id) {
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({
+                "taskId": task_id,
+                "status": { "state": "canceled" },
+            })),
+        )
+            .into_response());
+    }
+
+    Err(ApiError::NotFound(format!("task not found: {task_id}")))
 }
 
 async fn a2a_agent_card(State(_st): State<AppState>) -> Json<AgentCard> {

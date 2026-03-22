@@ -61,7 +61,10 @@ fn health_routes() -> Router<AppState> {
 fn thread_routes() -> Router<AppState> {
     Router::new()
         .route("/v1/threads", get(list_threads).post(create_thread))
-        .route("/v1/threads/{id}", get(get_thread))
+        .route(
+            "/v1/threads/{id}",
+            get(get_thread).delete(delete_thread).patch(patch_thread),
+        )
         .route("/v1/threads/{id}/messages", get(get_thread_messages))
         .route(
             "/v1/threads/{id}/mailbox",
@@ -147,12 +150,78 @@ async fn get_thread(
     Ok(Json(value))
 }
 
+async fn delete_thread(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    // Verify thread exists
+    st.thread_store
+        .load_thread(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or(ApiError::ThreadNotFound(id.clone()))?;
+
+    st.thread_store
+        .delete_thread(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+struct PatchThreadPayload {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    custom: Option<std::collections::HashMap<String, Value>>,
+}
+
+async fn patch_thread(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(payload): Json<PatchThreadPayload>,
+) -> Result<Json<Value>, ApiError> {
+    let mut thread = st
+        .thread_store
+        .load_thread(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or(ApiError::ThreadNotFound(id.clone()))?;
+
+    if let Some(title) = payload.title {
+        thread.metadata.title = Some(title);
+    }
+    if let Some(custom) = payload.custom {
+        for (key, value) in custom {
+            thread.metadata.custom.insert(key, value);
+        }
+    }
+    thread.metadata.updated_at = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),
+    );
+
+    st.thread_store
+        .save_thread(&thread)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    let value = serde_json::to_value(thread).map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(value))
+}
+
 #[derive(Debug, Deserialize)]
 struct MessageQueryParams {
     #[serde(default)]
     offset: Option<usize>,
     #[serde(default = "default_limit")]
     limit: usize,
+    /// Pass `visibility=all` to include internal messages; otherwise they are filtered out.
+    #[serde(default)]
+    visibility: Option<String>,
 }
 
 async fn get_thread_messages(
@@ -160,6 +229,8 @@ async fn get_thread_messages(
     Path(id): Path<String>,
     Query(params): Query<MessageQueryParams>,
 ) -> Result<Json<Value>, ApiError> {
+    use awaken_contract::contract::message::Visibility;
+
     // Verify thread exists
     st.thread_store
         .load_thread(&id)
@@ -173,6 +244,21 @@ async fn get_thread_messages(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .unwrap_or_default();
+
+    // Filter by visibility unless `?visibility=all` is specified
+    let include_internal = params
+        .visibility
+        .as_deref()
+        .is_some_and(|v| v.eq_ignore_ascii_case("all"));
+
+    let messages: Vec<_> = if include_internal {
+        messages
+    } else {
+        messages
+            .into_iter()
+            .filter(|m| m.visibility != Visibility::Internal)
+            .collect()
+    };
 
     let offset = params.offset.unwrap_or(0);
     let limit = params.limit.clamp(1, 200);
@@ -315,17 +401,19 @@ struct DecisionPayload {
     tool_call_id: String,
     action: String,
     #[serde(default)]
-    #[allow(dead_code)] // deserialized from JSON request, reserved for decision data
     payload: Value,
 }
 
 async fn submit_decision(
-    State(_st): State<AppState>,
+    State(st): State<AppState>,
     Path(id): Path<String>,
     Json(payload): Json<DecisionPayload>,
 ) -> Result<Response, ApiError> {
-    let _action = match payload.action.as_str() {
-        "resume" | "cancel" => payload.action.clone(),
+    use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
+
+    let action = match payload.action.as_str() {
+        "resume" => ResumeDecisionAction::Resume,
+        "cancel" => ResumeDecisionAction::Cancel,
         other => {
             return Err(ApiError::BadRequest(format!(
                 "invalid action: {other}, expected 'resume' or 'cancel'"
@@ -333,15 +421,34 @@ async fn submit_decision(
         }
     };
 
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(json!({
-            "status": "decision_submitted",
-            "run_id": id,
-            "tool_call_id": payload.tool_call_id,
-        })),
-    )
-        .into_response())
+    let resume = ToolCallResume {
+        decision_id: uuid::Uuid::now_v7().to_string(),
+        action,
+        result: payload.payload.clone(),
+        reason: None,
+        updated_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),
+    };
+
+    let sent = st
+        .dispatcher
+        .send_decision(&id, payload.tool_call_id.clone(), resume);
+
+    if sent {
+        Ok((
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "status": "decision_submitted",
+                "run_id": id,
+                "tool_call_id": payload.tool_call_id,
+            })),
+        )
+            .into_response())
+    } else {
+        Err(ApiError::RunNotFound(id))
+    }
 }
 
 // ── Thread Runs ──

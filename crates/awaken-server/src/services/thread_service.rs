@@ -87,6 +87,12 @@ mod tests {
             Ok(())
         }
 
+        async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError> {
+            self.threads.write().unwrap().remove(thread_id);
+            self.messages.write().unwrap().remove(thread_id);
+            Ok(())
+        }
+
         async fn list_threads(
             &self,
             offset: usize,

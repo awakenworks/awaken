@@ -106,6 +106,19 @@ impl PostgresStore {
                 "CREATE INDEX IF NOT EXISTS idx_{}_mailbox_id ON {} (mailbox_id, created_at)",
                 self.mailbox_table, self.mailbox_table
             ),
+            // Additional performance indices
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_{}_thread_created ON {} (thread_id, created_at DESC)",
+                self.runs_table, self.runs_table
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_{}_thread_id ON {} (thread_id)",
+                self.messages_table, self.messages_table
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_{}_thread_id ON {} (thread_id)",
+                self.mailbox_table, self.mailbox_table
+            ),
         ];
 
         for stmt in statements {
@@ -156,6 +169,34 @@ impl ThreadStore for PostgresStore {
             .bind(&thread.id)
             .bind(&data)
             .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError> {
+        self.ensure_schema().await?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        let delete_messages = format!("DELETE FROM {} WHERE thread_id = $1", self.messages_table);
+        sqlx::query(&delete_messages)
+            .bind(thread_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        let delete_thread = format!("DELETE FROM {} WHERE id = $1", self.threads_table);
+        sqlx::query(&delete_thread)
+            .bind(thread_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        tx.commit()
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
         Ok(())

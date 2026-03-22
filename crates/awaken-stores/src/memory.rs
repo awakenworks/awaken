@@ -47,6 +47,14 @@ impl ThreadStore for InMemoryStore {
         Ok(())
     }
 
+    async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError> {
+        let mut threads = self.threads.write().await;
+        let mut messages = self.messages.write().await;
+        threads.remove(thread_id);
+        messages.remove(thread_id);
+        Ok(())
+    }
+
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError> {
         let guard = self.threads.read().await;
         let mut ids: Vec<String> = guard.keys().cloned().collect();

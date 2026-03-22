@@ -231,6 +231,10 @@ impl ThreadStore for NatsBufferedWriter {
         self.inner.save_thread(thread).await
     }
 
+    async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError> {
+        self.inner.delete_thread(thread_id).await
+    }
+
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError> {
         self.inner.list_threads(offset, limit).await
     }

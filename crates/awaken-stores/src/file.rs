@@ -195,6 +195,25 @@ impl ThreadStore for FileStore {
         .await
     }
 
+    async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError> {
+        validate_id(thread_id, "thread id")?;
+        let thread_path = self.threads_dir().join(format!("{thread_id}.json"));
+        let messages_path = self.messages_dir().join(format!("{thread_id}.json"));
+        // Remove thread file (ignore not-found)
+        if thread_path.exists() {
+            tokio::fs::remove_file(&thread_path)
+                .await
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+        }
+        // Remove messages file (ignore not-found)
+        if messages_path.exists() {
+            tokio::fs::remove_file(&messages_path)
+                .await
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError> {
         let mut stems = scan_json_stems(&self.threads_dir()).await?;
         stems.sort();
