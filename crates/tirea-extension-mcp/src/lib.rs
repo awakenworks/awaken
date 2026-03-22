@@ -90,6 +90,10 @@ impl From<McpTransportError> for McpToolRegistryError {
     }
 }
 
+fn is_unsupported_transport_message(message: &str, operation: &str) -> bool {
+    message.contains(operation) && message.contains("not supported")
+}
+
 fn validate_server_name(name: &str) -> Result<(), McpToolRegistryError> {
     if name.trim().is_empty() {
         return Err(McpToolRegistryError::EmptyServerName);
@@ -732,7 +736,15 @@ impl McpToolRegistryManager {
         let mut prompts = Vec::new();
 
         for server in &self.state.servers {
-            let mut defs = server.transport.list_prompts().await?;
+            let mut defs = match server.transport.list_prompts().await {
+                Ok(defs) => defs,
+                Err(McpTransportError::TransportError(message))
+                    if is_unsupported_transport_message(&message, "list_prompts") =>
+                {
+                    continue;
+                }
+                Err(err) => return Err(err.into()),
+            };
             defs.sort_by(|a, b| a.name.cmp(&b.name));
             prompts.extend(defs.into_iter().map(|prompt| McpPromptEntry {
                 server_name: server.name.clone(),
@@ -773,7 +785,15 @@ impl McpToolRegistryManager {
         let mut resources = Vec::new();
 
         for server in &self.state.servers {
-            let mut defs = server.transport.list_resources().await?;
+            let mut defs = match server.transport.list_resources().await {
+                Ok(defs) => defs,
+                Err(McpTransportError::TransportError(message))
+                    if is_unsupported_transport_message(&message, "list_resources") =>
+                {
+                    continue;
+                }
+                Err(err) => return Err(err.into()),
+            };
             defs.sort_by(|a, b| a.uri.cmp(&b.uri));
             resources.extend(defs.into_iter().map(|resource| McpResourceEntry {
                 server_name: server.name.clone(),

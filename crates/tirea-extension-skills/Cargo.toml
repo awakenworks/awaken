@@ -21,8 +21,10 @@ tracing = "0.1"
 base64 = "0.22"
 thiserror = "2"
 tokio = { version = "1", features = ["sync", "rt", "time", "process"] }
+tirea-extension-mcp.workspace = true
 
 [dev-dependencies]
 tirea-contract = { workspace = true, features = ["test-support"] }
 tokio = { version = "1", features = ["rt", "macros"] }
 tempfile = "3"
+mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }

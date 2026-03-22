@@ -265,6 +265,9 @@ pub enum SkillRegistryManagerError {
     #[error(transparent)]
     Registry(#[from] SkillRegistryError),
 
+    #[error(transparent)]
+    Mcp(#[from] tirea_extension_mcp::McpToolRegistryError),
+
     #[error("skill roots list must be non-empty")]
     EmptyRoots,
 
@@ -273,6 +276,9 @@ pub enum SkillRegistryManagerError {
 
     #[error("periodic refresh loop is already running")]
     PeriodicRefreshAlreadyRunning,
+
+    #[error("tokio runtime is required to start periodic refresh")]
+    RuntimeUnavailable,
 
     #[error("periodic refresh join failed: {0}")]
     Join(String),

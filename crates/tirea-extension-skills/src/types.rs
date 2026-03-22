@@ -1,9 +1,12 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tirea_state::{GSet, State};
+
+use crate::skill_md::parse_skill_md;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillMeta {
@@ -144,6 +147,9 @@ pub enum SkillError {
     #[error("invalid SKILL.md: {0}")]
     InvalidSkillMd(String),
 
+    #[error("invalid skill arguments: {0}")]
+    InvalidArguments(String),
+
     #[error("materialize error: {0}")]
     Materialize(#[from] SkillMaterializeError),
 
@@ -155,6 +161,11 @@ pub enum SkillError {
 
     #[error("unsupported operation: {0}")]
     Unsupported(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillActivation {
+    pub instructions: String,
 }
 
 /// A single skill with its own IO capabilities.
@@ -169,6 +180,17 @@ pub trait Skill: Send + Sync + std::fmt::Debug {
 
     /// Read the raw SKILL.md content.
     async fn read_instructions(&self) -> Result<String, SkillError>;
+
+    /// Resolve activation instructions for this skill.
+    ///
+    /// By default this parses the `SKILL.md` body and ignores activation args.
+    async fn activate(&self, _args: Option<&Value>) -> Result<SkillActivation, SkillError> {
+        let raw = self.read_instructions().await?;
+        let doc = parse_skill_md(&raw).map_err(|e| SkillError::InvalidSkillMd(e.to_string()))?;
+        Ok(SkillActivation {
+            instructions: doc.body,
+        })
+    }
 
     /// Load a resource (reference or asset) by relative path.
     async fn load_resource(
@@ -301,5 +323,54 @@ mod tests {
         assert_eq!(map.len(), 2);
         assert!(map.contains_key("alpha"));
         assert!(map.contains_key("beta"));
+    }
+
+    #[tokio::test]
+    async fn default_skill_activation_uses_skill_md_body() {
+        #[derive(Debug)]
+        struct MockSkill {
+            meta: SkillMeta,
+            skill_md: String,
+        }
+
+        #[async_trait]
+        impl Skill for MockSkill {
+            fn meta(&self) -> &SkillMeta {
+                &self.meta
+            }
+
+            async fn read_instructions(&self) -> Result<String, SkillError> {
+                Ok(self.skill_md.clone())
+            }
+
+            async fn load_resource(
+                &self,
+                _kind: SkillResourceKind,
+                _path: &str,
+            ) -> Result<SkillResource, SkillError> {
+                Err(SkillError::Unsupported("mock".into()))
+            }
+
+            async fn run_script(
+                &self,
+                _script: &str,
+                _args: &[String],
+            ) -> Result<ScriptResult, SkillError> {
+                Err(SkillError::Unsupported("mock".into()))
+            }
+        }
+
+        let skill = MockSkill {
+            meta: SkillMeta {
+                id: "demo".to_string(),
+                name: "demo".to_string(),
+                description: "demo".to_string(),
+                allowed_tools: Vec::new(),
+            },
+            skill_md: "---\nname: demo\ndescription: Demo\n---\nUse the demo flow.\n".to_string(),
+        };
+
+        let activation = skill.activate(None).await.unwrap();
+        assert_eq!(activation.instructions, "Use the demo flow.\n");
     }
 }

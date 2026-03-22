@@ -1,4 +1,4 @@
-use crate::skill_md::{parse_allowed_tool_token, parse_skill_md};
+use crate::skill_md::parse_allowed_tool_token;
 use crate::{
     Skill, SkillError, SkillMaterializeError, SkillRegistry, SkillResource, SkillResourceKind,
     SkillState, SkillStateAction, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID,
@@ -103,28 +103,16 @@ impl SkillActivateTool {
             )));
         }
 
-        let raw = skill
-            .read_instructions()
+        let activation_args = activation_args(&args);
+        let activation = skill
+            .activate(activation_args)
             .await
             .map_err(|e| map_skill_error(SKILL_ACTIVATE_TOOL_ID, e));
-        let raw = match raw {
+        let activation = match activation {
             Ok(v) => v,
             Err(r) => return Ok(ToolExecutionEffect::from(r)),
         };
-
-        let doc = parse_skill_md(&raw).map_err(|e| {
-            tool_error(
-                SKILL_ACTIVATE_TOOL_ID,
-                "invalid_skill_md",
-                format!("invalid SKILL.md: {e}"),
-            )
-        });
-        let doc = match doc {
-            Ok(v) => v,
-            Err(r) => return Ok(ToolExecutionEffect::from(r)),
-        };
-        let instructions = doc.body;
-        let instruction_for_message = instructions.clone();
+        let instruction_for_message = activation.instructions;
 
         let activate_action =
             AnyStateAction::new::<SkillState>(SkillStateAction::Activate(meta.id.clone()));
@@ -205,7 +193,15 @@ impl Tool for SkillActivateTool {
             "type": "object",
             "properties": {
                 "skill": { "type": "string", "description": "Skill id or name" },
-                "args": { "type": "string", "description": "Optional arguments for the skill" }
+                "args": {
+                    "description": "Optional skill arguments. For MCP-backed skills this may be a string or object.",
+                    "oneOf": [{ "type": "string" }, { "type": "object" }]
+                },
+                "arguments": {
+                    "type": "object",
+                    "description": "Optional named arguments for MCP-backed skills",
+                    "additionalProperties": true
+                }
             },
             "required": ["skill"]
         }))
@@ -498,6 +494,10 @@ fn required_string_arg(args: &Value, key: &str) -> ToolArgResult<String> {
     }
 }
 
+fn activation_args(args: &Value) -> Option<&Value> {
+    args.get("arguments").or_else(|| args.get("args"))
+}
+
 fn parse_resource_kind(kind: Option<&Value>, path: &str) -> ToolArgResult<SkillResourceKind> {
     let from_kind = kind.and_then(|v| v.as_str()).map(str::trim);
 
@@ -578,6 +578,7 @@ fn map_skill_error(tool_name: &str, e: SkillError) -> ToolResult {
             tool_error(tool_name, "unknown_skill", format!("Unknown skill: {id}"))
         }
         SkillError::InvalidSkillMd(msg) => tool_error(tool_name, "invalid_skill_md", msg),
+        SkillError::InvalidArguments(msg) => tool_error(tool_name, "invalid_arguments", msg),
         SkillError::Materialize(err) => match err {
             SkillMaterializeError::InvalidPath(msg) => tool_error(tool_name, "invalid_path", msg),
             SkillMaterializeError::PathEscapesRoot => {
@@ -608,5 +609,89 @@ fn map_skill_error(tool_name: &str, e: SkillError) -> ToolResult {
             format!("duplicate skill id: {id}"),
         ),
         SkillError::Unsupported(msg) => tool_error(tool_name, "unsupported_operation", msg),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{InMemorySkillRegistry, ScriptResult, SkillActivation, SkillMeta};
+    use async_trait::async_trait;
+    use std::sync::Mutex;
+    use tirea_contract::testing::TestFixture;
+
+    #[derive(Debug)]
+    struct RecordingSkill {
+        meta: SkillMeta,
+        seen_args: Mutex<Vec<Option<Value>>>,
+    }
+
+    #[async_trait]
+    impl Skill for RecordingSkill {
+        fn meta(&self) -> &SkillMeta {
+            &self.meta
+        }
+
+        async fn read_instructions(&self) -> Result<String, SkillError> {
+            Ok("---\nname: record\ndescription: record\n---\nunused\n".to_string())
+        }
+
+        async fn activate(&self, args: Option<&Value>) -> Result<SkillActivation, SkillError> {
+            self.seen_args.lock().unwrap().push(args.cloned());
+            Ok(SkillActivation {
+                instructions: "Activated from custom skill".to_string(),
+            })
+        }
+
+        async fn load_resource(
+            &self,
+            _kind: SkillResourceKind,
+            _path: &str,
+        ) -> Result<SkillResource, SkillError> {
+            Err(SkillError::Unsupported("mock".to_string()))
+        }
+
+        async fn run_script(
+            &self,
+            _script: &str,
+            _args: &[String],
+        ) -> Result<ScriptResult, SkillError> {
+            Err(SkillError::Unsupported("mock".to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn skill_activate_tool_forwards_named_activation_arguments() {
+        let skill = Arc::new(RecordingSkill {
+            meta: SkillMeta {
+                id: "record".to_string(),
+                name: "record".to_string(),
+                description: "record".to_string(),
+                allowed_tools: Vec::new(),
+            },
+            seen_args: Mutex::new(Vec::new()),
+        });
+        let registry = Arc::new(InMemorySkillRegistry::from_skills(vec![
+            skill.clone() as Arc<dyn Skill>
+        ]));
+        let tool = SkillActivateTool::new(registry);
+
+        let fixture = TestFixture::new();
+        let ctx = fixture.ctx_with("activate", "test");
+        let effect = tool
+            .execute_effect(
+                json!({
+                    "skill": "record",
+                    "arguments": { "path": "src/lib.rs" }
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(effect.result.is_success());
+        let calls = skill.seen_args.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], Some(json!({"path": "src/lib.rs"})));
     }
 }

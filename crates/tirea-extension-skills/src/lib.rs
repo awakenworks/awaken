@@ -10,6 +10,7 @@
 mod discovery_plugin;
 mod embedded_registry;
 mod materialize;
+mod mcp_registry;
 mod registry;
 mod skill_md;
 mod subsystem;
@@ -26,6 +27,7 @@ pub const SKILL_SCRIPT_TOOL_ID: &str = "skill_script";
 
 pub use discovery_plugin::SkillDiscoveryPlugin;
 pub use embedded_registry::{EmbeddedSkill, EmbeddedSkillData};
+pub use mcp_registry::{McpPromptSkill, McpPromptSkillRegistryManager};
 pub use registry::{
     CompositeSkillRegistry, DiscoveryResult, FsSkill, FsSkillRegistryManager,
     InMemorySkillRegistry, SkillRegistry, SkillRegistryError, SkillRegistryManagerError,
@@ -33,7 +35,7 @@ pub use registry::{
 pub use subsystem::{SkillSubsystem, SkillSubsystemError};
 pub use tools::{LoadSkillResourceTool, SkillActivateTool, SkillScriptTool};
 pub use types::{
-    collect_skills, material_key, LoadedAsset, LoadedReference, ScriptResult, Skill, SkillError,
-    SkillMaterializeError, SkillMeta, SkillResource, SkillResourceKind, SkillState,
-    SkillStateAction, SkillWarning,
+    collect_skills, material_key, LoadedAsset, LoadedReference, ScriptResult, Skill,
+    SkillActivation, SkillError, SkillMaterializeError, SkillMeta, SkillResource,
+    SkillResourceKind, SkillState, SkillStateAction, SkillWarning,
 };
