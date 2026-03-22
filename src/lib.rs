@@ -4,6 +4,7 @@
 
 pub mod agent;
 pub mod contract;
+pub mod engine;
 mod error;
 mod model;
 mod plugins;

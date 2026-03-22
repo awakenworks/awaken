@@ -12,7 +12,7 @@ futures = "0.3"
 tracing = "0.1"
 typedmap = { version = "0.6", features = ["clone"] }
 uuid = { version = "1", features = ["v7"] }
-reqwest = { version = "0.13.2", features = ["json"] }
+genai = "0.6.0-beta.10"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
