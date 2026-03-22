@@ -212,7 +212,7 @@ impl ToolCallOutcome {
         match result.status {
             super::tool::ToolStatus::Pending => Self::Suspended,
             super::tool::ToolStatus::Error => Self::Failed,
-            super::tool::ToolStatus::Success | super::tool::ToolStatus::Warning => Self::Succeeded,
+            super::tool::ToolStatus::Success => Self::Succeeded,
         }
     }
 }
@@ -361,12 +361,6 @@ mod tests {
         assert_eq!(
             ToolCallOutcome::from_tool_result(&pending),
             ToolCallOutcome::Suspended
-        );
-
-        let warning = ToolResult::warning("t", json!(null), "warn");
-        assert_eq!(
-            ToolCallOutcome::from_tool_result(&warning),
-            ToolCallOutcome::Succeeded
         );
     }
 

@@ -19,11 +19,16 @@ use crate::state::{Snapshot, StateKey};
 pub enum ToolStatus {
     /// Execution succeeded.
     Success,
-    /// Execution succeeded with warnings.
-    Warning,
     /// Execution is pending (waiting for suspension resolution).
+    ///
+    /// The loop runner maps this to `ToolCallOutcome::Suspended`, which
+    /// causes the sequential executor to stop and the orchestrator to
+    /// transition the run to `Waiting` state until a resume decision arrives.
     Pending,
     /// Execution failed.
+    ///
+    /// The tool result content is sent back to the LLM as a normal tool
+    /// response so it can react (retry, report, change strategy).
     Error,
 }
 
@@ -135,25 +140,9 @@ impl ToolResult {
         }
     }
 
-    /// Create a warning result.
-    pub fn warning(
-        tool_name: impl Into<String>,
-        data: impl Into<Value>,
-        message: impl Into<String>,
-    ) -> Self {
-        Self {
-            tool_name: tool_name.into(),
-            status: ToolStatus::Warning,
-            data: data.into(),
-            message: Some(message.into()),
-
-            suspension: None,
-        }
-    }
-
     /// Check if execution succeeded.
     pub fn is_success(&self) -> bool {
-        matches!(self.status, ToolStatus::Success | ToolStatus::Warning)
+        matches!(self.status, ToolStatus::Success)
     }
 
     /// Check if execution is pending.
@@ -353,13 +342,6 @@ mod tests {
         let result = ToolResult::suspended("dangerous_tool", "needs approval");
         assert!(result.is_pending());
         assert!(!result.is_success());
-    }
-
-    #[test]
-    fn tool_result_warning() {
-        let result = ToolResult::warning("search", json!({"hits": 0}), "no results");
-        assert!(result.is_success()); // warning counts as success
-        assert_eq!(result.status, ToolStatus::Warning);
     }
 
     #[test]
