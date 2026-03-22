@@ -22,23 +22,26 @@ impl ActiveRunRegistry {
     }
 
     /// Register a run with both run_id and thread_id indexing.
-    /// Returns `false` if the thread already has an active run.
+    /// Returns `false` if either the thread or run_id is already active.
     pub(super) fn register(&self, run_id: &str, thread_id: &str, handle: RunHandle) -> bool {
         let mut by_thread = self.by_thread_id.write();
-        if by_thread.contains_key(thread_id) {
+        let mut by_run = self.by_run_id.write();
+
+        if by_thread.contains_key(thread_id) || by_run.contains_key(run_id) {
             return false;
         }
-        by_thread.insert(thread_id.to_string(), run_id.to_string());
-        drop(by_thread);
 
-        self.by_run_id.write().insert(run_id.to_string(), handle);
+        by_thread.insert(thread_id.to_string(), run_id.to_string());
+        by_run.insert(run_id.to_string(), handle);
         true
     }
 
     /// Unregister a run by run_id. Removes both run_id and thread_id mappings.
     pub(super) fn unregister(&self, run_id: &str) {
-        self.by_run_id.write().remove(run_id);
-        self.by_thread_id.write().retain(|_, v| v != run_id);
+        let mut by_thread = self.by_thread_id.write();
+        let mut by_run = self.by_run_id.write();
+        by_run.remove(run_id);
+        by_thread.retain(|_, v| v != run_id);
     }
 
     /// Look up a handle by run_id.
@@ -113,6 +116,16 @@ mod tests {
         let h2 = make_handle("r2");
         assert!(reg.register("r1", "t1", h1));
         assert!(!reg.register("r2", "t1", h2));
+    }
+
+    #[test]
+    fn duplicate_run_id_rejected() {
+        let reg = ActiveRunRegistry::new();
+        let h1 = make_handle("r1");
+        let h2 = make_handle("r1");
+        assert!(reg.register("r1", "t1", h1));
+        assert!(!reg.register("r1", "t2", h2));
+        assert!(reg.get_by_thread_id("t2").is_none());
     }
 
     #[test]
