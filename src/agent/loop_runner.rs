@@ -162,6 +162,8 @@ pub async fn run_agent_loop_controlled(
     let run_overrides = initial_overrides;
     let mut decision_rx = decision_rx;
     let run_created_at = now_ms();
+    let mut total_input_tokens: u64 = 0;
+    let mut total_output_tokens: u64 = 0;
 
     // Resolve initial agent
     let ResolvedAgent {
@@ -319,6 +321,14 @@ pub async fn run_agent_loop_controlled(
             .execute(request)
             .await
             .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
+        if let Some(usage) = &stream_result.usage {
+            if let Some(v) = usage.prompt_tokens {
+                total_input_tokens = total_input_tokens.saturating_add(v.max(0) as u64);
+            }
+            if let Some(v) = usage.completion_tokens {
+                total_output_tokens = total_output_tokens.saturating_add(v.max(0) as u64);
+            }
+        }
 
         let duration_ms = start.elapsed().as_millis() as u64;
         sink.emit(AgentEvent::InferenceComplete {
@@ -347,6 +357,8 @@ pub async fn run_agent_loop_controlled(
                 &messages,
                 &run_identity,
                 run_created_at,
+                total_input_tokens,
+                total_output_tokens,
             )
             .await?;
             break TerminationReason::NaturalEnd;
@@ -519,6 +531,8 @@ pub async fn run_agent_loop_controlled(
                 &messages,
                 &run_identity,
                 run_created_at,
+                total_input_tokens,
+                total_output_tokens,
             )
             .await?;
 
@@ -555,6 +569,8 @@ pub async fn run_agent_loop_controlled(
             &messages,
             &run_identity,
             run_created_at,
+            total_input_tokens,
+            total_output_tokens,
         )
         .await?;
         if let Some(reason) = check_termination(store) {
@@ -584,6 +600,8 @@ pub async fn run_agent_loop_controlled(
         messages.as_slice(),
         &run_identity,
         run_created_at,
+        total_input_tokens,
+        total_output_tokens,
     )
     .await?;
 
@@ -795,6 +813,8 @@ async fn complete_step(
     messages: &[Arc<Message>],
     run_identity: &RunIdentity,
     run_created_at: u64,
+    total_input_tokens: u64,
+    total_output_tokens: u64,
 ) -> Result<(), AgentLoopError> {
     commit_update::<RunLifecycle>(
         store,
@@ -813,6 +833,8 @@ async fn complete_step(
         messages,
         run_identity,
         run_created_at,
+        total_input_tokens,
+        total_output_tokens,
     )
     .await?;
 
@@ -826,6 +848,8 @@ async fn persist_checkpoint(
     messages: &[Arc<Message>],
     run_identity: &RunIdentity,
     run_created_at: u64,
+    total_input_tokens: u64,
+    total_output_tokens: u64,
 ) -> Result<(), AgentLoopError> {
     let Some(storage) = checkpoint_store else {
         return Ok(());
@@ -849,8 +873,8 @@ async fn persist_checkpoint(
             lifecycle.updated_at / 1000
         },
         steps: lifecycle.step_count as usize,
-        input_tokens: 0,
-        output_tokens: 0,
+        input_tokens: total_input_tokens,
+        output_tokens: total_output_tokens,
         state: Some(state),
     };
     let msgs: Vec<Message> = messages.iter().map(|m| (**m).clone()).collect();

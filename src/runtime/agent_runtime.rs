@@ -449,7 +449,11 @@ mod tests {
         let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
             content: vec![ContentBlock::text("ok")],
             tool_calls: vec![],
-            usage: None,
+            usage: Some(crate::contract::inference::TokenUsage {
+                prompt_tokens: Some(11),
+                completion_tokens: Some(7),
+                ..Default::default()
+            }),
             stop_reason: Some(StopReason::EndTurn),
         }]));
         let resolver = Arc::new(FixedResolver {
@@ -577,7 +581,11 @@ mod tests {
         let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
             content: vec![ContentBlock::text("ok")],
             tool_calls: vec![],
-            usage: None,
+            usage: Some(crate::contract::inference::TokenUsage {
+                prompt_tokens: Some(11),
+                completion_tokens: Some(7),
+                ..Default::default()
+            }),
             stop_reason: Some(StopReason::EndTurn),
         }]));
         let resolver = Arc::new(FixedResolver {
@@ -613,6 +621,8 @@ mod tests {
             .expect("run persisted");
         assert_eq!(latest.thread_id, "thread-tx");
         assert!(latest.state.is_some(), "state snapshot should be persisted");
+        assert_eq!(latest.input_tokens, 11);
+        assert_eq!(latest.output_tokens, 7);
 
         let msgs = store
             .load_messages("thread-tx")

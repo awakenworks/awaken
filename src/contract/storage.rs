@@ -33,31 +33,6 @@ pub enum StorageError {
     Serialization(String),
 }
 
-/// Thread message persistence.
-#[async_trait]
-pub trait ThreadStore: Send + Sync {
-    /// Load all messages for a thread. Returns `None` if the thread does not exist.
-    async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError>;
-
-    /// Append messages to a thread. Creates the thread if it does not exist.
-    async fn append_messages(
-        &self,
-        thread_id: &str,
-        messages: &[Message],
-    ) -> Result<(), StorageError>;
-
-    /// Replace all messages in a thread. Used at checkpoints (step end, run end)
-    /// to persist compacted message history.
-    async fn replace_messages(
-        &self,
-        thread_id: &str,
-        messages: &[Message],
-    ) -> Result<(), StorageError>;
-
-    /// Delete a thread and all its messages.
-    async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError>;
-}
-
 /// A run record for tracking run history and enabling resume.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRecord {
@@ -85,19 +60,6 @@ pub struct RunRecord {
     pub output_tokens: u64,
     /// State snapshot for resume.
     pub state: Option<PersistedState>,
-}
-
-/// Run record persistence.
-#[async_trait]
-pub trait RunStore: Send + Sync {
-    /// Save or update a run record.
-    async fn save_run(&self, record: &RunRecord) -> Result<(), StorageError>;
-
-    /// Load a run record by `run_id`.
-    async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, StorageError>;
-
-    /// Find the latest run for a thread (by `updated_at`).
-    async fn latest_run(&self, thread_id: &str) -> Result<Option<RunRecord>, StorageError>;
 }
 
 /// Atomic thread+run checkpoint persistence.
