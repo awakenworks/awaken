@@ -44,7 +44,7 @@ pub enum ContextMessageTarget {
 /// For `Conversation` messages:
 /// - role/visibility may be any supported combination
 /// - entries bypass context throttling and deduplication
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextMessage {
     /// Unique identifier for deduplication and throttle tracking.
     ///

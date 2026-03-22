@@ -6,7 +6,6 @@ members = [
     "crates/tirea-contract",
     "crates/tirea-agentos",
     "crates/tirea-extension-permission",
-    "crates/tirea-extension-reminder",
     "crates/tirea-extension-observability",
     "crates/tirea-extension-skills",
     "crates/tirea-extension-mcp",
@@ -38,7 +37,6 @@ tirea-contract = { version = "0.5.0-alpha.1", path = "crates/tirea-contract" }
 tirea-agentos = { version = "0.5.0-alpha.1", path = "crates/tirea-agentos" }
 tirea-agentos-server = { version = "0.5.0-alpha.1", path = "crates/tirea-agentos-server" }
 tirea-extension-permission = { version = "0.5.0-alpha.1", path = "crates/tirea-extension-permission" }
-tirea-extension-reminder = { version = "0.5.0-alpha.1", path = "crates/tirea-extension-reminder" }
 tirea-extension-observability = { version = "0.5.0-alpha.1", path = "crates/tirea-extension-observability" }
 tirea-extension-skills = { version = "0.5.0-alpha.1", path = "crates/tirea-extension-skills" }
 tirea-extension-mcp = { version = "0.5.0-alpha.1", path = "crates/tirea-extension-mcp" }

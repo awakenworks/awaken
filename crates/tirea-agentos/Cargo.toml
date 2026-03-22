@@ -12,7 +12,6 @@ categories = ["asynchronous"]
 tirea-state.workspace = true
 tirea-contract.workspace = true
 tirea-extension-permission = { workspace = true, optional = true }
-tirea-extension-reminder = { workspace = true, optional = true }
 tirea-extension-observability = { workspace = true, optional = true }
 tirea-extension-skills = { workspace = true, optional = true }
 tirea-extension-mcp = { workspace = true, optional = true }
@@ -34,10 +33,9 @@ tracing = "0.1"
 json-patch = "3"
 
 [features]
-default = ["skills", "permission", "reminder", "observability", "handoff"]
+default = ["skills", "permission", "observability", "handoff"]
 skills = ["dep:tirea-extension-skills"]
 permission = ["dep:tirea-extension-permission"]
-reminder = ["dep:tirea-extension-reminder"]
 observability = ["dep:tirea-extension-observability"]
 mcp = ["dep:tirea-extension-mcp"]
 handoff = ["dep:tirea-extension-handoff"]

@@ -9,11 +9,6 @@ pub mod permission {
 }
 
 #[cfg(feature = "core")]
-pub mod reminder {
-    pub use tirea_extension_reminder::*;
-}
-
-#[cfg(feature = "core")]
 pub mod observability {
     pub use tirea_extension_observability::*;
 }

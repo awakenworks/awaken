@@ -13,7 +13,7 @@ pub(crate) mod context;
 mod errors;
 mod policy;
 mod prepare;
-pub(crate) mod prompt_segments;
+pub mod prompt_segments;
 mod run;
 pub(crate) mod stop_policy;
 pub(crate) mod thread_run;

@@ -317,7 +317,7 @@ pub(super) fn consume_emitted_prompt_segments(
 
     let actions = context_keys
         .into_iter()
-        .map(tirea_contract::runtime::inference::remove_prompt_segment_context_key_action)
+        .map(crate::runtime::prompt_segments::remove_context_message_action)
         .collect::<Vec<AnyStateAction>>();
     let serialized_actions = actions
         .iter()

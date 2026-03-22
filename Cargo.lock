@@ -4593,7 +4593,6 @@ dependencies = [
  "tirea-extension-mcp",
  "tirea-extension-observability",
  "tirea-extension-permission",
- "tirea-extension-reminder",
  "tirea-extension-skills",
  "tirea-protocol-acp",
  "tirea-protocol-ag-ui",
@@ -4631,7 +4630,6 @@ dependencies = [
  "tirea-extension-mcp",
  "tirea-extension-observability",
  "tirea-extension-permission",
- "tirea-extension-reminder",
  "tirea-extension-skills",
  "tirea-state",
  "tirea-store-adapters",
@@ -4802,18 +4800,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tirea-extension-reminder"
-version = "0.5.0-alpha.1"
-dependencies = [
- "async-trait",
- "serde",
- "serde_json",
- "tirea-contract",
- "tirea-state",
- "tokio",
-]
-
-[[package]]
 name = "tirea-extension-skills"
 version = "0.5.0-alpha.1"
 dependencies = [
@@ -4858,7 +4844,6 @@ dependencies = [
  "tirea-contract",
  "tirea-extension-observability",
  "tirea-extension-permission",
- "tirea-extension-reminder",
  "tirea-extension-skills",
  "tirea-state",
  "tirea-store-adapters",

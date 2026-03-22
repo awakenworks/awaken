@@ -1,6 +1,6 @@
 //! Integration tests for tirea.
 //!
-//! These tests verify the Tool and SystemReminder traits
+//! These tests verify the Tool trait works correctly with the State/Context API.
 //! work correctly with the new State/Context API.
 
 use async_trait::async_trait;
@@ -19,7 +19,6 @@ use tirea_agentos::runtime::activity::ActivityHub;
 use tirea_agentos::runtime::loop_runner::AgentLoopError;
 use tirea_contract::runtime::state::StateSpec;
 use tirea_contract::testing::TestFixture;
-use tirea_extension_reminder::SystemReminder;
 use tirea_protocol_ag_ui::{interaction_to_ag_ui_events, Role, ToolExecutionLocation};
 use tirea_state::StateManager;
 use tirea_state::{DocCell, PatchSink, Path, State, TireaError, TireaResult};
@@ -423,29 +422,6 @@ impl Tool for UpdateCallStateTool {
 // Test system reminders
 // ============================================================================
 
-struct TaskReminder;
-
-#[async_trait]
-impl SystemReminder for TaskReminder {
-    fn id(&self) -> &str {
-        "task_reminder"
-    }
-
-    async fn remind(
-        &self,
-        ctx: &tirea_contract::runtime::tool_call::ToolCallContext<'_>,
-    ) -> Option<String> {
-        let tasks = ctx.state::<TaskState>("tasks");
-
-        let count = tasks.count().unwrap_or(0);
-        if count > 0 {
-            Some(format!("You have {} pending tasks", count))
-        } else {
-            None
-        }
-    }
-}
-
 // ============================================================================
 // Tool execution tests
 // ============================================================================
@@ -588,43 +564,6 @@ async fn test_tool_error_handling() {
 // System reminder tests
 // ============================================================================
 
-#[tokio::test]
-async fn test_system_reminder_with_tasks() {
-    let manager = StateManager::new(json!({
-        "tasks": {"items": ["Task 1", "Task 2"], "count": 2}
-    }));
-
-    let reminder = TaskReminder;
-
-    let snapshot = manager.snapshot().await;
-    let fix = TestFixture::new_with_state(snapshot);
-
-    let message = reminder.remind(&fix.ctx()).await;
-    assert!(message.is_some());
-    assert!(message.unwrap().contains("2"));
-}
-
-#[tokio::test]
-async fn test_system_reminder_no_tasks() {
-    let manager = StateManager::new(json!({
-        "tasks": {"items": [], "count": 0}
-    }));
-
-    let reminder = TaskReminder;
-
-    let snapshot = manager.snapshot().await;
-    let fix = TestFixture::new_with_state(snapshot);
-
-    let message = reminder.remind(&fix.ctx()).await;
-    assert!(message.is_none());
-}
-
-#[tokio::test]
-async fn test_system_reminder_metadata() {
-    let reminder = TaskReminder;
-    assert_eq!(reminder.id(), "task_reminder");
-}
-
 // ============================================================================
 // Tool descriptor tests
 // ============================================================================
@@ -762,7 +701,6 @@ async fn test_tool_reminder_integration() {
 
     let increment_tool = IncrementTool;
     let task_tool = AddTaskTool;
-    let reminder = TaskReminder;
 
     // Execute increment tool
     {
@@ -790,15 +728,6 @@ async fn test_tool_reminder_integration() {
             .await
             .unwrap();
         manager.commit(fix.ctx().take_patch()).await.unwrap();
-    }
-
-    // Run system reminder
-    {
-        let snapshot = manager.snapshot().await;
-        let fix = TestFixture::new_with_state(snapshot);
-        let message = reminder.remind(&fix.ctx()).await;
-        assert!(message.is_some());
-        assert!(message.unwrap().contains("1")); // 1 pending task
     }
 
     // Verify final state
@@ -3810,27 +3739,6 @@ async fn test_execute_single_tool_with_complex_state() {
 
     assert!(result.result.is_success());
     assert_eq!(result.result.data["new_value"], 101);
-}
-
-/// Test SystemReminder integration
-#[tokio::test]
-async fn test_e2e_system_reminder_integration() {
-    let manager = StateManager::new(json!({
-        "tasks": {"items": ["Task 1", "Task 2", "Task 3"], "count": 3}
-    }));
-
-    let reminder = TaskReminder;
-
-    // Reminder checks state and returns message
-    let snapshot = manager.snapshot().await;
-    let fix = TestFixture::new_with_state(snapshot);
-
-    let message = reminder.remind(&fix.ctx()).await;
-
-    // Should return reminder about pending tasks
-    assert!(message.is_some());
-    let msg = message.unwrap();
-    assert!(msg.contains("3")); // 3 pending tasks
 }
 
 // ============================================================================

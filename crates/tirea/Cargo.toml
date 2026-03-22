@@ -23,7 +23,6 @@ tirea-protocol-ai-sdk-v6 = { workspace = true, optional = true }
 
 # Extensions
 tirea-extension-permission = { workspace = true, optional = true }
-tirea-extension-reminder = { workspace = true, optional = true }
 tirea-extension-observability = { workspace = true, optional = true }
 tirea-extension-skills = { workspace = true, optional = true }
 tirea-extension-mcp = { workspace = true, optional = true }
@@ -43,7 +42,6 @@ default = ["core"]
 core = [
     "dep:tirea-agentos",
     "dep:tirea-extension-permission",
-    "dep:tirea-extension-reminder",
     "dep:tirea-extension-observability",
     "dep:tirea-extension-handoff",
 ]

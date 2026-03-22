@@ -21,7 +21,6 @@ uuid = { version = "1", features = ["v4", "v7"] }
 tirea-contract = { workspace = true, features = ["test-support"] }
 tirea-agentos.workspace = true
 tirea-extension-permission.workspace = true
-tirea-extension-reminder.workspace = true
 tirea-extension-observability.workspace = true
 tirea-extension-skills.workspace = true
 async-trait = "0.1"
