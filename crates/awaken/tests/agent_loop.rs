@@ -2,7 +2,9 @@
 
 use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
-use awaken::agent::loop_runner::{build_agent_env, prepare_resume, run_agent_loop};
+use awaken::agent::loop_runner::{
+    AgentLoopParams, build_agent_env, prepare_resume, run_agent_loop,
+};
 use awaken::agent::state::{
     AccumulatedContextMessages, AccumulatedOverrides, AccumulatedToolExclusions,
     AccumulatedToolInclusions, ContextThrottleState, RunLifecycle, ToolCallStates,
@@ -239,16 +241,18 @@ async fn single_step_natural_end() {
     let resolver = FixedResolver::new(agent);
 
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("hi")],
-        test_identity(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -288,16 +292,18 @@ async fn tool_call_then_response() {
     let resolver = FixedResolver::new(agent);
 
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("echo hello")],
-        test_identity(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("echo hello")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -332,16 +338,18 @@ async fn tool_call_state_machine_transitions() {
     let resolver = FixedResolver::new(agent);
 
     let sink = NullEventSink;
-    run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("test")],
-        test_identity(),
-        None,
-    )
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("test")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -381,16 +389,18 @@ async fn multiple_tool_calls_in_one_step() {
     let resolver = FixedResolver::new(agent);
 
     let sink = VecEventSink::new();
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("multi-tool")],
-        test_identity(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("multi-tool")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -428,16 +438,18 @@ async fn max_rounds_exceeded() {
     let resolver = FixedResolver::new(agent);
 
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("loop")],
-        test_identity(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("loop")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -481,16 +493,18 @@ async fn unknown_tool_returns_error_result_not_crash() {
     let resolver = FixedResolver::new(agent);
 
     let sink = VecEventSink::new();
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("call unknown")],
-        test_identity(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("call unknown")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap(); // Should NOT error — unknown tool produces ToolResult::error
 
@@ -534,16 +548,18 @@ async fn failing_tool_produces_error_result_continues_loop() {
     let resolver = FixedResolver::new(agent);
 
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("use fail tool")],
-        test_identity(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("use fail tool")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -566,16 +582,18 @@ async fn events_have_correct_sequence_for_single_step() {
     let resolver = FixedResolver::new(agent);
 
     let sink = VecEventSink::new();
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("hi")],
-        test_identity(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -637,16 +655,18 @@ async fn events_have_correct_sequence_with_tool_call() {
     let resolver = FixedResolver::new(agent);
 
     let sink = VecEventSink::new();
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("echo")],
-        test_identity(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("echo")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -710,16 +730,18 @@ async fn lifecycle_state_reflects_custom_run_id() {
     );
 
     let sink = NullEventSink;
-    run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("hi")],
-        identity,
-        None,
-    )
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: identity,
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -773,16 +795,18 @@ async fn phase_hooks_fire_during_loop() {
     let resolver = FixedResolver::with_plugins(agent, user_plugins);
 
     let sink = NullEventSink;
-    run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("hi")],
-        test_identity(),
-        None,
-    )
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -827,16 +851,18 @@ async fn tool_suspension_transitions_run_to_waiting() {
     let resolver = FixedResolver::new(agent);
 
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("do it")],
-        test_identity(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("do it")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -865,16 +891,18 @@ async fn resume_with_use_decision_as_tool_result() {
 
     // Run until suspension
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("do it")],
-        test_identity(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("do it")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
     assert_eq!(result.termination, TerminationReason::Suspended);
@@ -910,16 +938,18 @@ async fn resume_with_use_decision_as_tool_result() {
     )
     .unwrap();
 
-    let resume_result = run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
+    let resume_result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
         messages,
-        test_identity(),
-        None,
-    )
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -948,16 +978,18 @@ async fn resume_with_cancel_marks_tool_cancelled() {
 
     // Run until suspension
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("do it")],
-        test_identity(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("do it")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
     assert_eq!(result.termination, TerminationReason::Suspended);
@@ -992,16 +1024,18 @@ async fn resume_with_cancel_marks_tool_cancelled() {
     )
     .unwrap();
 
-    let resume_result = run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
+    let resume_result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
         messages,
-        test_identity(),
-        None,
-    )
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -1028,16 +1062,18 @@ async fn resume_with_replay_tool_call() {
 
     // Run until suspension
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("do it")],
-        test_identity(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("do it")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
     assert_eq!(result.termination, TerminationReason::Suspended);
@@ -1092,16 +1128,18 @@ async fn resume_with_replay_tool_call() {
     )
     .unwrap();
 
-    let resume_result = run_agent_loop(
-        &resolver2,
-        "test",
-        &runtime,
-        &sink,
-        None,
+    let resume_result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver2,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
         messages,
-        test_identity(),
-        None,
-    )
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -1127,16 +1165,18 @@ async fn resume_with_pass_decision_to_tool() {
 
     // First run: suspend
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("do it")],
-        test_identity(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("do it")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await;
     // This might not work because tool_call name is "passthrough" but we only have "dangerous".
     // Let me adjust: use "dangerous" tool call and have passthrough registered as "dangerous" on resume.
@@ -1152,16 +1192,18 @@ async fn resume_with_pass_decision_to_tool() {
     let agent2 = AgentConfig::new("test", "m", "sys", llm2).with_tool(Arc::new(SuspendingTool));
     let resolver2 = FixedResolver::new(agent2);
 
-    let result = run_agent_loop(
-        &resolver2,
-        "test",
-        &runtime2,
-        &sink,
-        None,
-        vec![Message::user("do it")],
-        test_identity(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver2,
+        agent_id: "test",
+        runtime: &runtime2,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("do it")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
     assert_eq!(result.termination, TerminationReason::Suspended);
@@ -1212,16 +1254,18 @@ async fn resume_with_pass_decision_to_tool() {
     )
     .unwrap();
 
-    let resume_result = run_agent_loop(
-        &resolver3,
-        "test",
-        &runtime2,
-        &sink,
-        None,
+    let resume_result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver3,
+        agent_id: "test",
+        runtime: &runtime2,
+        sink: &sink,
+        checkpoint_store: None,
         messages,
-        test_identity(),
-        None,
-    )
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -1237,16 +1281,18 @@ async fn resume_rejects_non_waiting_run() {
 
     // Run to completion (not suspended)
     let sink = NullEventSink;
-    run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("hi")],
-        test_identity(),
-        None,
-    )
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -1284,16 +1330,18 @@ async fn resume_rejects_unknown_call_id() {
     let resolver = FixedResolver::new(agent);
 
     let sink = NullEventSink;
-    run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("do it")],
-        test_identity(),
-        None,
-    )
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("do it")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -1411,16 +1459,18 @@ async fn cancel_during_streaming_terminates_run() {
         token_clone.cancel();
     });
 
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("hi")],
-        test_identity(),
-        Some(token),
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: Some(token),
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -1445,16 +1495,18 @@ async fn cancel_before_inference_terminates_immediately() {
     let token = CancellationToken::new();
     token.cancel();
 
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("hi")],
-        test_identity(),
-        Some(token),
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: Some(token),
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -1495,16 +1547,18 @@ async fn state_snapshot_emitted_after_phase() {
     let resolver = FixedResolver::new(agent);
 
     let sink = VecEventSink::new();
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &runtime,
-        &sink,
-        None,
-        vec![Message::user("hi")],
-        test_identity(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 

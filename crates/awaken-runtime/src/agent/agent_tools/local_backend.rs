@@ -8,7 +8,7 @@ use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
 use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::message::Message;
 
-use crate::agent::loop_runner::run_agent_loop;
+use crate::agent::loop_runner::{AgentLoopParams, run_agent_loop};
 use crate::runtime::AgentResolver;
 
 use super::backend::{AgentBackend, AgentBackendError, DelegateRunResult, DelegateRunStatus};
@@ -60,16 +60,18 @@ impl AgentBackend for LocalBackend {
 
         let sink = NullEventSink;
 
-        let result = run_agent_loop(
-            self.resolver.as_ref(),
+        let result = run_agent_loop(AgentLoopParams {
+            resolver: self.resolver.as_ref(),
             agent_id,
-            &phase_runtime,
-            &sink,
-            None, // no checkpoint store for sub-agent
+            runtime: &phase_runtime,
+            sink: &sink,
+            checkpoint_store: None,
             messages,
-            sub_identity,
-            None, // no cancellation token
-        )
+            run_identity: sub_identity,
+            cancellation_token: None,
+            decision_rx: None,
+            overrides: None,
+        })
         .await
         .map_err(|e| {
             AgentBackendError::ExecutionFailed(format!(

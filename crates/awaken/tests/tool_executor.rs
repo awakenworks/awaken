@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
 use awaken::agent::executor::{ParallelToolExecutor, SequentialToolExecutor, ToolExecutor};
-use awaken::agent::loop_runner::{build_agent_env, run_agent_loop};
+use awaken::agent::loop_runner::{AgentLoopParams, build_agent_env, run_agent_loop};
 use awaken::agent::state::{
     ContextThrottleState, RunLifecycle, SetInferenceOverride, ToolCallStates,
 };
@@ -239,16 +239,18 @@ async fn sequential_partial_failure_both_produce_results() {
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink = VecEventSink::new();
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &sink,
-        None,
-        vec![Message::user("go")],
-        id(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -281,16 +283,18 @@ async fn sequential_stops_after_first_suspension_in_loop() {
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink = VecEventSink::new();
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &sink,
-        None,
-        vec![Message::user("go")],
-        id(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -326,16 +330,18 @@ async fn parallel_both_tools_execute() {
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink = VecEventSink::new();
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &sink,
-        None,
-        vec![Message::user("go")],
-        id(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -364,16 +370,18 @@ async fn parallel_partial_failure() {
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink = VecEventSink::new();
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &sink,
-        None,
-        vec![Message::user("go")],
-        id(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -408,16 +416,18 @@ async fn parallel_does_not_stop_on_suspension() {
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink = VecEventSink::new();
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &sink,
-        None,
-        vec![Message::user("go")],
-        id(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -452,16 +462,18 @@ async fn suspension_sets_run_to_waiting() {
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &sink,
-        None,
-        vec![Message::user("go")],
-        id(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -481,16 +493,18 @@ async fn suspension_tool_call_state_is_suspended() {
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink = NullEventSink;
-    run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &sink,
-        None,
-        vec![Message::user("go")],
-        id(),
-        None,
-    )
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -576,16 +590,18 @@ async fn hook_state_mutation_is_not_visible_to_sibling_hook() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![hook_plugin];
     let resolver = FixedResolver::with_plugins(agent, user_plugins);
     let sink = NullEventSink;
-    run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &sink,
-        None,
-        vec![Message::user("hi")],
-        id(),
-        None,
-    )
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -616,16 +632,18 @@ async fn max_rounds_precise_count() {
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &sink,
-        None,
-        vec![Message::user("go")],
-        id(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -677,16 +695,18 @@ async fn terminate_via_state_in_after_inference_hook() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(TermHookPlugin)];
     let resolver = FixedResolver::with_plugins(agent, user_plugins);
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &sink,
-        None,
-        vec![Message::user("go")],
-        id(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -736,16 +756,18 @@ async fn phase_sequence_with_tool_call() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(LogPlugin(phases.clone()))];
     let resolver = FixedResolver::with_plugins(agent, user_plugins);
     let sink = NullEventSink;
-    run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &sink,
-        None,
-        vec![Message::user("go")],
-        id(),
-        None,
-    )
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -801,16 +823,18 @@ async fn phase_sequence_on_suspension() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(LogPlugin(phases.clone()))];
     let resolver = FixedResolver::with_plugins(agent, user_plugins);
     let sink = NullEventSink;
-    run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &sink,
-        None,
-        vec![Message::user("go")],
-        id(),
-        None,
-    )
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -902,16 +926,18 @@ async fn empty_tool_calls_treated_as_natural_end() {
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &sink,
-        None,
-        vec![Message::user("hi")],
-        id(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -938,16 +964,18 @@ async fn multiple_steps_accumulate_messages() {
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &sink,
-        None,
-        vec![Message::user("go")],
-        id(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -972,16 +1000,18 @@ async fn run_lifecycle_run_id_matches_identity() {
         RunOrigin::Internal,
     );
     let sink = NullEventSink;
-    run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &sink,
-        None,
-        vec![Message::user("hi")],
-        custom_id,
-        None,
-    )
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: custom_id,
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
     let lifecycle = rt.store().read::<RunLifecycle>().unwrap();
@@ -1007,16 +1037,18 @@ async fn batch_approval_both_tools_execute_in_loop() {
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink = VecEventSink::new();
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &sink,
-        None,
-        vec![Message::user("go")],
-        id(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -1045,16 +1077,18 @@ async fn batch_approval_suspension_still_executes_all() {
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink = NullEventSink;
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &sink,
-        None,
-        vec![Message::user("go")],
-        id(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -1086,16 +1120,18 @@ async fn streaming_partial_failure_in_loop() {
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink = VecEventSink::new();
-    let result = run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &sink,
-        None,
-        vec![Message::user("go")],
-        id(),
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -1184,16 +1220,18 @@ async fn before_inference_hook_override_reaches_request() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OverridePlugin)];
     let resolver = FixedResolver::with_plugins(agent, user_plugins);
     let sink = NullEventSink;
-    let _result = run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &sink,
-        None,
-        vec![Message::user("go")],
-        id(),
-        None,
-    )
+    let _result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -1293,16 +1331,18 @@ async fn multiple_hooks_merge_inference_overrides_last_wins() {
         vec![Arc::new(OverridePluginA), Arc::new(OverridePluginB)];
     let resolver = FixedResolver::with_plugins(agent, user_plugins);
 
-    let _result = run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &NullEventSink,
-        None,
-        vec![Message::user("go")],
-        id(),
-        None,
-    )
+    let _result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &NullEventSink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -1354,16 +1394,18 @@ async fn no_override_hook_leaves_overrides_none() {
     // No override plugins
     let resolver = FixedResolver::new(agent);
 
-    let _result = run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &NullEventSink,
-        None,
-        vec![Message::user("go")],
-        id(),
-        None,
-    )
+    let _result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &NullEventSink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -1462,16 +1504,18 @@ async fn override_consumed_each_step_not_leaked() {
     })];
     let resolver = FixedResolver::with_plugins(agent, user_plugins);
 
-    let _result = run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &NullEventSink,
-        None,
-        vec![Message::user("go")],
-        id(),
-        None,
-    )
+    let _result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &NullEventSink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -1560,16 +1604,18 @@ async fn context_message_injected_into_request() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(ContextPlugin)];
     let resolver = FixedResolver::with_plugins(agent, user_plugins);
 
-    let _result = run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &NullEventSink,
-        None,
-        vec![Message::user("hello")],
-        id(),
-        None,
-    )
+    let _result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &NullEventSink,
+        checkpoint_store: None,
+        messages: vec![Message::user("hello")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 
@@ -1693,16 +1739,18 @@ async fn context_messages_not_leaked_to_next_step() {
     })];
     let resolver = FixedResolver::with_plugins(agent, user_plugins);
 
-    let _result = run_agent_loop(
-        &resolver,
-        "test",
-        &rt,
-        &NullEventSink,
-        None,
-        vec![Message::user("go")],
-        id(),
-        None,
-    )
+    let _result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: &NullEventSink,
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await
     .unwrap();
 

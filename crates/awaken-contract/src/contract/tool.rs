@@ -10,10 +10,7 @@ use thiserror::Error;
 use super::event::AgentEvent;
 use super::event_sink::EventSink;
 use super::identity::RunIdentity;
-use super::progress::{
-    FILE_ACTIVITY_TYPE, FileActivity, FileOperation, ProgressStatus,
-    TOOL_CALL_PROGRESS_ACTIVITY_TYPE, ToolCallProgressState,
-};
+use super::progress::{ProgressStatus, TOOL_CALL_PROGRESS_ACTIVITY_TYPE, ToolCallProgressState};
 use crate::registry_spec::AgentSpec;
 use crate::state::{Snapshot, StateKey};
 
@@ -310,35 +307,6 @@ impl ToolCallContext {
             sink.emit(AgentEvent::ActivitySnapshot {
                 message_id: self.call_id.clone(),
                 activity_type: TOOL_CALL_PROGRESS_ACTIVITY_TYPE.into(),
-                content,
-                replace: Some(true),
-            })
-            .await;
-        }
-    }
-
-    /// Report a file change during tool execution.
-    ///
-    /// Emits an [`AgentEvent::ActivitySnapshot`] with
-    /// `activity_type = "file"`. No-op if no `activity_sink` is configured.
-    pub async fn report_file_change(
-        &self,
-        path: &str,
-        operation: FileOperation,
-        media_type: Option<&str>,
-        size: Option<u64>,
-    ) {
-        if let Some(sink) = &self.activity_sink {
-            let activity = FileActivity {
-                path: path.to_string(),
-                operation,
-                media_type: media_type.map(|s| s.to_string()),
-                size,
-            };
-            let content = serde_json::to_value(&activity).unwrap_or_default();
-            sink.emit(AgentEvent::ActivitySnapshot {
-                message_id: format!("{}:{}", self.call_id, path),
-                activity_type: FILE_ACTIVITY_TYPE.into(),
                 content,
                 replace: Some(true),
             })
@@ -729,83 +697,5 @@ mod tests {
         let ctx = ToolCallContext::test_default();
         ctx.report_progress(ProgressStatus::Running, None, None)
             .await;
-    }
-
-    #[tokio::test]
-    async fn report_file_change_emits_correct_event() {
-        use crate::contract::event::AgentEvent;
-        use crate::contract::event_sink::VecEventSink;
-        use crate::contract::progress::{FILE_ACTIVITY_TYPE, FileOperation};
-
-        let sink = Arc::new(VecEventSink::new());
-        let mut ctx = ToolCallContext::test_default();
-        ctx.call_id = "call-2".into();
-        ctx.tool_name = "write_file".into();
-        ctx.activity_sink = Some(sink.clone() as Arc<dyn EventSink>);
-
-        ctx.report_file_change(
-            "src/main.rs",
-            FileOperation::Created,
-            Some("text/x-rust"),
-            Some(1024),
-        )
-        .await;
-
-        let events = sink.events();
-        assert_eq!(events.len(), 1);
-
-        match &events[0] {
-            AgentEvent::ActivitySnapshot {
-                message_id,
-                activity_type,
-                content,
-                replace,
-            } => {
-                assert_eq!(message_id, "call-2:src/main.rs");
-                assert_eq!(activity_type, FILE_ACTIVITY_TYPE);
-                assert_eq!(content["path"], "src/main.rs");
-                assert_eq!(content["operation"], "created");
-                assert_eq!(content["media_type"], "text/x-rust");
-                assert_eq!(content["size"], 1024);
-                assert_eq!(*replace, Some(true));
-            }
-            other => panic!("expected ActivitySnapshot, got: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn report_file_change_noop_without_sink() {
-        use crate::contract::progress::FileOperation;
-        let ctx = ToolCallContext::test_default();
-        ctx.report_file_change("test.txt", FileOperation::Modified, None, None)
-            .await;
-    }
-
-    #[tokio::test]
-    async fn report_file_change_deletion_omits_size() {
-        use crate::contract::event::AgentEvent;
-        use crate::contract::event_sink::VecEventSink;
-        use crate::contract::progress::FileOperation;
-
-        let sink = Arc::new(VecEventSink::new());
-        let mut ctx = ToolCallContext::test_default();
-        ctx.call_id = "call-3".into();
-        ctx.tool_name = "delete_file".into();
-        ctx.activity_sink = Some(sink.clone() as Arc<dyn EventSink>);
-
-        ctx.report_file_change("old.txt", FileOperation::Deleted, None, None)
-            .await;
-
-        let events = sink.events();
-        assert_eq!(events.len(), 1);
-
-        match &events[0] {
-            AgentEvent::ActivitySnapshot { content, .. } => {
-                assert_eq!(content["operation"], "deleted");
-                assert!(content.get("size").is_none() || content["size"].is_null());
-                assert!(content.get("media_type").is_none() || content["media_type"].is_null());
-            }
-            other => panic!("expected ActivitySnapshot, got: {other:?}"),
-        }
     }
 }

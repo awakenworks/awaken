@@ -79,7 +79,7 @@ async fn main() {
             RunRequest::new(thread_id, vec![Message::user(*user_msg)]).with_agent_id("chat");
 
         match runtime.run(request, &ConsoleSink).await {
-            Ok((_handle, result)) => {
+            Ok(result) => {
                 print!(" [{:?}]", result.termination);
             }
             Err(e) => {

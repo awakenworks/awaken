@@ -75,7 +75,6 @@ pub use awaken_runtime::{
     PluginDescriptor,
     PluginRegistrar,
     ResolvedAgent,
-    RunHandle,
     RunRequest,
     // error
     RuntimeError,
@@ -116,8 +115,8 @@ pub mod agent {
     /// Re-exported loop runner public API.
     pub mod loop_runner {
         pub use awaken_runtime::{
-            AgentLoopError, AgentRunResult, LoopStatePlugin, build_agent_env, prepare_resume,
-            run_agent_loop, run_agent_loop_controlled,
+            AgentLoopError, AgentLoopParams, AgentRunResult, LoopStatePlugin, build_agent_env,
+            prepare_resume, run_agent_loop,
         };
     }
 

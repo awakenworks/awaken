@@ -23,14 +23,16 @@ use crate::state::MutationBatch;
 use awaken_contract::StateError;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
+use awaken_contract::contract::inference::InferenceOverride;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::ThreadRunStore;
+use awaken_contract::contract::suspension::ToolCallResume;
 use awaken_contract::contract::tool::ToolResult;
+use futures::channel::mpsc;
 
 use super::state::{RunLifecycle, ToolCallStates};
 
 // Re-export submodule items used by external callers
-pub use orchestrator::run_agent_loop_controlled;
 pub use resume::prepare_resume;
 
 /// Plugin that registers the core state keys required by the loop runner.
@@ -115,11 +117,35 @@ fn tool_result_to_content(result: &ToolResult) -> String {
     }
 }
 
+/// All parameters for executing the agent loop.
+pub struct AgentLoopParams<'a> {
+    /// Resolves agent IDs to config + execution environment.
+    pub resolver: &'a dyn AgentResolver,
+    /// Initial agent to resolve at loop start.
+    pub agent_id: &'a str,
+    /// Phase runtime (state store + hook executor).
+    pub runtime: &'a PhaseRuntime,
+    /// Event sink for streaming events to the caller.
+    pub sink: &'a dyn EventSink,
+    /// Optional persistent storage for checkpointing.
+    pub checkpoint_store: Option<&'a dyn ThreadRunStore>,
+    /// Messages to seed the conversation (history + new user input).
+    pub messages: Vec<Message>,
+    /// Run identity (thread, run, agent IDs).
+    pub run_identity: RunIdentity,
+    /// Cooperative cancellation token.
+    pub cancellation_token: Option<CancellationToken>,
+    /// Live decision channel for suspended tool calls (from RunHandle).
+    pub decision_rx: Option<mpsc::UnboundedReceiver<(String, ToolCallResume)>>,
+    /// Inference parameter overrides for this run.
+    pub overrides: Option<InferenceOverride>,
+}
+
 /// Build an execution environment for the agent loop.
 ///
 /// Adds internal plugins (stop conditions, default permission) and registers
 /// built-in request transforms (context truncation when a policy is provided).
-/// Build an execution environment. Prefer `AgentRuntime::run()` for production use.
+/// Prefer `AgentRuntime::run()` for production use.
 pub fn build_agent_env(
     plugins: &[Arc<dyn crate::plugins::Plugin>],
     agent: &super::config::AgentConfig,
@@ -144,32 +170,11 @@ pub fn build_agent_env(
     Ok(env)
 }
 
-/// Agent loop implementation. Prefer `AgentRuntime::run()` for production use.
+/// Execute the agent loop. Prefer `AgentRuntime::run()` for production use.
 ///
 /// Handles both fresh runs and resumed runs (state-driven detection).
 /// Supports dynamic agent handoff via `ActiveAgentIdKey` re-resolve at step boundaries.
 /// Cooperative cancellation via `CancellationToken`.
-pub async fn run_agent_loop(
-    resolver: &dyn AgentResolver,
-    initial_agent_id: &str,
-    runtime: &PhaseRuntime,
-    sink: &dyn EventSink,
-    checkpoint_store: Option<&dyn ThreadRunStore>,
-    initial_messages: Vec<Message>,
-    run_identity: RunIdentity,
-    cancellation_token: Option<CancellationToken>,
-) -> Result<AgentRunResult, AgentLoopError> {
-    run_agent_loop_controlled(
-        resolver,
-        initial_agent_id,
-        runtime,
-        sink,
-        checkpoint_store,
-        initial_messages,
-        run_identity,
-        cancellation_token,
-        None,
-        None,
-    )
-    .await
+pub async fn run_agent_loop(params: AgentLoopParams<'_>) -> Result<AgentRunResult, AgentLoopError> {
+    orchestrator::run_agent_loop_impl(params).await
 }

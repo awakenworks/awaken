@@ -27,10 +27,9 @@ pub use registry_spec::{AgentSpec, PluginConfigKey};
 pub use state::{KeyScope, MergeStrategy, StateKey, StateKeyOptions, StateMap};
 pub use state::{PersistedState, Snapshot};
 
-// ── progress / file activity ──
+// ── progress ──
 pub use contract::progress::{
-    FILE_ACTIVITY_TYPE, FileActivity, FileOperation, ProgressStatus,
-    TOOL_CALL_PROGRESS_ACTIVITY_TYPE, ToolCallProgressState,
+    ProgressStatus, TOOL_CALL_PROGRESS_ACTIVITY_TYPE, ToolCallProgressState,
 };
 
 // ── thread ──

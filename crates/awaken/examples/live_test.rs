@@ -6,7 +6,9 @@
 
 use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
-use awaken::agent::loop_runner::{LoopStatePlugin, build_agent_env, run_agent_loop};
+use awaken::agent::loop_runner::{
+    AgentLoopParams, LoopStatePlugin, build_agent_env, run_agent_loop,
+};
 use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::EventSink;
 use awaken::contract::identity::{RunIdentity, RunOrigin};
@@ -88,16 +90,18 @@ async fn main() {
 
     println!("--- Sending: 'What is 2+2? Answer in one word.' ---\n");
 
-    let result = run_agent_loop(
-        &resolver,
-        "live-test",
-        &runtime,
-        &ConsoleSink,
-        None,
-        vec![Message::user("What is 2+2? Answer in one word.")],
-        identity,
-        None,
-    )
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "live-test",
+        runtime: &runtime,
+        sink: &ConsoleSink,
+        checkpoint_store: None,
+        messages: vec![Message::user("What is 2+2? Answer in one word.")],
+        run_identity: identity,
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
     .await;
 
     match result {

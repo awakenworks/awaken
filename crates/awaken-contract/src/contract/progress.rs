@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 
 /// Constants for activity type identification.
 pub const TOOL_CALL_PROGRESS_ACTIVITY_TYPE: &str = "tool-call-progress";
-pub const FILE_ACTIVITY_TYPE: &str = "file";
 
 /// Canonical progress state for a tool call execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,29 +51,6 @@ pub enum ProgressStatus {
     Done,
     Failed,
     Cancelled,
-}
-
-/// A file change event emitted during tool execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileActivity {
-    /// File path (relative to workspace root).
-    pub path: String,
-    /// Type of change.
-    pub operation: FileOperation,
-    /// MIME type if known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub media_type: Option<String>,
-    /// File size in bytes after change. None for deletions.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub size: Option<u64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FileOperation {
-    Created,
-    Modified,
-    Deleted,
 }
 
 #[cfg(test)]
@@ -184,64 +160,6 @@ mod tests {
     }
 
     #[test]
-    fn file_activity_serde_roundtrip() {
-        let activity = FileActivity {
-            path: "src/main.rs".into(),
-            operation: FileOperation::Created,
-            media_type: Some("text/x-rust".into()),
-            size: Some(1024),
-        };
-        let json = serde_json::to_string(&activity).unwrap();
-        let parsed: FileActivity = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.path, "src/main.rs");
-        assert_eq!(parsed.operation, FileOperation::Created);
-        assert_eq!(parsed.media_type.as_deref(), Some("text/x-rust"));
-        assert_eq!(parsed.size, Some(1024));
-    }
-
-    #[test]
-    fn file_activity_omits_none_fields() {
-        let activity = FileActivity {
-            path: "deleted.txt".into(),
-            operation: FileOperation::Deleted,
-            media_type: None,
-            size: None,
-        };
-        let json = serde_json::to_string(&activity).unwrap();
-        assert!(!json.contains("media_type"));
-        assert!(!json.contains("size"));
-    }
-
-    #[test]
-    fn file_operation_all_variants_roundtrip() {
-        for op in [
-            FileOperation::Created,
-            FileOperation::Modified,
-            FileOperation::Deleted,
-        ] {
-            let json = serde_json::to_value(op).unwrap();
-            let parsed: FileOperation = serde_json::from_value(json).unwrap();
-            assert_eq!(parsed, op);
-        }
-    }
-
-    #[test]
-    fn file_operation_snake_case_serialization() {
-        assert_eq!(
-            serde_json::to_value(FileOperation::Created).unwrap(),
-            json!("created")
-        );
-        assert_eq!(
-            serde_json::to_value(FileOperation::Modified).unwrap(),
-            json!("modified")
-        );
-        assert_eq!(
-            serde_json::to_value(FileOperation::Deleted).unwrap(),
-            json!("deleted")
-        );
-    }
-
-    #[test]
     fn progress_state_with_parent_fields() {
         let state = ToolCallProgressState {
             schema: "tool-call-progress.v1".into(),
@@ -267,6 +185,5 @@ mod tests {
     #[test]
     fn activity_type_constants() {
         assert_eq!(TOOL_CALL_PROGRESS_ACTIVITY_TYPE, "tool-call-progress");
-        assert_eq!(FILE_ACTIVITY_TYPE, "file");
     }
 }

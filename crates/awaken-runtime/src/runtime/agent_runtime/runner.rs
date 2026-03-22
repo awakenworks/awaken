@@ -1,14 +1,14 @@
 //! AgentRuntime::run() implementation.
 
 use crate::agent::loop_runner::{
-    AgentLoopError, AgentRunResult, prepare_resume, run_agent_loop_controlled,
+    AgentLoopError, AgentLoopParams, AgentRunResult, prepare_resume, run_agent_loop,
 };
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::suspension::ToolCallResumeMode;
 
-use super::run_request::{RunOptions, RunRequest};
-use super::{AgentRuntime, RunHandle};
+use super::AgentRuntime;
+use super::run_request::RunRequest;
 
 impl AgentRuntime {
     /// Run an agent loop.
@@ -22,21 +22,22 @@ impl AgentRuntime {
     /// 6. Calls `run_agent_loop` internally
     /// 7. Unregisters the run when complete
     ///
-    /// Returns a `RunHandle` for external control (cancel, send decisions)
-    /// and the `AgentRunResult` when the run completes.
+    /// Run an agent loop. Returns the result when the run completes.
+    ///
+    /// Use `cancel()` / `send_decisions()` on `AgentRuntime` for external
+    /// control of in-flight runs.
     pub async fn run(
         &self,
         request: RunRequest,
         sink: &dyn EventSink,
-    ) -> Result<(RunHandle, AgentRunResult), AgentLoopError> {
-        let RunRequest { input, options } = request;
-        let RunOptions {
+    ) -> Result<AgentRunResult, AgentLoopError> {
+        let RunRequest {
+            messages: request_messages,
             thread_id,
             agent_id,
             overrides,
             decisions,
-        } = options;
-        let request_messages = input.messages;
+        } = request;
         let agent_id = agent_id.unwrap_or_else(|| "default".to_string());
 
         // Create runtime infrastructure
@@ -50,6 +51,20 @@ impl AgentRuntime {
         store
             .install_plugin(crate::agent::loop_runner::LoopStatePlugin)
             .map_err(AgentLoopError::PhaseError)?;
+
+        // Preflight resolve to register plugin-declared keys before restoring persisted state.
+        // Without this, thread-scoped keys may be skipped as unknown during restore.
+        let preflight_key_registrations = self
+            .resolver
+            .resolve(&agent_id)
+            .map_err(AgentLoopError::RuntimeError)?
+            .env
+            .key_registrations;
+        if !preflight_key_registrations.is_empty() {
+            store
+                .register_keys(&preflight_key_registrations)
+                .map_err(AgentLoopError::PhaseError)?;
+        }
 
         // Load existing thread messages and restore thread-scoped state
         let mut messages = if let Some(ref ts) = self.storage {
@@ -91,33 +106,31 @@ impl AgentRuntime {
         );
 
         // Create channels for external control
-        let (handle, cancellation_token, decision_rx) =
-            self.create_run_channels(run_id, thread_id.clone(), agent_id.clone());
+        let (handle, cancellation_token, decision_rx) = self.create_run_channels(run_id.clone());
 
         // Register active run
-        self.register_run(&thread_id, handle.clone())
+        self.register_run(&thread_id, handle)
             .map_err(AgentLoopError::RuntimeError)?;
 
         // Execute the loop
-        let checkpoint_store_ref = self.storage.as_deref();
-        let result = run_agent_loop_controlled(
-            self.resolver.as_ref(),
-            &agent_id,
-            &phase_runtime,
+        let result = run_agent_loop(AgentLoopParams {
+            resolver: self.resolver.as_ref(),
+            agent_id: &agent_id,
+            runtime: &phase_runtime,
             sink,
-            checkpoint_store_ref,
+            checkpoint_store: self.storage.as_deref(),
             messages,
             run_identity,
-            Some(cancellation_token),
-            Some(decision_rx),
+            cancellation_token: Some(cancellation_token),
+            decision_rx: Some(decision_rx),
             overrides,
-        )
+        })
         .await;
 
         // Unregister active run (by run_id for dual-index cleanup)
-        self.unregister_run(&handle.run_id);
+        self.unregister_run(&run_id);
 
-        Ok((handle, result?))
+        result
     }
 }
 
@@ -126,8 +139,11 @@ mod tests {
     use super::super::*;
     use crate::agent::config::AgentConfig;
     use crate::agent::loop_runner::build_agent_env;
+    use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
     use crate::runtime::ResolvedAgent;
     use crate::runtime::resolver::AgentResolver;
+    use crate::state::{KeyScope, StateCommand, StateKey, StateKeyOptions};
+    use crate::{PhaseContext, PhaseHook};
     use async_trait::async_trait;
     use awaken_contract::contract::content::ContentBlock;
     use awaken_contract::contract::event_sink::NullEventSink;
@@ -136,7 +152,7 @@ mod tests {
     };
     use awaken_contract::contract::inference::{InferenceOverride, StopReason, StreamResult};
     use awaken_contract::contract::message::Message;
-    use awaken_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
+    use awaken_contract::contract::storage::{RunQuery, RunStore, ThreadRunStore, ThreadStore};
     use awaken_contract::contract::suspension::ResumeDecisionAction;
     use awaken_contract::contract::suspension::ToolCallResume;
     use awaken_contract::contract::tool::{
@@ -220,15 +236,69 @@ mod tests {
 
     struct FixedResolver {
         agent: AgentConfig,
+        plugins: Vec<Arc<dyn Plugin>>,
     }
 
     impl AgentResolver for FixedResolver {
         fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, crate::error::RuntimeError> {
-            let env = build_agent_env(&[], &self.agent)?;
+            let env = build_agent_env(&self.plugins, &self.agent)?;
             Ok(ResolvedAgent {
                 config: self.agent.clone(),
                 env,
             })
+        }
+    }
+
+    struct ThreadCounterKey;
+
+    impl StateKey for ThreadCounterKey {
+        const KEY: &'static str = "test.thread_counter";
+        type Value = u32;
+        type Update = u32;
+
+        fn apply(value: &mut Self::Value, update: Self::Update) {
+            *value = update;
+        }
+    }
+
+    struct ThreadCounterPlugin;
+
+    impl Plugin for ThreadCounterPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "test.thread-counter",
+            }
+        }
+
+        fn register(
+            &self,
+            registrar: &mut PluginRegistrar,
+        ) -> Result<(), awaken_contract::StateError> {
+            registrar.register_key::<ThreadCounterKey>(StateKeyOptions {
+                persistent: true,
+                scope: KeyScope::Thread,
+                ..StateKeyOptions::default()
+            })?;
+            registrar.register_phase_hook(
+                "test.thread-counter",
+                awaken_contract::model::Phase::RunStart,
+                ThreadCounterHook,
+            )
+        }
+    }
+
+    struct ThreadCounterHook;
+
+    #[async_trait]
+    impl PhaseHook for ThreadCounterHook {
+        async fn run(
+            &self,
+            ctx: &PhaseContext,
+        ) -> Result<StateCommand, awaken_contract::StateError> {
+            let next = ctx.state::<ThreadCounterKey>().copied().unwrap_or(0) + 1;
+            let mut cmd = StateCommand::new();
+            cmd.update::<ThreadCounterKey>(next);
+            Ok(cmd)
         }
     }
 
@@ -247,6 +317,7 @@ mod tests {
         }]));
         let resolver = Arc::new(FixedResolver {
             agent: AgentConfig::new("agent", "m", "sys", llm.clone()),
+            plugins: vec![],
         });
         let runtime = AgentRuntime::new(resolver);
         let sink = NullEventSink;
@@ -256,7 +327,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (_handle, result) = runtime
+        let result = runtime
             .run(
                 RunRequest::new("thread-ovr", vec![Message::user("hi")])
                     .with_agent_id("agent")
@@ -309,6 +380,7 @@ mod tests {
         });
         let resolver = Arc::new(FixedResolver {
             agent: AgentConfig::new("agent", "m", "sys", llm).with_tool(tool),
+            plugins: vec![],
         });
         let runtime = Arc::new(AgentRuntime::new(resolver));
 
@@ -348,7 +420,7 @@ mod tests {
         }
         assert!(sent, "should send decision while run is active");
 
-        let (_handle, result) = run_task
+        let result = run_task
             .await
             .expect("join should succeed")
             .expect("run should succeed");
@@ -373,13 +445,14 @@ mod tests {
         }]));
         let resolver = Arc::new(FixedResolver {
             agent: AgentConfig::new("agent", "m", "sys", llm),
+            plugins: vec![],
         });
         let store = Arc::new(InMemoryStore::new());
         let runtime = AgentRuntime::new(resolver)
             .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>);
         let sink = NullEventSink;
 
-        let (_handle, result) = runtime
+        let result = runtime
             .run(
                 RunRequest::new("thread-tx", vec![Message::user("hi")]).with_agent_id("agent"),
                 &sink,
@@ -407,6 +480,70 @@ mod tests {
             .expect("load messages")
             .expect("thread should exist");
         assert!(!msgs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn thread_scoped_state_restores_before_run_start_hooks() {
+        let llm = Arc::new(ScriptedLlm::new(vec![
+            StreamResult {
+                content: vec![ContentBlock::text("ok-1")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            },
+            StreamResult {
+                content: vec![ContentBlock::text("ok-2")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            },
+        ]));
+        let resolver = Arc::new(FixedResolver {
+            agent: AgentConfig::new("agent", "m", "sys", llm),
+            plugins: vec![Arc::new(ThreadCounterPlugin)],
+        });
+        let store = Arc::new(InMemoryStore::new());
+        let runtime = AgentRuntime::new(resolver)
+            .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>);
+        let sink = NullEventSink;
+
+        runtime
+            .run(
+                RunRequest::new("thread-counter", vec![Message::user("first")])
+                    .with_agent_id("agent"),
+                &sink,
+            )
+            .await
+            .expect("first run should succeed");
+
+        runtime
+            .run(
+                RunRequest::new("thread-counter", vec![Message::user("second")])
+                    .with_agent_id("agent"),
+                &sink,
+            )
+            .await
+            .expect("second run should succeed");
+
+        let runs = store
+            .list_runs(&RunQuery {
+                thread_id: Some("thread-counter".into()),
+                ..RunQuery::default()
+            })
+            .await
+            .expect("run list lookup");
+
+        let max_counter = runs
+            .items
+            .iter()
+            .filter_map(|record| record.state.as_ref())
+            .filter_map(|persisted| persisted.extensions.get(ThreadCounterKey::KEY))
+            .filter_map(serde_json::Value::as_u64)
+            .max()
+            .expect("thread counter should be persisted");
+        assert_eq!(max_counter, 2, "counter should continue across runs");
     }
 
     // -----------------------------------------------------------------------
@@ -519,11 +656,12 @@ mod tests {
         let resolver = Arc::new(FixedResolver {
             agent: AgentConfig::new("agent", "m", "sys", llm.clone())
                 .with_max_continuation_retries(2),
+            plugins: vec![],
         });
         let runtime = AgentRuntime::new(resolver);
         let sink = NullEventSink;
 
-        let (_handle, result) = runtime
+        let result = runtime
             .run(
                 RunRequest::new("thread-trunc", vec![Message::user("hi")]).with_agent_id("agent"),
                 &sink,
@@ -611,11 +749,12 @@ mod tests {
         let resolver = Arc::new(FixedResolver {
             agent: AgentConfig::new("agent", "m", "sys", llm.clone())
                 .with_max_continuation_retries(2),
+            plugins: vec![],
         });
         let runtime = AgentRuntime::new(resolver);
         let sink = NullEventSink;
 
-        let (_handle, result) = runtime
+        let result = runtime
             .run(
                 RunRequest::new("thread-trunc-max", vec![Message::user("hi")])
                     .with_agent_id("agent"),

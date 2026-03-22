@@ -1,18 +1,13 @@
-//! Main agent loop orchestration — `run_agent_loop_controlled`.
+//! Main agent loop orchestration.
 
 use std::sync::Arc;
 
-use crate::runtime::{AgentResolver, CancellationToken, PhaseContext, PhaseRuntime};
+use crate::runtime::PhaseContext;
 use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::inference::InferenceOverride;
 use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::message::{Message, Role, gen_message_id};
-use awaken_contract::contract::storage::ThreadRunStore;
-use awaken_contract::contract::suspension::ToolCallResume;
 use awaken_contract::model::Phase;
-use futures::channel::mpsc::UnboundedReceiver;
 
 use super::super::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
 use super::checkpoint::{
@@ -22,24 +17,25 @@ use super::resume::{WaitOutcome, wait_for_resume_or_cancel};
 use super::setup::{PreparedRun, prepare_run};
 use super::step::{StepContext, StepOutcome, execute_step};
 use super::truncation_recovery::TruncationState;
-use super::{AgentLoopError, AgentRunResult, commit_update, now_ms};
+use super::{AgentLoopError, AgentLoopParams, AgentRunResult, commit_update, now_ms};
 
-/// Agent loop implementation with runtime control channels.
-///
-/// Prefer calling through `AgentRuntime::run()` in production code.
-#[tracing::instrument(skip_all, fields(agent_id = %initial_agent_id, run_id = %run_identity.run_id))]
-pub async fn run_agent_loop_controlled(
-    resolver: &dyn AgentResolver,
-    initial_agent_id: &str,
-    runtime: &PhaseRuntime,
-    sink: &dyn EventSink,
-    checkpoint_store: Option<&dyn ThreadRunStore>,
-    initial_messages: Vec<Message>,
-    run_identity: RunIdentity,
-    cancellation_token: Option<CancellationToken>,
-    decision_rx: Option<UnboundedReceiver<(String, ToolCallResume)>>,
-    initial_overrides: Option<InferenceOverride>,
+#[tracing::instrument(skip_all, fields(agent_id = %params.agent_id, run_id = %params.run_identity.run_id))]
+pub(super) async fn run_agent_loop_impl(
+    params: AgentLoopParams<'_>,
 ) -> Result<AgentRunResult, AgentLoopError> {
+    let AgentLoopParams {
+        resolver,
+        agent_id: initial_agent_id,
+        runtime,
+        sink,
+        checkpoint_store,
+        messages: initial_messages,
+        run_identity,
+        cancellation_token,
+        decision_rx,
+        overrides: initial_overrides,
+    } = params;
+
     let store = runtime.store();
     let run_overrides = initial_overrides;
     let mut decision_rx = decision_rx;

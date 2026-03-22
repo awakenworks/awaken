@@ -17,7 +17,7 @@ use futures::channel::mpsc;
 use crate::runtime::cancellation::CancellationToken;
 use crate::runtime::resolver::AgentResolver;
 
-pub use run_request::{RunInput, RunOptions, RunRequest};
+pub use run_request::RunRequest;
 
 use active_registry::ActiveRunRegistry;
 
@@ -25,27 +25,25 @@ use active_registry::ActiveRunRegistry;
 // RunHandle
 // ---------------------------------------------------------------------------
 
-/// External control handle for a running agent loop.
+/// Internal control handle for a running agent loop.
 ///
-/// Returned by `AgentRuntime`. Enables cancellation and
-/// live decision injection.
+/// Stored in `ActiveRunRegistry` for the lifetime of a run.
+/// External control is exposed via `AgentRuntime::cancel()` / `send_decisions()`.
 #[derive(Clone)]
-pub struct RunHandle {
-    pub run_id: String,
-    pub thread_id: String,
-    pub agent_id: String,
+pub(crate) struct RunHandle {
+    pub(crate) run_id: String,
     cancellation_token: CancellationToken,
     decision_tx: mpsc::UnboundedSender<(String, ToolCallResume)>,
 }
 
 impl RunHandle {
     /// Cancel the running agent loop cooperatively.
-    pub fn cancel(&self) {
+    pub(crate) fn cancel(&self) {
         self.cancellation_token.cancel();
     }
 
     /// Send a tool call decision to the running loop.
-    pub fn send_decision(
+    pub(crate) fn send_decision(
         &self,
         call_id: String,
         resume: ToolCallResume,
@@ -131,8 +129,6 @@ impl AgentRuntime {
     pub(crate) fn create_run_channels(
         &self,
         run_id: String,
-        thread_id: String,
-        agent_id: String,
     ) -> (
         RunHandle,
         CancellationToken,
@@ -143,8 +139,6 @@ impl AgentRuntime {
 
         let handle = RunHandle {
             run_id,
-            thread_id,
-            agent_id,
             cancellation_token: token.clone(),
             decision_tx: tx,
         };

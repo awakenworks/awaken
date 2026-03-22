@@ -65,13 +65,11 @@ mod tests {
     use awaken_contract::contract::suspension::ToolCallResume;
     use futures::channel::mpsc;
 
-    fn make_handle(run_id: &str, thread_id: &str) -> RunHandle {
+    fn make_handle(run_id: &str) -> RunHandle {
         let token = CancellationToken::new();
         let (tx, _rx) = mpsc::unbounded::<(String, ToolCallResume)>();
         RunHandle {
             run_id: run_id.to_string(),
-            thread_id: thread_id.to_string(),
-            agent_id: "agent".to_string(),
             cancellation_token: token,
             decision_tx: tx,
         }
@@ -80,7 +78,7 @@ mod tests {
     #[test]
     fn register_and_lookup_by_run_id() {
         let reg = ActiveRunRegistry::new();
-        let handle = make_handle("r1", "t1");
+        let handle = make_handle("r1");
         assert!(reg.register("r1", "t1", handle));
         assert!(reg.get_by_run_id("r1").is_some());
         assert!(reg.get_by_run_id("unknown").is_none());
@@ -89,7 +87,7 @@ mod tests {
     #[test]
     fn register_and_lookup_by_thread_id() {
         let reg = ActiveRunRegistry::new();
-        let handle = make_handle("r1", "t1");
+        let handle = make_handle("r1");
         assert!(reg.register("r1", "t1", handle));
         assert!(reg.get_by_thread_id("t1").is_some());
         assert!(reg.get_by_thread_id("unknown").is_none());
@@ -98,7 +96,7 @@ mod tests {
     #[test]
     fn get_handle_dual_lookup() {
         let reg = ActiveRunRegistry::new();
-        let handle = make_handle("r1", "t1");
+        let handle = make_handle("r1");
         assert!(reg.register("r1", "t1", handle));
         // By run_id
         assert!(reg.get_handle("r1").is_some());
@@ -111,8 +109,8 @@ mod tests {
     #[test]
     fn duplicate_thread_rejected() {
         let reg = ActiveRunRegistry::new();
-        let h1 = make_handle("r1", "t1");
-        let h2 = make_handle("r2", "t1");
+        let h1 = make_handle("r1");
+        let h2 = make_handle("r2");
         assert!(reg.register("r1", "t1", h1));
         assert!(!reg.register("r2", "t1", h2));
     }
@@ -120,7 +118,7 @@ mod tests {
     #[test]
     fn unregister_removes_both_indices() {
         let reg = ActiveRunRegistry::new();
-        let handle = make_handle("r1", "t1");
+        let handle = make_handle("r1");
         assert!(reg.register("r1", "t1", handle));
         reg.unregister("r1");
         assert!(reg.get_by_run_id("r1").is_none());

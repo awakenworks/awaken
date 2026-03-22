@@ -15,8 +15,8 @@ pub use error::RuntimeError;
 
 // ── agent internals re-exported for extensions and tests ──
 pub use agent::loop_runner::{
-    AgentLoopError, AgentRunResult, LoopStatePlugin, build_agent_env, prepare_resume,
-    run_agent_loop, run_agent_loop_controlled,
+    AgentLoopError, AgentLoopParams, AgentRunResult, LoopStatePlugin, build_agent_env,
+    prepare_resume, run_agent_loop,
 };
 pub use agent::state::AddContextMessage;
 pub use agent::state::{
@@ -39,19 +39,11 @@ pub use agent::compaction::{
 // ── retry policy ──
 pub use agent::retry_policy::{LlmRetryPolicy, RetryConfigKey, RetryingExecutor};
 
-// ── permission rules ──
-pub use agent::permission_rules::{
-    PermissionAction, PermissionRule, RulesPermissionChecker, RulesPermissionPlugin,
-};
-
 // ── background tasks ──
 pub use agent::background_tasks::{
     BackgroundTaskManager, BackgroundTaskPlugin, PersistedTaskMeta, TaskId, TaskResult, TaskStatus,
     TaskSummary,
 };
-
-// ── file tracker ──
-pub use agent::file_tracker::{FileChange, FileChangeOperation, FileChangeTracker};
 
 // ── agent tools ──
 pub use agent::agent_tools::{
@@ -76,9 +68,9 @@ pub use plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 // ── runtime ──
 pub use runtime::{
     AgentResolver, AgentRuntime, AppRuntime, CancellationToken, DEFAULT_MAX_PHASE_ROUNDS,
-    ExecutionEnv, PhaseContext, PhaseHook, PhaseRuntime, ResolvedAgent, RunHandle, RunRequest,
-    ToolPermission, ToolPermissionChecker, ToolPermissionResult, TypedEffectHandler,
-    TypedScheduledActionHandler, aggregate_tool_permissions,
+    ExecutionEnv, PhaseContext, PhaseHook, PhaseRuntime, ResolvedAgent, RunRequest, ToolPermission,
+    ToolPermissionChecker, ToolPermissionResult, TypedEffectHandler, TypedScheduledActionHandler,
+    aggregate_tool_permissions,
 };
 
 // ── state ──
