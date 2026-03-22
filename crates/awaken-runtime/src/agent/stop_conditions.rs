@@ -1,9 +1,9 @@
 //! Stop condition policy system and built-in policies.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use crate::runtime::{PhaseContext, PhaseHook};
@@ -240,32 +240,41 @@ impl Plugin for StopConditionPlugin {
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_key::<StopConditionStatsKey>(crate::state::StateKeyOptions::default())?;
         registrar.register_phase_hook(
             "stop-condition",
             Phase::AfterInference,
             StopConditionHook {
                 policies: self.policies.clone(),
-                step_count: AtomicU32::new(0),
-                total_input_tokens: AtomicU64::new(0),
-                total_output_tokens: AtomicU64::new(0),
-                start_time_ms: AtomicU64::new(0),
-                consecutive_errors: AtomicU32::new(0),
-                initialized: AtomicU32::new(0),
             },
         )
     }
 }
 
-/// Internal hook that builds stats and evaluates all policies.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StopConditionStatsState {
+    step_count: u32,
+    total_input_tokens: u64,
+    total_output_tokens: u64,
+    start_time_ms: u64,
+    consecutive_errors: u32,
+}
+
+pub struct StopConditionStatsKey;
+
+impl crate::state::StateKey for StopConditionStatsKey {
+    const KEY: &'static str = "__runtime.stop_condition_stats";
+    type Value = StopConditionStatsState;
+    type Update = StopConditionStatsState;
+
+    fn apply(value: &mut Self::Value, update: Self::Update) {
+        *value = update;
+    }
+}
+
+/// Internal hook that builds stats from state and evaluates all policies.
 struct StopConditionHook {
     policies: Vec<Arc<dyn StopPolicy>>,
-    step_count: AtomicU32,
-    total_input_tokens: AtomicU64,
-    total_output_tokens: AtomicU64,
-    start_time_ms: AtomicU64,
-    consecutive_errors: AtomicU32,
-    /// 0 = not initialized, 1 = initialized.
-    initialized: AtomicU32,
 }
 
 impl StopConditionHook {
@@ -276,25 +285,19 @@ impl StopConditionHook {
             .as_millis() as u64
     }
 
-    fn ensure_initialized(&self) {
-        if self
-            .initialized
-            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            self.start_time_ms.store(Self::now_ms(), Ordering::SeqCst);
+    fn build_stats(&self, ctx: &PhaseContext) -> (StopConditionStatsState, StopPolicyStats) {
+        let now = Self::now_ms();
+        let mut state = ctx
+            .state::<StopConditionStatsKey>()
+            .cloned()
+            .unwrap_or_default();
+        if state.start_time_ms == 0 {
+            state.start_time_ms = now;
         }
-    }
 
-    fn build_stats(&self, ctx: &PhaseContext) -> StopPolicyStats {
-        self.ensure_initialized();
+        // This hook runs once per AfterInference boundary.
+        state.step_count = state.step_count.saturating_add(1);
 
-        // Use internal counter for step tracking. RunLifecycleState step_count
-        // is incremented after AfterInference (in complete_step), so it would
-        // always lag behind when this hook evaluates.
-        let step_count = self.step_count.fetch_add(1, Ordering::SeqCst) + 1;
-
-        // Extract token usage and response text from LLM response
         let mut last_tool_names = Vec::new();
         let mut last_response_text = String::new();
         let mut is_error = false;
@@ -312,8 +315,8 @@ impl StopConditionHook {
                         .as_ref()
                         .and_then(|u| u.completion_tokens)
                         .unwrap_or(0) as u64;
-                    self.total_input_tokens.fetch_add(input, Ordering::SeqCst);
-                    self.total_output_tokens.fetch_add(output, Ordering::SeqCst);
+                    state.total_input_tokens = state.total_input_tokens.saturating_add(input);
+                    state.total_output_tokens = state.total_output_tokens.saturating_add(output);
 
                     last_response_text = stream_result.text();
                     last_tool_names = stream_result
@@ -323,44 +326,48 @@ impl StopConditionHook {
                         .collect();
 
                     // Successful inference resets consecutive errors
-                    self.consecutive_errors.store(0, Ordering::SeqCst);
+                    state.consecutive_errors = 0;
                 }
                 Err(_) => {
                     is_error = true;
-                    self.consecutive_errors.fetch_add(1, Ordering::SeqCst);
+                    state.consecutive_errors = state.consecutive_errors.saturating_add(1);
                 }
             }
         }
 
-        let elapsed_ms = Self::now_ms().saturating_sub(self.start_time_ms.load(Ordering::SeqCst));
+        let elapsed_ms = now.saturating_sub(state.start_time_ms);
         let consecutive_errors = if is_error {
-            self.consecutive_errors.load(Ordering::SeqCst)
+            state.consecutive_errors
         } else {
             0
         };
 
-        StopPolicyStats {
-            step_count,
-            total_input_tokens: self.total_input_tokens.load(Ordering::SeqCst),
-            total_output_tokens: self.total_output_tokens.load(Ordering::SeqCst),
-            elapsed_ms,
-            consecutive_errors,
-            last_tool_names,
-            last_response_text,
-        }
+        (
+            state.clone(),
+            StopPolicyStats {
+                step_count: state.step_count,
+                total_input_tokens: state.total_input_tokens,
+                total_output_tokens: state.total_output_tokens,
+                elapsed_ms,
+                consecutive_errors,
+                last_tool_names,
+                last_response_text,
+            },
+        )
     }
 }
 
 #[async_trait]
 impl PhaseHook for StopConditionHook {
     async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
-        let stats = self.build_stats(ctx);
+        let (next_state, stats) = self.build_stats(ctx);
+        let mut cmd = StateCommand::new();
+        cmd.update::<StopConditionStatsKey>(next_state);
 
         for policy in &self.policies {
             if let StopDecision::Stop { code, detail } = policy.evaluate(&stats) {
                 let reason = TerminationReason::stopped_with_detail(code, detail);
                 let (_, done_reason) = reason.to_run_status();
-                let mut cmd = StateCommand::new();
                 cmd.update::<RunLifecycle>(RunLifecycleUpdate::Done {
                     done_reason: done_reason.unwrap_or_default(),
                     updated_at: Self::now_ms(),
@@ -369,7 +376,7 @@ impl PhaseHook for StopConditionHook {
             }
         }
 
-        Ok(StateCommand::new())
+        Ok(cmd)
     }
 }
 
@@ -401,18 +408,11 @@ impl Plugin for MaxRoundsPlugin {
         // Delegate to StopConditionPlugin internals
         let policies: Vec<Arc<dyn StopPolicy>> =
             vec![Arc::new(MaxRoundsPolicy::new(self.max_rounds))];
+        registrar.register_key::<StopConditionStatsKey>(crate::state::StateKeyOptions::default())?;
         registrar.register_phase_hook(
             "stop-condition:max-rounds",
             Phase::AfterInference,
-            StopConditionHook {
-                policies,
-                step_count: AtomicU32::new(0),
-                total_input_tokens: AtomicU64::new(0),
-                total_output_tokens: AtomicU64::new(0),
-                start_time_ms: AtomicU64::new(0),
-                consecutive_errors: AtomicU32::new(0),
-                initialized: AtomicU32::new(0),
-            },
+            StopConditionHook { policies },
         )
     }
 }
@@ -463,6 +463,7 @@ mod tests {
             Arc::new(StopConditionPlugin::new(policies)),
         ];
         let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+        store.register_keys(&env.key_registrations).unwrap();
         (store, runtime, env)
     }
 
@@ -489,6 +490,7 @@ mod tests {
             Arc::new(MaxRoundsPlugin::new(2)),
         ];
         let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+        store.register_keys(&env.key_registrations).unwrap();
 
         // Round 1 and 2: still Running
         runtime
@@ -1002,6 +1004,40 @@ mod tests {
             lifecycle.status,
             RunStatus::Done,
             "accumulated tokens (1050) should exceed budget (1000)"
+        );
+        assert!(
+            lifecycle
+                .done_reason
+                .as_ref()
+                .unwrap()
+                .contains("token_budget")
+        );
+    }
+
+    #[tokio::test]
+    async fn stats_persist_across_store_restore() {
+        let (store, runtime, env) = make_test_env(vec![Arc::new(TokenBudgetPolicy::new(100))]);
+
+        let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
+            .with_llm_response(make_llm_response_with_tokens(60, 20));
+        runtime.run_phase_with_context(&env, ctx).await.unwrap();
+
+        let persisted = store.export_persisted().unwrap();
+
+        let (store2, runtime2, env2) = make_test_env(vec![Arc::new(TokenBudgetPolicy::new(100))]);
+        store2
+            .restore_persisted(persisted, awaken_contract::UnknownKeyPolicy::Error)
+            .unwrap();
+
+        let ctx = PhaseContext::new(Phase::AfterInference, runtime2.store().snapshot())
+            .with_llm_response(make_llm_response_with_tokens(20, 10));
+        runtime2.run_phase_with_context(&env2, ctx).await.unwrap();
+
+        let lifecycle = store2.read::<RunLifecycle>().unwrap();
+        assert_eq!(
+            lifecycle.status,
+            RunStatus::Done,
+            "token stats should continue from restored state (80 + 30 > 100)"
         );
         assert!(
             lifecycle
