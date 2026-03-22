@@ -319,6 +319,7 @@ for raw in sys.stdin:
             "jsonrpc": "2.0",
             "id": msg_id,
             "result": {
+                "protocolVersion": "2025-03-26",
                 "serverInfo": {"name": "progress-server", "version": "0.1.0"},
                 "capabilities": {}
             }
@@ -484,6 +485,15 @@ async fn real_http_mcp_progress_notifications_flow_to_ui_data_events() {
                     }
                 ]))
             }
+            "initialize" => HttpResponseSpec::json(json!({
+                "jsonrpc": "2.0",
+                "id": request["id"].clone(),
+                "result": {
+                    "protocolVersion": "2025-03-26",
+                    "serverInfo": {"name": "progress-server", "version": "0.1.0"},
+                    "capabilities": {}
+                }
+            })),
             _ => HttpResponseSpec::json(json!({
                 "jsonrpc": "2.0",
                 "id": request["id"].clone(),
