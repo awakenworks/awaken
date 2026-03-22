@@ -1273,10 +1273,10 @@ async fn mcp_prompt_skills_catalog_includes_resource_hints() {
             Ok(vec![McpResourceDefinition {
                 uri: "file://guide.md".to_string(),
                 name: "guide".to_string(),
-                title: None,
+                title: Some("Guide".to_string()),
                 description: Some("Guide".to_string()),
                 mime_type: Some("text/markdown".to_string()),
-                size: None,
+                size: Some(1536),
             }])
         }
 
@@ -1369,7 +1369,7 @@ async fn mcp_prompt_skills_catalog_includes_resource_hints() {
         .join("\n");
 
     assert!(merged.contains("mcp:github:review"));
-    assert!(merged.contains("file://guide.md"));
+    assert!(merged.contains("file://guide.md (Guide) - Guide [text/markdown; 1.5 KiB]"));
 }
 
 #[tokio::test]

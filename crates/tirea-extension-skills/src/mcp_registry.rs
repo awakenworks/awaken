@@ -56,7 +56,7 @@ fn map_mcp_registry_error(err: McpToolRegistryError) -> SkillError {
 fn enrich_description(
     base_description: &str,
     prompt_arguments: &[McpPromptArgument],
-    resource_uris: &[String],
+    resources: &[McpResourceHint],
 ) -> String {
     let mut description = base_description.trim().to_string();
 
@@ -75,16 +75,16 @@ fn enrich_description(
         description.push_str(&format!(" Args: {args}."));
     }
 
-    if !resource_uris.is_empty() {
-        let preview = resource_uris
+    if !resources.is_empty() {
+        let preview = resources
             .iter()
             .take(3)
-            .cloned()
+            .map(McpResourceHint::summary)
             .collect::<Vec<_>>()
             .join(", ");
         description.push_str(&format!(" Resources: {preview}"));
-        if resource_uris.len() > 3 {
-            description.push_str(&format!(", +{} more", resource_uris.len() - 3));
+        if resources.len() > 3 {
+            description.push_str(&format!(", +{} more", resources.len() - 3));
         }
         description.push('.');
     }
@@ -116,20 +116,92 @@ fn sanitize_mcp_tool_component(raw: &str) -> String {
 }
 
 #[derive(Debug, Clone)]
+struct McpResourceHint {
+    uri: String,
+    title: Option<String>,
+    description: Option<String>,
+    mime_type: Option<String>,
+    size: Option<u64>,
+}
+
+impl McpResourceHint {
+    fn from_entry(entry: McpResourceEntry) -> Self {
+        Self {
+            uri: entry.resource.uri,
+            title: entry.resource.title,
+            description: entry.resource.description,
+            mime_type: entry.resource.mime_type,
+            size: entry.resource.size,
+        }
+    }
+
+    fn summary(&self) -> String {
+        let mut out = self.uri.clone();
+        if let Some(title) = self
+            .title
+            .as_deref()
+            .filter(|title| !title.trim().is_empty())
+        {
+            out.push_str(&format!(" ({title})"));
+        }
+        if let Some(description) = self
+            .description
+            .as_deref()
+            .filter(|description| !description.trim().is_empty())
+        {
+            out.push_str(&format!(" - {description}"));
+        }
+        let metadata = self.metadata_summary();
+        if !metadata.is_empty() {
+            out.push_str(&format!(" [{metadata}]"));
+        }
+        out
+    }
+
+    fn metadata_summary(&self) -> String {
+        let mut parts = Vec::with_capacity(2);
+        if let Some(mime_type) = self
+            .mime_type
+            .as_deref()
+            .filter(|mime_type| !mime_type.trim().is_empty())
+        {
+            parts.push(mime_type.to_string());
+        }
+        if let Some(size) = self.size {
+            parts.push(format_resource_size(size));
+        }
+        parts.join("; ")
+    }
+}
+
+fn format_resource_size(size: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+
+    match size {
+        0..=1023 => format!("{size} B"),
+        1024..=1_048_575 => format!("{:.1} KiB", size as f64 / KIB),
+        1_048_576..=1_073_741_823 => format!("{:.1} MiB", size as f64 / MIB),
+        _ => format!("{:.1} GiB", size as f64 / GIB),
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct McpPromptSkill {
     meta: SkillMeta,
     server_name: String,
     prompt_name: String,
     prompt_arguments: Vec<McpPromptArgument>,
-    resource_uris: Vec<String>,
+    resources: Vec<McpResourceHint>,
     manager: Arc<McpToolRegistryManager>,
 }
 
 impl McpPromptSkill {
-    pub fn from_entry(
+    fn from_entry(
         manager: Arc<McpToolRegistryManager>,
         entry: McpPromptEntry,
-        resource_uris: Vec<String>,
+        resources: Vec<McpResourceHint>,
     ) -> Self {
         let prompt = entry.prompt;
         let skill_id = mcp_skill_id(&entry.server_name, &prompt.name);
@@ -140,7 +212,7 @@ impl McpPromptSkill {
                 prompt.name, entry.server_name
             )
         });
-        let description = enrich_description(&base_description, &prompt.arguments, &resource_uris);
+        let description = enrich_description(&base_description, &prompt.arguments, &resources);
         let server_tool_pattern = format!(
             "mcp__{}__*",
             sanitize_mcp_tool_component(&entry.server_name)
@@ -156,7 +228,7 @@ impl McpPromptSkill {
             server_name: entry.server_name,
             prompt_name: prompt.name,
             prompt_arguments: prompt.arguments,
-            resource_uris,
+            resources,
             manager,
         }
     }
@@ -179,13 +251,13 @@ impl McpPromptSkill {
     }
 
     fn resource_text(&self) -> String {
-        if self.resource_uris.is_empty() {
+        if self.resources.is_empty() {
             return "No MCP resources are currently advertised for this server.".to_string();
         }
 
         let mut out = String::from("Available MCP resources:\n");
-        for uri in &self.resource_uris {
-            out.push_str(&format!("- {uri}\n"));
+        for resource in &self.resources {
+            out.push_str(&format!("- {}\n", resource.summary()));
         }
         out
     }
@@ -462,14 +534,14 @@ async fn discover_snapshot_from_manager(
 
     let mut skills = HashMap::new();
     for entry in entries {
-        let resource_uris = resources_by_server
+        let resources = resources_by_server
             .get(&entry.server_name)
             .cloned()
             .unwrap_or_default();
         let skill = Arc::new(McpPromptSkill::from_entry(
             manager.clone(),
             entry,
-            resource_uris,
+            resources,
         )) as Arc<dyn Skill>;
         let id = skill.meta().id.trim().to_string();
         if id.is_empty() {
@@ -482,16 +554,19 @@ async fn discover_snapshot_from_manager(
     Ok(skills)
 }
 
-fn group_resources_by_server(resources: Vec<McpResourceEntry>) -> HashMap<String, Vec<String>> {
-    let mut grouped: HashMap<String, Vec<String>> = HashMap::new();
+fn group_resources_by_server(
+    resources: Vec<McpResourceEntry>,
+) -> HashMap<String, Vec<McpResourceHint>> {
+    let mut grouped: HashMap<String, Vec<McpResourceHint>> = HashMap::new();
     for entry in resources {
+        let server_name = entry.server_name.clone();
         grouped
-            .entry(entry.server_name)
+            .entry(server_name)
             .or_default()
-            .push(entry.resource.uri);
+            .push(McpResourceHint::from_entry(entry));
     }
-    for uris in grouped.values_mut() {
-        uris.sort();
+    for resource_hints in grouped.values_mut() {
+        resource_hints.sort_by(|a, b| a.uri.cmp(&b.uri));
     }
     grouped
 }
@@ -957,10 +1032,10 @@ mod tests {
                     McpResourceDefinition {
                         uri: "file://guide.md".to_string(),
                         name: "guide".to_string(),
-                        title: None,
+                        title: Some("Guide".to_string()),
                         description: Some("Guide".to_string()),
                         mime_type: Some("text/markdown".to_string()),
-                        size: None,
+                        size: Some(1536),
                     },
                     json!({
                         "contents": [{
@@ -980,12 +1055,30 @@ mod tests {
         assert!(skill
             .meta()
             .description
-            .contains("Resources: file://guide.md."));
+            .contains("Resources: file://guide.md (Guide) - Guide [text/markdown; 1.5 KiB]."));
 
         let instructions = skill.read_instructions().await.unwrap();
         assert!(instructions.contains("Available MCP resources:"));
-        assert!(instructions.contains("file://guide.md"));
+        assert!(instructions.contains("file://guide.md (Guide) - Guide [text/markdown; 1.5 KiB]"));
         assert_eq!(transport.resource_list_calls(), 1);
+    }
+
+    #[test]
+    fn resource_hint_summary_includes_metadata_when_present() {
+        let hint = McpResourceHint {
+            uri: "file://logo.bin".to_string(),
+            title: None,
+            description: None,
+            mime_type: Some("application/octet-stream".to_string()),
+            size: Some(42),
+        };
+
+        assert_eq!(
+            hint.summary(),
+            "file://logo.bin [application/octet-stream; 42 B]"
+        );
+        assert_eq!(format_resource_size(1024), "1.0 KiB");
+        assert_eq!(format_resource_size(1_048_576), "1.0 MiB");
     }
 
     #[tokio::test]
