@@ -9,7 +9,7 @@ pub use mailbox::{
     cancel_pending_for_mailbox, load_background_task, try_cancel_active_or_queued_run_by_id,
     BackgroundTaskLookup, CancelBackgroundRunResult, EnqueueOptions,
 };
-pub use mailbox_service::{ControlResult, ControlSignal, MailboxService};
+pub use mailbox_service::{ControlResult, ControlSignal, MailboxService, RunDoneCallback};
 pub use messages::{
     encode_message_page, load_message_page, parse_message_query, EncodedMessagePage,
     MessageQueryParams,

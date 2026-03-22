@@ -120,6 +120,12 @@ impl ThreadMailbox {
 // MailboxService
 // ---------------------------------------------------------------------------
 
+/// Callback invoked when a mailbox run completes.
+///
+/// Parameters: `(thread_id, run_id)`.
+pub type RunDoneCallback =
+    Arc<dyn Fn(String, String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
 /// Event-driven mailbox service that replaces polling-based dispatch.
 ///
 /// Each thread gets a `ThreadMailbox` that tracks whether it's idle or running.
@@ -131,6 +137,7 @@ pub struct MailboxService {
     mailbox_store: Arc<dyn MailboxStore>,
     consumer_id: String,
     mailboxes: tokio::sync::RwLock<HashMap<String, Arc<ThreadMailbox>>>,
+    run_done_callback: Option<RunDoneCallback>,
 }
 
 impl MailboxService {
@@ -144,7 +151,13 @@ impl MailboxService {
             mailbox_store,
             consumer_id: consumer_id.into(),
             mailboxes: tokio::sync::RwLock::new(HashMap::new()),
+            run_done_callback: None,
         }
+    }
+
+    /// Set a callback that fires after every mailbox run completes.
+    pub fn set_run_done_callback(&mut self, cb: RunDoneCallback) {
+        self.run_done_callback = Some(cb);
     }
 
     /// Returns a reference to the underlying mailbox store.
@@ -683,6 +696,16 @@ impl MailboxService {
             let svc = self.clone();
             tokio::spawn(async move {
                 svc.dispatch_entry(mailbox, buffered.entry).await;
+            });
+        }
+
+        // Fire external completion callback if configured.
+        if let Some(ref cb) = self.run_done_callback {
+            let cb = cb.clone();
+            let tid = thread_id.to_string();
+            let rid = run_id.to_string();
+            tokio::spawn(async move {
+                cb(tid, rid).await;
             });
         }
     }
