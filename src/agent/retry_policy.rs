@@ -364,6 +364,69 @@ mod tests {
         assert_eq!(inner.call_count(), 4);
     }
 
+    #[tokio::test]
+    async fn succeeds_on_first_try_no_retry_needed() {
+        let inner = Arc::new(FailNThenSucceed::new(0)); // never fails
+        let policy = LlmRetryPolicy::default().with_max_retries(3);
+        let executor = RetryingExecutor::new(inner.clone(), policy);
+
+        let result = executor.execute(test_request()).await;
+        assert!(result.is_ok());
+        assert_eq!(inner.call_count(), 1, "should call executor exactly once");
+    }
+
+    #[tokio::test]
+    async fn retrying_executor_delegates_name() {
+        let inner = Arc::new(FailNThenSucceed::new(0));
+        let executor = RetryingExecutor::new(inner, LlmRetryPolicy::default());
+        assert_eq!(executor.name(), "mock");
+    }
+
+    #[tokio::test]
+    async fn non_retryable_error_during_fallback_stops_immediately() {
+        // Primary fails with retryable, fallback fails with non-retryable (Cancelled).
+        // Should stop without trying further fallbacks.
+        let call_count = Arc::new(AtomicU32::new(0));
+        let cc = call_count.clone();
+
+        struct PrimaryRetryableFallbackFatal {
+            calls: Arc<AtomicU32>,
+        }
+
+        #[async_trait]
+        impl LlmExecutor for PrimaryRetryableFallbackFatal {
+            async fn execute(
+                &self,
+                request: InferenceRequest,
+            ) -> Result<StreamResult, InferenceExecutionError> {
+                let n = self.calls.fetch_add(1, Ordering::SeqCst);
+                if request.model.starts_with("primary") {
+                    Err(InferenceExecutionError::Provider("down".into()))
+                } else {
+                    // Fallback returns non-retryable error
+                    let _ = n;
+                    Err(InferenceExecutionError::Cancelled)
+                }
+            }
+
+            fn name(&self) -> &str {
+                "primary-retryable-fallback-fatal"
+            }
+        }
+
+        let inner = Arc::new(PrimaryRetryableFallbackFatal { calls: cc });
+        let policy = LlmRetryPolicy::default()
+            .with_max_retries(0)
+            .with_fallback_model("fallback-a")
+            .with_fallback_model("fallback-b");
+        let executor = RetryingExecutor::new(inner, policy);
+
+        let result = executor.execute(test_request()).await;
+        assert!(result.is_err());
+        // primary: 1 call, fallback-a: 1 call (Cancelled, stops immediately)
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
     #[test]
     fn default_policy_values() {
         let policy = LlmRetryPolicy::default();

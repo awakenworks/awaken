@@ -233,4 +233,190 @@ mod tests {
         let cm = to_chat_message(&msg);
         assert!(matches!(cm.role, chat::ChatRole::Assistant));
     }
+
+    // -- Task 1 tests --------------------------------------------------------
+
+    #[test]
+    fn to_chat_message_user() {
+        let msg = Message::user("How are you?");
+        let cm = to_chat_message(&msg);
+        assert!(matches!(cm.role, chat::ChatRole::User));
+        let text = cm.content.first_text().expect("should have text");
+        assert_eq!(text, "How are you?");
+    }
+
+    #[test]
+    fn to_chat_message_assistant_with_tools() {
+        let calls = vec![
+            ToolCall::new("c1", "search", json!({"q": "rust"})),
+            ToolCall::new("c2", "calc", json!({"expr": "1+1"})),
+        ];
+        let msg = Message::assistant_with_tool_calls("I'll help", calls);
+        let cm = to_chat_message(&msg);
+        assert!(matches!(cm.role, chat::ChatRole::Assistant));
+        // Content should include text and tool call parts
+        let tool_calls = cm.content.tool_calls();
+        assert_eq!(tool_calls.len(), 2);
+        assert_eq!(tool_calls[0].fn_name, "search");
+        assert_eq!(tool_calls[1].fn_name, "calc");
+        // Text should still be present
+        let text = cm.content.first_text().expect("should have text");
+        assert_eq!(text, "I'll help");
+    }
+
+    #[test]
+    fn to_chat_message_assistant_with_tools_no_text() {
+        let calls = vec![ToolCall::new("c1", "search", json!({"q": "rust"}))];
+        let msg = Message::assistant_with_tool_calls("", calls);
+        let cm = to_chat_message(&msg);
+        assert!(matches!(cm.role, chat::ChatRole::Assistant));
+        let tool_calls = cm.content.tool_calls();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].call_id, "c1");
+    }
+
+    #[test]
+    fn to_chat_message_tool_result() {
+        let msg = Message::tool("call-42", "Result is 42");
+        let cm = to_chat_message(&msg);
+        assert!(matches!(cm.role, chat::ChatRole::Tool));
+        // ToolResponse messages store content as a ToolResponse part, not plain text.
+        // Verify the content is non-empty and the role is correct.
+        assert!(!cm.content.parts().is_empty());
+    }
+
+    #[test]
+    fn to_chat_message_system() {
+        let msg = Message::system("You are a helpful assistant.");
+        let cm = to_chat_message(&msg);
+        assert!(matches!(cm.role, chat::ChatRole::System));
+        let text = cm.content.first_text().expect("should have text");
+        assert_eq!(text, "You are a helpful assistant.");
+    }
+
+    #[test]
+    fn build_chat_request_no_tools() {
+        let system = vec![ContentBlock::text("Be helpful")];
+        let messages = vec![Message::user("hi")];
+        let req = build_chat_request(&system, &messages, &[], false);
+        // System message + user message = 2 messages
+        assert_eq!(req.messages.len(), 2);
+        assert!(matches!(req.messages[0].role, chat::ChatRole::System));
+        assert!(matches!(req.messages[1].role, chat::ChatRole::User));
+        // No tools
+        assert!(req.tools.is_none());
+    }
+
+    #[test]
+    fn build_chat_request_with_tools() {
+        let tools = vec![
+            ToolDescriptor::new("search", "search", "Web search"),
+            ToolDescriptor::new("calc", "calc", "Calculator"),
+        ];
+        let req = build_chat_request(&[], &[Message::user("hi")], &tools, false);
+        let genai_tools = req.tools.expect("should have tools");
+        assert_eq!(genai_tools.len(), 2);
+        assert_eq!(genai_tools[0].name, "search".into());
+        assert_eq!(genai_tools[1].name, "calc".into());
+    }
+
+    #[test]
+    fn to_genai_tool_preserves_schema() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "limit": {"type": "integer"}
+            },
+            "required": ["query"]
+        });
+        let desc =
+            ToolDescriptor::new("search", "search", "Web search").with_parameters(schema.clone());
+        let tool = to_genai_tool(&desc);
+        assert_eq!(tool.schema.as_ref().expect("schema present"), &schema);
+        assert_eq!(tool.description.as_deref(), Some("Web search"));
+    }
+
+    #[test]
+    fn build_chat_request_empty_system_skipped() {
+        let req = build_chat_request(&[], &[Message::user("hi")], &[], false);
+        // Only user message, no system
+        assert_eq!(req.messages.len(), 1);
+        assert!(matches!(req.messages[0].role, chat::ChatRole::User));
+    }
+
+    #[test]
+    fn build_chat_request_prompt_cache_sets_options() {
+        let system = vec![ContentBlock::text("Be helpful")];
+        let req = build_chat_request(&system, &[], &[], true);
+        assert_eq!(req.messages.len(), 1);
+        // The system message should have options set (cache control)
+        assert!(req.messages[0].options.is_some());
+    }
+
+    #[test]
+    fn from_genai_tool_call_roundtrip() {
+        let genai_call = GenaiToolCall {
+            call_id: "c1".into(),
+            fn_name: "search".into(),
+            fn_arguments: json!({"q": "rust"}),
+            thought_signatures: None,
+        };
+        let awaken_call = from_genai_tool_call(&genai_call);
+        assert_eq!(awaken_call.id, "c1");
+        assert_eq!(awaken_call.name, "search");
+        assert_eq!(awaken_call.arguments, json!({"q": "rust"}));
+    }
+
+    #[test]
+    fn map_usage_handles_all_fields() {
+        let genai_usage = chat::Usage {
+            prompt_tokens: Some(100),
+            completion_tokens: Some(50),
+            total_tokens: Some(150),
+            prompt_tokens_details: Some(chat::PromptTokensDetails {
+                cached_tokens: Some(20),
+                cache_creation_tokens: Some(10),
+                cache_creation_details: None,
+                audio_tokens: None,
+            }),
+            completion_tokens_details: Some(chat::CompletionTokensDetails {
+                reasoning_tokens: Some(5),
+                accepted_prediction_tokens: None,
+                rejected_prediction_tokens: None,
+                audio_tokens: None,
+            }),
+        };
+        let usage = map_usage(&genai_usage);
+        assert_eq!(usage.prompt_tokens, Some(100));
+        assert_eq!(usage.completion_tokens, Some(50));
+        assert_eq!(usage.total_tokens, Some(150));
+        assert_eq!(usage.cache_read_tokens, Some(20));
+        assert_eq!(usage.cache_creation_tokens, Some(10));
+        assert_eq!(usage.thinking_tokens, Some(5));
+    }
+
+    #[test]
+    fn stop_reason_content_filter_maps_to_none() {
+        assert_eq!(
+            map_stop_reason(&chat::StopReason::ContentFilter("filter".into())),
+            None
+        );
+    }
+
+    #[test]
+    fn stop_reason_other_maps_to_none() {
+        assert_eq!(
+            map_stop_reason(&chat::StopReason::Other("unknown".into())),
+            None
+        );
+    }
+
+    #[test]
+    fn stop_reason_stop_sequence_maps_correctly() {
+        assert_eq!(
+            map_stop_reason(&chat::StopReason::StopSequence("seq".into())),
+            Some(StopReason::StopSequence)
+        );
+    }
 }

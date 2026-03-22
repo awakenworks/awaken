@@ -302,4 +302,230 @@ mod tests {
         assert!(result.tool_calls.is_empty());
         assert!(result.usage.is_none());
     }
+
+    // -- Task 2 tests --------------------------------------------------------
+
+    #[test]
+    fn collector_accumulates_text_deltas() {
+        let mut c = StreamCollector::new();
+        let chunks = ["The ", "quick ", "brown ", "fox"];
+        for chunk in &chunks {
+            let out = c.process(ChatStreamEvent::Chunk(StreamChunk {
+                content: (*chunk).into(),
+            }));
+            assert!(matches!(out, StreamOutput::TextDelta(ref s) if s == chunk));
+        }
+        let result = c.finish();
+        assert_eq!(result.text(), "The quick brown fox");
+        assert_eq!(result.content.len(), 1);
+    }
+
+    #[test]
+    fn collector_tracks_tool_call_start_and_delta() {
+        use genai::chat::ToolCall as GToolCall;
+
+        let mut c = StreamCollector::new();
+
+        // First chunk: start with empty args
+        let o1 = c.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: GToolCall {
+                call_id: "tc1".into(),
+                fn_name: "get_weather".into(),
+                fn_arguments: serde_json::json!({}),
+                thought_signatures: None,
+            },
+        }));
+        assert!(
+            matches!(o1, StreamOutput::ToolCallStart { ref id, ref name }
+                if id == "tc1" && name == "get_weather")
+        );
+
+        // Second chunk: accumulated args grow
+        let o2 = c.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: GToolCall {
+                call_id: "tc1".into(),
+                fn_name: "get_weather".into(),
+                fn_arguments: serde_json::json!({"city": "London"}),
+                thought_signatures: None,
+            },
+        }));
+        assert!(matches!(o2, StreamOutput::ToolCallDelta { ref id, .. } if id == "tc1"));
+
+        let result = c.finish();
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].name, "get_weather");
+        assert_eq!(result.tool_calls[0].arguments["city"], "London");
+    }
+
+    #[test]
+    fn collector_handles_usage_event() {
+        use genai::chat::{StreamEnd, Usage};
+
+        let mut c = StreamCollector::new();
+
+        let mut end = StreamEnd::default();
+        end.captured_usage = Some(Usage {
+            prompt_tokens: Some(200),
+            completion_tokens: Some(80),
+            total_tokens: Some(280),
+            prompt_tokens_details: None,
+            completion_tokens_details: None,
+        });
+        c.process(ChatStreamEvent::End(end));
+
+        let result = c.finish();
+        let usage = result.usage.expect("usage should be present");
+        assert_eq!(usage.prompt_tokens, Some(200));
+        assert_eq!(usage.completion_tokens, Some(80));
+        assert_eq!(usage.total_tokens, Some(280));
+        assert!(usage.cache_read_tokens.is_none());
+        assert!(usage.thinking_tokens.is_none());
+    }
+
+    #[test]
+    fn collector_handles_stop_event() {
+        use genai::chat::StreamEnd;
+
+        let mut c = StreamCollector::new();
+
+        let mut end = StreamEnd::default();
+        end.captured_stop_reason = Some(genai::chat::StopReason::Completed("stop".into()));
+        c.process(ChatStreamEvent::End(end));
+
+        let result = c.finish();
+        assert_eq!(
+            result.stop_reason,
+            Some(crate::contract::inference::StopReason::EndTurn)
+        );
+    }
+
+    #[test]
+    fn collector_drops_truncated_tool_calls() {
+        let mut c = StreamCollector::new();
+
+        // Insert two tool calls: one valid, one with truncated JSON
+        c.tool_call_order.push("valid".into());
+        c.tool_calls.insert(
+            "valid".into(),
+            PartialToolCall {
+                id: "valid".into(),
+                name: "search".into(),
+                arguments: r#"{"q":"hello"}"#.into(),
+            },
+        );
+
+        c.tool_call_order.push("bad".into());
+        c.tool_calls.insert(
+            "bad".into(),
+            PartialToolCall {
+                id: "bad".into(),
+                name: "calc".into(),
+                arguments: r#"{"expr": "2+"#.into(), // truncated
+            },
+        );
+
+        let result = c.finish();
+        // Only the valid tool call should survive
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].id, "valid");
+    }
+
+    #[test]
+    fn collector_preserves_tool_call_order() {
+        use genai::chat::ToolCall as GToolCall;
+
+        let mut c = StreamCollector::new();
+
+        let tool_names = ["alpha", "beta", "gamma"];
+        for (i, name) in tool_names.iter().enumerate() {
+            c.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+                tool_call: GToolCall {
+                    call_id: format!("c{i}"),
+                    fn_name: (*name).into(),
+                    fn_arguments: serde_json::json!({}),
+                    thought_signatures: None,
+                },
+            }));
+        }
+
+        let result = c.finish();
+        assert_eq!(result.tool_calls.len(), 3);
+        assert_eq!(result.tool_calls[0].name, "alpha");
+        assert_eq!(result.tool_calls[1].name, "beta");
+        assert_eq!(result.tool_calls[2].name, "gamma");
+    }
+
+    #[test]
+    fn collector_nameless_tool_call_dropped() {
+        let mut c = StreamCollector::new();
+        c.tool_call_order.push("c1".into());
+        c.tool_calls.insert(
+            "c1".into(),
+            PartialToolCall {
+                id: "c1".into(),
+                name: String::new(), // no name
+                arguments: r#"{"x":1}"#.into(),
+            },
+        );
+
+        let result = c.finish();
+        assert!(result.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn collector_reasoning_delta_not_accumulated_in_text() {
+        let mut c = StreamCollector::new();
+
+        c.process(ChatStreamEvent::Chunk(StreamChunk {
+            content: "visible".into(),
+        }));
+        let out = c.process(ChatStreamEvent::ReasoningChunk(StreamChunk {
+            content: "thinking...".into(),
+        }));
+        assert!(matches!(out, StreamOutput::ReasoningDelta(ref s) if s == "thinking..."));
+
+        let result = c.finish();
+        // Reasoning should NOT be in the accumulated text
+        assert_eq!(result.text(), "visible");
+    }
+
+    #[test]
+    fn collector_start_event_emits_none() {
+        let mut c = StreamCollector::new();
+        let out = c.process(ChatStreamEvent::Start);
+        assert!(matches!(out, StreamOutput::None));
+    }
+
+    #[test]
+    fn collector_end_captured_tool_calls_override_streamed() {
+        use genai::chat::{MessageContent, StreamEnd, ToolCall as GToolCall};
+
+        let mut c = StreamCollector::new();
+
+        // Stream a tool call chunk first
+        c.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: GToolCall {
+                call_id: "streamed".into(),
+                fn_name: "old_tool".into(),
+                fn_arguments: serde_json::json!({}),
+                thought_signatures: None,
+            },
+        }));
+
+        // End event with captured tool calls that override
+        let captured_call = GToolCall {
+            call_id: "captured".into(),
+            fn_name: "new_tool".into(),
+            fn_arguments: serde_json::json!({"a": 1}),
+            thought_signatures: None,
+        };
+        let mut end = StreamEnd::default();
+        end.captured_content = Some(MessageContent::from_tool_calls(vec![captured_call]));
+        c.process(ChatStreamEvent::End(end));
+
+        let result = c.finish();
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].name, "new_tool");
+        assert_eq!(result.tool_calls[0].id, "captured");
+    }
 }

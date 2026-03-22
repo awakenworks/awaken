@@ -138,4 +138,37 @@ mod tests {
         let parsed: ContextMessage = serde_json::from_value(json).unwrap();
         assert_eq!(parsed, msg);
     }
+
+    #[test]
+    fn conversation_target_visible_by_default() {
+        let msg = ContextMessage::conversation("conv.key", Role::User, "visible text");
+        assert_eq!(msg.target, ContextMessageTarget::Conversation);
+        assert_eq!(msg.visibility, Visibility::All);
+    }
+
+    #[test]
+    fn system_target_internal_by_default() {
+        let msg = ContextMessage::system("sys.key", "internal text");
+        assert_eq!(msg.target, ContextMessageTarget::System);
+        assert_eq!(msg.visibility, Visibility::Internal);
+
+        let suffix = ContextMessage::suffix_system("suffix.key", "suffix text");
+        assert_eq!(suffix.target, ContextMessageTarget::SuffixSystem);
+        assert_eq!(suffix.visibility, Visibility::Internal);
+
+        let session = ContextMessage::session("sess.key", Role::System, "session text");
+        assert_eq!(session.target, ContextMessageTarget::Session);
+        assert_eq!(session.visibility, Visibility::Internal);
+    }
+
+    #[test]
+    fn with_cooldown_builder_pattern() {
+        let msg = ContextMessage::conversation("k", Role::User, "text").with_cooldown(10);
+        assert_eq!(msg.cooldown_turns, 10);
+        // Verify other fields are preserved through the builder chain
+        assert_eq!(msg.key, "k");
+        assert_eq!(msg.role, Role::User);
+        assert_eq!(msg.target, ContextMessageTarget::Conversation);
+        assert_eq!(msg.visibility, Visibility::All);
+    }
 }

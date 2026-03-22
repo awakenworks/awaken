@@ -1290,3 +1290,155 @@ async fn resume_rejects_unknown_call_id() {
 
     assert!(err.to_string().contains("not found"));
 }
+
+// ---------------------------------------------------------------------------
+// Mid-stream cancellation tests
+// ---------------------------------------------------------------------------
+
+/// An LLM executor that yields streaming deltas with a configurable delay between each.
+struct SlowStreamingLlm {
+    deltas: Vec<String>,
+    delay_ms: u64,
+}
+
+impl SlowStreamingLlm {
+    fn new(deltas: Vec<&str>, delay_ms: u64) -> Self {
+        Self {
+            deltas: deltas.into_iter().map(String::from).collect(),
+            delay_ms,
+        }
+    }
+}
+
+#[async_trait]
+impl LlmExecutor for SlowStreamingLlm {
+    async fn execute(
+        &self,
+        _req: InferenceRequest,
+    ) -> Result<StreamResult, InferenceExecutionError> {
+        let text = self.deltas.join("");
+        Ok(StreamResult {
+            content: vec![ContentBlock::text(text)],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+        })
+    }
+
+    fn execute_stream(
+        &self,
+        _request: InferenceRequest,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        awaken::contract::executor::InferenceStream,
+                        InferenceExecutionError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        use awaken::contract::executor::StreamEvent;
+        use futures::StreamExt as _;
+        let deltas = self.deltas.clone();
+        let delay = self.delay_ms;
+        Box::pin(async move {
+            let stream = futures::stream::unfold(
+                (deltas.into_iter(), delay),
+                |(mut iter, delay)| async move {
+                    let delta = iter.next()?;
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    let event: Result<StreamEvent, InferenceExecutionError> =
+                        Ok(StreamEvent::TextDelta(delta));
+                    Some((event, (iter, delay)))
+                },
+            );
+            let stop = futures::stream::once(async { Ok(StreamEvent::Stop(StopReason::EndTurn)) });
+            let combined = stream.chain(stop);
+            Ok(Box::pin(combined) as awaken::contract::executor::InferenceStream)
+        })
+    }
+
+    fn name(&self) -> &str {
+        "slow-streaming"
+    }
+}
+
+#[tokio::test]
+async fn cancel_during_streaming_terminates_run() {
+    use awaken::CancellationToken;
+
+    let deltas: Vec<&str> = (0..10).map(|_| "tok ").collect();
+    let llm = Arc::new(SlowStreamingLlm::new(deltas, 50));
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+    let sink = NullEventSink;
+    let token = CancellationToken::new();
+    let token_clone = token.clone();
+
+    // Cancel after 100ms — mid-stream (after ~2 of 10 deltas)
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        token_clone.cancel();
+    });
+
+    let result = run_agent_loop(
+        &resolver,
+        "test",
+        &runtime,
+        &sink,
+        None,
+        vec![Message::user("hi")],
+        test_identity(),
+        Some(token),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        result.termination,
+        TerminationReason::Cancelled,
+        "run should terminate with Cancelled when token is signalled mid-stream"
+    );
+}
+
+#[tokio::test]
+async fn cancel_before_inference_terminates_immediately() {
+    use awaken::CancellationToken;
+
+    let deltas: Vec<&str> = (0..100).map(|_| "tok ").collect();
+    let llm = Arc::new(SlowStreamingLlm::new(deltas, 100));
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+    let sink = NullEventSink;
+
+    let token = CancellationToken::new();
+    token.cancel();
+
+    let result = run_agent_loop(
+        &resolver,
+        "test",
+        &runtime,
+        &sink,
+        None,
+        vec![Message::user("hi")],
+        test_identity(),
+        Some(token),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        result.termination,
+        TerminationReason::Cancelled,
+        "run should terminate immediately when token is already cancelled"
+    );
+    // steps is incremented at loop top before cancellation check, so it will be 1
+    assert_eq!(
+        result.steps, 1,
+        "only one step entry before cancellation detected"
+    );
+}

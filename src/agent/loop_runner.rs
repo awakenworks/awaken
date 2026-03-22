@@ -327,6 +327,27 @@ pub async fn run_agent_loop_controlled(
         .await?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
+
+        // Check if cancellation occurred mid-stream
+        if cancellation_token
+            .as_ref()
+            .is_some_and(|t| t.is_cancelled())
+        {
+            sink.emit(AgentEvent::InferenceComplete {
+                model: agent.model.clone(),
+                usage: stream_result.usage.clone(),
+                duration_ms,
+            })
+            .await;
+            commit_update::<RunLifecycle>(
+                store,
+                RunLifecycleUpdate::Done {
+                    done_reason: "cancelled".into(),
+                    updated_at: now_ms(),
+                },
+            )?;
+            break TerminationReason::Cancelled;
+        }
         sink.emit(AgentEvent::InferenceComplete {
             model: agent.model.clone(),
             usage: stream_result.usage.clone(),
@@ -1314,5 +1335,267 @@ fn tool_result_to_content(result: &ToolResult) -> String {
     match &result.message {
         Some(msg) => msg.clone(),
         None => serde_json::to_string(&result.data).unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contract::content::ContentBlock;
+    use crate::contract::context_message::ContextMessage;
+    use crate::contract::message::{Message, Role};
+    use crate::model::{
+        PendingScheduledActions, ScheduledAction, ScheduledActionEnvelope,
+        ScheduledActionQueueUpdate, ScheduledActionSpec,
+    };
+    use crate::state::{StateKeyOptions, StateStore};
+
+    use super::super::state::AddContextMessage;
+
+    /// Test-only plugin that registers the PendingScheduledActions key.
+    struct TestQueuePlugin;
+
+    impl crate::plugins::Plugin for TestQueuePlugin {
+        fn descriptor(&self) -> crate::plugins::PluginDescriptor {
+            crate::plugins::PluginDescriptor {
+                name: "__test_queue",
+            }
+        }
+
+        fn register(
+            &self,
+            r: &mut crate::plugins::PluginRegistrar,
+        ) -> Result<(), crate::error::StateError> {
+            r.register_key::<PendingScheduledActions>(StateKeyOptions::default())?;
+            Ok(())
+        }
+    }
+
+    /// Helper: create a StateStore with all keys needed by context message machinery.
+    fn test_store() -> StateStore {
+        let store = StateStore::new();
+        store
+            .install_plugin(TestQueuePlugin)
+            .expect("install TestQueuePlugin");
+        store
+            .install_plugin(LoopStatePlugin)
+            .expect("install LoopStatePlugin");
+        store
+    }
+
+    /// Helper: push a context message action into the pending queue.
+    fn enqueue_context_message(store: &StateStore, id: u64, msg: ContextMessage) {
+        let payload = AddContextMessage::encode_payload(&msg).expect("encode payload");
+        let mut batch = crate::state::MutationBatch::new();
+        batch.update::<PendingScheduledActions>(ScheduledActionQueueUpdate::Push(
+            ScheduledActionEnvelope {
+                id,
+                action: ScheduledAction::new(
+                    AddContextMessage::PHASE,
+                    AddContextMessage::KEY,
+                    payload,
+                ),
+            },
+        ));
+        store.commit(batch).expect("commit enqueue");
+    }
+
+    /// Helper: extract all text from a message's content blocks.
+    fn text_of(msg: &Message) -> String {
+        msg.content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    // -----------------------------------------------------------------------
+    // apply_context_messages tests (message placement)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn context_message_injected_at_system_target() {
+        let mut messages = vec![
+            Message::system("base system prompt"),
+            Message::user("hello"),
+        ];
+        let ctx = vec![ContextMessage::system("reminder", "remember the rules")];
+        apply_context_messages(&mut messages, ctx, true);
+
+        // System-target message should be inserted after the base system prompt (index 1)
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].role, Role::System);
+        assert_eq!(text_of(&messages[0]), "base system prompt");
+        assert_eq!(messages[1].role, Role::System);
+        assert_eq!(text_of(&messages[1]), "remember the rules");
+        assert_eq!(messages[2].role, Role::User);
+    }
+
+    #[test]
+    fn context_message_injected_at_suffix_target() {
+        let mut messages = vec![
+            Message::system("system"),
+            Message::user("hello"),
+            Message::system(""), // simulate assistant-like; using system for simplicity
+        ];
+        let original_len = messages.len();
+        let ctx = vec![ContextMessage::suffix_system(
+            "suffix.key",
+            "final reminder",
+        )];
+        apply_context_messages(&mut messages, ctx, true);
+
+        // Suffix messages should be appended at the end
+        assert_eq!(messages.len(), original_len + 1);
+        let last = messages.last().unwrap();
+        assert_eq!(last.role, Role::System);
+        assert_eq!(text_of(last), "final reminder");
+    }
+
+    #[test]
+    fn multiple_context_messages_sorted_by_target() {
+        let mut messages = vec![Message::system("system prompt"), Message::user("user msg")];
+
+        let ctx = vec![
+            ContextMessage::suffix_system("s1", "suffix text"),
+            ContextMessage::system("sys1", "after-system text"),
+            ContextMessage::conversation("conv1", Role::User, "conversation text"),
+        ];
+        apply_context_messages(&mut messages, ctx, true);
+
+        // Expected order:
+        // [0] system prompt (original)
+        // [1] after-system text (System target, after base system prompt)
+        // [2] conversation text (Conversation target, after system messages)
+        // [3] user msg (original)
+        // [4] suffix text (SuffixSystem target, at end)
+        assert_eq!(messages.len(), 5);
+        assert_eq!(text_of(&messages[0]), "system prompt");
+        assert_eq!(text_of(&messages[1]), "after-system text");
+        assert_eq!(text_of(&messages[2]), "conversation text");
+        assert_eq!(text_of(&messages[3]), "user msg");
+        assert_eq!(text_of(&messages[4]), "suffix text");
+    }
+
+    // -----------------------------------------------------------------------
+    // consume_context_messages tests (throttle logic)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn throttle_zero_cooldown_always_injects() {
+        let store = test_store();
+
+        for step in 0..5 {
+            enqueue_context_message(
+                &store,
+                step as u64,
+                ContextMessage::system("always", "inject me").with_cooldown(0),
+            );
+            let accepted = consume_context_messages(&store, step).expect("consume");
+            assert_eq!(
+                accepted.len(),
+                1,
+                "cooldown=0 should inject at every step, failed at step {step}"
+            );
+        }
+    }
+
+    #[test]
+    fn throttle_skips_within_cooldown() {
+        let store = test_store();
+
+        // Step 0: first injection, should be accepted
+        enqueue_context_message(
+            &store,
+            1,
+            ContextMessage::system("throttled", "content").with_cooldown(3),
+        );
+        let accepted = consume_context_messages(&store, 0).expect("step 0");
+        assert_eq!(accepted.len(), 1, "first injection at step 0 should pass");
+
+        // Steps 1 and 2: within cooldown, should be skipped
+        for step in 1..=2 {
+            enqueue_context_message(
+                &store,
+                10 + step as u64,
+                ContextMessage::system("throttled", "content").with_cooldown(3),
+            );
+            let accepted = consume_context_messages(&store, step)
+                .unwrap_or_else(|e| panic!("step {step}: {e}"));
+            assert_eq!(
+                accepted.len(),
+                0,
+                "should be throttled at step {step} (cooldown=3, last_step=0)"
+            );
+        }
+
+        // Step 3: cooldown expired (3 - 0 >= 3), should inject
+        enqueue_context_message(
+            &store,
+            20,
+            ContextMessage::system("throttled", "content").with_cooldown(3),
+        );
+        let accepted = consume_context_messages(&store, 3).expect("step 3");
+        assert_eq!(
+            accepted.len(),
+            1,
+            "cooldown expired at step 3, should inject"
+        );
+    }
+
+    #[test]
+    fn throttle_bypassed_on_content_change() {
+        let store = test_store();
+
+        // Step 0: initial injection
+        enqueue_context_message(
+            &store,
+            1,
+            ContextMessage::system("changing", "original content").with_cooldown(10),
+        );
+        let accepted = consume_context_messages(&store, 0).expect("step 0");
+        assert_eq!(accepted.len(), 1);
+
+        // Step 1: same content, within cooldown — should be throttled
+        enqueue_context_message(
+            &store,
+            2,
+            ContextMessage::system("changing", "original content").with_cooldown(10),
+        );
+        let accepted = consume_context_messages(&store, 1).expect("step 1 same content");
+        assert_eq!(
+            accepted.len(),
+            0,
+            "same content within cooldown should be throttled"
+        );
+
+        // Step 2: different content, within cooldown — should bypass
+        enqueue_context_message(
+            &store,
+            3,
+            ContextMessage::system("changing", "updated content").with_cooldown(10),
+        );
+        let accepted = consume_context_messages(&store, 2).expect("step 2 new content");
+        assert_eq!(
+            accepted.len(),
+            1,
+            "different content should bypass cooldown"
+        );
+        assert_eq!(text_of_ctx(&accepted[0]), "updated content");
+    }
+
+    /// Helper: extract text from a ContextMessage's content blocks.
+    fn text_of_ctx(msg: &ContextMessage) -> String {
+        msg.content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
     }
 }

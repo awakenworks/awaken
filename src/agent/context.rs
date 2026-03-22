@@ -347,7 +347,6 @@ pub fn trim_to_compaction_boundary(messages: &mut Vec<std::sync::Arc<Message>>) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contract::content::ContentBlock;
     use crate::contract::message::ToolCall;
     use serde_json::json;
 
@@ -644,5 +643,251 @@ mod tests {
 
         let messages = vec![Arc::new(Message::user("hello"))];
         assert!(extract_previous_summary(&messages).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Truncation tests (ContextTransform)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn no_truncation_when_within_budget() {
+        let transform = ContextTransform::new(make_policy(100_000, 2));
+        let messages = vec![
+            Message::system("system prompt"),
+            Message::user("hello"),
+            Message::assistant("hi there"),
+            Message::user("how are you?"),
+            Message::assistant("doing great"),
+        ];
+        let output = transform.transform(messages.clone(), &[]);
+        assert_eq!(output.messages.len(), messages.len());
+        for (a, b) in output.messages.iter().zip(messages.iter()) {
+            assert_eq!(a.text(), b.text());
+        }
+    }
+
+    #[test]
+    fn truncation_drops_oldest_history() {
+        // Use longer messages so token estimation is meaningful.
+        // estimate_message_tokens: 4 + len/4.
+        // "sys" → 4, each 40-char msg → 14 tokens. 6 history msgs → 84 tokens.
+        // Budget 60 means system(4) + history budget 56 → fits ~4 msgs, drops oldest 2.
+        let transform = ContextTransform::new(make_policy(60, 2));
+        let filler = |tag: &str| format!("{tag}:{}", "x".repeat(40));
+        let messages = vec![
+            Message::system("sys"),
+            Message::user(filler("old1")),
+            Message::assistant(filler("old_reply1")),
+            Message::user(filler("old2")),
+            Message::assistant(filler("old_reply2")),
+            Message::user(filler("recent1")),
+            Message::assistant(filler("recent_reply1")),
+        ];
+
+        let output = transform.transform(messages, &[]);
+        // System must be preserved
+        assert_eq!(output.messages[0].role, Role::System);
+        assert_eq!(output.messages[0].text(), "sys");
+        // Oldest history should be dropped
+        let texts: Vec<String> = output.messages.iter().map(|m| m.text()).collect();
+        assert!(
+            !texts.iter().any(|t| t.starts_with("old1:")),
+            "oldest message should be dropped"
+        );
+        // Recent messages should be preserved
+        assert!(
+            texts.iter().any(|t| t.starts_with("recent_reply1:")),
+            "most recent message should be preserved"
+        );
+    }
+
+    #[test]
+    fn min_recent_always_preserved() {
+        // Very tight budget but min_recent = 4; should keep at least 4 history messages
+        let transform = ContextTransform::new(make_policy(20, 4));
+        let messages = vec![
+            Message::system("s"),
+            Message::user("a"),
+            Message::assistant("b"),
+            Message::user("c"),
+            Message::assistant("d"),
+            Message::user("e"),
+            Message::assistant("f"),
+        ];
+
+        let output = transform.transform(messages, &[]);
+        // System is always kept; history portion should have at least min_recent messages
+        let history_count = output
+            .messages
+            .iter()
+            .filter(|m| m.role != Role::System)
+            .count();
+        assert!(
+            history_count >= 4,
+            "min_recent_messages=4 but only {history_count} history messages kept"
+        );
+    }
+
+    #[test]
+    fn system_messages_never_truncated() {
+        // Multiple system messages at the start — all must survive truncation
+        let transform = ContextTransform::new(make_policy(60, 1));
+        let messages = vec![
+            Message::system("system prompt 1"),
+            Message::system("system prompt 2"),
+            Message::system("system prompt 3"),
+            Message::user("old1"),
+            Message::assistant("old_reply1"),
+            Message::user("old2"),
+            Message::assistant("old_reply2"),
+            Message::user("recent"),
+            Message::assistant("recent_reply"),
+        ];
+
+        let output = transform.transform(messages, &[]);
+        let system_msgs: Vec<&Message> = output
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::System)
+            .collect();
+        assert_eq!(
+            system_msgs.len(),
+            3,
+            "all system messages must be preserved"
+        );
+        assert_eq!(system_msgs[0].text(), "system prompt 1");
+        assert_eq!(system_msgs[1].text(), "system prompt 2");
+        assert_eq!(system_msgs[2].text(), "system prompt 3");
+    }
+
+    // -----------------------------------------------------------------------
+    // Compaction boundary tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn find_boundary_skips_open_tool_rounds() {
+        use std::sync::Arc;
+
+        let messages: Vec<Arc<Message>> = vec![
+            Arc::new(Message::user("start")),
+            Arc::new(Message::assistant("ok")),
+            Arc::new(Message::user("do something")),
+            Arc::new(Message::assistant_with_tool_calls(
+                "",
+                vec![ToolCall::new("c1", "search", json!({}))],
+            )),
+            // c1 result is missing — open tool round
+        ];
+
+        let boundary = find_compaction_boundary(&messages, 0, messages.len());
+        // Must not place boundary at or after the open tool call (idx 3)
+        match boundary {
+            Some(b) => assert!(b < 3, "boundary {b} must be before open tool call at idx 3"),
+            None => {} // also acceptable if no safe boundary exists
+        }
+    }
+
+    #[test]
+    fn find_boundary_respects_suffix_messages() {
+        use std::sync::Arc;
+
+        // Search only within a sub-range, leaving suffix messages untouched
+        let messages: Vec<Arc<Message>> = vec![
+            Arc::new(Message::user("old1")),
+            Arc::new(Message::assistant("reply1")),
+            Arc::new(Message::user("old2")),
+            Arc::new(Message::assistant("reply2")),
+            // suffix: last 2 messages are "raw suffix"
+            Arc::new(Message::user("recent")),
+            Arc::new(Message::assistant("recent_reply")),
+        ];
+
+        let suffix_count = 2;
+        let search_end = messages.len().saturating_sub(suffix_count);
+        let boundary = find_compaction_boundary(&messages, 0, search_end);
+        // Boundary must be within the searched range, not touching suffix
+        if let Some(b) = boundary {
+            assert!(
+                b < search_end,
+                "boundary {b} must be before suffix start {search_end}"
+            );
+        }
+    }
+
+    #[test]
+    fn find_boundary_returns_none_when_too_few_messages() {
+        use std::sync::Arc;
+
+        // Single message — no safe compaction point
+        let messages: Vec<Arc<Message>> = vec![Arc::new(Message::user("only message"))];
+        // Search range is empty (start == end)
+        let boundary = find_compaction_boundary(&messages, 0, 0);
+        assert!(boundary.is_none(), "empty range should yield no boundary");
+
+        // Range with only an open tool call — no safe boundary
+        let messages2: Vec<Arc<Message>> = vec![Arc::new(Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCall::new("c1", "fn", json!({}))],
+        ))];
+        let boundary2 = find_compaction_boundary(&messages2, 0, messages2.len());
+        assert!(
+            boundary2.is_none(),
+            "single open tool call should yield no boundary"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Render transcript tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn render_transcript_filters_internal_messages() {
+        use std::sync::Arc;
+
+        let messages = vec![
+            Arc::new(Message::system("visible system")),
+            Arc::new(Message::internal_system("hidden internal context")),
+            Arc::new(Message::user("hello")),
+            Arc::new(Message::assistant("hi")),
+            Arc::new(Message::internal_system("another hidden")),
+        ];
+        let transcript = render_transcript(&messages);
+        assert!(
+            !transcript.contains("hidden internal context"),
+            "internal messages should be filtered"
+        );
+        assert!(
+            !transcript.contains("another hidden"),
+            "all internal messages should be filtered"
+        );
+        assert!(transcript.contains("[System]: visible system"));
+        assert!(transcript.contains("[User]: hello"));
+        assert!(transcript.contains("[Assistant]: hi"));
+    }
+
+    #[test]
+    fn render_transcript_formats_roles() {
+        use std::sync::Arc;
+
+        let messages = vec![
+            Arc::new(Message::system("sys prompt")),
+            Arc::new(Message::user("question")),
+            Arc::new(Message::assistant("answer")),
+            Arc::new(Message::tool("c1", "tool output")),
+        ];
+        let transcript = render_transcript(&messages);
+        assert!(
+            transcript.contains("[System]: sys prompt"),
+            "system role format"
+        );
+        assert!(transcript.contains("[User]: question"), "user role format");
+        assert!(
+            transcript.contains("[Assistant]: answer"),
+            "assistant role format"
+        );
+        assert!(
+            transcript.contains("[Tool]: tool output"),
+            "tool role format"
+        );
     }
 }
