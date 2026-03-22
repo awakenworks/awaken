@@ -21,6 +21,12 @@ use crate::runtime::AgentRuntime;
 pub enum BuildError {
     #[error("state error: {0}")]
     State(#[from] StateError),
+    #[error("agent registry conflict: {0}")]
+    AgentRegistryConflict(String),
+    #[error("stop policy registry conflict: {0}")]
+    StopPolicyConflict(String),
+    #[error("discovery failed: {0}")]
+    DiscoveryFailed(#[from] crate::registry::composite::DiscoveryError),
 }
 
 /// Fluent API for constructing an `AgentRuntime`.
@@ -116,15 +122,17 @@ impl AgentRuntimeBuilder {
 
     /// Build the `AgentRuntime` from the accumulated configuration.
     pub fn build(self) -> Result<AgentRuntime, BuildError> {
-        let agents: Arc<dyn AgentSpecRegistry> = if self.remote_sources.is_empty() {
-            Arc::new(self.agents)
-        } else {
-            let mut composite = CompositeAgentSpecRegistry::new(Arc::new(self.agents));
-            for source in self.remote_sources {
-                composite.add_remote(source);
-            }
-            Arc::new(composite)
-        };
+        let (agents, composite_registry): (Arc<dyn AgentSpecRegistry>, _) =
+            if self.remote_sources.is_empty() {
+                (Arc::new(self.agents), None)
+            } else {
+                let mut composite = CompositeAgentSpecRegistry::new(Arc::new(self.agents));
+                for source in self.remote_sources {
+                    composite.add_remote(source);
+                }
+                let arc = Arc::new(composite);
+                (Arc::clone(&arc) as Arc<dyn AgentSpecRegistry>, Some(arc))
+            };
 
         let registry_set = RegistrySet {
             agents,
@@ -138,10 +146,23 @@ impl AgentRuntimeBuilder {
 
         let mut runtime = AgentRuntime::new(resolver);
 
+        if let Some(composite) = composite_registry {
+            runtime = runtime.with_composite_registry(composite);
+        }
+
         if let Some(store) = self.thread_run_store {
             runtime = runtime.with_thread_run_store(store);
         }
 
+        Ok(runtime)
+    }
+
+    /// Build and initialize (async). Discovers remote agents after build.
+    pub async fn build_and_discover(self) -> Result<AgentRuntime, BuildError> {
+        let runtime = self.build()?;
+        if let Some(composite) = runtime.composite_registry() {
+            composite.discover().await?;
+        }
         Ok(runtime)
     }
 }

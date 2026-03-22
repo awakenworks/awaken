@@ -307,6 +307,7 @@ dependencies = [
  "futures",
  "genai",
  "jsonschema",
+ "parking_lot",
  "reqwest 0.12.28",
  "schemars 0.8.22",
  "serde",

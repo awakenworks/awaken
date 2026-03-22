@@ -7,8 +7,8 @@ use super::{PersistedState, StateMap, StateStore};
 
 impl StateStore {
     pub fn export_persisted(&self) -> Result<PersistedState, StateError> {
-        let registry = self.registry.lock().expect("registry lock poisoned");
-        let state = self.inner.read().expect("state lock poisoned");
+        let registry = self.registry.lock();
+        let state = self.inner.read();
         let mut extensions = std::collections::HashMap::new();
 
         for reg in registry.keys_by_type.values() {
@@ -38,7 +38,7 @@ impl StateStore {
         persisted: PersistedState,
         unknown_policy: UnknownKeyPolicy,
     ) -> Result<(), StateError> {
-        let registry = self.registry.lock().expect("registry lock poisoned");
+        let registry = self.registry.lock();
         let mut next_ext = StateMap::default();
 
         for (key, json) in persisted.extensions {
@@ -58,7 +58,7 @@ impl StateStore {
             })?;
         }
 
-        let mut state = self.inner.write().expect("state lock poisoned");
+        let mut state = self.inner.write();
         state.ext = Arc::new(next_ext);
         state.revision = persisted.revision;
         Ok(())
@@ -72,8 +72,8 @@ impl StateStore {
         persisted: PersistedState,
         unknown_policy: UnknownKeyPolicy,
     ) -> Result<(), StateError> {
-        let registry = self.registry.lock().expect("registry lock poisoned");
-        let mut state = self.inner.write().expect("state lock poisoned");
+        let registry = self.registry.lock();
+        let mut state = self.inner.write();
         let ext = Arc::make_mut(&mut state.ext);
 
         for (key, json) in persisted.extensions {
@@ -102,8 +102,8 @@ impl StateStore {
 
     /// Clear all `Run`-scoped keys, preserving `Thread`-scoped keys.
     pub fn clear_run_scoped(&self) {
-        let registry = self.registry.lock().expect("registry lock poisoned");
-        let mut state = self.inner.write().expect("state lock poisoned");
+        let registry = self.registry.lock();
+        let mut state = self.inner.write();
         let ext = Arc::make_mut(&mut state.ext);
 
         for reg in registry.keys_by_type.values() {

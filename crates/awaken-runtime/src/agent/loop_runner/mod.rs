@@ -9,6 +9,8 @@ mod inference;
 mod orchestrator;
 pub mod parallel_merge;
 mod resume;
+mod setup;
+mod step;
 pub(crate) mod truncation_recovery;
 
 #[cfg(test)]

@@ -1,5 +1,7 @@
 use std::any::TypeId;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
+
+use parking_lot::{Mutex, RwLock};
 
 use crate::plugins::{InstalledPlugin, KeyRegistration, Plugin, PluginRegistrar, PluginRegistry};
 use awaken_contract::StateError;
@@ -47,18 +49,18 @@ impl StateStore {
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        self.inner.read().expect("state lock poisoned").clone()
+        self.inner.read().clone()
     }
 
     pub fn revision(&self) -> u64 {
-        self.inner.read().expect("state lock poisoned").revision
+        self.inner.read().revision
     }
 
     pub fn read<K>(&self) -> Option<K::Value>
     where
         K: StateKey,
     {
-        let guard = self.inner.read().expect("state lock poisoned");
+        let guard = self.inner.read();
         guard.get::<K>().cloned()
     }
 
@@ -66,10 +68,7 @@ impl StateStore {
     where
         H: CommitHook,
     {
-        self.hooks
-            .write()
-            .expect("hook lock poisoned")
-            .push(Arc::new(hook));
+        self.hooks.write().push(Arc::new(hook));
     }
 
     pub fn begin_mutation(&self) -> MutationBatch {
@@ -82,7 +81,7 @@ impl StateStore {
         left: MutationBatch,
         right: MutationBatch,
     ) -> Result<MutationBatch, StateError> {
-        let registry = self.registry.lock().expect("registry lock poisoned");
+        let registry = self.registry.lock();
         left.merge_parallel(right, |key| registry.merge_strategy(key))
     }
 
@@ -91,7 +90,7 @@ impl StateStore {
         &self,
         commands: Vec<StateCommand>,
     ) -> Result<StateCommand, StateError> {
-        let registry = self.registry.lock().expect("registry lock poisoned");
+        let registry = self.registry.lock();
         commands
             .into_iter()
             .try_fold(StateCommand::new(), |acc, cmd| {
@@ -105,10 +104,10 @@ impl StateStore {
         }
 
         let op_count = patch.op_len();
-        let hooks = self.hooks.read().expect("hook lock poisoned").clone();
+        let hooks = self.hooks.read().clone();
 
-        let registry = self.registry.lock().expect("registry lock poisoned");
-        let mut state = self.inner.write().expect("state lock poisoned");
+        let registry = self.registry.lock();
+        let mut state = self.inner.write();
 
         if let Some(expected) = patch.base_revision
             && state.revision != expected
@@ -165,7 +164,7 @@ impl StateStore {
         let descriptor = plugin.descriptor();
 
         {
-            let mut registry = self.registry.lock().expect("registry lock poisoned");
+            let mut registry = self.registry.lock();
             if registry.plugins.contains_key(&plugin_type_id) {
                 return Err(StateError::PluginAlreadyInstalled {
                     name: descriptor.name.to_string(),
@@ -205,7 +204,7 @@ impl StateStore {
         &self,
         registrations: &[KeyRegistration],
     ) -> Result<(), StateError> {
-        let mut registry = self.registry.lock().expect("registry lock poisoned");
+        let mut registry = self.registry.lock();
         for reg in registrations {
             if registry.keys_by_name.contains_key(&reg.key) {
                 // Already registered (e.g., by LoopStatePlugin or another source) — skip.
@@ -224,7 +223,7 @@ impl StateStore {
         let plugin_type_id = TypeId::of::<P>();
         let registrations =
             {
-                let registry = self.registry.lock().expect("registry lock poisoned");
+                let registry = self.registry.lock();
                 let installed = registry.plugins.get(&plugin_type_id).ok_or(
                     StateError::PluginNotInstalled {
                         type_name: std::any::type_name::<P>(),
@@ -254,7 +253,7 @@ impl StateStore {
     ) -> Result<(), StateError> {
         let removed =
             {
-                let mut registry = self.registry.lock().expect("registry lock poisoned");
+                let mut registry = self.registry.lock();
                 let installed = registry.plugins.remove(&plugin_type_id).ok_or(
                     StateError::PluginNotInstalled {
                         type_name: "unknown",

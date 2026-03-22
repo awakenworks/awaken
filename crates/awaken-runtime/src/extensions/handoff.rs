@@ -269,7 +269,7 @@ mod tests {
         let store = StateStore::new();
         store.install_plugin(plugin).unwrap();
         // Key should be registered
-        let registry = store.registry.lock().unwrap();
+        let registry = store.registry.lock();
         assert!(registry.keys_by_name.contains_key("agent_handoff"));
     }
 

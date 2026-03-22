@@ -2,33 +2,27 @@
 
 use std::sync::Arc;
 
-use crate::runtime::{AgentResolver, CancellationToken, PhaseContext, PhaseRuntime, ResolvedAgent};
-use crate::state::StateCommand;
+use crate::runtime::{AgentResolver, CancellationToken, PhaseContext, PhaseRuntime};
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::executor::InferenceRequest;
 use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::inference::{InferenceOverride, LLMResponse};
+use awaken_contract::contract::inference::InferenceOverride;
 use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::message::{Message, Role, gen_message_id};
 use awaken_contract::contract::storage::ThreadRunStore;
-use awaken_contract::contract::suspension::{ToolCallOutcome, ToolCallResume, ToolCallStatus};
-use awaken_contract::contract::tool::ToolCallContext;
+use awaken_contract::contract::suspension::ToolCallResume;
 use awaken_contract::model::Phase;
 use futures::channel::mpsc::UnboundedReceiver;
 
 use super::super::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
-use super::actions::{
-    apply_context_messages, take_accumulated_overrides, take_and_apply_tool_filters,
-    take_context_messages,
-};
 use super::checkpoint::{
     check_termination, complete_step, emit_state_snapshot, persist_checkpoint,
 };
-use super::inference::{compact_with_llm, execute_streaming};
-use super::resume::{WaitOutcome, detect_and_replay_resume, wait_for_resume_or_cancel};
-use super::truncation_recovery::{self, TruncationState};
-use super::{AgentLoopError, AgentRunResult, commit_update, now_ms, tool_result_to_content};
+use super::resume::{WaitOutcome, wait_for_resume_or_cancel};
+use super::setup::{PreparedRun, prepare_run};
+use super::step::{StepContext, StepOutcome, execute_step};
+use super::truncation_recovery::TruncationState;
+use super::{AgentLoopError, AgentRunResult, commit_update, now_ms};
 
 /// Agent loop implementation with runtime control channels.
 ///
@@ -47,41 +41,29 @@ pub async fn run_agent_loop_controlled(
     initial_overrides: Option<InferenceOverride>,
 ) -> Result<AgentRunResult, AgentLoopError> {
     let store = runtime.store();
-    let mut messages: Vec<Arc<Message>> = initial_messages.into_iter().map(Arc::new).collect();
     let run_overrides = initial_overrides;
     let mut decision_rx = decision_rx;
     let run_created_at = now_ms();
     let mut total_input_tokens: u64 = 0;
     let mut total_output_tokens: u64 = 0;
 
-    // Resolve initial agent
-    let ResolvedAgent {
-        config: mut agent,
+    // --- Setup: resolve, trim, resume ---
+    let PreparedRun {
+        mut agent,
         mut env,
-    } = resolver
-        .resolve(initial_agent_id)
-        .map_err(AgentLoopError::RuntimeError)?;
-
-    // Install plugin state keys into the store so persistence and commit can find them.
-    if !env.key_registrations.is_empty() {
-        store
-            .register_keys(&env.key_registrations)
-            .map_err(AgentLoopError::PhaseError)?;
-    }
-
-    // Trim to latest compaction boundary — skip already-summarized history
-    if agent.context_policy.is_some() {
-        super::super::compaction::trim_to_compaction_boundary(&mut messages);
-    }
-
-    // --- State-driven resume detection ---
-    // If any tool calls are in Resuming state, replay them before starting the loop.
-    detect_and_replay_resume(&agent, store, &run_identity, &mut messages).await?;
+        mut messages,
+    } = prepare_run(
+        resolver,
+        runtime,
+        initial_agent_id,
+        initial_messages,
+        &run_identity,
+    )
+    .await?;
 
     let mut steps: usize = 0;
     let mut truncation_state = TruncationState::new();
 
-    // Helper to build PhaseContext with current state
     let make_ctx = |phase: Phase, msgs: &[Arc<Message>], identity: &RunIdentity| -> PhaseContext {
         PhaseContext::new(phase, store.snapshot())
             .with_run_identity(identity.clone())
@@ -108,26 +90,12 @@ pub async fn run_agent_loop_controlled(
         .run_phase_with_context(&env, make_ctx(Phase::RunStart, &messages, &run_identity))
         .await?;
 
+    // --- Main loop ---
     let termination = loop {
         steps += 1;
         tracing::info!(step = steps, "step_start");
 
-        // --- Cancellation check ---
-        if cancellation_token
-            .as_ref()
-            .is_some_and(|t| t.is_cancelled())
-        {
-            commit_update::<RunLifecycle>(
-                store,
-                RunLifecycleUpdate::Done {
-                    done_reason: "cancelled".into(),
-                    updated_at: now_ms(),
-                },
-            )?;
-            break TerminationReason::Cancelled;
-        }
-
-        // --- Handoff: check ActiveAgentKey for agent switch ---
+        // Handoff: check ActiveAgentKey for agent switch
         if let Some(Some(active_id)) =
             store.read::<awaken_contract::contract::profile::ActiveAgentIdKey>()
             && active_id != agent.id
@@ -145,520 +113,104 @@ pub async fn run_agent_loop_controlled(
         // Clear tool call states from previous step
         commit_update::<ToolCallStates>(store, ToolCallStatesUpdate::Clear)?;
 
-        runtime
-            .run_phase_with_context(&env, make_ctx(Phase::StepStart, &messages, &run_identity))
-            .await?;
-        if let Some(reason) = check_termination(store) {
-            break reason;
-        }
-
-        runtime
-            .run_phase_with_context(
-                &env,
-                make_ctx(Phase::BeforeInference, &messages, &run_identity),
-            )
-            .await?;
-        if let Some(reason) = check_termination(store) {
-            break reason;
-        }
-
-        // LLM compaction: if token count exceeds autocompact threshold,
-        // call LLM to generate summary and replace old messages.
-        if let Some(ref policy) = agent.context_policy
-            && let Some(threshold) = policy.autocompact_threshold
-        {
-            let token_est = awaken_contract::contract::transform::estimate_tokens_arc(&messages);
-            if token_est >= threshold {
-                compact_with_llm(&agent, &mut messages, policy).await?;
-            }
-        }
-
-        // Read accumulated results from action handlers (populated during run_phase above)
-        let mut overrides = run_overrides.clone();
-        if let Some(runtime_overrides) = take_accumulated_overrides(store)? {
-            if let Some(merged) = overrides.as_mut() {
-                merged.merge(runtime_overrides);
-            } else {
-                overrides = Some(runtime_overrides);
-            }
-        }
-        let context_msgs = take_context_messages(store)?;
-
-        // Build message list: system prompt + conversation history
-        let has_system_prompt = !agent.system_prompt.is_empty();
-        let mut request_messages: Vec<Message> = Vec::new();
-        if has_system_prompt {
-            request_messages.push(Message::system(&agent.system_prompt));
-        }
-        request_messages.extend(messages.iter().map(|m| (**m).clone()));
-
-        // Apply context messages at their target positions
-        if !context_msgs.is_empty() {
-            apply_context_messages(&mut request_messages, context_msgs, has_system_prompt);
-        }
-
-        // Apply accumulated tool filters from action handlers
-        let mut tools = agent.tool_descriptors();
-        take_and_apply_tool_filters(store, &mut tools)?;
-        let request_messages = awaken_contract::contract::transform::apply_transforms(
-            request_messages,
-            &tools,
-            &env.request_transforms,
-        );
-
-        let start = std::time::Instant::now();
-        let enable_prompt_cache = agent
-            .context_policy
-            .as_ref()
-            .is_some_and(|p| p.enable_prompt_cache);
-        let request = InferenceRequest {
-            model: agent.model.clone(),
-            messages: request_messages,
-            tools,
-            system: vec![],
-            overrides,
-            enable_prompt_cache,
-        };
-
-        let mut stream_result = execute_streaming(
-            &agent,
-            request,
-            sink,
-            cancellation_token.as_ref(),
-            &mut total_input_tokens,
-            &mut total_output_tokens,
-        )
-        .await?;
-
-        // --- Truncation recovery ---
-        // When the LLM hits MaxTokens mid-response with incomplete tool calls,
-        // inject a continuation prompt and re-invoke inference up to
-        // `max_continuation_retries` times.
-        while truncation_recovery::should_retry(
-            &stream_result,
-            &mut truncation_state,
-            agent.max_continuation_retries,
-        ) {
-            // Add the partial assistant message to the conversation
-            let partial_text = stream_result.text();
-            messages.push(Arc::new(Message::assistant(&partial_text)));
-
-            // Add a continuation user message (Internal visibility)
-            messages.push(Arc::new(truncation_recovery::continuation_message()));
-
-            // Rebuild request with updated messages
-            let has_sys = !agent.system_prompt.is_empty();
-            let mut cont_messages: Vec<Message> = Vec::new();
-            if has_sys {
-                cont_messages.push(Message::system(&agent.system_prompt));
-            }
-            cont_messages.extend(messages.iter().map(|m| (**m).clone()));
-            let cont_messages = awaken_contract::contract::transform::apply_transforms(
-                cont_messages,
-                &agent.tool_descriptors(),
-                &env.request_transforms,
-            );
-
-            let cont_request = InferenceRequest {
-                model: agent.model.clone(),
-                messages: cont_messages,
-                tools: agent.tool_descriptors(),
-                system: vec![],
-                overrides: run_overrides.clone(),
-                enable_prompt_cache: false,
-            };
-
-            stream_result = execute_streaming(
-                &agent,
-                cont_request,
-                sink,
-                cancellation_token.as_ref(),
-                &mut total_input_tokens,
-                &mut total_output_tokens,
-            )
-            .await?;
-        }
-
-        let duration_ms = start.elapsed().as_millis() as u64;
-        tracing::info!(
-            model = %agent.model,
-            input_tokens = total_input_tokens,
-            output_tokens = total_output_tokens,
-            duration_ms,
-            "inference_complete"
-        );
-
-        // Check if cancellation occurred mid-stream
-        if cancellation_token
-            .as_ref()
-            .is_some_and(|t| t.is_cancelled())
-        {
-            sink.emit(AgentEvent::InferenceComplete {
-                model: agent.model.clone(),
-                usage: stream_result.usage.clone(),
-                duration_ms,
-            })
-            .await;
-            commit_update::<RunLifecycle>(
-                store,
-                RunLifecycleUpdate::Done {
-                    done_reason: "cancelled".into(),
-                    updated_at: now_ms(),
-                },
-            )?;
-            break TerminationReason::Cancelled;
-        }
-        sink.emit(AgentEvent::InferenceComplete {
-            model: agent.model.clone(),
-            usage: stream_result.usage.clone(),
-            duration_ms,
-        })
-        .await;
-
-        let llm_response = LLMResponse::success(stream_result.clone());
-        let after_inf_ctx = make_ctx(Phase::AfterInference, &messages, &run_identity)
-            .with_llm_response(llm_response);
-        runtime.run_phase_with_context(&env, after_inf_ctx).await?;
-        if let Some(reason) = check_termination(store) {
-            break reason;
-        }
-
-        if !stream_result.needs_tools() {
-            messages.push(Arc::new(Message::assistant(stream_result.text())));
-            complete_step(
-                store,
-                runtime,
-                &env,
-                sink,
-                checkpoint_store,
-                &messages,
-                &run_identity,
-                run_created_at,
-                total_input_tokens,
-                total_output_tokens,
-            )
-            .await?;
-            break TerminationReason::NaturalEnd;
-        }
-
-        // Add assistant message with tool calls
-        messages.push(Arc::new(Message::assistant_with_tool_calls(
-            stream_result.text(),
-            stream_result.tool_calls.clone(),
-        )));
-
-        // Check tool permissions and execute allowed tool calls.
-        //
-        // Permission check runs per tool call before execution:
-        // - Allow → execute the tool
-        // - Deny → skip execution, add error message
-        // - Suspend → skip execution, mark as suspended
-        let mut allowed_calls = Vec::new();
-        let mut suspended = false;
-        let mut blocked: Option<String> = None;
-        let mut tool_commands = Vec::new();
-
-        for call in &stream_result.tool_calls {
-            let perm_ctx = make_ctx(Phase::BeforeToolExecute, &messages, &run_identity)
-                .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
-            let perm_result = runtime.check_tool_permission(&env, &perm_ctx).await?;
-
-            match perm_result {
-                crate::runtime::ToolPermissionResult::Allow => {
-                    allowed_calls.push(call.clone());
-                }
-                crate::runtime::ToolPermissionResult::Deny { reason, message } => {
-                    let mut lifecycle_cmd = StateCommand::new();
-                    lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
-                        call_id: call.id.clone(),
-                        tool_name: call.name.clone(),
-                        arguments: call.arguments.clone(),
-                        status: ToolCallStatus::Failed,
-                        updated_at: now_ms(),
-                    });
-                    tool_commands.push(lifecycle_cmd);
-                    let tool_msg =
-                        message.unwrap_or_else(|| format!("Permission denied: {reason}"));
-                    messages.push(Arc::new(Message::tool(&call.id, tool_msg)));
-                }
-                crate::runtime::ToolPermissionResult::Block { reason } => {
-                    let mut lifecycle_cmd = StateCommand::new();
-                    lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
-                        call_id: call.id.clone(),
-                        tool_name: call.name.clone(),
-                        arguments: call.arguments.clone(),
-                        status: ToolCallStatus::Failed,
-                        updated_at: now_ms(),
-                    });
-                    tool_commands.push(lifecycle_cmd);
-                    blocked = Some(reason);
-                    break;
-                }
-                crate::runtime::ToolPermissionResult::Suspend => {
-                    let mut lifecycle_cmd = StateCommand::new();
-                    lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
-                        call_id: call.id.clone(),
-                        tool_name: call.name.clone(),
-                        arguments: call.arguments.clone(),
-                        status: ToolCallStatus::Suspended,
-                        updated_at: now_ms(),
-                    });
-                    tool_commands.push(lifecycle_cmd);
-                    messages.push(Arc::new(Message::tool(
-                        &call.id,
-                        "Tool call suspended: awaiting approval".to_string(),
-                    )));
-                    suspended = true;
-                }
-            }
-        }
-
-        // If a tool call was blocked, submit state updates and terminate the run.
-        if let Some(block_reason) = blocked {
-            if !tool_commands.is_empty() {
-                let merged = store.merge_all_commands(tool_commands)?;
-                runtime.submit_command(&env, merged).await?;
-            }
-            commit_update::<RunLifecycle>(
-                store,
-                RunLifecycleUpdate::Done {
-                    done_reason: format!("blocked:{block_reason}"),
-                    updated_at: now_ms(),
-                },
-            )?;
-            break TerminationReason::Blocked(block_reason);
-        }
-
-        // Execute allowed tool calls via ToolExecutor
-        let activity_buffer = Arc::new(awaken_contract::contract::event_sink::VecEventSink::new());
-        let tool_ctx = ToolCallContext {
-            call_id: String::new(),   // filled per-call by executor
-            tool_name: String::new(), // filled per-call by executor
-            run_identity: run_identity.clone(),
-            agent_spec: make_ctx(Phase::BeforeToolExecute, &messages, &run_identity).agent_spec,
-            snapshot: store.snapshot(),
-            activity_sink: Some(activity_buffer.clone()
-                as Arc<dyn awaken_contract::contract::event_sink::EventSink>),
-        };
-
-        // Opt-in file change tracking: snapshot before tool execution
-        let file_tracker = match agent.file_tracking_root {
-            Some(ref root) => {
-                let mut tracker = crate::agent::file_tracker::FileChangeTracker::new(root);
-                if let Err(e) = tracker.snapshot().await {
-                    tracing::warn!(error = %e, "file tracker snapshot failed, skipping file tracking");
-                    None
-                } else {
-                    Some(tracker)
-                }
-            }
-            None => None,
-        };
-
-        let exec_results = agent
-            .tool_executor
-            .execute(&agent.tools, &allowed_calls, &tool_ctx)
-            .await
-            .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
-
-        // File change tracking: diff after tool execution and emit file activities
-        if let Some(ref tracker) = file_tracker {
-            match tracker.diff().await {
-                Ok(changes) => {
-                    for change in changes {
-                        let op = match change.operation {
-                            crate::agent::file_tracker::FileChangeOperation::Created => {
-                                awaken_contract::contract::progress::FileOperation::Created
-                            }
-                            crate::agent::file_tracker::FileChangeOperation::Modified => {
-                                awaken_contract::contract::progress::FileOperation::Modified
-                            }
-                            crate::agent::file_tracker::FileChangeOperation::Deleted => {
-                                awaken_contract::contract::progress::FileOperation::Deleted
-                            }
-                        };
-                        let activity = awaken_contract::contract::progress::FileActivity {
-                            path: change.path.clone(),
-                            operation: op,
-                            media_type: None,
-                            size: change.size,
-                        };
-                        let content = serde_json::to_value(&activity).unwrap_or_default();
-                        sink.emit(AgentEvent::ActivitySnapshot {
-                            message_id: format!("file:{}", change.path),
-                            activity_type: awaken_contract::contract::progress::FILE_ACTIVITY_TYPE
-                                .into(),
-                            content,
-                            replace: Some(true),
-                        })
-                        .await;
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "file tracker diff failed");
-                }
-            }
-        }
-        // Drop the file tracker to release the snapshot memory
-        drop(file_tracker);
-
-        // Flush buffered activity events to the real sink
-        for activity_event in activity_buffer.take() {
-            sink.emit(activity_event).await;
-        }
-
-        // Process tool results: collect phase commands, merge, commit once.
-        for exec_result in &exec_results {
-            let call = &exec_result.call;
-            let tool_result = &exec_result.result;
-
-            sink.emit(AgentEvent::ToolCallStart {
-                id: call.id.clone(),
-                name: call.name.clone(),
-            })
-            .await;
-
-            // Collect BeforeToolExecute hook commands (no commit)
-            let before_ctx = make_ctx(Phase::BeforeToolExecute, &messages, &run_identity)
-                .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
-            let before_cmd = runtime.collect_commands(&env, before_ctx).await?;
-            if !before_cmd.is_empty() {
-                tool_commands.push(before_cmd);
-            }
-
-            // Build tool call state transitions as a command
-            let terminal_status = match exec_result.outcome {
-                ToolCallOutcome::Suspended => ToolCallStatus::Suspended,
-                ToolCallOutcome::Succeeded => ToolCallStatus::Succeeded,
-                ToolCallOutcome::Failed => ToolCallStatus::Failed,
-            };
-            let mut lifecycle_cmd = StateCommand::new();
-            lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
-                call_id: call.id.clone(),
-                tool_name: call.name.clone(),
-                arguments: call.arguments.clone(),
-                status: ToolCallStatus::Running,
-                updated_at: now_ms(),
-            });
-            lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
-                call_id: call.id.clone(),
-                tool_name: call.name.clone(),
-                arguments: call.arguments.clone(),
-                status: terminal_status,
-                updated_at: now_ms(),
-            });
-            tool_commands.push(lifecycle_cmd);
-
-            tracing::info!(
-                tool_name = %call.name,
-                call_id = %call.id,
-                outcome = ?exec_result.outcome,
-                "tool_call_done"
-            );
-
-            sink.emit(AgentEvent::ToolCallDone {
-                id: call.id.clone(),
-                message_id: String::new(),
-                result: tool_result.clone(),
-                outcome: exec_result.outcome,
-            })
-            .await;
-
-            // Collect AfterToolExecute hook commands (no commit)
-            let after_ctx = make_ctx(Phase::AfterToolExecute, &messages, &run_identity)
-                .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()))
-                .with_tool_result(tool_result.clone());
-            let after_cmd = runtime.collect_commands(&env, after_ctx).await?;
-            if !after_cmd.is_empty() {
-                tool_commands.push(after_cmd);
-            }
-
-            let tool_content = tool_result_to_content(tool_result);
-            messages.push(Arc::new(Message::tool(&call.id, tool_content)));
-
-            if exec_result.outcome == ToolCallOutcome::Suspended {
-                suspended = true;
-            }
-        }
-
-        // Merge all tool call commands and submit once
-        if !tool_commands.is_empty() {
-            let merged = store.merge_all_commands(tool_commands)?;
-            runtime.submit_command(&env, merged).await?;
-        }
-
-        // Check termination after tool execution
-        if let Some(reason) = check_termination(store) {
-            break reason;
-        }
-
-        if suspended {
-            // Transition run to Waiting
-            commit_update::<RunLifecycle>(
-                store,
-                RunLifecycleUpdate::SetWaiting {
-                    updated_at: now_ms(),
-                },
-            )?;
-            complete_step(
-                store,
-                runtime,
-                &env,
-                sink,
-                checkpoint_store,
-                &messages,
-                &run_identity,
-                run_created_at,
-                total_input_tokens,
-                total_output_tokens,
-            )
-            .await?;
-
-            match wait_for_resume_or_cancel(
-                decision_rx.as_mut(),
-                cancellation_token.as_ref(),
-                store,
-                &agent,
-                &run_identity,
-                &mut messages,
-            )
-            .await?
-            {
-                WaitOutcome::Resumed => {
-                    commit_update::<RunLifecycle>(
-                        store,
-                        RunLifecycleUpdate::SetRunning {
-                            updated_at: now_ms(),
-                        },
-                    )?;
-                    continue;
-                }
-                WaitOutcome::Cancelled => break TerminationReason::Cancelled,
-                WaitOutcome::NoDecisionChannel => break TerminationReason::Suspended,
-            }
-        }
-
-        complete_step(
-            store,
+        let mut step_ctx = StepContext {
+            agent: &mut agent,
+            env: &mut env,
+            messages: &mut messages,
             runtime,
-            &env,
             sink,
             checkpoint_store,
-            &messages,
-            &run_identity,
+            run_identity: &run_identity,
+            cancellation_token: cancellation_token.as_ref(),
+            run_overrides: &run_overrides,
+            total_input_tokens: &mut total_input_tokens,
+            total_output_tokens: &mut total_output_tokens,
+            truncation_state: &mut truncation_state,
             run_created_at,
-            total_input_tokens,
-            total_output_tokens,
-        )
-        .await?;
-        if let Some(reason) = check_termination(store) {
-            break reason;
+        };
+
+        match execute_step(&mut step_ctx).await? {
+            StepOutcome::Cancelled => {
+                break TerminationReason::Cancelled;
+            }
+            StepOutcome::NaturalEnd => {
+                break TerminationReason::NaturalEnd;
+            }
+            StepOutcome::Blocked(reason) => {
+                break TerminationReason::Blocked(reason);
+            }
+            StepOutcome::Terminated(reason) => {
+                break reason;
+            }
+            StepOutcome::Suspended => {
+                // Transition run to Waiting
+                commit_update::<RunLifecycle>(
+                    store,
+                    RunLifecycleUpdate::SetWaiting {
+                        updated_at: now_ms(),
+                    },
+                )?;
+                complete_step(
+                    store,
+                    runtime,
+                    &env,
+                    sink,
+                    checkpoint_store,
+                    &messages,
+                    &run_identity,
+                    run_created_at,
+                    total_input_tokens,
+                    total_output_tokens,
+                )
+                .await?;
+
+                match wait_for_resume_or_cancel(
+                    decision_rx.as_mut(),
+                    cancellation_token.as_ref(),
+                    store,
+                    &agent,
+                    &run_identity,
+                    &mut messages,
+                )
+                .await?
+                {
+                    WaitOutcome::Resumed => {
+                        commit_update::<RunLifecycle>(
+                            store,
+                            RunLifecycleUpdate::SetRunning {
+                                updated_at: now_ms(),
+                            },
+                        )?;
+                        continue;
+                    }
+                    WaitOutcome::Cancelled => break TerminationReason::Cancelled,
+                    WaitOutcome::NoDecisionChannel => break TerminationReason::Suspended,
+                }
+            }
+            StepOutcome::Continue => {
+                complete_step(
+                    store,
+                    runtime,
+                    &env,
+                    sink,
+                    checkpoint_store,
+                    &messages,
+                    &run_identity,
+                    run_created_at,
+                    total_input_tokens,
+                    total_output_tokens,
+                )
+                .await?;
+                if let Some(reason) = check_termination(store) {
+                    break reason;
+                }
+            }
         }
     };
 
+    // --- Run lifecycle: Done ---
     tracing::warn!(reason = ?termination, "run_terminated");
 
-    // --- Run lifecycle: Done (unless Suspended → Waiting, not Done) ---
     let (target_status, done_reason) = termination.to_run_status();
     if target_status.is_terminal() {
         commit_update::<RunLifecycle>(

@@ -1,0 +1,579 @@
+//! Single step execution: inference, tool execution, and tool result processing.
+
+use std::sync::Arc;
+
+use crate::agent::config::AgentConfig;
+use crate::runtime::{CancellationToken, ExecutionEnv, PhaseContext, PhaseRuntime};
+use crate::state::StateCommand;
+use awaken_contract::contract::event::AgentEvent;
+use awaken_contract::contract::event_sink::EventSink;
+use awaken_contract::contract::executor::InferenceRequest;
+use awaken_contract::contract::identity::RunIdentity;
+use awaken_contract::contract::inference::{InferenceOverride, LLMResponse};
+use awaken_contract::contract::lifecycle::TerminationReason;
+use awaken_contract::contract::message::Message;
+use awaken_contract::contract::storage::ThreadRunStore;
+use awaken_contract::contract::suspension::{ToolCallOutcome, ToolCallStatus};
+use awaken_contract::contract::tool::ToolCallContext;
+use awaken_contract::model::Phase;
+
+use super::super::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
+use super::actions::{
+    apply_context_messages, take_accumulated_overrides, take_and_apply_tool_filters,
+    take_context_messages,
+};
+use super::checkpoint::{check_termination, complete_step};
+use super::inference::{compact_with_llm, execute_streaming};
+use super::truncation_recovery::{self, TruncationState};
+use super::{AgentLoopError, commit_update, now_ms, tool_result_to_content};
+
+/// Outcome of a single step.
+pub(super) enum StepOutcome {
+    /// The LLM responded with text only; run ends naturally.
+    NaturalEnd,
+    /// Tool calls were executed; continue to next step.
+    Continue,
+    /// A tool call was blocked; run terminates.
+    Blocked(String),
+    /// One or more tool calls are suspended.
+    Suspended,
+    /// Cancellation detected.
+    Cancelled,
+    /// A lifecycle hook signalled termination.
+    Terminated(TerminationReason),
+}
+
+/// Context passed into each step of the agent loop.
+pub(super) struct StepContext<'a> {
+    pub agent: &'a mut AgentConfig,
+    pub env: &'a mut ExecutionEnv,
+    pub messages: &'a mut Vec<Arc<Message>>,
+    pub runtime: &'a PhaseRuntime,
+    pub sink: &'a dyn EventSink,
+    pub checkpoint_store: Option<&'a dyn ThreadRunStore>,
+    pub run_identity: &'a RunIdentity,
+    pub cancellation_token: Option<&'a CancellationToken>,
+    pub run_overrides: &'a Option<InferenceOverride>,
+    pub total_input_tokens: &'a mut u64,
+    pub total_output_tokens: &'a mut u64,
+    pub truncation_state: &'a mut TruncationState,
+    pub run_created_at: u64,
+}
+
+fn make_ctx(
+    phase: Phase,
+    msgs: &[Arc<Message>],
+    identity: &RunIdentity,
+    store: &crate::state::StateStore,
+) -> PhaseContext {
+    PhaseContext::new(phase, store.snapshot())
+        .with_run_identity(identity.clone())
+        .with_messages(msgs.to_vec())
+}
+
+/// Execute a single step of the agent loop: inference + tool execution + checkpoint.
+pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcome, AgentLoopError> {
+    let store = ctx.runtime.store();
+
+    // --- Cancellation check ---
+    if ctx.cancellation_token.is_some_and(|t| t.is_cancelled()) {
+        commit_update::<RunLifecycle>(
+            store,
+            RunLifecycleUpdate::Done {
+                done_reason: "cancelled".into(),
+                updated_at: now_ms(),
+            },
+        )?;
+        return Ok(StepOutcome::Cancelled);
+    }
+
+    // --- Handoff: check ActiveAgentKey for agent switch ---
+    // (resolver not passed; handoff handled in orchestrator before calling step)
+
+    // --- Phase hooks: StepStart ---
+    ctx.runtime
+        .run_phase_with_context(
+            ctx.env,
+            make_ctx(Phase::StepStart, ctx.messages, ctx.run_identity, store),
+        )
+        .await?;
+    if let Some(reason) = check_termination(store) {
+        return Ok(StepOutcome::Terminated(reason));
+    }
+
+    // --- Phase hooks: BeforeInference ---
+    ctx.runtime
+        .run_phase_with_context(
+            ctx.env,
+            make_ctx(
+                Phase::BeforeInference,
+                ctx.messages,
+                ctx.run_identity,
+                store,
+            ),
+        )
+        .await?;
+    if let Some(reason) = check_termination(store) {
+        return Ok(StepOutcome::Terminated(reason));
+    }
+
+    // --- LLM compaction ---
+    if let Some(ref policy) = ctx.agent.context_policy
+        && let Some(threshold) = policy.autocompact_threshold
+    {
+        let token_est = awaken_contract::contract::transform::estimate_tokens_arc(ctx.messages);
+        if token_est >= threshold {
+            compact_with_llm(ctx.agent, ctx.messages, policy).await?;
+        }
+    }
+
+    // --- Build inference request ---
+    let mut overrides = ctx.run_overrides.clone();
+    if let Some(runtime_overrides) = take_accumulated_overrides(store)? {
+        if let Some(merged) = overrides.as_mut() {
+            merged.merge(runtime_overrides);
+        } else {
+            overrides = Some(runtime_overrides);
+        }
+    }
+    let context_msgs = take_context_messages(store)?;
+
+    let has_system_prompt = !ctx.agent.system_prompt.is_empty();
+    let mut request_messages: Vec<Message> = Vec::new();
+    if has_system_prompt {
+        request_messages.push(Message::system(&ctx.agent.system_prompt));
+    }
+    request_messages.extend(ctx.messages.iter().map(|m| (**m).clone()));
+
+    if !context_msgs.is_empty() {
+        apply_context_messages(&mut request_messages, context_msgs, has_system_prompt);
+    }
+
+    let mut tools = ctx.agent.tool_descriptors();
+    take_and_apply_tool_filters(store, &mut tools)?;
+    let request_messages = awaken_contract::contract::transform::apply_transforms(
+        request_messages,
+        &tools,
+        &ctx.env.request_transforms,
+    );
+
+    let start = std::time::Instant::now();
+    let enable_prompt_cache = ctx
+        .agent
+        .context_policy
+        .as_ref()
+        .is_some_and(|p| p.enable_prompt_cache);
+    let request = InferenceRequest {
+        model: ctx.agent.model.clone(),
+        messages: request_messages,
+        tools,
+        system: vec![],
+        overrides,
+        enable_prompt_cache,
+    };
+
+    // --- Inference ---
+    let mut stream_result = execute_streaming(
+        ctx.agent,
+        request,
+        ctx.sink,
+        ctx.cancellation_token,
+        ctx.total_input_tokens,
+        ctx.total_output_tokens,
+    )
+    .await?;
+
+    // --- Truncation recovery ---
+    while truncation_recovery::should_retry(
+        &stream_result,
+        ctx.truncation_state,
+        ctx.agent.max_continuation_retries,
+    ) {
+        let partial_text = stream_result.text();
+        ctx.messages
+            .push(Arc::new(Message::assistant(&partial_text)));
+        ctx.messages
+            .push(Arc::new(truncation_recovery::continuation_message()));
+
+        let has_sys = !ctx.agent.system_prompt.is_empty();
+        let mut cont_messages: Vec<Message> = Vec::new();
+        if has_sys {
+            cont_messages.push(Message::system(&ctx.agent.system_prompt));
+        }
+        cont_messages.extend(ctx.messages.iter().map(|m| (**m).clone()));
+        let cont_messages = awaken_contract::contract::transform::apply_transforms(
+            cont_messages,
+            &ctx.agent.tool_descriptors(),
+            &ctx.env.request_transforms,
+        );
+
+        let cont_request = InferenceRequest {
+            model: ctx.agent.model.clone(),
+            messages: cont_messages,
+            tools: ctx.agent.tool_descriptors(),
+            system: vec![],
+            overrides: ctx.run_overrides.clone(),
+            enable_prompt_cache: false,
+        };
+
+        stream_result = execute_streaming(
+            ctx.agent,
+            cont_request,
+            ctx.sink,
+            ctx.cancellation_token,
+            ctx.total_input_tokens,
+            ctx.total_output_tokens,
+        )
+        .await?;
+    }
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    tracing::info!(
+        model = %ctx.agent.model,
+        input_tokens = *ctx.total_input_tokens,
+        output_tokens = *ctx.total_output_tokens,
+        duration_ms,
+        "inference_complete"
+    );
+
+    // --- Post-inference cancellation check ---
+    if ctx.cancellation_token.is_some_and(|t| t.is_cancelled()) {
+        ctx.sink
+            .emit(AgentEvent::InferenceComplete {
+                model: ctx.agent.model.clone(),
+                usage: stream_result.usage.clone(),
+                duration_ms,
+            })
+            .await;
+        commit_update::<RunLifecycle>(
+            store,
+            RunLifecycleUpdate::Done {
+                done_reason: "cancelled".into(),
+                updated_at: now_ms(),
+            },
+        )?;
+        return Ok(StepOutcome::Cancelled);
+    }
+    ctx.sink
+        .emit(AgentEvent::InferenceComplete {
+            model: ctx.agent.model.clone(),
+            usage: stream_result.usage.clone(),
+            duration_ms,
+        })
+        .await;
+
+    // --- AfterInference phase ---
+    let llm_response = LLMResponse::success(stream_result.clone());
+    let after_inf_ctx = make_ctx(Phase::AfterInference, ctx.messages, ctx.run_identity, store)
+        .with_llm_response(llm_response);
+    ctx.runtime
+        .run_phase_with_context(ctx.env, after_inf_ctx)
+        .await?;
+    if let Some(reason) = check_termination(store) {
+        return Ok(StepOutcome::Terminated(reason));
+    }
+
+    // --- No tools needed: natural end ---
+    if !stream_result.needs_tools() {
+        ctx.messages
+            .push(Arc::new(Message::assistant(stream_result.text())));
+        complete_step(
+            store,
+            ctx.runtime,
+            ctx.env,
+            ctx.sink,
+            ctx.checkpoint_store,
+            ctx.messages,
+            ctx.run_identity,
+            ctx.run_created_at,
+            *ctx.total_input_tokens,
+            *ctx.total_output_tokens,
+        )
+        .await?;
+        return Ok(StepOutcome::NaturalEnd);
+    }
+
+    // --- Tool calls ---
+    ctx.messages
+        .push(Arc::new(Message::assistant_with_tool_calls(
+            stream_result.text(),
+            stream_result.tool_calls.clone(),
+        )));
+
+    let mut allowed_calls = Vec::new();
+    let mut suspended = false;
+    let mut blocked: Option<String> = None;
+    let mut tool_commands = Vec::new();
+
+    // Permission checks
+    for call in &stream_result.tool_calls {
+        let perm_ctx = make_ctx(
+            Phase::BeforeToolExecute,
+            ctx.messages,
+            ctx.run_identity,
+            store,
+        )
+        .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
+        let perm_result = ctx
+            .runtime
+            .check_tool_permission(ctx.env, &perm_ctx)
+            .await?;
+
+        match perm_result {
+            crate::runtime::ToolPermissionResult::Allow => {
+                allowed_calls.push(call.clone());
+            }
+            crate::runtime::ToolPermissionResult::Deny { reason, message } => {
+                let mut lifecycle_cmd = StateCommand::new();
+                lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
+                    call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                    status: ToolCallStatus::Failed,
+                    updated_at: now_ms(),
+                });
+                tool_commands.push(lifecycle_cmd);
+                let tool_msg = message.unwrap_or_else(|| format!("Permission denied: {reason}"));
+                ctx.messages
+                    .push(Arc::new(Message::tool(&call.id, tool_msg)));
+            }
+            crate::runtime::ToolPermissionResult::Block { reason } => {
+                let mut lifecycle_cmd = StateCommand::new();
+                lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
+                    call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                    status: ToolCallStatus::Failed,
+                    updated_at: now_ms(),
+                });
+                tool_commands.push(lifecycle_cmd);
+                blocked = Some(reason);
+                break;
+            }
+            crate::runtime::ToolPermissionResult::Suspend => {
+                let mut lifecycle_cmd = StateCommand::new();
+                lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
+                    call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                    status: ToolCallStatus::Suspended,
+                    updated_at: now_ms(),
+                });
+                tool_commands.push(lifecycle_cmd);
+                ctx.messages.push(Arc::new(Message::tool(
+                    &call.id,
+                    "Tool call suspended: awaiting approval".to_string(),
+                )));
+                suspended = true;
+            }
+        }
+    }
+
+    // Blocked → terminate
+    if let Some(block_reason) = blocked {
+        if !tool_commands.is_empty() {
+            let merged = store.merge_all_commands(tool_commands)?;
+            ctx.runtime.submit_command(ctx.env, merged).await?;
+        }
+        commit_update::<RunLifecycle>(
+            store,
+            RunLifecycleUpdate::Done {
+                done_reason: format!("blocked:{block_reason}"),
+                updated_at: now_ms(),
+            },
+        )?;
+        return Ok(StepOutcome::Blocked(block_reason));
+    }
+
+    // --- Execute allowed tool calls ---
+    let activity_buffer = Arc::new(awaken_contract::contract::event_sink::VecEventSink::new());
+    let tool_ctx = ToolCallContext {
+        call_id: String::new(),
+        tool_name: String::new(),
+        run_identity: ctx.run_identity.clone(),
+        agent_spec: make_ctx(
+            Phase::BeforeToolExecute,
+            ctx.messages,
+            ctx.run_identity,
+            store,
+        )
+        .agent_spec,
+        snapshot: store.snapshot(),
+        activity_sink: Some(
+            activity_buffer.clone() as Arc<dyn awaken_contract::contract::event_sink::EventSink>
+        ),
+    };
+
+    // Opt-in file change tracking
+    let file_tracker = match ctx.agent.file_tracking_root {
+        Some(ref root) => {
+            let mut tracker = crate::agent::file_tracker::FileChangeTracker::new(root);
+            if let Err(e) = tracker.snapshot().await {
+                tracing::warn!(error = %e, "file tracker snapshot failed, skipping file tracking");
+                None
+            } else {
+                Some(tracker)
+            }
+        }
+        None => None,
+    };
+
+    let exec_results = ctx
+        .agent
+        .tool_executor
+        .execute(&ctx.agent.tools, &allowed_calls, &tool_ctx)
+        .await
+        .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
+
+    // File change tracking: diff and emit
+    if let Some(ref tracker) = file_tracker {
+        emit_file_changes(tracker, ctx.sink).await;
+    }
+    drop(file_tracker);
+
+    // Flush buffered activity events
+    for activity_event in activity_buffer.take() {
+        ctx.sink.emit(activity_event).await;
+    }
+
+    // Process tool results
+    for exec_result in &exec_results {
+        let call = &exec_result.call;
+        let tool_result = &exec_result.result;
+
+        ctx.sink
+            .emit(AgentEvent::ToolCallStart {
+                id: call.id.clone(),
+                name: call.name.clone(),
+            })
+            .await;
+
+        let before_ctx = make_ctx(
+            Phase::BeforeToolExecute,
+            ctx.messages,
+            ctx.run_identity,
+            store,
+        )
+        .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
+        let before_cmd = ctx.runtime.collect_commands(ctx.env, before_ctx).await?;
+        if !before_cmd.is_empty() {
+            tool_commands.push(before_cmd);
+        }
+
+        let terminal_status = match exec_result.outcome {
+            ToolCallOutcome::Suspended => ToolCallStatus::Suspended,
+            ToolCallOutcome::Succeeded => ToolCallStatus::Succeeded,
+            ToolCallOutcome::Failed => ToolCallStatus::Failed,
+        };
+        let mut lifecycle_cmd = StateCommand::new();
+        lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
+            call_id: call.id.clone(),
+            tool_name: call.name.clone(),
+            arguments: call.arguments.clone(),
+            status: ToolCallStatus::Running,
+            updated_at: now_ms(),
+        });
+        lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
+            call_id: call.id.clone(),
+            tool_name: call.name.clone(),
+            arguments: call.arguments.clone(),
+            status: terminal_status,
+            updated_at: now_ms(),
+        });
+        tool_commands.push(lifecycle_cmd);
+
+        tracing::info!(
+            tool_name = %call.name,
+            call_id = %call.id,
+            outcome = ?exec_result.outcome,
+            "tool_call_done"
+        );
+
+        ctx.sink
+            .emit(AgentEvent::ToolCallDone {
+                id: call.id.clone(),
+                message_id: String::new(),
+                result: tool_result.clone(),
+                outcome: exec_result.outcome,
+            })
+            .await;
+
+        let after_ctx = make_ctx(
+            Phase::AfterToolExecute,
+            ctx.messages,
+            ctx.run_identity,
+            store,
+        )
+        .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()))
+        .with_tool_result(tool_result.clone());
+        let after_cmd = ctx.runtime.collect_commands(ctx.env, after_ctx).await?;
+        if !after_cmd.is_empty() {
+            tool_commands.push(after_cmd);
+        }
+
+        let tool_content = tool_result_to_content(tool_result);
+        ctx.messages
+            .push(Arc::new(Message::tool(&call.id, tool_content)));
+
+        if exec_result.outcome == ToolCallOutcome::Suspended {
+            suspended = true;
+        }
+    }
+
+    // Merge all tool call commands and submit once
+    if !tool_commands.is_empty() {
+        let merged = store.merge_all_commands(tool_commands)?;
+        ctx.runtime.submit_command(ctx.env, merged).await?;
+    }
+
+    if let Some(reason) = check_termination(store) {
+        return Ok(StepOutcome::Terminated(reason));
+    }
+
+    if suspended {
+        return Ok(StepOutcome::Suspended);
+    }
+
+    Ok(StepOutcome::Continue)
+}
+
+/// Emit file change activities from the file tracker.
+async fn emit_file_changes(
+    tracker: &crate::agent::file_tracker::FileChangeTracker,
+    sink: &dyn EventSink,
+) {
+    match tracker.diff().await {
+        Ok(changes) => {
+            for change in changes {
+                let op = match change.operation {
+                    crate::agent::file_tracker::FileChangeOperation::Created => {
+                        awaken_contract::contract::progress::FileOperation::Created
+                    }
+                    crate::agent::file_tracker::FileChangeOperation::Modified => {
+                        awaken_contract::contract::progress::FileOperation::Modified
+                    }
+                    crate::agent::file_tracker::FileChangeOperation::Deleted => {
+                        awaken_contract::contract::progress::FileOperation::Deleted
+                    }
+                };
+                let activity = awaken_contract::contract::progress::FileActivity {
+                    path: change.path.clone(),
+                    operation: op,
+                    media_type: None,
+                    size: change.size,
+                };
+                let content = serde_json::to_value(&activity).unwrap_or_default();
+                sink.emit(AgentEvent::ActivitySnapshot {
+                    message_id: format!("file:{}", change.path),
+                    activity_type: awaken_contract::contract::progress::FILE_ACTIVITY_TYPE.into(),
+                    content,
+                    replace: Some(true),
+                })
+                .await;
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "file tracker diff failed");
+        }
+    }
+}

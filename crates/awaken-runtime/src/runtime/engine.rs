@@ -366,7 +366,7 @@ impl PhaseRuntime {
 
         // Fast path: no Exclusive key overlap → merge all, commit once
         let has_conflicts = {
-            let registry = self.store.registry.lock().expect("registry lock poisoned");
+            let registry = self.store.registry.lock();
             has_exclusive_key_overlap(&indexed, |k| registry.merge_strategy(k))
         };
 
@@ -393,7 +393,7 @@ impl PhaseRuntime {
         // Conflict fallback: partition into compatible batch + deferred
         tracing::warn!(phase = ?base_ctx.phase, "exclusive_conflict_fallback");
         let (batch_commands, deferred_indices) = {
-            let registry = self.store.registry.lock().expect("registry lock poisoned");
+            let registry = self.store.registry.lock();
             partition_commands(indexed, |k| registry.merge_strategy(k))
         };
 

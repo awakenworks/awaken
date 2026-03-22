@@ -1,7 +1,8 @@
 //! ActiveRunRegistry: tracks active runs with dual indexing (run_id + thread_id).
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+
+use parking_lot::RwLock;
 
 use super::RunHandle;
 
@@ -23,59 +24,32 @@ impl ActiveRunRegistry {
     /// Register a run with both run_id and thread_id indexing.
     /// Returns `false` if the thread already has an active run.
     pub(super) fn register(&self, run_id: &str, thread_id: &str, handle: RunHandle) -> bool {
-        let mut by_thread = self
-            .by_thread_id
-            .write()
-            .expect("active runs thread lock poisoned");
+        let mut by_thread = self.by_thread_id.write();
         if by_thread.contains_key(thread_id) {
             return false;
         }
         by_thread.insert(thread_id.to_string(), run_id.to_string());
         drop(by_thread);
 
-        self.by_run_id
-            .write()
-            .expect("active runs lock poisoned")
-            .insert(run_id.to_string(), handle);
+        self.by_run_id.write().insert(run_id.to_string(), handle);
         true
     }
 
     /// Unregister a run by run_id. Removes both run_id and thread_id mappings.
     pub(super) fn unregister(&self, run_id: &str) {
-        self.by_run_id
-            .write()
-            .expect("active runs lock poisoned")
-            .remove(run_id);
-
-        self.by_thread_id
-            .write()
-            .expect("active runs thread lock poisoned")
-            .retain(|_, v| v != run_id);
+        self.by_run_id.write().remove(run_id);
+        self.by_thread_id.write().retain(|_, v| v != run_id);
     }
 
     /// Look up a handle by run_id.
     pub(super) fn get_by_run_id(&self, run_id: &str) -> Option<RunHandle> {
-        self.by_run_id
-            .read()
-            .expect("active runs lock poisoned")
-            .get(run_id)
-            .cloned()
+        self.by_run_id.read().get(run_id).cloned()
     }
 
-    /// Look up a handle by thread_id (resolves thread_id → run_id → handle).
+    /// Look up a handle by thread_id (resolves thread_id -> run_id -> handle).
     pub(super) fn get_by_thread_id(&self, thread_id: &str) -> Option<RunHandle> {
-        let run_id = self
-            .by_thread_id
-            .read()
-            .expect("active runs thread lock poisoned")
-            .get(thread_id)
-            .cloned()?;
-
-        self.by_run_id
-            .read()
-            .expect("active runs lock poisoned")
-            .get(&run_id)
-            .cloned()
+        let run_id = self.by_thread_id.read().get(thread_id).cloned()?;
+        self.by_run_id.read().get(&run_id).cloned()
     }
 
     /// Look up a handle by trying run_id first, then thread_id.

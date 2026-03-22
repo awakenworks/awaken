@@ -68,7 +68,7 @@ pub use agent::loop_runner::parallel_merge::{
 pub use registry::composite::{CompositeAgentSpecRegistry, DiscoveryError, RemoteAgentSource};
 
 // ── builder ──
-pub use builder::AgentRuntimeBuilder;
+pub use builder::{AgentRuntimeBuilder, BuildError};
 
 // ── plugins ──
 pub use plugins::{Plugin, PluginDescriptor, PluginRegistrar};

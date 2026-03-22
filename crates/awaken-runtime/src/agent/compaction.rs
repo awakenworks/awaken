@@ -1643,7 +1643,7 @@ mod tests {
 
         let store = StateStore::new();
         store.install_plugin(CompactionPlugin::default()).unwrap();
-        let registry = store.registry.lock().unwrap();
+        let registry = store.registry.lock();
         assert!(registry.keys_by_name.contains_key("__context_compaction"));
     }
 

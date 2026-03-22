@@ -18,6 +18,7 @@ tokio = { workspace = true }
 reqwest = { workspace = true }
 schemars = { workspace = true }
 jsonschema = { workspace = true }
+parking_lot = { workspace = true }
 
 [dev-dependencies]
 awaken-stores = { workspace = true }

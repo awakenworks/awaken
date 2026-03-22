@@ -10,6 +10,7 @@ use std::sync::Arc;
 use awaken_contract::contract::storage::ThreadRunStore;
 
 use crate::error::RuntimeError;
+use crate::registry::composite::CompositeAgentSpecRegistry;
 use awaken_contract::contract::suspension::ToolCallResume;
 use futures::channel::mpsc;
 
@@ -67,6 +68,7 @@ pub struct AgentRuntime {
     pub(crate) resolver: Arc<dyn AgentResolver>,
     pub(crate) storage: Option<Arc<dyn ThreadRunStore>>,
     pub(crate) active_runs: ActiveRunRegistry,
+    composite_registry: Option<Arc<CompositeAgentSpecRegistry>>,
 }
 
 impl AgentRuntime {
@@ -75,6 +77,7 @@ impl AgentRuntime {
             resolver,
             storage: None,
             active_runs: ActiveRunRegistry::new(),
+            composite_registry: None,
         }
     }
 
@@ -91,6 +94,31 @@ impl AgentRuntime {
     /// Return a cloned `Arc` of the agent resolver.
     pub fn resolver_arc(&self) -> Arc<dyn AgentResolver> {
         Arc::clone(&self.resolver)
+    }
+
+    #[must_use]
+    pub fn with_composite_registry(mut self, registry: Arc<CompositeAgentSpecRegistry>) -> Self {
+        self.composite_registry = Some(registry);
+        self
+    }
+
+    /// Return the composite registry, if one was configured.
+    pub fn composite_registry(&self) -> Option<&Arc<CompositeAgentSpecRegistry>> {
+        self.composite_registry.as_ref()
+    }
+
+    /// Initialize the runtime — discover remote agents.
+    /// Call this after `build()` to complete async initialization.
+    pub async fn initialize(&self) -> Result<(), RuntimeError> {
+        if let Some(composite) = &self.composite_registry {
+            composite
+                .discover()
+                .await
+                .map_err(|e| RuntimeError::ResolveFailed {
+                    message: format!("remote agent discovery failed: {e}"),
+                })?;
+        }
+        Ok(())
     }
 
     pub fn thread_run_store(&self) -> Option<&dyn ThreadRunStore> {

@@ -8,7 +8,9 @@
 //! all sources with local taking precedence.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+use parking_lot::RwLock;
 
 use awaken_contract::contract::agent_card::AgentCard;
 use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
@@ -142,7 +144,7 @@ impl CompositeAgentSpecRegistry {
             new_cache.insert(spec.id.clone(), (source.name.clone(), spec));
         }
 
-        let mut cache = self.cache.write().expect("cache lock poisoned");
+        let mut cache = self.cache.write();
         *cache = new_cache;
         Ok(())
     }
@@ -160,7 +162,7 @@ impl AgentSpecRegistry for CompositeAgentSpecRegistry {
             if source == self.local_name {
                 return self.local.get_agent(agent_id);
             }
-            let cache = self.cache.read().expect("cache lock poisoned");
+            let cache = self.cache.read();
             return cache
                 .get(agent_id)
                 .filter(|(s, _)| s == source)
@@ -172,7 +174,7 @@ impl AgentSpecRegistry for CompositeAgentSpecRegistry {
             return Some(spec);
         }
 
-        let cache = self.cache.read().expect("cache lock poisoned");
+        let cache = self.cache.read();
         cache.get(id).map(|(_, spec)| spec.clone())
     }
 
@@ -183,7 +185,7 @@ impl AgentSpecRegistry for CompositeAgentSpecRegistry {
             .into_iter()
             .map(|id| format!("{}/{}", self.local_name, id))
             .collect();
-        let cache = self.cache.read().expect("cache lock poisoned");
+        let cache = self.cache.read();
         for (id, (source, _)) in cache.iter() {
             ids.push(format!("{}/{}", source, id));
         }
@@ -259,7 +261,7 @@ mod tests {
 
         // Manually populate cache to simulate discovery
         {
-            let mut cache = composite.cache.write().unwrap();
+            let mut cache = composite.cache.write();
             cache.insert(
                 "remote-coder".into(),
                 (
@@ -291,7 +293,7 @@ mod tests {
 
         // Add a remote agent with the same ID as a local agent
         {
-            let mut cache = composite.cache.write().unwrap();
+            let mut cache = composite.cache.write();
             cache.insert(
                 "local-agent".into(),
                 (
@@ -322,7 +324,7 @@ mod tests {
         let composite = CompositeAgentSpecRegistry::new(make_local_registry());
 
         {
-            let mut cache = composite.cache.write().unwrap();
+            let mut cache = composite.cache.write();
             cache.insert(
                 "remote-agent".into(),
                 (
@@ -411,7 +413,7 @@ mod tests {
         let composite = CompositeAgentSpecRegistry::new(make_local_registry());
 
         {
-            let mut cache = composite.cache.write().unwrap();
+            let mut cache = composite.cache.write();
             cache.insert(
                 "translator".into(),
                 (
@@ -436,7 +438,7 @@ mod tests {
         let composite = CompositeAgentSpecRegistry::new(make_local_registry());
 
         {
-            let mut cache = composite.cache.write().unwrap();
+            let mut cache = composite.cache.write();
             cache.insert(
                 "translator".into(),
                 (
@@ -477,7 +479,7 @@ mod tests {
         let composite = CompositeAgentSpecRegistry::new(make_local_registry());
 
         {
-            let mut cache = composite.cache.write().unwrap();
+            let mut cache = composite.cache.write();
             cache.insert(
                 "summarizer".into(),
                 (
