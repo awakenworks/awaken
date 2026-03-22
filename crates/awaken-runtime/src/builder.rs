@@ -126,17 +126,20 @@ impl AgentRuntimeBuilder {
         self
     }
 
-    /// Add a remote A2A agent source for discovery.
+    /// Add a named remote A2A agent source for discovery.
     ///
     /// When remote sources are configured, the builder creates a
     /// [`CompositeAgentSpecRegistry`] that combines local agents with
-    /// agents discovered from remote A2A endpoints.
+    /// agents discovered from remote A2A endpoints. The `name` is used
+    /// for namespaced agent lookup (e.g., `"cloud/translator"`).
     pub fn with_remote_agents(
         mut self,
+        name: impl Into<String>,
         base_url: impl Into<String>,
         bearer_token: Option<String>,
     ) -> Self {
         self.remote_sources.push(RemoteAgentSource {
+            name: name.into(),
             base_url: base_url.into(),
             bearer_token,
         });

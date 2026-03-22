@@ -2,6 +2,10 @@
 //!
 //! Queries local agents first, then falls back to cached remote agents
 //! discovered via the A2A agent card protocol.
+//!
+//! Supports namespaced agent lookup: `"cloud/translator"` looks up agent
+//! `"translator"` only in the `"cloud"` source, while `"analyst"` searches
+//! all sources with local taking precedence.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -28,9 +32,11 @@ pub enum DiscoveryError {
 // RemoteAgentSource
 // ---------------------------------------------------------------------------
 
-/// A source for remote agent discovery.
+/// A named source for remote agent discovery.
 #[derive(Debug, Clone)]
 pub struct RemoteAgentSource {
+    /// Name of this registry source (e.g., "cloud", "internal", "partner").
+    pub name: String,
     /// Base URL of the remote A2A server.
     pub base_url: String,
     /// Optional bearer token for authentication.
@@ -43,16 +49,19 @@ pub struct RemoteAgentSource {
 
 /// Registry that combines local agents with remote agents discovered via A2A agent cards.
 ///
-/// - Queries local registry first (always authoritative).
+/// - Queries local registry first (always authoritative for plain IDs).
 /// - Falls back to cached remote agent specs discovered via [`Self::discover`].
+/// - Supports namespaced lookup: `"source/agent_id"` targets a specific source.
 /// - Remote agents are converted from `AgentCard` to `AgentSpec` with the endpoint filled in.
 pub struct CompositeAgentSpecRegistry {
-    /// Local agent definitions (always queried first).
+    /// Name of the local registry source.
+    local_name: String,
+    /// Local agent definitions (always queried first for plain IDs).
     local: Arc<dyn AgentSpecRegistry>,
     /// Remote A2A endpoints to discover agents from.
     remote_endpoints: Vec<RemoteAgentSource>,
-    /// Cached remote agent specs keyed by agent ID.
-    cache: RwLock<HashMap<String, AgentSpec>>,
+    /// Cached remote agent specs: agent_id → (source_name, AgentSpec).
+    cache: RwLock<HashMap<String, (String, AgentSpec)>>,
     /// HTTP client for fetching agent cards.
     client: reqwest::Client,
 }
@@ -61,11 +70,18 @@ impl CompositeAgentSpecRegistry {
     /// Create a new composite registry wrapping a local registry.
     pub fn new(local: Arc<dyn AgentSpecRegistry>) -> Self {
         Self {
+            local_name: "local".to_string(),
             local,
             remote_endpoints: Vec::new(),
             cache: RwLock::new(HashMap::new()),
             client: reqwest::Client::new(),
         }
+    }
+
+    /// Create a new composite registry with a custom local source name.
+    pub fn with_local_name(mut self, name: impl Into<String>) -> Self {
+        self.local_name = name.into();
+        self
     }
 
     /// Add a remote endpoint to discover agents from.
@@ -119,10 +135,11 @@ impl CompositeAgentSpecRegistry {
             let spec = agent_card_to_spec(&card, source);
             tracing::info!(
                 agent_id = %spec.id,
+                source = %source.name,
                 base_url = %source.base_url,
                 "discovered remote agent"
             );
-            new_cache.insert(spec.id.clone(), spec);
+            new_cache.insert(spec.id.clone(), (source.name.clone(), spec));
         }
 
         let mut cache = self.cache.write().expect("cache lock poisoned");
@@ -138,23 +155,37 @@ impl CompositeAgentSpecRegistry {
 
 impl AgentSpecRegistry for CompositeAgentSpecRegistry {
     fn get_agent(&self, id: &str) -> Option<AgentSpec> {
-        // Local registry is always authoritative.
+        // Check for namespaced ID: "source/agent_id"
+        if let Some((source, agent_id)) = id.split_once('/') {
+            if source == self.local_name {
+                return self.local.get_agent(agent_id);
+            }
+            let cache = self.cache.read().expect("cache lock poisoned");
+            return cache
+                .get(agent_id)
+                .filter(|(s, _)| s == source)
+                .map(|(_, spec)| spec.clone());
+        }
+
+        // Plain ID: search local first, then all remote caches.
         if let Some(spec) = self.local.get_agent(id) {
             return Some(spec);
         }
 
-        // Fall back to cached remote agents.
         let cache = self.cache.read().expect("cache lock poisoned");
-        cache.get(id).cloned()
+        cache.get(id).map(|(_, spec)| spec.clone())
     }
 
     fn agent_ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.local.agent_ids();
+        let mut ids: Vec<String> = self
+            .local
+            .agent_ids()
+            .into_iter()
+            .map(|id| format!("{}/{}", self.local_name, id))
+            .collect();
         let cache = self.cache.read().expect("cache lock poisoned");
-        for key in cache.keys() {
-            if !ids.contains(key) {
-                ids.push(key.clone());
-            }
+        for (id, (source, _)) in cache.iter() {
+            ids.push(format!("{}/{}", source, id));
         }
         ids
     }
@@ -176,6 +207,7 @@ fn agent_card_to_spec(card: &AgentCard, source: &RemoteAgentSource) -> AgentSpec
             bearer_token: source.bearer_token.clone(),
             ..Default::default()
         }),
+        registry: Some(source.name.clone()),
         ..Default::default()
     }
 }
@@ -215,10 +247,10 @@ mod tests {
     }
 
     #[test]
-    fn agent_ids_includes_local() {
+    fn agent_ids_includes_local_namespaced() {
         let composite = CompositeAgentSpecRegistry::new(make_local_registry());
         let ids = composite.agent_ids();
-        assert!(ids.contains(&"local-agent".to_string()));
+        assert!(ids.contains(&"local/local-agent".to_string()));
     }
 
     #[test]
@@ -230,22 +262,27 @@ mod tests {
             let mut cache = composite.cache.write().unwrap();
             cache.insert(
                 "remote-coder".into(),
-                AgentSpec {
-                    id: "remote-coder".into(),
-                    model: String::new(),
-                    system_prompt: "A remote coding agent.".into(),
-                    endpoint: Some(RemoteEndpoint {
-                        base_url: "https://remote.example.com".into(),
+                (
+                    "cloud".into(),
+                    AgentSpec {
+                        id: "remote-coder".into(),
+                        model: String::new(),
+                        system_prompt: "A remote coding agent.".into(),
+                        endpoint: Some(RemoteEndpoint {
+                            base_url: "https://remote.example.com".into(),
+                            ..Default::default()
+                        }),
+                        registry: Some("cloud".into()),
                         ..Default::default()
-                    }),
-                    ..Default::default()
-                },
+                    },
+                ),
             );
         }
 
         let spec = composite.get_agent("remote-coder").unwrap();
         assert_eq!(spec.id, "remote-coder");
         assert!(spec.endpoint.is_some());
+        assert_eq!(spec.registry.as_deref(), Some("cloud"));
     }
 
     #[test]
@@ -257,16 +294,20 @@ mod tests {
             let mut cache = composite.cache.write().unwrap();
             cache.insert(
                 "local-agent".into(),
-                AgentSpec {
-                    id: "local-agent".into(),
-                    model: String::new(),
-                    system_prompt: "Remote version.".into(),
-                    endpoint: Some(RemoteEndpoint {
-                        base_url: "https://remote.example.com".into(),
+                (
+                    "cloud".into(),
+                    AgentSpec {
+                        id: "local-agent".into(),
+                        model: String::new(),
+                        system_prompt: "Remote version.".into(),
+                        endpoint: Some(RemoteEndpoint {
+                            base_url: "https://remote.example.com".into(),
+                            ..Default::default()
+                        }),
+                        registry: Some("cloud".into()),
                         ..Default::default()
-                    }),
-                    ..Default::default()
-                },
+                    },
+                ),
             );
         }
 
@@ -277,23 +318,26 @@ mod tests {
     }
 
     #[test]
-    fn agent_ids_includes_both_local_and_remote() {
+    fn agent_ids_includes_both_local_and_remote_namespaced() {
         let composite = CompositeAgentSpecRegistry::new(make_local_registry());
 
         {
             let mut cache = composite.cache.write().unwrap();
             cache.insert(
                 "remote-agent".into(),
-                AgentSpec {
-                    id: "remote-agent".into(),
-                    ..Default::default()
-                },
+                (
+                    "cloud".into(),
+                    AgentSpec {
+                        id: "remote-agent".into(),
+                        ..Default::default()
+                    },
+                ),
             );
         }
 
         let ids = composite.agent_ids();
-        assert!(ids.contains(&"local-agent".to_string()));
-        assert!(ids.contains(&"remote-agent".to_string()));
+        assert!(ids.contains(&"local/local-agent".to_string()));
+        assert!(ids.contains(&"cloud/remote-agent".to_string()));
     }
 
     #[test]
@@ -307,6 +351,7 @@ mod tests {
             auth: None,
         };
         let source = RemoteAgentSource {
+            name: "cloud".into(),
             base_url: "https://test.example.com".into(),
             bearer_token: Some("tok-123".into()),
         };
@@ -314,6 +359,7 @@ mod tests {
         let spec = agent_card_to_spec(&card, &source);
         assert_eq!(spec.id, "test-agent");
         assert_eq!(spec.system_prompt, "Handles tests.");
+        assert_eq!(spec.registry.as_deref(), Some("cloud"));
         let endpoint = spec.endpoint.unwrap();
         assert_eq!(endpoint.base_url, "https://test.example.com");
         assert_eq!(endpoint.bearer_token.as_deref(), Some("tok-123"));
@@ -323,10 +369,12 @@ mod tests {
     fn add_remote_sources() {
         let mut composite = CompositeAgentSpecRegistry::new(make_local_registry());
         composite.add_remote(RemoteAgentSource {
+            name: "cloud".into(),
             base_url: "https://a.example.com".into(),
             bearer_token: None,
         });
         composite.add_remote(RemoteAgentSource {
+            name: "partner".into(),
             base_url: "https://b.example.com".into(),
             bearer_token: Some("tok".into()),
         });
@@ -346,5 +394,128 @@ mod tests {
             message: "invalid JSON".into(),
         };
         assert!(err.to_string().contains("invalid JSON"));
+    }
+
+    // -- Namespaced lookup tests --
+
+    #[test]
+    fn namespaced_lookup_local_source() {
+        let composite = CompositeAgentSpecRegistry::new(make_local_registry());
+        let spec = composite.get_agent("local/local-agent").unwrap();
+        assert_eq!(spec.id, "local-agent");
+        assert_eq!(spec.system_prompt, "Local agent.");
+    }
+
+    #[test]
+    fn namespaced_lookup_remote_source() {
+        let composite = CompositeAgentSpecRegistry::new(make_local_registry());
+
+        {
+            let mut cache = composite.cache.write().unwrap();
+            cache.insert(
+                "translator".into(),
+                (
+                    "cloud".into(),
+                    AgentSpec {
+                        id: "translator".into(),
+                        system_prompt: "Translates text.".into(),
+                        registry: Some("cloud".into()),
+                        ..Default::default()
+                    },
+                ),
+            );
+        }
+
+        let spec = composite.get_agent("cloud/translator").unwrap();
+        assert_eq!(spec.id, "translator");
+        assert_eq!(spec.system_prompt, "Translates text.");
+    }
+
+    #[test]
+    fn namespaced_lookup_wrong_source_returns_none() {
+        let composite = CompositeAgentSpecRegistry::new(make_local_registry());
+
+        {
+            let mut cache = composite.cache.write().unwrap();
+            cache.insert(
+                "translator".into(),
+                (
+                    "cloud".into(),
+                    AgentSpec {
+                        id: "translator".into(),
+                        registry: Some("cloud".into()),
+                        ..Default::default()
+                    },
+                ),
+            );
+        }
+
+        // Agent exists in "cloud" but not in "partner"
+        assert!(composite.get_agent("partner/translator").is_none());
+    }
+
+    #[test]
+    fn namespaced_lookup_nonexistent_local_returns_none() {
+        let composite = CompositeAgentSpecRegistry::new(make_local_registry());
+        assert!(composite.get_agent("local/nonexistent").is_none());
+    }
+
+    #[test]
+    fn custom_local_name() {
+        let composite =
+            CompositeAgentSpecRegistry::new(make_local_registry()).with_local_name("my-local");
+        let ids = composite.agent_ids();
+        assert!(ids.contains(&"my-local/local-agent".to_string()));
+
+        // Namespaced lookup with custom local name
+        let spec = composite.get_agent("my-local/local-agent").unwrap();
+        assert_eq!(spec.id, "local-agent");
+    }
+
+    #[test]
+    fn source_tracking_on_cached_agents() {
+        let composite = CompositeAgentSpecRegistry::new(make_local_registry());
+
+        {
+            let mut cache = composite.cache.write().unwrap();
+            cache.insert(
+                "summarizer".into(),
+                (
+                    "partner".into(),
+                    AgentSpec {
+                        id: "summarizer".into(),
+                        registry: Some("partner".into()),
+                        ..Default::default()
+                    },
+                ),
+            );
+        }
+
+        let spec = composite.get_agent("summarizer").unwrap();
+        assert_eq!(spec.registry.as_deref(), Some("partner"));
+    }
+
+    #[test]
+    fn agent_spec_registry_field_serialization() {
+        let spec = AgentSpec {
+            id: "test".into(),
+            registry: Some("cloud".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        assert!(json.contains("\"registry\":\"cloud\""));
+
+        let parsed: AgentSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.registry.as_deref(), Some("cloud"));
+    }
+
+    #[test]
+    fn agent_spec_registry_field_skipped_when_none() {
+        let spec = AgentSpec {
+            id: "test".into(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        assert!(!json.contains("registry"));
     }
 }

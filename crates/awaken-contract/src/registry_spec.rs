@@ -97,6 +97,10 @@ pub struct AgentSpec {
     /// Plugin-specific configuration sections (keyed by PluginConfigKey::KEY).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub sections: HashMap<String, Value>,
+    /// Registry source this agent was loaded from.
+    /// `None` for locally defined agents; `Some("cloud")` for agents from the "cloud" registry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry: Option<String>,
 }
 
 /// Remote endpoint configuration for agents running on external A2A servers.
@@ -146,6 +150,7 @@ impl Default for AgentSpec {
             endpoint: None,
             delegates: Vec::new(),
             sections: HashMap::new(),
+            registry: None,
         }
     }
 }
