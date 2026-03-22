@@ -51,8 +51,10 @@ pub use agent::background_tasks::{
 };
 
 // ── agent tools ──
-pub use agent::agent_tools::remote_a2a::A2aEndpoint;
-pub use agent::agent_tools::{AgentTool, RemoteA2aTool};
+pub use agent::agent_tools::{
+    A2aConfig, AgentBackend, AgentBackendError, AgentTool, DelegateRunResult, DelegateRunStatus,
+    LocalBackend,
+};
 
 // ── parallel merge ──
 pub use agent::loop_runner::parallel_merge::{

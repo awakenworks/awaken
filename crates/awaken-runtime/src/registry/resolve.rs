@@ -113,44 +113,46 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
 
     let mut tools = resolve_tools(registries, &spec);
 
-    // Wire sub-agent tools from spec.sub_agents
-    if !spec.sub_agents.is_empty() {
+    // Wire delegate agent tools from spec.delegates
+    if !spec.delegates.is_empty() {
         let resolver: Arc<dyn crate::runtime::AgentResolver> = Arc::new(registries.clone());
-        for sub in &spec.sub_agents {
-            let agent_tool = crate::agent::agent_tools::AgentTool::new(
-                &sub.agent_id,
-                if sub.description.is_empty() {
-                    format!("Delegate to sub-agent '{}'", sub.agent_id)
-                } else {
-                    sub.description.clone()
-                },
-                resolver.clone(),
-            );
-            let tool_id = agent_tool.descriptor().id;
-            tools.insert(tool_id, Arc::new(agent_tool));
-        }
-    }
-
-    // Wire remote A2A agent tools from spec.remote_agents
-    for remote in &spec.remote_agents {
-        let endpoint = crate::agent::agent_tools::remote_a2a::A2aEndpoint::new(
-            &remote.base_url,
-            &remote.remote_agent_id,
-        );
-        let endpoint = match &remote.bearer_token {
-            Some(token) => endpoint.with_bearer_token(token),
-            None => endpoint,
-        };
-        let tool = crate::agent::agent_tools::RemoteA2aTool::new(
-            &remote.tool_id,
-            if remote.description.is_empty() {
-                format!("Remote A2A agent '{}'", remote.remote_agent_id)
+        for delegate in &spec.delegates {
+            let description = if delegate.description.is_empty() {
+                format!("Delegate to agent '{}'", delegate.agent_id)
             } else {
-                remote.description.clone()
-            },
-            endpoint,
-        );
-        tools.insert(remote.tool_id.clone(), Arc::new(tool));
+                delegate.description.clone()
+            };
+            let tool: Arc<dyn Tool> = match &delegate.binding {
+                awaken_contract::registry_spec::AgentBinding::Local => {
+                    Arc::new(crate::agent::agent_tools::AgentTool::local(
+                        &delegate.agent_id,
+                        description,
+                        resolver.clone(),
+                    ))
+                }
+                awaken_contract::registry_spec::AgentBinding::Remote {
+                    base_url,
+                    bearer_token,
+                    poll_interval_ms,
+                    timeout_ms,
+                } => {
+                    let mut config = crate::agent::agent_tools::A2aConfig::new(base_url);
+                    if let Some(token) = bearer_token {
+                        config = config.with_bearer_token(token);
+                    }
+                    config = config
+                        .with_poll_interval(std::time::Duration::from_millis(*poll_interval_ms))
+                        .with_timeout(std::time::Duration::from_millis(*timeout_ms));
+                    Arc::new(crate::agent::agent_tools::AgentTool::remote(
+                        &delegate.agent_id,
+                        description,
+                        config,
+                    ))
+                }
+            };
+            let tool_id = tool.descriptor().id;
+            tools.insert(tool_id, tool);
+        }
     }
 
     let mut plugins = resolve_plugins(registries, &spec)?;

@@ -1,46 +1,226 @@
-//! Remote A2A agent tool — HTTP call to a remote agent endpoint.
+//! Remote A2A agent delegation backend -- HTTP client for A2A protocol.
+
+use std::time::Duration;
 
 use async_trait::async_trait;
+use awaken_contract::contract::content::ContentBlock;
+use awaken_contract::contract::message::{Message, Role};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
-};
+use super::backend::{AgentBackend, AgentBackendError, DelegateRunResult, DelegateRunStatus};
 
 /// Configuration for a remote A2A agent endpoint.
 #[derive(Debug, Clone)]
-pub struct A2aEndpoint {
-    /// Base URL of the remote A2A server.
+pub struct A2aConfig {
+    /// Base URL of the remote A2A server (e.g. "https://api.example.com").
     pub base_url: String,
-    /// Remote agent ID on the server.
-    pub remote_agent_id: String,
     /// Optional bearer token for authentication.
     pub bearer_token: Option<String>,
-    /// Poll interval in milliseconds for async task completion.
-    pub poll_interval_ms: u64,
+    /// Interval between poll requests.
+    pub poll_interval: Duration,
+    /// Maximum time to wait for task completion.
+    pub timeout: Duration,
 }
 
-impl A2aEndpoint {
-    pub fn new(base_url: impl Into<String>, remote_agent_id: impl Into<String>) -> Self {
+impl A2aConfig {
+    /// Create a new A2A config with defaults for poll interval and timeout.
+    pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
-            remote_agent_id: remote_agent_id.into(),
             bearer_token: None,
-            poll_interval_ms: 2000,
+            poll_interval: Duration::from_millis(2000),
+            timeout: Duration::from_secs(300),
         }
     }
 
+    #[must_use]
     pub fn with_bearer_token(mut self, token: impl Into<String>) -> Self {
         self.bearer_token = Some(token.into());
         self
     }
 
-    pub fn with_poll_interval_ms(mut self, ms: u64) -> Self {
-        self.poll_interval_ms = ms;
+    #[must_use]
+    pub fn with_poll_interval(mut self, interval: Duration) -> Self {
+        self.poll_interval = interval;
+        self
+    }
+
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
         self
     }
 }
+
+/// Backend that delegates to a remote agent via A2A HTTP protocol.
+pub struct A2aBackend {
+    config: A2aConfig,
+    client: reqwest::Client,
+}
+
+impl A2aBackend {
+    /// Create a new A2A backend with the given configuration.
+    pub fn new(config: A2aConfig) -> Self {
+        Self {
+            config,
+            client: reqwest::Client::new(),
+        }
+    }
+
+    /// Build a request with optional bearer token.
+    fn build_request(&self, method: reqwest::Method, url: &str) -> reqwest::RequestBuilder {
+        let builder = self.client.request(method, url);
+        match &self.config.bearer_token {
+            Some(token) => builder.bearer_auth(token),
+            None => builder,
+        }
+    }
+
+    /// Submit a task to the remote A2A endpoint.
+    async fn submit_task(&self, prompt: &str) -> Result<A2aSubmissionResponse, AgentBackendError> {
+        let url = format!(
+            "{}/v1/a2a/tasks/send",
+            self.config.base_url.trim_end_matches('/')
+        );
+
+        let body = serde_json::json!({
+            "message": {
+                "role": "user",
+                "parts": [{"type": "text", "text": prompt}]
+            }
+        });
+
+        let response = self
+            .build_request(reqwest::Method::POST, &url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                AgentBackendError::RemoteError(format!("failed to submit A2A task: {e}"))
+            })?;
+
+        let response = response
+            .error_for_status()
+            .map_err(|e| AgentBackendError::RemoteError(format!("A2A submission rejected: {e}")))?;
+
+        response.json::<A2aSubmissionResponse>().await.map_err(|e| {
+            AgentBackendError::RemoteError(format!("failed to decode A2A submission: {e}"))
+        })
+    }
+
+    /// Fetch current task status from the runs endpoint.
+    async fn fetch_task_status(&self, task_id: &str) -> Result<A2aTaskSnapshot, AgentBackendError> {
+        let url = format!(
+            "{}/v1/runs/{}",
+            self.config.base_url.trim_end_matches('/'),
+            task_id.trim()
+        );
+
+        let response = self
+            .build_request(reqwest::Method::GET, &url)
+            .send()
+            .await
+            .map_err(|e| AgentBackendError::RemoteError(format!("failed to query task: {e}")))?;
+
+        let response = response
+            .error_for_status()
+            .map_err(|e| AgentBackendError::RemoteError(format!("task query rejected: {e}")))?;
+
+        let task_response = response.json::<A2aTaskResponse>().await.map_err(|e| {
+            AgentBackendError::RemoteError(format!("failed to decode task status: {e}"))
+        })?;
+
+        Ok(map_task_status(&task_response))
+    }
+
+    /// Poll until the task reaches a terminal state or timeout.
+    async fn poll_to_completion(
+        &self,
+        task_id: &str,
+    ) -> Result<A2aTaskSnapshot, AgentBackendError> {
+        let deadline = tokio::time::Instant::now() + self.config.timeout;
+
+        loop {
+            let snapshot = self.fetch_task_status(task_id).await?;
+            if snapshot.done {
+                return Ok(snapshot);
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(A2aTaskSnapshot {
+                    status: RemoteTaskStatus::Timeout,
+                    error: Some("polling timeout exceeded".into()),
+                    done: true,
+                    output_text: snapshot.output_text,
+                });
+            }
+
+            tokio::time::sleep(self.config.poll_interval).await;
+        }
+    }
+}
+
+#[async_trait]
+impl AgentBackend for A2aBackend {
+    async fn execute(
+        &self,
+        agent_id: &str,
+        messages: Vec<Message>,
+    ) -> Result<DelegateRunResult, AgentBackendError> {
+        // Extract prompt text from user messages
+        let prompt = messages
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .flat_map(|m| m.content.iter())
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if prompt.trim().is_empty() {
+            return Err(AgentBackendError::ExecutionFailed(
+                "no user message content to send".into(),
+            ));
+        }
+
+        let submission = self.submit_task(&prompt).await?;
+
+        tracing::info!(
+            task_id = %submission.task_id,
+            agent_id = %agent_id,
+            "a2a_task_submitted"
+        );
+
+        let snapshot = self.poll_to_completion(&submission.task_id).await?;
+
+        let (status, steps) = match snapshot.status {
+            RemoteTaskStatus::Completed => (DelegateRunStatus::Completed, 1),
+            RemoteTaskStatus::Failed => {
+                let msg = snapshot
+                    .error
+                    .unwrap_or_else(|| "remote agent run failed".into());
+                (DelegateRunStatus::Failed(msg), 0)
+            }
+            RemoteTaskStatus::Stopped => (DelegateRunStatus::Cancelled, 0),
+            RemoteTaskStatus::Timeout => (DelegateRunStatus::Timeout, 0),
+            RemoteTaskStatus::Running => (DelegateRunStatus::Timeout, 0),
+        };
+
+        Ok(DelegateRunResult {
+            agent_id: agent_id.to_string(),
+            status,
+            response: snapshot.output_text,
+            steps,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A2A protocol types and mapping (moved from remote_a2a.rs)
+// ---------------------------------------------------------------------------
 
 /// Submission response from a remote A2A endpoint.
 #[derive(Debug, Deserialize)]
@@ -49,159 +229,44 @@ struct A2aSubmissionResponse {
     task_id: String,
 }
 
-/// Task status response from a remote A2A endpoint.
+/// Task status response from the runs endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct A2aTaskResponse {
-    status: String,
+pub(crate) struct A2aTaskResponse {
     #[serde(default)]
-    termination_code: Option<String>,
+    pub status: String,
     #[serde(default)]
-    termination_detail: Option<String>,
+    pub termination_code: Option<String>,
     #[serde(default)]
-    message: Option<Value>,
+    pub termination_detail: Option<String>,
     #[serde(default)]
-    history: Vec<Value>,
+    pub message: Option<Value>,
     #[serde(default)]
-    artifacts: Vec<Value>,
+    pub history: Vec<Value>,
+    #[serde(default)]
+    pub artifacts: Vec<Value>,
 }
 
 /// Status of a remote A2A task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RemoteTaskStatus {
+pub(crate) enum RemoteTaskStatus {
     Running,
     Completed,
     Failed,
     Stopped,
+    Timeout,
 }
 
 /// Snapshot of a remote A2A task's state.
 #[derive(Debug, Clone)]
-pub struct A2aTaskSnapshot {
+pub(crate) struct A2aTaskSnapshot {
     pub status: RemoteTaskStatus,
     pub error: Option<String>,
     pub done: bool,
     pub output_text: Option<String>,
 }
 
-/// Tool that delegates to a remote A2A agent via HTTP.
-///
-/// Submits a prompt to the remote endpoint, polls for completion,
-/// and returns the final output as the tool result.
-pub struct RemoteA2aTool {
-    /// Unique tool ID.
-    tool_id: String,
-    /// Human-readable description for the LLM.
-    description: String,
-    /// Remote endpoint configuration.
-    endpoint: A2aEndpoint,
-}
-
-impl RemoteA2aTool {
-    pub fn new(
-        tool_id: impl Into<String>,
-        description: impl Into<String>,
-        endpoint: A2aEndpoint,
-    ) -> Self {
-        Self {
-            tool_id: tool_id.into(),
-            description: description.into(),
-            endpoint,
-        }
-    }
-
-    /// Returns the endpoint configuration.
-    pub fn endpoint(&self) -> &A2aEndpoint {
-        &self.endpoint
-    }
-
-    /// Build the agent-scoped URL for the remote A2A endpoint.
-    fn agent_url(&self) -> String {
-        let base = self.endpoint.base_url.trim_end_matches('/');
-        format!("{}/agents/{}", base, self.endpoint.remote_agent_id.trim())
-    }
-
-    /// Build an HTTP client with optional authorization.
-    fn build_request(
-        &self,
-        client: &reqwest::Client,
-        method: reqwest::Method,
-        url: &str,
-    ) -> reqwest::RequestBuilder {
-        let builder = client.request(method, url);
-        match &self.endpoint.bearer_token {
-            Some(token) => builder.bearer_auth(token),
-            None => builder,
-        }
-    }
-
-    /// Submit a task to the remote A2A endpoint.
-    async fn submit_task(
-        &self,
-        client: &reqwest::Client,
-        prompt: &str,
-    ) -> Result<A2aSubmissionResponse, ToolError> {
-        let url = format!("{}/message:send", self.agent_url());
-        let response = self
-            .build_request(client, reqwest::Method::POST, &url)
-            .json(&json!({ "input": prompt }))
-            .send()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("failed to submit A2A task: {e}")))?;
-
-        let response = response
-            .error_for_status()
-            .map_err(|e| ToolError::ExecutionFailed(format!("A2A submission rejected: {e}")))?;
-
-        response.json::<A2aSubmissionResponse>().await.map_err(|e| {
-            ToolError::ExecutionFailed(format!("failed to decode A2A submission: {e}"))
-        })
-    }
-
-    /// Fetch the current status of a remote task.
-    async fn fetch_task_status(
-        &self,
-        client: &reqwest::Client,
-        task_id: &str,
-    ) -> Result<A2aTaskSnapshot, ToolError> {
-        let url = format!("{}/tasks/{}", self.agent_url(), task_id.trim());
-        let response = self
-            .build_request(client, reqwest::Method::GET, &url)
-            .send()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("failed to query A2A task: {e}")))?;
-
-        let response = response
-            .error_for_status()
-            .map_err(|e| ToolError::ExecutionFailed(format!("A2A task query rejected: {e}")))?;
-
-        let task_response = response.json::<A2aTaskResponse>().await.map_err(|e| {
-            ToolError::ExecutionFailed(format!("failed to decode A2A task status: {e}"))
-        })?;
-
-        Ok(map_task_status(&task_response))
-    }
-
-    /// Poll until the task reaches a terminal state.
-    async fn poll_to_completion(
-        &self,
-        client: &reqwest::Client,
-        task_id: &str,
-    ) -> Result<A2aTaskSnapshot, ToolError> {
-        loop {
-            let snapshot = self.fetch_task_status(client, task_id).await?;
-            if snapshot.done {
-                return Ok(snapshot);
-            }
-            tokio::time::sleep(tokio::time::Duration::from_millis(
-                self.endpoint.poll_interval_ms,
-            ))
-            .await;
-        }
-    }
-}
-
-fn extract_output_text(response: &A2aTaskResponse) -> Option<String> {
+pub(crate) fn extract_output_text(response: &A2aTaskResponse) -> Option<String> {
     // Try artifacts first
     for artifact in &response.artifacts {
         if let Some(text) = extract_text_from_value(artifact) {
@@ -223,7 +288,7 @@ fn extract_output_text(response: &A2aTaskResponse) -> Option<String> {
     None
 }
 
-fn extract_text_from_value(value: &Value) -> Option<String> {
+pub(crate) fn extract_text_from_value(value: &Value) -> Option<String> {
     match value {
         Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
         Value::Object(obj) => {
@@ -269,7 +334,7 @@ fn extract_text_from_value(value: &Value) -> Option<String> {
     }
 }
 
-fn map_task_status(response: &A2aTaskResponse) -> A2aTaskSnapshot {
+pub(crate) fn map_task_status(response: &A2aTaskResponse) -> A2aTaskSnapshot {
     let output_text = extract_output_text(response);
     let status = response.status.trim().to_ascii_lowercase();
     match status.as_str() {
@@ -327,93 +392,10 @@ fn map_task_status(response: &A2aTaskResponse) -> A2aTaskSnapshot {
     }
 }
 
-#[async_trait]
-impl Tool for RemoteA2aTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new(&self.tool_id, &self.tool_id, &self.description)
-    }
-
-    fn validate_args(&self, args: &Value) -> Result<(), ToolError> {
-        if args.get("prompt").and_then(Value::as_str).is_none() {
-            return Err(ToolError::InvalidArguments(
-                "missing required field \"prompt\"".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
-        let prompt = args
-            .get("prompt")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-
-        if prompt.is_empty() {
-            return Err(ToolError::InvalidArguments(
-                "prompt must not be empty".into(),
-            ));
-        }
-
-        let client = reqwest::Client::new();
-
-        // Submit the task
-        let submission = self.submit_task(&client, &prompt).await?;
-
-        tracing::info!(
-            task_id = %submission.task_id,
-            remote_agent = %self.endpoint.remote_agent_id,
-            "a2a_task_submitted"
-        );
-
-        // Poll to completion
-        let snapshot = self
-            .poll_to_completion(&client, &submission.task_id)
-            .await?;
-
-        match snapshot.status {
-            RemoteTaskStatus::Completed => {
-                let output = snapshot.output_text.unwrap_or_else(|| "(no output)".into());
-                Ok(ToolResult::success(
-                    &self.tool_id,
-                    json!({
-                        "remote_agent_id": self.endpoint.remote_agent_id,
-                        "status": "completed",
-                        "response": output,
-                    }),
-                ))
-            }
-            RemoteTaskStatus::Failed => {
-                let error_msg = snapshot
-                    .error
-                    .unwrap_or_else(|| "remote agent run failed".into());
-                Ok(ToolResult::error(&self.tool_id, &error_msg))
-            }
-            RemoteTaskStatus::Stopped => {
-                let error_msg = snapshot
-                    .error
-                    .unwrap_or_else(|| "remote agent run was stopped".into());
-                Ok(ToolResult::error(&self.tool_id, &error_msg))
-            }
-            RemoteTaskStatus::Running => {
-                // Should not happen after poll_to_completion, but handle gracefully
-                Ok(ToolResult::success(
-                    &self.tool_id,
-                    json!({
-                        "remote_agent_id": self.endpoint.remote_agent_id,
-                        "status": "running",
-                        "message": "Task is still running after polling timeout.",
-                    }),
-                ))
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn map_task_status_completed() {
@@ -528,51 +510,24 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_builder() {
-        let ep = A2aEndpoint::new("https://api.example.com", "agent-1")
+    fn a2a_config_builder() {
+        let config = A2aConfig::new("https://api.example.com")
             .with_bearer_token("tok_123")
-            .with_poll_interval_ms(5000);
+            .with_poll_interval(Duration::from_millis(5000))
+            .with_timeout(Duration::from_secs(60));
 
-        assert_eq!(ep.base_url, "https://api.example.com");
-        assert_eq!(ep.remote_agent_id, "agent-1");
-        assert_eq!(ep.bearer_token.as_deref(), Some("tok_123"));
-        assert_eq!(ep.poll_interval_ms, 5000);
+        assert_eq!(config.base_url, "https://api.example.com");
+        assert_eq!(config.bearer_token.as_deref(), Some("tok_123"));
+        assert_eq!(config.poll_interval, Duration::from_millis(5000));
+        assert_eq!(config.timeout, Duration::from_secs(60));
     }
 
     #[test]
-    fn endpoint_defaults() {
-        let ep = A2aEndpoint::new("https://api.example.com", "worker");
-        assert!(ep.bearer_token.is_none());
-        assert!(ep.poll_interval_ms > 0);
-    }
-
-    #[test]
-    fn descriptor_reflects_tool_id() {
-        let ep = A2aEndpoint::new("https://api.example.com", "worker");
-        let tool = RemoteA2aTool::new("remote_worker", "Remote worker agent", ep);
-        let desc = tool.descriptor();
-        assert_eq!(desc.id, "remote_worker");
-        assert!(desc.description.contains("Remote worker"));
-    }
-
-    #[test]
-    fn validates_prompt_required() {
-        let ep = A2aEndpoint::new("https://api.example.com", "worker");
-        let tool = RemoteA2aTool::new("rw", "desc", ep);
-
-        assert!(tool.validate_args(&json!({})).is_err());
-        assert!(tool.validate_args(&json!({"prompt": 42})).is_err());
-        assert!(tool.validate_args(&json!({"prompt": "go"})).is_ok());
-    }
-
-    #[tokio::test]
-    async fn rejects_empty_prompt() {
-        let ep = A2aEndpoint::new("https://api.example.com", "worker");
-        let tool = RemoteA2aTool::new("rw", "desc", ep);
-        let ctx = ToolCallContext::test_default();
-
-        let err = tool.execute(json!({"prompt": "   "}), &ctx).await;
-        assert!(err.is_err());
+    fn a2a_config_defaults() {
+        let config = A2aConfig::new("https://api.example.com");
+        assert!(config.bearer_token.is_none());
+        assert_eq!(config.poll_interval, Duration::from_millis(2000));
+        assert_eq!(config.timeout, Duration::from_secs(300));
     }
 
     #[test]
@@ -593,7 +548,6 @@ mod tests {
 
     #[test]
     fn extract_text_ignores_user_role_in_history() {
-        // User messages should not be extracted
         let value = json!({"role": "user", "text": "user input"});
         assert!(extract_text_from_value(&value).is_none());
     }

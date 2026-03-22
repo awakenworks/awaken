@@ -6,18 +6,18 @@ use serde_json::{Value, json};
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
-};
-use awaken_contract::registry_spec::AgentSpec;
+use awaken_contract::contract::message::Message;
+use awaken_contract::contract::tool::{Tool, ToolCallContext, ToolError, ToolResult};
+use awaken_contract::registry_spec::{AgentBinding, AgentDelegate, AgentSpec};
 
 use crate::agent::config::AgentConfig;
 use crate::agent::executor::SequentialToolExecutor;
 use crate::agent::loop_runner::build_agent_env;
 use crate::runtime::{AgentResolver, ExecutionEnv, ResolvedAgent};
 
+use super::a2a_backend::A2aConfig;
 use super::agent_tool::AgentTool;
-use super::remote_a2a::{A2aEndpoint, RemoteA2aTool};
+use super::backend::{AgentBackend, AgentBackendError, DelegateRunResult, DelegateRunStatus};
 
 // -- Mock Resolver --
 
@@ -82,12 +82,44 @@ impl AgentResolver for MockResolver {
     }
 }
 
-// -- AgentTool tests --
+// -- Mock Backend --
+
+struct MockBackend {
+    result: DelegateRunResult,
+}
+
+#[async_trait]
+impl AgentBackend for MockBackend {
+    async fn execute(
+        &self,
+        _agent_id: &str,
+        _messages: Vec<Message>,
+    ) -> Result<DelegateRunResult, AgentBackendError> {
+        Ok(self.result.clone())
+    }
+}
+
+struct FailingBackend {
+    error: String,
+}
+
+#[async_trait]
+impl AgentBackend for FailingBackend {
+    async fn execute(
+        &self,
+        _agent_id: &str,
+        _messages: Vec<Message>,
+    ) -> Result<DelegateRunResult, AgentBackendError> {
+        Err(AgentBackendError::ExecutionFailed(self.error.clone()))
+    }
+}
+
+// -- AgentTool with LocalBackend tests --
 
 #[tokio::test]
 async fn agent_tool_descriptor_includes_target_id() {
     let resolver = Arc::new(MockResolver::with_agent("worker"));
-    let tool = AgentTool::new("worker", "Delegate to worker agent", resolver);
+    let tool = AgentTool::local("worker", "Delegate to worker agent", resolver);
     let desc = tool.descriptor();
     assert_eq!(desc.id, "agent_run_worker");
     assert!(desc.description.contains("worker"));
@@ -96,7 +128,7 @@ async fn agent_tool_descriptor_includes_target_id() {
 #[tokio::test]
 async fn agent_tool_validates_prompt() {
     let resolver = Arc::new(MockResolver::with_agent("worker"));
-    let tool = AgentTool::new("worker", "desc", resolver);
+    let tool = AgentTool::local("worker", "desc", resolver);
 
     let err = tool.validate_args(&json!({}));
     assert!(err.is_err());
@@ -108,7 +140,7 @@ async fn agent_tool_validates_prompt() {
 #[tokio::test]
 async fn agent_tool_execute_runs_sub_agent() {
     let resolver = Arc::new(MockResolver::with_agent("worker"));
-    let tool = AgentTool::new("worker", "desc", resolver);
+    let tool = AgentTool::local("worker", "desc", resolver);
     let ctx = ToolCallContext::test_default();
 
     let result = tool
@@ -118,27 +150,28 @@ async fn agent_tool_execute_runs_sub_agent() {
 
     assert!(result.is_success());
     assert_eq!(result.data["agent_id"], "worker");
-    // After real execution, status reflects the termination reason
     assert!(result.data["status"].as_str().is_some());
-    // Sub-agent response should be captured
-    assert!(result.data["response"].as_str().is_some());
     assert!(result.data["steps"].as_u64().is_some());
 }
 
 #[tokio::test]
 async fn agent_tool_execute_fails_for_missing_agent() {
     let resolver = Arc::new(MockResolver::with_agent("other"));
-    let tool = AgentTool::new("missing", "desc", resolver);
+    let tool = AgentTool::local("missing", "desc", resolver);
     let ctx = ToolCallContext::test_default();
 
-    let err = tool.execute(json!({"prompt": "do work"}), &ctx).await;
-    assert!(err.is_err());
+    // Backend error is returned as ToolResult::error (not ToolError)
+    let result = tool
+        .execute(json!({"prompt": "do work"}), &ctx)
+        .await
+        .unwrap();
+    assert!(!result.is_success());
 }
 
 #[tokio::test]
 async fn agent_tool_rejects_empty_prompt() {
     let resolver = Arc::new(MockResolver::with_agent("worker"));
-    let tool = AgentTool::new("worker", "desc", resolver);
+    let tool = AgentTool::local("worker", "desc", resolver);
     let ctx = ToolCallContext::test_default();
 
     let err = tool.execute(json!({"prompt": "   "}), &ctx).await;
@@ -146,149 +179,225 @@ async fn agent_tool_rejects_empty_prompt() {
 }
 
 #[test]
-fn agent_tool_target_id() {
+fn agent_tool_agent_id() {
     let resolver = Arc::new(MockResolver::with_agent("worker"));
-    let tool = AgentTool::new("worker", "desc", resolver);
-    assert_eq!(tool.target_agent_id(), "worker");
+    let tool = AgentTool::local("worker", "desc", resolver);
+    assert_eq!(tool.agent_id(), "worker");
 }
 
-// -- RemoteA2aTool tests --
+// -- AgentTool with mock backend tests --
 
-#[test]
-fn remote_a2a_tool_descriptor() {
-    let endpoint = A2aEndpoint::new("https://api.example.com", "remote-worker");
-    let tool = RemoteA2aTool::new("remote_worker", "Remote worker agent", endpoint);
-    let desc = tool.descriptor();
-    assert_eq!(desc.id, "remote_worker");
-    assert!(desc.description.contains("Remote worker"));
-}
+#[tokio::test]
+async fn agent_tool_with_mock_backend_success() {
+    let backend = Arc::new(MockBackend {
+        result: DelegateRunResult {
+            agent_id: "helper".into(),
+            status: DelegateRunStatus::Completed,
+            response: Some("done!".into()),
+            steps: 3,
+        },
+    });
+    let tool = AgentTool::with_backend("helper", "A helper agent", backend);
+    let ctx = ToolCallContext::test_default();
 
-#[test]
-fn remote_a2a_tool_validates_prompt() {
-    let endpoint = A2aEndpoint::new("https://api.example.com", "worker");
-    let tool = RemoteA2aTool::new("rw", "desc", endpoint);
+    let result = tool
+        .execute(json!({"prompt": "help me"}), &ctx)
+        .await
+        .unwrap();
 
-    assert!(tool.validate_args(&json!({})).is_err());
-    assert!(tool.validate_args(&json!({"prompt": "go"})).is_ok());
+    assert!(result.is_success());
+    assert_eq!(result.data["agent_id"], "helper");
+    assert_eq!(result.data["status"], "completed");
+    assert_eq!(result.data["response"], "done!");
+    assert_eq!(result.data["steps"], 3);
 }
 
 #[tokio::test]
-async fn remote_a2a_tool_rejects_empty_prompt() {
-    let endpoint = A2aEndpoint::new("https://api.example.com", "worker")
-        .with_bearer_token("secret")
-        .with_poll_interval_ms(1000);
-    let tool = RemoteA2aTool::new("rw", "desc", endpoint);
+async fn agent_tool_with_mock_backend_failure() {
+    let backend = Arc::new(MockBackend {
+        result: DelegateRunResult {
+            agent_id: "helper".into(),
+            status: DelegateRunStatus::Failed("out of memory".into()),
+            response: None,
+            steps: 0,
+        },
+    });
+    let tool = AgentTool::with_backend("helper", "desc", backend);
     let ctx = ToolCallContext::test_default();
 
-    let err = tool.execute(json!({"prompt": "   "}), &ctx).await;
-    assert!(err.is_err());
+    let result = tool
+        .execute(json!({"prompt": "help me"}), &ctx)
+        .await
+        .unwrap();
+
+    assert!(result.is_success()); // ToolResult is success but status shows failure
+    assert!(result.data["status"].as_str().unwrap().contains("failed"));
 }
 
-#[test]
-fn a2a_endpoint_builder() {
-    let endpoint = A2aEndpoint::new("https://example.com/a2a", "agent-1")
-        .with_bearer_token("tok_123")
-        .with_poll_interval_ms(5000);
+#[tokio::test]
+async fn agent_tool_with_failing_backend() {
+    let backend = Arc::new(FailingBackend {
+        error: "connection refused".into(),
+    });
+    let tool = AgentTool::with_backend("helper", "desc", backend);
+    let ctx = ToolCallContext::test_default();
 
-    assert_eq!(endpoint.base_url, "https://example.com/a2a");
-    assert_eq!(endpoint.remote_agent_id, "agent-1");
-    assert_eq!(endpoint.bearer_token.as_deref(), Some("tok_123"));
-    assert_eq!(endpoint.poll_interval_ms, 5000);
+    let result = tool
+        .execute(json!({"prompt": "help me"}), &ctx)
+        .await
+        .unwrap();
+
+    // Backend errors are returned as ToolResult::error
+    assert!(!result.is_success());
+    assert!(
+        result
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("connection refused")
+    );
 }
 
-// -----------------------------------------------------------------------
-// Migrated from uncarve: additional agent tool and remote A2A tests
-// -----------------------------------------------------------------------
+// -- AgentTool descriptor format --
 
 #[test]
 fn agent_tool_descriptor_format() {
     let resolver = Arc::new(MockResolver::with_agent("researcher"));
-    let tool = AgentTool::new("researcher", "Research specialist", resolver);
+    let tool = AgentTool::local("researcher", "Research specialist", resolver);
     let desc = tool.descriptor();
 
     assert_eq!(desc.id, "agent_run_researcher");
     assert!(desc.description.contains("Research specialist"));
+    // Should have proper parameter schema
+    assert_eq!(desc.parameters["type"], "object");
+    assert!(desc.parameters["properties"]["prompt"].is_object());
 }
+
+// -- Validation tests --
 
 #[tokio::test]
 async fn agent_tool_validates_empty_object_rejected() {
     let resolver = Arc::new(MockResolver::with_agent("worker"));
-    let tool = AgentTool::new("worker", "desc", resolver);
-
-    // Empty object should be rejected (needs "prompt")
+    let tool = AgentTool::local("worker", "desc", resolver);
     assert!(tool.validate_args(&json!({})).is_err());
 }
 
 #[tokio::test]
 async fn agent_tool_validates_non_string_prompt_rejected() {
     let resolver = Arc::new(MockResolver::with_agent("worker"));
-    let tool = AgentTool::new("worker", "desc", resolver);
-
-    // Non-string prompt should be rejected
+    let tool = AgentTool::local("worker", "desc", resolver);
     assert!(tool.validate_args(&json!({"prompt": 42})).is_err());
 }
 
 #[tokio::test]
 async fn agent_tool_validates_string_prompt_accepted() {
     let resolver = Arc::new(MockResolver::with_agent("worker"));
-    let tool = AgentTool::new("worker", "desc", resolver);
-
+    let tool = AgentTool::local("worker", "desc", resolver);
     assert!(
         tool.validate_args(&json!({"prompt": "do something"}))
             .is_ok()
     );
 }
 
-#[test]
-fn a2a_endpoint_default_poll_interval() {
-    let endpoint = A2aEndpoint::new("https://api.example.com", "agent-1");
-    assert_eq!(endpoint.base_url, "https://api.example.com");
-    assert_eq!(endpoint.remote_agent_id, "agent-1");
-    assert!(endpoint.bearer_token.is_none());
-    // Default poll interval should be something reasonable
-    assert!(endpoint.poll_interval_ms > 0);
-}
+// -- A2aConfig tests --
 
 #[test]
-fn a2a_endpoint_without_bearer_token() {
-    let endpoint = A2aEndpoint::new("https://api.example.com", "worker");
-    assert!(endpoint.bearer_token.is_none());
+fn a2a_config_builder() {
+    use std::time::Duration;
+
+    let config = A2aConfig::new("https://example.com/a2a")
+        .with_bearer_token("tok_123")
+        .with_poll_interval(Duration::from_millis(5000))
+        .with_timeout(Duration::from_secs(60));
+
+    assert_eq!(config.base_url, "https://example.com/a2a");
+    assert_eq!(config.bearer_token.as_deref(), Some("tok_123"));
+    assert_eq!(config.poll_interval, Duration::from_millis(5000));
+    assert_eq!(config.timeout, Duration::from_secs(60));
 }
 
 #[test]
-fn remote_a2a_tool_validates_non_string_prompt() {
-    let endpoint = A2aEndpoint::new("https://api.example.com", "worker");
-    let tool = RemoteA2aTool::new("rw", "desc", endpoint);
+fn a2a_config_default_poll_interval() {
+    use std::time::Duration;
 
-    assert!(tool.validate_args(&json!({"prompt": 42})).is_err());
+    let config = A2aConfig::new("https://api.example.com");
+    assert_eq!(config.base_url, "https://api.example.com");
+    assert!(config.bearer_token.is_none());
+    assert_eq!(config.poll_interval, Duration::from_millis(2000));
+    assert_eq!(config.timeout, Duration::from_secs(300));
 }
 
-#[tokio::test]
-async fn remote_a2a_tool_rejects_whitespace_only_prompt() {
-    let endpoint = A2aEndpoint::new("https://api.example.com", "worker");
-    let tool = RemoteA2aTool::new("rw", "desc", endpoint);
-    let ctx = ToolCallContext::test_default();
+// -- AgentDelegate serialization --
 
-    let err = tool.execute(json!({"prompt": "\t\n  "}), &ctx).await;
-    assert!(err.is_err());
+#[test]
+fn agent_delegate_local_serde_roundtrip() {
+    let delegate = AgentDelegate {
+        agent_id: "worker".into(),
+        description: "A worker agent".into(),
+        binding: AgentBinding::Local,
+    };
+    let json = serde_json::to_string(&delegate).unwrap();
+    let parsed: AgentDelegate = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.agent_id, "worker");
+    assert!(matches!(parsed.binding, AgentBinding::Local));
 }
 
-#[tokio::test]
-async fn agent_tool_result_structure() {
-    let resolver = Arc::new(MockResolver::with_agent("analyst"));
-    let tool = AgentTool::new("analyst", "Data analyst", resolver);
-    let ctx = ToolCallContext::test_default();
-
-    let result = tool
-        .execute(json!({"prompt": "analyze data"}), &ctx)
-        .await
-        .unwrap();
-
-    assert!(result.is_success());
-    // Check expected fields
-    assert_eq!(result.data["agent_id"], "analyst");
-    assert!(result.data["response"].as_str().is_some());
+#[test]
+fn agent_delegate_remote_serde_roundtrip() {
+    let delegate = AgentDelegate {
+        agent_id: "remote-worker".into(),
+        description: "Remote worker".into(),
+        binding: AgentBinding::Remote {
+            base_url: "https://api.example.com".into(),
+            bearer_token: Some("tok_123".into()),
+            poll_interval_ms: 3000,
+            timeout_ms: 60000,
+        },
+    };
+    let json = serde_json::to_string(&delegate).unwrap();
+    let parsed: AgentDelegate = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.agent_id, "remote-worker");
+    match parsed.binding {
+        AgentBinding::Remote {
+            base_url,
+            bearer_token,
+            poll_interval_ms,
+            timeout_ms,
+        } => {
+            assert_eq!(base_url, "https://api.example.com");
+            assert_eq!(bearer_token.as_deref(), Some("tok_123"));
+            assert_eq!(poll_interval_ms, 3000);
+            assert_eq!(timeout_ms, 60000);
+        }
+        _ => panic!("expected Remote binding"),
+    }
 }
+
+#[test]
+fn agent_delegate_default_binding_is_local() {
+    let json = r#"{"agent_id": "worker", "description": "test"}"#;
+    let delegate: AgentDelegate = serde_json::from_str(json).unwrap();
+    assert!(matches!(delegate.binding, AgentBinding::Local));
+}
+
+#[test]
+fn agent_delegate_remote_defaults() {
+    let json = r#"{"agent_id": "rw", "binding": {"type": "remote", "base_url": "https://x.com"}}"#;
+    let delegate: AgentDelegate = serde_json::from_str(json).unwrap();
+    match delegate.binding {
+        AgentBinding::Remote {
+            poll_interval_ms,
+            timeout_ms,
+            ..
+        } => {
+            assert_eq!(poll_interval_ms, 2000);
+            assert_eq!(timeout_ms, 300_000);
+        }
+        _ => panic!("expected Remote binding"),
+    }
+}
+
+// -- Multiple agent resolver test --
 
 #[test]
 fn mock_resolver_with_multiple_agents() {
@@ -316,4 +425,50 @@ fn mock_resolver_with_multiple_agents() {
     assert!(resolver.resolve("writer").is_ok());
     assert!(resolver.resolve("reviewer").is_ok());
     assert!(resolver.resolve("nonexistent").is_err());
+}
+
+// -- AgentTool result structure --
+
+#[tokio::test]
+async fn agent_tool_result_structure() {
+    let resolver = Arc::new(MockResolver::with_agent("analyst"));
+    let tool = AgentTool::local("analyst", "Data analyst", resolver);
+    let ctx = ToolCallContext::test_default();
+
+    let result = tool
+        .execute(json!({"prompt": "analyze data"}), &ctx)
+        .await
+        .unwrap();
+
+    assert!(result.is_success());
+    assert_eq!(result.data["agent_id"], "analyst");
+    assert!(result.data["response"].as_str().is_some());
+}
+
+// -- DelegateRunStatus display --
+
+#[test]
+fn delegate_run_status_display() {
+    assert_eq!(DelegateRunStatus::Completed.to_string(), "completed");
+    assert_eq!(DelegateRunStatus::Cancelled.to_string(), "cancelled");
+    assert_eq!(DelegateRunStatus::Timeout.to_string(), "timeout");
+    assert!(
+        DelegateRunStatus::Failed("oops".into())
+            .to_string()
+            .contains("oops")
+    );
+}
+
+// -- AgentBackendError display --
+
+#[test]
+fn agent_backend_error_display() {
+    let err = AgentBackendError::AgentNotFound("x".into());
+    assert!(err.to_string().contains("agent not found"));
+
+    let err = AgentBackendError::ExecutionFailed("boom".into());
+    assert!(err.to_string().contains("execution failed"));
+
+    let err = AgentBackendError::RemoteError("timeout".into());
+    assert!(err.to_string().contains("remote error"));
 }

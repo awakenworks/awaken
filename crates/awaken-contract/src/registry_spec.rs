@@ -86,42 +86,52 @@ pub struct AgentSpec {
     /// Excluded tool IDs (blacklist). Applied after `allowed_tools`.
     #[serde(default)]
     pub excluded_tools: Option<Vec<String>>,
-    /// Sub-agent IDs: each creates an `AgentTool` delegating to the named agent.
+    /// Sub-agent delegates this agent can invoke.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sub_agents: Vec<SubAgentRef>,
-    /// Remote A2A agent endpoints: each creates a `RemoteA2aTool`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub remote_agents: Vec<RemoteAgentRef>,
+    pub delegates: Vec<AgentDelegate>,
     /// Plugin-specific configuration sections (keyed by PluginConfigKey::KEY).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub sections: HashMap<String, Value>,
 }
 
-/// Reference to a sub-agent for delegation via `AgentTool`.
+/// A sub-agent that this agent can delegate to.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SubAgentRef {
-    /// Agent ID to delegate to.
+pub struct AgentDelegate {
+    /// Agent ID for the tool name (`agent_run_{agent_id}`).
     pub agent_id: String,
-    /// Human-readable description shown to the LLM.
+    /// Description shown to the LLM.
     #[serde(default)]
     pub description: String,
+    /// Binding: local or remote.
+    #[serde(default)]
+    pub binding: AgentBinding,
 }
 
-/// Reference to a remote A2A agent endpoint.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RemoteAgentRef {
-    /// Unique tool ID for this remote agent.
-    pub tool_id: String,
-    /// Human-readable description shown to the LLM.
-    #[serde(default)]
-    pub description: String,
-    /// Base URL of the remote A2A server.
-    pub base_url: String,
-    /// Remote agent ID on the server.
-    pub remote_agent_id: String,
-    /// Optional bearer token for authentication.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bearer_token: Option<String>,
+/// How to reach a delegate agent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentBinding {
+    /// Agent runs in the same process.
+    #[default]
+    Local,
+    /// Agent runs on a remote A2A endpoint.
+    Remote {
+        base_url: String,
+        #[serde(default)]
+        bearer_token: Option<String>,
+        #[serde(default = "default_poll_interval")]
+        poll_interval_ms: u64,
+        #[serde(default = "default_timeout")]
+        timeout_ms: u64,
+    },
+}
+
+fn default_poll_interval() -> u64 {
+    2000
+}
+
+fn default_timeout() -> u64 {
+    300_000
 }
 
 impl Default for AgentSpec {
@@ -137,8 +147,7 @@ impl Default for AgentSpec {
             active_plugins: HashSet::new(),
             allowed_tools: None,
             excluded_tools: None,
-            sub_agents: Vec::new(),
-            remote_agents: Vec::new(),
+            delegates: Vec::new(),
             sections: HashMap::new(),
         }
     }
