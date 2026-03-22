@@ -5,6 +5,7 @@ members = [
     "crates/awaken-runtime",
     "crates/awaken-ext-permission",
     "crates/awaken-ext-observability",
+    "crates/awaken-ext-mcp",
     "crates/awaken",
 ]
 
