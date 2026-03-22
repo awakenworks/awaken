@@ -240,7 +240,7 @@ mod tests {
                 plugin_ids: vec!["logging".into()],
                 allowed_tools: Some(vec!["read".into()]),
                 excluded_tools: None,
-                sections: Default::default(),
+                ..Default::default()
             }],
         };
 

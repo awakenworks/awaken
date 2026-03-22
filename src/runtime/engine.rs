@@ -431,7 +431,7 @@ impl PhaseRuntime {
 
     fn filter_hooks<'a>(env: &'a ExecutionEnv, ctx: &PhaseContext) -> Vec<&'a TaggedPhaseHook> {
         let hooks = env.hooks_for_phase(ctx.phase);
-        let active_plugins = &ctx.profile.active_plugins;
+        let active_plugins = &ctx.agent_spec.active_plugins;
         hooks
             .iter()
             .filter(|tagged| {

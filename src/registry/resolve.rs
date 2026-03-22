@@ -123,23 +123,24 @@ impl AgentResolver for RegistrySet {
     /// Bridges the registry resolution (`ResolvedRun`) into the runtime's
     /// `AgentConfig` + `ExecutionEnv` pair that the loop runner expects.
     fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, StateError> {
-        let run = resolve(self, agent_id).map_err(|e| StateError::AgentNotFound {
-            agent_id: e.to_string(),
+        let run = resolve(self, agent_id).map_err(|e| StateError::ResolveFailed {
+            message: e.to_string(),
         })?;
 
         let mut env = run.env;
 
         let config = AgentConfig {
             id: run.spec.id,
+            model_id: run.spec.model,
             model: run.model_name,
             system_prompt: run.spec.system_prompt,
             max_rounds: run.spec.max_rounds,
             tools: run.tools,
             llm_executor: run.executor,
             tool_executor: Arc::new(SequentialToolExecutor),
-            context_policy: None,
+            context_policy: run.spec.context_policy,
             context_summarizer: None,
-            max_continuation_retries: 2,
+            max_continuation_retries: run.spec.max_continuation_retries,
         };
 
         // Register built-in context truncation transform when policy is set
@@ -324,11 +325,7 @@ mod tests {
             id: id.into(),
             model: "test-model".into(),
             system_prompt: "You are helpful.".into(),
-            max_rounds: 16,
-            plugin_ids: vec![],
-            allowed_tools: None,
-            excluded_tools: None,
-            sections: Default::default(),
+            ..Default::default()
         }
     }
 
@@ -629,6 +626,7 @@ mod tests {
 
         let resolved = AgentResolver::resolve(&regs, "my-agent").unwrap();
         assert_eq!(resolved.config.id, "my-agent");
+        assert_eq!(resolved.config.model_id, "test-model");
         assert_eq!(resolved.config.model, "claude-test");
         assert_eq!(resolved.config.system_prompt, "You are helpful.");
         assert_eq!(resolved.config.tools.len(), 2);
@@ -653,6 +651,6 @@ mod tests {
         );
 
         let err = AgentResolver::resolve(&regs, "missing").unwrap_err();
-        assert!(matches!(err, StateError::AgentNotFound { .. }));
+        assert!(matches!(err, StateError::ResolveFailed { .. }));
     }
 }

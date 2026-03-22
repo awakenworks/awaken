@@ -10,7 +10,7 @@ use thiserror::Error;
 use super::event::AgentEvent;
 use super::event_sink::EventSink;
 use super::identity::RunIdentity;
-use super::profile::AgentProfile;
+use crate::registry::spec::AgentSpec;
 use crate::state::{Snapshot, StateKey};
 
 /// Tool execution status.
@@ -229,7 +229,7 @@ impl ToolDescriptor {
 /// Context provided to a tool during execution.
 ///
 /// Gives the tool access to call identity, run identity, state snapshot,
-/// and agent profile. All read-only — tools produce results, not state mutations.
+/// and agent spec. All read-only — tools produce results, not state mutations.
 /// Tools can optionally report activity progress via [`activity_sink`](Self::activity_sink).
 #[derive(Clone)]
 pub struct ToolCallContext {
@@ -237,8 +237,8 @@ pub struct ToolCallContext {
     pub call_id: String,
     /// Run identity (thread_id, run_id, agent_id).
     pub run_identity: RunIdentity,
-    /// Active agent profile.
-    pub profile: Arc<AgentProfile>,
+    /// Active agent spec.
+    pub agent_spec: Arc<AgentSpec>,
     /// State snapshot at the time of tool execution.
     pub snapshot: Snapshot,
     /// Optional sink for reporting activity progress during execution.
@@ -292,7 +292,7 @@ impl ToolCallContext {
         Self {
             call_id: String::new(),
             run_identity: RunIdentity::default(),
-            profile: Arc::new(AgentProfile::default()),
+            agent_spec: Arc::new(AgentSpec::default()),
             snapshot: Snapshot::new(0, Arc::new(crate::state::StateMap::default())),
             activity_sink: None,
         }

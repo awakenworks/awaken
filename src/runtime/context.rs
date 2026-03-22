@@ -5,16 +5,17 @@ use serde_json::Value;
 use crate::contract::identity::RunIdentity;
 use crate::contract::inference::LLMResponse;
 use crate::contract::message::Message;
-use crate::contract::profile::{AgentProfile, PluginConfigKey, RunInput};
+use crate::contract::profile::RunInput;
 use crate::contract::tool::ToolResult;
 use crate::error::StateError;
 use crate::model::Phase;
+use crate::registry::spec::{AgentSpec, PluginConfigKey};
 use crate::state::{Snapshot, StateKey};
 
 /// Execution context passed to phase hooks and action handlers.
 ///
 /// Three input sources per ADR-0009:
-/// - `profile`: immutable agent configuration (model, active_plugins, sections)
+/// - `agent_spec`: immutable agent configuration (model, active_plugins, sections)
 /// - `snapshot`: shared runtime state (StateKeys)
 /// - `run_input`: per-run caller input (overrides, identity)
 #[derive(Clone)]
@@ -22,8 +23,8 @@ pub struct PhaseContext {
     pub phase: Phase,
     pub snapshot: Snapshot,
 
-    /// Active agent profile (resolved from registry at each phase boundary).
-    pub profile: Arc<AgentProfile>,
+    /// Active agent spec (resolved from registry at each phase boundary).
+    pub agent_spec: Arc<AgentSpec>,
 
     /// Per-run caller input (overrides, identity). Immutable for the run.
     pub run_input: Arc<RunInput>,
@@ -47,7 +48,7 @@ impl PhaseContext {
         Self {
             phase,
             snapshot,
-            profile: Arc::new(AgentProfile::default()),
+            agent_spec: Arc::new(AgentSpec::default()),
             run_input: Arc::new(RunInput::default()),
             messages: Arc::from([]),
             tool_name: None,
@@ -63,10 +64,10 @@ impl PhaseContext {
         self.snapshot.get::<K>()
     }
 
-    /// Read a typed plugin config from the active profile.
+    /// Read a typed plugin config from the active agent spec.
     /// Returns `Config::default()` if the section is missing.
     pub fn config<K: PluginConfigKey>(&self) -> Result<K::Config, StateError> {
-        self.profile.config::<K>()
+        self.agent_spec.config::<K>()
     }
 
     // -- Builder methods --
@@ -78,8 +79,8 @@ impl PhaseContext {
     }
 
     #[must_use]
-    pub fn with_profile(mut self, profile: Arc<AgentProfile>) -> Self {
-        self.profile = profile;
+    pub fn with_agent_spec(mut self, spec: Arc<AgentSpec>) -> Self {
+        self.agent_spec = spec;
         self
     }
 
@@ -154,20 +155,20 @@ mod tests {
         assert!(ctx.messages.is_empty());
         assert!(ctx.tool_name.is_none());
         assert!(ctx.llm_response.is_none());
-        assert_eq!(ctx.profile.id, "");
+        assert_eq!(ctx.agent_spec.id, "");
     }
 
     #[test]
-    fn phase_context_with_profile() {
-        let profile = Arc::new(
-            AgentProfile::new("reviewer")
+    fn phase_context_with_agent_spec() {
+        let spec = Arc::new(
+            AgentSpec::new("reviewer")
                 .with_model("opus")
                 .with_active_plugin("perm"),
         );
-        let ctx = PhaseContext::new(Phase::RunStart, empty_snapshot()).with_profile(profile);
-        assert_eq!(ctx.profile.id, "reviewer");
-        assert_eq!(ctx.profile.model.as_deref(), Some("opus"));
-        assert!(ctx.profile.active_plugins.contains("perm"));
+        let ctx = PhaseContext::new(Phase::RunStart, empty_snapshot()).with_agent_spec(spec);
+        assert_eq!(ctx.agent_spec.id, "reviewer");
+        assert_eq!(ctx.agent_spec.model, "opus");
+        assert!(ctx.agent_spec.active_plugins.contains("perm"));
     }
 
     #[test]

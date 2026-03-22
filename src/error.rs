@@ -42,4 +42,6 @@ pub enum StateError {
     ThreadAlreadyRunning { thread_id: String },
     #[error("agent not found: {agent_id}")]
     AgentNotFound { agent_id: String },
+    #[error("resolve failed: {message}")]
+    ResolveFailed { message: String },
 }

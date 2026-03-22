@@ -12,6 +12,9 @@ use super::executor::{SequentialToolExecutor, ToolExecutor};
 #[derive(Clone)]
 pub struct AgentConfig {
     pub id: String,
+    /// Model registry ID — the key used to look up the model entry.
+    pub model_id: String,
+    /// Actual model name for API calls (resolved from ModelEntry).
     pub model: String,
     pub system_prompt: String,
     pub max_rounds: usize,
@@ -35,9 +38,11 @@ impl AgentConfig {
         system_prompt: impl Into<String>,
         llm_executor: Arc<dyn LlmExecutor>,
     ) -> Self {
+        let model = model.into();
         Self {
             id: id.into(),
-            model: model.into(),
+            model_id: model.clone(),
+            model,
             system_prompt: system_prompt.into(),
             max_rounds: 16,
             tools: HashMap::new(),

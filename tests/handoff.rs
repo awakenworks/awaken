@@ -1,23 +1,24 @@
 #![allow(missing_docs)]
 //! Integration tests validating dynamic configuration:
-//! - Hook filtering by active_plugins in AgentProfile
-//! - Profile sections accessible in hooks via ctx.profile.sections
-//! - Handoff via ActiveAgentKey (state-driven profile switch)
-//! - Changing active_plugins between phases via different profiles
+//! - Hook filtering by active_plugins in AgentSpec
+//! - Spec sections accessible in hooks via ctx.agent_spec.sections
+//! - Handoff via ActiveAgentKey (state-driven agent switch)
+//! - Changing active_plugins between phases via different specs
 
 use async_trait::async_trait;
 use awaken::agent::state::{
     AccumulatedContextMessages, AccumulatedOverrides, AccumulatedToolExclusions,
     AccumulatedToolInclusions, ContextThrottleState, RunLifecycle, ToolCallStates,
 };
-use awaken::contract::profile::{ActiveAgentKey, AgentProfile, AgentRegistry, MapAgentRegistry};
+use awaken::contract::profile::ActiveAgentKey;
+use awaken::registry::spec::AgentSpec;
 use awaken::*;
 use serde_json::json;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
-// Tracking hooks — record what they see via profile sections
+// Tracking hooks — record what they see via spec sections
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Default)]
@@ -42,19 +43,19 @@ struct TrackingHook {
 impl PhaseHook for TrackingHook {
     async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         let model_name = ctx
-            .profile
+            .agent_spec
             .sections
             .get("test.model_name")
-            .and_then(|v| v.get("name"))
-            .and_then(|v| v.as_str())
+            .and_then(|v: &serde_json::Value| v.get("name"))
+            .and_then(|v: &serde_json::Value| v.as_str())
             .unwrap_or("")
             .to_string();
         let greeting = ctx
-            .profile
+            .agent_spec
             .sections
             .get("test.greeting")
-            .and_then(|v| v.get("prefix"))
-            .and_then(|v| v.as_str())
+            .and_then(|v: &serde_json::Value| v.get("prefix"))
+            .and_then(|v: &serde_json::Value| v.as_str())
             .unwrap_or("")
             .to_string();
         self.log.entries.lock().unwrap().push(HookEntry {
@@ -72,14 +73,14 @@ impl PhaseHook for TrackingHook {
 // ---------------------------------------------------------------------------
 
 struct HandoffHook {
-    target_profile: String,
+    target_agent: String,
 }
 
 #[async_trait]
 impl PhaseHook for HandoffHook {
     async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         let mut cmd = StateCommand::new();
-        cmd.update::<ActiveAgentKey>(Some(self.target_profile.clone()));
+        cmd.update::<ActiveAgentKey>(Some(self.target_agent.clone()));
         Ok(cmd)
     }
 }
@@ -163,7 +164,7 @@ impl Plugin for SingleTrackerPlugin {
 }
 
 struct HandoffPlugin {
-    target_profile: String,
+    target_agent: String,
 }
 
 impl Plugin for HandoffPlugin {
@@ -175,22 +176,22 @@ impl Plugin for HandoffPlugin {
             "handoff",
             Phase::RunStart,
             HandoffHook {
-                target_profile: self.target_profile.clone(),
+                target_agent: self.target_agent.clone(),
             },
         )?;
         Ok(())
     }
 }
 
-/// Build an AgentProfile with the given active_plugins set.
-fn profile_with_plugins(plugins: &[&str]) -> Arc<AgentProfile> {
+/// Build an AgentSpec with the given active_plugins set.
+fn spec_with_plugins(plugins: &[&str]) -> Arc<AgentSpec> {
     let mut active_plugins = HashSet::new();
     for p in plugins {
         active_plugins.insert((*p).to_string());
     }
-    Arc::new(AgentProfile {
+    Arc::new(AgentSpec {
         active_plugins,
-        ..AgentProfile::default()
+        ..AgentSpec::default()
     })
 }
 
@@ -215,11 +216,11 @@ async fn hook_filtering_only_active_plugins_fire() {
     });
     let env = ExecutionEnv::from_plugins(&[tracker as Arc<dyn Plugin>]).unwrap();
 
-    // Build a profile that only activates "alpha"
-    let profile = profile_with_plugins(&["alpha"]);
+    // Build a spec that only activates "alpha"
+    let spec = spec_with_plugins(&["alpha"]);
 
     let ctx =
-        PhaseContext::new(Phase::BeforeInference, runtime.store().snapshot()).with_profile(profile);
+        PhaseContext::new(Phase::BeforeInference, runtime.store().snapshot()).with_agent_spec(spec);
     runtime.run_phase_with_context(&env, ctx).await.unwrap();
 
     let entries = log.entries.lock().unwrap();
@@ -249,11 +250,11 @@ async fn empty_active_plugins_runs_all_hooks() {
     });
     let env = ExecutionEnv::from_plugins(&[tracker as Arc<dyn Plugin>]).unwrap();
 
-    // Default profile has empty active_plugins — no filtering, all hooks run
-    let profile = Arc::new(AgentProfile::default());
+    // Default spec has empty active_plugins — no filtering, all hooks run
+    let spec = Arc::new(AgentSpec::default());
 
     let ctx =
-        PhaseContext::new(Phase::BeforeInference, runtime.store().snapshot()).with_profile(profile);
+        PhaseContext::new(Phase::BeforeInference, runtime.store().snapshot()).with_agent_spec(spec);
     runtime.run_phase_with_context(&env, ctx).await.unwrap();
 
     let entries = log.entries.lock().unwrap();
@@ -265,7 +266,7 @@ async fn empty_active_plugins_runs_all_hooks() {
     assert_eq!(before_inf.len(), 2); // Both alpha and beta fire
 }
 
-/// Profile sections are accessible in hooks via ctx.profile.sections.
+/// Spec sections are accessible in hooks via ctx.agent_spec.sections.
 /// Overridden sections take precedence over defaults.
 #[tokio::test]
 async fn config_values_accessible_in_hooks() {
@@ -281,15 +282,15 @@ async fn config_values_accessible_in_hooks() {
     });
     let env = ExecutionEnv::from_plugins(&[tracker as Arc<dyn Plugin>]).unwrap();
 
-    // Build a profile with sections for model_name (overridden) and greeting (default)
-    let profile = Arc::new(
-        AgentProfile::new("test")
+    // Build a spec with sections for model_name and greeting
+    let spec = Arc::new(
+        AgentSpec::new("test")
             .with_section("test.model_name", json!({"name": "custom-model"}))
             .with_section("test.greeting", json!({"prefix": "Hello"})),
     );
 
     let ctx =
-        PhaseContext::new(Phase::BeforeInference, runtime.store().snapshot()).with_profile(profile);
+        PhaseContext::new(Phase::BeforeInference, runtime.store().snapshot()).with_agent_spec(spec);
     runtime.run_phase_with_context(&env, ctx).await.unwrap();
 
     let entries = log.entries.lock().unwrap();
@@ -298,24 +299,22 @@ async fn config_values_accessible_in_hooks() {
         .find(|e| e.phase == Phase::BeforeInference)
         .unwrap();
 
-    // ModelName set via profile section
     assert_eq!(entry.model_name, "custom-model");
-    // Greeting set via profile section
     assert_eq!(entry.greeting, "Hello");
 }
 
 /// Handoff hook writes ActiveAgentKey; at the next phase boundary the
-/// runtime resolves the new profile from the registry. The new profile's
+/// runtime resolves the new spec from the registry. The new spec's
 /// active_plugins and sections take effect.
 #[tokio::test]
-async fn handoff_switches_profile_at_next_boundary() {
+async fn handoff_switches_spec_at_next_boundary() {
     let log = HookLog::default();
 
     let runtime = PhaseRuntime::new(StateStore::new()).unwrap();
     runtime.store().install_plugin(LoopStatePlugin).unwrap();
 
     let handoff_plugin = Arc::new(HandoffPlugin {
-        target_profile: "reviewer".into(),
+        target_agent: "reviewer".into(),
     });
     let tracker = Arc::new(SingleTrackerPlugin {
         id: "review-tracker",
@@ -325,38 +324,34 @@ async fn handoff_switches_profile_at_next_boundary() {
     let plugins: Vec<Arc<dyn Plugin>> = vec![handoff_plugin, tracker];
     let env = ExecutionEnv::from_plugins(&plugins).unwrap();
 
-    // Build a registry with the "reviewer" profile
-    let mut registry = MapAgentRegistry::new();
-    registry.register(
-        AgentProfile::new("reviewer")
+    // Build a reviewer spec with sections
+    let reviewer_spec = Arc::new(
+        AgentSpec::new("reviewer")
             .with_active_plugin("review-tracker")
             .with_section("test.model_name", json!({"name": "reviewer-model"})),
     );
 
-    // Phase 1: RunStart with a profile that only activates "handoff"
+    // Phase 1: RunStart with a spec that only activates "handoff"
     // The handoff hook writes ActiveAgentKey = "reviewer"
-    let handoff_profile = profile_with_plugins(&["handoff"]);
+    let handoff_spec = spec_with_plugins(&["handoff"]);
     let run_start_ctx = PhaseContext::new(Phase::RunStart, runtime.store().snapshot())
-        .with_profile(handoff_profile);
+        .with_agent_spec(handoff_spec);
     runtime
         .run_phase_with_context(&env, run_start_ctx)
         .await
         .unwrap();
 
-    // After RunStart, read ActiveAgentKey from state to resolve the new profile
+    // After RunStart, read ActiveAgentKey from state
     let active_id = runtime
         .store()
         .read::<ActiveAgentKey>()
         .and_then(|v| v.clone());
     assert_eq!(active_id.as_deref(), Some("reviewer"));
 
-    // Resolve the reviewer profile from the registry
-    let reviewer_profile = Arc::new(registry.get(active_id.as_deref().unwrap()).unwrap().clone());
-
-    // Phase 2: BeforeInference with the resolved reviewer profile
+    // Phase 2: BeforeInference with the resolved reviewer spec
     // "review-tracker" should now be active and see "reviewer-model" in sections
     let before_inf_ctx = PhaseContext::new(Phase::BeforeInference, runtime.store().snapshot())
-        .with_profile(reviewer_profile);
+        .with_agent_spec(reviewer_spec);
     runtime
         .run_phase_with_context(&env, before_inf_ctx)
         .await
@@ -370,11 +365,10 @@ async fn handoff_switches_profile_at_next_boundary() {
 
     assert_eq!(before_inf.len(), 1);
     assert_eq!(before_inf[0].plugin_id, "review-tracker");
-    // Config comes from profile section (reviewer-model)
     assert_eq!(before_inf[0].model_name, "reviewer-model");
 }
 
-/// Switching to a profile without the tracker in active_plugins
+/// Switching to a spec without the tracker in active_plugins
 /// effectively deactivates it mid-run.
 #[tokio::test]
 async fn deactivate_plugin_mid_run_via_configure() {
@@ -391,9 +385,9 @@ async fn deactivate_plugin_mid_run_via_configure() {
     let env = ExecutionEnv::from_plugins(&[tracker as Arc<dyn Plugin>]).unwrap();
 
     // Phase 1: RunStart with tracker active
-    let profile_with_tracker = profile_with_plugins(&["tracker"]);
+    let spec_with_tracker = spec_with_plugins(&["tracker"]);
     let ctx = PhaseContext::new(Phase::RunStart, runtime.store().snapshot())
-        .with_profile(profile_with_tracker);
+        .with_agent_spec(spec_with_tracker);
     runtime.run_phase_with_context(&env, ctx).await.unwrap();
 
     {
@@ -402,11 +396,11 @@ async fn deactivate_plugin_mid_run_via_configure() {
         assert_eq!(entries[0].phase, Phase::RunStart);
     }
 
-    // Phase 2: BeforeInference with a profile that does NOT include "tracker"
+    // Phase 2: BeforeInference with a spec that does NOT include "tracker"
     // (non-empty active_plugins without "tracker" means tracker is filtered out)
-    let profile_without_tracker = profile_with_plugins(&["other-plugin"]);
+    let spec_without_tracker = spec_with_plugins(&["other-plugin"]);
     let ctx = PhaseContext::new(Phase::BeforeInference, runtime.store().snapshot())
-        .with_profile(profile_without_tracker);
+        .with_agent_spec(spec_without_tracker);
     runtime.run_phase_with_context(&env, ctx).await.unwrap();
 
     {

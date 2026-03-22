@@ -430,7 +430,7 @@ pub async fn run_agent_loop_controlled(
         let tool_ctx = ToolCallContext {
             call_id: String::new(), // filled per-call by executor
             run_identity: run_identity.clone(),
-            profile: make_ctx(Phase::BeforeToolExecute, &messages, &run_identity).profile,
+            agent_spec: make_ctx(Phase::BeforeToolExecute, &messages, &run_identity).agent_spec,
             snapshot: store.snapshot(),
             activity_sink: Some(
                 activity_buffer.clone() as Arc<dyn crate::contract::event_sink::EventSink>

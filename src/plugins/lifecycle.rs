@@ -1,5 +1,5 @@
-use crate::contract::profile::AgentProfile;
 use crate::error::StateError;
+use crate::registry::spec::AgentSpec;
 use crate::state::MutationBatch;
 
 use super::{PluginDescriptor, PluginRegistrar};
@@ -13,11 +13,11 @@ pub trait Plugin: Send + Sync + 'static {
         Ok(())
     }
 
-    /// Agent activated: read profile config, write initial state.
+    /// Agent activated: read spec config, write initial state.
     /// Called when this plugin becomes active for a specific agent.
     fn on_activate(
         &self,
-        _profile: &AgentProfile,
+        _agent_spec: &AgentSpec,
         _patch: &mut MutationBatch,
     ) -> Result<(), StateError> {
         Ok(())

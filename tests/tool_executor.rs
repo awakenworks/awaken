@@ -18,9 +18,9 @@ use awaken::contract::identity::{RunIdentity, RunOrigin};
 use awaken::contract::inference::{StopReason, StreamResult};
 use awaken::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken::contract::message::{Message, ToolCall};
-use awaken::contract::profile::AgentProfile;
 use awaken::contract::suspension::{ToolCallOutcome, ToolCallStatus};
 use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
+use awaken::registry::spec::AgentSpec;
 use awaken::*;
 use awaken::{AgentResolver, ExecutionEnv, ResolvedAgent};
 use serde::{Deserialize, Serialize};
@@ -837,7 +837,7 @@ async fn profile_sections_available_in_loop_hooks() {
     impl PhaseHook for ConfigReader {
         async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
             let name = ctx
-                .profile
+                .agent_spec
                 .sections
                 .get("test.model")
                 .and_then(|v| v.get("name"))
@@ -870,15 +870,15 @@ async fn profile_sections_available_in_loop_hooks() {
     let cfg_plugin = Arc::new(CfgPlugin(observed.clone()));
     let env = ExecutionEnv::from_plugins(&[cfg_plugin as Arc<dyn Plugin>]).unwrap();
 
-    // Build a profile with the test section
-    let profile = std::sync::Arc::new(
-        AgentProfile::new("test")
+    // Build a spec with the test section
+    let spec = std::sync::Arc::new(
+        AgentSpec::new("test")
             .with_section("test.model", serde_json::json!({"name": "test-model"})),
     );
 
-    // Run phases manually with profile context
+    // Run phases manually with spec context
     let store = rt.store();
-    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot()).with_profile(profile);
+    let ctx = PhaseContext::new(Phase::BeforeInference, store.snapshot()).with_agent_spec(spec);
     rt.run_phase_with_context(&env, ctx).await.unwrap();
 
     assert_eq!(*observed.lock().unwrap(), "test-model");

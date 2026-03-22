@@ -89,7 +89,7 @@ pub(super) async fn detect_and_replay_resume(
     let resume_tool_ctx = ToolCallContext {
         call_id: String::new(),
         run_identity: run_identity.clone(),
-        profile: std::sync::Arc::new(crate::contract::profile::AgentProfile::default()),
+        agent_spec: std::sync::Arc::new(crate::registry::spec::AgentSpec::default()),
         snapshot: store.snapshot(),
         activity_sink: None,
     };
