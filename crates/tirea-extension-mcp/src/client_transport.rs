@@ -212,18 +212,11 @@ impl ProgressAwareHttpTransport {
     }
 
     async fn initialize_if_needed(&self) -> Result<ServerCapabilities, McpTransportError> {
-        {
-            let guard = self.capabilities.lock().await;
-            if let Some(capabilities) = guard.clone() {
-                return Ok(capabilities);
-            }
-        }
-
-        let capabilities = self.initialize().await?;
         let mut guard = self.capabilities.lock().await;
-        if let Some(existing) = guard.clone() {
-            return Ok(existing);
+        if let Some(capabilities) = guard.clone() {
+            return Ok(capabilities);
         }
+        let capabilities = self.initialize().await?;
         *guard = Some(capabilities.clone());
         Ok(capabilities)
     }
@@ -272,6 +265,17 @@ impl ProgressAwareHttpTransport {
             McpTransportError::TransportError(format!("Failed to parse JSON response: {}", e))
         })?;
         decode_http_response_payload(body, id, progress_registration)
+    }
+
+    async fn send_initialized_request(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
+    ) -> Result<Value, McpTransportError> {
+        self.initialize_if_needed().await?;
+        self.send_request(method, params, progress_registration)
+            .await
     }
 }
 
@@ -833,7 +837,7 @@ impl McpToolTransport for ProgressAwareStdioTransport {
 impl McpToolTransport for ProgressAwareHttpTransport {
     async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
         let result = self
-            .send_request("tools/list", Some(json!({})), None)
+            .send_initialized_request("tools/list", Some(json!({})), None)
             .await?;
         let list_result: ListToolsResult = serde_json::from_value(result)?;
         Ok(list_result.tools)
@@ -841,7 +845,7 @@ impl McpToolTransport for ProgressAwareHttpTransport {
 
     async fn list_prompts(&self) -> Result<Vec<McpPromptDefinition>, McpTransportError> {
         let result = self
-            .send_request("prompts/list", Some(json!({})), None)
+            .send_initialized_request("prompts/list", Some(json!({})), None)
             .await?;
         let list_result: ListPromptsResult = serde_json::from_value(result)?;
         Ok(list_result.prompts)
@@ -853,7 +857,7 @@ impl McpToolTransport for ProgressAwareHttpTransport {
         arguments: Option<HashMap<String, String>>,
     ) -> Result<McpPromptResult, McpTransportError> {
         let result = self
-            .send_request(
+            .send_initialized_request(
                 "prompts/get",
                 Some(json!({
                     "name": name,
@@ -867,7 +871,7 @@ impl McpToolTransport for ProgressAwareHttpTransport {
 
     async fn list_resources(&self) -> Result<Vec<McpResourceDefinition>, McpTransportError> {
         let result = self
-            .send_request("resources/list", Some(json!({})), None)
+            .send_initialized_request("resources/list", Some(json!({})), None)
             .await?;
         let list_result: ListResourcesResult = serde_json::from_value(result)?;
         Ok(list_result.resources)
@@ -902,7 +906,7 @@ impl McpToolTransport for ProgressAwareHttpTransport {
         };
 
         let result = self
-            .send_request(
+            .send_initialized_request(
                 "tools/call",
                 Some(serde_json::to_value(&params)?),
                 progress_sender,
@@ -928,7 +932,7 @@ impl McpToolTransport for ProgressAwareHttpTransport {
     }
 
     async fn read_resource(&self, uri: &str) -> Result<Value, McpTransportError> {
-        self.send_request("resources/read", Some(json!({"uri": uri})), None)
+        self.send_initialized_request("resources/read", Some(json!({"uri": uri})), None)
             .await
     }
 }
@@ -1091,7 +1095,11 @@ mod tests {
                 .lock()
                 .expect("requests lock")
                 .push(request.clone());
-            tool_call_success_response(&request, "ok")
+            match request["method"].as_str().unwrap_or_default() {
+                "initialize" => initialize_response(&request, json!({})),
+                "tools/call" => tool_call_success_response(&request, "ok"),
+                other => panic!("unexpected method: {other}"),
+            }
         }))
         .await;
 
@@ -1110,10 +1118,11 @@ mod tests {
 
         server.abort();
         let captured = requests.lock().expect("requests lock");
-        assert_eq!(captured.len(), 2);
-        assert_eq!(captured[0]["method"], json!("tools/call"));
-        assert!(captured[0]["params"]["_meta"]["progressToken"].is_number());
-        assert!(captured[1]["params"].get("_meta").is_none());
+        assert_eq!(captured.len(), 3);
+        assert_eq!(captured[0]["method"], json!("initialize"));
+        assert_eq!(captured[1]["method"], json!("tools/call"));
+        assert!(captured[1]["params"]["_meta"]["progressToken"].is_number());
+        assert!(captured[2]["params"].get("_meta").is_none());
     }
 
     #[tokio::test]
@@ -1208,14 +1217,18 @@ mod tests {
     #[tokio::test]
     async fn http_call_tool_with_is_error_result_returns_server_error() {
         let (endpoint, server) = spawn_http_server(Arc::new(|request| {
-            HttpResponseSpec::json(json!({
-                "jsonrpc": "2.0",
-                "id": request["id"].clone(),
-                "result": {
-                    "content": [{"type": "text", "text": "tool failed"}],
-                    "isError": true
-                }
-            }))
+            match request["method"].as_str().unwrap_or_default() {
+                "initialize" => initialize_response(&request, json!({})),
+                "tools/call" => HttpResponseSpec::json(json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"].clone(),
+                    "result": {
+                        "content": [{"type": "text", "text": "tool failed"}],
+                        "isError": true
+                    }
+                })),
+                other => panic!("unexpected method: {other}"),
+            }
         }))
         .await;
         let cfg = McpServerConnectionConfig::http("http_tool_error", endpoint);
@@ -1232,14 +1245,18 @@ mod tests {
     #[tokio::test]
     async fn http_call_tool_preserves_structured_content() {
         let (endpoint, server) = spawn_http_server(Arc::new(|request| {
-            HttpResponseSpec::json(json!({
-                "jsonrpc": "2.0",
-                "id": request["id"].clone(),
-                "result": {
-                    "content": [{"type": "text", "text": "sum complete"}],
-                    "structuredContent": {"sum": 3, "values": [1, 2]}
-                }
-            }))
+            match request["method"].as_str().unwrap_or_default() {
+                "initialize" => initialize_response(&request, json!({})),
+                "tools/call" => HttpResponseSpec::json(json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"].clone(),
+                    "result": {
+                        "content": [{"type": "text", "text": "sum complete"}],
+                        "structuredContent": {"sum": 3, "values": [1, 2]}
+                    }
+                })),
+                other => panic!("unexpected method: {other}"),
+            }
         }))
         .await;
         let cfg = McpServerConnectionConfig::http("http_structured", endpoint);
@@ -1285,15 +1302,9 @@ mod tests {
         .await;
         let cfg = McpServerConnectionConfig::http("http_prompts", endpoint);
         let transport = ProgressAwareHttpTransport::connect(&cfg).expect("connect transport");
-        let capabilities = transport
-            .server_capabilities()
-            .await
-            .expect("server capabilities")
-            .expect("capabilities");
         let prompts = transport.list_prompts().await.expect("prompt list");
         server.abort();
 
-        assert!(capabilities.prompts.is_some());
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].name, "review");
         assert_eq!(prompts[0].arguments.len(), 1);
@@ -1309,17 +1320,21 @@ mod tests {
                 .lock()
                 .expect("requests lock")
                 .push(request.clone());
-            HttpResponseSpec::json(json!({
-                "jsonrpc": "2.0",
-                "id": request["id"].clone(),
-                "result": {
-                    "description": "Review prompt",
-                    "messages": [{
-                        "role": "user",
-                        "content": {"type": "text", "text": "Review src/lib.rs"}
-                    }]
-                }
-            }))
+            match request["method"].as_str().unwrap_or_default() {
+                "initialize" => initialize_response(&request, json!({"prompts": {}})),
+                "prompts/get" => HttpResponseSpec::json(json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"].clone(),
+                    "result": {
+                        "description": "Review prompt",
+                        "messages": [{
+                            "role": "user",
+                            "content": {"type": "text", "text": "Review src/lib.rs"}
+                        }]
+                    }
+                })),
+                other => panic!("unexpected method: {other}"),
+            }
         }))
         .await;
         let cfg = McpServerConnectionConfig::http("http_get_prompt", endpoint);
@@ -1345,11 +1360,12 @@ mod tests {
         );
 
         let captured = requests.lock().expect("requests lock");
-        assert_eq!(captured.len(), 1);
-        assert_eq!(captured[0]["method"], json!("prompts/get"));
-        assert_eq!(captured[0]["params"]["name"], json!("review"));
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0]["method"], json!("initialize"));
+        assert_eq!(captured[1]["method"], json!("prompts/get"));
+        assert_eq!(captured[1]["params"]["name"], json!("review"));
         assert_eq!(
-            captured[0]["params"]["arguments"]["path"],
+            captured[1]["params"]["arguments"]["path"],
             json!("src/lib.rs")
         );
     }
@@ -1379,19 +1395,57 @@ mod tests {
         .await;
         let cfg = McpServerConnectionConfig::http("http_resources", endpoint);
         let transport = ProgressAwareHttpTransport::connect(&cfg).expect("connect transport");
-        let capabilities = transport
-            .server_capabilities()
-            .await
-            .expect("server capabilities")
-            .expect("capabilities");
         let resources = transport.list_resources().await.expect("resource list");
         server.abort();
 
-        assert!(capabilities.resources.is_some());
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].uri, "file://guide.md");
         assert_eq!(resources[0].mime_type.as_deref(), Some("text/markdown"));
         assert_eq!(resources[0].size, Some(42));
+    }
+
+    #[tokio::test]
+    async fn http_read_resource_auto_initializes_before_read() {
+        let requests: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let requests_handler = Arc::clone(&requests);
+        let (endpoint, server) = spawn_http_server(Arc::new(move |request| {
+            requests_handler
+                .lock()
+                .expect("requests lock")
+                .push(request.clone());
+            match request["method"].as_str().unwrap_or_default() {
+                "initialize" => initialize_response(&request, json!({"resources": {}})),
+                "resources/read" => HttpResponseSpec::json(json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"].clone(),
+                    "result": {
+                        "contents": [{
+                            "uri": "file://guide.md",
+                            "text": "# Guide",
+                            "mimeType": "text/markdown"
+                        }]
+                    }
+                })),
+                other => panic!("unexpected method: {other}"),
+            }
+        }))
+        .await;
+
+        let cfg = McpServerConnectionConfig::http("http_read_resource", endpoint);
+        let transport = ProgressAwareHttpTransport::connect(&cfg).expect("connect transport");
+        let resource = transport
+            .read_resource("file://guide.md")
+            .await
+            .expect("resource");
+        server.abort();
+
+        assert_eq!(resource["contents"][0]["text"], json!("# Guide"));
+
+        let captured = requests.lock().expect("requests lock");
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0]["method"], json!("initialize"));
+        assert_eq!(captured[1]["method"], json!("resources/read"));
+        assert_eq!(captured[1]["params"]["uri"], json!("file://guide.md"));
     }
 
     #[test]
@@ -1446,31 +1500,43 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn concurrent_http_tool_calls_route_progress_by_token() {
-        let (endpoint, server) = spawn_http_server(Arc::new(|request| {
-            let token = request["params"]["_meta"]["progressToken"].clone();
-            let label = request["params"]["arguments"]["label"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string();
-            HttpResponseSpec::json(json!([
-                {
-                    "jsonrpc": "2.0",
-                    "method": "notifications/progress",
-                    "params": {
-                        "progressToken": token,
-                        "progress": 1.0,
-                        "total": 1.0,
-                        "message": label
-                    }
-                },
-                {
-                    "jsonrpc": "2.0",
-                    "id": request["id"].clone(),
-                    "result": {
-                        "content": [{"type": "text", "text": request["params"]["arguments"]["label"].clone()}]
-                    }
+        let requests: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let requests_handler = Arc::clone(&requests);
+        let (endpoint, server) = spawn_http_server(Arc::new(move |request| {
+            requests_handler
+                .lock()
+                .expect("requests lock")
+                .push(request.clone());
+            match request["method"].as_str().unwrap_or_default() {
+                "initialize" => initialize_response(&request, json!({})),
+                "tools/call" => {
+                    let token = request["params"]["_meta"]["progressToken"].clone();
+                    let label = request["params"]["arguments"]["label"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                    HttpResponseSpec::json(json!([
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "notifications/progress",
+                            "params": {
+                                "progressToken": token,
+                                "progress": 1.0,
+                                "total": 1.0,
+                                "message": label
+                            }
+                        },
+                        {
+                            "jsonrpc": "2.0",
+                            "id": request["id"].clone(),
+                            "result": {
+                                "content": [{"type": "text", "text": request["params"]["arguments"]["label"].clone()}]
+                            }
+                        }
+                    ]))
                 }
-            ]))
+                other => panic!("unexpected method: {other}"),
+            }
         }))
         .await;
 
@@ -1506,12 +1572,32 @@ mod tests {
         assert_eq!(update_b.message.as_deref(), Some("B"));
         assert!(rx_a.try_recv().is_err());
         assert!(rx_b.try_recv().is_err());
+
+        let captured = requests.lock().expect("requests lock");
+        assert_eq!(
+            captured
+                .iter()
+                .filter(|request| request["method"] == json!("initialize"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            captured
+                .iter()
+                .filter(|request| request["method"] == json!("tools/call"))
+                .count(),
+            2
+        );
     }
 
     #[tokio::test]
     async fn http_server_without_progress_still_succeeds_with_progress_channel() {
         let (endpoint, server) = spawn_http_server(Arc::new(|request| {
-            tool_call_success_response(&request, "no-progress")
+            match request["method"].as_str().unwrap_or_default() {
+                "initialize" => initialize_response(&request, json!({})),
+                "tools/call" => tool_call_success_response(&request, "no-progress"),
+                other => panic!("unexpected method: {other}"),
+            }
         }))
         .await;
         let cfg = McpServerConnectionConfig::http("http_no_progress", endpoint);
