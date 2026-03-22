@@ -55,8 +55,8 @@ pub trait ProviderRegistry: Send + Sync {
 
 /// Lookup interface for serializable agent definitions.
 pub trait AgentSpecRegistry: Send + Sync {
-    /// Get an agent spec by its ID.
-    fn get_agent(&self, id: &str) -> Option<&AgentSpec>;
+    /// Get an agent spec by its ID (returns an owned clone).
+    fn get_agent(&self, id: &str) -> Option<AgentSpec>;
     /// List all registered agent IDs.
     fn agent_ids(&self) -> Vec<String>;
 }

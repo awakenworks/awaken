@@ -89,8 +89,7 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
     let spec = registries
         .agents
         .get_agent(agent_id)
-        .ok_or_else(|| ResolveError::AgentNotFound(agent_id.into()))?
-        .clone();
+        .ok_or_else(|| ResolveError::AgentNotFound(agent_id.into()))?;
 
     let model = registries
         .models

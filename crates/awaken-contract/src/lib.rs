@@ -17,6 +17,9 @@ pub use model::{
     ScheduledActionSpec, TypedEffect,
 };
 
+// ── agent card ──
+pub use contract::agent_card::{AgentCard, AgentCardAuth};
+
 // ── registry spec (AgentSpec, PluginConfigKey) ──
 pub use registry_spec::{AgentSpec, PluginConfigKey};
 

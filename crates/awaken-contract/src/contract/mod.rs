@@ -1,3 +1,4 @@
+pub mod agent_card;
 pub mod bundle;
 pub mod content;
 pub mod context_message;

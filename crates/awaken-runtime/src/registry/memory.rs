@@ -115,8 +115,8 @@ impl MapAgentSpecRegistry {
 }
 
 impl AgentSpecRegistry for MapAgentSpecRegistry {
-    fn get_agent(&self, id: &str) -> Option<&AgentSpec> {
-        self.agents.get(id)
+    fn get_agent(&self, id: &str) -> Option<AgentSpec> {
+        self.agents.get(id).cloned()
     }
 
     fn agent_ids(&self) -> Vec<String> {

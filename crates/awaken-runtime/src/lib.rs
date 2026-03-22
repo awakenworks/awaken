@@ -61,6 +61,9 @@ pub use agent::loop_runner::parallel_merge::{
     ParallelMergeError, ToolStateBatch, collect_all_touched_keys, validate_parallel_state_batches,
 };
 
+// ── composite registry ──
+pub use registry::composite::{CompositeAgentSpecRegistry, DiscoveryError, RemoteAgentSource};
+
 // ── builder ──
 pub use builder::AgentRuntimeBuilder;
 

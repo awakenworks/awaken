@@ -24,6 +24,9 @@ pub fn a2a_routes() -> Router<AppState> {
 /// A2A Agent Card — describes agent capabilities for discovery.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentCard {
+    /// Agent identifier used for A2A discovery.
+    #[serde(default)]
+    pub id: String,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -152,6 +155,7 @@ async fn a2a_task_send(
 
 async fn a2a_agent_card(State(_st): State<AppState>) -> Json<AgentCard> {
     Json(AgentCard {
+        id: "awaken-agent".to_string(),
         name: "awaken-agent".to_string(),
         description: Some("Awaken AI Agent".to_string()),
         url: String::new(),
@@ -173,6 +177,7 @@ mod tests {
     #[test]
     fn agent_card_serde_roundtrip() {
         let card = AgentCard {
+            id: "test-agent".into(),
             name: "test-agent".into(),
             description: Some("A test agent".into()),
             url: "http://localhost:3000".into(),
@@ -191,6 +196,7 @@ mod tests {
         };
         let json = serde_json::to_string(&card).unwrap();
         let parsed: AgentCard = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.id, "test-agent");
         assert_eq!(parsed.name, "test-agent");
         assert_eq!(parsed.skills.len(), 1);
     }
@@ -198,6 +204,7 @@ mod tests {
     #[test]
     fn agent_card_empty_skills_omitted() {
         let card = AgentCard {
+            id: String::new(),
             name: "minimal".into(),
             description: None,
             url: String::new(),

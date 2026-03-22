@@ -13,6 +13,7 @@ use serde_json::json;
 #[test]
 fn agent_card_full_serde_roundtrip() {
     let card = AgentCard {
+        id: String::new(),
         name: "test-agent".into(),
         description: Some("A test agent".into()),
         url: "http://localhost:3000".into(),
@@ -41,6 +42,7 @@ fn agent_card_full_serde_roundtrip() {
 #[test]
 fn agent_card_minimal_omits_optional_fields() {
     let card = AgentCard {
+        id: String::new(),
         name: "minimal".into(),
         description: None,
         url: String::new(),
@@ -65,6 +67,7 @@ fn agent_card_capabilities_defaults() {
 #[test]
 fn agent_card_multiple_skills() {
     let card = AgentCard {
+        id: String::new(),
         name: "multi-skill".into(),
         description: None,
         url: "http://localhost".into(),
@@ -230,6 +233,7 @@ fn a2a_message_no_text_parts() {
 #[test]
 fn agent_card_streaming_capability() {
     let card = AgentCard {
+        id: String::new(),
         name: "streaming-agent".into(),
         description: Some("Supports SSE streaming".into()),
         url: "http://localhost:3000/v1/a2a".into(),
@@ -257,6 +261,7 @@ fn agent_card_streaming_capability() {
 #[test]
 fn agent_card_version_semver_format() {
     let card = AgentCard {
+        id: String::new(),
         name: "versioned".into(),
         description: None,
         url: String::new(),

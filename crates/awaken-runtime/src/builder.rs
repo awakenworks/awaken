@@ -12,11 +12,12 @@ use crate::state::StateStore;
 
 use crate::agent::stop_conditions::StopPolicy;
 use crate::plugins::Plugin;
+use crate::registry::composite::{CompositeAgentSpecRegistry, RemoteAgentSource};
 use crate::registry::memory::{
     MapAgentRegistry, MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry,
     MapStopPolicyRegistry, MapToolRegistry,
 };
-use crate::registry::traits::{ModelEntry, RegistrySet};
+use crate::registry::traits::{AgentSpecRegistry, ModelEntry, RegistrySet};
 use crate::runtime::AgentRuntime;
 
 /// Error returned when the builder cannot construct the runtime.
@@ -44,6 +45,7 @@ pub struct AgentRuntimeBuilder {
     thread_run_store: Option<Arc<dyn ThreadRunStore>>,
     agent_registries: MapAgentRegistry,
     stop_policies: MapStopPolicyRegistry,
+    remote_sources: Vec<RemoteAgentSource>,
 }
 
 impl AgentRuntimeBuilder {
@@ -58,6 +60,7 @@ impl AgentRuntimeBuilder {
             thread_run_store: None,
             agent_registries: MapAgentRegistry::new(),
             stop_policies: MapStopPolicyRegistry::new(),
+            remote_sources: Vec::new(),
         }
     }
 
@@ -123,10 +126,37 @@ impl AgentRuntimeBuilder {
         self
     }
 
+    /// Add a remote A2A agent source for discovery.
+    ///
+    /// When remote sources are configured, the builder creates a
+    /// [`CompositeAgentSpecRegistry`] that combines local agents with
+    /// agents discovered from remote A2A endpoints.
+    pub fn with_remote_agents(
+        mut self,
+        base_url: impl Into<String>,
+        bearer_token: Option<String>,
+    ) -> Self {
+        self.remote_sources.push(RemoteAgentSource {
+            base_url: base_url.into(),
+            bearer_token,
+        });
+        self
+    }
+
     /// Build the `AgentRuntime` from the accumulated configuration.
     pub fn build(self) -> Result<AgentRuntime, BuildError> {
+        let agents: Arc<dyn AgentSpecRegistry> = if self.remote_sources.is_empty() {
+            Arc::new(self.agents)
+        } else {
+            let mut composite = CompositeAgentSpecRegistry::new(Arc::new(self.agents));
+            for source in self.remote_sources {
+                composite.add_remote(source);
+            }
+            Arc::new(composite)
+        };
+
         let registry_set = RegistrySet {
-            agents: Arc::new(self.agents),
+            agents,
             tools: Arc::new(self.tools),
             models: Arc::new(self.models),
             providers: Arc::new(self.providers),
