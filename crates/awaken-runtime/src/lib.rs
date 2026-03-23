@@ -29,11 +29,11 @@ pub use agent::state::{
     RunLifecycleUpdate, SetInferenceOverride, ToolCallState, ToolCallStateMap, ToolCallStates,
     ToolCallStatesUpdate, ToolInclusionSet,
 };
-pub use execution::AllowAllToolsPlugin;
 pub use loop_runner::{
     AgentLoopError, AgentLoopParams, AgentRunResult, LoopStatePlugin, build_agent_env,
     prepare_resume, run_agent_loop,
 };
+pub use plugins::AllowAllToolsPlugin;
 
 // ── compaction ──
 pub use context::{

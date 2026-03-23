@@ -107,7 +107,7 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
     plugins.push(Arc::new(crate::policies::MaxRoundsPlugin::new(
         spec.max_rounds,
     )));
-    plugins.push(Arc::new(crate::execution::AllowAllToolsPlugin));
+    plugins.push(Arc::new(crate::plugins::AllowAllToolsPlugin));
 
     // Default compaction plugin: tracks compaction boundaries in state.
     // Only added if the agent has a context_policy configured.

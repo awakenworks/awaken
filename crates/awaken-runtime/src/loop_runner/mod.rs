@@ -168,7 +168,7 @@ pub fn build_agent_env(
     agent: &crate::agent::config::AgentConfig,
 ) -> Result<ExecutionEnv, StateError> {
     use crate::context::ContextTransform;
-    use crate::execution::permission::AllowAllToolsPlugin;
+    use crate::plugins::defaults::AllowAllToolsPlugin;
     use crate::policies::MaxRoundsPlugin;
 
     let mut all_plugins: Vec<Arc<dyn crate::plugins::Plugin>> = plugins.to_vec();
