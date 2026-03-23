@@ -24,11 +24,10 @@ pub use error::RuntimeError;
 
 pub use builder::{AgentRuntimeBuilder, BuildError};
 pub use phase::{
-    DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv, PhaseContext, PhaseHook, PhaseRuntime, ToolPermission,
-    ToolPermissionChecker, ToolPermissionResult, TypedEffectHandler, TypedScheduledActionHandler,
-    aggregate_tool_permissions,
+    DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv, PhaseContext, PhaseHook, PhaseRuntime,
+    TypedEffectHandler, TypedScheduledActionHandler,
 };
-pub use plugins::{AllowAllToolsPlugin, Plugin, PluginDescriptor, PluginRegistrar};
+pub use plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 pub use registry::{AgentResolver, ResolvedAgent};
 pub use runtime::{AgentRuntime, RunRequest};
 pub use state::{CommitEvent, CommitHook, MutationBatch, StateCommand, StateStore};

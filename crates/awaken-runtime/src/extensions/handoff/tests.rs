@@ -6,7 +6,7 @@ use awaken_contract::model::Phase;
 
 use crate::phase::{ExecutionEnv, PhaseRuntime};
 use crate::plugins::Plugin;
-use crate::state::StateStore;
+use crate::state::{KeyScope, StateStore};
 
 use super::*;
 
@@ -90,6 +90,20 @@ fn plugin_registers_state_key() {
     assert!(registry.keys_by_name.contains_key(
         <awaken_contract::contract::profile::ActiveAgentIdKey as crate::state::StateKey>::KEY,
     ));
+    assert_eq!(
+        registry
+            .keys_by_name
+            .get("agent_handoff")
+            .map(|reg| reg.scope),
+        Some(KeyScope::Thread)
+    );
+    assert_eq!(
+        registry
+            .keys_by_name
+            .get(<awaken_contract::contract::profile::ActiveAgentIdKey as crate::state::StateKey>::KEY)
+            .map(|reg| reg.scope),
+        Some(KeyScope::Thread)
+    );
 }
 
 #[test]

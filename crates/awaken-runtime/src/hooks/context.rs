@@ -15,7 +15,7 @@ use awaken_contract::registry_spec::{AgentSpec, PluginConfigKey};
 /// Execution context passed to phase hooks and action handlers.
 ///
 /// Three input sources per ADR-0009:
-/// - `agent_spec`: immutable agent configuration (model, active_plugins, sections)
+/// - `agent_spec`: immutable agent configuration (model, active_hook_filter, sections)
 /// - `snapshot`: shared runtime state (StateKeys)
 /// - `run_input`: per-run caller input (overrides, identity)
 #[derive(Clone)]
@@ -40,6 +40,9 @@ pub struct PhaseContext {
 
     // LLM response (set during AfterInference)
     pub llm_response: Option<LLMResponse>,
+
+    // Resume decision (set during BeforeToolExecute when resuming a suspended tool call)
+    pub resume_input: Option<awaken_contract::contract::suspension::ToolCallResume>,
 }
 
 impl PhaseContext {
@@ -56,6 +59,7 @@ impl PhaseContext {
             tool_args: None,
             tool_result: None,
             llm_response: None,
+            resume_input: None,
         }
     }
 
@@ -126,6 +130,15 @@ impl PhaseContext {
         self.llm_response = Some(response);
         self
     }
+
+    #[must_use]
+    pub fn with_resume_input(
+        mut self,
+        resume: awaken_contract::contract::suspension::ToolCallResume,
+    ) -> Self {
+        self.resume_input = Some(resume);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -156,12 +169,12 @@ mod tests {
         let spec = Arc::new(
             AgentSpec::new("reviewer")
                 .with_model("opus")
-                .with_active_plugin("perm"),
+                .with_hook_filter("perm"),
         );
         let ctx = PhaseContext::new(Phase::RunStart, empty_snapshot()).with_agent_spec(spec);
         assert_eq!(ctx.agent_spec.id, "reviewer");
         assert_eq!(ctx.agent_spec.model, "opus");
-        assert!(ctx.agent_spec.active_plugins.contains("perm"));
+        assert!(ctx.agent_spec.active_hook_filter.contains("perm"));
     }
 
     #[test]

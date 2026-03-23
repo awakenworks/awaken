@@ -102,20 +102,6 @@ impl SuspendTicket {
     }
 }
 
-/// Tool-call level control action emitted by plugins.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ToolCallAction {
-    Proceed,
-    Suspend(Box<SuspendTicket>),
-    Block { reason: String },
-}
-
-impl ToolCallAction {
-    pub fn suspend(ticket: SuspendTicket) -> Self {
-        Self::Suspend(Box::new(ticket))
-    }
-}
-
 /// Action to apply for a suspended tool call decision.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -241,13 +227,6 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_action_suspend() {
-        let ticket = SuspendTicket::default();
-        let action = ToolCallAction::suspend(ticket.clone());
-        assert_eq!(action, ToolCallAction::Suspend(Box::new(ticket)));
-    }
-
-    #[test]
     fn suspend_ticket_helpers_apply_expected_fields() {
         let suspension = Suspension {
             id: "s1".into(),
@@ -280,15 +259,6 @@ mod tests {
         let parsed: PendingToolCall = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed, pending);
-    }
-
-    #[test]
-    fn tool_call_action_block_preserves_reason() {
-        let action = ToolCallAction::Block {
-            reason: "denied".into(),
-        };
-
-        assert!(matches!(action, ToolCallAction::Block { reason } if reason == "denied"));
     }
 
     #[test]
@@ -516,12 +486,6 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         let parsed: Suspension = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, s);
-    }
-
-    #[test]
-    fn tool_call_action_proceed() {
-        let action = ToolCallAction::Proceed;
-        assert_eq!(action, ToolCallAction::Proceed);
     }
 
     #[test]

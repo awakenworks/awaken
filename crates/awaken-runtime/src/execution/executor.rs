@@ -38,9 +38,16 @@ pub trait ToolExecutor: Send + Sync {
 
     /// Strategy name for logging.
     fn name(&self) -> &'static str;
+
+    /// Whether the executor needs state refreshed between individual tool calls.
+    /// Sequential executors return true; parallel executors return false.
+    fn requires_incremental_state(&self) -> bool {
+        false
+    }
 }
 
-/// Execute tool calls one by one. Each tool sees the results of previous tools.
+/// Execute tool calls one by one in call order.
+/// Context freshness between calls is controlled by the caller.
 /// Stops at first suspension.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SequentialToolExecutor;
@@ -82,6 +89,10 @@ impl ToolExecutor for SequentialToolExecutor {
 
     fn name(&self) -> &'static str {
         "sequential"
+    }
+
+    fn requires_incremental_state(&self) -> bool {
+        true
     }
 }
 

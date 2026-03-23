@@ -1,6 +1,6 @@
 //! Per-run execution environment — built from resolved plugins.
 //!
-//! Contains all hooks, action handlers, effect handlers, and permission checkers
+//! Contains all hooks, action handlers, effect handlers, and tools
 //! for one agent run. Not global — rebuilt per resolve().
 
 use std::collections::HashMap;
@@ -13,12 +13,18 @@ use awaken_contract::model::Phase;
 
 use crate::plugins::{KeyRegistration, RequestTransformArc};
 
-use super::{EffectHandlerArc, PhaseHookArc, ScheduledActionHandlerArc, ToolPermissionCheckerArc};
+use super::{EffectHandlerArc, PhaseHookArc, ScheduledActionHandlerArc};
 
 /// A phase hook with its owning plugin ID.
 pub(crate) struct TaggedPhaseHook {
     pub(crate) plugin_id: String,
     pub(crate) hook: PhaseHookArc,
+}
+
+/// A request transform with its owning plugin ID.
+pub(crate) struct TaggedRequestTransform {
+    pub(crate) plugin_id: String,
+    pub(crate) transform: RequestTransformArc,
 }
 
 /// Per-run execution environment.
@@ -30,9 +36,9 @@ pub struct ExecutionEnv {
     pub(crate) phase_hooks: HashMap<Phase, Vec<TaggedPhaseHook>>,
     pub(crate) scheduled_action_handlers: HashMap<String, ScheduledActionHandlerArc>,
     pub(crate) effect_handlers: HashMap<String, EffectHandlerArc>,
-    pub(crate) tool_permission_checkers: Vec<ToolPermissionCheckerArc>,
     /// Request transforms applied after message assembly, before LLM call.
-    pub(crate) request_transforms: Vec<RequestTransformArc>,
+    /// Tagged with plugin_id for diagnostics and potential per-plugin filtering.
+    pub(crate) request_transforms: Vec<TaggedRequestTransform>,
     /// State key registrations collected from all plugins.
     pub(crate) key_registrations: Vec<KeyRegistration>,
     /// Tools registered by plugins (per-spec scoped).
@@ -49,8 +55,7 @@ impl ExecutionEnv {
         let mut all_hooks: HashMap<Phase, Vec<TaggedPhaseHook>> = HashMap::new();
         let mut all_action_handlers: HashMap<String, ScheduledActionHandlerArc> = HashMap::new();
         let mut all_effect_handlers: HashMap<String, EffectHandlerArc> = HashMap::new();
-        let mut all_permission_checkers: Vec<ToolPermissionCheckerArc> = Vec::new();
-        let mut all_transforms: Vec<RequestTransformArc> = Vec::new();
+        let mut all_transforms: Vec<TaggedRequestTransform> = Vec::new();
         let mut all_key_registrations: Vec<KeyRegistration> = Vec::new();
         let mut all_tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
@@ -99,15 +104,13 @@ impl ExecutionEnv {
                 all_effect_handlers.insert(entry.key, entry.handler);
             }
 
-            // Collect permission checkers
-            for entry in registrar.tool_permissions {
-                tracing::debug!(plugin_id = %entry.plugin_id, "registered_tool_permission_checker");
-                all_permission_checkers.push(entry.checker);
-            }
-
-            // Collect request transforms
+            // Collect request transforms (tagged with plugin_id)
             for entry in registrar.request_transforms {
-                all_transforms.push(entry.transform);
+                tracing::debug!(plugin_id = %entry.plugin_id, "registered_request_transform");
+                all_transforms.push(TaggedRequestTransform {
+                    plugin_id: entry.plugin_id,
+                    transform: entry.transform,
+                });
             }
 
             // Collect state key registrations
@@ -118,7 +121,6 @@ impl ExecutionEnv {
             phase_hooks: all_hooks,
             scheduled_action_handlers: all_action_handlers,
             effect_handlers: all_effect_handlers,
-            tool_permission_checkers: all_permission_checkers,
             request_transforms: all_transforms,
             key_registrations: all_key_registrations,
             tools: all_tools,
@@ -131,11 +133,18 @@ impl ExecutionEnv {
             phase_hooks: HashMap::new(),
             scheduled_action_handlers: HashMap::new(),
             effect_handlers: HashMap::new(),
-            tool_permission_checkers: Vec::new(),
             request_transforms: Vec::new(),
             key_registrations: Vec::new(),
             tools: HashMap::new(),
         }
+    }
+
+    /// Get the request transform arcs (without plugin tags) for `apply_transforms`.
+    pub(crate) fn transform_arcs(&self) -> Vec<RequestTransformArc> {
+        self.request_transforms
+            .iter()
+            .map(|t| Arc::clone(&t.transform))
+            .collect()
     }
 
     /// Get all tagged hooks for a phase.

@@ -3,6 +3,7 @@
 use awaken_contract::contract::suspension::ToolCallResume;
 
 use super::AgentRuntime;
+use super::active_registry::HandleLookup;
 
 impl AgentRuntime {
     /// Cancel an active run by thread ID.
@@ -25,13 +26,19 @@ impl AgentRuntime {
         }
     }
 
-    /// Cancel an active run, trying run_id first, then thread_id.
+    /// Cancel an active run by dual-index ID (run_id or thread_id).
+    /// Ambiguous IDs are rejected.
     pub fn cancel(&self, id: &str) -> bool {
-        if let Some(handle) = self.active_runs.get_handle(id) {
-            handle.cancel();
-            true
-        } else {
-            false
+        match self.active_runs.lookup_strict(id) {
+            HandleLookup::Found(handle) => {
+                handle.cancel();
+                true
+            }
+            HandleLookup::NotFound => false,
+            HandleLookup::Ambiguous => {
+                tracing::warn!(id = %id, "cancel rejected: ambiguous control id");
+                false
+            }
         }
     }
 
@@ -42,19 +49,12 @@ impl AgentRuntime {
         decisions: Vec<(String, ToolCallResume)>,
     ) -> bool {
         if let Some(handle) = self.active_runs.get_by_thread_id(thread_id) {
-            let total = decisions.len();
-            let mut sent = 0;
-            for (call_id, resume) in decisions {
-                if handle.send_decision(call_id, resume).is_err() {
-                    tracing::warn!(
-                        thread_id = %thread_id,
-                        sent,
-                        total,
-                        "send_decisions partial failure — channel closed"
-                    );
-                    return false;
-                }
-                sent += 1;
+            if handle.send_decisions(decisions).is_err() {
+                tracing::warn!(
+                    thread_id = %thread_id,
+                    "send_decisions failed: channel closed"
+                );
+                return false;
             }
             true
         } else {
@@ -62,12 +62,16 @@ impl AgentRuntime {
         }
     }
 
-    /// Send a decision to an active run, trying run_id first, then thread_id.
+    /// Send a decision by dual-index ID (run_id or thread_id).
+    /// Ambiguous IDs are rejected.
     pub fn send_decision(&self, id: &str, tool_call_id: String, resume: ToolCallResume) -> bool {
-        if let Some(handle) = self.active_runs.get_handle(id) {
-            handle.send_decision(tool_call_id, resume).is_ok()
-        } else {
-            false
+        match self.active_runs.lookup_strict(id) {
+            HandleLookup::Found(handle) => handle.send_decision(tool_call_id, resume).is_ok(),
+            HandleLookup::NotFound => false,
+            HandleLookup::Ambiguous => {
+                tracing::warn!(id = %id, "send_decision rejected: ambiguous control id");
+                false
+            }
         }
     }
 }

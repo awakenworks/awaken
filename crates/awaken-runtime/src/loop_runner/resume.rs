@@ -21,9 +21,18 @@ pub(super) enum WaitOutcome {
     NoDecisionChannel,
 }
 
-/// Prepare tool call states for resume. Call before `run_agent_loop`.
+/// Prepare tool call states for resume.
 ///
-/// Writes resume decisions into `ToolCallStates` so the loop detects them at startup.
+/// For each decision:
+/// - `Cancel` → status = Cancelled
+/// - `Resume` → status = Resuming, arguments adjusted per `resume_mode`:
+///   - `ReplayToolCall`: keep original arguments
+///   - `PassDecisionToTool` / `UseDecisionAsToolResult`: arguments = decision.result
+///
+/// `detect_and_replay_resume` then re-executes all Resuming calls through the
+/// full tool pipeline (BeforeToolExecute → execute → AfterToolExecute).
+/// For `UseDecisionAsToolResult`, the frontend tool plugin intercepts in
+/// BeforeToolExecute and returns `SetResult` to skip actual execution.
 pub fn prepare_resume(
     store: &crate::state::StateStore,
     decisions: Vec<(String, ToolCallResume)>,
@@ -40,18 +49,23 @@ pub fn prepare_resume(
                 .ok_or_else(|| StateError::UnknownKey {
                     key: format!("tool call {call_id} not found"),
                 })?;
-        // Write resume payload into state
+
+        // Adjust arguments based on resume mode
+        let arguments = match (&resume_mode, &decision.action) {
+            (
+                ToolCallResumeMode::PassDecisionToTool
+                | ToolCallResumeMode::UseDecisionAsToolResult,
+                ResumeDecisionAction::Resume,
+            ) => normalize_decision_result(&decision.result, &call_state.arguments),
+            _ => call_state.arguments.clone(),
+        };
+
         commit_update::<ToolCallStates>(
             store,
             ToolCallStatesUpdate::Upsert {
                 call_id: call_id.clone(),
                 tool_name: call_state.tool_name.clone(),
-                arguments: match (&resume_mode, &decision.action) {
-                    (ToolCallResumeMode::PassDecisionToTool, ResumeDecisionAction::Resume) => {
-                        decision.result.clone()
-                    }
-                    _ => call_state.arguments.clone(),
-                },
+                arguments,
                 status: match decision.action {
                     ResumeDecisionAction::Resume => ToolCallStatus::Resuming,
                     ResumeDecisionAction::Cancel => ToolCallStatus::Cancelled,
@@ -63,10 +77,26 @@ pub fn prepare_resume(
     Ok(())
 }
 
+/// Normalize decision result for use as tool arguments.
+///
+/// If the decision result is a boolean (simple approve/reject), fall back to
+/// the original arguments. Otherwise use the decision result as-is.
+/// Mirrors uncarve's `normalize_decision_tool_result`.
+fn normalize_decision_result(
+    response: &serde_json::Value,
+    fallback_arguments: &serde_json::Value,
+) -> serde_json::Value {
+    match response {
+        serde_json::Value::Bool(_) => fallback_arguments.clone(),
+        value => value.clone(),
+    }
+}
+
 /// Detect Resuming tool calls in state and replay them.
 ///
-/// Called at loop startup. If any tool calls are in Resuming state,
-/// execute them and append results to messages.
+/// Called at loop startup. All Resuming calls are re-executed through the
+/// standard tool pipeline. The `arguments` field already reflects the
+/// resume mode (set by `prepare_resume`).
 pub(super) async fn detect_and_replay_resume(
     agent: &AgentConfig,
     store: &crate::state::StateStore,
@@ -75,7 +105,6 @@ pub(super) async fn detect_and_replay_resume(
 ) -> Result<(), AgentLoopError> {
     let tool_call_states = store.read::<ToolCallStates>().unwrap_or_default();
 
-    // Find all Resuming tool calls
     let resuming: Vec<_> = tool_call_states
         .calls
         .iter()
@@ -96,7 +125,7 @@ pub(super) async fn detect_and_replay_resume(
     };
 
     for (call_id, call_state) in resuming {
-        // Re-execute with the arguments stored in state (may be original or decision payload)
+        // Re-execute with stored arguments (original or decision-adjusted)
         let call = ToolCall::new(call_id, &call_state.tool_name, call_state.arguments.clone());
         let mut tool_ctx = resume_tool_ctx.clone();
         tool_ctx.call_id = call_id.to_string();
@@ -130,7 +159,7 @@ pub(super) async fn detect_and_replay_resume(
 }
 
 pub(super) async fn wait_for_resume_or_cancel(
-    decision_rx: Option<&mut UnboundedReceiver<(String, ToolCallResume)>>,
+    decision_rx: Option<&mut UnboundedReceiver<Vec<(String, ToolCallResume)>>>,
     cancellation_token: Option<&CancellationToken>,
     store: &crate::state::StateStore,
     agent: &AgentConfig,
@@ -142,8 +171,7 @@ pub(super) async fn wait_for_resume_or_cancel(
     };
 
     loop {
-        // Use select! to race cancellation against decision arrival
-        let first = if let Some(token) = cancellation_token {
+        let first_batch = if let Some(token) = cancellation_token {
             tokio::select! {
                 biased;
                 _ = token.cancelled() => return Ok(WaitOutcome::Cancelled),
@@ -159,15 +187,20 @@ pub(super) async fn wait_for_resume_or_cancel(
             }
         };
 
-        let mut decisions = vec![first];
-        // Drain any additional buffered decisions
+        let mut decisions = first_batch;
         loop {
             match rx.try_recv() {
-                Ok(v) => decisions.push(v),
+                Ok(batch) => decisions.extend(batch),
                 Err(_) => break,
             }
         }
 
+        if decisions.is_empty() {
+            continue;
+        }
+
+        // Default to ReplayToolCall when receiving decisions via channel.
+        // Frontend tools override this via BeforeToolExecute interception.
         prepare_resume(store, decisions, ToolCallResumeMode::ReplayToolCall)?;
         detect_and_replay_resume(agent, store, run_identity, messages).await?;
         if !has_suspended_calls(store) {

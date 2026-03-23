@@ -34,7 +34,6 @@ pub(crate) fn inject_default_plugins(
         crate::loop_runner::actions::LoopActionHandlersPlugin,
     ));
     plugins.push(Arc::new(crate::policies::MaxRoundsPlugin::new(max_rounds)));
-    plugins.push(Arc::new(crate::plugins::AllowAllToolsPlugin));
     plugins
 }
 
@@ -44,20 +43,43 @@ pub(crate) fn inject_default_plugins(
 
 /// Resolve an agent by ID from registries into a fully wired [`ResolvedRun`].
 ///
-/// 1. Look up `AgentSpec` from `AgentSpecRegistry`.
-/// 2. Look up `ModelEntry` from `ModelRegistry`.
-/// 3. Look up `LlmExecutor` from `ProviderRegistry` via `ModelEntry.provider`.
-/// 4. Resolve tools with allow/exclude filtering.
-/// 5. Resolve plugins by ID.
-/// 6. Build `ExecutionEnv` from plugins.
+/// Three-stage pipeline:
+/// 1. **Lookup** — fetch spec, model, executor from registries.
+/// 2. **Plugin pipeline** — resolve plugins, inject defaults, validate config.
+/// 3. **Tool pipeline** — collect global + delegate + plugin tools, filter.
 fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, ResolveError> {
+    // Stage 1: Lookup
+    let spec = lookup_spec(registries, agent_id)?;
+    let (executor, model_name) = resolve_model_and_executor(registries, &spec)?;
+
+    // Stage 2: Plugin pipeline
+    let plugins = build_plugin_chain(registries, &spec)?;
+    let env = ExecutionEnv::from_plugins(&plugins)?;
+
+    // Stage 3: Tool pipeline
+    let tools = build_tool_set(registries, &spec, &env)?;
+
+    Ok(ResolvedRun {
+        spec,
+        executor,
+        model_name,
+        tools,
+        plugins,
+        env,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Stage 1: Lookup
+// ---------------------------------------------------------------------------
+
+/// Fetch and validate the agent spec from registry.
+fn lookup_spec(registries: &RegistrySet, agent_id: &str) -> Result<AgentSpec, ResolveError> {
     let spec = registries
         .agents
         .get_agent(agent_id)
         .ok_or_else(|| ResolveError::AgentNotFound(agent_id.into()))?;
 
-    // Remote agents run via A2A protocol — they don't need local model/provider
-    // resolution. They should be used as delegates, not resolved directly.
     #[cfg(feature = "a2a")]
     if spec.endpoint.is_some() {
         return Err(ResolveError::RemoteAgentNotDirectlyRunnable(
@@ -65,6 +87,14 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
         ));
     }
 
+    Ok(spec)
+}
+
+/// Resolve model and LLM executor, applying retry decoration if configured.
+fn resolve_model_and_executor(
+    registries: &RegistrySet,
+    spec: &AgentSpec,
+) -> Result<(Arc<dyn LlmExecutor>, String), ResolveError> {
     let model = registries
         .models
         .get_model(&spec.model)
@@ -75,7 +105,6 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
         .get_provider(&model.provider)
         .ok_or_else(|| ResolveError::ProviderNotFound(model.provider.clone()))?;
 
-    // Wrap executor with retry policy if configured in agent spec sections.
     let executor = match spec.config::<crate::engine::RetryConfigKey>() {
         Ok(policy) if policy.max_retries > 0 || !policy.fallback_models.is_empty() => {
             Arc::new(crate::engine::RetryingExecutor::new(executor, policy)) as Arc<dyn LlmExecutor>
@@ -83,10 +112,90 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
         _ => executor,
     };
 
-    #[cfg_attr(not(feature = "a2a"), allow(unused_mut))]
+    Ok((executor, model.model_name.clone()))
+}
+
+// ---------------------------------------------------------------------------
+// Stage 2: Plugin pipeline
+// ---------------------------------------------------------------------------
+
+/// Resolve plugins by ID, inject defaults, add conditional plugins, validate.
+fn build_plugin_chain(
+    registries: &RegistrySet,
+    spec: &AgentSpec,
+) -> Result<Vec<Arc<dyn Plugin>>, ResolveError> {
+    // User-declared plugins
+    let plugins = resolve_plugins(registries, spec)?;
+
+    // Runtime-required default plugins
+    let mut plugins = inject_default_plugins(plugins, spec.max_rounds);
+
+    // Conditional plugins (only when context_policy is set)
+    if let Some(ref policy) = spec.context_policy {
+        let compaction_config = spec
+            .config::<crate::context::CompactionConfigKey>()
+            .unwrap_or_default();
+        plugins.push(Arc::new(crate::context::CompactionPlugin::new(
+            compaction_config,
+        )));
+        plugins.push(Arc::new(crate::context::ContextTransformPlugin::new(
+            policy.clone(),
+        )));
+    }
+
+    // Validate spec sections against plugin-declared schemas
+    validate_sections(spec, &plugins)?;
+
+    Ok(plugins)
+}
+
+// ---------------------------------------------------------------------------
+// Stage 3: Tool pipeline
+// ---------------------------------------------------------------------------
+
+/// Collect tools from all sources, detect conflicts, apply filters.
+///
+/// Tool sources (merged in order):
+/// 1. Global tools from `ToolRegistry` (builder-registered)
+/// 2. Delegate agent tools (A2A, created from `spec.delegates`)
+/// 3. Plugin-registered tools (from `ExecutionEnv`)
+///
+/// After merging, `allowed_tools`/`excluded_tools` filtering is applied.
+fn build_tool_set(
+    registries: &RegistrySet,
+    spec: &AgentSpec,
+    env: &ExecutionEnv,
+) -> Result<HashMap<String, Arc<dyn Tool>>, ResolveError> {
     let mut tools = collect_global_tools(registries);
 
-    // Wire delegate agent tools from spec.delegates (IDs referencing other agents)
+    // Merge delegate agent tools
+    resolve_delegate_tools(registries, spec, &mut tools)?;
+
+    // Merge plugin-registered tools (conflict with global = error)
+    for (tool_id, tool) in &env.tools {
+        if tools.contains_key(tool_id) {
+            return Err(ResolveError::ToolIdConflict {
+                tool_id: tool_id.clone(),
+                source_a: "global".into(),
+                source_b: "plugin".into(),
+            });
+        }
+        tools.insert(tool_id.clone(), Arc::clone(tool));
+    }
+
+    // Apply allow/exclude filtering to the full merged tool set
+    filter_tools(&mut tools, spec);
+
+    Ok(tools)
+}
+
+/// Create delegate agent tools from `spec.delegates`.
+#[cfg_attr(not(feature = "a2a"), allow(unused_variables))]
+fn resolve_delegate_tools(
+    registries: &RegistrySet,
+    spec: &AgentSpec,
+    tools: &mut HashMap<String, Arc<dyn Tool>>,
+) -> Result<(), ResolveError> {
     #[cfg(feature = "a2a")]
     if !spec.delegates.is_empty() {
         for delegate_id in &spec.delegates {
@@ -112,7 +221,7 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
                 ))
             } else {
                 let resolver: Arc<dyn crate::registry::AgentResolver> =
-                    Arc::new(registries.clone());
+                    Arc::new(RegistrySetResolver::new(registries.clone()));
                 Arc::new(crate::extensions::a2a::AgentTool::local(
                     delegate_id,
                     &description,
@@ -131,63 +240,30 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
         );
     }
 
-    let plugins = resolve_plugins(registries, &spec)?;
-    let mut plugins = inject_default_plugins(plugins, spec.max_rounds);
-
-    // Default compaction plugin: tracks compaction boundaries in state.
-    // Only added if the agent has a context_policy configured.
-    if spec.context_policy.is_some() {
-        let compaction_config = spec
-            .config::<crate::context::CompactionConfigKey>()
-            .unwrap_or_default();
-        plugins.push(Arc::new(crate::context::CompactionPlugin::new(
-            compaction_config,
-        )));
-    }
-
-    // Eager validation: check spec sections against plugin-declared schemas
-    validate_sections(&spec, &plugins)?;
-
-    let env = ExecutionEnv::from_plugins(&plugins)?;
-
-    // Merge plugin-registered tools into the resolved tool set.
-    // Conflict between global (builder) tools and plugin tools is an error.
-    for (tool_id, tool) in &env.tools {
-        if tools.contains_key(tool_id) {
-            return Err(ResolveError::ToolIdConflict {
-                tool_id: tool_id.clone(),
-                source_a: "global".into(),
-                source_b: "plugin".into(),
-            });
-        }
-        tools.insert(tool_id.clone(), Arc::clone(tool));
-    }
-
-    // Apply allow/exclude filtering to the full merged tool set
-    // (covers both global and plugin tools).
-    filter_tools(&mut tools, &spec);
-
-    Ok(ResolvedRun {
-        spec,
-        executor,
-        model_name: model.model_name.clone(),
-        tools,
-        plugins,
-        env,
-    })
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // AgentResolver implementation
 // ---------------------------------------------------------------------------
 
-impl AgentResolver for RegistrySet {
-    /// Resolve an agent by ID into a `ResolvedAgent` (config + env).
-    ///
-    /// Bridges the registry resolution (`ResolvedRun`) into the runtime's
-    /// `AgentConfig` + `ExecutionEnv` pair that the loop runner expects.
+/// Resolver that bridges `RegistrySet` into `AgentResolver`.
+///
+/// Separates the registry aggregation concern (`RegistrySet`) from the
+/// resolution logic. `RegistrySet` stays a pure data container.
+pub(crate) struct RegistrySetResolver {
+    registries: RegistrySet,
+}
+
+impl RegistrySetResolver {
+    pub(crate) fn new(registries: RegistrySet) -> Self {
+        Self { registries }
+    }
+}
+
+impl AgentResolver for RegistrySetResolver {
     fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, RuntimeError> {
-        let run = resolve(self, agent_id).map_err(|e| RuntimeError::ResolveFailed {
+        let run = resolve(&self.registries, agent_id).map_err(|e| RuntimeError::ResolveFailed {
             message: e.to_string(),
         })?;
 
@@ -207,19 +283,11 @@ impl AgentResolver for RegistrySet {
             max_continuation_retries: run.spec.max_continuation_retries,
         };
 
-        // Register built-in context truncation transform when policy is set
-        if let Some(ref policy) = config.context_policy {
-            env.request_transforms
-                .push(Arc::new(crate::context::ContextTransform::new(
-                    policy.clone(),
-                )));
-        }
-
         Ok(ResolvedAgent { config, env })
     }
 
     fn agent_ids(&self) -> Vec<String> {
-        self.agents.agent_ids()
+        self.registries.agents.agent_ids()
     }
 }
 
@@ -468,7 +536,7 @@ mod tests {
         assert_eq!(run.tools.len(), 2);
         assert!(run.tools.contains_key("read"));
         assert!(run.tools.contains_key("write"));
-        assert_eq!(run.plugins.len(), 4); // user plugin + LoopActionHandlersPlugin + MaxRoundsPlugin + AllowAllToolsPlugin
+        assert_eq!(run.plugins.len(), 3); // user plugin + LoopActionHandlersPlugin + MaxRoundsPlugin
     }
 
     #[test]
@@ -714,7 +782,7 @@ mod tests {
         );
 
         let run = resolve(&regs, "a").unwrap();
-        assert_eq!(run.plugins.len(), 3); // LoopActionHandlersPlugin + MaxRoundsPlugin + AllowAllToolsPlugin
+        assert_eq!(run.plugins.len(), 2); // LoopActionHandlersPlugin + MaxRoundsPlugin
         // env has action handlers but no hooks
     }
 
@@ -758,7 +826,7 @@ mod tests {
     // -- AgentResolver bridge tests --
 
     #[test]
-    fn registry_set_as_agent_resolver() {
+    fn registry_set_resolver_resolves_agent() {
         use crate::registry::AgentResolver;
 
         let regs = build_registries(
@@ -777,7 +845,8 @@ mod tests {
             make_spec("my-agent"),
         );
 
-        let resolved = AgentResolver::resolve(&regs, "my-agent").unwrap();
+        let resolver = RegistrySetResolver::new(regs);
+        let resolved = resolver.resolve("my-agent").unwrap();
         assert_eq!(resolved.config.id, "my-agent");
         assert_eq!(resolved.config.model_id, "test-model");
         assert_eq!(resolved.config.model, "claude-test");
@@ -803,7 +872,8 @@ mod tests {
             make_spec("existing"),
         );
 
-        let err = AgentResolver::resolve(&regs, "missing").unwrap_err();
+        let resolver = RegistrySetResolver::new(regs);
+        let err = resolver.resolve("missing").unwrap_err();
         assert!(matches!(err, RuntimeError::ResolveFailed { .. }));
     }
 

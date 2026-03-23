@@ -14,5 +14,6 @@ pub mod progress;
 pub mod storage;
 pub mod suspension;
 pub mod tool;
+pub mod tool_intercept;
 pub mod transform;
 pub mod transport;

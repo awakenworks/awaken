@@ -22,7 +22,7 @@ use awaken_contract::model::Phase;
 
 use super::actions::{
     apply_context_messages, take_accumulated_overrides, take_and_apply_tool_filters,
-    take_context_messages,
+    take_context_messages, take_tool_intercept,
 };
 use super::checkpoint::{check_termination, complete_step};
 use super::inference::{compact_with_llm, execute_streaming};
@@ -101,7 +101,62 @@ async fn run_phase_and_check(
     Ok(check_termination(store).map(StepOutcome::Terminated))
 }
 
-/// Run the inference phase: compaction, request building, streaming, truncation recovery.
+/// Retry inference when the model hits max_tokens (truncation).
+///
+/// Appends the partial assistant response and a continuation prompt,
+/// then re-executes inference. Repeats up to `max_continuation_retries`.
+async fn recover_truncation(
+    ctx: &mut StepContext<'_>,
+    mut stream_result: StreamResult,
+    transform_arcs: &[std::sync::Arc<
+        dyn awaken_contract::contract::transform::InferenceRequestTransform,
+    >],
+) -> Result<StreamResult, AgentLoopError> {
+    while should_retry(
+        &stream_result,
+        ctx.truncation_state,
+        ctx.agent.max_continuation_retries,
+    ) {
+        let partial_text = stream_result.text();
+        ctx.messages
+            .push(Arc::new(Message::assistant(&partial_text)));
+        ctx.messages.push(Arc::new(continuation_message()));
+
+        let has_sys = !ctx.agent.system_prompt.is_empty();
+        let mut cont_messages: Vec<Message> = Vec::new();
+        if has_sys {
+            cont_messages.push(Message::system(&ctx.agent.system_prompt));
+        }
+        cont_messages.extend(ctx.messages.iter().map(|m| (**m).clone()));
+        let cont_messages = awaken_contract::contract::transform::apply_transforms(
+            cont_messages,
+            &ctx.agent.tool_descriptors(),
+            transform_arcs,
+        );
+
+        let cont_request = InferenceRequest {
+            model: ctx.agent.model.clone(),
+            messages: cont_messages,
+            tools: ctx.agent.tool_descriptors(),
+            system: vec![],
+            overrides: ctx.run_overrides.clone(),
+            enable_prompt_cache: false,
+        };
+
+        stream_result = execute_streaming(
+            ctx.agent,
+            cont_request,
+            ctx.sink.as_ref(),
+            ctx.cancellation_token,
+            ctx.total_input_tokens,
+            ctx.total_output_tokens,
+        )
+        .await?;
+    }
+    Ok(stream_result)
+}
+
+/// Run the inference phase: compaction, request building, streaming.
 /// Returns the stream result and wall-clock duration in milliseconds.
 async fn run_inference_phase(
     ctx: &mut StepContext<'_>,
@@ -142,10 +197,11 @@ async fn run_inference_phase(
 
     let mut tools = ctx.agent.tool_descriptors();
     take_and_apply_tool_filters(store, &mut tools)?;
+    let transform_arcs = ctx.env.transform_arcs();
     let request_messages = awaken_contract::contract::transform::apply_transforms(
         request_messages,
         &tools,
-        &ctx.env.request_transforms,
+        &transform_arcs,
     );
 
     let start = std::time::Instant::now();
@@ -164,7 +220,7 @@ async fn run_inference_phase(
     };
 
     // Inference
-    let mut stream_result = execute_streaming(
+    let stream_result = execute_streaming(
         ctx.agent,
         request,
         ctx.sink.as_ref(),
@@ -174,48 +230,8 @@ async fn run_inference_phase(
     )
     .await?;
 
-    // Truncation recovery
-    while should_retry(
-        &stream_result,
-        ctx.truncation_state,
-        ctx.agent.max_continuation_retries,
-    ) {
-        let partial_text = stream_result.text();
-        ctx.messages
-            .push(Arc::new(Message::assistant(&partial_text)));
-        ctx.messages.push(Arc::new(continuation_message()));
-
-        let has_sys = !ctx.agent.system_prompt.is_empty();
-        let mut cont_messages: Vec<Message> = Vec::new();
-        if has_sys {
-            cont_messages.push(Message::system(&ctx.agent.system_prompt));
-        }
-        cont_messages.extend(ctx.messages.iter().map(|m| (**m).clone()));
-        let cont_messages = awaken_contract::contract::transform::apply_transforms(
-            cont_messages,
-            &ctx.agent.tool_descriptors(),
-            &ctx.env.request_transforms,
-        );
-
-        let cont_request = InferenceRequest {
-            model: ctx.agent.model.clone(),
-            messages: cont_messages,
-            tools: ctx.agent.tool_descriptors(),
-            system: vec![],
-            overrides: ctx.run_overrides.clone(),
-            enable_prompt_cache: false,
-        };
-
-        stream_result = execute_streaming(
-            ctx.agent,
-            cont_request,
-            ctx.sink.as_ref(),
-            ctx.cancellation_token,
-            ctx.total_input_tokens,
-            ctx.total_output_tokens,
-        )
-        .await?;
-    }
+    // Truncation recovery (separated from main inference for clarity)
+    let stream_result = recover_truncation(ctx, stream_result, &transform_arcs).await?;
 
     let duration_ms = start.elapsed().as_millis() as u64;
     tracing::info!(
@@ -229,83 +245,178 @@ async fn run_inference_phase(
     Ok((stream_result, duration_ms))
 }
 
-/// Permission-check result for a batch of tool calls.
-struct PermissionCheckResult {
-    allowed_calls: Vec<ToolCall>,
-    tool_commands: Vec<StateCommand>,
-    blocked_reason: Option<String>,
-    has_suspended: bool,
+/// Run BeforeToolExecute phase (hooks + action handlers) and check for intercept.
+///
+/// Returns `Some(payload)` if any hook scheduled a `ToolInterceptAction`,
+/// `None` if the tool should execute normally.
+async fn intercept_tool_call(
+    ctx: &mut StepContext<'_>,
+    call: &ToolCall,
+) -> Result<Option<awaken_contract::contract::tool_intercept::ToolInterceptPayload>, AgentLoopError>
+{
+    let store = ctx.runtime.store();
+    let before_ctx = make_ctx(
+        Phase::BeforeToolExecute,
+        ctx.messages,
+        ctx.run_identity,
+        store,
+    )
+    .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
+
+    // Run BeforeToolExecute phase: hooks execute and may schedule ToolInterceptAction,
+    // action handlers consume and write to AccumulatedToolIntercept state.
+    ctx.runtime
+        .run_phase_with_context(ctx.env, before_ctx)
+        .await?;
+
+    // Read intercept decision (if any)
+    Ok(take_tool_intercept(store)?)
 }
 
-/// Check permissions for each tool call and categorise them.
-async fn check_tool_permissions(
+/// Complete a tool call: update lifecycle state, emit event via Effect,
+/// run AfterToolExecute phase, and append tool message.
+///
+/// Handles the complete lifecycle: state transition, event emission,
+/// AfterToolExecute phase hooks, and message append.
+async fn complete_tool_call(
     ctx: &mut StepContext<'_>,
-    calls: &[ToolCall],
-) -> Result<PermissionCheckResult, AgentLoopError> {
+    call: &ToolCall,
+    tool_result: &awaken_contract::contract::tool::ToolResult,
+    outcome: ToolCallOutcome,
+) -> Result<(), AgentLoopError> {
     let store = ctx.runtime.store();
-    let mut allowed_calls = Vec::new();
-    let mut tool_commands = Vec::new();
-    let mut blocked_reason: Option<String> = None;
-    let mut has_suspended = false;
+    let terminal_status = match outcome {
+        ToolCallOutcome::Suspended => ToolCallStatus::Suspended,
+        ToolCallOutcome::Succeeded => ToolCallStatus::Succeeded,
+        ToolCallOutcome::Failed => ToolCallStatus::Failed,
+    };
 
-    for call in calls {
-        let perm_ctx = make_ctx(
-            Phase::BeforeToolExecute,
-            ctx.messages,
-            ctx.run_identity,
-            store,
-        )
-        .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
-        let perm_result = ctx
-            .runtime
-            .check_tool_permission(ctx.env, &perm_ctx)
-            .await?;
+    // State transition: Running → terminal status
+    let mut lifecycle_cmd = tool_call_state_cmd(call, ToolCallStatus::Running);
+    lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
+        call_id: call.id.clone(),
+        tool_name: call.name.clone(),
+        arguments: call.arguments.clone(),
+        status: terminal_status,
+        updated_at: now_ms(),
+    });
 
-        match perm_result {
-            crate::hooks::ToolPermissionResult::Allow => {
-                allowed_calls.push(call.clone());
-            }
-            crate::hooks::ToolPermissionResult::Deny { reason, message } => {
-                tool_commands.push(tool_call_state_cmd(call, ToolCallStatus::Failed));
-                let tool_msg = message.unwrap_or_else(|| format!("Permission denied: {reason}"));
-                ctx.messages
-                    .push(Arc::new(Message::tool(&call.id, tool_msg)));
-            }
-            crate::hooks::ToolPermissionResult::Block { reason } => {
-                tool_commands.push(tool_call_state_cmd(call, ToolCallStatus::Failed));
-                blocked_reason = Some(reason);
-                break;
-            }
-            crate::hooks::ToolPermissionResult::Suspend => {
-                tool_commands.push(tool_call_state_cmd(call, ToolCallStatus::Suspended));
-                ctx.messages.push(Arc::new(Message::tool(
-                    &call.id,
-                    "Tool call suspended: awaiting approval".to_string(),
-                )));
-                has_suspended = true;
-            }
-        }
+    tracing::info!(
+        tool_name = %call.name,
+        call_id = %call.id,
+        outcome = ?outcome,
+        "tool_call_done"
+    );
+
+    // Event emission
+    ctx.sink
+        .emit(AgentEvent::ToolCallDone {
+            id: call.id.clone(),
+            message_id: String::new(),
+            result: tool_result.clone(),
+            outcome,
+        })
+        .await;
+
+    // AfterToolExecute phase
+    let after_ctx = make_ctx(
+        Phase::AfterToolExecute,
+        ctx.messages,
+        ctx.run_identity,
+        store,
+    )
+    .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()))
+    .with_tool_result(tool_result.clone());
+    let after_cmd = ctx.runtime.collect_commands(ctx.env, after_ctx).await?;
+    if !after_cmd.is_empty() {
+        lifecycle_cmd.extend(after_cmd)?;
     }
 
-    Ok(PermissionCheckResult {
-        allowed_calls,
-        tool_commands,
-        blocked_reason,
-        has_suspended,
-    })
+    // Commit state
+    ctx.runtime.submit_command(ctx.env, lifecycle_cmd).await?;
+
+    // Append tool message to conversation
+    let tool_content = tool_result_to_content(tool_result);
+    ctx.messages
+        .push(Arc::new(Message::tool(&call.id, tool_content)));
+
+    Ok(())
 }
 
-/// Execute allowed tool calls and collect state commands and results.
-/// Returns the accumulated tool commands and whether any call was suspended.
-async fn execute_tools_and_collect(
+/// Execute tool calls with interception pipeline.
+///
+/// For each tool call:
+/// 1. Run BeforeToolExecute phase (hooks + action handlers)
+/// 2. Check for intercept (Block/Suspend/SetResult)
+/// 3. If no intercept: execute the tool normally
+/// 4. Run AfterToolExecute phase
+///
+/// Returns whether any call was suspended.
+async fn execute_tools_with_interception(
     ctx: &mut StepContext<'_>,
-    allowed_calls: &[ToolCall],
-    mut tool_commands: Vec<StateCommand>,
-) -> Result<(Vec<StateCommand>, bool), AgentLoopError> {
+    calls: &[ToolCall],
+) -> Result<(Option<String>, bool), AgentLoopError> {
+    use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
+
     let store = ctx.runtime.store();
     let mut suspended = false;
+    let mut allowed_calls: Vec<ToolCall> = Vec::new();
 
-    let tool_ctx = ToolCallContext {
+    for call in calls {
+        // --- Interception check ---
+        let intercept = intercept_tool_call(ctx, call).await?;
+
+        match intercept {
+            Some(ToolInterceptPayload::Block { reason }) => {
+                // Block: result determined (failure), run full lifecycle including AfterToolExecute
+                let result =
+                    awaken_contract::contract::tool::ToolResult::error(&call.name, &reason);
+                complete_tool_call(ctx, call, &result, ToolCallOutcome::Failed).await?;
+                return Ok((Some(reason), suspended));
+            }
+            Some(ToolInterceptPayload::Suspend(ticket)) => {
+                // Suspend: result NOT yet determined — mark as suspended, do NOT run AfterToolExecute.
+                // AfterToolExecute runs later when resume/cancel decision arrives.
+                let mut cmd = StateCommand::new();
+                cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
+                    call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                    status: ToolCallStatus::Suspended,
+                    updated_at: now_ms(),
+                });
+                ctx.runtime.submit_command(ctx.env, cmd).await?;
+                ctx.messages.push(Arc::new(Message::tool(
+                    &call.id,
+                    format!("Tool '{}' suspended: awaiting decision", call.name),
+                )));
+                suspended = true;
+                continue;
+            }
+            Some(ToolInterceptPayload::SetResult(result)) => {
+                // SetResult: result determined (externally), run full lifecycle including AfterToolExecute
+                let outcome = ToolCallOutcome::from_tool_result(&result);
+                complete_tool_call(ctx, call, &result, outcome).await?;
+                if outcome == ToolCallOutcome::Suspended {
+                    suspended = true;
+                }
+                continue;
+            }
+            None => {
+                // No intercept — execute tool normally
+            }
+        }
+
+        // Collect calls that passed interception for execution
+        allowed_calls.push(call.clone());
+    }
+
+    // Execute allowed calls via the configured executor strategy
+    if allowed_calls.is_empty() {
+        return Ok((None, suspended));
+    }
+
+    let base_tool_ctx = ToolCallContext {
         call_id: String::new(),
         tool_name: String::new(),
         run_identity: ctx.run_identity.clone(),
@@ -320,85 +431,63 @@ async fn execute_tools_and_collect(
         activity_sink: Some(ctx.sink.clone()),
     };
 
+    // Incremental-state executors: execute one-by-one, submit state after each
+    if ctx.agent.tool_executor.requires_incremental_state() {
+        for call in &allowed_calls {
+            let mut tool_ctx = base_tool_ctx.clone();
+            tool_ctx.call_id = call.id.clone();
+            tool_ctx.tool_name = call.name.clone();
+            tool_ctx.snapshot = store.snapshot();
+
+            let batch = ctx
+                .agent
+                .tool_executor
+                .execute(&ctx.agent.tools, std::slice::from_ref(call), &tool_ctx)
+                .await
+                .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
+            let Some(exec_result) = batch.first() else {
+                continue;
+            };
+            let is_suspended = exec_result.outcome == ToolCallOutcome::Suspended;
+
+            complete_tool_call(
+                ctx,
+                &exec_result.call,
+                &exec_result.result,
+                exec_result.outcome,
+            )
+            .await?;
+
+            if is_suspended {
+                suspended = true;
+                break;
+            }
+        }
+        return Ok((None, suspended));
+    }
+
+    // Parallel executors: batch execute, then process results
     let exec_results = ctx
         .agent
         .tool_executor
-        .execute(&ctx.agent.tools, allowed_calls, &tool_ctx)
+        .execute(&ctx.agent.tools, &allowed_calls, &base_tool_ctx)
         .await
         .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
 
-    // Process tool results
     for exec_result in &exec_results {
-        let call = &exec_result.call;
-        let tool_result = &exec_result.result;
-
-        let before_ctx = make_ctx(
-            Phase::BeforeToolExecute,
-            ctx.messages,
-            ctx.run_identity,
-            store,
+        complete_tool_call(
+            ctx,
+            &exec_result.call,
+            &exec_result.result,
+            exec_result.outcome,
         )
-        .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
-        let before_cmd = ctx.runtime.collect_commands(ctx.env, before_ctx).await?;
-        if !before_cmd.is_empty() {
-            tool_commands.push(before_cmd);
-        }
-
-        let terminal_status = match exec_result.outcome {
-            ToolCallOutcome::Suspended => ToolCallStatus::Suspended,
-            ToolCallOutcome::Succeeded => ToolCallStatus::Succeeded,
-            ToolCallOutcome::Failed => ToolCallStatus::Failed,
-        };
-        // Record Running then terminal status via two upserts in a single command.
-        let mut lifecycle_cmd = tool_call_state_cmd(call, ToolCallStatus::Running);
-        lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
-            call_id: call.id.clone(),
-            tool_name: call.name.clone(),
-            arguments: call.arguments.clone(),
-            status: terminal_status,
-            updated_at: now_ms(),
-        });
-        tool_commands.push(lifecycle_cmd);
-
-        tracing::info!(
-            tool_name = %call.name,
-            call_id = %call.id,
-            outcome = ?exec_result.outcome,
-            "tool_call_done"
-        );
-
-        ctx.sink
-            .emit(AgentEvent::ToolCallDone {
-                id: call.id.clone(),
-                message_id: String::new(),
-                result: tool_result.clone(),
-                outcome: exec_result.outcome,
-            })
-            .await;
-
-        let after_ctx = make_ctx(
-            Phase::AfterToolExecute,
-            ctx.messages,
-            ctx.run_identity,
-            store,
-        )
-        .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()))
-        .with_tool_result(tool_result.clone());
-        let after_cmd = ctx.runtime.collect_commands(ctx.env, after_ctx).await?;
-        if !after_cmd.is_empty() {
-            tool_commands.push(after_cmd);
-        }
-
-        let tool_content = tool_result_to_content(tool_result);
-        ctx.messages
-            .push(Arc::new(Message::tool(&call.id, tool_content)));
-
+        .await?;
         if exec_result.outcome == ToolCallOutcome::Suspended {
             suspended = true;
         }
     }
 
-    Ok((tool_commands, suspended))
+    Ok((None, suspended))
 }
 
 /// Execute a single step of the agent loop: inference + tool execution + checkpoint.
@@ -494,34 +583,19 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
             stream_result.tool_calls.clone(),
         )));
 
-    // Permission checks
-    let perm = check_tool_permissions(ctx, &stream_result.tool_calls).await?;
+    // Intercept + execute tool calls via unified pipeline
+    let (blocked_reason, suspended) =
+        execute_tools_with_interception(ctx, &stream_result.tool_calls).await?;
 
-    // Blocked -> terminate
-    if let Some(block_reason) = perm.blocked_reason {
-        if !perm.tool_commands.is_empty() {
-            let merged = store.merge_all_commands(perm.tool_commands)?;
-            ctx.runtime.submit_command(ctx.env, merged).await?;
-        }
+    if let Some(reason) = blocked_reason {
         commit_update::<RunLifecycle>(
             store,
             RunLifecycleUpdate::Done {
-                done_reason: format!("blocked:{block_reason}"),
+                done_reason: format!("blocked:{reason}"),
                 updated_at: now_ms(),
             },
         )?;
-        return Ok(StepOutcome::Blocked(block_reason));
-    }
-
-    // Execute allowed tool calls
-    let (tool_commands, suspended) =
-        execute_tools_and_collect(ctx, &perm.allowed_calls, perm.tool_commands).await?;
-    let suspended = suspended || perm.has_suspended;
-
-    // Merge all tool call commands and submit once
-    if !tool_commands.is_empty() {
-        let merged = store.merge_all_commands(tool_commands)?;
-        ctx.runtime.submit_command(ctx.env, merged).await?;
+        return Ok(StepOutcome::Blocked(reason));
     }
 
     if let Some(reason) = check_termination(store) {

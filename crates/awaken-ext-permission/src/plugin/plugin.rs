@@ -1,10 +1,11 @@
 use awaken_contract::StateError;
+use awaken_contract::model::Phase;
 use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::state::{KeyScope, StateKeyOptions};
 
 use crate::state::{PermissionOverridesKey, PermissionPolicyKey};
 
-use super::checker::PermissionChecker;
+use super::checker::PermissionInterceptHook;
 
 /// Stable plugin name for the permission extension.
 pub const PERMISSION_PLUGIN_NAME: &str = "ext-permission";
@@ -14,7 +15,8 @@ pub const PERMISSION_PLUGIN_NAME: &str = "ext-permission";
 /// Registers:
 /// - [`PermissionPolicyKey`]: thread-scoped persisted permission rules
 /// - [`PermissionOverridesKey`]: run-scoped temporary overrides
-/// - A [`awaken_runtime::phase::ToolPermissionChecker`] that evaluates rules against tool calls
+/// - A `BeforeToolExecute` phase hook that evaluates rules and schedules
+///   `ToolInterceptAction` to block or suspend tool calls
 pub struct PermissionPlugin;
 
 impl Plugin for PermissionPlugin {
@@ -37,7 +39,11 @@ impl Plugin for PermissionPlugin {
             scope: KeyScope::Run,
         })?;
 
-        registrar.register_tool_permission(PERMISSION_PLUGIN_NAME, PermissionChecker)?;
+        registrar.register_phase_hook(
+            PERMISSION_PLUGIN_NAME,
+            Phase::BeforeToolExecute,
+            PermissionInterceptHook,
+        )?;
 
         Ok(())
     }

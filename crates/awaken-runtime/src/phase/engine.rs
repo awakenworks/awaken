@@ -13,12 +13,12 @@ use awaken_contract::model::{
     TypedEffect,
 };
 
+use super::PhaseContext;
 use super::env::{ExecutionEnv, TaggedPhaseHook};
 use super::queue_plugin::RuntimeQueuePlugin;
 use super::reports::{
     DEFAULT_MAX_PHASE_ROUNDS, EffectDispatchReport, PhaseRunReport, SubmitCommandReport,
 };
-use super::{PhaseContext, ToolPermissionResult, aggregate_tool_permissions};
 
 #[derive(Clone)]
 pub struct PhaseRuntime {
@@ -292,20 +292,6 @@ impl PhaseRuntime {
         report
     }
 
-    /// Check tool permission by running all permission checkers in the env.
-    pub async fn check_tool_permission(
-        &self,
-        env: &ExecutionEnv,
-        ctx: &PhaseContext,
-    ) -> Result<ToolPermissionResult, StateError> {
-        let mut decisions = Vec::with_capacity(env.tool_permission_checkers.len());
-        for checker in &env.tool_permission_checkers {
-            let check_ctx = ctx.clone().with_snapshot(self.store.snapshot());
-            decisions.push(checker.check(&check_ctx).await?);
-        }
-        Ok(aggregate_tool_permissions(&decisions))
-    }
-
     /// Run phase hooks, collecting their commands without committing.
     /// Returns a single merged command; fails on Exclusive conflicts (no auto-fallback).
     async fn run_hooks_collect(
@@ -430,11 +416,11 @@ impl PhaseRuntime {
 
     fn filter_hooks<'a>(env: &'a ExecutionEnv, ctx: &PhaseContext) -> Vec<&'a TaggedPhaseHook> {
         let hooks = env.hooks_for_phase(ctx.phase);
-        let active_plugins = &ctx.agent_spec.active_plugins;
+        let active_hook_filter = &ctx.agent_spec.active_hook_filter;
         hooks
             .iter()
             .filter(|tagged| {
-                active_plugins.is_empty() || active_plugins.contains(&tagged.plugin_id)
+                active_hook_filter.is_empty() || active_hook_filter.contains(&tagged.plugin_id)
             })
             .collect()
     }

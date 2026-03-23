@@ -7,7 +7,9 @@ use crate::loop_runner::{
 };
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
+use awaken_contract::contract::profile::ActiveAgentIdKey;
 use awaken_contract::contract::suspension::ToolCallResumeMode;
+use awaken_contract::state::PersistedState;
 
 use super::AgentRuntime;
 use super::run_request::RunRequest;
@@ -55,7 +57,7 @@ impl AgentRuntime {
             overrides,
             decisions,
         } = request;
-        let agent_id = agent_id.unwrap_or_else(|| DEFAULT_AGENT_ID.to_string());
+        let agent_id = self.resolve_agent_id(agent_id, &thread_id).await?;
 
         // Create runtime infrastructure
         let store = crate::state::StateStore::new();
@@ -152,6 +154,60 @@ impl AgentRuntime {
 
         result
     }
+
+    async fn resolve_agent_id(
+        &self,
+        requested_agent_id: Option<String>,
+        thread_id: &str,
+    ) -> Result<String, AgentLoopError> {
+        if let Some(agent_id) = requested_agent_id {
+            return Ok(agent_id);
+        }
+
+        if let Some(inferred) = self.infer_agent_id_from_thread(thread_id).await? {
+            return Ok(inferred);
+        }
+
+        Ok(DEFAULT_AGENT_ID.to_string())
+    }
+
+    async fn infer_agent_id_from_thread(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<String>, AgentLoopError> {
+        let Some(storage) = &self.storage else {
+            return Ok(None);
+        };
+
+        let Some(prev_run) = storage
+            .latest_run(thread_id)
+            .await
+            .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
+        else {
+            return Ok(None);
+        };
+
+        if let Some(agent_id) = prev_run.state.as_ref().and_then(active_agent_from_state) {
+            return Ok(Some(agent_id));
+        }
+
+        let agent_id = prev_run.agent_id.trim();
+        if agent_id.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(agent_id.to_string()))
+        }
+    }
+}
+
+fn active_agent_from_state(state: &PersistedState) -> Option<String> {
+    state
+        .extensions
+        .get(<ActiveAgentIdKey as awaken_contract::StateKey>::KEY)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 #[cfg(test)]
@@ -164,14 +220,19 @@ mod tests {
     use crate::state::{KeyScope, StateCommand, StateKey, StateKeyOptions};
     use crate::{PhaseContext, PhaseHook};
     use async_trait::async_trait;
+    use awaken_contract::PersistedState;
     use awaken_contract::contract::content::ContentBlock;
     use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
     use awaken_contract::contract::executor::{
         InferenceExecutionError, InferenceRequest, LlmExecutor,
     };
     use awaken_contract::contract::inference::{InferenceOverride, StopReason, StreamResult};
+    use awaken_contract::contract::lifecycle::RunStatus;
     use awaken_contract::contract::message::Message;
-    use awaken_contract::contract::storage::{RunQuery, RunStore, ThreadRunStore, ThreadStore};
+    use awaken_contract::contract::profile::ActiveAgentIdKey;
+    use awaken_contract::contract::storage::{
+        RunQuery, RunRecord, RunStore, ThreadRunStore, ThreadStore,
+    };
     use awaken_contract::contract::suspension::ResumeDecisionAction;
     use awaken_contract::contract::suspension::ToolCallResume;
     use awaken_contract::contract::tool::{
@@ -179,6 +240,7 @@ mod tests {
     };
     use awaken_stores::InMemoryStore;
     use serde_json::{Value, json};
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -321,6 +383,120 @@ mod tests {
         }
     }
 
+    struct SequentialVisibilityKey;
+
+    impl StateKey for SequentialVisibilityKey {
+        const KEY: &'static str = "test.sequential_visibility";
+        type Value = bool;
+        type Update = bool;
+
+        fn apply(value: &mut Self::Value, update: Self::Update) {
+            *value = update;
+        }
+    }
+
+    struct SequentialVisibilityPlugin;
+
+    impl Plugin for SequentialVisibilityPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "test.sequential-visibility",
+            }
+        }
+
+        fn register(
+            &self,
+            registrar: &mut PluginRegistrar,
+        ) -> Result<(), awaken_contract::StateError> {
+            registrar.register_key::<SequentialVisibilityKey>(StateKeyOptions::default())?;
+            registrar.register_phase_hook(
+                "test.sequential-visibility",
+                awaken_contract::model::Phase::AfterToolExecute,
+                SequentialVisibilityHook,
+            )
+        }
+    }
+
+    struct SequentialVisibilityHook;
+
+    #[async_trait]
+    impl PhaseHook for SequentialVisibilityHook {
+        async fn run(
+            &self,
+            ctx: &PhaseContext,
+        ) -> Result<StateCommand, awaken_contract::StateError> {
+            let mut cmd = StateCommand::new();
+            if ctx.tool_name.as_deref() == Some("writer") {
+                cmd.update::<SequentialVisibilityKey>(true);
+            }
+            Ok(cmd)
+        }
+    }
+
+    struct WriterTool;
+
+    #[async_trait]
+    impl Tool for WriterTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("writer", "writer", "writes marker in hook")
+        }
+
+        async fn execute(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("writer", Value::Null))
+        }
+    }
+
+    struct ReaderTool {
+        saw_marker: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait]
+    impl Tool for ReaderTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("reader", "reader", "reads marker from snapshot")
+        }
+
+        async fn execute(
+            &self,
+            _args: Value,
+            ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
+            let saw = ctx
+                .snapshot
+                .get::<SequentialVisibilityKey>()
+                .copied()
+                .unwrap_or(false);
+            self.saw_marker.store(saw, Ordering::SeqCst);
+            Ok(ToolResult::success("reader", Value::Null))
+        }
+    }
+
+    fn seeded_run_record(
+        run_id: &str,
+        thread_id: &str,
+        agent_id: &str,
+        state: Option<PersistedState>,
+    ) -> RunRecord {
+        RunRecord {
+            run_id: run_id.to_string(),
+            thread_id: thread_id.to_string(),
+            agent_id: agent_id.to_string(),
+            parent_run_id: None,
+            status: RunStatus::Done,
+            termination_code: Some("natural".into()),
+            created_at: 1,
+            updated_at: 1,
+            steps: 1,
+            input_tokens: 0,
+            output_tokens: 0,
+            state,
+        }
+    }
+
     #[tokio::test]
     async fn run_request_overrides_are_forwarded_to_inference() {
         let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
@@ -450,6 +626,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sequential_tool_execution_sees_latest_state_between_calls() {
+        let llm = Arc::new(ScriptedLlm::new(vec![
+            StreamResult {
+                content: vec![ContentBlock::text("tools")],
+                tool_calls: vec![
+                    awaken_contract::contract::message::ToolCall::new("c1", "writer", json!({})),
+                    awaken_contract::contract::message::ToolCall::new("c2", "reader", json!({})),
+                ],
+                usage: None,
+                stop_reason: Some(StopReason::ToolUse),
+                has_incomplete_tool_calls: false,
+            },
+            StreamResult {
+                content: vec![ContentBlock::text("done")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            },
+        ]));
+        let saw_marker = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let resolver = Arc::new(FixedResolver {
+            agent: AgentConfig::new("agent", "m", "sys", llm)
+                .with_tool(Arc::new(WriterTool))
+                .with_tool(Arc::new(ReaderTool {
+                    saw_marker: saw_marker.clone(),
+                })),
+            plugins: vec![Arc::new(SequentialVisibilityPlugin)],
+        });
+        let runtime = AgentRuntime::new(resolver);
+        let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
+
+        let result = runtime
+            .run(
+                RunRequest::new("thread-seq-visibility", vec![Message::user("go")])
+                    .with_agent_id("agent"),
+                sink.clone(),
+            )
+            .await
+            .expect("run should succeed");
+
+        assert_eq!(
+            result.termination,
+            awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd
+        );
+        assert!(
+            saw_marker.load(Ordering::SeqCst),
+            "second tool should observe state written after first tool"
+        );
+    }
+
+    #[tokio::test]
     async fn checkpoint_persists_state_and_thread_together() {
         let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
             content: vec![ContentBlock::text("ok")],
@@ -499,6 +727,104 @@ mod tests {
             .expect("load messages")
             .expect("thread should exist");
         assert!(!msgs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_request_without_agent_id_prefers_latest_thread_state_agent() {
+        let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+            content: vec![ContentBlock::text("ok")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        }]));
+        let resolver = Arc::new(FixedResolver {
+            agent: AgentConfig::new("agent", "m", "sys", llm),
+            plugins: vec![],
+        });
+        let store = Arc::new(InMemoryStore::new());
+
+        let mut extensions = HashMap::new();
+        extensions.insert(
+            <ActiveAgentIdKey as StateKey>::KEY.to_string(),
+            Value::String("agent-from-state".into()),
+        );
+        store
+            .create_run(&seeded_run_record(
+                "seed-1",
+                "thread-infer-state",
+                "agent-from-record",
+                Some(PersistedState {
+                    revision: 1,
+                    extensions,
+                }),
+            ))
+            .await
+            .expect("seed run record");
+
+        let runtime = AgentRuntime::new(resolver)
+            .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>);
+        let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
+
+        runtime
+            .run(
+                RunRequest::new("thread-infer-state", vec![Message::user("hi")]),
+                sink.clone(),
+            )
+            .await
+            .expect("run should succeed");
+
+        let latest = store
+            .latest_run("thread-infer-state")
+            .await
+            .expect("latest run lookup")
+            .expect("run persisted");
+        assert_eq!(latest.agent_id, "agent-from-state");
+    }
+
+    #[tokio::test]
+    async fn run_request_without_agent_id_falls_back_to_latest_run_record_agent_id() {
+        let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+            content: vec![ContentBlock::text("ok")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        }]));
+        let resolver = Arc::new(FixedResolver {
+            agent: AgentConfig::new("agent", "m", "sys", llm),
+            plugins: vec![],
+        });
+        let store = Arc::new(InMemoryStore::new());
+
+        store
+            .create_run(&seeded_run_record(
+                "seed-2",
+                "thread-infer-record",
+                "agent-from-record",
+                None,
+            ))
+            .await
+            .expect("seed run record");
+
+        let runtime = AgentRuntime::new(resolver)
+            .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>);
+        let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
+
+        runtime
+            .run(
+                RunRequest::new("thread-infer-record", vec![Message::user("hi")]),
+                sink.clone(),
+            )
+            .await
+            .expect("run should succeed");
+
+        let latest = store
+            .latest_run("thread-infer-record")
+            .await
+            .expect("latest run lookup")
+            .expect("run persisted");
+        assert_eq!(latest.agent_id, "agent-from-record");
     }
 
     #[tokio::test]

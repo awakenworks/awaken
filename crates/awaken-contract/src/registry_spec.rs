@@ -2,7 +2,7 @@
 //!
 //! `AgentSpec` is the unified agent configuration: it describes both the
 //! declarative registry references (model, plugins, tools) and the runtime
-//! behavior (active_plugins filtering, typed plugin sections, context policy).
+//! behavior (active_hook_filter filtering, typed plugin sections, context policy).
 //!
 //! Supersedes the former `AgentProfile` — see ADR-0009.
 
@@ -76,10 +76,15 @@ pub struct AgentSpec {
     /// PluginRegistry IDs — resolved at build time.
     #[serde(default)]
     pub plugin_ids: Vec<String>,
-    /// Which plugins' hooks are active for this agent.
-    /// Empty = no filtering (all hooks run).
-    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
-    pub active_plugins: HashSet<String>,
+    /// Runtime hook filter: only hooks from plugins in this set will run.
+    /// Empty = no filtering (all loaded plugins' hooks run).
+    /// Distinct from `plugin_ids` which controls which plugins are loaded.
+    #[serde(
+        default,
+        skip_serializing_if = "HashSet::is_empty",
+        alias = "active_plugins"
+    )]
+    pub active_hook_filter: HashSet<String>,
     /// Allowed tool IDs (whitelist). `None` = all tools.
     #[serde(default)]
     pub allowed_tools: Option<Vec<String>>,
@@ -144,7 +149,7 @@ impl Default for AgentSpec {
             max_continuation_retries: default_max_continuation_retries(),
             context_policy: None,
             plugin_ids: Vec::new(),
-            active_plugins: HashSet::new(),
+            active_hook_filter: HashSet::new(),
             allowed_tools: None,
             excluded_tools: None,
             endpoint: None,
@@ -219,8 +224,8 @@ impl AgentSpec {
     }
 
     #[must_use]
-    pub fn with_active_plugin(mut self, plugin_id: impl Into<String>) -> Self {
-        self.active_plugins.insert(plugin_id.into());
+    pub fn with_hook_filter(mut self, plugin_id: impl Into<String>) -> Self {
+        self.active_hook_filter.insert(plugin_id.into());
         self
     }
 
@@ -301,7 +306,7 @@ mod tests {
         assert_eq!(spec.max_continuation_retries, 2);
         assert!(spec.context_policy.is_none());
         assert!(spec.plugin_ids.is_empty());
-        assert!(spec.active_plugins.is_empty());
+        assert!(spec.active_hook_filter.is_empty());
         assert!(spec.allowed_tools.is_none());
         assert!(spec.excluded_tools.is_none());
         assert!(spec.sections.is_empty());
@@ -412,7 +417,7 @@ mod tests {
     fn builder() {
         let spec = AgentSpec::new("reviewer")
             .with_model("claude-opus")
-            .with_active_plugin("permission")
+            .with_hook_filter("permission")
             .with_config::<PermKey>(PermConfig {
                 mode: "strict".into(),
             })
@@ -420,6 +425,6 @@ mod tests {
 
         assert_eq!(spec.id, "reviewer");
         assert_eq!(spec.model, "claude-opus");
-        assert!(spec.active_plugins.contains("permission"));
+        assert!(spec.active_hook_filter.contains("permission"));
     }
 }

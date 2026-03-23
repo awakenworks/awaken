@@ -6,7 +6,7 @@ use awaken_contract::model::Phase;
 use awaken_contract::registry_spec::AgentSpec;
 
 use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
-use crate::state::{MutationBatch, StateKeyOptions};
+use crate::state::{KeyScope, MutationBatch, StateKeyOptions};
 
 use super::action::HandoffAction;
 use super::hook::HandoffSyncHook;
@@ -52,8 +52,13 @@ impl Plugin for HandoffPlugin {
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        registrar.register_key::<ActiveAgentKey>(StateKeyOptions::default())?;
-        registrar.register_key::<ActiveAgentIdKey>(StateKeyOptions::default())?;
+        let thread_scope = StateKeyOptions {
+            scope: KeyScope::Thread,
+            persistent: true,
+            ..StateKeyOptions::default()
+        };
+        registrar.register_key::<ActiveAgentKey>(thread_scope)?;
+        registrar.register_key::<ActiveAgentIdKey>(thread_scope)?;
         registrar.register_phase_hook(HANDOFF_PLUGIN_ID, Phase::RunStart, HandoffSyncHook)?;
         registrar.register_phase_hook(HANDOFF_PLUGIN_ID, Phase::StepEnd, HandoffSyncHook)?;
         Ok(())

@@ -154,7 +154,6 @@ mod tests {
         let mut states = ToolCallStateMap::default();
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
         upsert(&mut states, "c1", "echo", ToolCallStatus::Succeeded, 200);
-        // Terminal -> Running is invalid; state should remain unchanged
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 300);
         assert_eq!(states.calls["c1"].status, ToolCallStatus::Succeeded);
         assert_eq!(states.calls["c1"].updated_at, 200);
@@ -165,7 +164,6 @@ mod tests {
         let mut states = ToolCallStateMap::default();
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
         upsert(&mut states, "c1", "echo", ToolCallStatus::Failed, 200);
-        // Terminal -> Running is invalid; state should remain unchanged
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 300);
         assert_eq!(states.calls["c1"].status, ToolCallStatus::Failed);
         assert_eq!(states.calls["c1"].updated_at, 200);
@@ -205,9 +203,7 @@ mod tests {
     #[test]
     fn tool_call_full_lifecycle_suspend_resume_succeed() {
         let mut states = ToolCallStateMap::default();
-        // New -> Running
         upsert(&mut states, "c1", "dangerous", ToolCallStatus::Running, 100);
-        // Running -> Suspended
         upsert(
             &mut states,
             "c1",
@@ -215,7 +211,6 @@ mod tests {
             ToolCallStatus::Suspended,
             200,
         );
-        // Suspended -> Resuming
         upsert(
             &mut states,
             "c1",
@@ -223,9 +218,7 @@ mod tests {
             ToolCallStatus::Resuming,
             300,
         );
-        // Resuming -> Running
         upsert(&mut states, "c1", "dangerous", ToolCallStatus::Running, 400);
-        // Running -> Succeeded
         upsert(
             &mut states,
             "c1",
@@ -243,7 +236,6 @@ mod tests {
 
     #[test]
     fn tool_call_new_can_transition_to_any() {
-        // New status is open — transitions to any status are valid
         let mut states = ToolCallStateMap::default();
         upsert(&mut states, "c1", "echo", ToolCallStatus::Succeeded, 100);
         assert_eq!(states.calls["c1"].status, ToolCallStatus::Succeeded);
@@ -261,7 +253,6 @@ mod tests {
         let mut states = ToolCallStateMap::default();
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
         upsert(&mut states, "c1", "echo", ToolCallStatus::Suspended, 200);
-        // Suspended -> Succeeded should be rejected (must go through Resuming -> Running)
         upsert(&mut states, "c1", "echo", ToolCallStatus::Succeeded, 300);
         assert_eq!(states.calls["c1"].status, ToolCallStatus::Suspended);
         assert_eq!(states.calls["c1"].updated_at, 200);
@@ -300,7 +291,6 @@ mod tests {
         ToolCallStates::apply(&mut states, ToolCallStatesUpdate::Clear);
         assert!(states.calls.is_empty());
 
-        // After clear, can create new calls from scratch
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 300);
         assert_eq!(states.calls["c1"].status, ToolCallStatus::Running);
     }
@@ -341,15 +331,12 @@ mod tests {
     fn tool_call_many_calls_independent_lifecycle() {
         let mut states = ToolCallStateMap::default();
 
-        // c1: Running -> Succeeded
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
         upsert(&mut states, "c1", "echo", ToolCallStatus::Succeeded, 200);
 
-        // c2: Running -> Failed
         upsert(&mut states, "c2", "calc", ToolCallStatus::Running, 100);
         upsert(&mut states, "c2", "calc", ToolCallStatus::Failed, 200);
 
-        // c3: Running -> Suspended -> Resuming -> Running -> Succeeded
         upsert(&mut states, "c3", "search", ToolCallStatus::Running, 100);
         upsert(&mut states, "c3", "search", ToolCallStatus::Suspended, 200);
         upsert(&mut states, "c3", "search", ToolCallStatus::Resuming, 300);

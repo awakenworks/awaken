@@ -1,9 +1,9 @@
 #![allow(missing_docs)]
 //! Integration tests validating dynamic configuration:
-//! - Hook filtering by active_plugins in AgentSpec
+//! - Hook filtering by active_hook_filter in AgentSpec
 //! - Spec sections accessible in hooks via ctx.agent_spec.sections
 //! - Handoff via ActiveAgentIdKey (state-driven agent switch)
-//! - Changing active_plugins between phases via different specs
+//! - Changing active_hook_filter between phases via different specs
 
 use async_trait::async_trait;
 use awaken::agent::state::{
@@ -183,14 +183,14 @@ impl Plugin for HandoffPlugin {
     }
 }
 
-/// Build an AgentSpec with the given active_plugins set.
+/// Build an AgentSpec with the given active_hook_filter set.
 fn spec_with_plugins(plugins: &[&str]) -> Arc<AgentSpec> {
-    let mut active_plugins = HashSet::new();
+    let mut active_hook_filter = HashSet::new();
     for p in plugins {
-        active_plugins.insert((*p).to_string());
+        active_hook_filter.insert((*p).to_string());
     }
     Arc::new(AgentSpec {
-        active_plugins,
+        active_hook_filter,
         ..AgentSpec::default()
     })
 }
@@ -199,9 +199,9 @@ fn spec_with_plugins(plugins: &[&str]) -> Arc<AgentSpec> {
 // Tests
 // ---------------------------------------------------------------------------
 
-/// Only hooks whose plugin_id is in active_plugins should fire.
+/// Only hooks whose plugin_id is in active_hook_filter should fire.
 #[tokio::test]
-async fn hook_filtering_only_active_plugins_fire() {
+async fn hook_filtering_only_active_hook_filter_fire() {
     let log = HookLog::default();
 
     let runtime = PhaseRuntime::new(StateStore::new()).unwrap();
@@ -233,9 +233,9 @@ async fn hook_filtering_only_active_plugins_fire() {
     assert_eq!(before_inf[0].plugin_id, "alpha");
 }
 
-/// When active_plugins is empty, all hooks run (no filtering).
+/// When active_hook_filter is empty, all hooks run (no filtering).
 #[tokio::test]
-async fn empty_active_plugins_runs_all_hooks() {
+async fn empty_active_hook_filter_runs_all_hooks() {
     let log = HookLog::default();
 
     let runtime = PhaseRuntime::new(StateStore::new()).unwrap();
@@ -250,7 +250,7 @@ async fn empty_active_plugins_runs_all_hooks() {
     });
     let env = ExecutionEnv::from_plugins(&[tracker as Arc<dyn Plugin>]).unwrap();
 
-    // Default spec has empty active_plugins — no filtering, all hooks run
+    // Default spec has empty active_hook_filter — no filtering, all hooks run
     let spec = Arc::new(AgentSpec::default());
 
     let ctx =
@@ -305,7 +305,7 @@ async fn config_values_accessible_in_hooks() {
 
 /// Handoff hook writes ActiveAgentIdKey; at the next phase boundary the
 /// runtime resolves the new spec from the registry. The new spec's
-/// active_plugins and sections take effect.
+/// active_hook_filter and sections take effect.
 #[tokio::test]
 async fn handoff_switches_spec_at_next_boundary() {
     let log = HookLog::default();
@@ -327,7 +327,7 @@ async fn handoff_switches_spec_at_next_boundary() {
     // Build a reviewer spec with sections
     let reviewer_spec = Arc::new(
         AgentSpec::new("reviewer")
-            .with_active_plugin("review-tracker")
+            .with_hook_filter("review-tracker")
             .with_section("test.model_name", json!({"name": "reviewer-model"})),
     );
 
@@ -368,7 +368,7 @@ async fn handoff_switches_spec_at_next_boundary() {
     assert_eq!(before_inf[0].model_name, "reviewer-model");
 }
 
-/// Switching to a spec without the tracker in active_plugins
+/// Switching to a spec without the tracker in active_hook_filter
 /// effectively deactivates it mid-run.
 #[tokio::test]
 async fn deactivate_plugin_mid_run_via_configure() {
@@ -397,7 +397,7 @@ async fn deactivate_plugin_mid_run_via_configure() {
     }
 
     // Phase 2: BeforeInference with a spec that does NOT include "tracker"
-    // (non-empty active_plugins without "tracker" means tracker is filtered out)
+    // (non-empty active_hook_filter without "tracker" means tracker is filtered out)
     let spec_without_tracker = spec_with_plugins(&["other-plugin"]);
     let ctx = PhaseContext::new(Phase::BeforeInference, runtime.store().snapshot())
         .with_agent_spec(spec_without_tracker);

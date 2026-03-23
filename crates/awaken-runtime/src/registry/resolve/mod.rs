@@ -13,6 +13,7 @@ use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::AgentSpec;
 
 pub use error::ResolveError;
+pub(crate) use pipeline::RegistrySetResolver;
 pub(crate) use pipeline::inject_default_plugins;
 
 // ---------------------------------------------------------------------------

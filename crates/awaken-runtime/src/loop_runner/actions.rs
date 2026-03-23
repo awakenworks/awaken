@@ -17,9 +17,11 @@ use awaken_contract::contract::message::{Message, Role};
 use crate::agent::state::{
     AccumulatedOverrides, AccumulatedOverridesUpdate, AccumulatedToolExclusions,
     AccumulatedToolExclusionsUpdate, AccumulatedToolInclusions, AccumulatedToolInclusionsUpdate,
-    AddContextMessage, ContextMessageAction, ContextMessageStore, ContextThrottleState,
-    ContextThrottleUpdate, ExcludeTool, IncludeOnlyTools, RunLifecycle, SetInferenceOverride,
+    AccumulatedToolIntercept, AccumulatedToolInterceptUpdate, AddContextMessage,
+    ContextMessageAction, ContextMessageStore, ContextThrottleState, ContextThrottleUpdate,
+    ExcludeTool, IncludeOnlyTools, RunLifecycle, SetInferenceOverride,
 };
+use awaken_contract::contract::tool_intercept::{ToolInterceptAction, ToolInterceptPayload};
 
 // ---------------------------------------------------------------------------
 // Action handlers
@@ -133,6 +135,23 @@ impl TypedScheduledActionHandler<IncludeOnlyTools> for IncludeOnlyToolsHandler {
     }
 }
 
+/// Handler for `ToolInterceptAction` — stores the intercept decision
+/// in [`AccumulatedToolIntercept`] with priority aggregation.
+pub(super) struct ToolInterceptHandler;
+
+#[async_trait]
+impl TypedScheduledActionHandler<ToolInterceptAction> for ToolInterceptHandler {
+    async fn handle_typed(
+        &self,
+        _ctx: &PhaseContext,
+        payload: ToolInterceptPayload,
+    ) -> Result<StateCommand, StateError> {
+        let mut cmd = StateCommand::new();
+        cmd.update::<AccumulatedToolIntercept>(AccumulatedToolInterceptUpdate::Set(payload));
+        Ok(cmd)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Plugin for registering action handlers
 // ---------------------------------------------------------------------------
@@ -159,6 +178,14 @@ impl crate::plugins::Plugin for LoopActionHandlersPlugin {
         r.register_scheduled_action::<AddContextMessage, _>(ContextMessageHandler)?;
         r.register_scheduled_action::<ExcludeTool, _>(ExcludeToolHandler)?;
         r.register_scheduled_action::<IncludeOnlyTools, _>(IncludeOnlyToolsHandler)?;
+        r.register_scheduled_action::<ToolInterceptAction, _>(ToolInterceptHandler)?;
+
+        r.register_key::<AccumulatedToolIntercept>(crate::state::StateKeyOptions {
+            persistent: false,
+            retain_on_uninstall: false,
+            scope: awaken_contract::state::KeyScope::Run,
+        })?;
+
         Ok(())
     }
 }
@@ -205,6 +232,24 @@ pub(super) fn take_context_messages(
     store.commit(patch)?;
 
     Ok(result)
+}
+
+/// Read and clear accumulated tool intercept decision.
+///
+/// Returns `Some(payload)` if any BeforeToolExecute hook scheduled a `ToolInterceptAction`,
+/// `None` if the tool should execute normally (no intercept).
+pub(super) fn take_tool_intercept(
+    store: &crate::state::StateStore,
+) -> Result<Option<ToolInterceptPayload>, StateError> {
+    let value = store
+        .read::<AccumulatedToolIntercept>()
+        .and_then(|v| v.clone());
+    if value.is_some() {
+        let mut patch = crate::state::MutationBatch::new();
+        patch.update::<AccumulatedToolIntercept>(AccumulatedToolInterceptUpdate::Clear);
+        store.commit(patch)?;
+    }
+    Ok(value)
 }
 
 /// Read and clear accumulated tool filters, then apply them to the tool list.

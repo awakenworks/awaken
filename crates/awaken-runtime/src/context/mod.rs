@@ -10,8 +10,9 @@ pub use compaction::{
     find_compaction_boundary, record_compaction_boundary, trim_to_compaction_boundary,
 };
 pub use plugin::{
-    CONTEXT_COMPACTION_PLUGIN_ID, CompactionAction, CompactionBoundary, CompactionConfig,
-    CompactionConfigKey, CompactionPlugin, CompactionState, CompactionStateKey,
+    CONTEXT_COMPACTION_PLUGIN_ID, CONTEXT_TRANSFORM_PLUGIN_ID, CompactionAction,
+    CompactionBoundary, CompactionConfig, CompactionConfigKey, CompactionPlugin, CompactionState,
+    CompactionStateKey, ContextTransformPlugin,
 };
 pub use summarizer::{
     ContextSummarizer, DefaultSummarizer, MIN_COMPACTION_GAIN_TOKENS, extract_previous_summary,

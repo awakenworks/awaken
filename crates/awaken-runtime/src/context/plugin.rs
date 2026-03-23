@@ -167,6 +167,45 @@ impl Plugin for CompactionPlugin {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ContextTransformPlugin — registers the context truncation request transform
+// ---------------------------------------------------------------------------
+
+/// Plugin ID for context truncation transform.
+pub const CONTEXT_TRANSFORM_PLUGIN_ID: &str = "context_transform";
+
+/// Plugin that registers the built-in context truncation request transform.
+///
+/// Wraps a `ContextWindowPolicy` and registers a `ContextTransform` via
+/// `register_request_transform()` during plugin registration. This ensures
+/// the transform flows through the standard plugin mechanism (ADR-0001)
+/// instead of being manually appended post-hoc.
+pub struct ContextTransformPlugin {
+    policy: awaken_contract::contract::inference::ContextWindowPolicy,
+}
+
+impl ContextTransformPlugin {
+    pub fn new(policy: awaken_contract::contract::inference::ContextWindowPolicy) -> Self {
+        Self { policy }
+    }
+}
+
+impl Plugin for ContextTransformPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
+            name: CONTEXT_TRANSFORM_PLUGIN_ID,
+        }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), awaken_contract::StateError> {
+        registrar.register_request_transform(
+            CONTEXT_TRANSFORM_PLUGIN_ID,
+            super::ContextTransform::new(self.policy.clone()),
+        );
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

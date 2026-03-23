@@ -160,27 +160,25 @@ pub struct AgentLoopParams<'a> {
 
 /// Build an execution environment for the agent loop.
 ///
-/// Adds internal plugins (stop conditions, default permission) and registers
-/// built-in request transforms (context truncation when a policy is provided).
+/// Injects runtime-required default plugins and conditionally adds
+/// context truncation when a policy is provided. All transforms and hooks
+/// flow through the standard plugin registration mechanism.
+///
 /// Prefer `AgentRuntime::run()` for production use.
 pub fn build_agent_env(
     plugins: &[Arc<dyn crate::plugins::Plugin>],
     agent: &crate::agent::config::AgentConfig,
 ) -> Result<ExecutionEnv, StateError> {
-    use crate::context::ContextTransform;
-
-    let all_plugins =
+    let mut all_plugins =
         crate::registry::resolve::inject_default_plugins(plugins.to_vec(), agent.max_rounds);
 
-    let mut env = ExecutionEnv::from_plugins(&all_plugins)?;
-
-    // Register built-in context truncation transform when policy is set
     if let Some(ref policy) = agent.context_policy {
-        env.request_transforms
-            .push(Arc::new(ContextTransform::new(policy.clone())));
+        all_plugins.push(Arc::new(crate::context::ContextTransformPlugin::new(
+            policy.clone(),
+        )));
     }
 
-    Ok(env)
+    ExecutionEnv::from_plugins(&all_plugins)
 }
 
 /// Execute the agent loop. Prefer `AgentRuntime::run()` for production use.

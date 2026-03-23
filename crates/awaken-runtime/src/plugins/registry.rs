@@ -3,9 +3,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::phase::{
-    EffectHandlerArc, PhaseHook, PhaseHookArc, ScheduledActionHandlerArc, ToolPermissionChecker,
-    ToolPermissionCheckerArc, TypedEffectAdapter, TypedEffectHandler, TypedScheduledActionAdapter,
-    TypedScheduledActionHandler,
+    EffectHandlerArc, PhaseHook, PhaseHookArc, ScheduledActionHandlerArc, TypedEffectAdapter,
+    TypedEffectHandler, TypedScheduledActionAdapter, TypedScheduledActionHandler,
 };
 use crate::state::{KeyScope, MergeStrategy, StateKey, StateKeyOptions, StateMap};
 use awaken_contract::StateError;
@@ -64,16 +63,11 @@ pub(crate) struct PhaseHookRegistration {
     pub(crate) hook: PhaseHookArc,
 }
 
-pub(crate) struct ToolPermissionRegistration {
-    /// Plugin that registered this checker (used for diagnostics in tracing).
-    pub(crate) plugin_id: String,
-    pub(crate) checker: ToolPermissionCheckerArc,
-}
-
 pub(crate) type RequestTransformArc =
     std::sync::Arc<dyn awaken_contract::contract::transform::InferenceRequestTransform>;
 
 pub(crate) struct RequestTransformRegistration {
+    pub(crate) plugin_id: String,
     pub(crate) transform: RequestTransformArc,
 }
 
@@ -119,7 +113,6 @@ pub struct PluginRegistrar {
     pub(crate) effects: Vec<EffectHandlerRegistration>,
     effect_keys: HashSet<String>,
     pub(crate) phase_hooks: Vec<PhaseHookRegistration>,
-    pub(crate) tool_permissions: Vec<ToolPermissionRegistration>,
     pub(crate) request_transforms: Vec<RequestTransformRegistration>,
     pub(crate) tools: Vec<ToolRegistration>,
     tool_ids: HashSet<String>,
@@ -136,7 +129,6 @@ impl PluginRegistrar {
             effects: Vec::new(),
             effect_keys: HashSet::new(),
             phase_hooks: Vec::new(),
-            tool_permissions: Vec::new(),
             request_transforms: Vec::new(),
             tools: Vec::new(),
             tool_ids: HashSet::new(),
@@ -216,21 +208,6 @@ impl PluginRegistrar {
         Ok(())
     }
 
-    pub fn register_tool_permission<C>(
-        &mut self,
-        plugin_id: impl Into<String>,
-        checker: C,
-    ) -> Result<(), StateError>
-    where
-        C: ToolPermissionChecker,
-    {
-        self.tool_permissions.push(ToolPermissionRegistration {
-            plugin_id: plugin_id.into(),
-            checker: Arc::new(checker),
-        });
-        Ok(())
-    }
-
     /// Register a tool provided by this plugin.
     ///
     /// The tool becomes available to agents that activate this plugin.
@@ -249,11 +226,12 @@ impl PluginRegistrar {
     }
 
     /// Register a request transform applied after message assembly, before LLM call.
-    pub fn register_request_transform<T>(&mut self, transform: T)
+    pub fn register_request_transform<T>(&mut self, plugin_id: impl Into<String>, transform: T)
     where
         T: awaken_contract::contract::transform::InferenceRequestTransform + 'static,
     {
         self.request_transforms.push(RequestTransformRegistration {
+            plugin_id: plugin_id.into(),
             transform: Arc::new(transform),
         });
     }

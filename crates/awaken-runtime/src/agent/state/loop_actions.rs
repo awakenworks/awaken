@@ -249,6 +249,59 @@ impl StateKey for AccumulatedToolInclusions {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tool intercept accumulator
+// ---------------------------------------------------------------------------
+
+/// Accumulated tool intercept decision for the current tool call.
+///
+/// BeforeToolExecute hooks schedule `ToolInterceptAction` to control whether
+/// a tool call proceeds, is blocked, suspended, or short-circuited. The handler
+/// writes the decision here; the step runner reads and clears it after phase execution.
+///
+/// Priority: Block > Suspend > SetResult (highest-priority decision wins).
+pub(crate) struct AccumulatedToolIntercept;
+
+/// Update for [`AccumulatedToolIntercept`].
+pub(crate) enum AccumulatedToolInterceptUpdate {
+    /// Set a new intercept decision (respects priority).
+    Set(awaken_contract::contract::tool_intercept::ToolInterceptPayload),
+    /// Clear the accumulator.
+    Clear,
+}
+
+impl StateKey for AccumulatedToolIntercept {
+    const KEY: &'static str = "__runtime.accumulated_tool_intercept";
+    const MERGE: MergeStrategy = MergeStrategy::Commutative;
+
+    type Value = Option<awaken_contract::contract::tool_intercept::ToolInterceptPayload>;
+    type Update = AccumulatedToolInterceptUpdate;
+
+    fn apply(value: &mut Self::Value, update: Self::Update) {
+        use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
+        match update {
+            AccumulatedToolInterceptUpdate::Set(payload) => {
+                fn priority(p: &ToolInterceptPayload) -> u8 {
+                    match p {
+                        ToolInterceptPayload::Block { .. } => 3,
+                        ToolInterceptPayload::Suspend(_) => 2,
+                        ToolInterceptPayload::SetResult(_) => 1,
+                    }
+                }
+                if value
+                    .as_ref()
+                    .map_or(true, |existing| priority(&payload) > priority(existing))
+                {
+                    *value = Some(payload);
+                }
+            }
+            AccumulatedToolInterceptUpdate::Clear => {
+                *value = None;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

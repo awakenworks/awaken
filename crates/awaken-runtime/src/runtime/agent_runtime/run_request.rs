@@ -10,7 +10,8 @@ pub struct RunRequest {
     pub messages: Vec<Message>,
     /// Thread ID. Existing → load history; new → create.
     pub thread_id: String,
-    /// Target agent ID. `None` = use default or infer from thread state.
+    /// Target agent ID.
+    /// `None` = infer from latest thread state/run record, fallback to default.
     pub agent_id: Option<String>,
     /// Runtime parameter overrides for this run.
     pub overrides: Option<InferenceOverride>,

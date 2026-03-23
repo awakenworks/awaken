@@ -56,10 +56,8 @@ pub use awaken_contract::{
 
 // runtime types
 pub use awaken_runtime::{
-    AgentResolver, AgentRuntime, AgentRuntimeBuilder, AllowAllToolsPlugin, BuildError,
-    CancellationToken, CommitEvent, CommitHook, DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv,
-    MutationBatch, PhaseContext, PhaseHook, PhaseRuntime, Plugin, PluginDescriptor,
-    PluginRegistrar, ResolvedAgent, RunRequest, RuntimeError, StateCommand, StateStore,
-    ToolPermission, ToolPermissionChecker, ToolPermissionResult, TypedEffectHandler,
-    TypedScheduledActionHandler, aggregate_tool_permissions,
+    AgentResolver, AgentRuntime, AgentRuntimeBuilder, BuildError, CancellationToken, CommitEvent,
+    CommitHook, DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv, MutationBatch, PhaseContext, PhaseHook,
+    PhaseRuntime, Plugin, PluginDescriptor, PluginRegistrar, ResolvedAgent, RunRequest,
+    RuntimeError, StateCommand, StateStore, TypedEffectHandler, TypedScheduledActionHandler,
 };

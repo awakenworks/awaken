@@ -6,6 +6,13 @@ use parking_lot::RwLock;
 
 use super::RunHandle;
 
+/// Result of dual-index lookup for external control IDs.
+pub(super) enum HandleLookup {
+    Found(RunHandle),
+    NotFound,
+    Ambiguous,
+}
+
 /// Tracks active runs with dual indexing by run_id and thread_id.
 /// At most one active run per thread.
 pub(crate) struct ActiveRunRegistry {
@@ -55,9 +62,31 @@ impl ActiveRunRegistry {
         self.by_run_id.read().get(&run_id).cloned()
     }
 
-    /// Look up a handle by trying run_id first, then thread_id.
-    pub(super) fn get_handle(&self, id: &str) -> Option<RunHandle> {
-        self.get_by_run_id(id).or_else(|| self.get_by_thread_id(id))
+    /// Look up a handle by control id with ambiguity detection.
+    ///
+    /// If `id` matches both a `run_id` and a `thread_id` that point to
+    /// different runs, returns `Ambiguous`.
+    pub(super) fn lookup_strict(&self, id: &str) -> HandleLookup {
+        let by_run = self.by_run_id.read();
+        let by_thread = self.by_thread_id.read();
+
+        let by_run_hit = by_run.get(id).cloned();
+        let by_thread_hit = by_thread
+            .get(id)
+            .and_then(|run_id| by_run.get(run_id))
+            .cloned();
+
+        match (by_run_hit, by_thread_hit) {
+            (None, None) => HandleLookup::NotFound,
+            (Some(handle), None) | (None, Some(handle)) => HandleLookup::Found(handle),
+            (Some(run_handle), Some(thread_handle)) => {
+                if run_handle.run_id == thread_handle.run_id {
+                    HandleLookup::Found(run_handle)
+                } else {
+                    HandleLookup::Ambiguous
+                }
+            }
+        }
     }
 }
 
@@ -70,7 +99,7 @@ mod tests {
 
     fn make_handle(run_id: &str) -> RunHandle {
         let token = CancellationToken::new();
-        let (tx, _rx) = mpsc::unbounded::<(String, ToolCallResume)>();
+        let (tx, _rx) = mpsc::unbounded::<Vec<(String, ToolCallResume)>>();
         RunHandle {
             run_id: run_id.to_string(),
             cancellation_token: token,
@@ -97,16 +126,32 @@ mod tests {
     }
 
     #[test]
-    fn get_handle_dual_lookup() {
+    fn strict_lookup_dual_index_hit() {
         let reg = ActiveRunRegistry::new();
         let handle = make_handle("r1");
         assert!(reg.register("r1", "t1", handle));
         // By run_id
-        assert!(reg.get_handle("r1").is_some());
+        assert!(matches!(reg.lookup_strict("r1"), HandleLookup::Found(_)));
         // By thread_id
-        assert!(reg.get_handle("t1").is_some());
+        assert!(matches!(reg.lookup_strict("t1"), HandleLookup::Found(_)));
         // Unknown
-        assert!(reg.get_handle("unknown").is_none());
+        assert!(matches!(
+            reg.lookup_strict("unknown"),
+            HandleLookup::NotFound
+        ));
+    }
+
+    #[test]
+    fn strict_lookup_detects_id_ambiguity() {
+        let reg = ActiveRunRegistry::new();
+        assert!(reg.register("r1", "t1", make_handle("r1")));
+        assert!(reg.register("t1", "t2", make_handle("t1")));
+
+        match reg.lookup_strict("t1") {
+            HandleLookup::Ambiguous => {}
+            HandleLookup::Found(_) => panic!("lookup should be ambiguous"),
+            HandleLookup::NotFound => panic!("lookup should not be missing"),
+        }
     }
 
     #[test]
