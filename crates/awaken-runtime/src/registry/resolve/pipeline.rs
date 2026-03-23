@@ -8,7 +8,7 @@ use crate::error::RuntimeError;
 use crate::execution::SequentialToolExecutor;
 use crate::phase::ExecutionEnv;
 use crate::plugins::Plugin;
-use crate::runtime::{AgentResolver, ResolvedAgent};
+use crate::registry::{AgentResolver, ResolvedAgent};
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::tool::Tool;
 
@@ -88,7 +88,8 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
                     config,
                 ))
             } else {
-                let resolver: Arc<dyn crate::runtime::AgentResolver> = Arc::new(registries.clone());
+                let resolver: Arc<dyn crate::registry::AgentResolver> =
+                    Arc::new(registries.clone());
                 Arc::new(crate::extensions::a2a::AgentTool::local(
                     delegate_id,
                     &description,
@@ -710,7 +711,7 @@ mod tests {
 
     #[test]
     fn registry_set_as_agent_resolver() {
-        use crate::runtime::AgentResolver;
+        use crate::registry::AgentResolver;
 
         let regs = build_registries(
             vec![
@@ -739,7 +740,7 @@ mod tests {
 
     #[test]
     fn registry_set_resolver_not_found() {
-        use crate::runtime::AgentResolver;
+        use crate::registry::AgentResolver;
 
         let regs = build_registries(
             vec![],

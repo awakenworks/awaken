@@ -6,6 +6,7 @@ pub mod composite;
 pub mod config;
 pub mod memory;
 pub mod resolve;
+pub mod resolver;
 pub mod traits;
 
 pub use awaken_contract::registry_spec::AgentSpec;
@@ -16,6 +17,7 @@ pub use memory::{
     MapStopPolicyRegistry, MapToolRegistry,
 };
 pub use resolve::ResolveError;
+pub use resolver::{AgentResolver, ResolvedAgent};
 pub use traits::{
     AgentRegistry, AgentSpecRegistry, ModelEntry, ModelRegistry, PluginSource, ProviderRegistry,
     RegistrySet, StopPolicyRegistry, ToolRegistry,

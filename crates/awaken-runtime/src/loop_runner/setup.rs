@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::agent::config::AgentConfig;
 use crate::phase::{ExecutionEnv, PhaseRuntime};
-use crate::runtime::{AgentResolver, ResolvedAgent};
+use crate::registry::{AgentResolver, ResolvedAgent};
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::message::Message;
 

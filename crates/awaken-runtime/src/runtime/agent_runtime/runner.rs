@@ -158,8 +158,7 @@ mod tests {
     use crate::agent::config::AgentConfig;
     use crate::loop_runner::build_agent_env;
     use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
-    use crate::runtime::ResolvedAgent;
-    use crate::runtime::resolver::AgentResolver;
+    use crate::registry::{AgentResolver, ResolvedAgent};
     use crate::state::{KeyScope, StateCommand, StateKey, StateKeyOptions};
     use crate::{PhaseContext, PhaseHook};
     use async_trait::async_trait;

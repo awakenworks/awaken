@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use crate::agent::config::AgentConfig;
+use crate::cancellation::CancellationToken;
 use crate::phase::{ExecutionEnv, PhaseContext, PhaseRuntime};
-use crate::runtime::CancellationToken;
 use crate::state::StateCommand;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;

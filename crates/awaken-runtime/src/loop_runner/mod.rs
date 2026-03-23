@@ -18,8 +18,9 @@ mod tests;
 
 use std::sync::Arc;
 
+use crate::cancellation::CancellationToken;
 use crate::phase::{ExecutionEnv, PhaseRuntime};
-use crate::runtime::{AgentResolver, CancellationToken};
+use crate::registry::AgentResolver;
 use crate::state::MutationBatch;
 use awaken_contract::StateError;
 use awaken_contract::contract::event_sink::EventSink;

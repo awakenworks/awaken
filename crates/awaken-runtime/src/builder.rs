@@ -142,7 +142,7 @@ impl AgentRuntimeBuilder {
             plugins: Arc::new(self.plugins),
         };
 
-        let resolver: Arc<dyn crate::runtime::AgentResolver> = Arc::new(registry_set);
+        let resolver: Arc<dyn crate::registry::AgentResolver> = Arc::new(registry_set);
 
         let mut runtime = AgentRuntime::new(resolver);
 

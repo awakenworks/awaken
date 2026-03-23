@@ -9,7 +9,7 @@ use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::message::Message;
 
 use crate::loop_runner::{AgentLoopParams, run_agent_loop};
-use crate::runtime::AgentResolver;
+use crate::registry::AgentResolver;
 
 use super::backend::{AgentBackend, AgentBackendError, DelegateRunResult, DelegateRunStatus};
 

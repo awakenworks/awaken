@@ -14,7 +14,7 @@ use crate::agent::config::AgentConfig;
 use crate::execution::SequentialToolExecutor;
 use crate::loop_runner::build_agent_env;
 use crate::phase::ExecutionEnv;
-use crate::runtime::{AgentResolver, ResolvedAgent};
+use crate::registry::{AgentResolver, ResolvedAgent};
 
 use super::a2a_backend::A2aConfig;
 use super::agent_tool::AgentTool;

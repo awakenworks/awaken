@@ -14,8 +14,8 @@ use crate::registry::composite::CompositeAgentSpecRegistry;
 use awaken_contract::contract::suspension::ToolCallResume;
 use futures::channel::mpsc;
 
-use crate::runtime::cancellation::CancellationToken;
-use crate::runtime::resolver::AgentResolver;
+use crate::cancellation::CancellationToken;
+use crate::registry::AgentResolver;
 
 pub use run_request::RunRequest;
 

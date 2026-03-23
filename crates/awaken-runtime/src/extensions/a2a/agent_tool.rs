@@ -9,7 +9,7 @@ use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
 };
 
-use crate::runtime::AgentResolver;
+use crate::registry::AgentResolver;
 
 use super::a2a_backend::{A2aBackend, A2aConfig};
 use super::backend::{AgentBackend, DelegateRunStatus};

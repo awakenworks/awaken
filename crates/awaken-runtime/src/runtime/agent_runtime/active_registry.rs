@@ -64,7 +64,7 @@ impl ActiveRunRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::cancellation::CancellationToken;
+    use crate::cancellation::CancellationToken;
     use awaken_contract::contract::suspension::ToolCallResume;
     use futures::channel::mpsc;
 

@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod builder;
+mod cancellation;
 pub mod context;
 pub mod engine;
 mod error;
@@ -14,6 +15,9 @@ pub mod policies;
 pub mod registry;
 pub mod runtime;
 pub mod state;
+
+// ── cancellation ──
+pub use cancellation::CancellationToken;
 
 // ── error ──
 pub use error::RuntimeError;
@@ -78,9 +82,8 @@ pub use phase::{
 };
 
 // ── runtime ──
-pub use runtime::{
-    AgentResolver, AgentRuntime, AppRuntime, CancellationToken, ResolvedAgent, RunRequest,
-};
+pub use registry::{AgentResolver, ResolvedAgent};
+pub use runtime::{AgentRuntime, AppRuntime, RunRequest};
 
 // ── state ──
 pub use state::{CommitEvent, CommitHook, MutationBatch, StateCommand, StateStore};

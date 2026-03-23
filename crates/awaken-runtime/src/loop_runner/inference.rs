@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::runtime::CancellationToken;
+use crate::cancellation::CancellationToken;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::executor::{InferenceRequest, StreamEvent};
