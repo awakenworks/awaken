@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use awaken::agent::config::AgentConfig;
 use awaken::agent::state::{
-    AccumulatedContextMessages, AccumulatedOverrides, AccumulatedToolExclusions,
-    AccumulatedToolInclusions, ContextThrottleState, RunLifecycle, ToolCallStates,
+    AccumulatedOverrides, AccumulatedToolExclusions, AccumulatedToolInclusions,
+    ContextMessageStore, ContextThrottleState, RunLifecycle, ToolCallStates,
 };
 use awaken::contract::content::ContentBlock;
 use awaken::contract::event::AgentEvent;
@@ -158,7 +158,7 @@ impl Plugin for LoopStatePlugin {
         registrar.register_key::<ToolCallStates>(StateKeyOptions::default())?;
         registrar.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
         registrar.register_key::<AccumulatedOverrides>(StateKeyOptions::default())?;
-        registrar.register_key::<AccumulatedContextMessages>(StateKeyOptions::default())?;
+        registrar.register_key::<ContextMessageStore>(StateKeyOptions::default())?;
         registrar.register_key::<AccumulatedToolExclusions>(StateKeyOptions::default())?;
         registrar.register_key::<AccumulatedToolInclusions>(StateKeyOptions::default())?;
         Ok(())
@@ -238,12 +238,12 @@ async fn single_step_natural_end() {
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("hi")],
         run_identity: test_identity(),
@@ -289,12 +289,12 @@ async fn tool_call_then_response() {
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("echo hello")],
         run_identity: test_identity(),
@@ -335,12 +335,12 @@ async fn tool_call_state_machine_transitions() {
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("test")],
         run_identity: test_identity(),
@@ -386,12 +386,12 @@ async fn multiple_tool_calls_in_one_step() {
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
-    let sink = VecEventSink::new();
+    let sink = Arc::new(VecEventSink::new());
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("multi-tool")],
         run_identity: test_identity(),
@@ -435,12 +435,12 @@ async fn max_rounds_exceeded() {
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("loop")],
         run_identity: test_identity(),
@@ -490,12 +490,12 @@ async fn unknown_tool_returns_error_result_not_crash() {
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
-    let sink = VecEventSink::new();
+    let sink = Arc::new(VecEventSink::new());
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("call unknown")],
         run_identity: test_identity(),
@@ -545,12 +545,12 @@ async fn failing_tool_produces_error_result_continues_loop() {
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("use fail tool")],
         run_identity: test_identity(),
@@ -579,12 +579,12 @@ async fn events_have_correct_sequence_for_single_step() {
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
-    let sink = VecEventSink::new();
+    let sink = Arc::new(VecEventSink::new());
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("hi")],
         run_identity: test_identity(),
@@ -652,12 +652,12 @@ async fn events_have_correct_sequence_with_tool_call() {
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
-    let sink = VecEventSink::new();
+    let sink = Arc::new(VecEventSink::new());
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("echo")],
         run_identity: test_identity(),
@@ -727,12 +727,12 @@ async fn lifecycle_state_reflects_custom_run_id() {
         RunOrigin::Internal,
     );
 
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("hi")],
         run_identity: identity,
@@ -792,12 +792,12 @@ async fn phase_hooks_fire_during_loop() {
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![tracker_plugin];
     let resolver = FixedResolver::with_plugins(agent, user_plugins);
 
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("hi")],
         run_identity: test_identity(),
@@ -848,12 +848,12 @@ async fn tool_suspension_transitions_run_to_waiting() {
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("do it")],
         run_identity: test_identity(),
@@ -888,12 +888,12 @@ async fn resume_with_use_decision_as_tool_result() {
     let resolver = FixedResolver::new(agent);
 
     // Run until suspension
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("do it")],
         run_identity: test_identity(),
@@ -940,7 +940,7 @@ async fn resume_with_use_decision_as_tool_result() {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages,
         run_identity: test_identity(),
@@ -975,12 +975,12 @@ async fn resume_with_cancel_marks_tool_cancelled() {
     let resolver = FixedResolver::new(agent);
 
     // Run until suspension
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("do it")],
         run_identity: test_identity(),
@@ -1026,7 +1026,7 @@ async fn resume_with_cancel_marks_tool_cancelled() {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages,
         run_identity: test_identity(),
@@ -1059,12 +1059,12 @@ async fn resume_with_replay_tool_call() {
     let resolver = FixedResolver::new(agent);
 
     // Run until suspension
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("do it")],
         run_identity: test_identity(),
@@ -1130,7 +1130,7 @@ async fn resume_with_replay_tool_call() {
         resolver: &resolver2,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages,
         run_identity: test_identity(),
@@ -1162,12 +1162,12 @@ async fn resume_with_pass_decision_to_tool() {
     // Simpler: just use SuspendingTool for suspension, then on resume use passthrough.
 
     // First run: suspend
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("do it")],
         run_identity: test_identity(),
@@ -1194,7 +1194,7 @@ async fn resume_with_pass_decision_to_tool() {
         resolver: &resolver2,
         agent_id: "test",
         runtime: &runtime2,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("do it")],
         run_identity: test_identity(),
@@ -1256,7 +1256,7 @@ async fn resume_with_pass_decision_to_tool() {
         resolver: &resolver3,
         agent_id: "test",
         runtime: &runtime2,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages,
         run_identity: test_identity(),
@@ -1278,12 +1278,12 @@ async fn resume_rejects_non_waiting_run() {
     let resolver = FixedResolver::new(agent);
 
     // Run to completion (not suspended)
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("hi")],
         run_identity: test_identity(),
@@ -1327,12 +1327,12 @@ async fn resume_rejects_unknown_call_id() {
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("do it")],
         run_identity: test_identity(),
@@ -1447,7 +1447,7 @@ async fn cancel_during_streaming_terminates_run() {
     let agent = AgentConfig::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let token = CancellationToken::new();
     let token_clone = token.clone();
 
@@ -1461,7 +1461,7 @@ async fn cancel_during_streaming_terminates_run() {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("hi")],
         run_identity: test_identity(),
@@ -1488,7 +1488,7 @@ async fn cancel_before_inference_terminates_immediately() {
     let agent = AgentConfig::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
 
     let token = CancellationToken::new();
     token.cancel();
@@ -1497,7 +1497,7 @@ async fn cancel_before_inference_terminates_immediately() {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("hi")],
         run_identity: test_identity(),
@@ -1544,12 +1544,12 @@ async fn state_snapshot_emitted_after_phase() {
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
-    let sink = VecEventSink::new();
+    let sink = Arc::new(VecEventSink::new());
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("hi")],
         run_identity: test_identity(),

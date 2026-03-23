@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use awaken_contract::StateError;
 use awaken_runtime::agent::state::AddContextMessage;
-use awaken_runtime::hooks::{PhaseContext, PhaseHook};
+use awaken_runtime::phase::{PhaseContext, PhaseHook};
 use awaken_runtime::state::StateCommand;
 use awaken_tool_pattern::pattern_matches;
 

@@ -170,7 +170,7 @@ async fn main() {
         resolver: &resolver,
         agent_id: "calc-agent",
         runtime: &runtime,
-        sink: &ConsoleSink,
+        sink: Arc::new(ConsoleSink),
         checkpoint_store: None,
         messages: vec![Message::user("What is 137 * 42? Use the calculator tool.")],
         run_identity: identity,

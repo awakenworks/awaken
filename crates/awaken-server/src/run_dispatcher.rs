@@ -138,7 +138,7 @@ impl RunDispatcher {
                 if let Some(aid) = job.spec.agent_id {
                     request = request.with_agent_id(aid);
                 }
-                if let Err(e) = this.runtime.run(request, &sink).await {
+                if let Err(e) = this.runtime.run(request, Arc::new(sink)).await {
                     tracing::warn!(error = %e, "run failed");
                 }
             }

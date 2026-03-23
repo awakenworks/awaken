@@ -26,6 +26,7 @@ pub use awaken_runtime::engine;
 pub use awaken_runtime::execution;
 pub use awaken_runtime::extensions;
 pub use awaken_runtime::loop_runner;
+pub use awaken_runtime::phase;
 pub use awaken_runtime::plugins;
 pub use awaken_runtime::policies;
 pub use awaken_runtime::registry;

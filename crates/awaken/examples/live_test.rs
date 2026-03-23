@@ -92,7 +92,7 @@ async fn main() {
         resolver: &resolver,
         agent_id: "live-test",
         runtime: &runtime,
-        sink: &ConsoleSink,
+        sink: Arc::new(ConsoleSink),
         checkpoint_store: None,
         messages: vec![Message::user("What is 2+2? Answer in one word.")],
         run_identity: identity,

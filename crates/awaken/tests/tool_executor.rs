@@ -129,8 +129,7 @@ impl Tool for CountingTool {
 // ---------------------------------------------------------------------------
 
 use awaken::agent::state::{
-    AccumulatedContextMessages, AccumulatedOverrides, AccumulatedToolExclusions,
-    AccumulatedToolInclusions,
+    AccumulatedOverrides, AccumulatedToolExclusions, AccumulatedToolInclusions, ContextMessageStore,
 };
 
 struct LoopStatePlugin;
@@ -143,7 +142,7 @@ impl Plugin for LoopStatePlugin {
         r.register_key::<ToolCallStates>(StateKeyOptions::default())?;
         r.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
         r.register_key::<AccumulatedOverrides>(StateKeyOptions::default())?;
-        r.register_key::<AccumulatedContextMessages>(StateKeyOptions::default())?;
+        r.register_key::<ContextMessageStore>(StateKeyOptions::default())?;
         r.register_key::<AccumulatedToolExclusions>(StateKeyOptions::default())?;
         r.register_key::<AccumulatedToolInclusions>(StateKeyOptions::default())?;
         Ok(())
@@ -238,12 +237,12 @@ async fn sequential_partial_failure_both_produce_results() {
         .with_tool(Arc::new(FailingTool));
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
-    let sink = VecEventSink::new();
+    let sink = Arc::new(VecEventSink::new());
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("go")],
         run_identity: id(),
@@ -282,12 +281,12 @@ async fn sequential_stops_after_first_suspension_in_loop() {
         .with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
-    let sink = VecEventSink::new();
+    let sink = Arc::new(VecEventSink::new());
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("go")],
         run_identity: id(),
@@ -329,12 +328,12 @@ async fn parallel_both_tools_execute() {
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
-    let sink = VecEventSink::new();
+    let sink = Arc::new(VecEventSink::new());
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("go")],
         run_identity: id(),
@@ -369,12 +368,12 @@ async fn parallel_partial_failure() {
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
-    let sink = VecEventSink::new();
+    let sink = Arc::new(VecEventSink::new());
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("go")],
         run_identity: id(),
@@ -415,12 +414,12 @@ async fn parallel_does_not_stop_on_suspension() {
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
-    let sink = VecEventSink::new();
+    let sink = Arc::new(VecEventSink::new());
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("go")],
         run_identity: id(),
@@ -461,12 +460,12 @@ async fn suspension_sets_run_to_waiting() {
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("go")],
         run_identity: id(),
@@ -492,12 +491,12 @@ async fn suspension_tool_call_state_is_suspended() {
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("go")],
         run_identity: id(),
@@ -589,12 +588,12 @@ async fn hook_state_mutation_is_not_visible_to_sibling_hook() {
     });
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![hook_plugin];
     let resolver = FixedResolver::with_plugins(agent, user_plugins);
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("hi")],
         run_identity: id(),
@@ -631,12 +630,12 @@ async fn max_rounds_precise_count() {
         .with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("go")],
         run_identity: id(),
@@ -694,12 +693,12 @@ async fn terminate_via_state_in_after_inference_hook() {
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(TermHookPlugin)];
     let resolver = FixedResolver::with_plugins(agent, user_plugins);
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("go")],
         run_identity: id(),
@@ -755,12 +754,12 @@ async fn phase_sequence_with_tool_call() {
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(LogPlugin(phases.clone()))];
     let resolver = FixedResolver::with_plugins(agent, user_plugins);
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("go")],
         run_identity: id(),
@@ -822,12 +821,12 @@ async fn phase_sequence_on_suspension() {
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(LogPlugin(phases.clone()))];
     let resolver = FixedResolver::with_plugins(agent, user_plugins);
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("go")],
         run_identity: id(),
@@ -925,12 +924,12 @@ async fn empty_tool_calls_treated_as_natural_end() {
     let agent = AgentConfig::new("test", "m", "sys", llm);
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("hi")],
         run_identity: id(),
@@ -963,12 +962,12 @@ async fn multiple_steps_accumulate_messages() {
     let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("go")],
         run_identity: id(),
@@ -999,12 +998,12 @@ async fn run_lifecycle_run_id_matches_identity() {
         "a-x".into(),
         RunOrigin::Internal,
     );
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("hi")],
         run_identity: custom_id,
@@ -1036,12 +1035,12 @@ async fn batch_approval_both_tools_execute_in_loop() {
         .with_tool_executor(Arc::new(ParallelToolExecutor::batch_approval()));
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
-    let sink = VecEventSink::new();
+    let sink = Arc::new(VecEventSink::new());
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("go")],
         run_identity: id(),
@@ -1076,12 +1075,12 @@ async fn batch_approval_suspension_still_executes_all() {
         .with_tool_executor(Arc::new(ParallelToolExecutor::batch_approval()));
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("go")],
         run_identity: id(),
@@ -1119,12 +1118,12 @@ async fn streaming_partial_failure_in_loop() {
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
-    let sink = VecEventSink::new();
+    let sink = Arc::new(VecEventSink::new());
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("go")],
         run_identity: id(),
@@ -1219,12 +1218,12 @@ async fn before_inference_hook_override_reaches_request() {
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OverridePlugin)];
     let resolver = FixedResolver::with_plugins(agent, user_plugins);
-    let sink = NullEventSink;
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
     let _result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &sink,
+        sink: sink.clone(),
         checkpoint_store: None,
         messages: vec![Message::user("go")],
         run_identity: id(),
@@ -1335,7 +1334,7 @@ async fn multiple_hooks_merge_inference_overrides_last_wins() {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &NullEventSink,
+        sink: Arc::new(NullEventSink),
         checkpoint_store: None,
         messages: vec![Message::user("go")],
         run_identity: id(),
@@ -1398,7 +1397,7 @@ async fn no_override_hook_leaves_overrides_none() {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &NullEventSink,
+        sink: Arc::new(NullEventSink),
         checkpoint_store: None,
         messages: vec![Message::user("go")],
         run_identity: id(),
@@ -1508,7 +1507,7 @@ async fn override_consumed_each_step_not_leaked() {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &NullEventSink,
+        sink: Arc::new(NullEventSink),
         checkpoint_store: None,
         messages: vec![Message::user("go")],
         run_identity: id(),
@@ -1608,7 +1607,7 @@ async fn context_message_injected_into_request() {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &NullEventSink,
+        sink: Arc::new(NullEventSink),
         checkpoint_store: None,
         messages: vec![Message::user("hello")],
         run_identity: id(),
@@ -1743,7 +1742,7 @@ async fn context_messages_not_leaked_to_next_step() {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
-        sink: &NullEventSink,
+        sink: Arc::new(NullEventSink),
         checkpoint_store: None,
         messages: vec![Message::user("go")],
         run_identity: id(),

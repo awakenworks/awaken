@@ -78,7 +78,7 @@ async fn main() {
         let request =
             RunRequest::new(thread_id, vec![Message::user(*user_msg)]).with_agent_id("chat");
 
-        match runtime.run(request, &ConsoleSink).await {
+        match runtime.run(request, Arc::new(ConsoleSink)).await {
             Ok(result) => {
                 print!(" [{:?}]", result.termination);
             }

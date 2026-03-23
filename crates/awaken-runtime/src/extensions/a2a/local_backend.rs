@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::event_sink::NullEventSink;
+use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
 use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
 use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::message::Message;
@@ -58,13 +58,13 @@ impl AgentBackend for LocalBackend {
             RunOrigin::Subagent,
         );
 
-        let sink = NullEventSink;
+        let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
 
         let result = run_agent_loop(AgentLoopParams {
             resolver: self.resolver.as_ref(),
             agent_id,
             runtime: &phase_runtime,
-            sink: &sink,
+            sink,
             checkpoint_store: None,
             messages,
             run_identity: sub_identity,

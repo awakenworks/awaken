@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use crate::context::TruncationState;
 use crate::hooks::PhaseContext;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::identity::RunIdentity;
@@ -15,7 +16,6 @@ use super::checkpoint::{
 use super::resume::{WaitOutcome, wait_for_resume_or_cancel};
 use super::setup::{PreparedRun, prepare_run};
 use super::step::{StepContext, StepOutcome, execute_step};
-use super::truncation_recovery::TruncationState;
 use super::{AgentLoopError, AgentLoopParams, AgentRunResult, commit_update, now_ms};
 use crate::agent::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
 
@@ -127,7 +127,7 @@ pub(super) async fn run_agent_loop_impl(
             env: &mut env,
             messages: &mut messages,
             runtime,
-            sink,
+            sink: sink.clone(),
             checkpoint_store,
             run_identity: &run_identity,
             cancellation_token: cancellation_token.as_ref(),
@@ -163,7 +163,7 @@ pub(super) async fn run_agent_loop_impl(
                     store,
                     runtime,
                     &env,
-                    sink,
+                    sink.as_ref(),
                     checkpoint_store,
                     &messages,
                     &run_identity,
@@ -201,7 +201,7 @@ pub(super) async fn run_agent_loop_impl(
                     store,
                     runtime,
                     &env,
-                    sink,
+                    sink.as_ref(),
                     checkpoint_store,
                     &messages,
                     &run_identity,
@@ -246,7 +246,7 @@ pub(super) async fn run_agent_loop_impl(
     )
     .await?;
 
-    emit_state_snapshot(store, sink).await;
+    emit_state_snapshot(store, sink.as_ref()).await;
 
     let response = messages
         .iter()

@@ -14,7 +14,7 @@ use awaken_contract::contract::inference::InferenceOverride;
 ///
 /// Scheduled by `BeforeInference` hooks via `cmd.schedule_action::<AddContextMessage>(...)`.
 /// Handled during `run_phase(BeforeInference)` — the handler applies throttle logic
-/// and writes accepted messages to [`AccumulatedContextMessages`].
+/// and writes accepted messages to [`ContextMessageStore`].
 pub struct AddContextMessage;
 
 impl awaken_contract::model::ScheduledActionSpec for AddContextMessage {
@@ -178,12 +178,6 @@ impl StateKey for ContextMessageStore {
         }
     }
 }
-
-// Legacy aliases for backward compatibility in re-exports
-/// Alias for [`ContextMessageStore`] — backward compatibility.
-pub type AccumulatedContextMessages = ContextMessageStore;
-/// Alias for [`ContextMessageAction`] — backward compatibility.
-pub type AccumulatedContextMessagesUpdate = ContextMessageAction;
 
 /// Accumulated tool exclusion IDs for the current step.
 ///

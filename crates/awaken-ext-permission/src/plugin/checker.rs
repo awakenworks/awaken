@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use awaken_contract::StateError;
-use awaken_runtime::hooks::{PhaseContext, ToolPermission, ToolPermissionChecker};
+use awaken_runtime::phase::{PhaseContext, ToolPermission, ToolPermissionChecker};
 
 use crate::rules::{ToolPermissionBehavior, evaluate_tool_permission};
 use crate::state::{PermissionOverridesKey, PermissionPolicyKey, permission_rules_from_state};

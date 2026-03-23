@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::agent::config::AgentConfig;
 use crate::cancellation::CancellationToken;
+use crate::context::{TruncationState, continuation_message, should_retry};
 use crate::hooks::PhaseContext;
 use crate::phase::{ExecutionEnv, PhaseRuntime};
 use crate::state::StateCommand;
@@ -25,7 +26,6 @@ use super::actions::{
 };
 use super::checkpoint::{check_termination, complete_step};
 use super::inference::{compact_with_llm, execute_streaming};
-use super::truncation_recovery::{self, TruncationState};
 use super::{AgentLoopError, commit_update, now_ms, tool_result_to_content};
 use crate::agent::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
 
@@ -51,7 +51,7 @@ pub(super) struct StepContext<'a> {
     pub env: &'a mut ExecutionEnv,
     pub messages: &'a mut Vec<Arc<Message>>,
     pub runtime: &'a PhaseRuntime,
-    pub sink: &'a dyn EventSink,
+    pub sink: Arc<dyn EventSink>,
     pub checkpoint_store: Option<&'a dyn ThreadRunStore>,
     pub run_identity: &'a RunIdentity,
     pub cancellation_token: Option<&'a CancellationToken>,
@@ -167,7 +167,7 @@ async fn run_inference_phase(
     let mut stream_result = execute_streaming(
         ctx.agent,
         request,
-        ctx.sink,
+        ctx.sink.as_ref(),
         ctx.cancellation_token,
         ctx.total_input_tokens,
         ctx.total_output_tokens,
@@ -175,7 +175,7 @@ async fn run_inference_phase(
     .await?;
 
     // Truncation recovery
-    while truncation_recovery::should_retry(
+    while should_retry(
         &stream_result,
         ctx.truncation_state,
         ctx.agent.max_continuation_retries,
@@ -183,8 +183,7 @@ async fn run_inference_phase(
         let partial_text = stream_result.text();
         ctx.messages
             .push(Arc::new(Message::assistant(&partial_text)));
-        ctx.messages
-            .push(Arc::new(truncation_recovery::continuation_message()));
+        ctx.messages.push(Arc::new(continuation_message()));
 
         let has_sys = !ctx.agent.system_prompt.is_empty();
         let mut cont_messages: Vec<Message> = Vec::new();
@@ -210,7 +209,7 @@ async fn run_inference_phase(
         stream_result = execute_streaming(
             ctx.agent,
             cont_request,
-            ctx.sink,
+            ctx.sink.as_ref(),
             ctx.cancellation_token,
             ctx.total_input_tokens,
             ctx.total_output_tokens,
@@ -306,7 +305,6 @@ async fn execute_tools_and_collect(
     let store = ctx.runtime.store();
     let mut suspended = false;
 
-    let activity_buffer = Arc::new(awaken_contract::contract::event_sink::VecEventSink::new());
     let tool_ctx = ToolCallContext {
         call_id: String::new(),
         tool_name: String::new(),
@@ -319,9 +317,7 @@ async fn execute_tools_and_collect(
         )
         .agent_spec,
         snapshot: store.snapshot(),
-        activity_sink: Some(
-            activity_buffer.clone() as Arc<dyn awaken_contract::contract::event_sink::EventSink>
-        ),
+        activity_sink: Some(ctx.sink.clone()),
     };
 
     let exec_results = ctx
@@ -330,11 +326,6 @@ async fn execute_tools_and_collect(
         .execute(&ctx.agent.tools, allowed_calls, &tool_ctx)
         .await
         .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
-
-    // Flush buffered activity events
-    for activity_event in activity_buffer.take() {
-        ctx.sink.emit(activity_event).await;
-    }
 
     // Process tool results
     for exec_result in &exec_results {
@@ -484,7 +475,7 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
             store,
             ctx.runtime,
             ctx.env,
-            ctx.sink,
+            ctx.sink.as_ref(),
             ctx.checkpoint_store,
             ctx.messages,
             ctx.run_identity,

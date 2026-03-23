@@ -128,13 +128,6 @@ impl PhaseContext {
     }
 }
 
-// Backward compat alias
-impl PhaseContext {
-    pub fn get<K: StateKey>(&self) -> Option<&K::Value> {
-        self.state::<K>()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

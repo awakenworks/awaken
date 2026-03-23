@@ -11,7 +11,6 @@ pub mod parallel_merge;
 mod resume;
 mod setup;
 mod step;
-pub(crate) mod truncation_recovery;
 
 #[cfg(test)]
 mod tests;
@@ -144,7 +143,7 @@ pub struct AgentLoopParams<'a> {
     /// Phase runtime (state store + hook executor).
     pub runtime: &'a PhaseRuntime,
     /// Event sink for streaming events to the caller.
-    pub sink: &'a dyn EventSink,
+    pub sink: Arc<dyn EventSink>,
     /// Optional persistent storage for checkpointing.
     pub checkpoint_store: Option<&'a dyn ThreadRunStore>,
     /// Messages to seed the conversation (history + new user input).

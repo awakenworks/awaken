@@ -1,5 +1,7 @@
 //! AgentRuntime::run() implementation.
 
+use std::sync::Arc;
+
 use crate::loop_runner::{
     AgentLoopError, AgentLoopParams, AgentRunResult, prepare_resume, run_agent_loop,
 };
@@ -44,7 +46,7 @@ impl AgentRuntime {
     pub async fn run(
         &self,
         request: RunRequest,
-        sink: &dyn EventSink,
+        sink: Arc<dyn EventSink>,
     ) -> Result<AgentRunResult, AgentLoopError> {
         let RunRequest {
             messages: request_messages,
@@ -163,7 +165,7 @@ mod tests {
     use crate::{PhaseContext, PhaseHook};
     use async_trait::async_trait;
     use awaken_contract::contract::content::ContentBlock;
-    use awaken_contract::contract::event_sink::NullEventSink;
+    use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
     use awaken_contract::contract::executor::{
         InferenceExecutionError, InferenceRequest, LlmExecutor,
     };
@@ -337,7 +339,7 @@ mod tests {
             plugins: vec![],
         });
         let runtime = AgentRuntime::new(resolver);
-        let sink = NullEventSink;
+        let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
         let override_req = InferenceOverride {
             temperature: Some(0.3),
             max_tokens: Some(77),
@@ -349,7 +351,7 @@ mod tests {
                 RunRequest::new("thread-ovr", vec![Message::user("hi")])
                     .with_agent_id("agent")
                     .with_overrides(override_req.clone()),
-                &sink,
+                sink.clone(),
             )
             .await
             .expect("run should succeed");
@@ -404,12 +406,12 @@ mod tests {
         let run_task = {
             let runtime = Arc::clone(&runtime);
             tokio::spawn(async move {
-                let sink = NullEventSink;
+                let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
                 runtime
                     .run(
                         RunRequest::new("thread-live", vec![Message::user("go")])
                             .with_agent_id("agent"),
-                        &sink,
+                        sink.clone(),
                     )
                     .await
             })
@@ -467,12 +469,12 @@ mod tests {
         let store = Arc::new(InMemoryStore::new());
         let runtime = AgentRuntime::new(resolver)
             .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>);
-        let sink = NullEventSink;
+        let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
 
         let result = runtime
             .run(
                 RunRequest::new("thread-tx", vec![Message::user("hi")]).with_agent_id("agent"),
-                &sink,
+                sink.clone(),
             )
             .await
             .expect("run should succeed");
@@ -524,13 +526,13 @@ mod tests {
         let store = Arc::new(InMemoryStore::new());
         let runtime = AgentRuntime::new(resolver)
             .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>);
-        let sink = NullEventSink;
+        let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
 
         runtime
             .run(
                 RunRequest::new("thread-counter", vec![Message::user("first")])
                     .with_agent_id("agent"),
-                &sink,
+                sink.clone(),
             )
             .await
             .expect("first run should succeed");
@@ -539,7 +541,7 @@ mod tests {
             .run(
                 RunRequest::new("thread-counter", vec![Message::user("second")])
                     .with_agent_id("agent"),
-                &sink,
+                sink.clone(),
             )
             .await
             .expect("second run should succeed");
@@ -676,12 +678,12 @@ mod tests {
             plugins: vec![],
         });
         let runtime = AgentRuntime::new(resolver);
-        let sink = NullEventSink;
+        let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
 
         let result = runtime
             .run(
                 RunRequest::new("thread-trunc", vec![Message::user("hi")]).with_agent_id("agent"),
-                &sink,
+                sink.clone(),
             )
             .await
             .expect("run should succeed");
@@ -769,13 +771,13 @@ mod tests {
             plugins: vec![],
         });
         let runtime = AgentRuntime::new(resolver);
-        let sink = NullEventSink;
+        let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
 
         let result = runtime
             .run(
                 RunRequest::new("thread-trunc-max", vec![Message::user("hi")])
                     .with_agent_id("agent"),
-                &sink,
+                sink.clone(),
             )
             .await
             .expect("run should succeed");

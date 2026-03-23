@@ -18,7 +18,7 @@ use super::queue_plugin::RuntimeQueuePlugin;
 use super::reports::{
     DEFAULT_MAX_PHASE_ROUNDS, EffectDispatchReport, PhaseRunReport, SubmitCommandReport,
 };
-use crate::hooks::{PhaseContext, ToolPermissionResult, aggregate_tool_permissions};
+use super::{PhaseContext, ToolPermissionResult, aggregate_tool_permissions};
 
 #[derive(Clone)]
 pub struct PhaseRuntime {

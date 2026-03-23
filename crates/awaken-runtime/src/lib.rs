@@ -8,7 +8,7 @@ pub mod engine;
 mod error;
 pub mod execution;
 pub mod extensions;
-pub mod hooks;
+mod hooks;
 pub mod loop_runner;
 pub mod phase;
 pub mod plugins;
@@ -23,11 +23,11 @@ pub use cancellation::CancellationToken;
 pub use error::RuntimeError;
 
 pub use builder::{AgentRuntimeBuilder, BuildError};
-pub use hooks::{
-    PhaseContext, PhaseHook, ToolPermission, ToolPermissionChecker, ToolPermissionResult,
-    TypedEffectHandler, TypedScheduledActionHandler, aggregate_tool_permissions,
+pub use phase::{
+    DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv, PhaseContext, PhaseHook, PhaseRuntime, ToolPermission,
+    ToolPermissionChecker, ToolPermissionResult, TypedEffectHandler, TypedScheduledActionHandler,
+    aggregate_tool_permissions,
 };
-pub use phase::{DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv, PhaseRuntime};
 pub use plugins::{AllowAllToolsPlugin, Plugin, PluginDescriptor, PluginRegistrar};
 pub use registry::{AgentResolver, ResolvedAgent};
 pub use runtime::{AgentRuntime, RunRequest};

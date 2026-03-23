@@ -98,7 +98,7 @@ impl TypedScheduledActionHandler<ActivateRequested> for ActivateRequestedHandler
         _payload: (),
     ) -> Result<StateCommand, StateError> {
         let mut cmd = StateCommand::new().with_base_revision(ctx.snapshot.revision());
-        if let Some(state) = ctx.get::<HandoffChannel>()
+        if let Some(state) = ctx.state::<HandoffChannel>()
             && let Some(agent) = state.requested_agent.clone()
         {
             cmd.update::<HandoffChannel>(HandoffAction::Activate {

@@ -10,10 +10,9 @@ use crate::plugins::{Plugin, PluginRegistrar};
 use awaken_contract::StateError;
 use awaken_contract::model::Phase;
 
-use crate::hooks::{
-    EffectHandlerArc, PhaseHookArc, ScheduledActionHandlerArc, ToolPermissionCheckerArc,
-};
 use crate::plugins::{KeyRegistration, RequestTransformArc};
+
+use super::{EffectHandlerArc, PhaseHookArc, ScheduledActionHandlerArc, ToolPermissionCheckerArc};
 
 /// A phase hook with its owning plugin ID.
 pub(crate) struct TaggedPhaseHook {

@@ -263,7 +263,7 @@ async fn handle_run_prompt<W: AsyncWriteExt + Unpin>(
     // Spawn the run in a background task so we can stream events synchronously
     let rt = runtime.clone();
     let run_handle = tokio::spawn(async move {
-        if let Err(e) = rt.run(run_request, &sink).await {
+        if let Err(e) = rt.run(run_request, Arc::new(sink)).await {
             tracing::warn!(error = %e, "stdio run failed");
         }
         // sink is dropped here, closing event_rx
