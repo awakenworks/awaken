@@ -69,6 +69,8 @@ pub enum ResolveError {
         key: String,
         message: String,
     },
+    #[error("remote agent `{0}` cannot be resolved locally — use it as a delegate instead")]
+    RemoteAgentNotDirectlyRunnable(String),
     #[error("env build error: {0}")]
     EnvBuild(#[from] awaken_contract::StateError),
 }
@@ -90,6 +92,14 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
         .agents
         .get_agent(agent_id)
         .ok_or_else(|| ResolveError::AgentNotFound(agent_id.into()))?;
+
+    // Remote agents run via A2A protocol — they don't need local model/provider
+    // resolution. They should be used as delegates, not resolved directly.
+    if spec.endpoint.is_some() {
+        return Err(ResolveError::RemoteAgentNotDirectlyRunnable(
+            spec.id.clone(),
+        ));
+    }
 
     let model = registries
         .models
@@ -499,6 +509,39 @@ mod tests {
     }
 
     #[test]
+    fn resolve_remote_agent_returns_error() {
+        use awaken_contract::registry_spec::RemoteEndpoint;
+
+        let spec = AgentSpec {
+            endpoint: Some(RemoteEndpoint {
+                base_url: "https://remote.example.com".into(),
+                ..Default::default()
+            }),
+            ..make_spec("remote-agent")
+        };
+
+        let regs = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![],
+            spec,
+        );
+
+        let err = resolve(&regs, "remote-agent").unwrap_err();
+        assert!(
+            matches!(err, ResolveError::RemoteAgentNotDirectlyRunnable(ref id) if id == "remote-agent")
+        );
+        assert!(err.to_string().contains("remote-agent"));
+        assert!(err.to_string().contains("cannot be resolved locally"));
+    }
+
+    #[test]
     fn resolve_model_not_found() {
         let mut spec = make_spec("a");
         spec.model = "nonexistent-model".into();
@@ -710,6 +753,10 @@ mod tests {
             (
                 ResolveError::PluginNotFound("w".into()),
                 "plugin not found: w",
+            ),
+            (
+                ResolveError::RemoteAgentNotDirectlyRunnable("r".into()),
+                "remote agent `r` cannot be resolved locally — use it as a delegate instead",
             ),
         ];
         for (err, expected) in cases {

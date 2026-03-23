@@ -97,7 +97,7 @@ impl CompositeAgentSpecRegistry {
     /// and converts them to `AgentSpec` with the endpoint filled in.
     /// Results are cached for subsequent lookups.
     pub async fn discover(&self) -> Result<(), DiscoveryError> {
-        let mut new_cache = HashMap::new();
+        let mut new_cache: HashMap<String, (String, AgentSpec)> = HashMap::new();
 
         for source in &self.remote_endpoints {
             let url = format!(
@@ -141,7 +141,16 @@ impl CompositeAgentSpecRegistry {
                 base_url = %source.base_url,
                 "discovered remote agent"
             );
-            new_cache.insert(spec.id.clone(), (source.name.clone(), spec));
+            let cache_key = format!("{}/{}", source.name, spec.id);
+            if let Some((existing_key, _)) = new_cache.iter().find(|(_, (_, s))| s.id == spec.id) {
+                tracing::warn!(
+                    agent_id = %spec.id,
+                    existing_key = %existing_key,
+                    new_source = %source.name,
+                    "duplicate agent ID across sources — both entries are kept with namespaced keys"
+                );
+            }
+            new_cache.insert(cache_key, (source.name.clone(), spec));
         }
 
         let mut cache = self.cache.write();
@@ -162,11 +171,9 @@ impl AgentSpecRegistry for CompositeAgentSpecRegistry {
             if source == self.local_name {
                 return self.local.get_agent(agent_id);
             }
+            // Direct composite key lookup: "source/agent_id"
             let cache = self.cache.read();
-            return cache
-                .get(agent_id)
-                .filter(|(s, _)| s == source)
-                .map(|(_, spec)| spec.clone());
+            return cache.get(id).map(|(_, spec)| spec.clone());
         }
 
         // Plain ID: search local first, then all remote caches.
@@ -174,8 +181,12 @@ impl AgentSpecRegistry for CompositeAgentSpecRegistry {
             return Some(spec);
         }
 
+        // Search all cached agents by agent ID
         let cache = self.cache.read();
-        cache.get(id).map(|(_, spec)| spec.clone())
+        cache
+            .iter()
+            .find(|(_, (_, spec))| spec.id == id)
+            .map(|(_, (_, spec))| spec.clone())
     }
 
     fn agent_ids(&self) -> Vec<String> {
@@ -186,8 +197,8 @@ impl AgentSpecRegistry for CompositeAgentSpecRegistry {
             .map(|id| format!("{}/{}", self.local_name, id))
             .collect();
         let cache = self.cache.read();
-        for (id, (source, _)) in cache.iter() {
-            ids.push(format!("{}/{}", source, id));
+        for (key, _) in cache.iter() {
+            ids.push(key.clone());
         }
         ids
     }
@@ -263,7 +274,7 @@ mod tests {
         {
             let mut cache = composite.cache.write();
             cache.insert(
-                "remote-coder".into(),
+                "cloud/remote-coder".into(),
                 (
                     "cloud".into(),
                     AgentSpec {
@@ -295,7 +306,7 @@ mod tests {
         {
             let mut cache = composite.cache.write();
             cache.insert(
-                "local-agent".into(),
+                "cloud/local-agent".into(),
                 (
                     "cloud".into(),
                     AgentSpec {
@@ -326,7 +337,7 @@ mod tests {
         {
             let mut cache = composite.cache.write();
             cache.insert(
-                "remote-agent".into(),
+                "cloud/remote-agent".into(),
                 (
                     "cloud".into(),
                     AgentSpec {
@@ -415,7 +426,7 @@ mod tests {
         {
             let mut cache = composite.cache.write();
             cache.insert(
-                "translator".into(),
+                "cloud/translator".into(),
                 (
                     "cloud".into(),
                     AgentSpec {
@@ -440,7 +451,7 @@ mod tests {
         {
             let mut cache = composite.cache.write();
             cache.insert(
-                "translator".into(),
+                "cloud/translator".into(),
                 (
                     "cloud".into(),
                     AgentSpec {
@@ -481,7 +492,7 @@ mod tests {
         {
             let mut cache = composite.cache.write();
             cache.insert(
-                "summarizer".into(),
+                "partner/summarizer".into(),
                 (
                     "partner".into(),
                     AgentSpec {
@@ -495,6 +506,55 @@ mod tests {
 
         let spec = composite.get_agent("summarizer").unwrap();
         assert_eq!(spec.registry.as_deref(), Some("partner"));
+    }
+
+    #[test]
+    fn multi_source_same_agent_id_both_kept() {
+        let composite = CompositeAgentSpecRegistry::new(make_local_registry());
+
+        {
+            let mut cache = composite.cache.write();
+            cache.insert(
+                "cloud/translator".into(),
+                (
+                    "cloud".into(),
+                    AgentSpec {
+                        id: "translator".into(),
+                        system_prompt: "Cloud translator.".into(),
+                        registry: Some("cloud".into()),
+                        ..Default::default()
+                    },
+                ),
+            );
+            cache.insert(
+                "partner/translator".into(),
+                (
+                    "partner".into(),
+                    AgentSpec {
+                        id: "translator".into(),
+                        system_prompt: "Partner translator.".into(),
+                        registry: Some("partner".into()),
+                        ..Default::default()
+                    },
+                ),
+            );
+        }
+
+        // Namespaced lookups reach the correct source
+        let cloud = composite.get_agent("cloud/translator").unwrap();
+        assert_eq!(cloud.system_prompt, "Cloud translator.");
+
+        let partner = composite.get_agent("partner/translator").unwrap();
+        assert_eq!(partner.system_prompt, "Partner translator.");
+
+        // Plain ID lookup returns one of them (non-deterministic order, but succeeds)
+        let plain = composite.get_agent("translator");
+        assert!(plain.is_some());
+
+        // Both appear in agent_ids
+        let ids = composite.agent_ids();
+        assert!(ids.contains(&"cloud/translator".to_string()));
+        assert!(ids.contains(&"partner/translator".to_string()));
     }
 
     #[test]
