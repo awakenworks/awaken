@@ -5,7 +5,7 @@
 //!
 //! # Run-end flush strategy
 //!
-//! During a run the [`AgentOs::run_stream`] checkpoint background task calls
+//! During a run the AgentOS checkpoint background task calls
 //! `append()` for each delta.  This storage publishes those deltas to a
 //! JetStream subject `thread.{thread_id}.deltas` so they are durably buffered
 //! in NATS.  No database writes happen during the run.

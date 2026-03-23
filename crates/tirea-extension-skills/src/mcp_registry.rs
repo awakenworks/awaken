@@ -363,10 +363,7 @@ fn render_prompt_content(content: &Value) -> String {
     serde_json::to_string_pretty(content).unwrap_or_else(|_| content.to_string())
 }
 
-fn resource_uri_from_path<'a>(
-    kind: SkillResourceKind,
-    path: &'a str,
-) -> Result<&'a str, SkillError> {
+fn resource_uri_from_path(kind: SkillResourceKind, path: &str) -> Result<&str, SkillError> {
     let prefix = match kind {
         SkillResourceKind::Reference => "references/",
         SkillResourceKind::Asset => "assets/",

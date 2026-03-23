@@ -4,7 +4,7 @@ set -euo pipefail
 WORKSPACE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 if ! command -v mdbook >/dev/null 2>&1; then
-    echo "error: mdbook is required. Install with: cargo install mdbook --locked --version 0.5.2"
+    echo "error: mdbook is required. Install with: cargo install mdbook --locked --version 0.5.0"
     exit 1
 fi
 

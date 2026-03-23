@@ -11,9 +11,19 @@
 
 ## Trait Shape
 
-```rust,ignore
+```rust,edition2021
+# extern crate async_trait;
+# extern crate schemars;
+# extern crate serde;
+# extern crate tirea;
+use async_trait::async_trait;
+use schemars::JsonSchema;
+use serde::Deserialize;
+use tirea::contracts::runtime::tool_call::{ToolError, ToolResult};
+use tirea::contracts::ToolCallContext;
+
 #[async_trait]
-pub trait TypedTool: Send + Sync {
+pub trait ExampleTypedTool: Send + Sync {
     type Args: for<'de> Deserialize<'de> + JsonSchema + Send;
 
     fn tool_id(&self) -> &str;
@@ -36,7 +46,12 @@ A blanket implementation converts every `TypedTool` into a normal `Tool`, so reg
 
 ## Minimal Example
 
-```rust,ignore
+```rust,edition2021
+# extern crate async_trait;
+# extern crate schemars;
+# extern crate serde;
+# extern crate serde_json;
+# extern crate tirea;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -78,6 +93,9 @@ impl TypedTool for SelectTripTool {
         ))
     }
 }
+
+let tool = SelectTripTool;
+assert_eq!(tool.tool_id(), "select_trip");
 ```
 
 ## Validation Flow
@@ -98,7 +116,13 @@ That means:
 
 This example shows a state-writing tool using the plain `Tool` trait with `execute_effect`. State mutations must go through `ToolExecutionEffect` + `AnyStateAction` — the runtime rejects direct writes via `ctx.state::<T>().set_*()`.
 
-```rust,ignore
+```rust,edition2021
+# extern crate async_trait;
+# extern crate serde;
+# extern crate serde_json;
+# extern crate tirea;
+# extern crate tirea_state;
+# extern crate tirea_state_derive;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -142,7 +166,11 @@ impl Tool for RenameCounter {
             }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
         Ok(<Self as Tool>::execute_effect(self, args, ctx).await?.result)
     }
 
@@ -164,6 +192,9 @@ impl Tool for RenameCounter {
         )))
     }
 }
+
+let tool = RenameCounter;
+assert_eq!(tool.descriptor().id, "rename_counter");
 ```
 
 ## Reading State
@@ -172,8 +203,25 @@ Inside a tool, state reads follow one of two patterns:
 
 Use `ctx.snapshot_of::<T>()` to read the current state as a deserialized Rust value:
 
-```rust,ignore
-let file: WorkspaceFile = ctx.snapshot_of::<WorkspaceFile>().unwrap_or_default();
+```rust,edition2021
+# extern crate serde;
+# extern crate serde_json;
+# extern crate tirea;
+# extern crate tirea_state;
+# extern crate tirea_state_derive;
+use serde::{Deserialize, Serialize};
+use tirea::contracts::ToolCallContext;
+use tirea_state_derive::State;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+struct WorkspaceFile {
+    path: String,
+}
+
+fn read_file(ctx: &ToolCallContext<'_>) {
+    let file: WorkspaceFile = ctx.snapshot_of::<WorkspaceFile>().unwrap_or_default();
+    let _ = file.path;
+}
 ```
 
 For advanced cases where the same state type is reused at different paths, use `ctx.snapshot_at::<T>("some.path")`.
@@ -192,11 +240,32 @@ All state writes use the action-based pattern:
 
 State scope is declared on the state type, not on the tool.
 
-```rust,ignore
+```rust,edition2021
+# extern crate serde;
+# extern crate serde_json;
+# extern crate tirea_state;
+# extern crate tirea_state_derive;
+use serde::{Deserialize, Serialize};
+use tirea_state::{StateScope, StateSpec};
+use tirea_state_derive::State;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[tirea(action = "FileAccessAction", scope = "thread")]
 struct FileAccessState {
     opened_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum FileAccessAction {
+    Open(String),
+}
+
+impl FileAccessState {
+    fn reduce(&mut self, action: FileAccessAction) {
+        match action {
+            FileAccessAction::Open(path) => self.opened_paths.push(path),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
@@ -205,11 +274,41 @@ struct EditorRunState {
     current_goal: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum EditorRunAction {
+    SetGoal(String),
+}
+
+impl EditorRunState {
+    fn reduce(&mut self, action: EditorRunAction) {
+        match action {
+            EditorRunAction::SetGoal(goal) => self.current_goal = Some(goal),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 #[tirea(action = "ApprovalAction", scope = "tool_call")]
 struct ApprovalState {
     requested: bool,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum ApprovalAction {
+    Request,
+}
+
+impl ApprovalState {
+    fn reduce(&mut self, action: ApprovalAction) {
+        match action {
+            ApprovalAction::Request => self.requested = true,
+        }
+    }
+}
+
+assert_eq!(<FileAccessState as StateSpec>::SCOPE, StateScope::Thread);
+assert_eq!(<EditorRunState as StateSpec>::SCOPE, StateScope::Run);
+assert_eq!(<ApprovalState as StateSpec>::SCOPE, StateScope::ToolCall);
 ```
 
 Use each scope for a different kind of data:

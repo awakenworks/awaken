@@ -14,7 +14,7 @@ pub(crate) struct Entry<V> {
 
 /// An observed-remove map (OR-Map) with put-wins semantics and recursive value merge.
 ///
-/// Each key maps to an [`Entry`] containing a value `V: Lattice` and an insertion timestamp.
+/// Each key maps to an internal entry containing a value `V: Lattice` and an insertion timestamp.
 /// Removals record a tombstone timestamp. A key is considered present when its entry timestamp
 /// is greater than or equal to its tombstone timestamp (put-wins: concurrent put and
 /// remove resolve in favor of put).

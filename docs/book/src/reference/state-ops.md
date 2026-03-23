@@ -124,11 +124,15 @@ Behavior:
 
 Numeric ops use `Number`:
 
-```rust,ignore
-pub enum Number {
-    Int(i64),
-    Float(f64),
-}
+```rust,edition2021
+# extern crate tirea_state;
+use tirea_state::Number;
+
+let int_value = Number::from(1_i64);
+let float_value = Number::from(1.5_f64);
+
+assert!(int_value.is_int());
+assert!(float_value.is_float());
 ```
 
 `From` is implemented for `i32`, `i64`, `u32`, `u64`, `f32`, `f64`.

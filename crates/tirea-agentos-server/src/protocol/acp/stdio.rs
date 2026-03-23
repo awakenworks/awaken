@@ -89,9 +89,9 @@ struct InitializeParams {
 #[serde(rename_all = "camelCase")]
 struct NewSessionParams {
     #[serde(default)]
-    cwd: Option<String>,
+    _cwd: Option<String>,
     #[serde(default)]
-    mcp_servers: Vec<Value>,
+    _mcp_servers: Vec<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -884,15 +884,15 @@ mod tests {
     fn parse_new_session_params() {
         let raw = json!({"cwd": "/home/user/project", "mcpServers": []});
         let params: NewSessionParams = serde_json::from_value(raw).unwrap();
-        assert_eq!(params.cwd.as_deref(), Some("/home/user/project"));
-        assert!(params.mcp_servers.is_empty());
+        assert_eq!(params._cwd.as_deref(), Some("/home/user/project"));
+        assert!(params._mcp_servers.is_empty());
     }
 
     #[test]
     fn parse_new_session_params_minimal() {
         let raw = json!({});
         let params: NewSessionParams = serde_json::from_value(raw).unwrap();
-        assert!(params.cwd.is_none());
+        assert!(params._cwd.is_none());
     }
 
     // -- session/prompt --

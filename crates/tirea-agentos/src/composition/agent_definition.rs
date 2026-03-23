@@ -15,7 +15,7 @@ pub enum ToolExecutionMode {
 ///
 /// This is the orchestration-facing model and uses only registry references
 /// (`behavior_ids`, `stop_condition_ids`) and declarative specs.
-/// Before execution, AgentOS resolves it into loop-facing [`BaseAgent`].
+/// Before execution, AgentOS resolves it into a loop-facing base agent.
 #[derive(Clone)]
 pub struct AgentDefinition {
     /// Unique identifier for this agent.

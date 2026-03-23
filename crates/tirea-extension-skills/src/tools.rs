@@ -107,7 +107,7 @@ impl SkillActivateTool {
             .activate(activation_args)
             .await
             .map_err(|e| map_skill_error(SKILL_ACTIVATE_TOOL_ID, e));
-        let activation = match activation {
+        let _activation = match activation {
             Ok(v) => v,
             Err(r) => return Ok(ToolExecutionEffect::from(r)),
         };

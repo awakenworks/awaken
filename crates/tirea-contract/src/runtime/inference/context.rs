@@ -4,7 +4,7 @@ use crate::runtime::tool_call::ToolDescriptor;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-/// Auto-compaction strategy used by [`ContextPlugin`].
+/// Auto-compaction strategy used by the context-window management behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextCompactionMode {
@@ -21,7 +21,7 @@ const fn default_compaction_raw_suffix_messages() -> usize {
 
 /// Context window management policy.
 ///
-/// Pure data struct used by [`ContextPlugin`] to configure context
+/// Pure data struct used by the context-window management behavior to configure context
 /// management. Lives in the contract layer so plugin crates can construct
 /// it without depending on `tirea-agentos`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,7 +35,7 @@ pub struct ContextWindowPolicy {
     /// Whether to enable prompt caching (Anthropic `cache_control: ephemeral`).
     pub enable_prompt_cache: bool,
     /// Token count threshold that triggers auto-compaction. `None` disables.
-    /// Used by ContextPlugin to decide when to compact history.
+    /// Used by the context-window management behavior to decide when to compact history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autocompact_threshold: Option<usize>,
     /// Auto-compaction strategy to use when `autocompact_threshold` is reached.

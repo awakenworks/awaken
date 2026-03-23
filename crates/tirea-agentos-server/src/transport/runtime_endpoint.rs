@@ -4,7 +4,7 @@
 //!
 //! 1. `Run(request)` — starts execution via the injected run factory.
 //! 2. `Decision(d)` / `Cancel` — control messages managed by AgentOS
-//!    [`ThreadRunHandle`], not by this endpoint.
+//!    `ThreadRunHandle`, not by this endpoint.
 //!
 //! `close()` is transport-only and does **not** cancel the run.
 

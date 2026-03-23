@@ -77,7 +77,7 @@ cd examples/copilotkit-starter && npm install && npm run build
 ### Docs
 
 ```bash
-cargo install mdbook --locked --version 0.5.2
+cargo install mdbook --locked --version 0.5.0
 cargo install mdbook-mermaid --locked
 bash scripts/build-docs.sh
 ```
@@ -156,7 +156,7 @@ Example:
 Make sure both tools are installed:
 
 ```bash
-cargo install mdbook --locked --version 0.5.2
+cargo install mdbook --locked --version 0.5.0
 cargo install mdbook-mermaid --locked
 ```
 

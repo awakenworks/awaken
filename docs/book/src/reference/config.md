@@ -250,12 +250,22 @@ Core fields:
 
 The `extensions` field is a `TypeMap`-based store that lets plugins attach arbitrary typed configuration without modifying `AgentRunConfig` itself. Plugins insert config during resolve and read it during execution:
 
-```rust
-// During resolve (mutable phase):
-run_config.extensions_mut().insert(MyPluginConfig { ... });
+```rust,edition2021
+# extern crate tirea;
+use tirea::contracts::{AgentRunConfig, RunPolicy};
 
-// During execution (frozen phase):
+#[derive(Debug, Default)]
+struct MyPluginConfig {
+    enabled: bool,
+}
+
+let mut run_config = AgentRunConfig::new(RunPolicy::default());
+run_config
+    .extensions_mut()
+    .insert(MyPluginConfig { enabled: true });
+
 let cfg = run_config.extensions().get::<MyPluginConfig>();
+assert_eq!(cfg.map(|cfg| cfg.enabled), Some(true));
 ```
 
 This replaces the earlier pattern of passing `RunPolicy` directly to plugins and tools, providing a single extensible config surface for the entire run lifecycle.

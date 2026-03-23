@@ -5,7 +5,7 @@ use serde_json::Value;
 /// Stream event types compatible with AI SDK v6.
 ///
 /// These events map directly to the AI SDK UI Message Stream protocol.
-/// See: https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
+/// See: <https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol>
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum UIStreamEvent {

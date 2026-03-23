@@ -6,12 +6,12 @@ use tirea_state::StateSpec;
 /// Registry mapping `StateSpec` types to their declared [`StateScope`] and path.
 ///
 /// Built once at agent construction by calling
-/// [`AgentBehavior::register_state_scopes`] on each behavior. The loop then
-/// uses [`resolve`] to determine the effective scope of any [`AnyStateAction`],
+/// `AgentBehavior::register_state_scopes` on each behavior. The loop then
+/// uses `resolve` to determine the effective scope of any [`AnyStateAction`],
 /// overriding the action-carried default when a registered type provides a
 /// canonical scope.
 ///
-/// Also exposes [`run_scoped_paths`] for enumerating all Run-scoped state
+/// Also exposes `run_scoped_paths` for enumerating all Run-scoped state
 /// paths, enabling framework-driven cleanup at the start of each run.
 #[derive(Debug, Clone, Default)]
 pub struct StateScopeRegistry {
@@ -51,7 +51,7 @@ impl StateScopeRegistry {
     /// Resolve the scope of an [`AnyStateAction`].
     ///
     /// If the action targets a registered type, returns the registered scope.
-    /// Otherwise falls back to [`AnyStateAction::scope`].
+    /// Otherwise falls back to `AnyStateAction::scope`.
     pub fn resolve(&self, action: &AnyStateAction) -> StateScope {
         if let Some(scope) = self.scope_for_type_id(action.state_type_id()) {
             return scope;

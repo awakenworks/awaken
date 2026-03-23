@@ -4,9 +4,13 @@
 
 ## Basic Usage
 
-```rust,ignore
+```rust,edition2021
+# extern crate serde;
+# extern crate serde_json;
+# extern crate tirea_state;
+# extern crate tirea_state_derive;
 use serde::{Deserialize, Serialize};
-use tirea_state::State;
+use tirea_state::{State as StateTrait, StateScope, StateSpec};
 use tirea_state_derive::State;
 
 #[derive(Debug, Clone, Serialize, Deserialize, State)]
@@ -14,6 +18,22 @@ use tirea_state_derive::State;
 struct Counter {
     value: i64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum CounterAction {
+    Increment(i64),
+}
+
+impl Counter {
+    fn reduce(&mut self, action: CounterAction) {
+        match action {
+            CounterAction::Increment(amount) => self.value += amount,
+        }
+    }
+}
+
+assert_eq!(<Counter as StateTrait>::PATH, "counter");
+assert_eq!(<Counter as StateSpec>::SCOPE, StateScope::Run);
 ```
 
 ## Struct Attributes

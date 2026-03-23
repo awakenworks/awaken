@@ -4,16 +4,16 @@
 
 ## TireaError
 
-```rust,ignore
-pub enum TireaError {
-    PathNotFound { path: Path },
-    IndexOutOfBounds { path: Path, index: usize, len: usize },
-    TypeMismatch { path: Path, expected: &'static str, found: &'static str },
-    NumericOperationOnNonNumber { path: Path },
-    MergeRequiresObject { path: Path },
-    AppendRequiresArray { path: Path },
-    InvalidOperation { message: String },
-    Serialization(serde_json::Error),
+```rust,edition2021
+# extern crate tirea_state;
+use tirea_state::{path, TireaError};
+
+let err = TireaError::path_not_found(path!("users", 0, "name"));
+match err {
+    TireaError::PathNotFound { path } => {
+        assert_eq!(path.to_string(), "$.users[0].name");
+    }
+    other => panic!("unexpected error variant: {other:?}"),
 }
 ```
 
@@ -34,19 +34,25 @@ pub enum TireaError {
 
 Convenience type alias:
 
-```rust,ignore
-pub type TireaResult<T> = Result<T, TireaError>;
+```rust,edition2021
+# extern crate tirea_state;
+use tirea_state::TireaResult;
+
+let result: TireaResult<i32> = Ok(42);
+assert_eq!(result.unwrap(), 42);
 ```
 
 ## Error Context with `with_prefix`
 
 When working with nested state, errors include the full path context. The `with_prefix` method prepends a path segment:
 
-```rust,ignore
-// If a nested struct at "address" has an error at "city":
+```rust,edition2021
+# extern crate tirea_state;
+use tirea_state::{path, TireaError};
+
 let err = TireaError::path_not_found(path!("city"));
 let contextualized = err.with_prefix(&path!("address"));
-// Error now shows: "path not found: address.city"
+assert_eq!(contextualized.to_string(), "path not found: $.address.city");
 ```
 
 ## Convenience Constructors

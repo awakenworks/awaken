@@ -432,8 +432,8 @@ impl AgentOs {
     /// Resolve, prepare, and execute an agent run.
     ///
     /// This is the primary entry point. Callers that need to customize
-    /// the resolved wiring should use [`resolve`] + mutation + [`prepare_run`]
-    /// + [`execute_prepared`] instead.
+    /// the resolved wiring should use `resolve` + mutation + `prepare_run`
+    /// + `execute_prepared` instead.
     pub async fn run_stream(&self, request: RunRequest) -> Result<RunStream, AgentOsRunError> {
         let resolved = self.resolve(&request.agent_id)?;
         let prepared = self.prepare_run(request, resolved).await?;
@@ -444,7 +444,7 @@ impl AgentOs {
     ///
     /// When multiple agents are registered, `HandoffPlugin` handles dynamic
     /// agent switching within the run via `agent_handoff`. No termination or
-    /// re-resolution occurs — this method simply delegates to [`run_stream`].
+    /// re-resolution occurs — this method simply delegates to `run_stream`.
     #[cfg(feature = "handoff")]
     pub async fn run(&self, request: RunRequest) -> Result<RunStream, AgentOsRunError> {
         self.run_stream(request).await

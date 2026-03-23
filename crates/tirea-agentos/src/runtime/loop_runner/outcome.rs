@@ -101,7 +101,7 @@ where
         .collect()
 }
 
-/// Helper to create a tool map from Arc<dyn Tool>.
+/// Helper to create a tool map from `Arc<dyn Tool>`.
 pub fn tool_map_from_arc<I>(tools: I) -> HashMap<String, Arc<dyn Tool>>
 where
     I: IntoIterator<Item = Arc<dyn Tool>>,

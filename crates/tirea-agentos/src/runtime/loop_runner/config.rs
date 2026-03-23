@@ -433,9 +433,9 @@ impl BaseAgent {
         self
     }
 
-    /// Set static tool map (wraps in [`StaticStepToolProvider`]).
+    /// Set static tool map (wraps in `StaticStepToolProvider`).
     ///
-    /// Prefer passing tools directly to [`run_loop`] / [`run_loop_stream`];
+    /// Prefer passing tools directly to `run_loop` / `run_loop_stream`;
     /// use this only when you need to set tools via `step_tool_provider`.
     #[must_use]
     pub fn with_tools(self, tools: HashMap<String, Arc<dyn Tool>>) -> Self {
