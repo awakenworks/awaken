@@ -75,33 +75,6 @@ pub trait PluginSource: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// AgentRegistry (runtime-level agent lookup by ID)
-// ---------------------------------------------------------------------------
-
-/// Runtime-level agent lookup — returns full agent specs for sub-agent delegation.
-///
-/// Unlike `AgentSpecRegistry` (which backs the resolve pipeline), this trait
-/// supports dynamic, runtime agent lookups (local or remote).
-pub trait AgentRegistry: Send + Sync {
-    /// Look up an agent spec by ID.
-    fn get(&self, id: &str) -> Option<AgentSpec>;
-    /// List all registered agent IDs.
-    fn ids(&self) -> Vec<String>;
-}
-
-// ---------------------------------------------------------------------------
-// StopPolicyRegistry
-// ---------------------------------------------------------------------------
-
-/// Lookup interface for stop condition policies by name.
-pub trait StopPolicyRegistry: Send + Sync {
-    /// Get a stop policy by its ID.
-    fn get(&self, id: &str) -> Option<Arc<dyn crate::policies::StopPolicy>>;
-    /// List all registered stop policy IDs.
-    fn ids(&self) -> Vec<String>;
-}
-
-// ---------------------------------------------------------------------------
 // RegistrySet
 // ---------------------------------------------------------------------------
 
