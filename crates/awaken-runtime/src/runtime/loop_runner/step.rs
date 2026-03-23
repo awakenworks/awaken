@@ -9,9 +9,9 @@ use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::executor::InferenceRequest;
 use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::inference::{InferenceOverride, LLMResponse};
+use awaken_contract::contract::inference::{InferenceOverride, LLMResponse, StreamResult};
 use awaken_contract::contract::lifecycle::TerminationReason;
-use awaken_contract::contract::message::Message;
+use awaken_contract::contract::message::{Message, ToolCall};
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::suspension::{ToolCallOutcome, ToolCallStatus};
 use awaken_contract::contract::tool::ToolCallContext;
@@ -71,53 +71,42 @@ fn make_ctx(
         .with_messages(msgs.to_vec())
 }
 
-/// Execute a single step of the agent loop: inference + tool execution + checkpoint.
-pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcome, AgentLoopError> {
+/// Build a `StateCommand` that upserts a `ToolCallStates` entry for a given call and status.
+fn tool_call_state_cmd(call: &ToolCall, status: ToolCallStatus) -> StateCommand {
+    let mut cmd = StateCommand::new();
+    cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
+        call_id: call.id.clone(),
+        tool_name: call.name.clone(),
+        arguments: call.arguments.clone(),
+        status,
+        updated_at: now_ms(),
+    });
+    cmd
+}
+
+/// Run a phase hook and check for termination afterwards.
+async fn run_phase_and_check(
+    ctx: &mut StepContext<'_>,
+    phase: Phase,
+) -> Result<Option<StepOutcome>, AgentLoopError> {
+    let store = ctx.runtime.store();
+    ctx.runtime
+        .run_phase_with_context(
+            ctx.env,
+            make_ctx(phase, ctx.messages, ctx.run_identity, store),
+        )
+        .await?;
+    Ok(check_termination(store).map(StepOutcome::Terminated))
+}
+
+/// Run the inference phase: compaction, request building, streaming, truncation recovery.
+/// Returns the stream result and wall-clock duration in milliseconds.
+async fn run_inference_phase(
+    ctx: &mut StepContext<'_>,
+) -> Result<(StreamResult, u64), AgentLoopError> {
     let store = ctx.runtime.store();
 
-    // --- Cancellation check ---
-    if ctx.cancellation_token.is_some_and(|t| t.is_cancelled()) {
-        commit_update::<RunLifecycle>(
-            store,
-            RunLifecycleUpdate::Done {
-                done_reason: "cancelled".into(),
-                updated_at: now_ms(),
-            },
-        )?;
-        return Ok(StepOutcome::Cancelled);
-    }
-
-    // --- Handoff: check ActiveAgentKey for agent switch ---
-    // (resolver not passed; handoff handled in orchestrator before calling step)
-
-    // --- Phase hooks: StepStart ---
-    ctx.runtime
-        .run_phase_with_context(
-            ctx.env,
-            make_ctx(Phase::StepStart, ctx.messages, ctx.run_identity, store),
-        )
-        .await?;
-    if let Some(reason) = check_termination(store) {
-        return Ok(StepOutcome::Terminated(reason));
-    }
-
-    // --- Phase hooks: BeforeInference ---
-    ctx.runtime
-        .run_phase_with_context(
-            ctx.env,
-            make_ctx(
-                Phase::BeforeInference,
-                ctx.messages,
-                ctx.run_identity,
-                store,
-            ),
-        )
-        .await?;
-    if let Some(reason) = check_termination(store) {
-        return Ok(StepOutcome::Terminated(reason));
-    }
-
-    // --- LLM compaction ---
+    // LLM compaction
     if let Some(ref policy) = ctx.agent.context_policy
         && let Some(threshold) = policy.autocompact_threshold
     {
@@ -127,7 +116,7 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
         }
     }
 
-    // --- Build inference request ---
+    // Build inference request
     let mut overrides = ctx.run_overrides.clone();
     if let Some(runtime_overrides) = take_accumulated_overrides(store)? {
         if let Some(merged) = overrides.as_mut() {
@@ -172,7 +161,7 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
         enable_prompt_cache,
     };
 
-    // --- Inference ---
+    // Inference
     let mut stream_result = execute_streaming(
         ctx.agent,
         request,
@@ -183,7 +172,7 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
     )
     .await?;
 
-    // --- Truncation recovery ---
+    // Truncation recovery
     while truncation_recovery::should_retry(
         &stream_result,
         ctx.truncation_state,
@@ -235,6 +224,218 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
         duration_ms,
         "inference_complete"
     );
+
+    Ok((stream_result, duration_ms))
+}
+
+/// Permission-check result for a batch of tool calls.
+struct PermissionCheckResult {
+    allowed_calls: Vec<ToolCall>,
+    tool_commands: Vec<StateCommand>,
+    blocked_reason: Option<String>,
+    has_suspended: bool,
+}
+
+/// Check permissions for each tool call and categorise them.
+async fn check_tool_permissions(
+    ctx: &mut StepContext<'_>,
+    calls: &[ToolCall],
+) -> Result<PermissionCheckResult, AgentLoopError> {
+    let store = ctx.runtime.store();
+    let mut allowed_calls = Vec::new();
+    let mut tool_commands = Vec::new();
+    let mut blocked_reason: Option<String> = None;
+    let mut has_suspended = false;
+
+    for call in calls {
+        let perm_ctx = make_ctx(
+            Phase::BeforeToolExecute,
+            ctx.messages,
+            ctx.run_identity,
+            store,
+        )
+        .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
+        let perm_result = ctx
+            .runtime
+            .check_tool_permission(ctx.env, &perm_ctx)
+            .await?;
+
+        match perm_result {
+            crate::runtime::ToolPermissionResult::Allow => {
+                allowed_calls.push(call.clone());
+            }
+            crate::runtime::ToolPermissionResult::Deny { reason, message } => {
+                tool_commands.push(tool_call_state_cmd(call, ToolCallStatus::Failed));
+                let tool_msg = message.unwrap_or_else(|| format!("Permission denied: {reason}"));
+                ctx.messages
+                    .push(Arc::new(Message::tool(&call.id, tool_msg)));
+            }
+            crate::runtime::ToolPermissionResult::Block { reason } => {
+                tool_commands.push(tool_call_state_cmd(call, ToolCallStatus::Failed));
+                blocked_reason = Some(reason);
+                break;
+            }
+            crate::runtime::ToolPermissionResult::Suspend => {
+                tool_commands.push(tool_call_state_cmd(call, ToolCallStatus::Suspended));
+                ctx.messages.push(Arc::new(Message::tool(
+                    &call.id,
+                    "Tool call suspended: awaiting approval".to_string(),
+                )));
+                has_suspended = true;
+            }
+        }
+    }
+
+    Ok(PermissionCheckResult {
+        allowed_calls,
+        tool_commands,
+        blocked_reason,
+        has_suspended,
+    })
+}
+
+/// Execute allowed tool calls and collect state commands and results.
+/// Returns the accumulated tool commands and whether any call was suspended.
+async fn execute_tools_and_collect(
+    ctx: &mut StepContext<'_>,
+    allowed_calls: &[ToolCall],
+    mut tool_commands: Vec<StateCommand>,
+) -> Result<(Vec<StateCommand>, bool), AgentLoopError> {
+    let store = ctx.runtime.store();
+    let mut suspended = false;
+
+    let activity_buffer = Arc::new(awaken_contract::contract::event_sink::VecEventSink::new());
+    let tool_ctx = ToolCallContext {
+        call_id: String::new(),
+        tool_name: String::new(),
+        run_identity: ctx.run_identity.clone(),
+        agent_spec: make_ctx(
+            Phase::BeforeToolExecute,
+            ctx.messages,
+            ctx.run_identity,
+            store,
+        )
+        .agent_spec,
+        snapshot: store.snapshot(),
+        activity_sink: Some(
+            activity_buffer.clone() as Arc<dyn awaken_contract::contract::event_sink::EventSink>
+        ),
+    };
+
+    let exec_results = ctx
+        .agent
+        .tool_executor
+        .execute(&ctx.agent.tools, allowed_calls, &tool_ctx)
+        .await
+        .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
+
+    // Flush buffered activity events
+    for activity_event in activity_buffer.take() {
+        ctx.sink.emit(activity_event).await;
+    }
+
+    // Process tool results
+    for exec_result in &exec_results {
+        let call = &exec_result.call;
+        let tool_result = &exec_result.result;
+
+        let before_ctx = make_ctx(
+            Phase::BeforeToolExecute,
+            ctx.messages,
+            ctx.run_identity,
+            store,
+        )
+        .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
+        let before_cmd = ctx.runtime.collect_commands(ctx.env, before_ctx).await?;
+        if !before_cmd.is_empty() {
+            tool_commands.push(before_cmd);
+        }
+
+        let terminal_status = match exec_result.outcome {
+            ToolCallOutcome::Suspended => ToolCallStatus::Suspended,
+            ToolCallOutcome::Succeeded => ToolCallStatus::Succeeded,
+            ToolCallOutcome::Failed => ToolCallStatus::Failed,
+        };
+        // Record Running then terminal status via two upserts in a single command.
+        let mut lifecycle_cmd = tool_call_state_cmd(call, ToolCallStatus::Running);
+        lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
+            call_id: call.id.clone(),
+            tool_name: call.name.clone(),
+            arguments: call.arguments.clone(),
+            status: terminal_status,
+            updated_at: now_ms(),
+        });
+        tool_commands.push(lifecycle_cmd);
+
+        tracing::info!(
+            tool_name = %call.name,
+            call_id = %call.id,
+            outcome = ?exec_result.outcome,
+            "tool_call_done"
+        );
+
+        ctx.sink
+            .emit(AgentEvent::ToolCallDone {
+                id: call.id.clone(),
+                message_id: String::new(),
+                result: tool_result.clone(),
+                outcome: exec_result.outcome,
+            })
+            .await;
+
+        let after_ctx = make_ctx(
+            Phase::AfterToolExecute,
+            ctx.messages,
+            ctx.run_identity,
+            store,
+        )
+        .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()))
+        .with_tool_result(tool_result.clone());
+        let after_cmd = ctx.runtime.collect_commands(ctx.env, after_ctx).await?;
+        if !after_cmd.is_empty() {
+            tool_commands.push(after_cmd);
+        }
+
+        let tool_content = tool_result_to_content(tool_result);
+        ctx.messages
+            .push(Arc::new(Message::tool(&call.id, tool_content)));
+
+        if exec_result.outcome == ToolCallOutcome::Suspended {
+            suspended = true;
+        }
+    }
+
+    Ok((tool_commands, suspended))
+}
+
+/// Execute a single step of the agent loop: inference + tool execution + checkpoint.
+pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcome, AgentLoopError> {
+    let store = ctx.runtime.store();
+
+    // --- Cancellation check ---
+    if ctx.cancellation_token.is_some_and(|t| t.is_cancelled()) {
+        commit_update::<RunLifecycle>(
+            store,
+            RunLifecycleUpdate::Done {
+                done_reason: "cancelled".into(),
+                updated_at: now_ms(),
+            },
+        )?;
+        return Ok(StepOutcome::Cancelled);
+    }
+
+    // --- Phase hooks: StepStart ---
+    if let Some(outcome) = run_phase_and_check(ctx, Phase::StepStart).await? {
+        return Ok(outcome);
+    }
+
+    // --- Phase hooks: BeforeInference ---
+    if let Some(outcome) = run_phase_and_check(ctx, Phase::BeforeInference).await? {
+        return Ok(outcome);
+    }
+
+    // --- Inference ---
+    let (stream_result, duration_ms) = run_inference_phase(ctx).await?;
 
     // --- Post-inference cancellation check ---
     if ctx.cancellation_token.is_some_and(|t| t.is_cancelled()) {
@@ -300,79 +501,13 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
             stream_result.tool_calls.clone(),
         )));
 
-    let mut allowed_calls = Vec::new();
-    let mut suspended = false;
-    let mut blocked: Option<String> = None;
-    let mut tool_commands = Vec::new();
-
     // Permission checks
-    for call in &stream_result.tool_calls {
-        let perm_ctx = make_ctx(
-            Phase::BeforeToolExecute,
-            ctx.messages,
-            ctx.run_identity,
-            store,
-        )
-        .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
-        let perm_result = ctx
-            .runtime
-            .check_tool_permission(ctx.env, &perm_ctx)
-            .await?;
+    let perm = check_tool_permissions(ctx, &stream_result.tool_calls).await?;
 
-        match perm_result {
-            crate::runtime::ToolPermissionResult::Allow => {
-                allowed_calls.push(call.clone());
-            }
-            crate::runtime::ToolPermissionResult::Deny { reason, message } => {
-                let mut lifecycle_cmd = StateCommand::new();
-                lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
-                    call_id: call.id.clone(),
-                    tool_name: call.name.clone(),
-                    arguments: call.arguments.clone(),
-                    status: ToolCallStatus::Failed,
-                    updated_at: now_ms(),
-                });
-                tool_commands.push(lifecycle_cmd);
-                let tool_msg = message.unwrap_or_else(|| format!("Permission denied: {reason}"));
-                ctx.messages
-                    .push(Arc::new(Message::tool(&call.id, tool_msg)));
-            }
-            crate::runtime::ToolPermissionResult::Block { reason } => {
-                let mut lifecycle_cmd = StateCommand::new();
-                lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
-                    call_id: call.id.clone(),
-                    tool_name: call.name.clone(),
-                    arguments: call.arguments.clone(),
-                    status: ToolCallStatus::Failed,
-                    updated_at: now_ms(),
-                });
-                tool_commands.push(lifecycle_cmd);
-                blocked = Some(reason);
-                break;
-            }
-            crate::runtime::ToolPermissionResult::Suspend => {
-                let mut lifecycle_cmd = StateCommand::new();
-                lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
-                    call_id: call.id.clone(),
-                    tool_name: call.name.clone(),
-                    arguments: call.arguments.clone(),
-                    status: ToolCallStatus::Suspended,
-                    updated_at: now_ms(),
-                });
-                tool_commands.push(lifecycle_cmd);
-                ctx.messages.push(Arc::new(Message::tool(
-                    &call.id,
-                    "Tool call suspended: awaiting approval".to_string(),
-                )));
-                suspended = true;
-            }
-        }
-    }
-
-    // Blocked → terminate
-    if let Some(block_reason) = blocked {
-        if !tool_commands.is_empty() {
-            let merged = store.merge_all_commands(tool_commands)?;
+    // Blocked -> terminate
+    if let Some(block_reason) = perm.blocked_reason {
+        if !perm.tool_commands.is_empty() {
+            let merged = store.merge_all_commands(perm.tool_commands)?;
             ctx.runtime.submit_command(ctx.env, merged).await?;
         }
         commit_update::<RunLifecycle>(
@@ -385,113 +520,10 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
         return Ok(StepOutcome::Blocked(block_reason));
     }
 
-    // --- Execute allowed tool calls ---
-    let activity_buffer = Arc::new(awaken_contract::contract::event_sink::VecEventSink::new());
-    let tool_ctx = ToolCallContext {
-        call_id: String::new(),
-        tool_name: String::new(),
-        run_identity: ctx.run_identity.clone(),
-        agent_spec: make_ctx(
-            Phase::BeforeToolExecute,
-            ctx.messages,
-            ctx.run_identity,
-            store,
-        )
-        .agent_spec,
-        snapshot: store.snapshot(),
-        activity_sink: Some(
-            activity_buffer.clone() as Arc<dyn awaken_contract::contract::event_sink::EventSink>
-        ),
-    };
-
-    let exec_results = ctx
-        .agent
-        .tool_executor
-        .execute(&ctx.agent.tools, &allowed_calls, &tool_ctx)
-        .await
-        .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
-
-    // Flush buffered activity events
-    for activity_event in activity_buffer.take() {
-        ctx.sink.emit(activity_event).await;
-    }
-
-    // Process tool results
-    for exec_result in &exec_results {
-        let call = &exec_result.call;
-        let tool_result = &exec_result.result;
-
-        let before_ctx = make_ctx(
-            Phase::BeforeToolExecute,
-            ctx.messages,
-            ctx.run_identity,
-            store,
-        )
-        .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
-        let before_cmd = ctx.runtime.collect_commands(ctx.env, before_ctx).await?;
-        if !before_cmd.is_empty() {
-            tool_commands.push(before_cmd);
-        }
-
-        let terminal_status = match exec_result.outcome {
-            ToolCallOutcome::Suspended => ToolCallStatus::Suspended,
-            ToolCallOutcome::Succeeded => ToolCallStatus::Succeeded,
-            ToolCallOutcome::Failed => ToolCallStatus::Failed,
-        };
-        let mut lifecycle_cmd = StateCommand::new();
-        lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
-            call_id: call.id.clone(),
-            tool_name: call.name.clone(),
-            arguments: call.arguments.clone(),
-            status: ToolCallStatus::Running,
-            updated_at: now_ms(),
-        });
-        lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
-            call_id: call.id.clone(),
-            tool_name: call.name.clone(),
-            arguments: call.arguments.clone(),
-            status: terminal_status,
-            updated_at: now_ms(),
-        });
-        tool_commands.push(lifecycle_cmd);
-
-        tracing::info!(
-            tool_name = %call.name,
-            call_id = %call.id,
-            outcome = ?exec_result.outcome,
-            "tool_call_done"
-        );
-
-        ctx.sink
-            .emit(AgentEvent::ToolCallDone {
-                id: call.id.clone(),
-                message_id: String::new(),
-                result: tool_result.clone(),
-                outcome: exec_result.outcome,
-            })
-            .await;
-
-        let after_ctx = make_ctx(
-            Phase::AfterToolExecute,
-            ctx.messages,
-            ctx.run_identity,
-            store,
-        )
-        .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()))
-        .with_tool_result(tool_result.clone());
-        let after_cmd = ctx.runtime.collect_commands(ctx.env, after_ctx).await?;
-        if !after_cmd.is_empty() {
-            tool_commands.push(after_cmd);
-        }
-
-        let tool_content = tool_result_to_content(tool_result);
-        ctx.messages
-            .push(Arc::new(Message::tool(&call.id, tool_content)));
-
-        if exec_result.outcome == ToolCallOutcome::Suspended {
-            suspended = true;
-        }
-    }
+    // Execute allowed tool calls
+    let (tool_commands, suspended) =
+        execute_tools_and_collect(ctx, &perm.allowed_calls, perm.tool_commands).await?;
+    let suspended = suspended || perm.has_suspended;
 
     // Merge all tool call commands and submit once
     if !tool_commands.is_empty() {
