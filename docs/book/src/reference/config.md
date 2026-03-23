@@ -250,7 +250,7 @@ Core fields:
 
 The `extensions` field is a `TypeMap`-based store that lets plugins attach arbitrary typed configuration without modifying `AgentRunConfig` itself. Plugins insert config during resolve and read it during execution:
 
-```rust
+```rust,ignore
 // During resolve (mutable phase):
 run_config.extensions_mut().insert(MyPluginConfig { ... });
 
