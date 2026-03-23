@@ -1850,3 +1850,527 @@ async fn frontend_tool_intercept_suspend_and_resume() {
         "should complete after frontend tool resume"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tool interception tests: Block, SetResult, state transitions
+// ---------------------------------------------------------------------------
+
+/// Plugin that blocks a specific tool via BeforeToolExecute.
+struct BlockingPlugin {
+    blocked_tool: String,
+    reason: String,
+}
+
+impl Clone for BlockingPlugin {
+    fn clone(&self) -> Self {
+        Self {
+            blocked_tool: self.blocked_tool.clone(),
+            reason: self.reason.clone(),
+        }
+    }
+}
+
+#[async_trait]
+impl PhaseHook for BlockingPlugin {
+    async fn run(
+        &self,
+        ctx: &awaken::PhaseContext,
+    ) -> Result<awaken::StateCommand, awaken::StateError> {
+        let tool_name = match &ctx.tool_name {
+            Some(name) => name.as_str(),
+            None => return Ok(awaken::StateCommand::new()),
+        };
+
+        if tool_name != self.blocked_tool {
+            return Ok(awaken::StateCommand::new());
+        }
+
+        let mut cmd = awaken::StateCommand::new();
+        cmd.schedule_action::<ToolInterceptAction>(ToolInterceptPayload::Block {
+            reason: self.reason.clone(),
+        })?;
+        Ok(cmd)
+    }
+}
+
+struct BlockingPluginWrapper(BlockingPlugin);
+
+impl Plugin for BlockingPluginWrapper {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
+            name: "blocking-plugin",
+        }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_phase_hook(
+            "blocking-plugin",
+            awaken::Phase::BeforeToolExecute,
+            self.0.clone(),
+        )?;
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn tool_intercept_block_terminates_run() {
+    let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
+        "echo",
+        "c1",
+        json!({"message": "hello"}),
+    )]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let blocking_plugin = Arc::new(BlockingPluginWrapper(BlockingPlugin {
+        blocked_tool: "echo".into(),
+        reason: "tool is forbidden".into(),
+    }));
+
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(agent, vec![blocking_plugin]);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("use echo")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        matches!(result.termination, TerminationReason::Blocked(ref reason) if reason == "tool is forbidden"),
+        "expected Blocked termination, got {:?}",
+        result.termination
+    );
+
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
+    assert_eq!(lifecycle.status, RunStatus::Done);
+}
+
+/// Plugin that sets a result for a specific tool, skipping execution.
+struct SetResultPlugin {
+    target_tool: String,
+    result: ToolResult,
+}
+
+impl Clone for SetResultPlugin {
+    fn clone(&self) -> Self {
+        Self {
+            target_tool: self.target_tool.clone(),
+            result: self.result.clone(),
+        }
+    }
+}
+
+#[async_trait]
+impl PhaseHook for SetResultPlugin {
+    async fn run(
+        &self,
+        ctx: &awaken::PhaseContext,
+    ) -> Result<awaken::StateCommand, awaken::StateError> {
+        let tool_name = match &ctx.tool_name {
+            Some(name) => name.as_str(),
+            None => return Ok(awaken::StateCommand::new()),
+        };
+
+        if tool_name != self.target_tool {
+            return Ok(awaken::StateCommand::new());
+        }
+
+        let mut cmd = awaken::StateCommand::new();
+        cmd.schedule_action::<ToolInterceptAction>(ToolInterceptPayload::SetResult(
+            self.result.clone(),
+        ))?;
+        Ok(cmd)
+    }
+}
+
+struct SetResultPluginWrapper(SetResultPlugin);
+
+impl Plugin for SetResultPluginWrapper {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
+            name: "set-result-plugin",
+        }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_phase_hook(
+            "set-result-plugin",
+            awaken::Phase::BeforeToolExecute,
+            self.0.clone(),
+        )?;
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn tool_intercept_set_result_skips_execution() {
+    // Track whether the tool was actually executed
+    struct TrackedEchoTool(Arc<Mutex<bool>>);
+
+    #[async_trait]
+    impl Tool for TrackedEchoTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("echo", "echo", "Tracked echo")
+        }
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
+            *self.0.lock().unwrap() = true;
+            let msg = args
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Ok(ToolResult::success_with_message("echo", args, msg))
+        }
+    }
+
+    let executed = Arc::new(Mutex::new(false));
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        make_tool_call_response("echo", "c1", json!({"message": "hello"})),
+        StreamResult {
+            content: vec![ContentBlock::text("Got the result.")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm)
+        .with_tool(Arc::new(TrackedEchoTool(Arc::clone(&executed))));
+
+    let intercepted_result = ToolResult::success_with_message(
+        "echo",
+        json!({"message": "hello"}),
+        "intercepted result".to_string(),
+    );
+    let set_result_plugin = Arc::new(SetResultPluginWrapper(SetResultPlugin {
+        target_tool: "echo".into(),
+        result: intercepted_result,
+    }));
+
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(agent, vec![set_result_plugin]);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("use echo")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert!(
+        !*executed.lock().unwrap(),
+        "tool should NOT have been executed when SetResult intercept is active"
+    );
+
+    // Verify a ToolCallDone event was still emitted (from the SetResult path)
+    let events = sink.take();
+    let tool_done_count = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolCallDone { .. }))
+        .count();
+    assert_eq!(tool_done_count, 1, "SetResult should emit ToolCallDone");
+}
+
+#[tokio::test]
+async fn suspended_tool_preserves_state_across_resume() {
+    // Run 1: suspend
+    let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
+        "dangerous",
+        "c1",
+        json!({"action": "rm -rf"}),
+    )]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("do it")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::Suspended);
+
+    // Verify Suspended state
+    let tc_states = runtime.store().read::<ToolCallStates>().unwrap();
+    assert_eq!(tc_states.calls["c1"].status, ToolCallStatus::Suspended);
+    assert_eq!(tc_states.calls["c1"].tool_name, "dangerous");
+    assert_eq!(tc_states.calls["c1"].arguments, json!({"action": "rm -rf"}));
+
+    // Resume: transition Suspended → Resuming
+    prepare_resume(
+        runtime.store(),
+        vec![(
+            "c1".into(),
+            ToolCallResume {
+                decision_id: "d1".into(),
+                action: ResumeDecisionAction::Resume,
+                result: json!({"approved": true}),
+                reason: None,
+                updated_at: 0,
+            },
+        )],
+        ToolCallResumeMode::UseDecisionAsToolResult,
+    )
+    .unwrap();
+
+    // Verify Resuming state
+    let tc_states = runtime.store().read::<ToolCallStates>().unwrap();
+    assert_eq!(tc_states.calls["c1"].status, ToolCallStatus::Resuming);
+
+    // Run 2: complete
+    let messages = vec![
+        Message::user("do it"),
+        Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCall::new(
+                "c1",
+                "dangerous",
+                json!({"action": "rm -rf"}),
+            )],
+        ),
+        Message::tool("c1", "needs user approval"),
+    ];
+
+    let resume_result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages,
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(resume_result.termination, TerminationReason::NaturalEnd);
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
+    assert_eq!(lifecycle.status, RunStatus::Done);
+}
+
+#[tokio::test]
+async fn decision_channel_resume_resolves_suspended_call() {
+    use futures::channel::mpsc;
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        make_tool_call_response("dangerous", "c1", json!({"action": "delete"})),
+        // After resume via decision channel, LLM produces final response
+    ]));
+
+    struct DangerousApproved;
+    #[async_trait]
+    impl Tool for DangerousApproved {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("dangerous", "dangerous", "Requires approval")
+        }
+        async fn execute(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::suspended("dangerous", "needs user approval"))
+        }
+    }
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(DangerousApproved));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let (tx, rx) = mpsc::unbounded::<Vec<(String, ToolCallResume)>>();
+
+    // Send the decision after a short delay so the loop picks it up
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tx.unbounded_send(vec![(
+            "c1".into(),
+            ToolCallResume {
+                decision_id: "d1".into(),
+                action: ResumeDecisionAction::Resume,
+                result: json!({"approved": true}),
+                reason: None,
+                updated_at: 0,
+            },
+        )])
+        .unwrap();
+    });
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("do it")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: Some(rx),
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    // With decision_rx, the loop resumes in-place (doesn't return Suspended)
+    assert_eq!(
+        result.termination,
+        TerminationReason::NaturalEnd,
+        "decision channel should allow the run to resume and complete"
+    );
+
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
+    assert_eq!(lifecycle.status, RunStatus::Done);
+}
+
+#[tokio::test]
+async fn cancel_decision_marks_tool_cancelled() {
+    use futures::channel::mpsc;
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        make_tool_call_response("dangerous", "c1", json!({"action": "delete"})),
+        // After cancel decision, LLM sees cancellation and ends
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let (tx, rx) = mpsc::unbounded::<Vec<(String, ToolCallResume)>>();
+
+    // Send a Cancel decision after a short delay
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tx.unbounded_send(vec![(
+            "c1".into(),
+            ToolCallResume {
+                decision_id: "d1".into(),
+                action: ResumeDecisionAction::Cancel,
+                result: Value::Null,
+                reason: Some("user denied".into()),
+                updated_at: 0,
+            },
+        )])
+        .unwrap();
+    });
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("do it")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: Some(rx),
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    // After cancel via decision channel, the loop continues and LLM responds with NaturalEnd
+    assert_eq!(
+        result.termination,
+        TerminationReason::NaturalEnd,
+        "cancel decision should let the run continue and finish"
+    );
+}
+
+#[tokio::test]
+async fn permission_hook_blocks_denied_tool() {
+    // A permission-style plugin that blocks a specific tool
+    let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
+        "echo",
+        "c1",
+        json!({"message": "hello"}),
+    )]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let permission_plugin = Arc::new(BlockingPluginWrapper(BlockingPlugin {
+        blocked_tool: "echo".into(),
+        reason: "permission denied by policy".into(),
+    }));
+
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(agent, vec![permission_plugin]);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("use echo")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        matches!(result.termination, TerminationReason::Blocked(ref reason) if reason == "permission denied by policy"),
+        "expected Blocked termination from permission hook, got {:?}",
+        result.termination
+    );
+
+    // Verify ToolCallDone event with Failed outcome was emitted
+    let events = sink.take();
+    let tool_fail_events: Vec<_> = events
+        .iter()
+        .filter(|e| {
+            matches!(e, AgentEvent::ToolCallDone { outcome, .. }
+                if *outcome == awaken::contract::suspension::ToolCallOutcome::Failed)
+        })
+        .collect();
+    assert_eq!(
+        tool_fail_events.len(),
+        1,
+        "blocked tool should emit ToolCallDone with Failed outcome"
+    );
+
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
+    assert_eq!(lifecycle.status, RunStatus::Done);
+}
