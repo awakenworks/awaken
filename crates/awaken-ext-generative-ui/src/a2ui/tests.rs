@@ -1,7 +1,7 @@
 use awaken_contract::contract::tool::{Tool, ToolCallContext};
 use serde_json::json;
 
-use crate::plugins::Plugin;
+use awaken_runtime::plugins::Plugin;
 
 use super::*;
 

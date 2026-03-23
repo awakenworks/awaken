@@ -1,8 +1,8 @@
 use awaken_contract::StateError;
 use awaken_contract::registry_spec::AgentSpec;
 
-use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
-use crate::state::MutationBatch;
+use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
+use awaken_runtime::state::MutationBatch;
 
 use super::A2UI_PLUGIN_ID;
 
