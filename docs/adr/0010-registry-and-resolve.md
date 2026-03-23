@@ -149,6 +149,7 @@ All pluggable functionality goes through `Plugin`. A plugin may contribute:
 - Tool permission checkers (via `register()` → `register_tool_permission()`)
 - State keys (via `register()` → `register_key()`)
 - Scheduled action handlers / effect handlers
+- **Tools** (via `register()` → `register_tool()`) — per-spec scoped, only available to agents that activate the plugin
 
 `AgentSpec.plugin_ids` lists which plugins are active for this agent. At resolve time, plugins are looked up by ID and installed into the PhaseRuntime. This replaces `AgentProfile.active_plugins`.
 
@@ -165,7 +166,7 @@ fn resolve_plugins(
 }
 ```
 
-A plugin that bridges MCP servers contributes tools to `ToolRegistry` and hooks to its own `register()`. A plugin that provides skills contributes tools (skill-as-tool wrappers) to `ToolRegistry`. No separate Extension/Skill/MCP registry — all are Plugins that contribute to standard registries.
+A plugin that bridges MCP servers contributes tools to `ToolRegistry` and hooks to its own `register()`. A plugin that provides skills registers tools directly via `register_tool()` in its `Plugin::register()` method. No separate Extension/Skill/MCP registry — all are Plugins that contribute to standard registries. See ADR-0013 for recommended extension organization patterns.
 
 ### D7: AgentSystemConfig — serializable config file format
 
@@ -239,6 +240,6 @@ Handoff is resolved inside the loop at step boundaries via `ActiveAgentKey` chec
 ### Deferred
 - `CompositeXxxRegistry` (merge multiple sources)
 - Remote agent support (A2A protocol)
-- Plugin contrib during build (MCP tools, skill tools)
+- ~~Plugin contrib during build (MCP tools, skill tools)~~ → Implemented via `register_tool()`
 - Config file hot-reload
 - Registry snapshot consistency
