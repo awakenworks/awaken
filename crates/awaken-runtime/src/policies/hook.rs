@@ -7,9 +7,9 @@ use crate::state::StateCommand;
 use awaken_contract::StateError;
 use awaken_contract::contract::lifecycle::TerminationReason;
 
-use super::super::state::{RunLifecycle, RunLifecycleUpdate};
 use super::policy::{StopDecision, StopPolicy, StopPolicyStats};
 use super::state::{StopConditionStatsKey, StopConditionStatsState};
+use crate::agent::state::{RunLifecycle, RunLifecycleUpdate};
 
 /// Internal hook that builds stats from state and evaluates all policies.
 pub(super) struct StopConditionHook {

@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::agent::config::AgentConfig;
-use crate::agent::executor::SequentialToolExecutor;
 use crate::error::RuntimeError;
+use crate::execution::SequentialToolExecutor;
 use crate::plugins::Plugin;
 use crate::runtime::{AgentResolver, ExecutionEnv, ResolvedAgent};
 use awaken_contract::contract::executor::LlmExecutor;
@@ -112,11 +112,11 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
         .ok_or_else(|| ResolveError::ProviderNotFound(model.provider.clone()))?;
 
     // Wrap executor with retry policy if configured in agent spec sections.
-    let executor = match spec.config::<crate::agent::retry_policy::RetryConfigKey>() {
-        Ok(policy) if policy.max_retries > 0 || !policy.fallback_models.is_empty() => Arc::new(
-            crate::agent::retry_policy::RetryingExecutor::new(executor, policy),
-        )
-            as Arc<dyn LlmExecutor>,
+    let executor = match spec.config::<crate::execution::RetryConfigKey>() {
+        Ok(policy) if policy.max_retries > 0 || !policy.fallback_models.is_empty() => {
+            Arc::new(crate::execution::RetryingExecutor::new(executor, policy))
+                as Arc<dyn LlmExecutor>
+        }
         _ => executor,
     };
 
@@ -133,21 +133,21 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
             let description: String = delegate_spec.system_prompt.chars().take(100).collect();
 
             let tool: Arc<dyn Tool> = if let Some(endpoint) = &delegate_spec.endpoint {
-                let mut config = crate::agent::agent_tools::A2aConfig::new(&endpoint.base_url);
+                let mut config = crate::extensions::a2a::A2aConfig::new(&endpoint.base_url);
                 if let Some(token) = &endpoint.bearer_token {
                     config = config.with_bearer_token(token);
                 }
                 config = config
                     .with_poll_interval(std::time::Duration::from_millis(endpoint.poll_interval_ms))
                     .with_timeout(std::time::Duration::from_millis(endpoint.timeout_ms));
-                Arc::new(crate::agent::agent_tools::AgentTool::remote(
+                Arc::new(crate::extensions::a2a::AgentTool::remote(
                     delegate_id,
                     &description,
                     config,
                 ))
             } else {
                 let resolver: Arc<dyn crate::runtime::AgentResolver> = Arc::new(registries.clone());
-                Arc::new(crate::agent::agent_tools::AgentTool::local(
+                Arc::new(crate::extensions::a2a::AgentTool::local(
                     delegate_id,
                     &description,
                     resolver,
@@ -160,12 +160,12 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedRun, Reso
 
     let mut plugins = resolve_plugins(registries, &spec)?;
     plugins.push(Arc::new(
-        crate::agent::loop_runner::actions::LoopActionHandlersPlugin,
+        crate::runtime::loop_runner::actions::LoopActionHandlersPlugin,
     ));
-    plugins.push(Arc::new(
-        crate::agent::stop_conditions::MaxRoundsPlugin::new(spec.max_rounds),
-    ));
-    plugins.push(Arc::new(crate::agent::tool_permission::AllowAllToolsPlugin));
+    plugins.push(Arc::new(crate::policies::MaxRoundsPlugin::new(
+        spec.max_rounds,
+    )));
+    plugins.push(Arc::new(crate::execution::AllowAllToolsPlugin));
 
     // Default compaction plugin: tracks compaction boundaries in state.
     // Only added if the agent has a context_policy configured.

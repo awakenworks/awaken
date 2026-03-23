@@ -11,8 +11,8 @@ use awaken_contract::contract::tool::{Tool, ToolCallContext, ToolError, ToolResu
 use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
 
 use crate::agent::config::AgentConfig;
-use crate::agent::executor::SequentialToolExecutor;
-use crate::agent::loop_runner::build_agent_env;
+use crate::execution::SequentialToolExecutor;
+use crate::runtime::loop_runner::build_agent_env;
 use crate::runtime::{AgentResolver, ExecutionEnv, ResolvedAgent};
 
 use super::a2a_backend::A2aConfig;

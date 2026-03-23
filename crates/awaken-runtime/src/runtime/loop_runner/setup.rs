@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
+use super::super::{AgentResolver, ExecutionEnv, PhaseRuntime, ResolvedAgent};
 use crate::agent::config::AgentConfig;
-use crate::runtime::{AgentResolver, ExecutionEnv, PhaseRuntime, ResolvedAgent};
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::message::Message;
 
@@ -42,7 +42,7 @@ pub(super) async fn prepare_run(
 
     // Trim to latest compaction boundary — skip already-summarized history
     if agent.context_policy.is_some() {
-        super::super::compaction::trim_to_compaction_boundary(&mut messages);
+        crate::agent::compaction::trim_to_compaction_boundary(&mut messages);
     }
 
     // State-driven resume detection: replay any Resuming tool calls.

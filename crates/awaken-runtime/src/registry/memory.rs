@@ -187,7 +187,7 @@ impl super::traits::AgentRegistry for MapAgentRegistry {
 /// In-memory stop policy registry.
 #[derive(Default)]
 pub struct MapStopPolicyRegistry {
-    policies: HashMap<String, Arc<dyn crate::agent::stop_conditions::StopPolicy>>,
+    policies: HashMap<String, Arc<dyn crate::policies::StopPolicy>>,
 }
 
 impl MapStopPolicyRegistry {
@@ -198,14 +198,14 @@ impl MapStopPolicyRegistry {
     pub fn register(
         &mut self,
         id: impl Into<String>,
-        policy: Arc<dyn crate::agent::stop_conditions::StopPolicy>,
+        policy: Arc<dyn crate::policies::StopPolicy>,
     ) {
         self.policies.insert(id.into(), policy);
     }
 }
 
 impl super::traits::StopPolicyRegistry for MapStopPolicyRegistry {
-    fn get(&self, id: &str) -> Option<Arc<dyn crate::agent::stop_conditions::StopPolicy>> {
+    fn get(&self, id: &str) -> Option<Arc<dyn crate::policies::StopPolicy>> {
         self.policies.get(id).cloned()
     }
 

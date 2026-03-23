@@ -96,7 +96,7 @@ pub trait AgentRegistry: Send + Sync {
 /// Lookup interface for stop condition policies by name.
 pub trait StopPolicyRegistry: Send + Sync {
     /// Get a stop policy by its ID.
-    fn get(&self, id: &str) -> Option<Arc<dyn crate::agent::stop_conditions::StopPolicy>>;
+    fn get(&self, id: &str) -> Option<Arc<dyn crate::policies::StopPolicy>>;
     /// List all registered stop policy IDs.
     fn ids(&self) -> Vec<String>;
 }

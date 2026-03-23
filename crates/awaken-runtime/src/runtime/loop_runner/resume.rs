@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::runtime::CancellationToken;
+use super::super::CancellationToken;
 use awaken_contract::StateError;
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::message::{Message, ToolCall};
@@ -11,9 +11,9 @@ use awaken_contract::contract::tool::ToolCallContext;
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
 
-use super::super::config::AgentConfig;
-use super::super::state::{ToolCallStates, ToolCallStatesUpdate};
 use super::{AgentLoopError, commit_update, now_ms, tool_result_to_content};
+use crate::agent::config::AgentConfig;
+use crate::agent::state::{ToolCallStates, ToolCallStatesUpdate};
 
 pub(super) enum WaitOutcome {
     Resumed,
@@ -102,7 +102,7 @@ pub(super) async fn detect_and_replay_resume(
         tool_ctx.call_id = call_id.to_string();
         tool_ctx.tool_name = call_state.tool_name.clone();
         let result =
-            crate::agent::executor::execute_single_tool(&agent.tools, &call, &tool_ctx).await;
+            crate::execution::executor::execute_single_tool(&agent.tools, &call, &tool_ctx).await;
 
         let status = if result.is_success() {
             ToolCallStatus::Succeeded

@@ -109,8 +109,8 @@ pub mod state {
 /// are exposed only through curated re-export sub-modules.
 pub mod agent {
     pub use awaken_runtime::agent::config;
-    pub use awaken_runtime::agent::executor;
     pub use awaken_runtime::agent::stop_conditions;
+    pub use awaken_runtime::execution as executor;
 
     /// Re-exported loop runner public API.
     pub mod loop_runner {

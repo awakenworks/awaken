@@ -62,12 +62,14 @@ impl StateKey for RunLifecycle {
 
     fn apply(value: &mut Self::Value, update: Self::Update) {
         let target_status = update.target_status();
-        assert!(
-            value.status.can_transition_to(target_status),
-            "invalid lifecycle transition from {:?} to {:?}",
-            value.status,
-            target_status,
-        );
+        if !value.status.can_transition_to(target_status) {
+            tracing::error!(
+                from = ?value.status,
+                to = ?target_status,
+                "invalid lifecycle transition — skipping update"
+            );
+            return;
+        }
         match update {
             RunLifecycleUpdate::Start { run_id, updated_at } => {
                 value.run_id = run_id;
@@ -230,7 +232,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "invalid lifecycle transition")]
     fn run_lifecycle_rejects_done_to_running() {
         let mut state = RunLifecycleState {
             run_id: "r1".into(),
@@ -239,7 +240,7 @@ mod tests {
             updated_at: 100,
             step_count: 1,
         };
-        // Done -> Running is an invalid transition
+        // Done -> Running should be rejected (state unchanged)
         RunLifecycle::apply(
             &mut state,
             RunLifecycleUpdate::Start {
@@ -247,10 +248,12 @@ mod tests {
                 updated_at: 200,
             },
         );
+        assert_eq!(state.status, RunStatus::Done);
+        assert_eq!(state.run_id, "r1");
+        assert_eq!(state.updated_at, 100);
     }
 
     #[test]
-    #[should_panic(expected = "invalid lifecycle transition")]
     fn run_lifecycle_rejects_done_to_waiting() {
         let mut state = RunLifecycleState {
             run_id: "r1".into(),
@@ -259,15 +262,16 @@ mod tests {
             updated_at: 100,
             step_count: 1,
         };
-        // Done -> Waiting is an invalid transition
+        // Done -> Waiting should be rejected (state unchanged)
         RunLifecycle::apply(
             &mut state,
             RunLifecycleUpdate::SetWaiting { updated_at: 200 },
         );
+        assert_eq!(state.status, RunStatus::Done);
+        assert_eq!(state.updated_at, 100);
     }
 
     #[test]
-    #[should_panic(expected = "invalid lifecycle transition")]
     fn run_lifecycle_rejects_done_to_step_completed() {
         let mut state = RunLifecycleState {
             run_id: "r1".into(),
@@ -276,11 +280,14 @@ mod tests {
             updated_at: 100,
             step_count: 1,
         };
-        // Done -> Running (via StepCompleted) is invalid
+        // Done -> Running (via StepCompleted) should be rejected (state unchanged)
         RunLifecycle::apply(
             &mut state,
             RunLifecycleUpdate::StepCompleted { updated_at: 200 },
         );
+        assert_eq!(state.status, RunStatus::Done);
+        assert_eq!(state.step_count, 1);
+        assert_eq!(state.updated_at, 100);
     }
 
     #[test]

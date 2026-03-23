@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
+use super::super::{CancellationToken, ExecutionEnv, PhaseContext, PhaseRuntime};
 use crate::agent::config::AgentConfig;
-use crate::runtime::{CancellationToken, ExecutionEnv, PhaseContext, PhaseRuntime};
 use crate::state::StateCommand;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
@@ -17,7 +17,6 @@ use awaken_contract::contract::suspension::{ToolCallOutcome, ToolCallStatus};
 use awaken_contract::contract::tool::ToolCallContext;
 use awaken_contract::model::Phase;
 
-use super::super::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
 use super::actions::{
     apply_context_messages, take_accumulated_overrides, take_and_apply_tool_filters,
     take_context_messages,
@@ -26,6 +25,7 @@ use super::checkpoint::{check_termination, complete_step};
 use super::inference::{compact_with_llm, execute_streaming};
 use super::truncation_recovery::{self, TruncationState};
 use super::{AgentLoopError, commit_update, now_ms, tool_result_to_content};
+use crate::agent::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
 
 /// Outcome of a single step.
 pub(super) enum StepOutcome {
@@ -420,13 +420,6 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
     for exec_result in &exec_results {
         let call = &exec_result.call;
         let tool_result = &exec_result.result;
-
-        ctx.sink
-            .emit(AgentEvent::ToolCallStart {
-                id: call.id.clone(),
-                name: call.name.clone(),
-            })
-            .await;
 
         let before_ctx = make_ctx(
             Phase::BeforeToolExecute,

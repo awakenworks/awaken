@@ -6,7 +6,7 @@ use awaken_contract::contract::tool::Tool;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::executor::{SequentialToolExecutor, ToolExecutor};
+use crate::execution::{SequentialToolExecutor, ToolExecutor};
 
 /// The sole interface the agent loop sees.
 #[derive(Clone)]
@@ -104,7 +104,9 @@ impl AgentConfig {
     }
 
     pub fn tool_descriptors(&self) -> Vec<awaken_contract::contract::tool::ToolDescriptor> {
-        self.tools.values().map(|t| t.descriptor()).collect()
+        let mut descs: Vec<_> = self.tools.values().map(|t| t.descriptor()).collect();
+        descs.sort_by(|a, b| a.id.cmp(&b.id));
+        descs
     }
 }
 
@@ -266,7 +268,7 @@ mod tests {
     #[test]
     fn config_with_tool_executor() {
         let config = AgentConfig::new("a", "m", "s", mock_executor())
-            .with_tool_executor(Arc::new(super::super::executor::SequentialToolExecutor));
+            .with_tool_executor(Arc::new(crate::execution::SequentialToolExecutor));
         assert_eq!(config.tool_executor.name(), "sequential");
     }
 

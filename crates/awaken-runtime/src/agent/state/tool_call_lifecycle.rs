@@ -56,10 +56,15 @@ impl StateKey for ToolCallStates {
                 let existing = value.calls.get(&call_id);
                 let current_status = existing.map(|s| s.status).unwrap_or(ToolCallStatus::New);
 
-                assert!(
-                    current_status.can_transition_to(status),
-                    "invalid tool call transition from {current_status:?} to {status:?} for call {call_id}",
-                );
+                if !current_status.can_transition_to(status) {
+                    tracing::error!(
+                        from = ?current_status,
+                        to = ?status,
+                        call_id = %call_id,
+                        "invalid tool call transition — skipping update"
+                    );
+                    return;
+                }
 
                 value.calls.insert(
                     call_id.clone(),
@@ -145,22 +150,25 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "invalid tool call transition")]
     fn tool_call_rejects_succeeded_to_running() {
         let mut states = ToolCallStateMap::default();
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
         upsert(&mut states, "c1", "echo", ToolCallStatus::Succeeded, 200);
-        // Terminal -> Running is invalid
+        // Terminal -> Running is invalid; state should remain unchanged
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 300);
+        assert_eq!(states.calls["c1"].status, ToolCallStatus::Succeeded);
+        assert_eq!(states.calls["c1"].updated_at, 200);
     }
 
     #[test]
-    #[should_panic(expected = "invalid tool call transition")]
     fn tool_call_rejects_failed_to_running() {
         let mut states = ToolCallStateMap::default();
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
         upsert(&mut states, "c1", "echo", ToolCallStatus::Failed, 200);
+        // Terminal -> Running is invalid; state should remain unchanged
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 300);
+        assert_eq!(states.calls["c1"].status, ToolCallStatus::Failed);
+        assert_eq!(states.calls["c1"].updated_at, 200);
     }
 
     #[test]
@@ -249,13 +257,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "invalid tool call transition")]
     fn tool_call_suspended_to_succeeded_not_allowed() {
         let mut states = ToolCallStateMap::default();
         upsert(&mut states, "c1", "echo", ToolCallStatus::Running, 100);
         upsert(&mut states, "c1", "echo", ToolCallStatus::Suspended, 200);
-        // Suspended -> Succeeded should fail (must go through Resuming -> Running)
+        // Suspended -> Succeeded should be rejected (must go through Resuming -> Running)
         upsert(&mut states, "c1", "echo", ToolCallStatus::Succeeded, 300);
+        assert_eq!(states.calls["c1"].status, ToolCallStatus::Suspended);
+        assert_eq!(states.calls["c1"].updated_at, 200);
     }
 
     #[test]

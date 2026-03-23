@@ -1,6 +1,6 @@
 //! AgentRuntime::run() implementation.
 
-use crate::agent::loop_runner::{
+use crate::runtime::loop_runner::{
     AgentLoopError, AgentLoopParams, AgentRunResult, prepare_resume, run_agent_loop,
 };
 use awaken_contract::contract::event_sink::EventSink;
@@ -9,6 +9,19 @@ use awaken_contract::contract::suspension::ToolCallResumeMode;
 
 use super::AgentRuntime;
 use super::run_request::RunRequest;
+
+/// RAII guard that unregisters the active run on drop, ensuring cleanup
+/// even if the run future panics or is cancelled.
+struct RunSlotGuard<'a> {
+    runtime: &'a AgentRuntime,
+    run_id: String,
+}
+
+impl Drop for RunSlotGuard<'_> {
+    fn drop(&mut self) {
+        self.runtime.unregister_run(&self.run_id);
+    }
+}
 
 impl AgentRuntime {
     /// Run an agent loop.
@@ -49,7 +62,7 @@ impl AgentRuntime {
         // These are registered via the resolved agent's plugins during resolve.
         // For keys needed by the loop itself, install a minimal plugin.
         store
-            .install_plugin(crate::agent::loop_runner::LoopStatePlugin)
+            .install_plugin(crate::runtime::loop_runner::LoopStatePlugin)
             .map_err(AgentLoopError::PhaseError)?;
 
         // Preflight resolve to register plugin-declared keys before restoring persisted state.
@@ -108,9 +121,13 @@ impl AgentRuntime {
         // Create channels for external control
         let (handle, cancellation_token, decision_rx) = self.create_run_channels(run_id.clone());
 
-        // Register active run
+        // Register active run (guard ensures cleanup on drop/panic/cancellation)
         self.register_run(&thread_id, handle)
             .map_err(AgentLoopError::RuntimeError)?;
+        let _guard = RunSlotGuard {
+            runtime: self,
+            run_id: run_id.clone(),
+        };
 
         // Execute the loop
         let result = run_agent_loop(AgentLoopParams {
@@ -127,8 +144,7 @@ impl AgentRuntime {
         })
         .await;
 
-        // Unregister active run (by run_id for dual-index cleanup)
-        self.unregister_run(&run_id);
+        // Guard drops here, calling unregister_run automatically
 
         result
     }
@@ -138,9 +154,9 @@ impl AgentRuntime {
 mod tests {
     use super::super::*;
     use crate::agent::config::AgentConfig;
-    use crate::agent::loop_runner::build_agent_env;
     use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
     use crate::runtime::ResolvedAgent;
+    use crate::runtime::loop_runner::build_agent_env;
     use crate::runtime::resolver::AgentResolver;
     use crate::state::{KeyScope, StateCommand, StateKey, StateKeyOptions};
     use crate::{PhaseContext, PhaseHook};

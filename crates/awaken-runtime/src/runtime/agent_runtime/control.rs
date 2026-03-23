@@ -42,10 +42,19 @@ impl AgentRuntime {
         decisions: Vec<(String, ToolCallResume)>,
     ) -> bool {
         if let Some(handle) = self.active_runs.get_by_thread_id(thread_id) {
+            let total = decisions.len();
+            let mut sent = 0;
             for (call_id, resume) in decisions {
                 if handle.send_decision(call_id, resume).is_err() {
+                    tracing::warn!(
+                        thread_id = %thread_id,
+                        sent,
+                        total,
+                        "send_decisions partial failure — channel closed"
+                    );
                     return false;
                 }
+                sent += 1;
             }
             true
         } else {

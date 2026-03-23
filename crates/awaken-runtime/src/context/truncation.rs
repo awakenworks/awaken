@@ -13,12 +13,12 @@ const CONTINUATION_PROMPT: &str = "Your response was cut off because it exceeded
 
 /// Mutable state for tracking recovery retries during a single run.
 #[derive(Debug, Default)]
-pub(super) struct TruncationState {
-    pub(super) truncation_retries: usize,
+pub struct TruncationState {
+    pub truncation_retries: usize,
 }
 
 impl TruncationState {
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 }
@@ -30,7 +30,7 @@ impl TruncationState {
 /// 1. The result needs truncation recovery (MaxTokens + incomplete tool calls)
 /// 2. Haven't exceeded the configured max retries
 /// 3. Configured retries > 0
-pub(super) fn should_retry(
+pub fn should_retry(
     result: &StreamResult,
     state: &mut TruncationState,
     max_retries: usize,
@@ -52,7 +52,7 @@ pub(super) fn should_retry(
 }
 
 /// Build the continuation prompt message (Internal visibility).
-pub(super) fn continuation_message() -> Message {
+pub fn continuation_message() -> Message {
     let mut msg = Message::user(CONTINUATION_PROMPT);
     msg.visibility = Visibility::Internal;
     msg

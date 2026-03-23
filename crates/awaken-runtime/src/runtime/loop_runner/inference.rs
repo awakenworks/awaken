@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::runtime::CancellationToken;
+use super::super::CancellationToken;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::executor::{InferenceRequest, StreamEvent};
@@ -10,8 +10,8 @@ use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage}
 use awaken_contract::contract::message::{Message, ToolCall};
 use futures::StreamExt;
 
-use super::super::config::AgentConfig;
 use super::AgentLoopError;
+use crate::agent::config::AgentConfig;
 
 /// Execute LLM inference with streaming, emitting delta events via sink.
 ///
@@ -160,7 +160,7 @@ pub(super) async fn compact_with_llm(
     messages: &mut Vec<Arc<Message>>,
     policy: &awaken_contract::contract::inference::ContextWindowPolicy,
 ) -> Result<(), AgentLoopError> {
-    use super::super::compaction::{
+    use crate::agent::compaction::{
         MIN_COMPACTION_GAIN_TOKENS, extract_previous_summary, find_compaction_boundary,
         render_transcript,
     };

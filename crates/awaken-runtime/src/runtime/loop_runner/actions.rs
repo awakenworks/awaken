@@ -8,13 +8,13 @@ use async_trait::async_trait;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use crate::runtime::{PhaseContext, TypedScheduledActionHandler};
+use super::super::{PhaseContext, TypedScheduledActionHandler};
 use crate::state::StateCommand;
 use awaken_contract::StateError;
 use awaken_contract::contract::context_message::ContextMessage;
 use awaken_contract::contract::message::{Message, Role};
 
-use super::super::state::{
+use crate::agent::state::{
     AccumulatedOverrides, AccumulatedOverridesUpdate, AccumulatedToolExclusions,
     AccumulatedToolExclusionsUpdate, AccumulatedToolInclusions, AccumulatedToolInclusionsUpdate,
     AddContextMessage, ContextMessageAction, ContextMessageStore, ContextThrottleState,

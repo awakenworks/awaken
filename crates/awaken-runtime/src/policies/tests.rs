@@ -12,8 +12,8 @@ use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use crate::runtime::{ExecutionEnv, PhaseContext, PhaseRuntime};
 use crate::state::StateStore;
 
-use super::super::state::RunLifecycle;
 use super::*;
+use crate::agent::state::RunLifecycle;
 
 /// Plugin that registers the RunLifecycle key needed by stop condition hooks.
 struct LifecycleKeyPlugin;
@@ -35,7 +35,7 @@ fn make_test_env(policies: Vec<Arc<dyn StopPolicy>>) -> (StateStore, PhaseRuntim
 
     // Initialize RunLifecycle to Running so Done transitions are valid
     let mut patch = crate::state::MutationBatch::new();
-    patch.update::<RunLifecycle>(super::super::state::RunLifecycleUpdate::Start {
+    patch.update::<RunLifecycle>(crate::agent::state::RunLifecycleUpdate::Start {
         run_id: "test".into(),
         updated_at: 0,
     });
@@ -62,7 +62,7 @@ async fn max_rounds_plugin_sets_done_after_exceeding_limit() {
 
     // Initialize to Running
     let mut patch = crate::state::MutationBatch::new();
-    patch.update::<RunLifecycle>(super::super::state::RunLifecycleUpdate::Start {
+    patch.update::<RunLifecycle>(crate::agent::state::RunLifecycleUpdate::Start {
         run_id: "test".into(),
         updated_at: 0,
     });

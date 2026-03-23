@@ -2,10 +2,13 @@
 
 pub mod agent;
 pub mod builder;
+pub mod context;
 pub mod engine;
 mod error;
+pub mod execution;
 pub mod extensions;
 pub mod plugins;
+pub mod policies;
 pub mod registry;
 pub mod runtime;
 pub mod state;
@@ -14,10 +17,6 @@ pub mod state;
 pub use error::RuntimeError;
 
 // ── agent internals re-exported for extensions and tests ──
-pub use agent::loop_runner::{
-    AgentLoopError, AgentLoopParams, AgentRunResult, LoopStatePlugin, build_agent_env,
-    prepare_resume, run_agent_loop,
-};
 pub use agent::state::AddContextMessage;
 pub use agent::state::{
     AccumulatedContextMessages, AccumulatedContextMessagesUpdate, AccumulatedOverrides,
@@ -28,31 +27,35 @@ pub use agent::state::{
     RunLifecycleUpdate, SetInferenceOverride, ToolCallState, ToolCallStateMap, ToolCallStates,
     ToolCallStatesUpdate, ToolInclusionSet,
 };
-pub use agent::tool_permission::AllowAllToolsPlugin;
+pub use execution::AllowAllToolsPlugin;
+pub use runtime::loop_runner::{
+    AgentLoopError, AgentLoopParams, AgentRunResult, LoopStatePlugin, build_agent_env,
+    prepare_resume, run_agent_loop,
+};
 
 // ── compaction ──
-pub use agent::compaction::{
+pub use context::{
     CompactionConfig, CompactionConfigKey, CompactionPlugin, CompactionState, CompactionStateKey,
     ContextSummarizer, ContextTransform, DefaultSummarizer, record_compaction_boundary,
 };
 
 // ── retry policy ──
-pub use agent::retry_policy::{LlmRetryPolicy, RetryConfigKey, RetryingExecutor};
+pub use execution::{LlmRetryPolicy, RetryConfigKey, RetryingExecutor};
 
 // ── background tasks ──
-pub use agent::background_tasks::{
+pub use extensions::background::{
     BackgroundTaskManager, BackgroundTaskPlugin, PersistedTaskMeta, TaskId, TaskResult, TaskStatus,
     TaskSummary,
 };
 
 // ── agent tools ──
-pub use agent::agent_tools::{
+pub use extensions::a2a::{
     A2aConfig, AgentBackend, AgentBackendError, AgentTool, DelegateRunResult, DelegateRunStatus,
     LocalBackend,
 };
 
 // ── parallel merge ──
-pub use agent::loop_runner::parallel_merge::{
+pub use runtime::loop_runner::parallel_merge::{
     ParallelMergeError, ToolStateBatch, collect_all_touched_keys, validate_parallel_state_batches,
 };
 

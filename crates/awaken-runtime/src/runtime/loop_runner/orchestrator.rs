@@ -2,14 +2,13 @@
 
 use std::sync::Arc;
 
-use crate::runtime::PhaseContext;
+use super::super::PhaseContext;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::message::{Message, Role, gen_message_id};
 use awaken_contract::model::Phase;
 
-use super::super::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
 use super::checkpoint::{
     check_termination, complete_step, emit_state_snapshot, persist_checkpoint,
 };
@@ -18,6 +17,7 @@ use super::setup::{PreparedRun, prepare_run};
 use super::step::{StepContext, StepOutcome, execute_step};
 use super::truncation_recovery::TruncationState;
 use super::{AgentLoopError, AgentLoopParams, AgentRunResult, commit_update, now_ms};
+use crate::agent::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
 
 #[tracing::instrument(skip_all, fields(agent_id = %params.agent_id, run_id = %params.run_identity.run_id))]
 pub(super) async fn run_agent_loop_impl(

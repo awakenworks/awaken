@@ -5,6 +5,7 @@ mod context;
 mod engine;
 mod env;
 mod handlers;
+pub(crate) mod loop_runner;
 mod registry;
 mod reports;
 mod resolver;

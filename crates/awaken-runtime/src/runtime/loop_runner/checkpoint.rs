@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::runtime::{ExecutionEnv, PhaseContext, PhaseRuntime};
+use super::super::{ExecutionEnv, PhaseContext, PhaseRuntime};
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
@@ -11,8 +11,8 @@ use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{RunRecord, ThreadRunStore};
 use awaken_contract::model::Phase;
 
-use super::super::state::{RunLifecycle, RunLifecycleUpdate};
 use super::{AgentLoopError, commit_update, now_ms};
+use crate::agent::state::{RunLifecycle, RunLifecycleUpdate};
 
 pub(super) async fn complete_step(
     store: &crate::state::StateStore,
