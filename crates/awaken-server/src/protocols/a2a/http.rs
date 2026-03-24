@@ -186,7 +186,7 @@ async fn a2a_task_status(
 ) -> Result<Json<Value>, ApiError> {
     // A2A tasks use task_id as thread_id, so query latest run for that thread.
     let record = st
-        .run_store
+        .store
         .latest_run(&task_id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?

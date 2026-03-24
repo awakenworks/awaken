@@ -116,7 +116,7 @@ async fn list_threads(
     let offset = params.offset.unwrap_or(0);
     let limit = params.limit.clamp(1, 200);
     let ids = st
-        .thread_store
+        .store
         .list_threads(offset, limit)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -132,7 +132,7 @@ async fn list_thread_summaries(
     let offset = params.offset.unwrap_or(0);
     let limit = params.limit.clamp(1, 200);
     let ids = st
-        .thread_store
+        .store
         .list_threads(offset, limit)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -140,7 +140,7 @@ async fn list_thread_summaries(
     let mut items = Vec::with_capacity(ids.len());
     for id in ids {
         if let Some(thread) = st
-            .thread_store
+            .store
             .load_thread(&id)
             .await
             .map_err(|e| ApiError::Internal(e.to_string()))?
@@ -167,10 +167,9 @@ async fn create_thread(
     State(st): State<AppState>,
     Json(payload): Json<CreateThreadPayload>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let thread =
-        crate::services::thread_service::create_thread(st.thread_store.as_ref(), payload.title)
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let thread = crate::services::thread_service::create_thread(st.store.as_ref(), payload.title)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     let value = serde_json::to_value(&thread).map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok((StatusCode::CREATED, Json(value)))
 }
@@ -180,7 +179,7 @@ async fn get_thread(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let thread = st
-        .thread_store
+        .store
         .load_thread(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
@@ -194,13 +193,13 @@ async fn delete_thread(
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     // Verify thread exists
-    st.thread_store
+    st.store
         .load_thread(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or(ApiError::ThreadNotFound(id.clone()))?;
 
-    st.thread_store
+    st.store
         .delete_thread(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -222,7 +221,7 @@ async fn patch_thread(
     Json(payload): Json<PatchThreadPayload>,
 ) -> Result<Json<Value>, ApiError> {
     let mut thread = st
-        .thread_store
+        .store
         .load_thread(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
@@ -243,7 +242,7 @@ async fn patch_thread(
             .unwrap_or(0),
     );
 
-    st.thread_store
+    st.store
         .save_thread(&thread)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -289,14 +288,14 @@ async fn get_thread_messages(
     use awaken_contract::contract::message::Visibility;
 
     // Verify thread exists
-    st.thread_store
+    st.store
         .load_thread(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or(ApiError::ThreadNotFound(id.clone()))?;
 
     let messages = st
-        .thread_store
+        .store
         .load_messages(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
@@ -345,7 +344,7 @@ async fn post_thread_messages(
     Json(payload): Json<PostThreadMessagesPayload>,
 ) -> Result<Response, ApiError> {
     // Require existing thread for thread-centric API semantics.
-    st.thread_store
+    st.store
         .load_thread(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
@@ -475,7 +474,7 @@ async fn get_run(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let record = crate::services::run_service::get_run(st.run_store.as_ref(), &id)
+    let record = crate::services::run_service::get_run(st.store.as_ref(), &id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or(ApiError::RunNotFound(id))?;
@@ -509,7 +508,7 @@ async fn list_runs(
         thread_id: None,
         status,
     };
-    let page = crate::services::run_service::list_runs(st.run_store.as_ref(), &query)
+    let page = crate::services::run_service::list_runs(st.store.as_ref(), &query)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
@@ -532,7 +531,7 @@ async fn push_run_inputs(
     Path(id): Path<String>,
     Json(payload): Json<PushRunInputsPayload>,
 ) -> Result<Response, ApiError> {
-    let run = crate::services::run_service::get_run(st.run_store.as_ref(), &id)
+    let run = crate::services::run_service::get_run(st.store.as_ref(), &id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or(ApiError::RunNotFound(id.clone()))?;
@@ -675,7 +674,7 @@ async fn list_thread_runs(
         thread_id: Some(id),
         status,
     };
-    let page = crate::services::run_service::list_runs(st.run_store.as_ref(), &query)
+    let page = crate::services::run_service::list_runs(st.store.as_ref(), &query)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
@@ -691,7 +690,7 @@ async fn latest_thread_run(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let record = crate::services::run_service::latest_run(st.run_store.as_ref(), &id)
+    let record = crate::services::run_service::latest_run(st.store.as_ref(), &id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or(ApiError::RunNotFound(format!("no runs for thread {id}")))?;

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use awaken_contract::contract::executor::LlmExecutor;
-use awaken_contract::contract::storage::{MailboxStore, RunStore, ThreadStore};
+use awaken_contract::contract::storage::{MailboxStore, ThreadRunStore};
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_examples::research::tools::*;
@@ -79,18 +79,19 @@ async fn main() {
 
     builder = builder.with_plugin("permission", Arc::new(PermissionPlugin) as Arc<dyn Plugin>);
 
+    let store = Arc::new(InMemoryStore::new());
+    builder = builder.with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>);
+
     let runtime = builder.build().expect("failed to build runtime");
     let runtime = Arc::new(runtime);
 
-    let store = Arc::new(InMemoryStore::new());
     let resolver = runtime.resolver_arc();
 
     let addr = std::env::var("AWAKEN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
 
     let state = AppState::new(
         runtime,
-        store.clone() as Arc<dyn ThreadStore>,
-        store.clone() as Arc<dyn RunStore>,
+        store.clone() as Arc<dyn ThreadRunStore>,
         store.clone() as Arc<dyn MailboxStore>,
         resolver,
         ServerConfig {

@@ -89,7 +89,7 @@ async fn thread_messages(
     Query(params): Query<MessageQueryParams>,
 ) -> Result<Json<Value>, ApiError> {
     let messages = st
-        .thread_store
+        .store
         .load_messages(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?

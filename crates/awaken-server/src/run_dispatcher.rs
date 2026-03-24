@@ -55,6 +55,14 @@ struct QueuedRun {
     event_tx: mpsc::UnboundedSender<AgentEvent>,
 }
 
+/// Per-thread state: a FIFO queue of pending runs and a flag indicating
+/// whether a worker task is currently draining the queue.
+#[derive(Default)]
+struct ThreadState {
+    queue: VecDeque<QueuedRun>,
+    worker_active: bool,
+}
+
 /// Unified run execution pipeline.
 ///
 /// Protocol handlers build a [`RunSpec`] from their protocol-specific request,
@@ -66,7 +74,7 @@ struct QueuedRun {
 #[derive(Clone)]
 pub struct RunDispatcher {
     runtime: Arc<AgentRuntime>,
-    state: Arc<Mutex<HashMap<String, VecDeque<QueuedRun>>>>,
+    state: Arc<Mutex<HashMap<String, ThreadState>>>,
 }
 
 impl RunDispatcher {
@@ -93,16 +101,19 @@ impl RunDispatcher {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let thread_id = spec.thread_id.clone();
         let mut state = self.state.lock().await;
-        let queue = state.entry(thread_id.clone()).or_default();
-        let status = if queue.is_empty() {
+        let ts = state.entry(thread_id.clone()).or_default();
+        let status = if !ts.worker_active && ts.queue.is_empty() {
             DispatchStatus::Running
         } else {
             DispatchStatus::Queued {
-                pending_ahead: queue.len(),
+                pending_ahead: ts.queue.len(),
             }
         };
-        let should_spawn = queue.is_empty();
-        queue.push_back(QueuedRun { spec, event_tx });
+        let should_spawn = !ts.worker_active;
+        ts.queue.push_back(QueuedRun { spec, event_tx });
+        if should_spawn {
+            ts.worker_active = true;
+        }
         drop(state);
 
         if should_spawn {
@@ -116,30 +127,40 @@ impl RunDispatcher {
         let this = self.clone();
         tokio::spawn(async move {
             loop {
+                // Lock only long enough to pop the next job.
                 let next = {
                     let mut state = this.state.lock().await;
-                    let Some(queue) = state.get_mut(&thread_id) else {
+                    let Some(ts) = state.get_mut(&thread_id) else {
                         break;
                     };
-                    let next = queue.pop_front();
-                    if queue.is_empty() {
-                        state.remove(&thread_id);
+                    match ts.queue.pop_front() {
+                        Some(job) => job,
+                        None => {
+                            // Queue drained — mark worker inactive and clean up.
+                            ts.worker_active = false;
+                            if ts.queue.is_empty() {
+                                state.remove(&thread_id);
+                            }
+                            break;
+                        }
                     }
-                    next
                 };
 
-                let Some(job) = next else {
-                    break;
-                };
-
-                let sink = ChannelEventSink::new(job.event_tx);
-                let mut request =
-                    awaken_runtime::RunRequest::new(job.spec.thread_id, job.spec.messages);
-                if let Some(aid) = job.spec.agent_id {
+                let QueuedRun { spec, event_tx } = next;
+                let error_tx = event_tx.clone();
+                let sink = ChannelEventSink::new(event_tx);
+                let mut request = awaken_runtime::RunRequest::new(spec.thread_id, spec.messages);
+                if let Some(aid) = spec.agent_id {
                     request = request.with_agent_id(aid);
                 }
                 if let Err(e) = this.runtime.run(request, Arc::new(sink)).await {
                     tracing::warn!(error = %e, "run failed");
+                    // Notify the caller through the event channel so the
+                    // error is not silently swallowed.
+                    let _ = error_tx.send(AgentEvent::Error {
+                        message: e.to_string(),
+                        code: None,
+                    });
                 }
             }
         });

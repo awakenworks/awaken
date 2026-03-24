@@ -204,7 +204,6 @@ fn make_ag_ui_app(llm: Arc<dyn LlmExecutor>, tools: Vec<(String, Arc<dyn Tool>)>
         runtime.clone(),
         store.clone(),
         store.clone(),
-        store.clone(),
         runtime.resolver_arc(),
         ServerConfig::default(),
     );
@@ -995,7 +994,6 @@ async fn multiple_sequential_runs_on_same_thread() {
     );
     let state = AppState::new(
         runtime.clone(),
-        store.clone(),
         store.clone(),
         store.clone(),
         runtime.resolver_arc(),

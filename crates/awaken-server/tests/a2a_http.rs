@@ -80,7 +80,6 @@ fn make_test_app(agent_ids: &[&str]) -> axum::Router {
         runtime.clone(),
         store.clone(),
         store.clone(),
-        store.clone(),
         runtime.resolver_arc(),
         ServerConfig::default(),
     );
