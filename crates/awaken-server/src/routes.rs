@@ -13,10 +13,10 @@ use awaken_contract::contract::message::Message;
 use crate::app::AppState;
 use crate::http_run::wire_sse_relay;
 use crate::http_sse::{sse_body_stream, sse_response};
+use crate::mailbox::{MailboxDispatchStatus, RunSpec};
 use crate::protocols::a2a::http::a2a_routes;
 use crate::protocols::ag_ui::http::ag_ui_routes;
 use crate::protocols::ai_sdk_v6::http::ai_sdk_routes;
-use crate::run_dispatcher::RunSpec;
 
 /// API error type returned by route handlers.
 #[derive(Debug)]
@@ -255,7 +255,13 @@ async fn interrupt_thread(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    if st.dispatcher.cancel_run(&id) {
+    let cancelled = st
+        .mailbox
+        .cancel(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    if cancelled {
         return Ok((
             StatusCode::ACCEPTED,
             Json(json!({
@@ -357,21 +363,22 @@ async fn post_thread_messages(
         ));
     }
 
-    let (status, _rx) = st
-        .dispatcher
-        .dispatch_with_status(RunSpec {
+    let result = st
+        .mailbox
+        .submit_background(RunSpec {
             thread_id: id.clone(),
             agent_id: payload.agent_id,
             messages,
         })
-        .await;
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    let body = match status {
-        crate::run_dispatcher::DispatchStatus::Running => json!({
+    let body = match result.status {
+        MailboxDispatchStatus::Running => json!({
             "status": "running",
             "thread_id": id,
         }),
-        crate::run_dispatcher::DispatchStatus::Queued { pending_ahead } => json!({
+        MailboxDispatchStatus::Queued { pending_ahead } => json!({
             "status": "queued",
             "thread_id": id,
             "pending_ahead": pending_ahead,
@@ -394,16 +401,38 @@ async fn push_mailbox(
     Path(id): Path<String>,
     Json(body): Json<MailboxPayload>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let entry = crate::services::mailbox_service::push_message(
-        st.mailbox_store.as_ref(),
-        &id,
-        body.payload,
-    )
-    .await
-    .map_err(|e| ApiError::Internal(e.to_string()))?;
+    // Convert the opaque payload into a user message for the mailbox.
+    let text = body
+        .payload
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let messages = if text.is_empty() {
+        vec![awaken_contract::contract::message::Message::user(
+            body.payload.to_string(),
+        )]
+    } else {
+        vec![awaken_contract::contract::message::Message::user(text)]
+    };
 
-    let value = serde_json::to_value(&entry).map_err(|e| ApiError::Internal(e.to_string()))?;
-    Ok((StatusCode::CREATED, Json(value)))
+    let result = st
+        .mailbox
+        .submit_background(RunSpec {
+            thread_id: id,
+            agent_id: None,
+            messages,
+        })
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "job_id": result.job_id,
+            "thread_id": result.thread_id,
+        })),
+    ))
 }
 
 async fn peek_mailbox(
@@ -412,12 +441,13 @@ async fn peek_mailbox(
     Query(params): Query<ListParams>,
 ) -> Result<Json<Value>, ApiError> {
     let limit = params.limit.clamp(1, 200);
-    let entries =
-        crate::services::mailbox_service::peek_messages(st.mailbox_store.as_ref(), &id, limit)
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let jobs = st
+        .mailbox
+        .list_jobs(&id, None, limit, 0)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    let value = serde_json::to_value(&entries).map_err(|e| ApiError::Internal(e.to_string()))?;
+    let value = serde_json::to_value(&jobs).map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(json!({ "items": value })))
 }
 
@@ -455,15 +485,18 @@ async fn start_run(
     }
 
     let messages = convert_run_messages(payload.messages);
-    let (thread_id, messages) =
-        crate::run_dispatcher::prepare_run_inputs(payload.thread_id, messages)?;
+    let (thread_id, messages) = crate::mailbox::prepare_run_inputs(payload.thread_id, messages)?;
 
     let spec = RunSpec {
         thread_id,
         agent_id: Some(agent_id),
         messages,
     };
-    let event_rx = st.dispatcher.dispatch(spec).await;
+    let (_result, event_rx) = st
+        .mailbox
+        .submit(spec)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     let encoder = awaken_contract::contract::transport::Identity::default();
     let sse_rx = wire_sse_relay(event_rx, encoder, st.config.sse_buffer_size);
 
@@ -548,7 +581,11 @@ async fn push_run_inputs(
         agent_id: Some(run.agent_id),
         messages,
     };
-    let _ = st.dispatcher.dispatch(spec).await;
+    let _ = st
+        .mailbox
+        .submit_background(spec)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     Ok((
         StatusCode::ACCEPTED,
@@ -564,8 +601,13 @@ async fn cancel_run(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    // Dual-index lookup: tries run_id first, then thread_id.
-    if st.dispatcher.cancel_run(&id) {
+    let cancelled = st
+        .mailbox
+        .cancel(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    if cancelled {
         return Ok((
             StatusCode::ACCEPTED,
             Json(json!({
@@ -617,7 +659,7 @@ async fn submit_decision(
     };
 
     let sent = st
-        .dispatcher
+        .mailbox
         .send_decision(&id, payload.tool_call_id.clone(), resume);
 
     if sent {

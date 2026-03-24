@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use awaken_contract::contract::storage::{MailboxStore, ThreadRunStore};
+use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_runtime::{AgentResolver, AgentRuntime};
 use serde::{Deserialize, Serialize};
 
-use crate::run_dispatcher::RunDispatcher;
+use crate::mailbox::Mailbox;
 
 /// Server configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,12 +36,10 @@ impl Default for ServerConfig {
 pub struct AppState {
     /// Agent runtime for executing runs.
     pub runtime: Arc<AgentRuntime>,
-    /// Unified run dispatcher.
-    pub dispatcher: RunDispatcher,
+    /// Unified mailbox service (persistent run queue).
+    pub mailbox: Arc<Mailbox>,
     /// Unified thread + run persistence (atomic checkpoint).
     pub store: Arc<dyn ThreadRunStore>,
-    /// Mailbox persistence.
-    pub mailbox_store: Arc<dyn MailboxStore>,
     /// Agent resolver for protocol-specific lookups.
     pub resolver: Arc<dyn AgentResolver>,
     /// Server configuration.
@@ -52,17 +50,15 @@ impl AppState {
     /// Create a new AppState with all required dependencies.
     pub fn new(
         runtime: Arc<AgentRuntime>,
+        mailbox: Arc<Mailbox>,
         store: Arc<dyn ThreadRunStore>,
-        mailbox_store: Arc<dyn MailboxStore>,
         resolver: Arc<dyn AgentResolver>,
         config: ServerConfig,
     ) -> Self {
-        let dispatcher = RunDispatcher::new(runtime.clone());
         Self {
             runtime,
-            dispatcher,
+            mailbox,
             store,
-            mailbox_store,
             resolver,
             config,
         }

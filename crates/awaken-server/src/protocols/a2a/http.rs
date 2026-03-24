@@ -11,8 +11,8 @@ use serde_json::Value;
 use awaken_contract::contract::message::Message;
 
 use crate::app::AppState;
+use crate::mailbox::RunSpec;
 use crate::routes::ApiError;
-use crate::run_dispatcher::RunSpec;
 
 /// Build A2A routes.
 pub fn a2a_routes() -> Router<AppState> {
@@ -152,8 +152,12 @@ async fn a2a_task_send(
         agent_id: payload.agent_id,
         messages,
     };
-    // Fire-and-forget: dispatch the run but don't consume the event stream.
-    let _event_rx = st.dispatcher.dispatch(spec).await;
+    // Fire-and-forget: submit the run in the background.
+    let _result = st
+        .mailbox
+        .submit_background(spec)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     Ok((
         StatusCode::OK,
@@ -215,8 +219,13 @@ async fn a2a_task_cancel(
     State(st): State<AppState>,
     Path(task_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    // Dual-index lookup: tries run_id first, then thread_id.
-    if st.dispatcher.cancel_run(&task_id) {
+    let cancelled = st
+        .mailbox
+        .cancel(&task_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    if cancelled {
         return Ok((
             StatusCode::ACCEPTED,
             Json(serde_json::json!({

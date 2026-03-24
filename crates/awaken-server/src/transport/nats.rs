@@ -247,8 +247,8 @@ where
         .map_err(|e| NatsProtocolError::BadRequest(format!("invalid request: {e}")))?;
 
     let messages = convert_nats_messages(request.messages);
-    let (thread_id, messages) =
-        crate::run_dispatcher::prepare_run_inputs(request.thread_id, messages).map_err(|e| {
+    let (thread_id, messages) = crate::mailbox::prepare_run_inputs(request.thread_id, messages)
+        .map_err(|e| {
             let message = match e {
                 crate::routes::ApiError::BadRequest(msg)
                 | crate::routes::ApiError::NotFound(msg)
