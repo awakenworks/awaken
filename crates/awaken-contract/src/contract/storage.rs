@@ -1,8 +1,7 @@
-//! Storage traits for thread, run record, and mailbox persistence.
+//! Storage traits for thread, run record, and persistence.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use thiserror::Error;
 
 use super::lifecycle::RunStatus;
@@ -180,42 +179,6 @@ pub trait RunStore: Send + Sync {
     async fn list_runs(&self, query: &RunQuery) -> Result<RunPage, StorageError>;
 }
 
-// ── MailboxStore ────────────────────────────────────────────────────
-
-/// Envelope for inter-thread message queue entries.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MailboxEntry {
-    /// Unique entry identifier.
-    pub entry_id: String,
-    /// Target mailbox address (typically a thread or agent ID).
-    pub mailbox_id: String,
-    /// Opaque message payload.
-    pub payload: Value,
-    /// Unix timestamp (millis) when the entry was enqueued.
-    pub created_at: u64,
-}
-
-/// Inter-thread message queue persistence.
-#[async_trait]
-pub trait MailboxStore: Send + Sync {
-    /// Push a message into a mailbox.
-    async fn push_message(&self, entry: &MailboxEntry) -> Result<(), StorageError>;
-
-    /// Pop up to `limit` messages from a mailbox (oldest first), removing them.
-    async fn pop_messages(
-        &self,
-        mailbox_id: &str,
-        limit: usize,
-    ) -> Result<Vec<MailboxEntry>, StorageError>;
-
-    /// Peek at up to `limit` messages in a mailbox without removing them.
-    async fn peek_messages(
-        &self,
-        mailbox_id: &str,
-        limit: usize,
-    ) -> Result<Vec<MailboxEntry>, StorageError>;
-}
-
 // ── ThreadRunStore (convenience) ────────────────────────────────────
 
 /// Atomic thread+run checkpoint persistence.
@@ -238,7 +201,7 @@ pub trait ThreadRunStore: ThreadStore + RunStore + Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::HashMap;
     use std::sync::RwLock;
 
     // ── Mock ThreadStore ──
@@ -531,130 +494,6 @@ mod tests {
             .unwrap();
         assert_eq!(page.total, 2);
         assert_eq!(page.items.len(), 2);
-    }
-
-    // ── Mock MailboxStore ──
-
-    #[derive(Debug, Default)]
-    struct MockMailboxStore {
-        entries: RwLock<BTreeMap<String, Vec<MailboxEntry>>>,
-    }
-
-    #[async_trait]
-    impl MailboxStore for MockMailboxStore {
-        async fn push_message(&self, entry: &MailboxEntry) -> Result<(), StorageError> {
-            let mut guard = self
-                .entries
-                .write()
-                .map_err(|e| StorageError::Io(e.to_string()))?;
-            guard
-                .entry(entry.mailbox_id.clone())
-                .or_default()
-                .push(entry.clone());
-            Ok(())
-        }
-
-        async fn pop_messages(
-            &self,
-            mailbox_id: &str,
-            limit: usize,
-        ) -> Result<Vec<MailboxEntry>, StorageError> {
-            let mut guard = self
-                .entries
-                .write()
-                .map_err(|e| StorageError::Io(e.to_string()))?;
-            let queue = match guard.get_mut(mailbox_id) {
-                Some(q) => q,
-                None => return Ok(Vec::new()),
-            };
-            let drain_count = limit.min(queue.len());
-            Ok(queue.drain(..drain_count).collect())
-        }
-
-        async fn peek_messages(
-            &self,
-            mailbox_id: &str,
-            limit: usize,
-        ) -> Result<Vec<MailboxEntry>, StorageError> {
-            let guard = self
-                .entries
-                .read()
-                .map_err(|e| StorageError::Io(e.to_string()))?;
-            Ok(guard
-                .get(mailbox_id)
-                .map(|q| q.iter().take(limit).cloned().collect())
-                .unwrap_or_default())
-        }
-    }
-
-    fn make_mailbox_entry(id: &str, mailbox: &str) -> MailboxEntry {
-        MailboxEntry {
-            entry_id: id.to_string(),
-            mailbox_id: mailbox.to_string(),
-            payload: serde_json::json!({"text": id}),
-            created_at: 1000,
-        }
-    }
-
-    #[tokio::test]
-    async fn mailbox_push_and_peek() {
-        let store = MockMailboxStore::default();
-        store
-            .push_message(&make_mailbox_entry("e1", "inbox-a"))
-            .await
-            .unwrap();
-        store
-            .push_message(&make_mailbox_entry("e2", "inbox-a"))
-            .await
-            .unwrap();
-
-        let peeked = store.peek_messages("inbox-a", 10).await.unwrap();
-        assert_eq!(peeked.len(), 2);
-        // Peek does not remove
-        let peeked_again = store.peek_messages("inbox-a", 10).await.unwrap();
-        assert_eq!(peeked_again.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn mailbox_pop_removes_entries() {
-        let store = MockMailboxStore::default();
-        store
-            .push_message(&make_mailbox_entry("e1", "inbox-a"))
-            .await
-            .unwrap();
-        store
-            .push_message(&make_mailbox_entry("e2", "inbox-a"))
-            .await
-            .unwrap();
-        store
-            .push_message(&make_mailbox_entry("e3", "inbox-a"))
-            .await
-            .unwrap();
-
-        let popped = store.pop_messages("inbox-a", 2).await.unwrap();
-        assert_eq!(popped.len(), 2);
-        assert_eq!(popped[0].entry_id, "e1");
-        assert_eq!(popped[1].entry_id, "e2");
-
-        let remaining = store.peek_messages("inbox-a", 10).await.unwrap();
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].entry_id, "e3");
-    }
-
-    #[tokio::test]
-    async fn mailbox_pop_empty() {
-        let store = MockMailboxStore::default();
-        let popped = store.pop_messages("nonexistent", 10).await.unwrap();
-        assert!(popped.is_empty());
-    }
-
-    #[tokio::test]
-    async fn mailbox_entry_serde_roundtrip() {
-        let entry = make_mailbox_entry("e1", "inbox-a");
-        let json = serde_json::to_string(&entry).unwrap();
-        let parsed: MailboxEntry = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.entry_id, "e1");
-        assert_eq!(parsed.mailbox_id, "inbox-a");
     }
 
     // ── RunRecord serde ──

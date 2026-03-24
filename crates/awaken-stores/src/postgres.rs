@@ -5,8 +5,7 @@
 use async_trait::async_trait;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
-    MailboxEntry, MailboxStore, RunPage, RunQuery, RunRecord, RunStore, StorageError,
-    ThreadRunStore, ThreadStore,
+    RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::Thread;
 use sqlx::PgPool;
@@ -18,7 +17,6 @@ pub struct PostgresStore {
     threads_table: String,
     runs_table: String,
     messages_table: String,
-    mailbox_table: String,
     schema_ready: Mutex<bool>,
 }
 
@@ -30,7 +28,6 @@ impl PostgresStore {
             threads_table: "awaken_threads".to_string(),
             runs_table: "awaken_runs".to_string(),
             messages_table: "awaken_messages".to_string(),
-            mailbox_table: "awaken_mailbox".to_string(),
             schema_ready: Mutex::new(false),
         }
     }
@@ -43,7 +40,6 @@ impl PostgresStore {
             threads_table: format!("{prefix}_threads"),
             runs_table: format!("{prefix}_runs"),
             messages_table: format!("{prefix}_messages"),
-            mailbox_table: format!("{prefix}_mailbox"),
             schema_ready: Mutex::new(false),
         }
     }
@@ -93,19 +89,6 @@ impl PostgresStore {
                 "CREATE INDEX IF NOT EXISTS idx_{}_thread_id ON {} (thread_id)",
                 self.runs_table, self.runs_table
             ),
-            format!(
-                "CREATE TABLE IF NOT EXISTS {} (
-                    entry_id TEXT PRIMARY KEY,
-                    mailbox_id TEXT NOT NULL,
-                    payload JSONB NOT NULL,
-                    created_at BIGINT NOT NULL
-                )",
-                self.mailbox_table
-            ),
-            format!(
-                "CREATE INDEX IF NOT EXISTS idx_{}_mailbox_id ON {} (mailbox_id, created_at)",
-                self.mailbox_table, self.mailbox_table
-            ),
             // Additional performance indices
             format!(
                 "CREATE INDEX IF NOT EXISTS idx_{}_thread_created ON {} (thread_id, created_at DESC)",
@@ -114,10 +97,6 @@ impl PostgresStore {
             format!(
                 "CREATE INDEX IF NOT EXISTS idx_{}_thread_id ON {} (thread_id)",
                 self.messages_table, self.messages_table
-            ),
-            format!(
-                "CREATE INDEX IF NOT EXISTS idx_{}_thread_id ON {} (thread_id)",
-                self.mailbox_table, self.mailbox_table
             ),
         ];
 
@@ -593,86 +572,6 @@ impl RunStore for PostgresStore {
             total: total as usize,
             has_more,
         })
-    }
-}
-
-// ── MailboxStore ────────────────────────────────────────────────────
-
-#[async_trait]
-impl MailboxStore for PostgresStore {
-    async fn push_message(&self, entry: &MailboxEntry) -> Result<(), StorageError> {
-        self.ensure_schema().await?;
-        let sql = format!(
-            "INSERT INTO {} (entry_id, mailbox_id, payload, created_at) VALUES ($1, $2, $3, $4)",
-            self.mailbox_table
-        );
-        sqlx::query(&sql)
-            .bind(&entry.entry_id)
-            .bind(&entry.mailbox_id)
-            .bind(&entry.payload)
-            .bind(entry.created_at as i64)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| StorageError::Io(e.to_string()))?;
-        Ok(())
-    }
-
-    async fn pop_messages(
-        &self,
-        mailbox_id: &str,
-        limit: usize,
-    ) -> Result<Vec<MailboxEntry>, StorageError> {
-        self.ensure_schema().await?;
-        let sql = format!(
-            "DELETE FROM {} WHERE entry_id IN (
-                SELECT entry_id FROM {} WHERE mailbox_id = $1 ORDER BY created_at ASC LIMIT $2
-            ) RETURNING entry_id, mailbox_id, payload, created_at",
-            self.mailbox_table, self.mailbox_table
-        );
-        let rows: Vec<(String, String, serde_json::Value, i64)> = sqlx::query_as(&sql)
-            .bind(mailbox_id)
-            .bind(limit as i64)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| StorageError::Io(e.to_string()))?;
-
-        Ok(rows
-            .into_iter()
-            .map(|(entry_id, mailbox_id, payload, created_at)| MailboxEntry {
-                entry_id,
-                mailbox_id,
-                payload,
-                created_at: created_at as u64,
-            })
-            .collect())
-    }
-
-    async fn peek_messages(
-        &self,
-        mailbox_id: &str,
-        limit: usize,
-    ) -> Result<Vec<MailboxEntry>, StorageError> {
-        self.ensure_schema().await?;
-        let sql = format!(
-            "SELECT entry_id, mailbox_id, payload, created_at FROM {} WHERE mailbox_id = $1 ORDER BY created_at ASC LIMIT $2",
-            self.mailbox_table
-        );
-        let rows: Vec<(String, String, serde_json::Value, i64)> = sqlx::query_as(&sql)
-            .bind(mailbox_id)
-            .bind(limit as i64)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| StorageError::Io(e.to_string()))?;
-
-        Ok(rows
-            .into_iter()
-            .map(|(entry_id, mailbox_id, payload, created_at)| MailboxEntry {
-                entry_id,
-                mailbox_id,
-                payload,
-                created_at: created_at as u64,
-            })
-            .collect())
     }
 }
 

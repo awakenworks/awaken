@@ -8,6 +8,5 @@ pub mod mailbox;
 pub mod message_convert;
 pub mod protocols;
 pub mod routes;
-pub mod run_dispatcher;
 pub mod services;
 pub mod transport;

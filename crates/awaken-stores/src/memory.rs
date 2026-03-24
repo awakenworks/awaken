@@ -1,13 +1,12 @@
 //! In-memory storage backend for testing and local development.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use async_trait::async_trait;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::profile_store::{ProfileEntry, ProfileOwner, ProfileStore};
 use awaken_contract::contract::storage::{
-    MailboxEntry, MailboxStore, RunPage, RunQuery, RunRecord, RunStore, StorageError,
-    ThreadRunStore, ThreadStore,
+    RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::Thread;
 use serde_json::Value;
@@ -23,8 +22,6 @@ pub struct InMemoryStore {
     runs: RwLock<HashMap<String, RunRecord>>,
     /// Thread ID -> ordered messages (single source of truth).
     messages: RwLock<HashMap<String, Vec<Message>>>,
-    /// Mailbox ID -> ordered queue of entries.
-    mailbox: RwLock<BTreeMap<String, Vec<MailboxEntry>>>,
     /// Profile entries keyed by (owner, key).
     profiles: RwLock<HashMap<ProfileOwner, HashMap<String, ProfileEntry>>>,
 }
@@ -155,46 +152,6 @@ impl RunStore for InMemoryStore {
     }
 }
 
-// ── MailboxStore ────────────────────────────────────────────────────
-
-#[async_trait]
-impl MailboxStore for InMemoryStore {
-    async fn push_message(&self, entry: &MailboxEntry) -> Result<(), StorageError> {
-        let mut guard = self.mailbox.write().await;
-        guard
-            .entry(entry.mailbox_id.clone())
-            .or_default()
-            .push(entry.clone());
-        Ok(())
-    }
-
-    async fn pop_messages(
-        &self,
-        mailbox_id: &str,
-        limit: usize,
-    ) -> Result<Vec<MailboxEntry>, StorageError> {
-        let mut guard = self.mailbox.write().await;
-        let queue = match guard.get_mut(mailbox_id) {
-            Some(q) => q,
-            None => return Ok(Vec::new()),
-        };
-        let drain_count = limit.min(queue.len());
-        Ok(queue.drain(..drain_count).collect())
-    }
-
-    async fn peek_messages(
-        &self,
-        mailbox_id: &str,
-        limit: usize,
-    ) -> Result<Vec<MailboxEntry>, StorageError> {
-        let guard = self.mailbox.read().await;
-        Ok(guard
-            .get(mailbox_id)
-            .map(|q| q.iter().take(limit).cloned().collect())
-            .unwrap_or_default())
-    }
-}
-
 // ── ThreadRunStore ──────────────────────────────────────────────────
 
 #[async_trait]
@@ -278,7 +235,7 @@ mod tests {
     use awaken_contract::contract::lifecycle::RunStatus;
     use awaken_contract::contract::message::Message;
     use awaken_contract::contract::storage::{
-        MailboxEntry, RunQuery, RunRecord, RunStore, ThreadRunStore, ThreadStore,
+        RunQuery, RunRecord, RunStore, ThreadRunStore, ThreadStore,
     };
     use awaken_contract::thread::Thread;
 
@@ -507,54 +464,6 @@ mod tests {
         assert_eq!(loaded_msgs.len(), 1);
         let loaded_run = store.load_run("r-cp").await.unwrap().unwrap();
         assert_eq!(loaded_run.thread_id, "t-1");
-    }
-
-    // ── MailboxStore ──
-
-    #[tokio::test]
-    async fn mailbox_push_and_pop() {
-        let store = InMemoryStore::new();
-        let entry = MailboxEntry {
-            entry_id: "e-1".to_string(),
-            mailbox_id: "m-1".to_string(),
-            payload: serde_json::json!({"msg": "hello"}),
-            created_at: 100,
-        };
-        store.push_message(&entry).await.unwrap();
-
-        let popped = store.pop_messages("m-1", 10).await.unwrap();
-        assert_eq!(popped.len(), 1);
-        assert_eq!(popped[0].entry_id, "e-1");
-
-        // After pop, should be empty
-        let popped = store.pop_messages("m-1", 10).await.unwrap();
-        assert!(popped.is_empty());
-    }
-
-    #[tokio::test]
-    async fn mailbox_peek_does_not_consume() {
-        let store = InMemoryStore::new();
-        let entry = MailboxEntry {
-            entry_id: "e-1".to_string(),
-            mailbox_id: "m-1".to_string(),
-            payload: serde_json::json!({}),
-            created_at: 100,
-        };
-        store.push_message(&entry).await.unwrap();
-
-        let peeked = store.peek_messages("m-1", 10).await.unwrap();
-        assert_eq!(peeked.len(), 1);
-
-        // Still available
-        let peeked2 = store.peek_messages("m-1", 10).await.unwrap();
-        assert_eq!(peeked2.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn mailbox_pop_empty_returns_empty_vec() {
-        let store = InMemoryStore::new();
-        let popped = store.pop_messages("no-such", 10).await.unwrap();
-        assert!(popped.is_empty());
     }
 
     // ── Large payload ──

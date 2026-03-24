@@ -6,7 +6,6 @@
 //!   threads/<thread_id>.json         — Thread
 //!   messages/<thread_id>.json        — Vec<Message>
 //!   runs/<run_id>.json               — RunRecord
-//!   mailbox/<mailbox_id>/<entry_id>.json — MailboxEntry
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -15,8 +14,7 @@ use async_trait::async_trait;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::profile_store::{ProfileEntry, ProfileOwner, ProfileStore};
 use awaken_contract::contract::storage::{
-    MailboxEntry, MailboxStore, RunPage, RunQuery, RunRecord, RunStore, StorageError,
-    ThreadRunStore, ThreadStore,
+    RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::Thread;
 use tokio::io::AsyncWriteExt;
@@ -44,10 +42,6 @@ impl FileStore {
 
     fn runs_dir(&self) -> PathBuf {
         self.base_path.join("runs")
-    }
-
-    fn mailbox_dir(&self) -> PathBuf {
-        self.base_path.join("mailbox")
     }
 
     fn profiles_dir(&self) -> PathBuf {
@@ -329,59 +323,6 @@ impl RunStore for FileStore {
     }
 }
 
-// ── MailboxStore ────────────────────────────────────────────────────
-
-#[async_trait]
-impl MailboxStore for FileStore {
-    async fn push_message(&self, entry: &MailboxEntry) -> Result<(), StorageError> {
-        validate_id(&entry.mailbox_id, "mailbox id")?;
-        validate_id(&entry.entry_id, "entry id")?;
-        let dir = self.mailbox_dir().join(&entry.mailbox_id);
-        let payload = serde_json::to_string_pretty(entry)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        atomic_write(&dir, &format!("{}.json", entry.entry_id), &payload).await
-    }
-
-    async fn pop_messages(
-        &self,
-        mailbox_id: &str,
-        limit: usize,
-    ) -> Result<Vec<MailboxEntry>, StorageError> {
-        validate_id(mailbox_id, "mailbox id")?;
-        let dir = self.mailbox_dir().join(mailbox_id);
-        if !dir.exists() {
-            return Ok(Vec::new());
-        }
-        let mut entries: Vec<MailboxEntry> = scan_json_dir(&dir).await?;
-        entries.sort_by_key(|e| e.created_at);
-        let drain_count = limit.min(entries.len());
-        let popped: Vec<MailboxEntry> = entries.drain(..drain_count).collect();
-
-        // Remove popped files
-        for entry in &popped {
-            let path = dir.join(format!("{}.json", entry.entry_id));
-            let _ = tokio::fs::remove_file(path).await;
-        }
-        Ok(popped)
-    }
-
-    async fn peek_messages(
-        &self,
-        mailbox_id: &str,
-        limit: usize,
-    ) -> Result<Vec<MailboxEntry>, StorageError> {
-        validate_id(mailbox_id, "mailbox id")?;
-        let dir = self.mailbox_dir().join(mailbox_id);
-        if !dir.exists() {
-            return Ok(Vec::new());
-        }
-        let mut entries: Vec<MailboxEntry> = scan_json_dir(&dir).await?;
-        entries.sort_by_key(|e| e.created_at);
-        entries.truncate(limit);
-        Ok(entries)
-    }
-}
-
 // ── ProfileStore ────────────────────────────────────────────────────
 
 /// Sanitize an agent ID for use as a directory name.
@@ -510,7 +451,7 @@ mod tests {
     use awaken_contract::contract::lifecycle::RunStatus;
     use awaken_contract::contract::message::Message;
     use awaken_contract::contract::storage::{
-        MailboxEntry, RunQuery, RunRecord, RunStore, ThreadRunStore, ThreadStore,
+        RunQuery, RunRecord, RunStore, ThreadRunStore, ThreadStore,
     };
     use awaken_contract::thread::Thread;
     use tempfile::TempDir;
@@ -730,36 +671,6 @@ mod tests {
 
         let latest = store.latest_run("t-1").await.unwrap().unwrap();
         assert_eq!(latest.run_id, "r-2");
-    }
-
-    // ── MailboxStore ──
-
-    #[tokio::test]
-    async fn file_store_mailbox_push_pop() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-        let entry = MailboxEntry {
-            entry_id: "e-1".to_string(),
-            mailbox_id: "m-1".to_string(),
-            payload: serde_json::json!({"msg": "hi"}),
-            created_at: 100,
-        };
-        store.push_message(&entry).await.unwrap();
-
-        let popped = store.pop_messages("m-1", 10).await.unwrap();
-        assert_eq!(popped.len(), 1);
-
-        // After pop, should be empty
-        let popped = store.pop_messages("m-1", 10).await.unwrap();
-        assert!(popped.is_empty());
-    }
-
-    #[tokio::test]
-    async fn file_store_mailbox_pop_empty() {
-        let td = TempDir::new().unwrap();
-        let store = FileStore::new(td.path());
-        let popped = store.pop_messages("no-such", 10).await.unwrap();
-        assert!(popped.is_empty());
     }
 
     // ── Checkpoint ──
