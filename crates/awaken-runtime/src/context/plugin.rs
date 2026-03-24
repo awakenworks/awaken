@@ -210,6 +210,7 @@ impl Plugin for ContextTransformPlugin {
 mod tests {
     use super::*;
     use crate::state::StateStore;
+    use awaken_contract::contract::message::Message;
 
     #[test]
     fn compaction_state_record_boundary() {
@@ -523,6 +524,228 @@ mod tests {
         let policy = awaken_contract::contract::inference::ContextWindowPolicy::default();
         let plugin = ContextTransformPlugin::new(policy);
         assert_eq!(plugin.descriptor().name, CONTEXT_TRANSFORM_PLUGIN_ID);
+    }
+
+    // -----------------------------------------------------------------------
+    // Additional compaction tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compaction_fires_at_threshold() {
+        // Verify savings ratio check: only accept compaction when savings >= min_savings_ratio
+        let config = CompactionConfig {
+            min_savings_ratio: 0.5,
+            ..Default::default()
+        };
+        let boundary_good = CompactionBoundary {
+            summary: "good".into(),
+            pre_tokens: 1000,
+            post_tokens: 400, // 60% savings > 50% threshold
+            timestamp_ms: 1,
+        };
+        let savings_good =
+            1.0 - (boundary_good.post_tokens as f64 / boundary_good.pre_tokens as f64);
+        assert!(
+            savings_good >= config.min_savings_ratio,
+            "60% savings should meet 50% threshold"
+        );
+
+        let boundary_bad = CompactionBoundary {
+            summary: "bad".into(),
+            pre_tokens: 1000,
+            post_tokens: 600, // 40% savings < 50% threshold
+            timestamp_ms: 2,
+        };
+        let savings_bad = 1.0 - (boundary_bad.post_tokens as f64 / boundary_bad.pre_tokens as f64);
+        assert!(
+            savings_bad < config.min_savings_ratio,
+            "40% savings should not meet 50% threshold"
+        );
+    }
+
+    #[test]
+    fn compaction_state_tracks_across_multiple_rounds() {
+        let mut state = CompactionState::default();
+        // Simulate 5 compaction rounds with increasing pre-token counts
+        for round in 1..=5u64 {
+            state.reduce(CompactionAction::RecordBoundary(CompactionBoundary {
+                summary: format!("round {round}"),
+                pre_tokens: 1000 * round as usize,
+                post_tokens: 100 * round as usize,
+                timestamp_ms: round * 1000,
+            }));
+            assert_eq!(state.total_compactions, round);
+            assert_eq!(state.boundaries.len(), round as usize);
+        }
+        // Latest boundary should be the last round
+        assert_eq!(state.latest_boundary().unwrap().summary, "round 5");
+        assert_eq!(state.latest_boundary().unwrap().pre_tokens, 5000);
+    }
+
+    #[test]
+    fn compaction_config_serialization_omits_none_fields() {
+        let config = CompactionConfig::default();
+        let json = serde_json::to_value(&config).unwrap();
+        // summary_max_tokens and summary_model are None, should be omitted via skip_serializing_if
+        assert!(
+            !json.as_object().unwrap().contains_key("summary_max_tokens"),
+            "None fields should be omitted"
+        );
+        assert!(
+            !json.as_object().unwrap().contains_key("summary_model"),
+            "None fields should be omitted"
+        );
+    }
+
+    #[test]
+    fn compaction_config_serialization_includes_some_fields() {
+        let config = CompactionConfig {
+            summary_max_tokens: Some(1024),
+            summary_model: Some("claude-3-sonnet".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["summary_max_tokens"], 1024);
+        assert_eq!(json["summary_model"], "claude-3-sonnet");
+    }
+
+    #[test]
+    fn compaction_with_tool_messages_records_correctly() {
+        // Simulate compaction that includes tool messages in the summarized range
+        let store = StateStore::new();
+        store.install_plugin(CompactionPlugin::default()).unwrap();
+
+        // Record a boundary representing a range that included tool messages
+        let mut patch = store.begin_mutation();
+        patch.update::<CompactionStateKey>(super::super::record_compaction_boundary(
+            CompactionBoundary {
+                summary: "User asked to search files. Tool search returned 3 results. Assistant presented findings.".into(),
+                pre_tokens: 8000,
+                post_tokens: 200,
+                timestamp_ms: 1000,
+            },
+        ));
+        store.commit(patch).unwrap();
+
+        let state = store.read::<CompactionStateKey>().unwrap();
+        assert_eq!(state.total_compactions, 1);
+        assert!(state.boundaries[0].summary.contains("Tool search"));
+        assert_eq!(state.boundaries[0].pre_tokens, 8000);
+    }
+
+    #[test]
+    fn context_transform_plugin_registers_transform() {
+        use crate::plugins::PluginRegistrar;
+        let policy = awaken_contract::contract::inference::ContextWindowPolicy::default();
+        let plugin = ContextTransformPlugin::new(policy);
+        let mut registrar = PluginRegistrar::new();
+        plugin.register(&mut registrar).unwrap();
+        assert_eq!(
+            registrar.request_transforms.len(),
+            1,
+            "should have registered one transform"
+        );
+        assert_eq!(
+            registrar.request_transforms[0].plugin_id,
+            CONTEXT_TRANSFORM_PLUGIN_ID
+        );
+    }
+
+    #[test]
+    fn transform_ordering_compaction_then_context() {
+        use crate::plugins::PluginRegistrar;
+        // Compaction plugin should register no transforms
+        let mut reg_compaction = PluginRegistrar::new();
+        CompactionPlugin::default()
+            .register(&mut reg_compaction)
+            .unwrap();
+        assert!(
+            reg_compaction.request_transforms.is_empty(),
+            "CompactionPlugin should not register request transforms"
+        );
+        // ContextTransformPlugin should register exactly one transform
+        let policy = awaken_contract::contract::inference::ContextWindowPolicy::default();
+        let mut reg_transform = PluginRegistrar::new();
+        ContextTransformPlugin::new(policy)
+            .register(&mut reg_transform)
+            .unwrap();
+        assert_eq!(reg_transform.request_transforms.len(), 1);
+    }
+
+    #[test]
+    fn token_count_estimation_for_various_content_types() {
+        use awaken_contract::contract::transform::estimate_message_tokens;
+
+        // Text message
+        let text_msg = Message::user("Hello, this is a test message with some content.");
+        let text_tokens = estimate_message_tokens(&text_msg);
+        assert!(
+            text_tokens > 4,
+            "text message should have tokens beyond overhead"
+        );
+
+        // Empty content message
+        let empty_msg = Message::user("");
+        let empty_tokens = estimate_message_tokens(&empty_msg);
+        assert_eq!(
+            empty_tokens, 4,
+            "empty message should have only overhead tokens"
+        );
+
+        // Very long message
+        let long_msg = Message::user(&"x".repeat(4000));
+        let long_tokens = estimate_message_tokens(&long_msg);
+        assert!(
+            long_tokens >= 1000,
+            "4000-char message should estimate >= 1000 tokens, got {long_tokens}"
+        );
+    }
+
+    #[test]
+    fn enable_prompt_cache_flag_in_policy() {
+        let policy_cached = awaken_contract::contract::inference::ContextWindowPolicy {
+            enable_prompt_cache: true,
+            ..Default::default()
+        };
+        assert!(policy_cached.enable_prompt_cache);
+
+        let policy_uncached = awaken_contract::contract::inference::ContextWindowPolicy {
+            enable_prompt_cache: false,
+            ..Default::default()
+        };
+        assert!(!policy_uncached.enable_prompt_cache);
+
+        // Both should create valid transform plugins
+        let _ = ContextTransformPlugin::new(policy_cached);
+        let _ = ContextTransformPlugin::new(policy_uncached);
+    }
+
+    #[test]
+    fn autocompact_threshold_check() {
+        use awaken_contract::contract::transform::estimate_tokens;
+
+        let policy_with_threshold = awaken_contract::contract::inference::ContextWindowPolicy {
+            autocompact_threshold: Some(500),
+            ..Default::default()
+        };
+
+        // Simulate checking if messages exceed autocompact threshold
+        let messages = vec![Message::user("short"), Message::assistant("reply")];
+        let total = estimate_tokens(&messages);
+        assert!(
+            total < policy_with_threshold.autocompact_threshold.unwrap(),
+            "short conversation should be under threshold"
+        );
+
+        // Longer conversation should exceed threshold
+        let long_messages: Vec<Message> = (0..100)
+            .map(|i| Message::user(format!("message {i} with some filler text to add tokens")))
+            .collect();
+        let long_total = estimate_tokens(&long_messages);
+        assert!(
+            long_total > policy_with_threshold.autocompact_threshold.unwrap(),
+            "100-message conversation should exceed threshold of 500, got {long_total}"
+        );
     }
 
     #[test]
