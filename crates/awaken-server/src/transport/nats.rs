@@ -276,7 +276,8 @@ where
     });
 
     // Execute the run
-    let sink = crate::transport::channel_sink::BoundedChannelEventSink::new(event_tx);
+    let sink: Arc<dyn awaken_contract::contract::event_sink::EventSink> =
+        Arc::new(crate::transport::channel_sink::BoundedChannelEventSink::new(event_tx));
     let run_request = awaken_runtime::RunRequest::new(thread_id, messages);
     let run_request = if let Some(aid) = request.agent_id {
         run_request.with_agent_id(aid)
@@ -284,7 +285,7 @@ where
         run_request
     };
 
-    if let Err(e) = runtime.run(run_request, &sink).await {
+    if let Err(e) = runtime.run(run_request, sink.clone()).await {
         tracing::warn!(error = %e, "{protocol_label} NATS run failed");
     }
 
