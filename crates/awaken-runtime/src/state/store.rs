@@ -484,6 +484,118 @@ mod tests {
     }
 
     #[test]
+    fn commit_with_wrong_base_revision_rejected() {
+        let store = StateStore::new();
+        store.install_plugin(TestStorePlugin).unwrap();
+
+        let mut batch = store.begin_mutation();
+        batch.update::<TestCounter>(1);
+        let rev = store.commit(batch).unwrap();
+        assert_eq!(rev, 1);
+
+        // Build batch with stale base_revision=0 while store is at revision 1
+        let mut stale_batch = MutationBatch::new().with_base_revision(0);
+        stale_batch.update::<TestCounter>(2);
+        let err = store.commit(stale_batch).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                StateError::RevisionConflict {
+                    expected: 0,
+                    actual: 1
+                }
+            ),
+            "expected RevisionConflict, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn concurrent_snapshots_independent() {
+        let store = StateStore::new();
+        store.install_plugin(TestStorePlugin).unwrap();
+
+        // Take snapshot before any change
+        let snap_before = store.snapshot();
+        assert!(snap_before.get::<TestCounter>().is_none());
+
+        // Commit a change
+        let mut batch = store.begin_mutation();
+        batch.update::<TestCounter>(42);
+        store.commit(batch).unwrap();
+
+        // Take snapshot after change
+        let snap_after = store.snapshot();
+
+        // First snapshot must NOT see the change
+        assert!(snap_before.get::<TestCounter>().is_none());
+        assert_eq!(snap_before.revision, 0);
+
+        // Second snapshot must see the change
+        assert_eq!(*snap_after.get::<TestCounter>().unwrap(), 42);
+        assert_eq!(snap_after.revision, 1);
+    }
+
+    #[test]
+    fn empty_commit_returns_current_revision() {
+        let store = StateStore::new();
+        store.install_plugin(TestStorePlugin).unwrap();
+
+        // Advance to revision 1
+        let mut batch = store.begin_mutation();
+        batch.update::<TestCounter>(1);
+        store.commit(batch).unwrap();
+        assert_eq!(store.revision(), 1);
+
+        // Empty commit should return current revision without incrementing
+        let empty_batch = store.begin_mutation();
+        let rev = store.commit(empty_batch).unwrap();
+        assert_eq!(rev, 1);
+        assert_eq!(store.revision(), 1);
+    }
+
+    #[test]
+    fn commit_hook_receives_correct_metadata() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct VerifyHook {
+            prev_rev: Arc<AtomicU64>,
+            new_rev: Arc<AtomicU64>,
+            op_count: Arc<AtomicUsize>,
+        }
+
+        impl CommitHook for VerifyHook {
+            fn on_commit(&self, event: &CommitEvent) {
+                self.prev_rev
+                    .store(event.previous_revision, Ordering::SeqCst);
+                self.new_rev.store(event.new_revision, Ordering::SeqCst);
+                self.op_count.store(event.op_count, Ordering::SeqCst);
+            }
+        }
+
+        let store = StateStore::new();
+        store.install_plugin(TestStorePlugin).unwrap();
+
+        let prev_rev = Arc::new(AtomicU64::new(999));
+        let new_rev = Arc::new(AtomicU64::new(999));
+        let op_count = Arc::new(AtomicUsize::new(999));
+        store.add_hook(VerifyHook {
+            prev_rev: prev_rev.clone(),
+            new_rev: new_rev.clone(),
+            op_count: op_count.clone(),
+        });
+
+        let mut batch = store.begin_mutation();
+        batch.update::<TestCounter>(1);
+        batch.update::<TestCounter>(2);
+        batch.update::<TestCounter>(3);
+        store.commit(batch).unwrap();
+
+        assert_eq!(prev_rev.load(Ordering::SeqCst), 0);
+        assert_eq!(new_rev.load(Ordering::SeqCst), 1);
+        assert_eq!(op_count.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
     fn store_multiple_updates_in_single_batch() {
         let store = StateStore::new();
         store.install_plugin(TestStorePlugin).unwrap();
