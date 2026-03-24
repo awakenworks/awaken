@@ -3020,3 +3020,503 @@ async fn tool_call_lifecycle_complete_transitions_in_loop() {
     let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.status, RunStatus::Done);
 }
+
+// ---------------------------------------------------------------------------
+// Core tool execution tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn parallel_tools_one_fails_other_succeeds() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![
+                ToolCall::new("c1", "echo", json!({"message": "hello"})),
+                ToolCall::new("c2", "fail", json!({})),
+            ],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("Echo worked, fail failed.")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm)
+        .with_tool(Arc::new(EchoTool))
+        .with_tool(Arc::new(FailingTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("run both")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(result.steps, 2);
+
+    let events = sink.take();
+    let tool_done_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolCallDone { id, outcome, .. } => Some((id.clone(), outcome.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tool_done_events.len(), 2, "both tools should complete");
+
+    // Echo should succeed, fail should fail (order may vary)
+    let succeeded = tool_done_events
+        .iter()
+        .filter(|(_, o)| *o == awaken::contract::suspension::ToolCallOutcome::Succeeded)
+        .count();
+    let failed = tool_done_events
+        .iter()
+        .filter(|(_, o)| *o == awaken::contract::suspension::ToolCallOutcome::Failed)
+        .count();
+    assert_eq!(succeeded, 1, "echo tool should succeed");
+    assert_eq!(failed, 1, "fail tool should fail");
+}
+
+#[tokio::test]
+async fn sequential_tools_stop_after_first_suspension() {
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![],
+        tool_calls: vec![
+            ToolCall::new("c1", "dangerous", json!({"action": "delete"})),
+            ToolCall::new("c2", "echo", json!({"message": "should not run"})),
+        ],
+        usage: None,
+        stop_reason: Some(StopReason::ToolUse),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm)
+        .with_tool(Arc::new(SuspendingTool))
+        .with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("do both")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        result.termination,
+        TerminationReason::Suspended,
+        "run should terminate with Suspended when a tool suspends"
+    );
+
+    // Verify the suspending tool is in Suspended state
+    let tc_states = runtime.store().read::<ToolCallStates>().unwrap();
+    assert_eq!(tc_states.calls["c1"].status, ToolCallStatus::Suspended);
+
+    // The second tool (echo) should NOT have a Succeeded entry
+    let events = sink.take();
+    let echo_done = events.iter().any(|e| {
+        matches!(e, AgentEvent::ToolCallDone { id, outcome, .. }
+            if id == "c2" && *outcome == awaken::contract::suspension::ToolCallOutcome::Succeeded)
+    });
+    assert!(
+        !echo_done,
+        "second tool should NOT execute after first tool suspends"
+    );
+}
+
+#[tokio::test]
+async fn stop_policy_max_rounds_terminates() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c0", "echo", json!({"message": "round0"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "round1"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm)
+        .with_max_rounds(1)
+        .with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("loop")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        matches!(
+            result.termination,
+            TerminationReason::Stopped(ref s) if s.code == "max_rounds"
+        ),
+        "expected Stopped(max_rounds), got {:?}",
+        result.termination
+    );
+}
+
+#[tokio::test]
+async fn cancel_during_tool_execution() {
+    use awaken::CancellationToken;
+
+    /// A tool that sleeps for 100ms before returning.
+    struct SlowTool;
+
+    #[async_trait]
+    impl Tool for SlowTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("slow", "slow", "Sleeps before returning")
+        }
+
+        async fn execute(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            Ok(ToolResult::success("slow", json!({"done": true})))
+        }
+    }
+
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![],
+        tool_calls: vec![ToolCall::new("c1", "slow", json!({}))],
+        usage: None,
+        stop_reason: Some(StopReason::ToolUse),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(SlowTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let token = CancellationToken::new();
+    let token_clone = token.clone();
+
+    // Cancel after 10ms while the tool is sleeping for 100ms
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        token_clone.cancel();
+    });
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("run slow tool")],
+        run_identity: test_identity(),
+        cancellation_token: Some(token),
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        result.termination,
+        TerminationReason::Cancelled,
+        "run should terminate with Cancelled when token fires during tool execution"
+    );
+}
+
+#[tokio::test]
+async fn empty_tool_calls_natural_end() {
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("Just a text response, no tools.")],
+        tool_calls: vec![],
+        usage: Some(TokenUsage {
+            prompt_tokens: Some(5),
+            completion_tokens: Some(8),
+            total_tokens: Some(13),
+            ..Default::default()
+        }),
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool)); // Tools registered but not used
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hello")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(result.response, "Just a text response, no tools.");
+    assert_eq!(result.steps, 1);
+}
+
+#[tokio::test]
+async fn context_message_injected_before_inference() {
+    use awaken::agent::state::AddContextMessage;
+    use awaken::contract::context_message::ContextMessage;
+
+    /// An LLM that records the messages it receives.
+    struct RecordingLlm {
+        requests: Mutex<Vec<Vec<Message>>>,
+    }
+
+    impl RecordingLlm {
+        fn new() -> Self {
+            Self {
+                requests: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn recorded_requests(&self) -> Vec<Vec<Message>> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl LlmExecutor for RecordingLlm {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            self.requests.lock().unwrap().push(req.messages.clone());
+            Ok(StreamResult {
+                content: vec![ContentBlock::text("Acknowledged.")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+
+        fn name(&self) -> &str {
+            "recording"
+        }
+    }
+
+    /// Plugin that injects a context message via BeforeInference.
+    struct ContextInjectorHook;
+
+    #[async_trait]
+    impl PhaseHook for ContextInjectorHook {
+        async fn run(
+            &self,
+            _ctx: &awaken::PhaseContext,
+        ) -> Result<awaken::StateCommand, awaken::StateError> {
+            let mut cmd = awaken::StateCommand::new();
+            cmd.schedule_action::<AddContextMessage>(ContextMessage::system(
+                "test_injector",
+                "Injected context message for testing.",
+            ))?;
+            Ok(cmd)
+        }
+    }
+
+    struct ContextInjectorPlugin;
+
+    impl Plugin for ContextInjectorPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "context-injector",
+            }
+        }
+
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_phase_hook(
+                "context-injector",
+                awaken::Phase::BeforeInference,
+                ContextInjectorHook,
+            )?;
+            Ok(())
+        }
+    }
+
+    let llm = Arc::new(RecordingLlm::new());
+    let llm_clone = Arc::clone(&llm);
+
+    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(agent, vec![Arc::new(ContextInjectorPlugin)]);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hello")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+
+    // Verify the LLM received the injected context message in its request
+    let requests = llm_clone.recorded_requests();
+    assert!(
+        !requests.is_empty(),
+        "LLM should have received at least one request"
+    );
+
+    let first_request_messages = &requests[0];
+    let has_context_message = first_request_messages
+        .iter()
+        .any(|msg| msg.text().contains("Injected context message for testing."));
+    assert!(
+        has_context_message,
+        "LLM request should contain the injected context message, got messages: {:?}",
+        first_request_messages
+    );
+}
+
+#[tokio::test]
+async fn tool_execution_preserves_arguments() {
+    /// A tool that returns its received arguments as the result.
+    struct ArgReturningTool;
+
+    #[async_trait]
+    impl Tool for ArgReturningTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("arg_echo", "arg_echo", "Returns args as result")
+        }
+
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("arg_echo", args))
+        }
+    }
+
+    let expected_args = json!({
+        "name": "test_value",
+        "count": 42,
+        "nested": {"key": "val"},
+        "list": [1, 2, 3]
+    });
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "arg_echo", expected_args.clone())],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("Got the args back.")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent =
+        AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(ArgReturningTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("call arg_echo")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(result.steps, 2);
+
+    // Verify the tool received and returned the exact arguments
+    let events = sink.take();
+    let tool_done_results: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolCallDone { id, result, .. } => Some((id.clone(), result.clone())),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(tool_done_results.len(), 1);
+    let (id, tool_result) = &tool_done_results[0];
+    assert_eq!(id, "c1");
+    assert!(tool_result.is_success(), "tool should succeed");
+    assert_eq!(
+        tool_result.data, expected_args,
+        "tool result should contain the exact arguments passed by the LLM"
+    );
+}
