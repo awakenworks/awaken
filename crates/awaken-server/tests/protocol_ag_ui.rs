@@ -4,6 +4,7 @@
 //! message ID propagation, and terminal guard behavior.
 
 use awaken_contract::contract::event::AgentEvent;
+use awaken_contract::contract::inference::TokenUsage;
 use awaken_contract::contract::lifecycle::{StoppedReason, TerminationReason};
 use awaken_contract::contract::suspension::ToolCallOutcome;
 use awaken_contract::contract::tool::ToolResult;
@@ -859,4 +860,521 @@ fn empty_run_start_finish() {
     });
     assert_eq!(finish.len(), 1);
     assert!(matches!(&finish[0], Event::RunFinished { .. }));
+}
+
+// ============================================================================
+// Tool execution and event encoding tests (20 tests)
+// ============================================================================
+
+// 1. Tool call start event has correct fields (id, name)
+#[test]
+fn tool_call_start_has_correct_id_and_name() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let events = enc.on_agent_event(&AgentEvent::ToolCallStart {
+        id: "call_abc".into(),
+        name: "get_weather".into(),
+    });
+    let tc = events
+        .iter()
+        .find(|e| matches!(e, Event::ToolCallStart { .. }))
+        .unwrap();
+    assert!(
+        matches!(tc, Event::ToolCallStart { tool_call_id, tool_call_name, parent_message_id, .. }
+            if tool_call_id == "call_abc"
+                && tool_call_name == "get_weather"
+                && *parent_message_id == Some("r1".into()))
+    );
+}
+
+// 2. Tool call args event encodes arguments correctly
+#[test]
+fn tool_call_args_encodes_arguments() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    enc.on_agent_event(&AgentEvent::ToolCallStart {
+        id: "c1".into(),
+        name: "search".into(),
+    });
+    let args_json = r#"{"query":"hello world","limit":10}"#;
+    let events = enc.on_agent_event(&AgentEvent::ToolCallDelta {
+        id: "c1".into(),
+        args_delta: args_json.into(),
+    });
+    assert_eq!(events.len(), 1);
+    assert!(
+        matches!(&events[0], Event::ToolCallArgs { tool_call_id, delta, .. }
+            if tool_call_id == "c1" && delta == args_json)
+    );
+}
+
+// 3. Tool call end event emits after args
+#[test]
+fn tool_call_end_emits_after_args() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    enc.on_agent_event(&AgentEvent::ToolCallStart {
+        id: "c1".into(),
+        name: "calc".into(),
+    });
+    enc.on_agent_event(&AgentEvent::ToolCallDelta {
+        id: "c1".into(),
+        args_delta: r#"{"expr":"1+1"}"#.into(),
+    });
+    let events = enc.on_agent_event(&AgentEvent::ToolCallReady {
+        id: "c1".into(),
+        name: "calc".into(),
+        arguments: json!({"expr": "1+1"}),
+    });
+    assert_eq!(events.len(), 1);
+    assert!(matches!(&events[0], Event::ToolCallEnd { tool_call_id, .. } if tool_call_id == "c1"));
+}
+
+// 4. Tool call result event has correct result payload
+#[test]
+fn tool_call_result_has_correct_payload() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let result_data = json!({"temperature": 72, "unit": "F"});
+    let events = enc.on_agent_event(&AgentEvent::ToolCallDone {
+        id: "c1".into(),
+        message_id: "msg_tool".into(),
+        result: ToolResult::success("get_weather", result_data.clone()),
+        outcome: ToolCallOutcome::Succeeded,
+    });
+    assert_eq!(events.len(), 1);
+    if let Event::ToolCallResult {
+        tool_call_id,
+        message_id,
+        content,
+        role,
+        ..
+    } = &events[0]
+    {
+        assert_eq!(tool_call_id, "c1");
+        assert_eq!(message_id, "msg_tool");
+        let parsed: serde_json::Value = serde_json::from_str(content).unwrap();
+        assert_eq!(parsed, result_data);
+        assert_eq!(*role, Some(Role::Tool));
+    } else {
+        panic!("expected ToolCallResult");
+    }
+}
+
+// 5. Multiple tool calls produce correct event sequence
+#[test]
+fn multiple_tool_calls_produce_correct_sequence() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let mut all_events = Vec::new();
+
+    // Tool 1: start -> delta -> ready -> done
+    all_events.extend(enc.on_agent_event(&AgentEvent::ToolCallStart {
+        id: "c1".into(),
+        name: "tool_a".into(),
+    }));
+    all_events.extend(enc.on_agent_event(&AgentEvent::ToolCallDelta {
+        id: "c1".into(),
+        args_delta: "{}".into(),
+    }));
+    all_events.extend(enc.on_agent_event(&AgentEvent::ToolCallReady {
+        id: "c1".into(),
+        name: "tool_a".into(),
+        arguments: json!({}),
+    }));
+    all_events.extend(enc.on_agent_event(&AgentEvent::ToolCallDone {
+        id: "c1".into(),
+        message_id: "m1".into(),
+        result: ToolResult::success("tool_a", json!("ok")),
+        outcome: ToolCallOutcome::Succeeded,
+    }));
+
+    // Tool 2: start -> delta -> ready -> done
+    all_events.extend(enc.on_agent_event(&AgentEvent::ToolCallStart {
+        id: "c2".into(),
+        name: "tool_b".into(),
+    }));
+    all_events.extend(enc.on_agent_event(&AgentEvent::ToolCallDelta {
+        id: "c2".into(),
+        args_delta: "{}".into(),
+    }));
+    all_events.extend(enc.on_agent_event(&AgentEvent::ToolCallReady {
+        id: "c2".into(),
+        name: "tool_b".into(),
+        arguments: json!({}),
+    }));
+    all_events.extend(enc.on_agent_event(&AgentEvent::ToolCallDone {
+        id: "c2".into(),
+        message_id: "m2".into(),
+        result: ToolResult::success("tool_b", json!("done")),
+        outcome: ToolCallOutcome::Succeeded,
+    }));
+
+    // Verify correct order: ToolCallStart(c1), Args(c1), End(c1), Result(c1),
+    //                        ToolCallStart(c2), Args(c2), End(c2), Result(c2)
+    let tool_events: Vec<_> = all_events
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Event::ToolCallStart { .. }
+                    | Event::ToolCallArgs { .. }
+                    | Event::ToolCallEnd { .. }
+                    | Event::ToolCallResult { .. }
+            )
+        })
+        .collect();
+    assert_eq!(tool_events.len(), 8);
+    assert!(
+        matches!(tool_events[0], Event::ToolCallStart { tool_call_id, .. } if tool_call_id == "c1")
+    );
+    assert!(
+        matches!(tool_events[1], Event::ToolCallArgs { tool_call_id, .. } if tool_call_id == "c1")
+    );
+    assert!(
+        matches!(tool_events[2], Event::ToolCallEnd { tool_call_id, .. } if tool_call_id == "c1")
+    );
+    assert!(
+        matches!(tool_events[3], Event::ToolCallResult { tool_call_id, .. } if tool_call_id == "c1")
+    );
+    assert!(
+        matches!(tool_events[4], Event::ToolCallStart { tool_call_id, .. } if tool_call_id == "c2")
+    );
+    assert!(
+        matches!(tool_events[5], Event::ToolCallArgs { tool_call_id, .. } if tool_call_id == "c2")
+    );
+    assert!(
+        matches!(tool_events[6], Event::ToolCallEnd { tool_call_id, .. } if tool_call_id == "c2")
+    );
+    assert!(
+        matches!(tool_events[7], Event::ToolCallResult { tool_call_id, .. } if tool_call_id == "c2")
+    );
+}
+
+// 6. Failed tool produces error result event
+#[test]
+fn failed_tool_produces_error_result() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let events = enc.on_agent_event(&AgentEvent::ToolCallDone {
+        id: "c1".into(),
+        message_id: "m1".into(),
+        result: ToolResult::error("broken_tool", "connection refused"),
+        outcome: ToolCallOutcome::Failed,
+    });
+    assert_eq!(events.len(), 1);
+    assert!(
+        matches!(&events[0], Event::ToolCallResult { tool_call_id, content, .. }
+            if tool_call_id == "c1" && content == "connection refused")
+    );
+}
+
+// 7. Unknown tool produces error event (not crash)
+#[test]
+fn unknown_tool_error_does_not_crash() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    // Simulate an unknown tool by using error result
+    let events = enc.on_agent_event(&AgentEvent::ToolCallDone {
+        id: "c_unknown".into(),
+        message_id: "m_unk".into(),
+        result: ToolResult::error("nonexistent_tool", "tool not found"),
+        outcome: ToolCallOutcome::Failed,
+    });
+    assert_eq!(events.len(), 1);
+    assert!(
+        matches!(&events[0], Event::ToolCallResult { tool_call_id, content, .. }
+            if tool_call_id == "c_unknown" && content.contains("not found"))
+    );
+}
+
+// 8. Text delta events encode content correctly
+#[test]
+fn text_delta_encodes_content_correctly() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let events = enc.on_agent_event(&AgentEvent::TextDelta {
+        delta: "Hello, 世界! 🌍".into(),
+    });
+    assert_eq!(events.len(), 2);
+    assert!(matches!(&events[0], Event::TextMessageStart { role, .. } if *role == Role::Assistant));
+    assert!(
+        matches!(&events[1], Event::TextMessageContent { delta, .. } if delta == "Hello, 世界! 🌍")
+    );
+}
+
+// 9. Run start event has thread_id and run_id
+#[test]
+fn run_start_has_thread_and_run_id() {
+    let mut enc = AgUiEncoder::new();
+    let events = enc.on_agent_event(&AgentEvent::RunStart {
+        thread_id: "thread_42".into(),
+        run_id: "run_99".into(),
+        parent_run_id: None,
+    });
+    assert_eq!(events.len(), 1);
+    assert!(
+        matches!(&events[0], Event::RunStarted { thread_id, run_id, parent_run_id, .. }
+            if thread_id == "thread_42" && run_id == "run_99" && parent_run_id.is_none())
+    );
+}
+
+// 10. Run finish event has termination reason
+#[test]
+fn run_finish_with_result_payload() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let result_val = json!({"summary": "completed 3 tasks"});
+    let events = enc.on_agent_event(&AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: Some(result_val.clone()),
+        termination: TerminationReason::NaturalEnd,
+    });
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::RunFinished { result, .. } if *result == Some(result_val.clone())
+    )));
+}
+
+// 11. Step boundary events (StepStart, StepEnd) in correct order
+#[test]
+fn step_boundary_events_in_correct_order() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let mut all = Vec::new();
+
+    all.extend(enc.on_agent_event(&AgentEvent::StepStart {
+        message_id: "m1".into(),
+    }));
+    all.extend(enc.on_agent_event(&AgentEvent::TextDelta {
+        delta: "response".into(),
+    }));
+    all.extend(enc.on_agent_event(&AgentEvent::StepEnd));
+
+    // StepStarted must come before StepFinished
+    let step_start_idx = all
+        .iter()
+        .position(|e| matches!(e, Event::StepStarted { .. }))
+        .unwrap();
+    let step_finish_idx = all
+        .iter()
+        .position(|e| matches!(e, Event::StepFinished { .. }))
+        .unwrap();
+    assert!(step_start_idx < step_finish_idx);
+
+    // Both refer to the same step name
+    assert!(
+        matches!(&all[step_start_idx], Event::StepStarted { step_name, .. } if step_name == "step_1")
+    );
+    assert!(
+        matches!(&all[step_finish_idx], Event::StepFinished { step_name, .. } if step_name == "step_1")
+    );
+}
+
+// 12. Inference complete has no AG-UI output (silently consumed)
+#[test]
+fn inference_complete_produces_no_events() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let events = enc.on_agent_event(&AgentEvent::InferenceComplete {
+        model: "claude-3-opus".into(),
+        usage: Some(TokenUsage {
+            prompt_tokens: Some(100),
+            completion_tokens: Some(50),
+            total_tokens: Some(150),
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
+            thinking_tokens: None,
+        }),
+        duration_ms: 2500,
+    });
+    assert!(events.is_empty());
+}
+
+// 13. State snapshot event encodes state correctly
+#[test]
+fn state_snapshot_encodes_complex_state() {
+    let mut enc = AgUiEncoder::new();
+    let state = json!({
+        "user": {"name": "Alice", "role": "admin"},
+        "items": [1, 2, 3],
+        "nested": {"deep": {"value": true}}
+    });
+    let events = enc.on_agent_event(&AgentEvent::StateSnapshot {
+        snapshot: state.clone(),
+    });
+    assert_eq!(events.len(), 1);
+    if let Event::StateSnapshot { snapshot, .. } = &events[0] {
+        assert_eq!(*snapshot, state);
+        assert_eq!(snapshot["user"]["name"], "Alice");
+        assert_eq!(snapshot["items"][1], 2);
+        assert_eq!(snapshot["nested"]["deep"]["value"], true);
+    } else {
+        panic!("expected StateSnapshot");
+    }
+}
+
+// 14. Empty tool calls = no tool events emitted
+#[test]
+fn no_tool_calls_means_no_tool_events() {
+    let mut enc = AgUiEncoder::new();
+    let mut all = Vec::new();
+
+    all.extend(enc.on_agent_event(&AgentEvent::RunStart {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        parent_run_id: None,
+    }));
+    all.extend(enc.on_agent_event(&AgentEvent::StepStart {
+        message_id: "m1".into(),
+    }));
+    all.extend(enc.on_agent_event(&AgentEvent::TextDelta {
+        delta: "just text".into(),
+    }));
+    all.extend(enc.on_agent_event(&AgentEvent::StepEnd));
+    all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: None,
+        termination: TerminationReason::NaturalEnd,
+    }));
+
+    let tool_events: Vec<_> = all
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Event::ToolCallStart { .. }
+                    | Event::ToolCallArgs { .. }
+                    | Event::ToolCallEnd { .. }
+                    | Event::ToolCallResult { .. }
+            )
+        })
+        .collect();
+    assert!(tool_events.is_empty());
+}
+
+// 15. Tool suspension emits no result event (pending status)
+#[test]
+fn tool_suspension_emits_no_result() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    enc.on_agent_event(&AgentEvent::ToolCallStart {
+        id: "c1".into(),
+        name: "confirm".into(),
+    });
+    enc.on_agent_event(&AgentEvent::ToolCallReady {
+        id: "c1".into(),
+        name: "confirm".into(),
+        arguments: json!({"action": "delete_file"}),
+    });
+    let events = enc.on_agent_event(&AgentEvent::ToolCallDone {
+        id: "c1".into(),
+        message_id: "m1".into(),
+        result: ToolResult::suspended("confirm", "awaiting user approval"),
+        outcome: ToolCallOutcome::Suspended,
+    });
+    assert!(events.is_empty());
+}
+
+// 16. Reasoning delta event encoding
+#[test]
+fn reasoning_delta_encodes_content() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let events = enc.on_agent_event(&AgentEvent::ReasoningDelta {
+        delta: "Let me analyze this step by step...".into(),
+    });
+    assert_eq!(events.len(), 2);
+    assert!(
+        matches!(&events[0], Event::ReasoningMessageStart { message_id, role, .. }
+            if message_id == "r1" && *role == Role::Assistant)
+    );
+    assert!(
+        matches!(&events[1], Event::ReasoningMessageContent { message_id, delta, .. }
+            if message_id == "r1" && delta == "Let me analyze this step by step...")
+    );
+}
+
+// 17. Activity snapshot event encoding
+#[test]
+fn activity_snapshot_encodes_content_as_map() {
+    let mut enc = AgUiEncoder::new();
+    let events = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
+        message_id: "act_1".into(),
+        activity_type: "search_progress".into(),
+        content: json!({"found": 5, "total": 100}),
+        replace: Some(false),
+    });
+    assert_eq!(events.len(), 1);
+    if let Event::ActivitySnapshot {
+        message_id,
+        activity_type,
+        content,
+        replace,
+        ..
+    } = &events[0]
+    {
+        assert_eq!(message_id, "act_1");
+        assert_eq!(activity_type, "search_progress");
+        assert_eq!(content.get("found"), Some(&json!(5)));
+        assert_eq!(content.get("total"), Some(&json!(100)));
+        assert_eq!(*replace, Some(false));
+    } else {
+        panic!("expected ActivitySnapshot");
+    }
+}
+
+// 18. Multiple text deltas concatenated in final response
+#[test]
+fn multiple_text_deltas_stream_correctly() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let mut all = Vec::new();
+
+    all.extend(enc.on_agent_event(&AgentEvent::TextDelta {
+        delta: "Hello ".into(),
+    }));
+    all.extend(enc.on_agent_event(&AgentEvent::TextDelta {
+        delta: "world".into(),
+    }));
+    all.extend(enc.on_agent_event(&AgentEvent::TextDelta { delta: "!".into() }));
+
+    // Should have 1 TextMessageStart + 3 TextMessageContent
+    let starts: Vec<_> = all
+        .iter()
+        .filter(|e| matches!(e, Event::TextMessageStart { .. }))
+        .collect();
+    let contents: Vec<_> = all
+        .iter()
+        .filter_map(|e| match e {
+            Event::TextMessageContent { delta, .. } => Some(delta.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(starts.len(), 1);
+    assert_eq!(contents.len(), 3);
+    assert_eq!(contents.join(""), "Hello world!");
+}
+
+// 19. Error event encoding with message and code
+#[test]
+fn error_event_encodes_message_and_code() {
+    let mut enc = AgUiEncoder::new();
+    let events = enc.on_agent_event(&AgentEvent::Error {
+        message: "rate limit exceeded".into(),
+        code: Some("RATE_LIMIT".into()),
+    });
+    assert_eq!(events.len(), 1);
+    if let Event::RunError { message, code, .. } = &events[0] {
+        assert_eq!(message, "rate limit exceeded");
+        assert_eq!(*code, Some("RATE_LIMIT".into()));
+    } else {
+        panic!("expected RunError");
+    }
+}
+
+// 20. Error event without code
+#[test]
+fn error_event_without_code() {
+    let mut enc = AgUiEncoder::new();
+    let events = enc.on_agent_event(&AgentEvent::Error {
+        message: "internal error".into(),
+        code: None,
+    });
+    assert_eq!(events.len(), 1);
+    if let Event::RunError { message, code, .. } = &events[0] {
+        assert_eq!(message, "internal error");
+        assert!(code.is_none());
+    } else {
+        panic!("expected RunError");
+    }
 }
