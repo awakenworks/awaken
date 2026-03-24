@@ -4756,3 +4756,2074 @@ async fn mixed_suspended_and_completed_tools() {
         "echo should emit Succeeded ToolCallDone"
     );
 }
+
+// ===========================================================================
+// Migrated from uncarve loop_runner integration tests
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// 1. Agent config defaults & builder
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn agent_config_defaults() {
+    let llm = Arc::new(ScriptedLlm::new(vec![]));
+    let config = AgentConfig::new("test", "gpt-4", "sys", llm);
+    assert_eq!(config.max_rounds, 16);
+    assert!(config.system_prompt == "sys");
+    assert!(config.tools.is_empty());
+}
+
+#[tokio::test]
+async fn agent_config_builder_chain() {
+    let llm = Arc::new(ScriptedLlm::new(vec![]));
+    let config = AgentConfig::new("test", "gpt-4", "You are helpful.", llm)
+        .with_max_rounds(5)
+        .with_tool(Arc::new(EchoTool))
+        .with_tool(Arc::new(CalcTool));
+
+    assert_eq!(config.model, "gpt-4");
+    assert_eq!(config.max_rounds, 5);
+    assert_eq!(config.system_prompt, "You are helpful.");
+    assert_eq!(config.tools.len(), 2);
+    assert!(config.tools.contains_key("echo"));
+    assert!(config.tools.contains_key("calc"));
+}
+
+#[tokio::test]
+async fn agent_config_with_tools_batch() {
+    let llm = Arc::new(ScriptedLlm::new(vec![]));
+    let tools: Vec<Arc<dyn awaken::contract::tool::Tool>> = vec![
+        Arc::new(EchoTool),
+        Arc::new(CalcTool),
+        Arc::new(FailingTool),
+    ];
+    let config = AgentConfig::new("test", "m", "s", llm).with_tools(tools);
+
+    assert_eq!(config.tools.len(), 3);
+    assert!(config.tools.contains_key("echo"));
+    assert!(config.tools.contains_key("calc"));
+    assert!(config.tools.contains_key("fail"));
+}
+
+// ---------------------------------------------------------------------------
+// 2. Tool descriptor schema
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn tool_descriptor_has_required_fields() {
+    let echo = EchoTool;
+    let desc = echo.descriptor();
+    assert_eq!(desc.id, "echo");
+    assert!(!desc.description.is_empty());
+}
+
+#[tokio::test]
+async fn tool_descriptor_with_parameters_schema() {
+    let desc = ToolDescriptor::new("search", "search", "Searches the web").with_parameters(json!({
+        "type": "object",
+        "properties": {
+            "query": { "type": "string" }
+        },
+        "required": ["query"]
+    }));
+
+    assert_eq!(desc.id, "search");
+    assert_eq!(desc.parameters["properties"]["query"]["type"], "string");
+}
+
+#[tokio::test]
+async fn tool_descriptors_sorted_by_id() {
+    let llm = Arc::new(ScriptedLlm::new(vec![]));
+    let config = AgentConfig::new("test", "m", "s", llm)
+        .with_tool(Arc::new(CalcTool))
+        .with_tool(Arc::new(EchoTool))
+        .with_tool(Arc::new(FailingTool));
+
+    let descs = config.tool_descriptors();
+    let ids: Vec<&str> = descs.iter().map(|d| d.id.as_str()).collect();
+    let mut sorted_ids = ids.clone();
+    sorted_ids.sort();
+    assert_eq!(ids, sorted_ids, "tool_descriptors should be sorted by id");
+}
+
+// ---------------------------------------------------------------------------
+// 3. Parallel tool execution (multiple tools run, results collected)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn parallel_tools_all_succeed() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![
+                ToolCall::new("c1", "echo", json!({"message": "alpha"})),
+                ToolCall::new("c2", "echo", json!({"message": "beta"})),
+                ToolCall::new("c3", "calc", json!({"result": 100})),
+            ],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("All tools done.")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm)
+        .with_tool(Arc::new(EchoTool))
+        .with_tool(Arc::new(CalcTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("run all three")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(result.steps, 2);
+
+    let events = sink.take();
+    let tool_done_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolCallDone { id, outcome, .. } => Some((id.clone(), *outcome)),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(tool_done_events.len(), 3, "all three tools should complete");
+    let all_succeeded = tool_done_events
+        .iter()
+        .all(|(_, o)| *o == awaken::contract::suspension::ToolCallOutcome::Succeeded);
+    assert!(all_succeeded, "all three tools should succeed");
+}
+
+// ---------------------------------------------------------------------------
+// 4. Parallel tools: mixed success and failure with result data
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn parallel_tools_mixed_outcomes_preserve_results() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![
+                ToolCall::new("c1", "echo", json!({"message": "works"})),
+                ToolCall::new("c2", "fail", json!({})),
+                ToolCall::new("c3", "calc", json!({"result": 7})),
+            ],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("Mixed results.")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm)
+        .with_tool(Arc::new(EchoTool))
+        .with_tool(Arc::new(FailingTool))
+        .with_tool(Arc::new(CalcTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("run mixed")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+
+    let events = sink.take();
+    let results_by_id: std::collections::HashMap<
+        String,
+        (awaken::contract::suspension::ToolCallOutcome, ToolResult),
+    > = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolCallDone {
+                id,
+                outcome,
+                result,
+                ..
+            } => Some((id.clone(), (*outcome, result.clone()))),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(results_by_id.len(), 3);
+
+    // echo should succeed with message
+    let (echo_outcome, echo_result) = &results_by_id["c1"];
+    assert_eq!(
+        *echo_outcome,
+        awaken::contract::suspension::ToolCallOutcome::Succeeded
+    );
+    assert!(echo_result.is_success());
+
+    // fail should fail
+    let (fail_outcome, _) = &results_by_id["c2"];
+    assert_eq!(
+        *fail_outcome,
+        awaken::contract::suspension::ToolCallOutcome::Failed
+    );
+
+    // calc should succeed
+    let (calc_outcome, calc_result) = &results_by_id["c3"];
+    assert_eq!(
+        *calc_outcome,
+        awaken::contract::suspension::ToolCallOutcome::Succeeded
+    );
+    assert!(calc_result.is_success());
+    assert_eq!(calc_result.data, json!(7));
+}
+
+// ---------------------------------------------------------------------------
+// 5. System prompt appears in LLM request
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn system_prompt_included_in_inference_request() {
+    struct SystemPromptRecordingLlm {
+        messages: Mutex<Vec<Vec<Message>>>,
+    }
+
+    impl SystemPromptRecordingLlm {
+        fn new() -> Self {
+            Self {
+                messages: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmExecutor for SystemPromptRecordingLlm {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            self.messages.lock().unwrap().push(req.messages.clone());
+            Ok(StreamResult {
+                content: vec![ContentBlock::text("ok")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+
+        fn name(&self) -> &str {
+            "system-prompt-recording"
+        }
+    }
+
+    let llm = Arc::new(SystemPromptRecordingLlm::new());
+    let llm_clone = Arc::clone(&llm);
+
+    let agent = AgentConfig::new("test", "gpt-4o", "You are a helpful assistant.", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let requests = llm_clone.messages.lock().unwrap();
+    assert!(
+        !requests.is_empty(),
+        "should have at least one inference call"
+    );
+    let first_messages = &requests[0];
+    let has_system_prompt = first_messages
+        .iter()
+        .any(|msg| msg.text().contains("You are a helpful assistant."));
+    assert!(
+        has_system_prompt,
+        "system prompt should appear as a message in inference request, got: {:?}",
+        first_messages.iter().map(|m| m.text()).collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 6. Message ordering: user messages appear in correct order
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn message_ordering_preserved_in_inference_request() {
+    struct MessageOrderLlm {
+        requests: Mutex<Vec<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for MessageOrderLlm {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            let texts: Vec<String> = req.messages.iter().map(|m| m.text()).collect();
+            self.requests.lock().unwrap().push(texts);
+            Ok(StreamResult {
+                content: vec![ContentBlock::text("done")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+
+        fn name(&self) -> &str {
+            "message-order"
+        }
+    }
+
+    let llm = Arc::new(MessageOrderLlm {
+        requests: Mutex::new(Vec::new()),
+    });
+    let llm_ref = Arc::clone(&llm);
+
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![
+            Message::user("first message"),
+            Message::user("second message"),
+        ],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let requests = llm_ref.requests.lock().unwrap();
+    assert!(!requests.is_empty());
+    let first_req = &requests[0];
+    let first_idx = first_req.iter().position(|m| m.contains("first message"));
+    let second_idx = first_req.iter().position(|m| m.contains("second message"));
+    assert!(first_idx.is_some(), "first message should appear");
+    assert!(second_idx.is_some(), "second message should appear");
+    assert!(
+        first_idx.unwrap() < second_idx.unwrap(),
+        "messages should be in order: first before second"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 7. Tools provided to LLM as descriptors
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn tool_descriptors_sent_to_llm() {
+    struct ToolDescriptorCheckLlm {
+        tool_ids: Mutex<Vec<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for ToolDescriptorCheckLlm {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            let ids: Vec<String> = req.tools.iter().map(|t| t.id.clone()).collect();
+            self.tool_ids.lock().unwrap().push(ids);
+            Ok(StreamResult {
+                content: vec![ContentBlock::text("done")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+
+        fn name(&self) -> &str {
+            "tool-descriptor-check"
+        }
+    }
+
+    let llm = Arc::new(ToolDescriptorCheckLlm {
+        tool_ids: Mutex::new(Vec::new()),
+    });
+    let llm_ref = Arc::clone(&llm);
+
+    let agent = AgentConfig::new("test", "m", "sys", llm)
+        .with_tool(Arc::new(EchoTool))
+        .with_tool(Arc::new(CalcTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let tool_ids = llm_ref.tool_ids.lock().unwrap();
+    assert!(!tool_ids.is_empty());
+    let first_call_tools = &tool_ids[0];
+    assert!(
+        first_call_tools.contains(&"echo".to_string()),
+        "echo tool descriptor should be sent to LLM"
+    );
+    assert!(
+        first_call_tools.contains(&"calc".to_string()),
+        "calc tool descriptor should be sent to LLM"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 8. Run identity fields propagate correctly
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn run_identity_fields_propagate_to_lifecycle() {
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("ok")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let identity = RunIdentity::new(
+        "thread-abc".into(),
+        Some("parent-thread".into()),
+        "run-xyz".into(),
+        Some("parent-run".into()),
+        "agent-42".into(),
+        RunOrigin::Internal,
+    );
+
+    let sink = Arc::new(VecEventSink::new());
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: identity,
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
+    assert_eq!(lifecycle.run_id, "run-xyz");
+    assert_eq!(lifecycle.status, RunStatus::Done);
+}
+
+// ---------------------------------------------------------------------------
+// 9. Context message injection via plugin (suffix system)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn context_message_suffix_system_injected() {
+    use awaken::agent::state::AddContextMessage;
+    use awaken::contract::context_message::ContextMessage;
+
+    struct RecordingLlm2 {
+        requests: Mutex<Vec<Vec<Message>>>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for RecordingLlm2 {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            self.requests.lock().unwrap().push(req.messages.clone());
+            Ok(StreamResult {
+                content: vec![ContentBlock::text("ok")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+
+        fn name(&self) -> &str {
+            "recording2"
+        }
+    }
+
+    struct SuffixInjectorHook;
+
+    #[async_trait]
+    impl PhaseHook for SuffixInjectorHook {
+        async fn run(
+            &self,
+            _ctx: &awaken::PhaseContext,
+        ) -> Result<awaken::StateCommand, awaken::StateError> {
+            let mut cmd = awaken::StateCommand::new();
+            cmd.schedule_action::<AddContextMessage>(ContextMessage::suffix_system(
+                "test_suffix",
+                "This is a suffix system reminder.",
+            ))?;
+            Ok(cmd)
+        }
+    }
+
+    struct SuffixInjectorPlugin;
+    impl Plugin for SuffixInjectorPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "suffix-injector",
+            }
+        }
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_phase_hook(
+                "suffix-injector",
+                awaken::Phase::BeforeInference,
+                SuffixInjectorHook,
+            )?;
+            Ok(())
+        }
+    }
+
+    let llm = Arc::new(RecordingLlm2 {
+        requests: Mutex::new(Vec::new()),
+    });
+    let llm_clone = Arc::clone(&llm);
+
+    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(agent, vec![Arc::new(SuffixInjectorPlugin)]);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hello")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let requests = llm_clone.requests.lock().unwrap();
+    assert!(!requests.is_empty());
+    let first_req = &requests[0];
+    let has_suffix = first_req
+        .iter()
+        .any(|msg| msg.text().contains("suffix system reminder"));
+    assert!(
+        has_suffix,
+        "suffix system message should be injected, got messages: {:?}",
+        first_req.iter().map(|m| m.text()).collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 10. Multiple context messages injected in same step
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn multiple_context_messages_injected() {
+    use awaken::agent::state::AddContextMessage;
+    use awaken::contract::context_message::ContextMessage;
+
+    struct RecordingLlm3 {
+        requests: Mutex<Vec<Vec<Message>>>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for RecordingLlm3 {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            self.requests.lock().unwrap().push(req.messages.clone());
+            Ok(StreamResult {
+                content: vec![ContentBlock::text("ok")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+
+        fn name(&self) -> &str {
+            "recording3"
+        }
+    }
+
+    struct MultiContextHook;
+
+    #[async_trait]
+    impl PhaseHook for MultiContextHook {
+        async fn run(
+            &self,
+            _ctx: &awaken::PhaseContext,
+        ) -> Result<awaken::StateCommand, awaken::StateError> {
+            let mut cmd = awaken::StateCommand::new();
+            cmd.schedule_action::<AddContextMessage>(ContextMessage::system(
+                "ctx_alpha",
+                "Alpha context message.",
+            ))?;
+            cmd.schedule_action::<AddContextMessage>(ContextMessage::system(
+                "ctx_beta",
+                "Beta context message.",
+            ))?;
+            Ok(cmd)
+        }
+    }
+
+    struct MultiContextPlugin;
+    impl Plugin for MultiContextPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "multi-context",
+            }
+        }
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_phase_hook(
+                "multi-context",
+                awaken::Phase::BeforeInference,
+                MultiContextHook,
+            )?;
+            Ok(())
+        }
+    }
+
+    let llm = Arc::new(RecordingLlm3 {
+        requests: Mutex::new(Vec::new()),
+    });
+    let llm_clone = Arc::clone(&llm);
+
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(agent, vec![Arc::new(MultiContextPlugin)]);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let requests = llm_clone.requests.lock().unwrap();
+    let first_req = &requests[0];
+    let has_alpha = first_req
+        .iter()
+        .any(|msg| msg.text().contains("Alpha context message"));
+    let has_beta = first_req
+        .iter()
+        .any(|msg| msg.text().contains("Beta context message"));
+    assert!(has_alpha, "alpha context should be injected");
+    assert!(has_beta, "beta context should be injected");
+}
+
+// ---------------------------------------------------------------------------
+// 11. Phase hooks fire with tool call context (BeforeToolExecute/AfterToolExecute)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn phase_hooks_fire_with_tool_call_phases() {
+    let recorded_phases = Arc::new(Mutex::new(Vec::<Phase>::new()));
+
+    struct DetailedPhaseTracker(Arc<Mutex<Vec<Phase>>>);
+    #[async_trait]
+    impl PhaseHook for DetailedPhaseTracker {
+        async fn run(
+            &self,
+            ctx: &awaken::PhaseContext,
+        ) -> Result<awaken::StateCommand, awaken::StateError> {
+            self.0.lock().unwrap().push(ctx.phase);
+            Ok(awaken::StateCommand::new())
+        }
+    }
+
+    struct DetailedTrackerPlugin(Arc<Mutex<Vec<Phase>>>);
+    impl Plugin for DetailedTrackerPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "detailed-tracker",
+            }
+        }
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            for phase in Phase::ALL {
+                registrar.register_phase_hook(
+                    "detailed-tracker",
+                    phase,
+                    DetailedPhaseTracker(Arc::clone(&self.0)),
+                )?;
+            }
+            Ok(())
+        }
+    }
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "hi"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("done")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+
+    let tracker = Arc::new(DetailedTrackerPlugin(Arc::clone(&recorded_phases)));
+    let resolver = FixedResolver::with_plugins(agent, vec![tracker]);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("echo")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let phases = recorded_phases.lock().unwrap();
+    assert!(
+        phases.contains(&Phase::BeforeToolExecute),
+        "BeforeToolExecute should fire for tool call, got: {:?}",
+        *phases
+    );
+    assert!(
+        phases.contains(&Phase::AfterToolExecute),
+        "AfterToolExecute should fire after tool completes, got: {:?}",
+        *phases
+    );
+    assert!(
+        phases.len() >= 10,
+        "should have at least 10 phase hooks, got {}",
+        phases.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 12. Step count increments correctly across tool call steps
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn step_count_increments_with_tool_calls() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "1"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c2", "echo", json!({"message": "2"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("final")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.steps, 3, "should have 3 steps: 2 tool + 1 final");
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
+    assert_eq!(lifecycle.step_count, 3);
+}
+
+// ---------------------------------------------------------------------------
+// 13. Token usage reported in inference events
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn token_usage_reported_in_inference_events() {
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("hi")],
+        tool_calls: vec![],
+        usage: Some(TokenUsage {
+            prompt_tokens: Some(50),
+            completion_tokens: Some(20),
+            total_tokens: Some(70),
+            ..Default::default()
+        }),
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let events = sink.take();
+    let inference_events: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::InferenceComplete { .. }))
+        .collect();
+    assert_eq!(
+        inference_events.len(),
+        1,
+        "should have one InferenceComplete event"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 14. Blocking plugin allows non-targeted tool
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn blocking_plugin_allows_non_targeted_tool() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "calc", json!({"result": 42}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("done")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(CalcTool));
+    let blocking_plugin = Arc::new(BlockingPluginWrapper(BlockingPlugin {
+        blocked_tool: "echo".into(),
+        reason: "echo is blocked".into(),
+    }));
+
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(agent, vec![blocking_plugin]);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("calc")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        result.termination,
+        TerminationReason::NaturalEnd,
+        "non-blocked tool should proceed normally"
+    );
+    assert_eq!(result.steps, 2);
+}
+
+// ---------------------------------------------------------------------------
+// 15. SetResult intercept on specific tool only (other tool executes)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn set_result_intercept_on_specific_tool_only() {
+    let tool_executed = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    struct TrackingCalcTool2(Arc<Mutex<Vec<String>>>);
+    #[async_trait]
+    impl Tool for TrackingCalcTool2 {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("calc", "calculator", "Tracking calculator")
+        }
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
+            self.0.lock().unwrap().push("calc".into());
+            Ok(ToolResult::success("calc", args))
+        }
+    }
+
+    struct TrackingEchoTool3(Arc<Mutex<Vec<String>>>);
+    #[async_trait]
+    impl Tool for TrackingEchoTool3 {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("echo", "echo", "Tracking echo")
+        }
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
+            self.0.lock().unwrap().push("echo".into());
+            let msg = args
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Ok(ToolResult::success_with_message("echo", args, msg))
+        }
+    }
+
+    let executed = Arc::clone(&tool_executed);
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![
+                ToolCall::new("c1", "echo", json!({"message": "hi"})),
+                ToolCall::new("c2", "calc", json!({"result": 5})),
+            ],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("done")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm)
+        .with_tool(Arc::new(TrackingEchoTool3(Arc::clone(&executed))))
+        .with_tool(Arc::new(TrackingCalcTool2(Arc::clone(&executed))));
+
+    let set_result_plugin = Arc::new(SetResultPluginWrapper(SetResultPlugin {
+        target_tool: "echo".into(),
+        result: ToolResult::success_with_message("echo", json!({}), "intercepted".to_string()),
+    }));
+
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(agent, vec![set_result_plugin]);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("run both")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+
+    let executed_tools = tool_executed.lock().unwrap();
+    assert!(
+        !executed_tools.contains(&"echo".to_string()),
+        "echo should not execute when SetResult intercept is active"
+    );
+    assert!(
+        executed_tools.contains(&"calc".to_string()),
+        "calc should execute normally (not intercepted)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16. Phase hook sees tool name and call_id in BeforeToolExecute
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn phase_hook_receives_tool_context() {
+    let observed_tool_names = Arc::new(Mutex::new(Vec::<String>::new()));
+    let observed_call_ids = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    struct ToolContextObserver {
+        tool_names: Arc<Mutex<Vec<String>>>,
+        call_ids: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Clone for ToolContextObserver {
+        fn clone(&self) -> Self {
+            Self {
+                tool_names: Arc::clone(&self.tool_names),
+                call_ids: Arc::clone(&self.call_ids),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl PhaseHook for ToolContextObserver {
+        async fn run(
+            &self,
+            ctx: &awaken::PhaseContext,
+        ) -> Result<awaken::StateCommand, awaken::StateError> {
+            if let Some(ref name) = ctx.tool_name {
+                self.tool_names.lock().unwrap().push(name.clone());
+            }
+            if let Some(ref id) = ctx.tool_call_id {
+                self.call_ids.lock().unwrap().push(id.clone());
+            }
+            Ok(awaken::StateCommand::new())
+        }
+    }
+
+    struct ToolContextPlugin {
+        observer: ToolContextObserver,
+    }
+
+    impl Plugin for ToolContextPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "tool-context-observer",
+            }
+        }
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_phase_hook(
+                "tool-context-observer",
+                awaken::Phase::BeforeToolExecute,
+                self.observer.clone(),
+            )?;
+            Ok(())
+        }
+    }
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "test"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("done")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let observer_plugin = Arc::new(ToolContextPlugin {
+        observer: ToolContextObserver {
+            tool_names: Arc::clone(&observed_tool_names),
+            call_ids: Arc::clone(&observed_call_ids),
+        },
+    });
+    let resolver = FixedResolver::with_plugins(agent, vec![observer_plugin]);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("echo")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let names = observed_tool_names.lock().unwrap();
+    let ids = observed_call_ids.lock().unwrap();
+
+    assert!(
+        names.contains(&"echo".to_string()),
+        "should see tool name 'echo'"
+    );
+    assert!(ids.contains(&"c1".to_string()), "should see call_id 'c1'");
+}
+
+// ---------------------------------------------------------------------------
+// 17. LLM error on second step propagates after tool call
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn llm_error_on_second_step_propagates() {
+    struct FailOnSecondCallLlm {
+        call_count: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for FailOnSecondCallLlm {
+        async fn execute(
+            &self,
+            _req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            if *count == 1 {
+                Ok(StreamResult {
+                    content: vec![],
+                    tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "hi"}))],
+                    usage: None,
+                    stop_reason: Some(StopReason::ToolUse),
+                    has_incomplete_tool_calls: false,
+                })
+            } else {
+                Err(InferenceExecutionError::Provider(
+                    "second call failed".into(),
+                ))
+            }
+        }
+
+        fn name(&self) -> &str {
+            "fail-on-second"
+        }
+    }
+
+    let llm = Arc::new(FailOnSecondCallLlm {
+        call_count: Mutex::new(0),
+    });
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await;
+
+    assert!(result.is_err(), "second-step LLM error should propagate");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("second call failed"),
+        "error should contain the provider message"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 18. AfterInference hook sees LLM response
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn after_inference_hook_sees_llm_response() {
+    let saw_response = Arc::new(Mutex::new(false));
+
+    struct AfterInferenceObserver(Arc<Mutex<bool>>);
+
+    impl Clone for AfterInferenceObserver {
+        fn clone(&self) -> Self {
+            Self(Arc::clone(&self.0))
+        }
+    }
+
+    #[async_trait]
+    impl PhaseHook for AfterInferenceObserver {
+        async fn run(
+            &self,
+            ctx: &awaken::PhaseContext,
+        ) -> Result<awaken::StateCommand, awaken::StateError> {
+            if ctx.llm_response.is_some() {
+                *self.0.lock().unwrap() = true;
+            }
+            Ok(awaken::StateCommand::new())
+        }
+    }
+
+    struct AfterInferenceObserverPlugin(Arc<Mutex<bool>>);
+    impl Plugin for AfterInferenceObserverPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "after-inference-observer",
+            }
+        }
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_phase_hook(
+                "after-inference-observer",
+                awaken::Phase::AfterInference,
+                AfterInferenceObserver(Arc::clone(&self.0)),
+            )?;
+            Ok(())
+        }
+    }
+
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("hello")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(
+        agent,
+        vec![Arc::new(AfterInferenceObserverPlugin(Arc::clone(
+            &saw_response,
+        )))],
+    );
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        *saw_response.lock().unwrap(),
+        "AfterInference hook should see the LLM response"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 19. AfterToolExecute hook sees tool result
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn after_tool_execute_hook_sees_tool_result() {
+    let tool_results_observed = Arc::new(Mutex::new(Vec::<ToolResult>::new()));
+
+    struct AfterToolObserver(Arc<Mutex<Vec<ToolResult>>>);
+
+    impl Clone for AfterToolObserver {
+        fn clone(&self) -> Self {
+            Self(Arc::clone(&self.0))
+        }
+    }
+
+    #[async_trait]
+    impl PhaseHook for AfterToolObserver {
+        async fn run(
+            &self,
+            ctx: &awaken::PhaseContext,
+        ) -> Result<awaken::StateCommand, awaken::StateError> {
+            if let Some(ref result) = ctx.tool_result {
+                self.0.lock().unwrap().push(result.clone());
+            }
+            Ok(awaken::StateCommand::new())
+        }
+    }
+
+    struct AfterToolObserverPlugin(Arc<Mutex<Vec<ToolResult>>>);
+    impl Plugin for AfterToolObserverPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "after-tool-observer",
+            }
+        }
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_phase_hook(
+                "after-tool-observer",
+                awaken::Phase::AfterToolExecute,
+                AfterToolObserver(Arc::clone(&self.0)),
+            )?;
+            Ok(())
+        }
+    }
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "world"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("done")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(
+        agent,
+        vec![Arc::new(AfterToolObserverPlugin(Arc::clone(
+            &tool_results_observed,
+        )))],
+    );
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("echo")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let results = tool_results_observed.lock().unwrap();
+    assert_eq!(results.len(), 1, "should observe one tool result");
+    assert!(results[0].is_success(), "tool result should be success");
+}
+
+// ---------------------------------------------------------------------------
+// 20. Max rounds = 0 stops immediately
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn max_rounds_two_stops_after_two_tool_steps() {
+    let llm = Arc::new(ScriptedLlm::new(
+        (0..5)
+            .map(|i| StreamResult {
+                content: vec![],
+                tool_calls: vec![ToolCall::new(
+                    format!("c{i}"),
+                    "echo",
+                    json!({"message": format!("round{i}")}),
+                )],
+                usage: None,
+                stop_reason: Some(StopReason::ToolUse),
+                has_incomplete_tool_calls: false,
+            })
+            .collect(),
+    ));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm)
+        .with_max_rounds(2)
+        .with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        matches!(
+            result.termination,
+            TerminationReason::Stopped(ref s) if s.code == "max_rounds"
+        ),
+        "max_rounds=2 should trigger Stopped(max_rounds), got {:?}",
+        result.termination
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 21. StepStart events contain step number
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn step_start_events_contain_step_number() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "hi"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("done")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("echo")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let events = sink.take();
+    let step_start_count = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::StepStart { .. }))
+        .count();
+
+    assert_eq!(step_start_count, 2, "should have 2 step starts");
+}
+
+// ---------------------------------------------------------------------------
+// 22. Suspension preserves original tool arguments
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn suspension_preserves_original_arguments() {
+    let original_args =
+        json!({"action": "deploy", "target": "production", "config": {"replicas": 3}});
+
+    let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
+        "dangerous",
+        "c1",
+        original_args.clone(),
+    )]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("deploy")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let tc_states = runtime.store().read::<ToolCallStates>().unwrap();
+    assert_eq!(tc_states.calls["c1"].status, ToolCallStatus::Suspended);
+    assert_eq!(
+        tc_states.calls["c1"].arguments, original_args,
+        "suspended tool call should preserve original arguments"
+    );
+    assert_eq!(tc_states.calls["c1"].tool_name, "dangerous");
+}
+
+// ---------------------------------------------------------------------------
+// 23. Second tool not executed after first suspends
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn second_tool_not_executed_after_first_suspends() {
+    let tool_executed = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    struct TrackingEchoTool2(Arc<Mutex<Vec<String>>>);
+    #[async_trait]
+    impl Tool for TrackingEchoTool2 {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("echo", "echo", "Tracking echo 2")
+        }
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolResult, ToolError> {
+            self.0.lock().unwrap().push("echo".into());
+            Ok(ToolResult::success("echo", args))
+        }
+    }
+
+    let executed = Arc::clone(&tool_executed);
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![],
+        tool_calls: vec![
+            ToolCall::new("c1", "dangerous", json!({"action": "first"})),
+            ToolCall::new("c2", "echo", json!({"message": "second"})),
+        ],
+        usage: None,
+        stop_reason: Some(StopReason::ToolUse),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm)
+        .with_tool(Arc::new(SuspendingTool))
+        .with_tool(Arc::new(TrackingEchoTool2(executed)));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("do both")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::Suspended);
+
+    let executed_tools = tool_executed.lock().unwrap();
+    assert!(
+        !executed_tools.contains(&"echo".to_string()),
+        "echo should NOT execute after dangerous suspends"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 24. RunStart event emitted first
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn run_start_event_emitted_first() {
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("hi")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let events = sink.take();
+    let first_event = &events[0];
+    assert!(
+        matches!(first_event, AgentEvent::RunStart { .. }),
+        "first event should be RunStart, got {:?}",
+        first_event
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 25. RunFinish event emitted last
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn run_finish_event_emitted_last() {
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("hi")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let events = sink.take();
+    let last_event = events.last().unwrap();
+    assert!(
+        matches!(last_event, AgentEvent::RunFinish { .. }),
+        "last event should be RunFinish, got {:?}",
+        last_event
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 26. Tool call events contain correct tool name and call_id
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn tool_call_events_contain_correct_metadata() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new(
+                "tc_42",
+                "echo",
+                json!({"message": "meta-test"}),
+            )],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("done")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("echo")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let events = sink.take();
+
+    let start_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolCallStart { id, name } => Some((id.clone(), name.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(start_events.len(), 1);
+    assert_eq!(start_events[0].0, "tc_42", "call_id should match");
+    assert_eq!(start_events[0].1, "echo", "tool_name should match");
+
+    let done_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolCallDone { id, outcome, .. } => Some((id.clone(), *outcome)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(done_events.len(), 1);
+    assert_eq!(done_events[0].0, "tc_42");
+    assert_eq!(
+        done_events[0].1,
+        awaken::contract::suspension::ToolCallOutcome::Succeeded
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 27. Three-step loop: tool -> tool -> final response
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn three_step_loop_tool_tool_response() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![ContentBlock::text("Step 1")],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "step1"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("Step 2")],
+            tool_calls: vec![ToolCall::new("c2", "calc", json!({"result": 10}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("Final answer.")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm)
+        .with_tool(Arc::new(EchoTool))
+        .with_tool(Arc::new(CalcTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.steps, 3);
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(result.response, "Final answer.");
+
+    let events = sink.take();
+    let step_starts = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::StepStart { .. }))
+        .count();
+    assert_eq!(step_starts, 3, "should have 3 StepStart events");
+
+    let tool_done_count = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolCallDone { .. }))
+        .count();
+    assert_eq!(tool_done_count, 2, "should have 2 ToolCallDone events");
+}
+
+// ---------------------------------------------------------------------------
+// 28. Lifecycle status: Running -> Done
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn lifecycle_transitions_running_to_done() {
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("done")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
+    assert_eq!(lifecycle.status, RunStatus::Done);
+    assert!(lifecycle.done_reason.is_some());
+}
+
+// ---------------------------------------------------------------------------
+// 29. Lifecycle status: Running -> Waiting (suspended)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn lifecycle_transitions_running_to_waiting() {
+    let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
+        "dangerous",
+        "c1",
+        json!({}),
+    )]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("do it")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::Suspended);
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
+    assert_eq!(lifecycle.status, RunStatus::Waiting);
+}
+
+// ---------------------------------------------------------------------------
+// 30. Lifecycle status: Running -> Done (cancelled)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn lifecycle_transitions_running_to_done_on_cancel() {
+    use awaken::CancellationToken;
+
+    let llm = Arc::new(SlowStreamingLlm::new(vec!["tok "; 10].to_vec(), 50));
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let token = CancellationToken::new();
+    token.cancel();
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: Some(token),
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::Cancelled);
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
+    assert_eq!(lifecycle.status, RunStatus::Done);
+}
+
+// ---------------------------------------------------------------------------
+// 31. TextDelta events emitted for text response
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn text_delta_events_emitted_for_text_response() {
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("Hello world!")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hi")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+    })
+    .await
+    .unwrap();
+
+    let events = sink.take();
+    let text_deltas: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::TextDelta { .. }))
+        .collect();
+    assert!(
+        !text_deltas.is_empty(),
+        "should emit TextDelta events for text content"
+    );
+}
