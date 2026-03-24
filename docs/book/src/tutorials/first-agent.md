@@ -8,9 +8,9 @@ Run one agent end-to-end and confirm you receive a complete event stream.
 
 ```toml
 [dependencies]
-tirea = "0.5.0-alpha.1"
-tirea-agentos-server = "0.5.0-alpha.1"
-tirea-store-adapters = "0.5.0-alpha.1"
+tirea = "0.5.0"
+tirea-agentos-server = "0.5.0"
+tirea-store-adapters = "0.5.0"
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 futures = "0.3"
