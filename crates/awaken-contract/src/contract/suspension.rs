@@ -500,4 +500,20 @@ mod tests {
     fn tool_call_status_default_is_new() {
         assert_eq!(ToolCallStatus::default(), ToolCallStatus::New);
     }
+
+    #[test]
+    fn resuming_can_transition_to_suspended() {
+        assert!(
+            ToolCallStatus::Resuming.can_transition_to(ToolCallStatus::Suspended),
+            "Resuming -> Suspended (re-suspension) should be valid"
+        );
+    }
+
+    #[test]
+    fn resuming_can_transition_to_cancelled() {
+        assert!(
+            ToolCallStatus::Resuming.can_transition_to(ToolCallStatus::Cancelled),
+            "Resuming -> Cancelled should be valid"
+        );
+    }
 }
