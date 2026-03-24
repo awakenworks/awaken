@@ -34,7 +34,7 @@ Implemented as a built-in `StateKey` with Run scope.
 
 **Stop conditions are plugins**: Implemented as regular plugins with AfterInference hooks, not hardcoded loop logic. Built-in conditions (MaxRounds, Timeout, TokenBudget, etc.) provided as a default plugin bundle. Termination flows through the `RunLifecycle` state machine — stop condition hooks write `RunLifecycleUpdate::Done` directly via `StateCommand`, and the loop runner checks `RunStatus` at phase boundaries. This eliminates the need for `RuntimeEffect::Terminate` and the `TerminationFlag` side channel; all lifecycle transitions are state-driven.
 
-**Configuration is boundary-resolved**: Run/step lifecycle boundaries are also configuration resolution boundaries (ADR-0004). In particular, `run_phase`, `BeforeInference`, and `BeforeToolExecute` re-resolve live config sources into an execution-local view so handoff, profile switching, and request-level overrides take effect without rebuilding the whole runtime.
+**Configuration is resolved at run start and re-resolved on handoff**: `AgentSpec` is resolved once at run start. Re-resolution occurs at step boundaries only when `ActiveAgentIdKey` indicates a handoff has changed the active agent. This means configuration is stable within a step and only changes between steps when an agent switch occurs. See ADR-0014 for details.
 
 ## Implementation Status
 
@@ -43,7 +43,7 @@ Implemented as a built-in `StateKey` with Run scope.
 - Stop conditions as plugins: implemented (MaxRounds, TokenBudget, Timeout, ConsecutiveErrors)
 - State-driven termination: hooks write `RunLifecycleUpdate::Done`, loop checks `RunStatus`
 - `RuntimeEffect::Terminate` / `TerminationFlag`: removed (replaced by state machine)
-- Boundary-resolved configuration: not implemented (depends on ADR-0004)
+- Configuration resolved at run start, re-resolved on handoff at step boundaries (see ADR-0014)
 
 ## Consequences
 

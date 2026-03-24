@@ -1,6 +1,8 @@
 # ADR-0004: Configuration Resolution
 
-- **Status**: Superseded by ADR-0009
+> **Status: Superseded** — see ADR-0014
+
+- **Status**: Superseded by ADR-0009, ADR-0014
 - **Date**: 2026-03-21
 - **Depends on**: ADR-0001, ADR-0002
 

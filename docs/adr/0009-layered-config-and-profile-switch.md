@@ -1,6 +1,8 @@
 # ADR-0009: Configuration, State, and Profile Switch
 
-- **Status**: Accepted
+> **Status: Superseded** — see ADR-0014, ADR-0015
+
+- **Status**: Superseded by ADR-0014, ADR-0015
 - **Date**: 2026-03-22
 - **Supersedes**: ADR-0004, ADR-0005
 - **Depends on**: ADR-0001, ADR-0002, ADR-0008

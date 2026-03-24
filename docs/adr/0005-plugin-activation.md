@@ -1,6 +1,8 @@
 # ADR-0005: Plugin Activation
 
-- **Status**: Superseded by ADR-0009
+> **Status: Superseded** — see ADR-0015
+
+- **Status**: Superseded by ADR-0009, ADR-0015
 - **Date**: 2026-03-21
 - **Depends on**: ADR-0004
 
