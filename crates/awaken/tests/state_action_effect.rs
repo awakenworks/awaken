@@ -846,7 +846,7 @@ async fn phase_max_rounds_boundary_exact() {
     let store = StateStore::new();
     let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(RespawningPlugin)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<CountingAction>(()).unwrap();
@@ -896,7 +896,7 @@ async fn phase_action_for_different_phase_is_skipped() {
     let store = StateStore::new();
     let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OtherPlugin)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<OtherPhaseAction>(()).unwrap();
@@ -982,7 +982,7 @@ async fn phase_hook_state_mutation_visible_to_action_handler() {
             seen: Arc::clone(&seen),
         }),
     ];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     // Schedule action, then run phase — hook writes first, action reads
     let mut cmd = StateCommand::new();
@@ -1029,7 +1029,7 @@ async fn effect_dispatch_preserves_order() {
     let store = StateStore::new();
     let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(RecorderPlugin(recorder.clone()))];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.emit::<TestEffect>(TestEffect::Ping {
@@ -1082,7 +1082,7 @@ async fn effect_handler_failure_does_not_block_other_effects() {
     let store = StateStore::new();
     let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(FailingEffectPlugin)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.emit::<TestEffect>(TestEffect::Ping {
@@ -1149,7 +1149,7 @@ async fn effect_handler_sees_post_commit_snapshot() {
     let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     store.install_plugin(CounterPlugin).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(SnapshotReaderPlugin(Arc::clone(&seen)))];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.update::<Counter>(77);
@@ -1228,7 +1228,7 @@ async fn hooks_from_different_plugins_do_not_see_sibling_mutations() {
             seen: Arc::clone(&seen),
         }),
     ];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     phase_runtime
         .run_phase(&env, Phase::BeforeInference)
@@ -1292,7 +1292,7 @@ async fn exclusive_hook_conflict_auto_fallback() {
     store.install_plugin(PluginA).unwrap();
 
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(PluginA), Arc::new(PluginB)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     // Auto-fallback: first hook committed in batch, second re-run serially
     phase_runtime
@@ -1358,7 +1358,7 @@ async fn exclusive_hook_conflict_deferred_sees_fresh_snapshot() {
 
     // Writer registered first → goes into batch; Reader deferred (Exclusive conflict on Counter)
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(PluginWriter), Arc::new(PluginReader)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     phase_runtime
         .run_phase(&env, Phase::StepStart)
@@ -1419,7 +1419,7 @@ async fn collect_commands_still_fails_on_exclusive_conflict() {
     store.install_plugin(PluginA).unwrap();
 
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(PluginA), Arc::new(PluginB)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let ctx = PhaseContext::new(Phase::RunStart, store.snapshot());
     let result = phase_runtime.collect_commands(&env, ctx).await;
@@ -1480,7 +1480,7 @@ async fn no_conflict_hooks_merge_in_single_commit() {
     store.install_plugin(PluginA).unwrap();
 
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(PluginA), Arc::new(PluginB)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let report = phase_runtime
         .run_phase(&env, Phase::RunStart)
@@ -1568,7 +1568,7 @@ async fn three_hooks_two_conflicting_one_independent() {
 
     let plugins: Vec<Arc<dyn Plugin>> =
         vec![Arc::new(KeyPlugin), Arc::new(PluginB), Arc::new(PluginC)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     phase_runtime
         .run_phase(&env, Phase::RunStart)
@@ -1630,7 +1630,7 @@ async fn commutative_key_overlap_does_not_trigger_fallback() {
     store.install_plugin(KeyPlugin).unwrap();
 
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(KeyPlugin), Arc::new(PluginB)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     phase_runtime
         .run_phase(&env, Phase::RunStart)
@@ -1664,7 +1664,7 @@ async fn all_hooks_return_empty_commands() {
     let store = StateStore::new();
     let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(EmptyPlugin)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let report = phase_runtime
         .run_phase(&env, Phase::RunStart)
@@ -1702,7 +1702,7 @@ async fn single_hook_no_fallback_needed() {
     store.install_plugin(SinglePlugin).unwrap();
 
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(SinglePlugin)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     phase_runtime
         .run_phase(&env, Phase::RunStart)
@@ -1803,7 +1803,7 @@ async fn exclusive_fallback_effects_still_dispatched() {
         Arc::new(EffectPlugin2),
         Arc::new(EffectCounterPlugin(effect_count.clone())),
     ];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let report = phase_runtime
         .run_phase(&env, Phase::RunStart)
@@ -1845,7 +1845,9 @@ async fn uninstalled_plugin_hooks_do_not_fire() {
 
     // First run: with the hook plugin
     let count_plugin = Arc::new(CountPlugin(Arc::clone(&count)));
-    let env_with = ExecutionEnv::from_plugins(&[count_plugin as Arc<dyn Plugin>]).unwrap();
+    let env_with =
+        ExecutionEnv::from_plugins(&[count_plugin as Arc<dyn Plugin>], &Default::default())
+            .unwrap();
 
     phase_runtime
         .run_phase(&env_with, Phase::RunStart)
@@ -1923,7 +1925,7 @@ async fn action_handler_spawning_different_action_converges() {
     let store = StateStore::new();
     let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(StepPlugin)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<StepOneAction>(()).unwrap();
@@ -1986,7 +1988,7 @@ async fn hook_emitted_effects_dispatched_during_phase() {
         Arc::new(RecorderPlugin2(recorder.clone())),
         Arc::new(EffectPlugin),
     ];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let report = phase_runtime
         .run_phase(&env, Phase::RunStart)
@@ -2437,7 +2439,7 @@ async fn collect_commands_returns_combined_hook_output() {
     let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     store.install_plugin(WriterPlugin).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(WriterPlugin)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let ctx = PhaseContext::new(Phase::AfterToolExecute, store.snapshot());
     let cmd = phase_runtime.collect_commands(&env, ctx).await.unwrap();
@@ -2489,7 +2491,7 @@ async fn collect_commands_from_multiple_hooks_combined() {
     let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     store.install_plugin(DualHookPlugin).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(DualHookPlugin)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let ctx = PhaseContext::new(Phase::AfterToolExecute, store.snapshot());
     let cmd = phase_runtime.collect_commands(&env, ctx).await.unwrap();
@@ -2544,7 +2546,7 @@ async fn parallel_tool_calls_merge_hook_commands() {
     let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     store.install_plugin(ToolCounterPlugin).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(ToolCounterPlugin)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     // Simulate two parallel tool calls, each collecting commands independently
     let ctx1 = PhaseContext::new(Phase::AfterToolExecute, store.snapshot());
@@ -2624,7 +2626,7 @@ async fn parallel_pipeline_with_effects() {
         Arc::new(RecorderPlugin3(recorder.clone())),
         Arc::new(EffectPlugin),
     ];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     // Two tool calls, each producing an effect
     let cmd1 = phase_runtime

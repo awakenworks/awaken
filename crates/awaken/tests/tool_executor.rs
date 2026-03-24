@@ -891,7 +891,8 @@ async fn profile_sections_available_in_loop_hooks() {
     let rt = make_runtime();
 
     let cfg_plugin = Arc::new(CfgPlugin(observed.clone()));
-    let env = ExecutionEnv::from_plugins(&[cfg_plugin as Arc<dyn Plugin>]).unwrap();
+    let env =
+        ExecutionEnv::from_plugins(&[cfg_plugin as Arc<dyn Plugin>], &Default::default()).unwrap();
 
     // Build a spec with the test section
     let spec = std::sync::Arc::new(

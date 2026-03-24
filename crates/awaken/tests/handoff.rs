@@ -214,7 +214,8 @@ async fn hook_filtering_only_active_hook_filter_fire() {
         ],
         log: log.clone(),
     });
-    let env = ExecutionEnv::from_plugins(&[tracker as Arc<dyn Plugin>]).unwrap();
+    let env =
+        ExecutionEnv::from_plugins(&[tracker as Arc<dyn Plugin>], &Default::default()).unwrap();
 
     // Build a spec that only activates "alpha"
     let spec = spec_with_plugins(&["alpha"]);
@@ -248,7 +249,8 @@ async fn empty_active_hook_filter_runs_all_hooks() {
         ],
         log: log.clone(),
     });
-    let env = ExecutionEnv::from_plugins(&[tracker as Arc<dyn Plugin>]).unwrap();
+    let env =
+        ExecutionEnv::from_plugins(&[tracker as Arc<dyn Plugin>], &Default::default()).unwrap();
 
     // Default spec has empty active_hook_filter — no filtering, all hooks run
     let spec = Arc::new(AgentSpec::default());
@@ -280,7 +282,8 @@ async fn config_values_accessible_in_hooks() {
         log: log.clone(),
         phases: vec![Phase::BeforeInference],
     });
-    let env = ExecutionEnv::from_plugins(&[tracker as Arc<dyn Plugin>]).unwrap();
+    let env =
+        ExecutionEnv::from_plugins(&[tracker as Arc<dyn Plugin>], &Default::default()).unwrap();
 
     // Build a spec with sections for model_name and greeting
     let spec = Arc::new(
@@ -322,7 +325,7 @@ async fn handoff_switches_spec_at_next_boundary() {
         phases: vec![Phase::BeforeInference],
     });
     let plugins: Vec<Arc<dyn Plugin>> = vec![handoff_plugin, tracker];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     // Build a reviewer spec with sections
     let reviewer_spec = Arc::new(
@@ -382,7 +385,8 @@ async fn deactivate_plugin_mid_run_via_configure() {
         log: log.clone(),
         phases: vec![Phase::RunStart, Phase::BeforeInference, Phase::RunEnd],
     });
-    let env = ExecutionEnv::from_plugins(&[tracker as Arc<dyn Plugin>]).unwrap();
+    let env =
+        ExecutionEnv::from_plugins(&[tracker as Arc<dyn Plugin>], &Default::default()).unwrap();
 
     // Phase 1: RunStart with tracker active
     let spec_with_tracker = spec_with_plugins(&["tracker"]);

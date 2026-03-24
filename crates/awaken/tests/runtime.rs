@@ -518,7 +518,7 @@ async fn phase_runtime_stages_and_reduces_actions() {
         Arc::new(HandoffPlugin),
         Arc::new(RuntimeEffectPlugin(recorder.clone())),
     ];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let mut cmd = StateCommand::new().with_base_revision(store.revision());
     cmd.update::<HandoffChannel>(HandoffAction::Request {
@@ -566,7 +566,7 @@ async fn effect_failures_are_reported_immediately() {
     let runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> =
         vec![Arc::new(RuntimeEffectPlugin(FailingRuntimeEffectHandler))];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.emit::<TestEffect>(TestEffect::Ping {
@@ -587,7 +587,7 @@ async fn store_and_phase_runtime_work_together() {
         Arc::new(HandoffPlugin),
         Arc::new(RuntimeEffectPlugin(RuntimeEffectRecorder::default())),
     ];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let mut cmd = StateCommand::new().with_base_revision(store.revision());
     cmd.update::<HandoffChannel>(HandoffAction::Request {
@@ -634,7 +634,7 @@ fn duplicate_typed_handler_registration_is_rejected() {
     }
 
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(ActionPlugin1), Arc::new(ActionPlugin2)];
-    let err = ExecutionEnv::from_plugins(&plugins)
+    let err = ExecutionEnv::from_plugins(&plugins, &Default::default())
         .err()
         .expect("should fail");
     assert!(matches!(err, StateError::HandlerAlreadyRegistered { .. }));
@@ -662,7 +662,7 @@ fn duplicate_effect_handler_registration_is_rejected() {
     }
 
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(EffectPlugin1), Arc::new(EffectPlugin2)];
-    let err = ExecutionEnv::from_plugins(&plugins)
+    let err = ExecutionEnv::from_plugins(&plugins, &Default::default())
         .err()
         .expect("should fail");
     assert!(matches!(
@@ -698,7 +698,7 @@ async fn runtime_plugin_can_be_uninstalled_and_reinstalled() {
         Arc::new(HandoffPlugin),
         Arc::new(RuntimeEffectPlugin(RuntimeEffectRecorder::default())),
     ];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     // Write some state
     let mut cmd = StateCommand::new().with_base_revision(store.revision());
@@ -739,7 +739,7 @@ async fn failed_scheduled_actions_are_dead_lettered() {
     let store = StateStore::new();
     let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(AlwaysFailingPlugin)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<AlwaysFailingAction>(()).unwrap();
@@ -767,7 +767,7 @@ async fn run_phase_processes_same_phase_actions_across_rounds() {
     let store = StateStore::new();
     let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(SpawnOncePlugin)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<SpawnOnceAction>(()).unwrap();
@@ -793,7 +793,7 @@ async fn run_phase_reports_skipped_actions_from_other_phases() {
     let store = StateStore::new();
     let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OtherPhasePlugin)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<OtherPhaseAction>(()).unwrap();
@@ -819,7 +819,7 @@ async fn run_phase_returns_error_on_infinite_loop() {
     let store = StateStore::new();
     let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(InfiniteLoopPlugin)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<InfiniteLoopAction>(()).unwrap();
@@ -843,7 +843,7 @@ async fn run_phase_with_custom_limit() {
     let store = StateStore::new();
     let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(InfiniteLoopPlugin)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<InfiniteLoopAction>(()).unwrap();
@@ -867,7 +867,7 @@ async fn malformed_action_payloads_are_dead_lettered() {
     let store = StateStore::new();
     let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(BadlyEncodedPlugin)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.schedule_action::<BadlyEncodedAction>("broken".into())
@@ -888,7 +888,7 @@ async fn malformed_action_payloads_are_dead_lettered() {
 async fn malformed_effect_payloads_are_reported_as_failed_dispatch() {
     let runtime = PhaseRuntime::new(StateStore::new()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(MismatchedEffectPlugin)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let mut cmd = StateCommand::new();
     cmd.emit::<MismatchedEffect>(MismatchedPayload).unwrap();
@@ -965,7 +965,7 @@ async fn phase_hook_runs_during_run_phase() {
         hook_count: Arc::clone(&count),
     });
     let plugins: Vec<Arc<dyn Plugin>> = vec![hook_plugin];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     phase_runtime
         .run_phase(&env, Phase::BeforeInference)
@@ -998,7 +998,7 @@ async fn phase_hook_can_mutate_state() {
     }
 
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(HandoffPlugin), Arc::new(MutatingHookPlugin)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     phase_runtime
         .run_phase(&env, Phase::BeforeInference)
@@ -1033,7 +1033,7 @@ async fn phase_hook_can_enqueue_actions() {
     }
 
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(EnqueuePlugin)];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     let report = phase_runtime
         .run_phase(&env, Phase::BeforeInference)
@@ -1099,7 +1099,7 @@ async fn phase_hooks_execute_in_registration_order() {
     let store = StateStore::new();
     let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
     let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OrderPlugin { order: order_clone })];
-    let env = ExecutionEnv::from_plugins(&plugins).unwrap();
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
 
     phase_runtime
         .run_phase(&env, Phase::BeforeInference)
@@ -1118,7 +1118,8 @@ async fn phase_hooks_are_cleaned_up_on_uninstall() {
     let hook_plugin = Arc::new(HookPlugin {
         hook_count: Arc::clone(&count),
     });
-    let env_with_hook = ExecutionEnv::from_plugins(&[hook_plugin as Arc<dyn Plugin>]).unwrap();
+    let env_with_hook =
+        ExecutionEnv::from_plugins(&[hook_plugin as Arc<dyn Plugin>], &Default::default()).unwrap();
 
     phase_runtime
         .run_phase(&env_with_hook, Phase::BeforeInference)
@@ -1144,7 +1145,8 @@ async fn phase_hook_does_not_fire_for_other_phases() {
     let hook_plugin = Arc::new(HookPlugin {
         hook_count: Arc::clone(&count),
     });
-    let env = ExecutionEnv::from_plugins(&[hook_plugin as Arc<dyn Plugin>]).unwrap();
+    let env =
+        ExecutionEnv::from_plugins(&[hook_plugin as Arc<dyn Plugin>], &Default::default()).unwrap();
 
     phase_runtime
         .run_phase(&env, Phase::AfterInference)
@@ -1191,7 +1193,8 @@ async fn phase_hooks_fire_for_step_start_and_step_end() {
         start_count: Arc::clone(&step_start_count),
         end_count: Arc::clone(&step_end_count),
     });
-    let env = ExecutionEnv::from_plugins(&[step_plugin as Arc<dyn Plugin>]).unwrap();
+    let env =
+        ExecutionEnv::from_plugins(&[step_plugin as Arc<dyn Plugin>], &Default::default()).unwrap();
 
     phase_runtime
         .run_phase(&env, Phase::StepStart)
@@ -1236,7 +1239,8 @@ async fn phase_hooks_do_not_cross_fire_between_step_phases() {
     let step_plugin = Arc::new(StepStartOnlyPlugin {
         count: Arc::clone(&start_count),
     });
-    let env = ExecutionEnv::from_plugins(&[step_plugin as Arc<dyn Plugin>]).unwrap();
+    let env =
+        ExecutionEnv::from_plugins(&[step_plugin as Arc<dyn Plugin>], &Default::default()).unwrap();
 
     // StepEnd should NOT trigger StepStart hook
     phase_runtime.run_phase(&env, Phase::StepEnd).await.unwrap();
