@@ -831,3 +831,751 @@ fn error_event_sets_terminal_guard() {
         .is_empty()
     );
 }
+
+// ============================================================================
+// Tool Execution (8 tests)
+// ============================================================================
+
+#[test]
+fn tool_call_result_has_correct_payload() {
+    let mut enc = AcpEncoder::new();
+    let result_data = json!({"files": ["a.rs", "b.rs"], "count": 2});
+    let ev = enc.transcode(&AgentEvent::ToolCallDone {
+        id: "call_42".into(),
+        message_id: "msg_42".into(),
+        result: ToolResult::success("file_search", result_data.clone()),
+        outcome: ToolCallOutcome::Succeeded,
+    });
+    assert_eq!(ev.len(), 1);
+    match &ev[0] {
+        AcpEvent::SessionUpdate(params) => {
+            let update = params.tool_call_update.as_ref().unwrap();
+            assert_eq!(update.id, "call_42");
+            assert_eq!(update.status, ToolCallStatus::Completed);
+            let result_val = update.result.as_ref().unwrap();
+            assert!(result_val.get("data").is_some() || result_val.get("files").is_some());
+        }
+        other => panic!("expected tool_call_update, got: {other:?}"),
+    }
+}
+
+#[test]
+fn multiple_tool_calls_produce_results() {
+    let mut enc = AcpEncoder::new();
+
+    // First tool call
+    let ev1 = enc.transcode(&AgentEvent::ToolCallReady {
+        id: "c1".into(),
+        name: "read_file".into(),
+        arguments: json!({"path": "/tmp/a.txt"}),
+    });
+    assert_eq!(ev1.len(), 1);
+
+    let ev2 = enc.transcode(&AgentEvent::ToolCallDone {
+        id: "c1".into(),
+        message_id: "m1".into(),
+        result: ToolResult::success("read_file", json!("contents of a")),
+        outcome: ToolCallOutcome::Succeeded,
+    });
+    assert_eq!(ev2.len(), 1);
+
+    // Second tool call
+    let ev3 = enc.transcode(&AgentEvent::ToolCallReady {
+        id: "c2".into(),
+        name: "read_file".into(),
+        arguments: json!({"path": "/tmp/b.txt"}),
+    });
+    assert_eq!(ev3.len(), 1);
+
+    let ev4 = enc.transcode(&AgentEvent::ToolCallDone {
+        id: "c2".into(),
+        message_id: "m2".into(),
+        result: ToolResult::success("read_file", json!("contents of b")),
+        outcome: ToolCallOutcome::Succeeded,
+    });
+    assert_eq!(ev4.len(), 1);
+
+    // Verify both results reference correct call IDs
+    match (&ev2[0], &ev4[0]) {
+        (AcpEvent::SessionUpdate(p1), AcpEvent::SessionUpdate(p2)) => {
+            assert_eq!(p1.tool_call_update.as_ref().unwrap().id, "c1");
+            assert_eq!(p2.tool_call_update.as_ref().unwrap().id, "c2");
+        }
+        other => panic!("expected two SessionUpdates, got: {other:?}"),
+    }
+}
+
+#[test]
+fn failed_tool_produces_error_content() {
+    let mut enc = AcpEncoder::new();
+    let ev = enc.transcode(&AgentEvent::ToolCallDone {
+        id: "c_fail".into(),
+        message_id: "m_fail".into(),
+        result: ToolResult::error("database_query", "connection refused"),
+        outcome: ToolCallOutcome::Failed,
+    });
+    assert_eq!(ev.len(), 1);
+    match &ev[0] {
+        AcpEvent::SessionUpdate(params) => {
+            let update = params.tool_call_update.as_ref().unwrap();
+            assert_eq!(update.id, "c_fail");
+            assert_eq!(update.status, ToolCallStatus::Errored);
+            assert_eq!(update.error.as_deref(), Some("connection refused"));
+            assert!(update.result.is_none());
+        }
+        other => panic!("expected errored update, got: {other:?}"),
+    }
+}
+
+#[test]
+fn tool_with_complex_arguments() {
+    let mut enc = AcpEncoder::new();
+    let complex_args = json!({
+        "query": "SELECT * FROM users WHERE age > 18",
+        "params": [18, "active"],
+        "options": {
+            "timeout_ms": 5000,
+            "retry": true,
+            "nested": {"deep": {"value": [1, 2, 3]}}
+        }
+    });
+    let ev = enc.transcode(&AgentEvent::ToolCallReady {
+        id: "c_complex".into(),
+        name: "sql_query".into(),
+        arguments: complex_args.clone(),
+    });
+    assert_eq!(ev.len(), 1);
+    match &ev[0] {
+        AcpEvent::SessionUpdate(params) => {
+            let tc = params.tool_call.as_ref().unwrap();
+            assert_eq!(tc.name, "sql_query");
+            assert_eq!(tc.arguments, complex_args);
+            assert_eq!(tc.arguments["options"]["nested"]["deep"]["value"][2], 3);
+        }
+        other => panic!("expected tool_call, got: {other:?}"),
+    }
+}
+
+#[test]
+fn tool_suspension_handling() {
+    let mut enc = AcpEncoder::new();
+
+    // Tool call ready
+    let ev = enc.transcode(&AgentEvent::ToolCallReady {
+        id: "c_suspend".into(),
+        name: "approval_gate".into(),
+        arguments: json!({"action": "deploy"}),
+    });
+    assert_eq!(ev.len(), 1);
+
+    // Run finishes with Suspended termination
+    let ev = enc.transcode(&AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: None,
+        termination: TerminationReason::Suspended,
+    });
+    assert_eq!(ev, vec![AcpEvent::finished(StopReason::Suspended)]);
+}
+
+#[test]
+fn tool_result_contains_call_id() {
+    let mut enc = AcpEncoder::new();
+    let ev = enc.transcode(&AgentEvent::ToolCallDone {
+        id: "unique_call_id_abc123".into(),
+        message_id: "msg_x".into(),
+        result: ToolResult::success("echo", json!("ok")),
+        outcome: ToolCallOutcome::Succeeded,
+    });
+    match &ev[0] {
+        AcpEvent::SessionUpdate(params) => {
+            assert_eq!(
+                params.tool_call_update.as_ref().unwrap().id,
+                "unique_call_id_abc123"
+            );
+        }
+        other => panic!("expected SessionUpdate, got: {other:?}"),
+    }
+}
+
+#[test]
+fn tool_call_incremental_events_skipped() {
+    let mut enc = AcpEncoder::new();
+
+    // ToolCallStart -> skipped
+    assert!(
+        enc.transcode(&AgentEvent::ToolCallStart {
+            id: "c1".into(),
+            name: "search".into(),
+        })
+        .is_empty()
+    );
+
+    // ToolCallDelta -> skipped
+    assert!(
+        enc.transcode(&AgentEvent::ToolCallDelta {
+            id: "c1".into(),
+            args_delta: r#"{"q":"#.into(),
+        })
+        .is_empty()
+    );
+
+    // Another delta -> skipped
+    assert!(
+        enc.transcode(&AgentEvent::ToolCallDelta {
+            id: "c1".into(),
+            args_delta: r#""rust"}"#.into(),
+        })
+        .is_empty()
+    );
+
+    // Only ToolCallReady produces output
+    let ev = enc.transcode(&AgentEvent::ToolCallReady {
+        id: "c1".into(),
+        name: "search".into(),
+        arguments: json!({"q": "rust"}),
+    });
+    assert_eq!(ev.len(), 1);
+}
+
+#[test]
+fn tool_result_is_final_only() {
+    let mut enc = AcpEncoder::new();
+
+    // ToolCallStart produces nothing
+    let ev_start = enc.transcode(&AgentEvent::ToolCallStart {
+        id: "c1".into(),
+        name: "search".into(),
+    });
+    assert!(ev_start.is_empty());
+
+    // ToolCallDelta produces nothing
+    let ev_delta = enc.transcode(&AgentEvent::ToolCallDelta {
+        id: "c1".into(),
+        args_delta: r#"{"q": "test"}"#.into(),
+    });
+    assert!(ev_delta.is_empty());
+
+    // ToolCallReady produces the tool_call event (final invocation)
+    let ev_ready = enc.transcode(&AgentEvent::ToolCallReady {
+        id: "c1".into(),
+        name: "search".into(),
+        arguments: json!({"q": "test"}),
+    });
+    assert_eq!(ev_ready.len(), 1);
+
+    // ToolCallDone produces the tool_call_update (final result)
+    let ev_done = enc.transcode(&AgentEvent::ToolCallDone {
+        id: "c1".into(),
+        message_id: "m1".into(),
+        result: ToolResult::success("search", json!([])),
+        outcome: ToolCallOutcome::Succeeded,
+    });
+    assert_eq!(ev_done.len(), 1);
+    match &ev_done[0] {
+        AcpEvent::SessionUpdate(params) => {
+            assert!(params.tool_call_update.is_some());
+            assert!(params.tool_call.is_none());
+        }
+        other => panic!("expected SessionUpdate with tool_call_update, got: {other:?}"),
+    }
+}
+
+// ============================================================================
+// Text & Message (6 tests)
+// ============================================================================
+
+#[test]
+fn text_content_forwarded() {
+    let mut enc = AcpEncoder::new();
+    let ev = enc.transcode(&AgentEvent::TextDelta {
+        delta: "Here is some text content.".into(),
+    });
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0], AcpEvent::agent_message("Here is some text content."));
+}
+
+#[test]
+fn multiple_text_blocks_accumulated() {
+    let mut enc = AcpEncoder::new();
+    let ev1 = enc.transcode(&AgentEvent::TextDelta {
+        delta: "First ".into(),
+    });
+    let ev2 = enc.transcode(&AgentEvent::TextDelta {
+        delta: "second ".into(),
+    });
+    let ev3 = enc.transcode(&AgentEvent::TextDelta {
+        delta: "third.".into(),
+    });
+
+    // Each delta produces an independent agent_message event
+    assert_eq!(ev1, vec![AcpEvent::agent_message("First ")]);
+    assert_eq!(ev2, vec![AcpEvent::agent_message("second ")]);
+    assert_eq!(ev3, vec![AcpEvent::agent_message("third.")]);
+}
+
+#[test]
+fn run_finish_with_result() {
+    let mut enc = AcpEncoder::new();
+    let ev = enc.transcode(&AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: Some(json!({"response": {"text": "Final answer"}})),
+        termination: TerminationReason::NaturalEnd,
+    });
+    assert_eq!(ev, vec![AcpEvent::finished(StopReason::EndTurn)]);
+}
+
+#[test]
+fn run_finish_cancelled() {
+    let mut enc = AcpEncoder::new();
+    let ev = enc.transcode(&AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: None,
+        termination: TerminationReason::Cancelled,
+    });
+    assert_eq!(ev, vec![AcpEvent::finished(StopReason::Cancelled)]);
+}
+
+#[test]
+fn run_error_forwarded() {
+    let mut enc = AcpEncoder::new();
+    let ev = enc.transcode(&AgentEvent::Error {
+        message: "provider unreachable".into(),
+        code: Some("PROVIDER_DOWN".into()),
+    });
+    assert_eq!(ev.len(), 1);
+    assert_eq!(
+        ev[0],
+        AcpEvent::error("provider unreachable", Some("PROVIDER_DOWN".into()))
+    );
+}
+
+#[test]
+fn empty_response_handling() {
+    let mut enc = AcpEncoder::new();
+
+    // Empty text delta still produces an event
+    let ev = enc.transcode(&AgentEvent::TextDelta { delta: "".into() });
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0], AcpEvent::agent_message(""));
+
+    // Run finish with empty result
+    let ev = enc.transcode(&AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: Some(json!({})),
+        termination: TerminationReason::NaturalEnd,
+    });
+    assert_eq!(ev, vec![AcpEvent::finished(StopReason::EndTurn)]);
+}
+
+// ============================================================================
+// State & Activity (6 tests)
+// ============================================================================
+
+#[test]
+fn state_snapshot_forwarded_new() {
+    let mut enc = AcpEncoder::new();
+    let snapshot = json!({"model": "claude-4", "temperature": 0.7});
+    let ev = enc.transcode(&AgentEvent::StateSnapshot {
+        snapshot: snapshot.clone(),
+    });
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0], AcpEvent::state_snapshot(snapshot));
+}
+
+#[test]
+fn state_snapshot_nested_json() {
+    let mut enc = AcpEncoder::new();
+    let snapshot = json!({
+        "level1": {
+            "level2": {
+                "level3": {
+                    "level4": [1, 2, {"level5": true}]
+                }
+            }
+        },
+        "array_of_objects": [
+            {"id": 1, "nested": {"a": "b"}},
+            {"id": 2, "nested": {"c": "d"}}
+        ]
+    });
+    let ev = enc.transcode(&AgentEvent::StateSnapshot {
+        snapshot: snapshot.clone(),
+    });
+    assert_eq!(ev.len(), 1);
+    match &ev[0] {
+        AcpEvent::SessionUpdate(params) => {
+            let snap = params.state_snapshot.as_ref().unwrap();
+            assert_eq!(
+                snap["level1"]["level2"]["level3"]["level4"][2]["level5"],
+                true
+            );
+            assert_eq!(snap["array_of_objects"][1]["nested"]["c"], "d");
+        }
+        other => panic!("expected state_snapshot, got: {other:?}"),
+    }
+}
+
+#[test]
+fn activity_snapshot_forwarded_new() {
+    let mut enc = AcpEncoder::new();
+    let content = json!({"status": "running", "progress": 0.75});
+    let ev = enc.transcode(&AgentEvent::ActivitySnapshot {
+        message_id: "act_1".into(),
+        activity_type: "progress".into(),
+        content: content.clone(),
+        replace: Some(false),
+    });
+    assert_eq!(ev.len(), 1);
+    let value = serde_json::to_value(&ev[0]).unwrap();
+    assert_eq!(value["params"]["activity"]["messageId"], "act_1");
+    assert_eq!(value["params"]["activity"]["activityType"], "progress");
+    assert_eq!(value["params"]["activity"]["content"]["progress"], 0.75);
+    assert_eq!(value["params"]["activity"]["replace"], false);
+}
+
+#[test]
+fn activity_delta_forwarded_new() {
+    let mut enc = AcpEncoder::new();
+    let patch = vec![
+        json!({"op": "replace", "path": "/status", "value": "complete"}),
+        json!({"op": "add", "path": "/duration_ms", "value": 1234}),
+    ];
+    let ev = enc.transcode(&AgentEvent::ActivityDelta {
+        message_id: "act_2".into(),
+        activity_type: "build_progress".into(),
+        patch: patch.clone(),
+    });
+    assert_eq!(ev.len(), 1);
+    let value = serde_json::to_value(&ev[0]).unwrap();
+    assert_eq!(value["params"]["activity"]["messageId"], "act_2");
+    assert_eq!(value["params"]["activity"]["patch"][0]["op"], "replace");
+    assert_eq!(value["params"]["activity"]["patch"][1]["value"], 1234);
+}
+
+#[test]
+fn messages_snapshot_forwarded_silently() {
+    let mut enc = AcpEncoder::new();
+    let ev = enc.transcode(&AgentEvent::MessagesSnapshot {
+        messages: vec![
+            json!({"role": "user", "content": "Hello"}),
+            json!({"role": "assistant", "content": "Hi there"}),
+        ],
+    });
+    // ACP silently consumes MessagesSnapshot (unlike AG-UI which forwards it)
+    assert!(ev.is_empty());
+}
+
+#[test]
+fn state_snapshot_empty_new() {
+    let mut enc = AcpEncoder::new();
+    let ev = enc.transcode(&AgentEvent::StateSnapshot {
+        snapshot: json!({}),
+    });
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0], AcpEvent::state_snapshot(json!({})));
+}
+
+// ============================================================================
+// Event Sequence (6 tests)
+// ============================================================================
+
+#[test]
+fn events_start_with_lifecycle() {
+    let mut enc = AcpEncoder::new();
+
+    // RunStart is silently consumed in ACP
+    let ev = enc.transcode(&AgentEvent::RunStart {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        parent_run_id: None,
+    });
+    assert!(ev.is_empty(), "ACP silently consumes RunStart");
+
+    // First real event is text
+    let ev = enc.transcode(&AgentEvent::TextDelta {
+        delta: "Hello".into(),
+    });
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0], AcpEvent::agent_message("Hello"));
+}
+
+#[test]
+fn events_end_with_finish() {
+    let mut enc = AcpEncoder::new();
+
+    enc.transcode(&AgentEvent::TextDelta {
+        delta: "output".into(),
+    });
+
+    let ev = enc.transcode(&AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: None,
+        termination: TerminationReason::NaturalEnd,
+    });
+
+    assert_eq!(ev.len(), 1);
+    match &ev[0] {
+        AcpEvent::SessionUpdate(params) => {
+            assert!(params.finished.is_some());
+            assert_eq!(
+                params.finished.as_ref().unwrap().stop_reason,
+                StopReason::EndTurn
+            );
+        }
+        other => panic!("expected finished event, got: {other:?}"),
+    }
+}
+
+#[test]
+fn terminal_guard_suppresses_after_finish() {
+    let mut enc = AcpEncoder::new();
+
+    enc.transcode(&AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: None,
+        termination: TerminationReason::NaturalEnd,
+    });
+
+    // All subsequent events suppressed
+    assert!(
+        enc.transcode(&AgentEvent::TextDelta { delta: "a".into() })
+            .is_empty()
+    );
+    assert!(
+        enc.transcode(&AgentEvent::ToolCallReady {
+            id: "c".into(),
+            name: "x".into(),
+            arguments: json!({}),
+        })
+        .is_empty()
+    );
+    assert!(
+        enc.transcode(&AgentEvent::StateSnapshot {
+            snapshot: json!({"key": "val"}),
+        })
+        .is_empty()
+    );
+    assert!(
+        enc.transcode(&AgentEvent::ReasoningDelta {
+            delta: "late thought".into(),
+        })
+        .is_empty()
+    );
+}
+
+#[test]
+fn terminal_guard_suppresses_after_error() {
+    let mut enc = AcpEncoder::new();
+
+    enc.transcode(&AgentEvent::Error {
+        message: "crash".into(),
+        code: None,
+    });
+
+    // All subsequent events suppressed
+    assert!(
+        enc.transcode(&AgentEvent::TextDelta { delta: "a".into() })
+            .is_empty()
+    );
+    assert!(
+        enc.transcode(&AgentEvent::ToolCallDone {
+            id: "c".into(),
+            message_id: "m".into(),
+            result: ToolResult::success("x", json!(null)),
+            outcome: ToolCallOutcome::Succeeded,
+        })
+        .is_empty()
+    );
+    assert!(
+        enc.transcode(&AgentEvent::RunFinish {
+            thread_id: "t".into(),
+            run_id: "r".into(),
+            result: None,
+            termination: TerminationReason::NaturalEnd,
+        })
+        .is_empty()
+    );
+}
+
+#[test]
+fn step_events_present() {
+    let mut enc = AcpEncoder::new();
+
+    // StepStart silently consumed
+    let ev = enc.transcode(&AgentEvent::StepStart {
+        message_id: "step_1".into(),
+    });
+    assert!(ev.is_empty());
+
+    // StepEnd silently consumed
+    let ev = enc.transcode(&AgentEvent::StepEnd);
+    assert!(ev.is_empty());
+
+    // Multiple steps also silently consumed
+    let ev = enc.transcode(&AgentEvent::StepStart {
+        message_id: "step_2".into(),
+    });
+    assert!(ev.is_empty());
+    let ev = enc.transcode(&AgentEvent::StepEnd);
+    assert!(ev.is_empty());
+}
+
+#[test]
+fn reasoning_delta_forwarded() {
+    let mut enc = AcpEncoder::new();
+
+    let ev1 = enc.transcode(&AgentEvent::ReasoningDelta {
+        delta: "Let me think about this...".into(),
+    });
+    assert_eq!(ev1.len(), 1);
+    assert_eq!(
+        ev1[0],
+        AcpEvent::agent_thought("Let me think about this...")
+    );
+
+    let ev2 = enc.transcode(&AgentEvent::ReasoningDelta {
+        delta: " I should check the database.".into(),
+    });
+    assert_eq!(ev2.len(), 1);
+    assert_eq!(
+        ev2[0],
+        AcpEvent::agent_thought(" I should check the database.")
+    );
+}
+
+// ============================================================================
+// Edge Cases (4 tests)
+// ============================================================================
+
+#[test]
+fn unicode_preserved() {
+    let mut enc = AcpEncoder::new();
+
+    // Text with unicode
+    let ev = enc.transcode(&AgentEvent::TextDelta {
+        delta: "Hello 世界! 🌍 Ñoño café résumé".into(),
+    });
+    assert_eq!(
+        ev[0],
+        AcpEvent::agent_message("Hello 世界! 🌍 Ñoño café résumé")
+    );
+
+    // Tool args with unicode
+    let ev = enc.transcode(&AgentEvent::ToolCallReady {
+        id: "c_unicode".into(),
+        name: "translate".into(),
+        arguments: json!({"text": "日本語テスト", "target": "en"}),
+    });
+    match &ev[0] {
+        AcpEvent::SessionUpdate(params) => {
+            assert_eq!(
+                params.tool_call.as_ref().unwrap().arguments["text"],
+                "日本語テスト"
+            );
+        }
+        other => panic!("expected tool_call, got: {other:?}"),
+    }
+
+    // Reasoning with unicode
+    let ev = enc.transcode(&AgentEvent::ReasoningDelta {
+        delta: "思考中…".into(),
+    });
+    assert_eq!(ev[0], AcpEvent::agent_thought("思考中…"));
+}
+
+#[test]
+fn large_payload_handled() {
+    let mut enc = AcpEncoder::new();
+
+    // Large text delta
+    let large_text = "x".repeat(100_000);
+    let ev = enc.transcode(&AgentEvent::TextDelta {
+        delta: large_text.clone(),
+    });
+    assert_eq!(ev.len(), 1);
+    match &ev[0] {
+        AcpEvent::SessionUpdate(params) => {
+            assert_eq!(params.agent_message_chunk.as_ref().unwrap().len(), 100_000);
+        }
+        other => panic!("expected agent_message, got: {other:?}"),
+    }
+
+    // Large tool result
+    let large_array: Vec<serde_json::Value> = (0..10_000).map(|i| json!({"id": i})).collect();
+    let ev = enc.transcode(&AgentEvent::ToolCallDone {
+        id: "c_large".into(),
+        message_id: "m_large".into(),
+        result: ToolResult::success("big_query", json!(large_array)),
+        outcome: ToolCallOutcome::Succeeded,
+    });
+    assert_eq!(ev.len(), 1);
+    match &ev[0] {
+        AcpEvent::SessionUpdate(params) => {
+            let update = params.tool_call_update.as_ref().unwrap();
+            assert_eq!(update.status, ToolCallStatus::Completed);
+            assert!(update.result.is_some());
+        }
+        other => panic!("expected tool_call_update, got: {other:?}"),
+    }
+}
+
+#[test]
+fn special_characters_in_tool_result() {
+    let mut enc = AcpEncoder::new();
+    let special_content = json!({
+        "output": "line1\nline2\ttab\r\nwindows",
+        "path": "C:\\Users\\test\\file.txt",
+        "html": "<script>alert('xss')</script>",
+        "quotes": "He said \"hello\" and 'goodbye'",
+        "backslash": "\\\\server\\share",
+        "null_byte": "before\u{0000}after",
+    });
+    let ev = enc.transcode(&AgentEvent::ToolCallDone {
+        id: "c_special".into(),
+        message_id: "m_special".into(),
+        result: ToolResult::success("shell", special_content.clone()),
+        outcome: ToolCallOutcome::Succeeded,
+    });
+    assert_eq!(ev.len(), 1);
+    match &ev[0] {
+        AcpEvent::SessionUpdate(params) => {
+            let update = params.tool_call_update.as_ref().unwrap();
+            assert_eq!(update.status, ToolCallStatus::Completed);
+            // Verify the result can be round-tripped through JSON
+            let json_str = serde_json::to_string(&ev[0]).unwrap();
+            let _restored: AcpEvent = serde_json::from_str(&json_str).unwrap();
+        }
+        other => panic!("expected tool_call_update, got: {other:?}"),
+    }
+}
+
+#[test]
+fn provider_error_produces_error() {
+    let mut enc = AcpEncoder::new();
+
+    // Error with code
+    let ev = enc.transcode(&AgentEvent::Error {
+        message: "rate limit exceeded".into(),
+        code: Some("429".into()),
+    });
+    assert_eq!(ev.len(), 1);
+    assert_eq!(
+        ev[0],
+        AcpEvent::error("rate limit exceeded", Some("429".into()))
+    );
+
+    // Terminal guard is now active — further events suppressed
+    assert!(
+        enc.transcode(&AgentEvent::Error {
+            message: "another error".into(),
+            code: None,
+        })
+        .is_empty()
+    );
+}
