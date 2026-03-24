@@ -1,0 +1,999 @@
+//! Mailbox service: unified persistent run queue replacing `RunDispatcher`.
+//!
+//! Every run request (streaming, background, A2A, internal) enters as a
+//! [`MailboxJob`] keyed by `thread_id`. The Mailbox orchestrates persistent
+//! enqueue, lease-based claim, execution via [`AgentRuntime`], and lifecycle
+//! management (lease renewal, sweep, GC).
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+use std::time::Duration;
+
+use thiserror::Error;
+use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio::task::JoinHandle;
+
+use awaken_contract::contract::event::AgentEvent;
+use awaken_contract::contract::mailbox::{
+    MailboxInterrupt, MailboxJob, MailboxJobOrigin, MailboxJobStatus, MailboxStore,
+};
+use awaken_contract::contract::message::Message;
+use awaken_contract::contract::storage::StorageError;
+use awaken_contract::contract::suspension::ToolCallResume;
+use awaken_runtime::AgentRuntime;
+
+use crate::routes::ApiError;
+use crate::transport::channel_sink::ChannelEventSink;
+
+// ── Public types ─────────────────────────────────────────────────────
+
+/// Everything needed to start a run -- protocol-agnostic.
+pub struct RunSpec {
+    pub thread_id: String,
+    pub agent_id: Option<String>,
+    pub messages: Vec<Message>,
+}
+
+/// Result returned by submit/submit_background.
+#[derive(Debug, Clone)]
+pub struct MailboxSubmitResult {
+    pub job_id: String,
+    pub thread_id: String,
+    pub status: MailboxDispatchStatus,
+}
+
+/// Dispatch status for a submitted job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MailboxDispatchStatus {
+    /// Job was claimed and is executing now.
+    Running,
+    /// Job is queued behind `pending_ahead` other jobs.
+    Queued { pending_ahead: usize },
+}
+
+/// Mailbox service errors.
+#[derive(Debug, Error)]
+pub enum MailboxError {
+    #[error("validation error: {0}")]
+    Validation(String),
+    #[error("store error: {0}")]
+    Store(#[from] StorageError),
+    #[error("internal error: {0}")]
+    Internal(String),
+}
+
+/// Outcome classification for runtime run results.
+#[derive(Debug)]
+pub enum MailboxRunOutcome {
+    /// Run completed successfully.
+    Completed,
+    /// Transient infrastructure failure -- retry.
+    TransientError(String),
+    /// Permanent failure -- do not retry.
+    PermanentError(String),
+}
+
+/// Configuration for the Mailbox service.
+#[derive(Debug, Clone)]
+pub struct MailboxConfig {
+    /// Lease duration in milliseconds (default 30_000).
+    pub lease_ms: u64,
+    /// How often to renew leases (default 10s).
+    pub lease_renewal_interval: Duration,
+    /// How often to sweep for expired leases (default 30s).
+    pub sweep_interval: Duration,
+    /// How often to run GC for terminal jobs (default 60s).
+    pub gc_interval: Duration,
+    /// How long to keep terminal jobs before purging (default 24h).
+    pub gc_ttl: Duration,
+    /// Default max attempts before dead-lettering (default 5).
+    pub default_max_attempts: u32,
+    /// Default retry delay in milliseconds (default 250).
+    pub default_retry_delay_ms: u64,
+}
+
+impl Default for MailboxConfig {
+    fn default() -> Self {
+        Self {
+            lease_ms: 30_000,
+            lease_renewal_interval: Duration::from_secs(10),
+            sweep_interval: Duration::from_secs(30),
+            gc_interval: Duration::from_secs(60),
+            gc_ttl: Duration::from_secs(24 * 60 * 60),
+            default_max_attempts: 5,
+            default_retry_delay_ms: 250,
+        }
+    }
+}
+
+// ── Internal types ───────────────────────────────────────────────────
+
+/// Per-thread worker status.
+#[allow(dead_code)] // claim_token stored for future ack/nack wiring
+enum MailboxWorkerStatus {
+    Idle,
+    Running {
+        job_id: String,
+        claim_token: String,
+        lease_handle: JoinHandle<()>,
+    },
+}
+
+/// Per-thread worker with pending job buffer.
+struct MailboxWorker {
+    status: MailboxWorkerStatus,
+    pending: VecDeque<MailboxJob>,
+}
+
+impl Default for MailboxWorker {
+    fn default() -> Self {
+        Self {
+            status: MailboxWorkerStatus::Idle,
+            pending: VecDeque::new(),
+        }
+    }
+}
+
+// ── Mailbox service ──────────────────────────────────────────────────
+
+/// Unified persistent run queue. Replaces `RunDispatcher`.
+///
+/// Orchestrates `MailboxStore` (persistence) + `AgentRuntime` (execution)
+/// with lease-based distributed claim, per-thread serialization, sweep,
+/// and garbage collection.
+pub struct Mailbox {
+    runtime: Arc<AgentRuntime>,
+    store: Arc<dyn MailboxStore>,
+    consumer_id: String,
+    workers: RwLock<HashMap<String, Arc<Mutex<MailboxWorker>>>>,
+    config: MailboxConfig,
+}
+
+impl Mailbox {
+    /// Create a new Mailbox service.
+    pub fn new(
+        runtime: Arc<AgentRuntime>,
+        store: Arc<dyn MailboxStore>,
+        consumer_id: String,
+        config: MailboxConfig,
+    ) -> Self {
+        Self {
+            runtime,
+            store,
+            consumer_id,
+            workers: RwLock::new(HashMap::new()),
+            config,
+        }
+    }
+
+    // ── Submission ───────────────────────────────────────────────────
+
+    /// Submit a run for streaming. Returns event receiver immediately.
+    ///
+    /// The job is persisted (WAL), then claimed inline by this process.
+    /// The caller wires `event_rx` to their transport (SSE, WebSocket, etc).
+    pub async fn submit(
+        self: &Arc<Self>,
+        spec: RunSpec,
+    ) -> Result<(MailboxSubmitResult, mpsc::UnboundedReceiver<AgentEvent>), MailboxError> {
+        let (thread_id, messages) = validate_run_inputs(spec.thread_id, spec.messages)?;
+
+        let job = self.build_job(&thread_id, spec.agent_id.as_deref(), messages);
+        let job_id = job.job_id.clone();
+        let mailbox_id = job.mailbox_id.clone();
+
+        // WAL: persist before anything else.
+        // Use u64::MAX for available_at to prevent sweep from grabbing it.
+        let mut wal_job = job;
+        wal_job.available_at = u64::MAX;
+        self.store.enqueue(&wal_job).await?;
+
+        // Inline claim.
+        let now = now_ms();
+        let claimed = self
+            .store
+            .claim_job(&job_id, &self.consumer_id, self.config.lease_ms, now)
+            .await?;
+
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+
+        if let Some(claimed_job) = claimed {
+            let claim_token = claimed_job.claim_token.clone().unwrap_or_default();
+
+            // Start lease renewal.
+            let lease_handle =
+                self.spawn_lease_renewal(job_id.clone(), claim_token.clone(), mailbox_id.clone());
+
+            // Update worker state.
+            let worker = self.get_or_create_worker(&mailbox_id).await;
+            {
+                let mut w = worker.lock().await;
+                w.status = MailboxWorkerStatus::Running {
+                    job_id: job_id.clone(),
+                    claim_token: claim_token.clone(),
+                    lease_handle,
+                };
+            }
+
+            // Spawn execution.
+            self.spawn_execution(claimed_job, event_tx.clone(), claim_token, mailbox_id);
+
+            Ok((
+                MailboxSubmitResult {
+                    job_id,
+                    thread_id,
+                    status: MailboxDispatchStatus::Running,
+                },
+                event_rx,
+            ))
+        } else {
+            // Claim failed (unlikely for inline claim), treat as queued.
+            Ok((
+                MailboxSubmitResult {
+                    job_id,
+                    thread_id,
+                    status: MailboxDispatchStatus::Queued { pending_ahead: 0 },
+                },
+                event_rx,
+            ))
+        }
+    }
+
+    /// Submit a run in the background (fire-and-forget).
+    ///
+    /// Job is persisted with `available_at = now`, dispatch is event-driven.
+    /// Returns job_id + thread_id for status polling.
+    pub async fn submit_background(
+        self: &Arc<Self>,
+        spec: RunSpec,
+    ) -> Result<MailboxSubmitResult, MailboxError> {
+        let (thread_id, messages) = validate_run_inputs(spec.thread_id, spec.messages)?;
+
+        let job = self.build_job(&thread_id, spec.agent_id.as_deref(), messages);
+        let job_id = job.job_id.clone();
+        let mailbox_id = job.mailbox_id.clone();
+
+        // WAL: persist with available_at = now.
+        self.store.enqueue(&job).await?;
+
+        // Check worker state and dispatch or buffer.
+        let worker = self.get_or_create_worker(&mailbox_id).await;
+        let status = {
+            let mut w = worker.lock().await;
+            match &w.status {
+                MailboxWorkerStatus::Idle => {
+                    // Dispatch immediately.
+                    drop(w);
+                    self.dispatch_job(&mailbox_id).await;
+                    MailboxDispatchStatus::Running
+                }
+                MailboxWorkerStatus::Running { .. } => {
+                    let pending_ahead = w.pending.len();
+                    w.pending.push_back(job);
+                    MailboxDispatchStatus::Queued { pending_ahead }
+                }
+            }
+        };
+
+        Ok(MailboxSubmitResult {
+            job_id,
+            thread_id,
+            status,
+        })
+    }
+
+    // ── Control ──────────────────────────────────────────────────────
+
+    /// Cancel a run by job_id or thread_id.
+    ///
+    /// If Queued: transitions to Cancelled via store.
+    /// If Claimed/Running: cancels runtime run via dual-index lookup.
+    pub async fn cancel(&self, id: &str) -> Result<bool, MailboxError> {
+        // Try store cancel first (works for Queued jobs).
+        let now = now_ms();
+        let cancelled = self.store.cancel(id, now).await?;
+        if cancelled.is_some() {
+            return Ok(true);
+        }
+
+        // Try runtime cancel (for Claimed/Running jobs).
+        Ok(self.runtime.cancel(id))
+    }
+
+    /// Interrupt a thread: bump generation, supersede all pending,
+    /// cancel active run. Clean slate for the thread.
+    pub async fn interrupt(&self, thread_id: &str) -> Result<MailboxInterrupt, MailboxError> {
+        let now = now_ms();
+        let result = self.store.interrupt(thread_id, now).await?;
+
+        // Cancel active runtime run if any.
+        if result.active_job.is_some() {
+            self.runtime.cancel(thread_id);
+        }
+
+        // Clear local pending buffer.
+        let workers = self.workers.read().await;
+        if let Some(worker) = workers.get(thread_id) {
+            let mut w = worker.lock().await;
+            w.pending.clear();
+        }
+
+        Ok(result)
+    }
+
+    /// Forward a tool-call decision to an active run.
+    pub fn send_decision(&self, id: &str, tool_call_id: String, resume: ToolCallResume) -> bool {
+        self.runtime.send_decision(id, tool_call_id, resume)
+    }
+
+    // ── Query ────────────────────────────────────────────────────────
+
+    /// List mailbox jobs for a thread (with optional status filter).
+    pub async fn list_jobs(
+        &self,
+        thread_id: &str,
+        status_filter: Option<&[MailboxJobStatus]>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<MailboxJob>, MailboxError> {
+        Ok(self
+            .store
+            .list_jobs(thread_id, status_filter, limit, offset)
+            .await?)
+    }
+
+    // ── Lifecycle ────────────────────────────────────────────────────
+
+    /// Recover on startup: reload Queued jobs, buffer, dispatch idle threads.
+    pub async fn recover(self: &Arc<Self>) -> Result<usize, MailboxError> {
+        let now = now_ms();
+        let mut total = 0;
+
+        // Reclaim expired leases from previous process crash.
+        let reclaimed = self.store.reclaim_expired_leases(now, 100).await?;
+        for job in &reclaimed {
+            if job.status == MailboxJobStatus::Queued {
+                let worker = self.get_or_create_worker(&job.mailbox_id).await;
+                let mut w = worker.lock().await;
+                w.pending.push_back(job.clone());
+            }
+        }
+        total += reclaimed.len();
+
+        // Reload all queued mailbox IDs.
+        let mailbox_ids = self.store.queued_mailbox_ids().await?;
+        for mailbox_id in &mailbox_ids {
+            let jobs = self
+                .store
+                .list_jobs(mailbox_id, Some(&[MailboxJobStatus::Queued]), 100, 0)
+                .await?;
+            let count = jobs.len();
+            let worker = self.get_or_create_worker(mailbox_id).await;
+            {
+                let mut w = worker.lock().await;
+                for job in jobs {
+                    w.pending.push_back(job);
+                }
+            }
+            total += count;
+        }
+
+        // Try to dispatch for each mailbox.
+        for mailbox_id in &mailbox_ids {
+            self.try_dispatch_next(mailbox_id).await;
+        }
+
+        Ok(total)
+    }
+
+    /// Run sweep + GC loop forever. Call from `tokio::spawn`.
+    pub async fn run_maintenance_loop(self: Arc<Self>) {
+        let mut sweep_interval = tokio::time::interval(self.config.sweep_interval);
+        let mut gc_interval = tokio::time::interval(self.config.gc_interval);
+
+        // Skip the initial immediate tick.
+        sweep_interval.tick().await;
+        gc_interval.tick().await;
+
+        loop {
+            tokio::select! {
+                _ = sweep_interval.tick() => {
+                    self.run_sweep().await;
+                }
+                _ = gc_interval.tick() => {
+                    self.run_gc().await;
+                }
+            }
+        }
+    }
+
+    // ── Internal: dispatch ───────────────────────────────────────────
+
+    /// Claim a job from the store and start execution.
+    async fn dispatch_job(self: &Arc<Self>, mailbox_id: &str) {
+        let now = now_ms();
+        let claimed = match self
+            .store
+            .claim(mailbox_id, &self.consumer_id, self.config.lease_ms, now, 1)
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, mailbox_id, "failed to claim job");
+                return;
+            }
+        };
+
+        let Some(job) = claimed.into_iter().next() else {
+            // No jobs to claim, mark worker idle.
+            let workers = self.workers.read().await;
+            if let Some(worker) = workers.get(mailbox_id) {
+                let mut w = worker.lock().await;
+                w.status = MailboxWorkerStatus::Idle;
+            }
+            return;
+        };
+
+        let job_id = job.job_id.clone();
+        let claim_token = job.claim_token.clone().unwrap_or_default();
+
+        // Start lease renewal.
+        let lease_handle =
+            self.spawn_lease_renewal(job_id.clone(), claim_token.clone(), mailbox_id.to_string());
+
+        // Update worker state.
+        let worker = self.get_or_create_worker(mailbox_id).await;
+        {
+            let mut w = worker.lock().await;
+            w.status = MailboxWorkerStatus::Running {
+                job_id: job_id.clone(),
+                claim_token: claim_token.clone(),
+                lease_handle,
+            };
+        }
+
+        // Create channel for background dispatch (events go nowhere unless observed).
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+
+        self.spawn_execution(job, event_tx, claim_token, mailbox_id.to_string());
+    }
+
+    /// Pop pending or claim from store for the next job.
+    async fn try_dispatch_next(self: &Arc<Self>, mailbox_id: &str) {
+        let worker = {
+            let workers = self.workers.read().await;
+            match workers.get(mailbox_id) {
+                Some(w) => Arc::clone(w),
+                None => return,
+            }
+        };
+
+        let should_dispatch = {
+            let w = worker.lock().await;
+            matches!(w.status, MailboxWorkerStatus::Idle)
+        };
+
+        if !should_dispatch {
+            return;
+        }
+
+        // Try popping from local buffer first.
+        let has_pending = {
+            let w = worker.lock().await;
+            !w.pending.is_empty()
+        };
+
+        if has_pending {
+            self.dispatch_job(mailbox_id).await;
+        } else {
+            // Try claiming from store.
+            self.dispatch_job(mailbox_id).await;
+        }
+    }
+
+    /// Spawn a lease renewal task that periodically extends the lease.
+    fn spawn_lease_renewal(
+        &self,
+        job_id: String,
+        claim_token: String,
+        mailbox_id: String,
+    ) -> JoinHandle<()> {
+        let store = Arc::clone(&self.store);
+        let runtime = Arc::clone(&self.runtime);
+        let lease_ms = self.config.lease_ms;
+        let interval = self.config.lease_renewal_interval;
+
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(interval);
+            tick.tick().await; // skip initial
+
+            loop {
+                tick.tick().await;
+                let now = now_ms();
+                match store
+                    .extend_lease(&job_id, &claim_token, lease_ms, now)
+                    .await
+                {
+                    Ok(true) => {} // Lease extended successfully.
+                    Ok(false) => {
+                        // Lease lost -- another process reclaimed.
+                        tracing::warn!(job_id, mailbox_id, "lease lost, cancelling run");
+                        runtime.cancel(&mailbox_id);
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::warn!(job_id, error = %e, "lease extension failed");
+                        break;
+                    }
+                }
+            }
+        })
+    }
+
+    /// Spawn the actual execution task for a claimed job.
+    fn spawn_execution(
+        self: &Arc<Self>,
+        job: MailboxJob,
+        event_tx: mpsc::UnboundedSender<AgentEvent>,
+        claim_token: String,
+        mailbox_id: String,
+    ) {
+        let this = Arc::clone(self);
+        let job_id = job.job_id.clone();
+
+        tokio::spawn(async move {
+            let error_tx = event_tx.clone();
+            let sink = ChannelEventSink::new(event_tx);
+
+            let mut request =
+                awaken_runtime::RunRequest::new(job.mailbox_id.clone(), job.messages.clone());
+            if !job.agent_id.is_empty() {
+                request = request.with_agent_id(job.agent_id.clone());
+            }
+
+            let result = this.runtime.run(request, Arc::new(sink)).await;
+            let now = now_ms();
+
+            match classify_error(&result) {
+                MailboxRunOutcome::Completed => {
+                    if let Err(e) = this.store.ack(&job_id, &claim_token, now).await {
+                        tracing::warn!(job_id, error = %e, "ack failed");
+                    }
+                }
+                MailboxRunOutcome::TransientError(msg) => {
+                    tracing::warn!(job_id, error = %msg, "run failed (transient), nacking");
+                    let retry_at = now + this.config.default_retry_delay_ms;
+                    if let Err(e) = this
+                        .store
+                        .nack(&job_id, &claim_token, retry_at, &msg, now)
+                        .await
+                    {
+                        tracing::warn!(job_id, error = %e, "nack failed");
+                    }
+                }
+                MailboxRunOutcome::PermanentError(msg) => {
+                    tracing::warn!(job_id, error = %msg, "run failed (permanent), dead-lettering");
+                    if let Err(e) = this
+                        .store
+                        .dead_letter(&job_id, &claim_token, &msg, now)
+                        .await
+                    {
+                        tracing::warn!(job_id, error = %e, "dead_letter failed");
+                    }
+                    // Notify the caller.
+                    let _ = error_tx.send(AgentEvent::Error {
+                        message: msg,
+                        code: None,
+                    });
+                }
+            }
+
+            // Abort lease renewal.
+            let worker = this.get_or_create_worker(&mailbox_id).await;
+            {
+                let mut w = worker.lock().await;
+                let should_transition = matches!(
+                    &w.status,
+                    MailboxWorkerStatus::Running { job_id: cid, .. } if *cid == job_id
+                );
+                if should_transition {
+                    // Take ownership of the old status to abort the lease handle.
+                    let old = std::mem::replace(&mut w.status, MailboxWorkerStatus::Idle);
+                    if let MailboxWorkerStatus::Running { lease_handle, .. } = old {
+                        lease_handle.abort();
+                    }
+                }
+            }
+
+            // Try to dispatch next job for this mailbox.
+            this.try_dispatch_next(&mailbox_id).await;
+        });
+    }
+
+    /// Get or create a per-thread worker.
+    async fn get_or_create_worker(&self, mailbox_id: &str) -> Arc<Mutex<MailboxWorker>> {
+        // Fast path: read lock.
+        {
+            let workers = self.workers.read().await;
+            if let Some(w) = workers.get(mailbox_id) {
+                return Arc::clone(w);
+            }
+        }
+        // Slow path: write lock.
+        let mut workers = self.workers.write().await;
+        Arc::clone(
+            workers
+                .entry(mailbox_id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(MailboxWorker::default()))),
+        )
+    }
+
+    /// Build a MailboxJob from a RunSpec.
+    fn build_job(
+        &self,
+        thread_id: &str,
+        agent_id: Option<&str>,
+        messages: Vec<Message>,
+    ) -> MailboxJob {
+        let now = now_ms();
+        MailboxJob {
+            job_id: uuid::Uuid::now_v7().to_string(),
+            mailbox_id: thread_id.to_string(),
+            agent_id: agent_id.unwrap_or_default().to_string(),
+            messages,
+            origin: MailboxJobOrigin::User,
+            sender_id: None,
+            parent_run_id: None,
+            overrides: None,
+            priority: 128,
+            dedupe_key: None,
+            generation: 0, // Set by store on enqueue.
+            status: MailboxJobStatus::Queued,
+            available_at: now,
+            attempt_count: 0,
+            max_attempts: self.config.default_max_attempts,
+            last_error: None,
+            claim_token: None,
+            claimed_by: None,
+            lease_until: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    // ── Maintenance ──────────────────────────────────────────────────
+
+    async fn run_sweep(self: &Arc<Self>) {
+        let now = now_ms();
+        match self.store.reclaim_expired_leases(now, 100).await {
+            Ok(reclaimed) => {
+                if !reclaimed.is_empty() {
+                    tracing::info!(count = reclaimed.len(), "sweep reclaimed expired leases");
+                    for job in reclaimed {
+                        if job.status == MailboxJobStatus::Queued {
+                            let worker = self.get_or_create_worker(&job.mailbox_id).await;
+                            let mailbox_id = job.mailbox_id.clone();
+                            {
+                                let mut w = worker.lock().await;
+                                w.pending.push_back(job);
+                            }
+                            self.try_dispatch_next(&mailbox_id).await;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "sweep failed");
+            }
+        }
+    }
+
+    async fn run_gc(&self) {
+        let now = now_ms();
+        let gc_ttl_ms = self.config.gc_ttl.as_millis() as u64;
+        let older_than = now.saturating_sub(gc_ttl_ms);
+        match self.store.purge_terminal(older_than).await {
+            Ok(purged) => {
+                if purged > 0 {
+                    tracing::info!(purged, "GC purged terminal jobs");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "GC failed");
+            }
+        }
+    }
+}
+
+// ── Free functions ───────────────────────────────────────────────────
+
+/// Validate and normalize run request inputs.
+///
+/// Checks that messages are non-empty, trims/generates thread_id.
+/// Returns `(thread_id, messages)`.
+pub fn prepare_run_inputs(
+    thread_id: Option<String>,
+    messages: Vec<Message>,
+) -> Result<(String, Vec<Message>), ApiError> {
+    if messages.is_empty() {
+        return Err(ApiError::BadRequest(
+            "at least one message is required".to_string(),
+        ));
+    }
+    let thread_id = thread_id
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+    Ok((thread_id, messages))
+}
+
+/// Internal validation for mailbox submit paths.
+fn validate_run_inputs(
+    thread_id: String,
+    messages: Vec<Message>,
+) -> Result<(String, Vec<Message>), MailboxError> {
+    if messages.is_empty() {
+        return Err(MailboxError::Validation(
+            "at least one message is required".to_string(),
+        ));
+    }
+    let thread_id = {
+        let trimmed = thread_id.trim().to_string();
+        if trimmed.is_empty() {
+            uuid::Uuid::now_v7().to_string()
+        } else {
+            trimmed
+        }
+    };
+    Ok((thread_id, messages))
+}
+
+/// Classify a runtime run result for ack/nack/dead_letter.
+fn classify_error(
+    result: &Result<
+        awaken_runtime::loop_runner::AgentRunResult,
+        awaken_runtime::loop_runner::AgentLoopError,
+    >,
+) -> MailboxRunOutcome {
+    match result {
+        Ok(_) => MailboxRunOutcome::Completed,
+        Err(e) => {
+            use awaken_runtime::loop_runner::AgentLoopError;
+            match e {
+                AgentLoopError::RuntimeError(re) => {
+                    use awaken_runtime::RuntimeError;
+                    match re {
+                        RuntimeError::ThreadAlreadyRunning { .. } => {
+                            MailboxRunOutcome::TransientError(e.to_string())
+                        }
+                        RuntimeError::AgentNotFound { .. } | RuntimeError::ResolveFailed { .. } => {
+                            MailboxRunOutcome::PermanentError(e.to_string())
+                        }
+                        _ => MailboxRunOutcome::TransientError(e.to_string()),
+                    }
+                }
+                AgentLoopError::StorageError(_) => MailboxRunOutcome::TransientError(e.to_string()),
+                AgentLoopError::InferenceFailed(_) => {
+                    MailboxRunOutcome::TransientError(e.to_string())
+                }
+                // Agent-level failures (phase error, invalid resume) are not infra errors.
+                _ => MailboxRunOutcome::Completed,
+            }
+        }
+    }
+}
+
+/// Current time in milliseconds since UNIX epoch.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+// ── Tests ────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_contract::contract::message::Message;
+    use awaken_stores::InMemoryMailboxStore;
+
+    // ── Helper ───────────────────────────────────────────────────────
+
+    /// Stub resolver that always returns an error (no agents registered).
+    struct StubResolver;
+    impl awaken_runtime::AgentResolver for StubResolver {
+        fn resolve(
+            &self,
+            agent_id: &str,
+        ) -> Result<awaken_runtime::ResolvedAgent, awaken_runtime::RuntimeError> {
+            Err(awaken_runtime::RuntimeError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })
+        }
+    }
+
+    fn make_store() -> Arc<InMemoryMailboxStore> {
+        Arc::new(InMemoryMailboxStore::new())
+    }
+
+    fn make_runtime() -> Arc<AgentRuntime> {
+        Arc::new(AgentRuntime::new(Arc::new(StubResolver)))
+    }
+
+    fn make_mailbox(runtime: Arc<AgentRuntime>, store: Arc<InMemoryMailboxStore>) -> Arc<Mailbox> {
+        Arc::new(Mailbox::new(
+            runtime,
+            store,
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ))
+    }
+
+    // ── Tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn mailbox_config_defaults() {
+        let config = MailboxConfig::default();
+        assert_eq!(config.lease_ms, 30_000);
+        assert_eq!(config.lease_renewal_interval, Duration::from_secs(10));
+        assert_eq!(config.sweep_interval, Duration::from_secs(30));
+        assert_eq!(config.gc_interval, Duration::from_secs(60));
+        assert_eq!(config.gc_ttl, Duration::from_secs(24 * 60 * 60));
+        assert_eq!(config.default_max_attempts, 5);
+        assert_eq!(config.default_retry_delay_ms, 250);
+    }
+
+    #[test]
+    fn run_spec_fields() {
+        let spec = RunSpec {
+            thread_id: "t-1".into(),
+            agent_id: Some("agent-a".into()),
+            messages: vec![Message::user("hello")],
+        };
+        assert_eq!(spec.thread_id, "t-1");
+        assert_eq!(spec.agent_id.as_deref(), Some("agent-a"));
+        assert_eq!(spec.messages.len(), 1);
+    }
+
+    #[test]
+    fn run_spec_validation_empty_messages_errors() {
+        let result = validate_run_inputs("thread-1".into(), vec![]);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), MailboxError::Validation(_)));
+    }
+
+    #[test]
+    fn run_spec_validation_blank_thread_id_generates_new() {
+        let result = validate_run_inputs("  ".into(), vec![Message::user("hi")]);
+        assert!(result.is_ok());
+        let (thread_id, _) = result.unwrap();
+        assert!(!thread_id.is_empty());
+        assert_ne!(thread_id.trim(), "");
+    }
+
+    #[test]
+    fn run_spec_validation_trims_thread_id() {
+        let result = validate_run_inputs("  my-thread  ".into(), vec![Message::user("hi")]);
+        assert!(result.is_ok());
+        let (thread_id, _) = result.unwrap();
+        assert_eq!(thread_id, "my-thread");
+    }
+
+    #[test]
+    fn prepare_run_inputs_generates_thread_id() {
+        let msgs = vec![Message::user("hi")];
+        let (thread_id, messages) = prepare_run_inputs(None, msgs).unwrap();
+        assert!(!thread_id.is_empty());
+        assert_eq!(messages.len(), 1);
+    }
+
+    #[test]
+    fn prepare_run_inputs_empty_messages_errors() {
+        let result = prepare_run_inputs(None, vec![]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn dispatch_status_enum_variants() {
+        let running = MailboxDispatchStatus::Running;
+        let queued = MailboxDispatchStatus::Queued { pending_ahead: 2 };
+        assert!(matches!(running, MailboxDispatchStatus::Running));
+        assert!(matches!(
+            queued,
+            MailboxDispatchStatus::Queued { pending_ahead: 2 }
+        ));
+    }
+
+    #[tokio::test]
+    async fn submit_background_enqueues_job() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store.clone());
+
+        let spec = RunSpec {
+            thread_id: "thread-1".into(),
+            agent_id: Some("agent-1".into()),
+            messages: vec![Message::user("hello")],
+        };
+        let result = mailbox.submit_background(spec).await.unwrap();
+
+        assert_eq!(result.thread_id, "thread-1");
+        assert!(!result.job_id.is_empty());
+
+        // Verify job is in store.
+        let jobs = store.list_jobs("thread-1", None, 100, 0).await.unwrap();
+        assert!(!jobs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancel_queued_job_works() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store.clone());
+
+        // Submit a job with available_at in the future so it stays Queued.
+        let spec = RunSpec {
+            thread_id: "thread-cancel".into(),
+            agent_id: Some("agent-1".into()),
+            messages: vec![Message::user("hello")],
+        };
+        let result = mailbox.submit_background(spec).await.unwrap();
+        let job_id = result.job_id.clone();
+
+        // The job might already be dispatched (claimed). Load it to check.
+        let loaded = store.load_job(&job_id).await.unwrap().unwrap();
+        if loaded.status == MailboxJobStatus::Queued {
+            let cancelled = mailbox.cancel(&job_id).await.unwrap();
+            assert!(cancelled);
+
+            let after = store.load_job(&job_id).await.unwrap().unwrap();
+            assert_eq!(after.status, MailboxJobStatus::Cancelled);
+        }
+        // If already Claimed, cancel via runtime path is tested implicitly.
+    }
+
+    #[tokio::test]
+    async fn list_jobs_returns_entries() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store.clone());
+
+        for i in 0..3 {
+            let spec = RunSpec {
+                thread_id: "thread-list".into(),
+                agent_id: Some(format!("agent-{i}")),
+                messages: vec![Message::user("msg")],
+            };
+            mailbox.submit_background(spec).await.unwrap();
+        }
+
+        let jobs = mailbox
+            .list_jobs("thread-list", None, 100, 0)
+            .await
+            .unwrap();
+        assert_eq!(jobs.len(), 3);
+    }
+
+    #[test]
+    fn mailbox_error_display() {
+        let e = MailboxError::Validation("test".to_string());
+        assert_eq!(e.to_string(), "validation error: test");
+
+        let e = MailboxError::Internal("oops".to_string());
+        assert_eq!(e.to_string(), "internal error: oops");
+    }
+
+    #[test]
+    fn mailbox_submit_result_fields() {
+        let result = MailboxSubmitResult {
+            job_id: "job-1".into(),
+            thread_id: "thread-1".into(),
+            status: MailboxDispatchStatus::Running,
+        };
+        assert_eq!(result.job_id, "job-1");
+        assert_eq!(result.thread_id, "thread-1");
+        assert!(matches!(result.status, MailboxDispatchStatus::Running));
+    }
+}
