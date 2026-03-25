@@ -279,6 +279,10 @@ pub struct ToolDescriptor {
     pub parameters: Value,
     /// Tool category.
     pub category: Option<String>,
+    /// Whether the tool can be speculatively executed before the full
+    /// assistant stream completes.
+    #[serde(default)]
+    pub is_concurrency_safe: bool,
     /// Additional metadata.
     pub metadata: HashMap<String, Value>,
 }
@@ -296,6 +300,7 @@ impl ToolDescriptor {
             description: description.into(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
             category: None,
+            is_concurrency_safe: false,
             metadata: HashMap::new(),
         }
     }
@@ -309,6 +314,12 @@ impl ToolDescriptor {
     /// Set category.
     pub fn with_category(mut self, category: impl Into<String>) -> Self {
         self.category = Some(category.into());
+        self
+    }
+
+    /// Mark whether the tool is safe to execute concurrently with response streaming.
+    pub fn with_concurrency_safe(mut self, is_concurrency_safe: bool) -> Self {
+        self.is_concurrency_safe = is_concurrency_safe;
         self
     }
 
@@ -810,6 +821,7 @@ mod tests {
         assert_eq!(desc.name, "Read File");
         assert_eq!(desc.description, "Reads a file from disk");
         assert!(desc.category.is_none());
+        assert!(!desc.is_concurrency_safe);
         assert!(desc.metadata.is_empty());
         // Default parameters
         assert_eq!(desc.parameters, json!({"type": "object", "properties": {}}));
@@ -850,10 +862,12 @@ mod tests {
         let desc = ToolDescriptor::new("tool", "Tool", "Desc")
             .with_parameters(json!({"type": "object"}))
             .with_category("test")
+            .with_concurrency_safe(true)
             .with_metadata("key", "value");
 
         assert_eq!(desc.id, "tool");
         assert_eq!(desc.category, Some("test".to_string()));
+        assert!(desc.is_concurrency_safe);
         assert_eq!(desc.metadata.get("key"), Some(&json!("value")));
     }
 

@@ -2,8 +2,9 @@ use super::core::{apply_context_messages_to_prompt, consume_emitted_prompt_segme
 use super::state_commit::PendingDeltaCommitContext;
 use super::stream_core::preallocate_tool_result_message_ids;
 use super::*;
+use crate::contracts::runtime::tool_call::ToolDescriptor;
 use crate::runtime::streaming::StreamRecoveryCheckpoint;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 // Stream adapter layer:
 // - drives provider I/O and plugin phases
@@ -185,6 +186,42 @@ fn pending_event_key(event: &AgentEvent) -> Option<PendingEventKey> {
         }),
         _ => None,
     }
+}
+
+fn tool_descriptor_for_call<'a>(
+    tool_descriptors: &'a [ToolDescriptor],
+    tool_name: &str,
+) -> Option<&'a ToolDescriptor> {
+    tool_descriptors
+        .iter()
+        .find(|descriptor| descriptor.id == tool_name)
+}
+
+fn should_start_streaming_tool_execution(
+    agent: &dyn Agent,
+    tool_descriptors: &[ToolDescriptor],
+    tool_name: &str,
+) -> bool {
+    agent.streaming_tool_execution_enabled()
+        && tool_descriptor_for_call(tool_descriptors, tool_name)
+            .is_some_and(|descriptor| descriptor.is_concurrency_safe)
+}
+
+fn cancel_pending_early_tool_executions(
+    tokens: &mut HashMap<String, RunCancellationToken>,
+    tasks: &mut tokio::task::JoinSet<Result<ToolExecutionResult, AgentLoopError>>,
+) {
+    for token in tokens.values() {
+        token.cancel();
+    }
+    tokens.clear();
+    tasks.abort_all();
+}
+
+fn early_result_matches_call(result: &ToolExecutionResult, call: &ToolCall) -> bool {
+    result.execution.call.id == call.id
+        && result.execution.call.name == call.name
+        && result.execution.call.arguments == call.arguments
 }
 
 pub(super) fn run_stream(
@@ -541,6 +578,20 @@ pub(super) fn run_stream(
             let mut collector = StreamCollector::new();
             let mut chat_stream = chat_stream_events;
             let mut saw_stream_payload = false;
+            let mut emitted_ready_ids = HashSet::new();
+            let mut early_tool_tasks: tokio::task::JoinSet<
+                Result<ToolExecutionResult, AgentLoopError>,
+            > = tokio::task::JoinSet::new();
+            let mut early_tool_tokens: HashMap<String, RunCancellationToken> = HashMap::new();
+            let inference_state_for_early_tools = run_ctx.snapshot().unwrap_or(Value::Null);
+            let run_policy_for_early_tools = run_ctx.run_policy().clone();
+            let run_identity_for_early_tools = run_ctx.run_identity().clone();
+            let caller_context_for_early_tools = prepare_tool_execution_context(&run_ctx)
+                .map(|ctx| ctx.caller_context)
+                .unwrap_or_else(|_| caller_context_for_tool_execution(&run_ctx, &inference_state_for_early_tools));
+            let thread_id_for_early_tools = run_ctx.thread_id().to_string();
+            let thread_messages_for_early_tools = run_ctx.messages().to_vec();
+            let behavior_for_early_tools = agent.behavior_arc();
 
             loop {
                 let next_event = if let Some(ref token) = run_cancellation_token {
@@ -628,7 +679,7 @@ pub(super) fn run_stream(
                         if stream_event_has_payload(&event) {
                             saw_stream_payload = true;
                         }
-                        if let Some(output) = collector.process(event) {
+                        for output in collector.process(event) {
                             match output {
                                 crate::runtime::streaming::StreamOutput::TextDelta(delta) => {
                                     yield emitter.emit_existing(AgentEvent::TextDelta { delta });
@@ -644,6 +695,65 @@ pub(super) fn run_stream(
                                 }
                                 crate::runtime::streaming::StreamOutput::ToolCallDelta { id, args_delta } => {
                                     yield emitter.emit_existing(AgentEvent::ToolCallDelta { id, args_delta });
+                                }
+                                crate::runtime::streaming::StreamOutput::ToolCallReady { id, name, arguments } => {
+                                    emitted_ready_ids.insert(id.clone());
+                                    yield emitter.emit_existing(AgentEvent::ToolCallReady {
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                        arguments: arguments.clone(),
+                                    });
+
+                                    if early_tool_tokens.contains_key(&id)
+                                        || !should_start_streaming_tool_execution(
+                                            agent.as_ref(),
+                                            &active_tool_descriptors,
+                                            &name,
+                                        )
+                                    {
+                                        continue;
+                                    }
+
+                                    let Some(tool) = active_tool_snapshot.tools.get(&name).cloned() else {
+                                        continue;
+                                    };
+                                    let call = ToolCall::new(id.clone(), name, arguments);
+                                    let child_token = run_cancellation_token
+                                        .as_ref()
+                                        .map(tokio_util::sync::CancellationToken::child_token)
+                                        .unwrap_or_default();
+                                    let state = inference_state_for_early_tools.clone();
+                                    let tool_descriptors = active_tool_descriptors.clone();
+                                    let activity_manager = activity_manager.clone();
+                                    let run_policy = run_policy_for_early_tools.clone();
+                                    let run_identity = run_identity_for_early_tools.clone();
+                                    let caller_context = caller_context_for_early_tools.clone();
+                                    let thread_id = thread_id_for_early_tools.clone();
+                                    let thread_messages = thread_messages_for_early_tools.clone();
+                                    let behavior = behavior_for_early_tools.clone();
+                                    let task_token = child_token.clone();
+
+                                    early_tool_tasks.spawn(async move {
+                                        let phase_ctx = super::tool_exec::ToolPhaseContext {
+                                            tool_descriptors: &tool_descriptors,
+                                            agent_behavior: Some(behavior.as_ref()),
+                                            activity_manager,
+                                            run_policy: &run_policy,
+                                            run_identity,
+                                            caller_context,
+                                            thread_id: &thread_id,
+                                            thread_messages: &thread_messages,
+                                            cancellation_token: Some(&task_token),
+                                        };
+                                        super::tool_exec::execute_single_tool_with_phases_deferred(
+                                            Some(tool.as_ref()),
+                                            &call,
+                                            &state,
+                                            &phase_ctx,
+                                        )
+                                        .await
+                                    });
+                                    early_tool_tokens.insert(id, child_token);
                                 }
                             }
                         }
@@ -747,11 +857,19 @@ pub(super) fn run_stream(
                                     continued_response_prefix.clear();
                                 }
                             }
+                            cancel_pending_early_tool_executions(
+                                &mut early_tool_tokens,
+                                &mut early_tool_tasks,
+                            );
                             // Close the failed step and re-enter the outer loop.
                             yield emitter.step_end();
                             mark_step_completed(&mut run_state);
                             continue 'step;
                         }
+                        cancel_pending_early_tool_executions(
+                            &mut early_tool_tokens,
+                            &mut early_tool_tasks,
+                        );
                         // Non-retryable or retries exhausted: terminate the run.
                         match apply_llm_error_cleanup(
                             &mut run_ctx,
@@ -776,6 +894,18 @@ pub(super) fn run_stream(
 
             let max_output_tokens = chat_options.as_ref().and_then(|o| o.max_tokens);
             let result = collector.finish(max_output_tokens);
+            let finalized_tool_ids: HashSet<String> =
+                result.tool_calls.iter().map(|call| call.id.clone()).collect();
+            let stale_early_ids: Vec<String> = early_tool_tokens
+                .keys()
+                .filter(|call_id| !finalized_tool_ids.contains(*call_id))
+                .cloned()
+                .collect();
+            for call_id in stale_early_ids {
+                if let Some(token) = early_tool_tokens.remove(&call_id) {
+                    token.cancel();
+                }
+            }
 
             // Empty stream response: the stream completed without error but
             // produced no content, tool calls, or usage.  This is almost always
@@ -847,11 +977,16 @@ pub(super) fn run_stream(
                             );
                         }
                     }
+                    cancel_pending_early_tool_executions(
+                        &mut early_tool_tokens,
+                        &mut early_tool_tasks,
+                    );
                     yield emitter.step_end();
                     mark_step_completed(&mut run_state);
                     continue 'step;
                 }
 
+                cancel_pending_early_tool_executions(&mut early_tool_tokens, &mut early_tool_tasks);
                 // Retries exhausted — terminate.
                 let error_message = format!(
                     "empty stream response from model='{inference_model}' (no content, tool calls, or usage); possible upstream SSE error payload was ignored"
@@ -962,12 +1097,65 @@ pub(super) fn run_stream(
 
             // Emit ToolCallReady for each finalized tool call
             for tc in &result.tool_calls {
+                if emitted_ready_ids.contains(&tc.id) {
+                    continue;
+                }
                 yield emitter.emit_existing(AgentEvent::ToolCallReady {
                     id: tc.id.clone(),
                     name: tc.name.clone(),
                     arguments: tc.arguments.clone(),
                 });
             }
+
+            let mut early_results_by_id = HashMap::new();
+            let mut early_activity_closed = false;
+            while !early_tool_tokens.is_empty() && !early_tool_tasks.is_empty() {
+                tokio::select! {
+                    activity = activity_rx.recv(), if !early_activity_closed => {
+                        match activity {
+                            Some(event) => yield emitter.emit_existing(event),
+                            None => early_activity_closed = true,
+                        }
+                    }
+                    joined = early_tool_tasks.join_next(), if !early_tool_tasks.is_empty() => {
+                        let Some(joined) = joined else {
+                            break;
+                        };
+                        match joined {
+                            Ok(Ok(exec_result)) => {
+                                early_tool_tokens.remove(&exec_result.execution.call.id);
+                                early_results_by_id.insert(exec_result.execution.call.id.clone(), exec_result);
+                            }
+                            Ok(Err(AgentLoopError::Cancelled)) => {
+                                continue;
+                            }
+                            Ok(Err(e)) => {
+                                let message = e.to_string();
+                                terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
+                            }
+                            Err(e) => {
+                                let message = format!("early tool execution join failure: {e}");
+                                terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
+                            }
+                        }
+                    }
+                }
+            }
+
+            while let Ok(event) = activity_rx.try_recv() {
+                yield emitter.emit_existing(event);
+            }
+
+            let remaining_calls: Vec<ToolCall> = result
+                .tool_calls
+                .iter()
+                .filter(|call| {
+                    !early_results_by_id
+                        .get(&call.id)
+                        .is_some_and(|result| early_result_matches_call(result, call))
+                })
+                .cloned()
+                .collect();
 
             // Execute tools with phase hooks
             let tool_context = match prepare_tool_execution_context(&run_ctx) {
@@ -988,7 +1176,7 @@ pub(super) fn run_stream(
                     .tool_executor()
                     .execute(ToolExecutionRequest {
                         tools: &active_tool_snapshot.tools,
-                        calls: &result.tool_calls,
+                        calls: &remaining_calls,
                         state: &tool_context.state,
                         tool_descriptors: &tool_descriptors_for_exec,
                         agent_behavior: Some(agent.behavior()),
@@ -1006,7 +1194,10 @@ pub(super) fn run_stream(
             });
             let mut activity_closed = false;
             let mut resolved_call_ids = HashSet::new();
-            let results = loop {
+            let results = if remaining_calls.is_empty() {
+                Ok(Vec::new())
+            } else {
+                loop {
                 tokio::select! {
                     activity = activity_rx.recv(), if !activity_closed => {
                         match activity {
@@ -1054,13 +1245,14 @@ pub(super) fn run_stream(
                         break res;
                     }
                 }
+                }
             };
 
             while let Ok(event) = activity_rx.try_recv() {
                 yield emitter.emit_existing(event);
             }
 
-            let mut results = match results {
+            let mut remaining_results = match results {
                 Ok(r) => r,
                 Err(AgentLoopError::Cancelled) => {
                     append_cancellation_user_message(&mut run_ctx, CancellationStage::ToolExecution);
@@ -1072,13 +1264,30 @@ pub(super) fn run_stream(
                 }
             };
             if !resolved_call_ids.is_empty() {
-                results.retain(|exec_result| {
+                remaining_results.retain(|exec_result| {
                     !(matches!(
                         exec_result.outcome,
                         crate::contracts::ToolCallOutcome::Suspended
                     )
                         && resolved_call_ids.contains(&exec_result.execution.call.id))
                 });
+            }
+
+            let mut remaining_results_by_id: HashMap<String, ToolExecutionResult> = remaining_results
+                .into_iter()
+                .map(|result| (result.execution.call.id.clone(), result))
+                .collect();
+            let mut results = Vec::with_capacity(result.tool_calls.len());
+            for call in &result.tool_calls {
+                if let Some(exec_result) = early_results_by_id.remove(&call.id) {
+                    if early_result_matches_call(&exec_result, call) {
+                        results.push(exec_result);
+                        continue;
+                    }
+                }
+                if let Some(exec_result) = remaining_results_by_id.remove(&call.id) {
+                    results.push(exec_result);
+                }
             }
 
             // Emit suspended-call events first.

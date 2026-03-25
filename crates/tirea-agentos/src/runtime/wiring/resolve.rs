@@ -566,6 +566,7 @@ fn build_base_agent_from_definition(
         system_prompt: definition.system_prompt,
         max_rounds: definition.max_rounds,
         tool_executor,
+        streaming_tool_execution_enabled: true,
         chat_options: definition.chat_options,
         fallback_models: definition.fallback_models,
         llm_retry_policy: definition.llm_retry_policy,

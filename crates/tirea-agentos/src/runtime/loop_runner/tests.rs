@@ -1004,6 +1004,35 @@ struct ActivityGateTool {
     proceed: Arc<Notify>,
 }
 
+struct StreamingStartProbeTool {
+    id: &'static str,
+    started: Arc<Notify>,
+    calls: Arc<AtomicUsize>,
+    concurrency_safe: bool,
+}
+
+#[async_trait]
+impl Tool for StreamingStartProbeTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(
+            self.id,
+            "Streaming Start Probe",
+            "Records when execution starts",
+        )
+        .with_concurrency_safe(self.concurrency_safe)
+    }
+
+    async fn execute(
+        &self,
+        _args: Value,
+        _ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.started.notify_waiters();
+        Ok(ToolResult::success(self.id, json!({ "ok": true })))
+    }
+}
+
 #[async_trait]
 impl Tool for ActivityGateTool {
     fn descriptor(&self) -> ToolDescriptor {
@@ -7398,6 +7427,20 @@ struct MockResponse {
     usage: Option<Usage>,
 }
 
+struct DelayedToolReadyProvider {
+    release_stream: Arc<Notify>,
+    calls: Mutex<usize>,
+}
+
+impl DelayedToolReadyProvider {
+    fn new(release_stream: Arc<Notify>) -> Self {
+        Self {
+            release_stream,
+            calls: Mutex::new(0),
+        }
+    }
+}
+
 impl MockResponse {
     fn text(s: &str) -> Self {
         Self {
@@ -7681,6 +7724,66 @@ impl LlmExecutor for MockStreamProvider {
     }
 }
 
+#[async_trait]
+impl LlmExecutor for DelayedToolReadyProvider {
+    async fn exec_chat_response(
+        &self,
+        _model: &str,
+        _chat_req: ChatRequest,
+        _options: Option<&ChatOptions>,
+    ) -> genai::Result<genai::chat::ChatResponse> {
+        unimplemented!("stream-only provider")
+    }
+
+    async fn exec_chat_stream_events(
+        &self,
+        _model: &str,
+        _chat_req: ChatRequest,
+        _options: Option<&ChatOptions>,
+    ) -> genai::Result<super::LlmEventStream> {
+        let mut calls = self.calls.lock().expect("lock poisoned");
+        *calls += 1;
+        if *calls > 1 {
+            return Ok(Box::pin(futures::stream::iter(vec![
+                Ok(ChatStreamEvent::Start),
+                Ok(ChatStreamEvent::Chunk(StreamChunk {
+                    content: "all done".to_string(),
+                })),
+                Ok(ChatStreamEvent::End(StreamEnd::default())),
+            ])));
+        }
+        let release_stream = self.release_stream.clone();
+        Ok(Box::pin(async_stream::stream! {
+            yield Ok(ChatStreamEvent::Start);
+            yield Ok(ChatStreamEvent::ToolCallChunk(ToolChunk {
+                tool_call: genai::chat::ToolCall {
+                    call_id: "call_1".to_string(),
+                    fn_name: "stream_probe".to_string(),
+                    fn_arguments: Value::String("{}".to_string()),
+                    thought_signatures: None,
+                },
+            }));
+            release_stream.notified().await;
+            yield Ok(ChatStreamEvent::Chunk(StreamChunk {
+                content: "done".to_string(),
+            }));
+            yield Ok(ChatStreamEvent::End(StreamEnd {
+                captured_content: Some(MessageContent::from_tool_calls(vec![genai::chat::ToolCall {
+                    call_id: "call_1".to_string(),
+                    fn_name: "stream_probe".to_string(),
+                    fn_arguments: Value::String("{}".to_string()),
+                    thought_signatures: None,
+                }])),
+                ..Default::default()
+            }));
+        }))
+    }
+
+    fn name(&self) -> &'static str {
+        "delayed_tool_ready"
+    }
+}
+
 /// Helper: run a mock stream and collect events.
 async fn run_mock_stream(
     provider: MockStreamProvider,
@@ -7692,6 +7795,82 @@ async fn run_mock_stream(
     let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
     let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
     collect_stream_events(stream).await
+}
+
+#[tokio::test]
+async fn test_streaming_tool_execution_starts_concurrency_safe_tool_before_stream_end() {
+    let release_stream = Arc::new(Notify::new());
+    let started = Arc::new(Notify::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider = DelayedToolReadyProvider::new(release_stream.clone());
+    let config = BaseAgent::new("mock")
+        .with_streaming_tool_execution(true)
+        .with_llm_executor(Arc::new(provider));
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let tools = tool_map([StreamingStartProbeTool {
+        id: "stream_probe",
+        started: started.clone(),
+        calls: calls.clone(),
+        concurrency_safe: true,
+    }]);
+
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
+    let collect_task = tokio::spawn(collect_stream_events(stream));
+
+    tokio::time::timeout(std::time::Duration::from_millis(300), started.notified())
+        .await
+        .expect("concurrency-safe tool should start before stream end");
+    release_stream.notify_waiters();
+
+    let events = tokio::time::timeout(std::time::Duration::from_millis(300), collect_task)
+        .await
+        .expect("stream should complete")
+        .expect("collector task should succeed");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, AgentEvent::ToolCallDone { id, .. } if id == "call_1")));
+}
+
+#[tokio::test]
+async fn test_streaming_tool_execution_keeps_non_concurrency_safe_tool_sequential() {
+    let release_stream = Arc::new(Notify::new());
+    let started = Arc::new(Notify::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider = DelayedToolReadyProvider::new(release_stream.clone());
+    let config = BaseAgent::new("mock")
+        .with_streaming_tool_execution(true)
+        .with_llm_executor(Arc::new(provider));
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let tools = tool_map([StreamingStartProbeTool {
+        id: "stream_probe",
+        started: started.clone(),
+        calls: calls.clone(),
+        concurrency_safe: false,
+    }]);
+
+    let run_ctx = RunContext::from_thread(&thread, tirea_contract::RunPolicy::default()).unwrap();
+    let stream = run_loop_stream(Arc::new(config), tools, run_ctx, None, None, None);
+    let collect_task = tokio::spawn(collect_stream_events(stream));
+
+    let early_start =
+        tokio::time::timeout(std::time::Duration::from_millis(150), started.notified()).await;
+    assert!(
+        early_start.is_err(),
+        "non-concurrency-safe tool should not start before stream end"
+    );
+
+    release_stream.notify_waiters();
+    let events = tokio::time::timeout(std::time::Duration::from_millis(300), collect_task)
+        .await
+        .expect("stream should complete")
+        .expect("collector task should succeed");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, AgentEvent::InferenceComplete { .. })));
 }
 
 #[tokio::test]
@@ -12906,9 +13085,9 @@ async fn test_stream_after_inference_run_action_stops_before_tool_events() {
     assert!(
         !events.iter().any(|event| matches!(
             event,
-            AgentEvent::ToolCallReady { id, .. } if id == "call_1"
+            AgentEvent::ToolCallDone { id, .. } if id == "call_1"
         )),
-        "tool-ready event should not be emitted after AfterInference termination: {events:?}"
+        "tool execution should not proceed after AfterInference termination: {events:?}"
     );
 }
 
