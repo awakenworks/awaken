@@ -13,9 +13,6 @@ pub mod file;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 
-#[cfg(feature = "nats")]
-pub mod nats;
-
 pub use memory::InMemoryStore;
 pub use memory_mailbox::InMemoryMailboxStore;
 
@@ -24,6 +21,3 @@ pub use file::FileStore;
 
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresStore;
-
-#[cfg(feature = "nats")]
-pub use nats::NatsBufferedWriter;

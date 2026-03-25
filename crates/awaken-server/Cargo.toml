@@ -22,9 +22,7 @@ tokio-stream = "0.1"
 bytes = "1"
 
 # Optional
-async-nats = { version = "0.38", optional = true }
 awaken-ext-permission = { workspace = true, optional = true }
-awaken-stores = { workspace = true, features = ["nats"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
@@ -37,7 +35,6 @@ async-trait = { workspace = true }
 [features]
 default = ["permission"]
 permission = ["dep:awaken-ext-permission"]
-nats = ["dep:async-nats", "dep:awaken-stores"]
 
 [lints]
 workspace = true

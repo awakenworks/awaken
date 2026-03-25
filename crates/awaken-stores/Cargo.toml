@@ -16,7 +16,6 @@ async-trait = { workspace = true }
 
 # Optional backends
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "json"], default-features = false, optional = true }
-async-nats = { version = "0.38", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
@@ -26,7 +25,6 @@ tempfile = "3"
 default = []
 file = []
 postgres = ["dep:sqlx"]
-nats = ["dep:async-nats"]
 
 [lints]
 workspace = true
