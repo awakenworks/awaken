@@ -11,8 +11,7 @@
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
-    MailboxEntry, MailboxStore, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore,
-    ThreadStore,
+    RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::Thread;
 use awaken_stores::PostgresStore;
@@ -41,15 +40,6 @@ fn make_run(run_id: &str, thread_id: &str, updated_at: u64) -> RunRecord {
         input_tokens: 0,
         output_tokens: 0,
         state: None,
-    }
-}
-
-fn make_mailbox_entry(id: &str, mailbox: &str) -> MailboxEntry {
-    MailboxEntry {
-        entry_id: id.to_string(),
-        mailbox_id: mailbox.to_string(),
-        payload: serde_json::json!({"text": id}),
-        created_at: 1000,
     }
 }
 
@@ -198,35 +188,6 @@ async fn run_with_tokens() {
     assert_eq!(loaded.input_tokens, 500);
     assert_eq!(loaded.output_tokens, 200);
     assert_eq!(loaded.steps, 3);
-}
-
-// ========================================================================
-// MailboxStore
-// ========================================================================
-
-#[tokio::test]
-#[ignore = "requires PostgreSQL via DATABASE_URL"]
-async fn mailbox_push_peek_pop() {
-    let Some(store) = make_store().await else {
-        return;
-    };
-    store
-        .push_message(&make_mailbox_entry("pg-e1", "pg-inbox"))
-        .await
-        .unwrap();
-    store
-        .push_message(&make_mailbox_entry("pg-e2", "pg-inbox"))
-        .await
-        .unwrap();
-
-    let peeked = store.peek_messages("pg-inbox", 10).await.unwrap();
-    assert_eq!(peeked.len(), 2);
-
-    let popped = store.pop_messages("pg-inbox", 1).await.unwrap();
-    assert_eq!(popped.len(), 1);
-
-    let remaining = store.peek_messages("pg-inbox", 10).await.unwrap();
-    assert_eq!(remaining.len(), 1);
 }
 
 // ========================================================================

@@ -71,9 +71,16 @@ fn make_app() -> axum::Router {
         Arc::new(builder.build().expect("build runtime"))
     };
     let store = Arc::new(InMemoryStore::new());
+    let mailbox_store = std::sync::Arc::new(awaken_stores::InMemoryMailboxStore::new());
+    let mailbox = std::sync::Arc::new(awaken_server::mailbox::Mailbox::new(
+        runtime.clone(),
+        mailbox_store,
+        "test".to_string(),
+        awaken_server::mailbox::MailboxConfig::default(),
+    ));
     let state = AppState::new(
         runtime.clone(),
-        store.clone(),
+        mailbox,
         store.clone(),
         runtime.resolver_arc(),
         ServerConfig::default(),

@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use awaken_contract::contract::executor::LlmExecutor;
-use awaken_contract::contract::storage::{MailboxStore, ThreadRunStore};
+use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
 };
@@ -212,10 +212,17 @@ async fn main() {
 
     let resolver = runtime.resolver_arc();
 
+    let mailbox_store = Arc::new(awaken_stores::InMemoryMailboxStore::new());
+    let mailbox = Arc::new(awaken_server::mailbox::Mailbox::new(
+        runtime.clone(),
+        mailbox_store as Arc<dyn awaken_contract::MailboxStore>,
+        format!("starter:{}", std::process::id()),
+        awaken_server::mailbox::MailboxConfig::default(),
+    ));
     let state = AppState::new(
         runtime,
+        mailbox,
         store.clone() as Arc<dyn ThreadRunStore>,
-        store.clone() as Arc<dyn MailboxStore>,
         resolver,
         ServerConfig {
             address: addr.clone(),

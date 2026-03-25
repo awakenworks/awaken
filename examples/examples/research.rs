@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use awaken_contract::contract::executor::LlmExecutor;
-use awaken_contract::contract::storage::{MailboxStore, ThreadRunStore};
+use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_examples::research::tools::*;
@@ -89,10 +89,17 @@ async fn main() {
 
     let addr = std::env::var("AWAKEN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
 
+    let mailbox_store = Arc::new(awaken_stores::InMemoryMailboxStore::new());
+    let mailbox = Arc::new(awaken_server::mailbox::Mailbox::new(
+        runtime.clone(),
+        mailbox_store as Arc<dyn awaken_contract::MailboxStore>,
+        format!("research:{}", std::process::id()),
+        awaken_server::mailbox::MailboxConfig::default(),
+    ));
     let state = AppState::new(
         runtime,
+        mailbox,
         store.clone() as Arc<dyn ThreadRunStore>,
-        store.clone() as Arc<dyn MailboxStore>,
         resolver,
         ServerConfig {
             address: addr.clone(),

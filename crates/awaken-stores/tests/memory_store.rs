@@ -5,8 +5,7 @@ use std::sync::Arc;
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
-    MailboxEntry, MailboxStore, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore,
-    ThreadStore,
+    RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::Thread;
 use awaken_stores::InMemoryStore;
@@ -25,15 +24,6 @@ fn make_run(run_id: &str, thread_id: &str, updated_at: u64) -> RunRecord {
         input_tokens: 0,
         output_tokens: 0,
         state: None,
-    }
-}
-
-fn make_mailbox_entry(id: &str, mailbox: &str) -> MailboxEntry {
-    MailboxEntry {
-        entry_id: id.to_string(),
-        mailbox_id: mailbox.to_string(),
-        payload: serde_json::json!({"text": id}),
-        created_at: 1000,
     }
 }
 
@@ -300,155 +290,6 @@ async fn run_record_with_termination_code() {
 }
 
 // ========================================================================
-// MailboxStore
-// ========================================================================
-
-#[tokio::test]
-async fn mailbox_push_and_peek() {
-    let store = InMemoryStore::new();
-    store
-        .push_message(&make_mailbox_entry("e1", "inbox-a"))
-        .await
-        .unwrap();
-    store
-        .push_message(&make_mailbox_entry("e2", "inbox-a"))
-        .await
-        .unwrap();
-
-    let peeked = store.peek_messages("inbox-a", 10).await.unwrap();
-    assert_eq!(peeked.len(), 2);
-
-    // Peek should not remove
-    let peeked_again = store.peek_messages("inbox-a", 10).await.unwrap();
-    assert_eq!(peeked_again.len(), 2);
-}
-
-#[tokio::test]
-async fn mailbox_pop_removes_entries() {
-    let store = InMemoryStore::new();
-    store
-        .push_message(&make_mailbox_entry("e1", "inbox-a"))
-        .await
-        .unwrap();
-    store
-        .push_message(&make_mailbox_entry("e2", "inbox-a"))
-        .await
-        .unwrap();
-    store
-        .push_message(&make_mailbox_entry("e3", "inbox-a"))
-        .await
-        .unwrap();
-
-    let popped = store.pop_messages("inbox-a", 2).await.unwrap();
-    assert_eq!(popped.len(), 2);
-    assert_eq!(popped[0].entry_id, "e1");
-    assert_eq!(popped[1].entry_id, "e2");
-
-    let remaining = store.peek_messages("inbox-a", 10).await.unwrap();
-    assert_eq!(remaining.len(), 1);
-    assert_eq!(remaining[0].entry_id, "e3");
-}
-
-#[tokio::test]
-async fn mailbox_pop_empty() {
-    let store = InMemoryStore::new();
-    let popped = store.pop_messages("nonexistent", 10).await.unwrap();
-    assert!(popped.is_empty());
-}
-
-#[tokio::test]
-async fn mailbox_peek_empty() {
-    let store = InMemoryStore::new();
-    let peeked = store.peek_messages("nonexistent", 10).await.unwrap();
-    assert!(peeked.is_empty());
-}
-
-#[tokio::test]
-async fn mailbox_multiple_mailboxes() {
-    let store = InMemoryStore::new();
-    store
-        .push_message(&make_mailbox_entry("e1", "inbox-a"))
-        .await
-        .unwrap();
-    store
-        .push_message(&make_mailbox_entry("e2", "inbox-b"))
-        .await
-        .unwrap();
-
-    let a = store.peek_messages("inbox-a", 10).await.unwrap();
-    assert_eq!(a.len(), 1);
-    assert_eq!(a[0].entry_id, "e1");
-
-    let b = store.peek_messages("inbox-b", 10).await.unwrap();
-    assert_eq!(b.len(), 1);
-    assert_eq!(b[0].entry_id, "e2");
-}
-
-#[tokio::test]
-async fn mailbox_pop_limited() {
-    let store = InMemoryStore::new();
-    for i in 0..5 {
-        store
-            .push_message(&make_mailbox_entry(&format!("e{i}"), "inbox"))
-            .await
-            .unwrap();
-    }
-    let popped = store.pop_messages("inbox", 3).await.unwrap();
-    assert_eq!(popped.len(), 3);
-    let remaining = store.peek_messages("inbox", 10).await.unwrap();
-    assert_eq!(remaining.len(), 2);
-}
-
-#[tokio::test]
-async fn mailbox_peek_limited() {
-    let store = InMemoryStore::new();
-    for i in 0..5 {
-        store
-            .push_message(&make_mailbox_entry(&format!("e{i}"), "inbox"))
-            .await
-            .unwrap();
-    }
-    let peeked = store.peek_messages("inbox", 3).await.unwrap();
-    assert_eq!(peeked.len(), 3);
-    // All still present
-    let all = store.peek_messages("inbox", 10).await.unwrap();
-    assert_eq!(all.len(), 5);
-}
-
-#[tokio::test]
-async fn mailbox_entry_serde_roundtrip() {
-    let entry = make_mailbox_entry("e1", "inbox-a");
-    let json = serde_json::to_string(&entry).unwrap();
-    let parsed: MailboxEntry = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed.entry_id, "e1");
-    assert_eq!(parsed.mailbox_id, "inbox-a");
-}
-
-#[tokio::test]
-async fn mailbox_pop_all_then_push_again() {
-    let store = InMemoryStore::new();
-    store
-        .push_message(&make_mailbox_entry("e1", "inbox"))
-        .await
-        .unwrap();
-    let popped = store.pop_messages("inbox", 10).await.unwrap();
-    assert_eq!(popped.len(), 1);
-
-    // Mailbox should be empty
-    let empty = store.peek_messages("inbox", 10).await.unwrap();
-    assert!(empty.is_empty());
-
-    // Push again
-    store
-        .push_message(&make_mailbox_entry("e2", "inbox"))
-        .await
-        .unwrap();
-    let peeked = store.peek_messages("inbox", 10).await.unwrap();
-    assert_eq!(peeked.len(), 1);
-    assert_eq!(peeked[0].entry_id, "e2");
-}
-
-// ========================================================================
 // ThreadRunStore
 // ========================================================================
 
@@ -626,29 +467,6 @@ async fn concurrent_checkpoint() {
         .unwrap()
         .unwrap();
     assert_eq!(msgs.len(), 1);
-}
-
-#[tokio::test]
-async fn concurrent_mailbox_push() {
-    let store = Arc::new(InMemoryStore::new());
-    let handles: Vec<_> = (0..20)
-        .map(|i| {
-            let store = Arc::clone(&store);
-            tokio::spawn(async move {
-                store
-                    .push_message(&make_mailbox_entry(&format!("e{i}"), "inbox"))
-                    .await
-                    .unwrap();
-            })
-        })
-        .collect();
-
-    for handle in handles {
-        handle.await.unwrap();
-    }
-
-    let peeked = store.peek_messages("inbox", 100).await.unwrap();
-    assert_eq!(peeked.len(), 20);
 }
 
 // ========================================================================
@@ -908,25 +726,6 @@ async fn run_record_with_state() {
 }
 
 // ========================================================================
-// Additional mailbox edge cases
-// ========================================================================
-
-#[tokio::test]
-async fn mailbox_fifo_ordering() {
-    let store = InMemoryStore::new();
-    for i in 0..5 {
-        store
-            .push_message(&make_mailbox_entry(&format!("e{i}"), "inbox"))
-            .await
-            .unwrap();
-    }
-    let popped = store.pop_messages("inbox", 5).await.unwrap();
-    for (i, entry) in popped.iter().enumerate() {
-        assert_eq!(entry.entry_id, format!("e{i}"), "FIFO order broken");
-    }
-}
-
-// ========================================================================
 // Full agent lifecycle simulation
 // ========================================================================
 
@@ -1044,17 +843,6 @@ async fn concurrent_mixed_operations() {
         }));
     }
 
-    // Mailbox
-    for i in 0..5 {
-        let store = Arc::clone(&store);
-        handles.push(tokio::spawn(async move {
-            store
-                .push_message(&make_mailbox_entry(&format!("e{i}"), "inbox"))
-                .await
-                .unwrap();
-        }));
-    }
-
     for handle in handles {
         handle.await.unwrap();
     }
@@ -1064,9 +852,6 @@ async fn concurrent_mixed_operations() {
 
     let run_page = store.list_runs(&RunQuery::default()).await.unwrap();
     assert_eq!(run_page.total, 5);
-
-    let mailbox_count = store.peek_messages("inbox", 100).await.unwrap().len();
-    assert_eq!(mailbox_count, 5);
 }
 
 // ========================================================================

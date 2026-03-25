@@ -5,8 +5,7 @@
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
-    MailboxEntry, MailboxStore, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore,
-    ThreadStore,
+    RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::Thread;
 use awaken_stores::FileStore;
@@ -26,15 +25,6 @@ fn make_run(run_id: &str, thread_id: &str, updated_at: u64) -> RunRecord {
         input_tokens: 0,
         output_tokens: 0,
         state: None,
-    }
-}
-
-fn make_mailbox_entry(id: &str, mailbox: &str) -> MailboxEntry {
-    MailboxEntry {
-        entry_id: id.to_string(),
-        mailbox_id: mailbox.to_string(),
-        payload: serde_json::json!({"text": id}),
-        created_at: 1000,
     }
 }
 
@@ -173,59 +163,6 @@ async fn run_with_tokens() {
     let loaded = RunStore::load_run(&store, "r1").await.unwrap().unwrap();
     assert_eq!(loaded.input_tokens, 500);
     assert_eq!(loaded.output_tokens, 200);
-}
-
-// ========================================================================
-// MailboxStore
-// ========================================================================
-
-#[tokio::test]
-async fn mailbox_push_and_peek() {
-    let tmp = TempDir::new().unwrap();
-    let store = FileStore::new(tmp.path());
-    store
-        .push_message(&make_mailbox_entry("e1", "inbox-a"))
-        .await
-        .unwrap();
-
-    let peeked = store.peek_messages("inbox-a", 10).await.unwrap();
-    assert_eq!(peeked.len(), 1);
-}
-
-#[tokio::test]
-async fn mailbox_pop_removes_files() {
-    let tmp = TempDir::new().unwrap();
-    let store = FileStore::new(tmp.path());
-    store
-        .push_message(&make_mailbox_entry("e1", "inbox-a"))
-        .await
-        .unwrap();
-    store
-        .push_message(&make_mailbox_entry("e2", "inbox-a"))
-        .await
-        .unwrap();
-
-    let popped = store.pop_messages("inbox-a", 1).await.unwrap();
-    assert_eq!(popped.len(), 1);
-
-    let remaining = store.peek_messages("inbox-a", 10).await.unwrap();
-    assert_eq!(remaining.len(), 1);
-}
-
-#[tokio::test]
-async fn mailbox_pop_empty() {
-    let tmp = TempDir::new().unwrap();
-    let store = FileStore::new(tmp.path());
-    let popped = store.pop_messages("nonexistent", 10).await.unwrap();
-    assert!(popped.is_empty());
-}
-
-#[tokio::test]
-async fn mailbox_invalid_id_rejected() {
-    let tmp = TempDir::new().unwrap();
-    let store = FileStore::new(tmp.path());
-    let result = store.peek_messages("../escape", 10).await;
-    assert!(result.is_err());
 }
 
 // ========================================================================
@@ -497,96 +434,6 @@ async fn run_record_with_termination_code() {
     let loaded = RunStore::load_run(&store, "r1").await.unwrap().unwrap();
     assert_eq!(loaded.status, RunStatus::Done);
     assert_eq!(loaded.termination_code.as_deref(), Some("natural"));
-}
-
-// ========================================================================
-// Additional MailboxStore tests
-// ========================================================================
-
-#[tokio::test]
-async fn mailbox_peek_empty() {
-    let tmp = TempDir::new().unwrap();
-    let store = FileStore::new(tmp.path());
-    let peeked = store.peek_messages("nonexistent", 10).await.unwrap();
-    assert!(peeked.is_empty());
-}
-
-#[tokio::test]
-async fn mailbox_multiple_mailboxes() {
-    let tmp = TempDir::new().unwrap();
-    let store = FileStore::new(tmp.path());
-    store
-        .push_message(&make_mailbox_entry("e1", "inbox-a"))
-        .await
-        .unwrap();
-    store
-        .push_message(&make_mailbox_entry("e2", "inbox-b"))
-        .await
-        .unwrap();
-
-    let a = store.peek_messages("inbox-a", 10).await.unwrap();
-    assert_eq!(a.len(), 1);
-    assert_eq!(a[0].entry_id, "e1");
-
-    let b = store.peek_messages("inbox-b", 10).await.unwrap();
-    assert_eq!(b.len(), 1);
-    assert_eq!(b[0].entry_id, "e2");
-}
-
-#[tokio::test]
-async fn mailbox_pop_all_then_push_again() {
-    let tmp = TempDir::new().unwrap();
-    let store = FileStore::new(tmp.path());
-    store
-        .push_message(&make_mailbox_entry("e1", "inbox"))
-        .await
-        .unwrap();
-    let popped = store.pop_messages("inbox", 10).await.unwrap();
-    assert_eq!(popped.len(), 1);
-
-    let empty = store.peek_messages("inbox", 10).await.unwrap();
-    assert!(empty.is_empty());
-
-    store
-        .push_message(&make_mailbox_entry("e2", "inbox"))
-        .await
-        .unwrap();
-    let peeked = store.peek_messages("inbox", 10).await.unwrap();
-    assert_eq!(peeked.len(), 1);
-    assert_eq!(peeked[0].entry_id, "e2");
-}
-
-#[tokio::test]
-async fn mailbox_pop_limited() {
-    let tmp = TempDir::new().unwrap();
-    let store = FileStore::new(tmp.path());
-    for i in 0..5 {
-        store
-            .push_message(&make_mailbox_entry(&format!("e{i}"), "inbox"))
-            .await
-            .unwrap();
-    }
-    let popped = store.pop_messages("inbox", 3).await.unwrap();
-    assert_eq!(popped.len(), 3);
-    let remaining = store.peek_messages("inbox", 10).await.unwrap();
-    assert_eq!(remaining.len(), 2);
-}
-
-#[tokio::test]
-async fn mailbox_peek_limited() {
-    let tmp = TempDir::new().unwrap();
-    let store = FileStore::new(tmp.path());
-    for i in 0..5 {
-        store
-            .push_message(&make_mailbox_entry(&format!("e{i}"), "inbox"))
-            .await
-            .unwrap();
-    }
-    let peeked = store.peek_messages("inbox", 3).await.unwrap();
-    assert_eq!(peeked.len(), 3);
-    // All still present
-    let all = store.peek_messages("inbox", 10).await.unwrap();
-    assert_eq!(all.len(), 5);
 }
 
 // ========================================================================
