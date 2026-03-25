@@ -7,7 +7,7 @@ use crate::loop_runner::{
 };
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::profile::ActiveAgentIdKey;
+use awaken_contract::contract::run_input::ActiveAgentIdKey;
 use awaken_contract::contract::suspension::ToolCallResumeMode;
 use awaken_contract::state::PersistedState;
 
@@ -229,7 +229,7 @@ mod tests {
     use awaken_contract::contract::inference::{InferenceOverride, StopReason, StreamResult};
     use awaken_contract::contract::lifecycle::RunStatus;
     use awaken_contract::contract::message::Message;
-    use awaken_contract::contract::profile::ActiveAgentIdKey;
+    use awaken_contract::contract::run_input::ActiveAgentIdKey;
     use awaken_contract::contract::storage::{
         RunQuery, RunRecord, RunStore, ThreadRunStore, ThreadStore,
     };

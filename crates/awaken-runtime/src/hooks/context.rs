@@ -8,7 +8,7 @@ use awaken_contract::StateError;
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::inference::LLMResponse;
 use awaken_contract::contract::message::Message;
-use awaken_contract::contract::profile::RunInput;
+use awaken_contract::contract::run_input::RunInput;
 use awaken_contract::contract::tool::ToolResult;
 use awaken_contract::model::Phase;
 use awaken_contract::registry_spec::{AgentSpec, PluginConfigKey};

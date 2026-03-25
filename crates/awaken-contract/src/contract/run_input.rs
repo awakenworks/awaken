@@ -1,10 +1,4 @@
-//! Run input and active agent state key.
-//!
-//! `AgentProfile` has been merged into `AgentSpec` — use `crate::registry::spec::AgentSpec`
-//! for agent configuration and plugin config access. `PluginConfigKey` is also on `AgentSpec`.
-
-// Re-export PluginConfigKey and AgentSpec from their canonical location for convenience.
-pub use crate::registry_spec::{AgentSpec, PluginConfigKey};
+//! Per-run caller input and active agent state key.
 
 use crate::contract::identity::RunIdentity;
 

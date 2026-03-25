@@ -110,7 +110,7 @@ pub(super) async fn run_agent_loop_impl(
         // Handoff: check ActiveAgentKey for agent switch
         #[cfg(feature = "handoff")]
         if let Some(Some(active_id)) =
-            store.read::<awaken_contract::contract::profile::ActiveAgentIdKey>()
+            store.read::<awaken_contract::contract::run_input::ActiveAgentIdKey>()
             && active_id != agent.id
         {
             match resolver.resolve(&active_id) {

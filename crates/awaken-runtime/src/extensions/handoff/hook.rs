@@ -1,5 +1,5 @@
 use awaken_contract::StateError;
-use awaken_contract::contract::profile::ActiveAgentIdKey;
+use awaken_contract::contract::run_input::ActiveAgentIdKey;
 
 use crate::hooks::{PhaseContext, PhaseHook};
 

@@ -22,8 +22,8 @@ use std::path::Path;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use awaken_contract::PluginConfigKey;
 use awaken_contract::contract::context_message::ContextMessage;
-use awaken_contract::contract::profile::PluginConfigKey;
 use awaken_tool_pattern::{FieldCondition, MatchOp, PathSegment, parse_pattern};
 
 use crate::output_matcher::{ContentMatcher, OutputMatcher, ToolStatusMatcher};

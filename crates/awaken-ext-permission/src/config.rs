@@ -21,7 +21,7 @@ use std::path::Path;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use awaken_contract::contract::profile::PluginConfigKey;
+use awaken_contract::PluginConfigKey;
 
 use crate::rules::{
     PermissionRule, PermissionRuleScope, PermissionRuleSource, PermissionRuleset,
