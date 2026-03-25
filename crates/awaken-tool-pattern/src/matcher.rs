@@ -91,7 +91,9 @@ pub fn resolve_path<'a>(value: &'a Value, path: &[PathSegment]) -> Vec<&'a Value
         return vec![value];
     }
 
-    let (head, tail) = path.split_first().unwrap();
+    let Some((head, tail)) = path.split_first() else {
+        return vec![];
+    };
 
     match head {
         PathSegment::Field(name) => match value.get(name.as_str()) {
@@ -124,8 +126,9 @@ fn infer_primary_value(args: &Value) -> String {
     if let Some(obj) = args.as_object()
         && obj.len() == 1
     {
-        let v = obj.values().next().unwrap();
-        return value_to_string(v);
+        if let Some(v) = obj.values().next() {
+            return value_to_string(v);
+        }
     }
     value_to_string(args)
 }
@@ -258,7 +261,9 @@ pub fn schema_has_path(schema: &Value, path: &[PathSegment]) -> bool {
         return true;
     }
 
-    let (head, tail) = path.split_first().unwrap();
+    let Some((head, tail)) = path.split_first() else {
+        return true;
+    };
     match head {
         PathSegment::Field(name) => {
             let prop = schema.get("properties").and_then(|p| p.get(name.as_str()));

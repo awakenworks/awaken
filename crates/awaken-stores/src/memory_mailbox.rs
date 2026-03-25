@@ -100,7 +100,9 @@ impl MailboxStore for InMemoryMailboxStore {
         let mut claimed = Vec::with_capacity(ids.len());
 
         for id in ids {
-            let job = jobs.get_mut(&id).unwrap();
+            let job = jobs
+                .get_mut(&id)
+                .ok_or_else(|| StorageError::NotFound(id.clone()))?;
             job.status = MailboxJobStatus::Claimed;
             job.claim_token = Some(token.clone());
             job.claimed_by = Some(consumer_id.to_string());
@@ -356,7 +358,9 @@ impl MailboxStore for InMemoryMailboxStore {
         let mut reclaimed = Vec::with_capacity(expired_ids.len());
 
         for id in expired_ids {
-            let job = jobs.get_mut(&id).unwrap();
+            let job = jobs
+                .get_mut(&id)
+                .ok_or_else(|| StorageError::NotFound(id.clone()))?;
             job.attempt_count += 1;
             job.updated_at = now;
 
