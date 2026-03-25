@@ -22,6 +22,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use awaken_contract::PluginConfigKey;
+use awaken_contract::config_loader::{
+    ConfigLoadError, load_config_from_file, load_config_from_str,
+};
 
 use crate::rules::{
     PermissionRule, PermissionRuleScope, PermissionRuleSource, PermissionRuleset,
@@ -79,12 +82,9 @@ impl PluginConfigKey for PermissionConfigKey {
 /// Error type for configuration loading.
 #[derive(Debug, thiserror::Error)]
 pub enum PermissionConfigError {
-    /// File I/O error.
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-    /// YAML/JSON deserialization error.
-    #[error("parse error: {0}")]
-    Parse(String),
+    /// File I/O or parse error from shared config loader.
+    #[error(transparent)]
+    Load(#[from] ConfigLoadError),
     /// Invalid pattern in a rule entry.
     #[error("invalid pattern `{pattern}`: {reason}")]
     InvalidPattern { pattern: String, reason: String },
@@ -93,34 +93,14 @@ pub enum PermissionConfigError {
 impl PermissionRulesConfig {
     /// Load configuration from a file path (YAML or JSON, detected by extension).
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, PermissionConfigError> {
-        let path = path.as_ref();
-        let content = std::fs::read_to_string(path)?;
-        Self::from_str(&content, path.extension().and_then(|e| e.to_str()))
+        Ok(load_config_from_file(path)?)
     }
 
     /// Parse configuration from a string with an optional format hint.
     ///
-    /// If `ext` is `Some("json")`, parses as JSON; otherwise YAML.
+    /// If `ext` is `Some("json")`, parses as JSON; otherwise auto-detects.
     pub fn from_str(content: &str, ext: Option<&str>) -> Result<Self, PermissionConfigError> {
-        match ext {
-            Some("json") => serde_json::from_str(content)
-                .map_err(|e| PermissionConfigError::Parse(e.to_string())),
-            _ => {
-                // Treat as JSON if it starts with `{`
-                let trimmed = content.trim();
-                if trimmed.starts_with('{') || trimmed.starts_with('[') {
-                    serde_json::from_str(content)
-                        .map_err(|e| PermissionConfigError::Parse(e.to_string()))
-                } else {
-                    // Parse as YAML using serde_json's Value as intermediary:
-                    // Since we don't depend on serde_yaml, parse a simple subset.
-                    // For full YAML support, the caller can deserialize externally and
-                    // pass an already-parsed PermissionRulesConfig.
-                    serde_json::from_str(content)
-                        .map_err(|e| PermissionConfigError::Parse(e.to_string()))
-                }
-            }
-        }
+        Ok(load_config_from_str(content, ext)?)
     }
 
     /// Convert this configuration into a [`PermissionRuleset`] for evaluation.

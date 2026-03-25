@@ -23,6 +23,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use awaken_contract::PluginConfigKey;
+use awaken_contract::config_loader::{
+    ConfigLoadError, load_config_from_file, load_config_from_str,
+};
 use awaken_contract::contract::context_message::ContextMessage;
 use awaken_tool_pattern::{FieldCondition, MatchOp, PathSegment, parse_pattern};
 
@@ -131,12 +134,9 @@ impl PluginConfigKey for ReminderConfigKey {
 /// Error type for configuration loading.
 #[derive(Debug, thiserror::Error)]
 pub enum ReminderConfigError {
-    /// File I/O error.
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-    /// JSON deserialization error.
-    #[error("parse error: {0}")]
-    Parse(String),
+    /// File I/O or parse error from shared config loader.
+    #[error(transparent)]
+    Load(#[from] ConfigLoadError),
     /// Invalid pattern in a rule entry.
     #[error("invalid pattern `{pattern}`: {reason}")]
     InvalidPattern { pattern: String, reason: String },
@@ -154,30 +154,14 @@ pub enum ReminderConfigError {
 impl ReminderRulesConfig {
     /// Load configuration from a file path (JSON, detected by extension).
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, ReminderConfigError> {
-        let path = path.as_ref();
-        let content = std::fs::read_to_string(path)?;
-        Self::from_str(&content, path.extension().and_then(|e| e.to_str()))
+        Ok(load_config_from_file(path)?)
     }
 
     /// Parse configuration from a string with an optional format hint.
     ///
     /// If `ext` is `Some("json")`, parses as JSON; otherwise auto-detects.
     pub fn from_str(content: &str, ext: Option<&str>) -> Result<Self, ReminderConfigError> {
-        match ext {
-            Some("json") => {
-                serde_json::from_str(content).map_err(|e| ReminderConfigError::Parse(e.to_string()))
-            }
-            _ => {
-                let trimmed = content.trim();
-                if trimmed.starts_with('{') || trimmed.starts_with('[') {
-                    serde_json::from_str(content)
-                        .map_err(|e| ReminderConfigError::Parse(e.to_string()))
-                } else {
-                    serde_json::from_str(content)
-                        .map_err(|e| ReminderConfigError::Parse(e.to_string()))
-                }
-            }
-        }
+        Ok(load_config_from_str(content, ext)?)
     }
 
     /// Convert this configuration into a list of [`ReminderRule`]s.

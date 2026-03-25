@@ -1,5 +1,6 @@
 #![allow(missing_docs)]
 
+pub mod config_loader;
 pub mod contract;
 mod error;
 pub mod model;
