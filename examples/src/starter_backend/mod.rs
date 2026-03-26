@@ -1,5 +1,7 @@
 pub mod frontend_tools;
+pub mod phase_logger;
 pub mod research;
+pub mod scripted_executor;
 pub mod state;
 pub mod tools;
 pub mod travel;
@@ -31,6 +33,7 @@ use awaken_server::routes::build_router;
 use awaken_stores::FileStore;
 
 use crate::starter_backend::frontend_tools::FrontendToolPlugin;
+use crate::starter_backend::phase_logger::PhaseLoggerPlugin;
 use crate::starter_backend::research::{
     DeleteResourcesTool, ExtractResourcesTool, SearchTool, SetQuestionTool, WriteReportTool,
 };
@@ -236,9 +239,18 @@ Deterministic compatibility directives:\n\
     let a2a_agent = AgentSpec {
         id: "a2a".into(),
         model: "default".into(),
-        system_prompt: base_prompt,
+        system_prompt: base_prompt.clone(),
         max_rounds: args.max_rounds,
         plugin_ids: vec!["frontend_tools".into()],
+        ..Default::default()
+    };
+    let phases_agent = AgentSpec {
+        id: "phases".into(),
+        model: "default".into(),
+        system_prompt: "You are a test assistant demonstrating phase hooks. Respond briefly."
+            .into(),
+        max_rounds: 2,
+        plugin_ids: vec!["permission".into(), "phase_logger".into()],
         ..Default::default()
     };
 
@@ -270,9 +282,17 @@ Deterministic compatibility directives:\n\
     ];
 
     // -- Build genai client and provider --
+    // Use scripted executor for deterministic testing when no LLM key is set.
 
-    let genai_client = build_genai_client();
-    let executor: Arc<dyn LlmExecutor> = Arc::new(GenaiExecutor::with_client(genai_client));
+    let executor: Arc<dyn LlmExecutor> = if std::env::var("OPENAI_BASE_URL").is_ok()
+        || std::env::var("OPENAI_API_KEY").is_ok()
+    {
+        let client = build_genai_client();
+        Arc::new(GenaiExecutor::with_client(client))
+    } else {
+        tracing::info!("No LLM API key found, using scripted executor for deterministic testing");
+        Arc::new(scripted_executor::ScriptedLlmExecutor::new())
+    };
 
     // -- MCP --
 
@@ -356,6 +376,9 @@ Deterministic compatibility directives:\n\
     if default_id != "a2a" {
         builder = builder.with_agent_spec(a2a_agent);
     }
+    if default_id != "phases" {
+        builder = builder.with_agent_spec(phases_agent);
+    }
 
     // -- A2A remote agents --
 
@@ -391,6 +414,12 @@ Deterministic compatibility directives:\n\
             Arc::new(ReminderPlugin::new(rules)) as Arc<dyn Plugin>,
         );
     }
+
+    // Phase logger plugin (demonstrates all 8 phase hooks)
+    builder = builder.with_plugin(
+        "phase_logger",
+        Arc::new(PhaseLoggerPlugin) as Arc<dyn Plugin>,
+    );
 
     // Observability plugin (in-memory sink for demo)
     let observability = ObservabilityPlugin::new(InMemorySink::new())
