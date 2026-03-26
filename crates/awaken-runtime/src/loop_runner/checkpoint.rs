@@ -97,10 +97,23 @@ pub(super) async fn persist_checkpoint(
         .map_err(|e| AgentLoopError::StorageError(e.to_string()))
 }
 
-/// Emit a `StateSnapshot` event with the current persisted state.
+/// State key prefix used for internal runtime bookkeeping.
+/// Keys starting with this prefix are filtered from frontend state snapshots.
+const INTERNAL_KEY_PREFIX: &str = "__runtime.";
+
+/// Additional internal keys that don't follow the `__runtime.` prefix convention
+/// but should still be hidden from the frontend.
+const INTERNAL_STATE_KEYS: &[&str] = &["__context_compaction"];
+
+/// Emit a `StateSnapshot` event with the current persisted state,
+/// filtering out internal runtime keys that the frontend should not see.
 pub(super) async fn emit_state_snapshot(store: &crate::state::StateStore, sink: &dyn EventSink) {
     match store.export_persisted() {
-        Ok(persisted) => {
+        Ok(mut persisted) => {
+            persisted.extensions.retain(|key, _| {
+                !key.starts_with(INTERNAL_KEY_PREFIX)
+                    && !INTERNAL_STATE_KEYS.contains(&key.as_str())
+            });
             if let Ok(snapshot) = serde_json::to_value(persisted) {
                 sink.emit(AgentEvent::StateSnapshot { snapshot }).await;
             }
