@@ -28,7 +28,7 @@ pre-commit:
     check-forbidden-docs:
       run: |
         FORBIDDEN_PATTERNS="STATUS|REPORT|SUMMARY|PROGRESS|IMPLEMENTATION|_LOG|_NOTES|QUICKREF|QUICK|_V[0-9]|_OLD|_NEW"
-        process_docs=$(git diff --cached --name-only --diff-filter=A | grep -E '\.md$' | grep -vE '^docs/runbooks/' | grep -iE "($FORBIDDEN_PATTERNS)" || true)
+        process_docs=$(git diff --cached --name-only --diff-filter=A | grep -E '\.md$' | grep -vE '^docs/(runbooks|book)/' | grep -iE "($FORBIDDEN_PATTERNS)" || true)
         if [ -n "$process_docs" ]; then
           echo "ERROR: Attempting to add process/status documents:"
           echo "$process_docs"
@@ -87,7 +87,7 @@ pre-commit:
       glob: "docs/**/*.md"
       run: |
         # 检查被修改的文档（排除 runbooks）
-        modified_docs=$(git diff --cached --name-only --diff-filter=AM | grep -E '^docs/.*\.md$' | grep -vE '^docs/runbooks/' || true)
+        modified_docs=$(git diff --cached --name-only --diff-filter=AM | grep -E '^docs/.*\.md$' | grep -vE '^docs/(runbooks|book)/' || true)
 
         if [ -z "$modified_docs" ]; then
           exit 0
