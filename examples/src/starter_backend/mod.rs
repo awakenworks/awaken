@@ -221,12 +221,17 @@ Deterministic compatibility directives:\n\
         plugin_ids: vec!["permission".into()],
         ..Default::default()
     };
+    let has_skills_dir = std::path::Path::new("./skills").is_dir();
     let skills_agent = AgentSpec {
         id: "skills".into(),
         model: "default".into(),
         system_prompt: base_prompt.clone(),
         max_rounds: args.max_rounds,
-        plugin_ids: vec!["skills_discovery".into(), "frontend_tools".into()],
+        plugin_ids: if has_skills_dir {
+            vec!["skills-discovery".into(), "frontend_tools".into()]
+        } else {
+            vec!["frontend_tools".into()]
+        },
         ..Default::default()
     };
     let limited_agent = AgentSpec {
@@ -282,7 +287,7 @@ Deterministic compatibility directives:\n\
         )
         .into(),
         max_rounds: args.max_rounds,
-        plugin_ids: vec!["a2ui".into()],
+        plugin_ids: vec!["generative-ui".into()],
         ..Default::default()
     };
 
@@ -429,7 +434,7 @@ Deterministic compatibility directives:\n\
 
     builder = builder.with_plugin("permission", Arc::new(PermissionPlugin) as Arc<dyn Plugin>);
     builder = builder.with_plugin(
-        "a2ui",
+        "generative-ui",
         Arc::new(A2uiPlugin::with_catalog_id(
             "https://a2ui.org/specification/v0_9/basic_catalog.json",
         )) as Arc<dyn Plugin>,
@@ -472,12 +477,12 @@ Deterministic compatibility directives:\n\
     builder = builder.with_plugin("observability", Arc::new(observability) as Arc<dyn Plugin>);
 
     // Skills discovery plugin (if ./skills/ directory exists)
-    if std::path::Path::new("./skills").is_dir() {
+    if has_skills_dir {
         match FsSkillRegistryManager::discover_roots(vec![PathBuf::from("./skills")]) {
             Ok(manager) => {
                 let registry: Arc<dyn SkillRegistry> = Arc::new(manager);
                 builder = builder.with_plugin(
-                    "skills_discovery",
+                    "skills-discovery",
                     Arc::new(SkillDiscoveryPlugin::new(registry)) as Arc<dyn Plugin>,
                 );
             }

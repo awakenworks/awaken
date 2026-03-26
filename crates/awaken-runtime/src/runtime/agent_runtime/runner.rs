@@ -8,7 +8,6 @@ use crate::loop_runner::{
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::run_input::ActiveAgentIdKey;
-use awaken_contract::contract::suspension::ToolCallResumeMode;
 use awaken_contract::state::PersistedState;
 
 use super::AgentRuntime;
@@ -109,8 +108,7 @@ impl AgentRuntime {
 
         // Apply resume decisions to state if present
         if !decisions.is_empty() {
-            prepare_resume(&store, decisions, ToolCallResumeMode::ReplayToolCall)
-                .map_err(AgentLoopError::PhaseError)?;
+            prepare_resume(&store, decisions).map_err(AgentLoopError::PhaseError)?;
         }
 
         // Create run identity
