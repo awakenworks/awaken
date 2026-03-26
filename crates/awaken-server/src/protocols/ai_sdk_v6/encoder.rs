@@ -6,7 +6,7 @@ use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::tool::ToolStatus;
 use awaken_contract::contract::transport::Transcoder;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::types::UIStreamEvent;
 
@@ -187,7 +187,15 @@ impl AiSdkEncoder {
                 vec![UIStreamEvent::start_step()]
             }
 
-            AgentEvent::StepEnd => vec![UIStreamEvent::finish_step()],
+            AgentEvent::StepEnd => {
+                let mut events = Vec::new();
+                if self.text_open {
+                    events.push(self.close_text());
+                }
+                events.extend(self.close_all_reasoning());
+                events.push(UIStreamEvent::finish_step());
+                events
+            }
 
             AgentEvent::RunFinish { termination, .. } => {
                 self.finished = true;
@@ -237,7 +245,56 @@ impl AiSdkEncoder {
                 content,
                 replace,
             } => {
-                vec![UIStreamEvent::data(
+                let mut events = Vec::new();
+
+                // Extract dedicated events from activity type
+                match activity_type.as_str() {
+                    "source-url" => {
+                        if let Some(obj) = content.as_object() {
+                            let source_id = obj
+                                .get("sourceId")
+                                .and_then(Value::as_str)
+                                .unwrap_or(message_id.as_str());
+                            let url = obj.get("url").and_then(Value::as_str).unwrap_or("");
+                            let title = obj.get("title").and_then(Value::as_str).map(String::from);
+                            events.push(UIStreamEvent::source_url(source_id, url, title));
+                        }
+                    }
+                    "source-document" => {
+                        if let Some(obj) = content.as_object() {
+                            let source_id = obj
+                                .get("sourceId")
+                                .and_then(Value::as_str)
+                                .unwrap_or(message_id.as_str());
+                            let media_type = obj
+                                .get("mediaType")
+                                .and_then(Value::as_str)
+                                .unwrap_or("application/octet-stream");
+                            let title = obj.get("title").and_then(Value::as_str).map(String::from);
+                            let filename = obj
+                                .get("filename")
+                                .and_then(Value::as_str)
+                                .map(String::from);
+                            events.push(UIStreamEvent::source_document(
+                                source_id, media_type, title, filename,
+                            ));
+                        }
+                    }
+                    "file" => {
+                        if let Some(obj) = content.as_object() {
+                            let url = obj.get("url").and_then(Value::as_str).unwrap_or("");
+                            let media_type = obj
+                                .get("mediaType")
+                                .and_then(Value::as_str)
+                                .unwrap_or("application/octet-stream");
+                            events.push(UIStreamEvent::file(url, media_type));
+                        }
+                    }
+                    _ => {}
+                }
+
+                // Always emit the data event too
+                events.push(UIStreamEvent::data(
                     DATA_EVENT_ACTIVITY_SNAPSHOT,
                     json!({
                         "messageId": message_id,
@@ -245,7 +302,8 @@ impl AiSdkEncoder {
                         "content": content,
                         "replace": replace,
                     }),
-                )]
+                ));
+                events
             }
 
             AgentEvent::ActivityDelta {
@@ -559,5 +617,105 @@ mod tests {
         let mut enc = AiSdkEncoder::new();
         let events = enc.transcode(&AgentEvent::TextDelta { delta: "hi".into() });
         assert!(!events.is_empty());
+    }
+
+    #[test]
+    fn activity_snapshot_source_url_emits_source_url_event() {
+        let mut enc = AiSdkEncoder::new();
+        let events = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
+            message_id: "m1".into(),
+            activity_type: "source-url".into(),
+            content: json!({
+                "sourceId": "src1",
+                "url": "https://example.com",
+                "title": "Example"
+            }),
+            replace: Some(false),
+        });
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0],
+            UIStreamEvent::SourceUrl { source_id, url, title, .. }
+            if source_id == "src1" && url == "https://example.com" && title.as_deref() == Some("Example")
+        ));
+    }
+
+    #[test]
+    fn activity_snapshot_source_document_emits_source_document_event() {
+        let mut enc = AiSdkEncoder::new();
+        let events = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
+            message_id: "m1".into(),
+            activity_type: "source-document".into(),
+            content: json!({
+                "sourceId": "doc1",
+                "mediaType": "application/pdf",
+                "title": "Report",
+                "filename": "report.pdf"
+            }),
+            replace: Some(false),
+        });
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0],
+            UIStreamEvent::SourceDocument { source_id, media_type, .. }
+            if source_id == "doc1" && media_type == "application/pdf"
+        ));
+    }
+
+    #[test]
+    fn activity_snapshot_file_emits_file_event() {
+        let mut enc = AiSdkEncoder::new();
+        let events = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
+            message_id: "m1".into(),
+            activity_type: "file".into(),
+            content: json!({
+                "url": "https://example.com/file.png",
+                "mediaType": "image/png"
+            }),
+            replace: Some(false),
+        });
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0],
+            UIStreamEvent::File { url, media_type, .. }
+            if url == "https://example.com/file.png" && media_type == "image/png"
+        ));
+    }
+
+    #[test]
+    fn activity_snapshot_unknown_type_emits_only_data_event() {
+        let mut enc = AiSdkEncoder::new();
+        let events = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
+            message_id: "m1".into(),
+            activity_type: "custom-type".into(),
+            content: json!({"key": "val"}),
+            replace: Some(false),
+        });
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn step_end_closes_open_text_and_reasoning() {
+        let mut enc = AiSdkEncoder::new();
+        enc.message_id = "msg1".into();
+        // Open text and reasoning
+        enc.on_agent_event(&AgentEvent::TextDelta { delta: "hi".into() });
+        enc.on_agent_event(&AgentEvent::ReasoningDelta {
+            delta: "think".into(),
+        });
+        let events = enc.on_agent_event(&AgentEvent::StepEnd);
+        // text_end + reasoning_end + finish_step
+        assert_eq!(events.len(), 3);
+        assert!(matches!(&events[0], UIStreamEvent::TextEnd { .. }));
+        assert!(matches!(&events[1], UIStreamEvent::ReasoningEnd { .. }));
+        assert!(matches!(&events[2], UIStreamEvent::FinishStep));
+    }
+
+    #[test]
+    fn step_end_without_open_blocks_emits_only_finish_step() {
+        let mut enc = AiSdkEncoder::new();
+        let events = enc.on_agent_event(&AgentEvent::StepEnd);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], UIStreamEvent::FinishStep));
     }
 }

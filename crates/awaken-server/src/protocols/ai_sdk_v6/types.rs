@@ -142,6 +142,65 @@ pub enum UIStreamEvent {
         error_text: String,
     },
 
+    /// Source URL reference (RAG).
+    SourceUrl {
+        #[serde(rename = "sourceId")]
+        source_id: String,
+        url: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<Value>,
+    },
+
+    /// Source document reference (RAG).
+    SourceDocument {
+        #[serde(rename = "sourceId")]
+        source_id: String,
+        #[serde(rename = "mediaType")]
+        media_type: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        filename: Option<String>,
+        #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<Value>,
+    },
+
+    /// File content.
+    File {
+        url: String,
+        #[serde(rename = "mediaType")]
+        media_type: String,
+        #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<Value>,
+    },
+
+    /// Message-level metadata.
+    MessageMetadata {
+        #[serde(rename = "messageMetadata")]
+        message_metadata: Value,
+    },
+
+    /// Tool input validation error.
+    ToolInputError {
+        #[serde(rename = "toolCallId")]
+        tool_call_id: String,
+        #[serde(rename = "toolName")]
+        tool_name: String,
+        input: Value,
+        #[serde(rename = "errorText")]
+        error_text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dynamic: Option<bool>,
+    },
+
+    /// Stream abort.
+    Abort {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+
     /// Custom data event.
     #[serde(untagged)]
     Data {
@@ -298,6 +357,54 @@ impl UIStreamEvent {
         }
     }
 
+    pub fn source_url(
+        source_id: impl Into<String>,
+        url: impl Into<String>,
+        title: Option<String>,
+    ) -> Self {
+        Self::SourceUrl {
+            source_id: source_id.into(),
+            url: url.into(),
+            title,
+            provider_metadata: None,
+        }
+    }
+
+    pub fn source_document(
+        source_id: impl Into<String>,
+        media_type: impl Into<String>,
+        title: Option<String>,
+        filename: Option<String>,
+    ) -> Self {
+        Self::SourceDocument {
+            source_id: source_id.into(),
+            media_type: media_type.into(),
+            title,
+            filename,
+            provider_metadata: None,
+        }
+    }
+
+    pub fn file(url: impl Into<String>, media_type: impl Into<String>) -> Self {
+        Self::File {
+            url: url.into(),
+            media_type: media_type.into(),
+            provider_metadata: None,
+        }
+    }
+
+    pub fn message_metadata(metadata: Value) -> Self {
+        Self::MessageMetadata {
+            message_metadata: metadata,
+        }
+    }
+
+    pub fn abort(reason: impl Into<String>) -> Self {
+        Self::Abort {
+            reason: Some(reason.into()),
+        }
+    }
+
     pub fn data(name: impl Into<String>, data: Value) -> Self {
         Self::data_with_options(name, data, None, None)
     }
@@ -426,5 +533,81 @@ mod tests {
         assert!(a_json.contains("tool-output-available"));
         assert!(e_json.contains("tool-output-error"));
         assert!(d_json.contains("tool-output-denied"));
+    }
+
+    #[test]
+    fn source_url_serde() {
+        let event =
+            UIStreamEvent::source_url("src1", "https://example.com", Some("Example".into()));
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"source-url\""));
+        assert!(json.contains("\"sourceId\":\"src1\""));
+        assert!(json.contains("\"url\":\"https://example.com\""));
+        assert!(json.contains("\"title\":\"Example\""));
+        assert!(!json.contains("providerMetadata"));
+    }
+
+    #[test]
+    fn source_document_serde() {
+        let event = UIStreamEvent::source_document(
+            "doc1",
+            "application/pdf",
+            None,
+            Some("report.pdf".into()),
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"source-document\""));
+        assert!(json.contains("\"sourceId\":\"doc1\""));
+        assert!(json.contains("\"mediaType\":\"application/pdf\""));
+        assert!(json.contains("\"filename\":\"report.pdf\""));
+        assert!(!json.contains("title"));
+    }
+
+    #[test]
+    fn file_event_serde() {
+        let event = UIStreamEvent::file("https://example.com/img.png", "image/png");
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"file\""));
+        assert!(json.contains("\"url\":\"https://example.com/img.png\""));
+        assert!(json.contains("\"mediaType\":\"image/png\""));
+    }
+
+    #[test]
+    fn message_metadata_serde() {
+        let event = UIStreamEvent::message_metadata(json!({"key": "val"}));
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"message-metadata\""));
+        assert!(json.contains("\"messageMetadata\""));
+    }
+
+    #[test]
+    fn abort_event_serde() {
+        let event = UIStreamEvent::abort("timeout");
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"abort\""));
+        assert!(json.contains("\"reason\":\"timeout\""));
+    }
+
+    #[test]
+    fn abort_event_omits_none_reason() {
+        let event = UIStreamEvent::Abort { reason: None };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"abort\""));
+        assert!(!json.contains("reason"));
+    }
+
+    #[test]
+    fn tool_input_error_serde() {
+        let event = UIStreamEvent::ToolInputError {
+            tool_call_id: "c1".into(),
+            tool_name: "search".into(),
+            input: json!({"q": "test"}),
+            error_text: "invalid input".into(),
+            dynamic: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"tool-input-error\""));
+        assert!(json.contains("\"toolCallId\":\"c1\""));
+        assert!(json.contains("\"errorText\":\"invalid input\""));
     }
 }
