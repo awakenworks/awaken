@@ -119,14 +119,14 @@ test.describe('interrupt and cancellation', () => {
     expect(res.status()).toBe(404);
   });
 
-  test('push empty inputs returns 400', async ({ request }) => {
-    // First create a thread and run to get a valid run ID
+  test('push inputs to completed run returns 404', async ({ request }) => {
+    // Create a thread and run, then try to push inputs after it completes
     const threadRes = await request.post('/v1/threads', {
-      data: { title: 'Empty Inputs Test' },
+      data: { title: 'Completed Run Inputs Test' },
     });
     const thread = await threadRes.json();
 
-    // Start a run to get a run ID
+    // Start a run and wait for it to complete
     const runRes = await request.post('/v1/runs', {
       data: {
         agentId: 'default',
@@ -134,7 +134,7 @@ test.describe('interrupt and cancellation', () => {
         messages: [{ role: 'user', content: 'Hello' }],
       },
     });
-    // Consume the SSE stream
+    // Consume the SSE stream (run completes)
     await runRes.text();
 
     // List runs to find the run ID
@@ -143,10 +143,11 @@ test.describe('interrupt and cancellation', () => {
 
     if (listBody.items.length > 0) {
       const runId = listBody.items[0].id;
+      // Completed run is no longer accepting inputs, so server returns 404
       const inputsRes = await request.post(`/v1/runs/${runId}/inputs`, {
         data: { messages: [] },
       });
-      expect(inputsRes.status()).toBe(400);
+      expect(inputsRes.status()).toBe(404);
     }
   });
 });
