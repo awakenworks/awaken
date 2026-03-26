@@ -7,6 +7,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::Value;
 
+use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::message::Message;
 
 use crate::app::AppState;
@@ -43,33 +44,70 @@ struct AiSdkMessage {
     content: Value,
 }
 
-/// Extract text from an AI SDK content value (string or array of parts).
-fn extract_text(content: &Value) -> Option<String> {
+/// Parse a data-URI of the form `data:<media_type>;base64,<data>`.
+fn parse_data_uri(url: &str) -> Option<(String, String)> {
+    let rest = url.strip_prefix("data:")?;
+    let (meta, data) = rest.split_once(",")?;
+    let media_type = meta.strip_suffix(";base64")?;
+    Some((media_type.to_string(), data.to_string()))
+}
+
+/// Parse a single content part from the AI SDK array format into a `ContentBlock`.
+fn parse_content_part(part: &Value) -> Option<ContentBlock> {
+    match part.get("type").and_then(Value::as_str)? {
+        "text" => {
+            let text = part.get("text").and_then(Value::as_str)?;
+            Some(ContentBlock::text(text))
+        }
+        "image_url" => {
+            let url = part
+                .get("image_url")
+                .and_then(|v| v.get("url"))
+                .and_then(Value::as_str)
+                // Also support flat `url` field (seen in some clients).
+                .or_else(|| part.get("url").and_then(Value::as_str))?;
+            if let Some((media_type, data)) = parse_data_uri(url) {
+                Some(ContentBlock::image_base64(media_type, data))
+            } else {
+                Some(ContentBlock::image_url(url))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extract content blocks from an AI SDK content value (string or array of parts).
+fn extract_content_blocks(content: &Value) -> Option<Vec<ContentBlock>> {
     match content {
-        Value::String(s) => Some(s.clone()),
+        Value::String(s) => Some(vec![ContentBlock::text(s.as_str())]),
         Value::Array(arr) => {
-            let text: String = arr
-                .iter()
-                .filter_map(|p| {
-                    if p.get("type").and_then(Value::as_str) == Some("text") {
-                        p.get("text").and_then(Value::as_str).map(str::to_string)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("");
-            Some(text)
+            let blocks: Vec<ContentBlock> = arr.iter().filter_map(parse_content_part).collect();
+            if blocks.is_empty() {
+                None
+            } else {
+                Some(blocks)
+            }
         }
         _ => None,
     }
 }
 
 fn convert_messages(msgs: Vec<AiSdkMessage>) -> Vec<Message> {
-    crate::message_convert::convert_role_content_pairs(
-        msgs.into_iter()
-            .filter_map(|m| extract_text(&m.content).map(|text| (m.role, text))),
-    )
+    use awaken_contract::contract::content::extract_text;
+
+    msgs.into_iter()
+        .filter_map(|m| {
+            let blocks = extract_content_blocks(&m.content)?;
+            match m.role.as_str() {
+                "user" => Some(Message::user_with_content(blocks)),
+                // Assistant and system messages are text-only in practice;
+                // extract concatenated text for backward compatibility.
+                "assistant" => Some(Message::assistant(extract_text(&blocks))),
+                "system" => Some(Message::system(extract_text(&blocks))),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 /// Reconnect to an active run's event stream.
@@ -171,6 +209,7 @@ async fn ai_sdk_chat(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_contract::contract::content::ContentBlock;
     use serde_json::json;
 
     #[test]
@@ -192,18 +231,61 @@ mod tests {
     }
 
     #[test]
-    fn convert_array_content_messages() {
+    fn convert_array_content_preserves_image_url() {
         let msgs = vec![AiSdkMessage {
             role: "user".into(),
             content: json!([
                 {"type": "text", "text": "Look at "},
-                {"type": "image_url", "url": "https://example.com/img.png"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
                 {"type": "text", "text": "this"}
             ]),
         }];
         let converted = convert_messages(msgs);
         assert_eq!(converted.len(), 1);
-        assert_eq!(converted[0].text(), "Look at this");
+        assert_eq!(converted[0].content.len(), 3);
+        assert_eq!(converted[0].content[0], ContentBlock::text("Look at "));
+        assert_eq!(
+            converted[0].content[1],
+            ContentBlock::image_url("https://example.com/img.png")
+        );
+        assert_eq!(converted[0].content[2], ContentBlock::text("this"));
+    }
+
+    #[test]
+    fn convert_array_content_parses_base64_image() {
+        let msgs = vec![AiSdkMessage {
+            role: "user".into(),
+            content: json!([
+                {"type": "text", "text": "Describe"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR"}}
+            ]),
+        }];
+        let converted = convert_messages(msgs);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].content.len(), 2);
+        assert_eq!(
+            converted[0].content[1],
+            ContentBlock::image_base64("image/png", "iVBOR")
+        );
+    }
+
+    #[test]
+    fn convert_array_content_flat_url_fallback() {
+        // Some clients send {"type": "image_url", "url": "..."} without nesting.
+        let msgs = vec![AiSdkMessage {
+            role: "user".into(),
+            content: json!([
+                {"type": "text", "text": "Look"},
+                {"type": "image_url", "url": "https://example.com/img.png"}
+            ]),
+        }];
+        let converted = convert_messages(msgs);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].content.len(), 2);
+        assert_eq!(
+            converted[0].content[1],
+            ContentBlock::image_url("https://example.com/img.png")
+        );
     }
 
     #[test]
@@ -231,5 +313,18 @@ mod tests {
     fn convert_empty_messages() {
         let converted = convert_messages(vec![]);
         assert!(converted.is_empty());
+    }
+
+    #[test]
+    fn parse_data_uri_valid() {
+        let (mime, data) = parse_data_uri("data:image/jpeg;base64,/9j/4AA").unwrap();
+        assert_eq!(mime, "image/jpeg");
+        assert_eq!(data, "/9j/4AA");
+    }
+
+    #[test]
+    fn parse_data_uri_invalid() {
+        assert!(parse_data_uri("https://example.com/img.png").is_none());
+        assert!(parse_data_uri("data:image/png,raw-data").is_none());
     }
 }
