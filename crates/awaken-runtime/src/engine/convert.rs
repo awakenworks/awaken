@@ -89,6 +89,30 @@ fn to_content_parts(blocks: &[ContentBlock]) -> Vec<ContentPart> {
                     ))
                 }
             },
+            ContentBlock::Audio { source } => match source {
+                awaken_contract::contract::content::AudioSource::Url { url } => {
+                    Some(ContentPart::from_binary_url("audio/mpeg", url, None))
+                }
+                awaken_contract::contract::content::AudioSource::Base64 { media_type, data } => {
+                    Some(ContentPart::from_binary_base64(
+                        media_type,
+                        data.as_str(),
+                        None,
+                    ))
+                }
+            },
+            ContentBlock::Video { source } => match source {
+                awaken_contract::contract::content::VideoSource::Url { url } => {
+                    Some(ContentPart::from_binary_url("video/mp4", url, None))
+                }
+                awaken_contract::contract::content::VideoSource::Base64 { media_type, data } => {
+                    Some(ContentPart::from_binary_base64(
+                        media_type,
+                        data.as_str(),
+                        None,
+                    ))
+                }
+            },
             // ToolUse, ToolResult, Thinking are handled separately
             _ => None,
         })

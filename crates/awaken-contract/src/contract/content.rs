@@ -21,6 +21,12 @@ pub enum ContentBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         title: Option<String>,
     },
+    Audio {
+        source: AudioSource,
+    },
+    Video {
+        source: VideoSource,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -55,6 +61,43 @@ impl ContentBlock {
         }
     }
 
+    pub fn audio_url(url: impl Into<String>) -> Self {
+        Self::Audio {
+            source: AudioSource::Url { url: url.into() },
+        }
+    }
+
+    pub fn audio_base64(media_type: impl Into<String>, data: impl Into<String>) -> Self {
+        Self::Audio {
+            source: AudioSource::Base64 {
+                media_type: media_type.into(),
+                data: data.into(),
+            },
+        }
+    }
+
+    pub fn video_url(url: impl Into<String>) -> Self {
+        Self::Video {
+            source: VideoSource::Url { url: url.into() },
+        }
+    }
+
+    pub fn video_base64(media_type: impl Into<String>, data: impl Into<String>) -> Self {
+        Self::Video {
+            source: VideoSource::Base64 {
+                media_type: media_type.into(),
+                data: data.into(),
+            },
+        }
+    }
+
+    pub fn document_url(url: impl Into<String>, title: Option<String>) -> Self {
+        Self::Document {
+            source: DocumentSource::Url { url: url.into() },
+            title,
+        }
+    }
+
     pub fn document_base64(
         media_type: impl Into<String>,
         data: impl Into<String>,
@@ -82,6 +125,22 @@ pub enum ImageSource {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DocumentSource {
+    Base64 { media_type: String, data: String },
+    Url { url: String },
+}
+
+/// Audio data source.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AudioSource {
+    Base64 { media_type: String, data: String },
+    Url { url: String },
+}
+
+/// Video data source.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum VideoSource {
     Base64 { media_type: String, data: String },
     Url { url: String },
 }
@@ -262,6 +321,50 @@ mod tests {
         let debug = format!("{:?}", block);
         assert!(debug.contains("Text"));
         assert!(debug.contains("hi"));
+    }
+
+    #[test]
+    fn audio_url_block_serde_roundtrip() {
+        let block = ContentBlock::audio_url("https://example.com/audio.mp3");
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "audio");
+        assert_eq!(json["source"]["type"], "url");
+        assert_eq!(json["source"]["url"], "https://example.com/audio.mp3");
+        let parsed: ContentBlock = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, block);
+    }
+
+    #[test]
+    fn audio_base64_block_serde_roundtrip() {
+        let block = ContentBlock::audio_base64("audio/mpeg", "SGVsbG8=");
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "audio");
+        assert_eq!(json["source"]["type"], "base64");
+        assert_eq!(json["source"]["media_type"], "audio/mpeg");
+        let parsed: ContentBlock = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, block);
+    }
+
+    #[test]
+    fn video_url_block_serde_roundtrip() {
+        let block = ContentBlock::video_url("https://example.com/video.mp4");
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "video");
+        assert_eq!(json["source"]["type"], "url");
+        assert_eq!(json["source"]["url"], "https://example.com/video.mp4");
+        let parsed: ContentBlock = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, block);
+    }
+
+    #[test]
+    fn video_base64_block_serde_roundtrip() {
+        let block = ContentBlock::video_base64("video/mp4", "AAAA");
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "video");
+        assert_eq!(json["source"]["type"], "base64");
+        assert_eq!(json["source"]["media_type"], "video/mp4");
+        let parsed: ContentBlock = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, block);
     }
 
     #[test]
