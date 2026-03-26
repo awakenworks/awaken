@@ -76,6 +76,57 @@ impl LlmExecutor for ScriptedLlmExecutor {
             .map(|m| m.text())
             .unwrap_or_default();
 
+        // A2UI directive (complex args, handled separately)
+        if user_text.contains("RUN_A2UI_TOOL") {
+            return Ok(StreamResult {
+                content: vec![],
+                tool_calls: vec![ToolCall::new(
+                    "call_a2ui_1",
+                    "render_a2ui",
+                    json!({
+                        "messages": [
+                            {
+                                "version": "v0.9",
+                                "createSurface": {
+                                    "surfaceId": "demo",
+                                    "catalogId": "https://a2ui.org/specification/v0_9/basic_catalog.json"
+                                }
+                            },
+                            {
+                                "version": "v0.9",
+                                "updateComponents": {
+                                    "surfaceId": "demo",
+                                    "components": [
+                                        {
+                                            "id": "root",
+                                            "component": "Card",
+                                            "child": "text1"
+                                        },
+                                        {
+                                            "id": "text1",
+                                            "component": "Text",
+                                            "text": "Hello A2UI"
+                                        }
+                                    ]
+                                }
+                            },
+                            {
+                                "version": "v0.9",
+                                "updateDataModel": {
+                                    "surfaceId": "demo",
+                                    "path": "/",
+                                    "value": {}
+                                }
+                            }
+                        ]
+                    }),
+                )],
+                usage: usage_stub(10, 15),
+                stop_reason: Some(StopReason::ToolUse),
+                has_incomplete_tool_calls: false,
+            });
+        }
+
         // Check each directive keyword
         for d in DIRECTIVES {
             if user_text.contains(d.keyword) {

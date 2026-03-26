@@ -18,6 +18,7 @@ use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::AgentSpec;
+use awaken_ext_generative_ui::A2uiPlugin;
 use awaken_ext_mcp::{McpServerConnectionConfig, McpToolRegistryManager};
 use awaken_ext_observability::{InMemorySink, ObservabilityPlugin};
 use awaken_ext_permission::PermissionPlugin;
@@ -253,6 +254,37 @@ Deterministic compatibility directives:\n\
         plugin_ids: vec!["permission".into(), "phase_logger".into()],
         ..Default::default()
     };
+    let genui_agent = AgentSpec {
+        id: "genui".into(),
+        model: "default".into(),
+        system_prompt: concat!(
+            "You are a generative UI assistant. When users ask for forms or interfaces, ",
+            "describe what UI is needed. The system will generate the appropriate schema."
+        )
+        .into(),
+        max_rounds: args.max_rounds,
+        plugin_ids: vec!["permission".into()],
+        ..Default::default()
+    };
+
+    let a2ui_agent = AgentSpec {
+        id: "a2ui".into(),
+        model: "default".into(),
+        system_prompt: concat!(
+            "You are an A2UI demo assistant. When the user asks you to render UI, ",
+            "use the render_a2ui tool to send A2UI declarative UI messages.\n\n",
+            "Deterministic compatibility directives:\n",
+            "- If message contains RUN_A2UI_TOOL, call render_a2ui with a createSurface ",
+            "for surfaceId \"demo\" and catalogId ",
+            "\"https://a2ui.org/specification/v0_9/basic_catalog.json\", ",
+            "then updateComponents with a Card containing a Text component saying ",
+            "\"Hello A2UI\", then updateDataModel with an empty root object."
+        )
+        .into(),
+        max_rounds: args.max_rounds,
+        plugin_ids: vec!["a2ui".into()],
+        ..Default::default()
+    };
 
     // -- Tools --
 
@@ -379,6 +411,12 @@ Deterministic compatibility directives:\n\
     if default_id != "phases" {
         builder = builder.with_agent_spec(phases_agent);
     }
+    if default_id != "genui" {
+        builder = builder.with_agent_spec(genui_agent);
+    }
+    if default_id != "a2ui" {
+        builder = builder.with_agent_spec(a2ui_agent);
+    }
 
     // -- A2A remote agents --
 
@@ -390,6 +428,12 @@ Deterministic compatibility directives:\n\
     // -- Plugins --
 
     builder = builder.with_plugin("permission", Arc::new(PermissionPlugin) as Arc<dyn Plugin>);
+    builder = builder.with_plugin(
+        "a2ui",
+        Arc::new(A2uiPlugin::with_catalog_id(
+            "https://a2ui.org/specification/v0_9/basic_catalog.json",
+        )) as Arc<dyn Plugin>,
+    );
     builder = builder.with_plugin(
         "frontend_tools",
         Arc::new(FrontendToolPlugin::new()) as Arc<dyn Plugin>,
