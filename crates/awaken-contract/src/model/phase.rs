@@ -1,5 +1,17 @@
 use serde::{Deserialize, Serialize};
 
+/// Lifecycle phase within an agent run.
+///
+/// # Examples
+///
+/// ```
+/// use awaken_contract::Phase;
+///
+/// assert!(Phase::RunStart.is_run_level());
+/// assert!(!Phase::RunStart.is_step_level());
+/// assert!(Phase::BeforeInference.is_step_level());
+/// assert_eq!(Phase::ALL.len(), 8);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {

@@ -204,6 +204,15 @@ impl fmt::Display for ToolCallPattern {
 
 impl ToolCallPattern {
     /// Exact tool name, any args.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use awaken_tool_pattern::ToolCallPattern;
+    ///
+    /// let pattern = ToolCallPattern::tool("read_file");
+    /// assert_eq!(format!("{}", pattern), "read_file");
+    /// ```
     #[must_use]
     pub fn tool(name: impl Into<String>) -> Self {
         Self {

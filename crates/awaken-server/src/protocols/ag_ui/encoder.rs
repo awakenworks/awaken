@@ -182,6 +182,17 @@ impl AgUiEncoder {
                     TerminationReason::Error(msg) => {
                         events.push(Event::run_error(msg, None));
                     }
+                    TerminationReason::Suspended => {
+                        events.push(Event::run_interrupted(
+                            thread_id,
+                            run_id,
+                            super::types::InterruptPayload {
+                                id: None,
+                                reason: Some("tool_approval".into()),
+                                payload: None,
+                            },
+                        ));
+                    }
                     _ => {
                         events.push(Event::run_finished(thread_id, run_id, result.clone()));
                     }
@@ -436,5 +447,29 @@ mod tests {
         enc.message_id = "m1".into();
         let events = enc.transcode(&AgentEvent::TextDelta { delta: "hi".into() });
         assert!(!events.is_empty());
+    }
+
+    #[test]
+    fn suspended_termination_emits_interrupt() {
+        let mut enc = AgUiEncoder::new();
+        let events = enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::Suspended,
+        });
+        let finished = events
+            .iter()
+            .find(|e| matches!(e, Event::RunFinished { .. }));
+        assert!(finished.is_some());
+        if let Some(Event::RunFinished {
+            outcome, interrupt, ..
+        }) = finished
+        {
+            assert_eq!(outcome.as_deref(), Some("interrupt"));
+            assert!(interrupt.is_some());
+            let int = interrupt.as_ref().unwrap();
+            assert_eq!(int.reason.as_deref(), Some("tool_approval"));
+        }
     }
 }

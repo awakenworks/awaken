@@ -51,6 +51,18 @@ pub struct ToolResult {
 
 impl ToolResult {
     /// Create a success result.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use awaken_contract::contract::tool::ToolResult;
+    /// use serde_json::json;
+    ///
+    /// let result = ToolResult::success("calc", json!({"answer": 42}));
+    /// assert!(result.is_success());
+    /// assert!(!result.is_error());
+    /// assert_eq!(result.tool_name, "calc");
+    /// ```
     pub fn success(tool_name: impl Into<String>, data: impl Into<Value>) -> Self {
         Self {
             tool_name: tool_name.into(),
@@ -79,6 +91,17 @@ impl ToolResult {
     }
 
     /// Create an error result.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use awaken_contract::contract::tool::ToolResult;
+    ///
+    /// let result = ToolResult::error("calc", "division by zero");
+    /// assert!(result.is_error());
+    /// assert!(!result.is_success());
+    /// assert_eq!(result.message.as_deref(), Some("division by zero"));
+    /// ```
     pub fn error(tool_name: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             tool_name: tool_name.into(),
@@ -163,6 +186,18 @@ impl ToolResult {
 }
 
 /// Tool execution errors.
+///
+/// # Examples
+///
+/// ```
+/// use awaken_contract::contract::tool::ToolError;
+///
+/// let err = ToolError::InvalidArguments("missing field 'x'".into());
+/// assert_eq!(err.to_string(), "Invalid arguments: missing field 'x'");
+///
+/// let err = ToolError::NotFound("no such tool".into());
+/// assert_eq!(err.to_string(), "Not found: no such tool");
+/// ```
 #[derive(Debug, Error)]
 pub enum ToolError {
     #[error("Invalid arguments: {0}")]
@@ -178,6 +213,22 @@ pub enum ToolError {
 }
 
 /// Tool descriptor.
+///
+/// # Examples
+///
+/// ```
+/// use awaken_contract::contract::tool::ToolDescriptor;
+/// use serde_json::json;
+///
+/// let desc = ToolDescriptor::new("calc", "Calculator", "Performs arithmetic")
+///     .with_parameters(json!({
+///         "type": "object",
+///         "properties": { "expr": { "type": "string" } }
+///     }));
+/// assert_eq!(desc.id, "calc");
+/// assert_eq!(desc.name, "Calculator");
+/// assert_eq!(desc.description, "Performs arithmetic");
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDescriptor {
     pub id: String,

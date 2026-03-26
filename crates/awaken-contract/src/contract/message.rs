@@ -75,6 +75,15 @@ pub struct Message {
 
 impl Message {
     /// Create a system message.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use awaken_contract::contract::message::Message;
+    ///
+    /// let msg = Message::system("You are helpful");
+    /// assert_eq!(msg.text(), "You are helpful");
+    /// ```
     pub fn system(text: impl Into<String>) -> Self {
         Self {
             id: Some(gen_message_id()),
@@ -101,6 +110,15 @@ impl Message {
     }
 
     /// Create a user message with text.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use awaken_contract::contract::message::Message;
+    ///
+    /// let msg = Message::user("Hello");
+    /// assert_eq!(msg.text(), "Hello");
+    /// ```
     pub fn user(text: impl Into<String>) -> Self {
         Self {
             id: Some(gen_message_id()),
@@ -179,6 +197,15 @@ impl Message {
     }
 
     /// Extract concatenated text from content blocks.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use awaken_contract::contract::message::Message;
+    ///
+    /// let msg = Message::user("Hello world");
+    /// assert_eq!(msg.text(), "Hello world");
+    /// ```
     pub fn text(&self) -> String {
         super::content::extract_text(&self.content)
     }

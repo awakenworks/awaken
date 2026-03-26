@@ -169,6 +169,22 @@ fn default_max_continuation_retries() -> usize {
 }
 
 impl AgentSpec {
+    /// Create a new agent spec with default settings.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use awaken_contract::registry_spec::AgentSpec;
+    ///
+    /// let spec = AgentSpec::new("assistant")
+    ///     .with_model("gpt-4o-mini")
+    ///     .with_system_prompt("You are helpful.")
+    ///     .with_max_rounds(10);
+    /// assert_eq!(spec.id, "assistant");
+    /// assert_eq!(spec.model, "gpt-4o-mini");
+    /// assert_eq!(spec.system_prompt, "You are helpful.");
+    /// assert_eq!(spec.max_rounds, 10);
+    /// ```
     pub fn new(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),

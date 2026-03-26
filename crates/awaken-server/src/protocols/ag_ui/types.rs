@@ -14,6 +14,62 @@ pub enum Role {
     Tool,
 }
 
+/// AG-UI multimodal input content source (draft spec).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum InputContentSource {
+    Data {
+        value: String,
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+    },
+    Url {
+        value: String,
+        #[serde(rename = "mimeType")]
+        mime_type: Option<String>,
+    },
+}
+
+/// AG-UI multimodal input content part (draft spec).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum InputContentPart {
+    Text {
+        text: String,
+    },
+    Image {
+        source: InputContentSource,
+        #[serde(default)]
+        metadata: Option<serde_json::Value>,
+    },
+    Audio {
+        source: InputContentSource,
+        #[serde(default)]
+        metadata: Option<serde_json::Value>,
+    },
+    Video {
+        source: InputContentSource,
+        #[serde(default)]
+        metadata: Option<serde_json::Value>,
+    },
+    Document {
+        source: InputContentSource,
+        #[serde(default)]
+        metadata: Option<serde_json::Value>,
+    },
+}
+
+/// AG-UI interrupt payload (draft spec).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InterruptPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Value>,
+}
+
 /// Common fields for all AG-UI events.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct BaseEvent {
@@ -47,6 +103,10 @@ pub enum Event {
         run_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        outcome: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        interrupt: Option<InterruptPayload>,
         #[serde(flatten)]
         base: BaseEvent,
     },
@@ -257,6 +317,23 @@ impl Event {
             thread_id: thread_id.into(),
             run_id: run_id.into(),
             result,
+            outcome: None,
+            interrupt: None,
+            base: BaseEvent::default(),
+        }
+    }
+
+    pub fn run_interrupted(
+        thread_id: impl Into<String>,
+        run_id: impl Into<String>,
+        interrupt: InterruptPayload,
+    ) -> Self {
+        Self::RunFinished {
+            thread_id: thread_id.into(),
+            run_id: run_id.into(),
+            result: None,
+            outcome: Some("interrupt".into()),
+            interrupt: Some(interrupt),
             base: BaseEvent::default(),
         }
     }

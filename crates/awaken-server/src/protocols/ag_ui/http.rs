@@ -26,6 +26,16 @@ pub fn ag_ui_routes() -> Router<AppState> {
 }
 
 #[derive(Debug, Deserialize)]
+struct AgUiResumePayload {
+    #[serde(rename = "interruptId", alias = "interrupt_id")]
+    #[allow(dead_code)]
+    interrupt_id: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    payload: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
 struct AgUiRunRequest {
     #[serde(rename = "threadId", alias = "thread_id", default)]
     thread_id: Option<String>,
@@ -36,19 +46,96 @@ struct AgUiRunRequest {
     #[serde(default)]
     #[allow(dead_code)] // deserialized from AG-UI request, reserved for context forwarding
     context: Option<Value>,
+    #[serde(default)]
+    #[allow(dead_code)] // deserialized from AG-UI request, reserved for resume handling
+    resume: Option<AgUiResumePayload>,
 }
 
 #[derive(Debug, Deserialize)]
 struct AgUiMessage {
     role: String,
     #[serde(default)]
-    content: String,
+    content: serde_json::Value,
 }
 
 fn convert_messages(msgs: Vec<AgUiMessage>) -> Vec<Message> {
-    crate::message_convert::convert_role_content_pairs(
-        msgs.into_iter().map(|m| (m.role, m.content)),
-    )
+    msgs.into_iter()
+        .filter_map(|m| {
+            let blocks = parse_ag_ui_content(&m.content)?;
+            match m.role.as_str() {
+                "user" => Some(Message::user_with_content(blocks)),
+                "assistant" => Some(Message::assistant(
+                    awaken_contract::contract::content::extract_text(&blocks),
+                )),
+                "system" => Some(Message::system(
+                    awaken_contract::contract::content::extract_text(&blocks),
+                )),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn parse_ag_ui_content(
+    content: &serde_json::Value,
+) -> Option<Vec<awaken_contract::contract::content::ContentBlock>> {
+    use awaken_contract::contract::content::ContentBlock;
+
+    match content {
+        serde_json::Value::String(s) => Some(vec![ContentBlock::text(s.as_str())]),
+        serde_json::Value::Array(arr) => {
+            let blocks: Vec<ContentBlock> = arr
+                .iter()
+                .filter_map(|v| {
+                    let part: super::types::InputContentPart =
+                        serde_json::from_value(v.clone()).ok()?;
+                    input_part_to_block(part)
+                })
+                .collect();
+            if blocks.is_empty() {
+                None
+            } else {
+                Some(blocks)
+            }
+        }
+        serde_json::Value::Null => None,
+        _ => None,
+    }
+}
+
+fn input_part_to_block(
+    part: super::types::InputContentPart,
+) -> Option<awaken_contract::contract::content::ContentBlock> {
+    use super::types::{InputContentPart, InputContentSource};
+    use awaken_contract::contract::content::ContentBlock;
+
+    match part {
+        InputContentPart::Text { text } => Some(ContentBlock::text(text)),
+        InputContentPart::Image { source, .. } => Some(match source {
+            InputContentSource::Data { value, mime_type } => {
+                ContentBlock::image_base64(mime_type, value)
+            }
+            InputContentSource::Url { value, .. } => ContentBlock::image_url(value),
+        }),
+        InputContentPart::Audio { source, .. } => Some(match source {
+            InputContentSource::Data { value, mime_type } => {
+                ContentBlock::audio_base64(mime_type, value)
+            }
+            InputContentSource::Url { value, .. } => ContentBlock::audio_url(value),
+        }),
+        InputContentPart::Video { source, .. } => Some(match source {
+            InputContentSource::Data { value, mime_type } => {
+                ContentBlock::video_base64(mime_type, value)
+            }
+            InputContentSource::Url { value, .. } => ContentBlock::video_url(value),
+        }),
+        InputContentPart::Document { source, .. } => Some(match source {
+            InputContentSource::Data { value, mime_type } => {
+                ContentBlock::document_base64(mime_type, value, None)
+            }
+            InputContentSource::Url { value, .. } => ContentBlock::document_url(value, None),
+        }),
+    }
 }
 
 async fn ag_ui_run(
@@ -131,21 +218,22 @@ async fn thread_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn convert_ag_ui_messages() {
         let msgs = vec![
             AgUiMessage {
                 role: "user".into(),
-                content: "hello".into(),
+                content: json!("hello"),
             },
             AgUiMessage {
                 role: "assistant".into(),
-                content: "hi".into(),
+                content: json!("hi"),
             },
             AgUiMessage {
                 role: "unknown".into(),
-                content: "x".into(),
+                content: json!("x"),
             },
         ];
         let converted = convert_messages(msgs);
@@ -157,5 +245,19 @@ mod tests {
     #[test]
     fn convert_empty_messages() {
         assert!(convert_messages(vec![]).is_empty());
+    }
+
+    #[test]
+    fn convert_multimodal_user_message() {
+        let msgs = vec![AgUiMessage {
+            role: "user".into(),
+            content: json!([
+                {"type": "text", "text": "Look at this"},
+                {"type": "image", "source": {"type": "url", "value": "https://example.com/img.png"}}
+            ]),
+        }];
+        let converted = convert_messages(msgs);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].content.len(), 2);
     }
 }

@@ -113,6 +113,20 @@ pub enum AgentEvent {
 
 impl AgentEvent {
     /// Extract the response text from a `RunFinish` result value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use awaken_contract::contract::event::AgentEvent;
+    /// use serde_json::json;
+    ///
+    /// let result = Some(json!({"response": "Hello world"}));
+    /// let text = AgentEvent::extract_response(&result);
+    /// assert_eq!(text, "Hello world");
+    ///
+    /// let empty = AgentEvent::extract_response(&None);
+    /// assert_eq!(empty, "");
+    /// ```
     pub fn extract_response(result: &Option<Value>) -> String {
         result
             .as_ref()
