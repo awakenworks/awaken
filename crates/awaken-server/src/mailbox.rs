@@ -808,11 +808,21 @@ pub fn prepare_run_inputs(
     let mut messages = messages;
     if let Some(state) = frontend_state {
         if !state.is_null() {
-            let state_text = serde_json::to_string_pretty(&state).unwrap_or_default();
+            let state_text = serde_json::to_string(&state).unwrap_or_default();
             if !state_text.is_empty() && state_text != "{}" {
-                let ctx_msg =
-                    Message::internal_system(format!("Current frontend state:\n{state_text}"));
-                messages.insert(0, ctx_msg);
+                // Append frontend state to the last user message as XML-tagged context.
+                // Models handle XML structure reliably and won't confuse data with instructions.
+                let suffix = format!("\n\n<frontend-state>\n{state_text}\n</frontend-state>");
+                if let Some(last_user) = messages
+                    .iter_mut()
+                    .rev()
+                    .find(|m| m.role == awaken_contract::contract::message::Role::User)
+                {
+                    let mut text = last_user.text();
+                    text.push_str(&suffix);
+                    last_user.content =
+                        vec![awaken_contract::contract::content::ContentBlock::text(text)];
+                }
             }
         }
     }
@@ -990,16 +1000,16 @@ mod tests {
     }
 
     #[test]
-    fn prepare_run_inputs_injects_state_as_internal_system_message() {
-        use awaken_contract::contract::message::{Role, Visibility};
+    fn prepare_run_inputs_appends_state_to_last_user_message() {
         let msgs = vec![Message::user("hello")];
         let state = Some(serde_json::json!({"todos": ["buy milk"]}));
         let (_, prepared) = prepare_run_inputs(None, msgs, state).unwrap();
-        assert_eq!(prepared.len(), 2);
-        assert_eq!(prepared[0].role, Role::System);
-        assert_eq!(prepared[0].visibility, Visibility::Internal);
-        assert!(prepared[0].text().contains("todos"));
-        assert_eq!(prepared[1].text(), "hello");
+        assert_eq!(prepared.len(), 1); // no extra message, appended to user msg
+        let text = prepared[0].text();
+        assert!(text.starts_with("hello"));
+        assert!(text.contains("<frontend-state>"));
+        assert!(text.contains("todos"));
+        assert!(text.contains("</frontend-state>"));
     }
 
     #[test]
