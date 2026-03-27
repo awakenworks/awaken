@@ -12,8 +12,8 @@ use awaken_contract::contract::message::Message;
 use crate::app::AppState;
 use crate::http_run::wire_sse_relay;
 use crate::http_sse::{sse_body_stream, sse_response};
-use crate::mailbox::RunSpec;
 use crate::routes::ApiError;
+use awaken_runtime::RunRequest;
 
 use super::encoder::AgUiEncoder;
 use super::types::Role;
@@ -146,14 +146,13 @@ async fn ag_ui_run(
     let (thread_id, messages) = crate::request::prepare_run_inputs(payload.thread_id, messages)?;
     let messages = crate::request::inject_frontend_context(messages, payload.state);
 
-    let spec = RunSpec {
-        thread_id,
-        agent_id,
-        messages,
-    };
+    let mut request = RunRequest::new(thread_id, messages);
+    if let Some(id) = agent_id {
+        request = request.with_agent_id(id);
+    }
     let (_result, event_rx) = st
         .mailbox
-        .submit(spec)
+        .submit(request)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 

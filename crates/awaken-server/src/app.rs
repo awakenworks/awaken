@@ -1,12 +1,15 @@
 //! Application state and server startup.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_runtime::{AgentResolver, AgentRuntime};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::mailbox::Mailbox;
+use crate::transport::replay_buffer::EventReplayBuffer;
 
 /// Server configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,10 +19,17 @@ pub struct ServerConfig {
     /// Maximum SSE channel buffer size.
     #[serde(default = "default_sse_buffer")]
     pub sse_buffer_size: usize,
+    /// Maximum number of SSE frames to buffer per run for reconnection replay.
+    #[serde(default = "default_replay_buffer_capacity")]
+    pub replay_buffer_capacity: usize,
 }
 
 fn default_sse_buffer() -> usize {
     64
+}
+
+fn default_replay_buffer_capacity() -> usize {
+    1024
 }
 
 impl Default for ServerConfig {
@@ -27,6 +37,7 @@ impl Default for ServerConfig {
         Self {
             address: "0.0.0.0:3000".to_string(),
             sse_buffer_size: default_sse_buffer(),
+            replay_buffer_capacity: default_replay_buffer_capacity(),
         }
     }
 }
@@ -44,6 +55,8 @@ pub struct AppState {
     pub resolver: Arc<dyn AgentResolver>,
     /// Server configuration.
     pub config: ServerConfig,
+    /// Per-run replay buffers for SSE stream resumption.
+    pub replay_buffers: Arc<Mutex<HashMap<String, Arc<EventReplayBuffer>>>>,
 }
 
 impl AppState {
@@ -61,6 +74,7 @@ impl AppState {
             store,
             resolver,
             config,
+            replay_buffers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -74,6 +88,7 @@ mod tests {
         let config = ServerConfig::default();
         assert_eq!(config.address, "0.0.0.0:3000");
         assert_eq!(config.sse_buffer_size, 64);
+        assert_eq!(config.replay_buffer_capacity, 1024);
     }
 
     #[test]
@@ -81,11 +96,13 @@ mod tests {
         let config = ServerConfig {
             address: "127.0.0.1:8080".to_string(),
             sse_buffer_size: 128,
+            replay_buffer_capacity: 512,
         };
         let json = serde_json::to_string(&config).unwrap();
         let parsed: ServerConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.address, "127.0.0.1:8080");
         assert_eq!(parsed.sse_buffer_size, 128);
+        assert_eq!(parsed.replay_buffer_capacity, 512);
     }
 
     #[test]

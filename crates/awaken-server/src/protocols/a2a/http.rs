@@ -11,8 +11,8 @@ use serde_json::Value;
 use awaken_contract::contract::message::Message;
 
 use crate::app::AppState;
-use crate::mailbox::RunSpec;
 use crate::routes::ApiError;
+use awaken_runtime::RunRequest;
 
 /// Build A2A routes.
 pub fn a2a_routes() -> Router<AppState> {
@@ -147,15 +147,14 @@ async fn a2a_task_send(
         }
     };
 
-    let spec = RunSpec {
-        thread_id: task_id.clone(),
-        agent_id: payload.agent_id,
-        messages,
-    };
+    let mut request = RunRequest::new(task_id.clone(), messages);
+    if let Some(id) = payload.agent_id {
+        request = request.with_agent_id(id);
+    }
     // Fire-and-forget: submit the run in the background.
     let _result = st
         .mailbox
-        .submit_background(spec)
+        .submit_background(request)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 

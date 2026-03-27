@@ -1,9 +1,15 @@
 //! /v1/ai-sdk routes.
 
+use std::convert::Infallible;
+use std::sync::Arc;
+
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use bytes::Bytes;
+use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -11,10 +17,11 @@ use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::message::Message;
 
 use crate::app::AppState;
-use crate::http_run::wire_sse_relay;
+use crate::http_run::wire_sse_relay_resumable;
 use crate::http_sse::{sse_body_stream, sse_response};
-use crate::mailbox::RunSpec;
 use crate::routes::ApiError;
+use crate::transport::replay_buffer::EventReplayBuffer;
+use awaken_runtime::RunRequest;
 
 use super::encoder::AiSdkEncoder;
 
@@ -114,19 +121,37 @@ fn convert_messages(msgs: Vec<AiSdkMessage>) -> Vec<Message> {
 
 /// Reconnect to an active run's event stream.
 ///
-/// Returns 404 if the run is not found or no longer active. Stream
-/// resumption requires broadcast channel infrastructure which is not yet
-/// implemented.
+/// Replays buffered frames after the client's `Last-Event-ID` and then
+/// streams any new frames produced by the still-running agent.
+/// Returns 404 if the run has no active replay buffer.
 async fn resume_stream(
-    State(_st): State<AppState>,
+    State(st): State<AppState>,
     Path(run_id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    // Stream resumption requires broadcast channels for active runs.
-    // This is a stub that returns a clear error until the broadcast
-    // infrastructure is in place.
-    Err(ApiError::NotFound(format!(
-        "stream resumption not yet available for run {run_id}"
-    )))
+    let last_event_id: u64 = headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    let buffer = st
+        .replay_buffers
+        .lock()
+        .get(&run_id)
+        .cloned()
+        .ok_or_else(|| ApiError::NotFound(format!("no active stream for run {run_id}")))?;
+
+    // Atomically replay + subscribe under a single lock hold.
+    // This guarantees no duplicates and no gaps.
+    let (replayed, live_rx) = buffer.subscribe_after(last_event_id);
+
+    let replay_stream = futures::stream::iter(replayed.into_iter().map(Ok::<Bytes, Infallible>));
+    let live_stream =
+        tokio_stream::wrappers::UnboundedReceiverStream::new(live_rx).map(Ok::<Bytes, Infallible>);
+    let combined = replay_stream.chain(live_stream);
+
+    Ok(sse_response(combined))
 }
 
 #[derive(Debug, Deserialize)]
@@ -194,21 +219,50 @@ async fn ai_sdk_chat(
     let (thread_id, messages) = crate::request::prepare_run_inputs(payload.thread_id, messages)?;
     let messages = crate::request::inject_frontend_context(messages, payload.state);
 
-    let spec = RunSpec {
-        thread_id,
-        agent_id,
-        messages,
-    };
-    let (_result, event_rx) = st
+    let mut request = RunRequest::new(thread_id, messages);
+    if let Some(id) = agent_id {
+        request = request.with_agent_id(id);
+    }
+    let (result, event_rx) = st
         .mailbox
-        .submit(spec)
+        .submit(request)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    let encoder = AiSdkEncoder::new();
-    let sse_rx = wire_sse_relay(event_rx, encoder, st.config.sse_buffer_size);
+    let replay_buffer = Arc::new(EventReplayBuffer::new(st.config.replay_buffer_capacity));
+    let run_id = result.job_id.clone();
 
-    Ok(sse_response(sse_body_stream(sse_rx)))
+    // Register buffer so resume_stream can find it.
+    st.replay_buffers
+        .lock()
+        .insert(run_id.clone(), Arc::clone(&replay_buffer));
+
+    let encoder = AiSdkEncoder::new();
+    let sse_rx =
+        wire_sse_relay_resumable(event_rx, encoder, st.config.sse_buffer_size, replay_buffer);
+
+    // Spawn cleanup task: forward frames to client, but keep buffer alive for
+    // the full run duration (not tied to client connection). This allows
+    // reconnecting clients to use resume_stream even after the original client
+    // disconnects.
+    let buffers = Arc::clone(&st.replay_buffers);
+    let replay_buf_for_cleanup = Arc::clone(st.replay_buffers.lock().get(&run_id).unwrap());
+    let cleanup_run_id = run_id;
+    let mut sse_rx_forwarded = sse_rx;
+    let (final_tx, final_rx) = tokio::sync::mpsc::channel::<Bytes>(st.config.sse_buffer_size);
+    tokio::spawn(async move {
+        while let Some(frame) = sse_rx_forwarded.recv().await {
+            // Best-effort forward; ignore send errors (client gone).
+            // Keep consuming so the relay task doesn't stall.
+            let _ = final_tx.send(frame).await;
+        }
+        // Run is done — close subscribers so reconnected clients get EOF,
+        // then remove the buffer from registry.
+        replay_buf_for_cleanup.close_subscribers();
+        buffers.lock().remove(&cleanup_run_id);
+    });
+
+    Ok(sse_response(sse_body_stream(final_rx)))
 }
 
 #[cfg(test)]

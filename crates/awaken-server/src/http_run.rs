@@ -10,6 +10,7 @@ use awaken_contract::contract::transport::Transcoder;
 
 use crate::event_relay::relay_events;
 use crate::http_sse::format_sse_data;
+use crate::transport::replay_buffer::EventReplayBuffer;
 
 /// Spawn a background task that consumes agent events from a receiver,
 /// transcodes them via the protocol encoder, and sends SSE frames to the response.
@@ -40,6 +41,40 @@ where
                 }
             };
             if sse_tx.send(format_sse_data(&json)).await.is_err() {
+                return;
+            }
+        }
+    });
+
+    sse_rx
+}
+
+/// Like [`wire_sse_relay`], but assigns sequential IDs to each SSE frame
+/// and stores them in a replay buffer for client reconnection.
+pub fn wire_sse_relay_resumable<E>(
+    event_rx: mpsc::UnboundedReceiver<AgentEvent>,
+    encoder: E,
+    buffer_size: usize,
+    replay_buffer: std::sync::Arc<EventReplayBuffer>,
+) -> mpsc::Receiver<Bytes>
+where
+    E: Transcoder<Input = AgentEvent> + 'static,
+    E::Output: Serialize + Send + 'static,
+{
+    let (sse_tx, sse_rx) = mpsc::channel::<Bytes>(buffer_size);
+
+    tokio::spawn(async move {
+        let mut stream = std::pin::pin!(relay_events(event_rx, encoder));
+        while let Some(json_bytes) = stream.next().await {
+            let json = match String::from_utf8(json_bytes) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to decode relay output as UTF-8");
+                    continue;
+                }
+            };
+            let (_seq, frame) = replay_buffer.push_json(&json);
+            if sse_tx.send(frame).await.is_err() {
                 return;
             }
         }
@@ -183,5 +218,62 @@ mod tests {
         assert!(chunks[0].contains("stream_start"));
         assert!(chunks[1].contains("\"seq\":1"));
         assert!(chunks[2].contains("stream_end"));
+    }
+
+    #[tokio::test]
+    async fn resumable_relay_assigns_sequential_ids() {
+        let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let encoder = Identity::<AgentEvent>::default();
+        let replay_buffer = std::sync::Arc::new(EventReplayBuffer::new(64));
+        let mut sse_rx = wire_sse_relay_resumable(rx, encoder, 16, replay_buffer);
+
+        tx.send(AgentEvent::TextDelta { delta: "a".into() })
+            .unwrap();
+        tx.send(AgentEvent::TextDelta { delta: "b".into() })
+            .unwrap();
+        tx.send(AgentEvent::StepEnd).unwrap();
+        drop(tx);
+
+        let mut chunks = Vec::new();
+        while let Some(chunk) = sse_rx.recv().await {
+            chunks.push(String::from_utf8(chunk.to_vec()).unwrap());
+        }
+        assert_eq!(chunks.len(), 3);
+        assert!(chunks[0].starts_with("id: 1\n"));
+        assert!(chunks[1].starts_with("id: 2\n"));
+        assert!(chunks[2].starts_with("id: 3\n"));
+    }
+
+    #[tokio::test]
+    async fn resumable_relay_stores_in_buffer() {
+        let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let encoder = Identity::<AgentEvent>::default();
+        let replay_buffer = std::sync::Arc::new(EventReplayBuffer::new(64));
+        let buf_ref = std::sync::Arc::clone(&replay_buffer);
+        let mut sse_rx = wire_sse_relay_resumable(rx, encoder, 16, replay_buffer);
+
+        tx.send(AgentEvent::TextDelta { delta: "a".into() })
+            .unwrap();
+        tx.send(AgentEvent::TextDelta { delta: "b".into() })
+            .unwrap();
+        drop(tx);
+
+        // Drain the receiver to let the relay task complete.
+        while sse_rx.recv().await.is_some() {}
+
+        assert_eq!(buf_ref.len(), 2);
+        assert_eq!(buf_ref.current_seq(), 2);
+    }
+
+    #[tokio::test]
+    async fn resumable_relay_completes_on_sender_drop() {
+        let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let encoder = Identity::<AgentEvent>::default();
+        let replay_buffer = std::sync::Arc::new(EventReplayBuffer::new(64));
+        let mut sse_rx = wire_sse_relay_resumable(rx, encoder, 16, replay_buffer);
+
+        drop(tx);
+        let result = sse_rx.recv().await;
+        assert!(result.is_none());
     }
 }

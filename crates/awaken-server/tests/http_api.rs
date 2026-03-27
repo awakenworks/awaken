@@ -29,11 +29,13 @@ fn server_config_serde_roundtrip() {
     let config = ServerConfig {
         address: "127.0.0.1:8080".to_string(),
         sse_buffer_size: 128,
+        replay_buffer_capacity: 512,
     };
     let json = serde_json::to_string(&config).unwrap();
     let parsed: ServerConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.address, "127.0.0.1:8080");
     assert_eq!(parsed.sse_buffer_size, 128);
+    assert_eq!(parsed.replay_buffer_capacity, 512);
 }
 
 #[test]

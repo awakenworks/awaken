@@ -23,18 +23,11 @@ use awaken_contract::contract::mailbox::{
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::StorageError;
 use awaken_contract::contract::suspension::{ToolCallOutcome, ToolCallResume};
-use awaken_runtime::AgentRuntime;
+use awaken_runtime::{AgentRuntime, RunRequest};
 
 use crate::transport::channel_sink::ChannelEventSink;
 
 // ── Public types ─────────────────────────────────────────────────────
-
-/// Everything needed to start a run -- protocol-agnostic.
-pub struct RunSpec {
-    pub thread_id: String,
-    pub agent_id: Option<String>,
-    pub messages: Vec<Message>,
-}
 
 /// Result returned by submit/submit_background.
 #[derive(Debug, Clone)]
@@ -212,11 +205,11 @@ impl Mailbox {
     /// The caller wires `event_rx` to their transport (SSE, WebSocket, etc).
     pub async fn submit(
         self: &Arc<Self>,
-        spec: RunSpec,
+        request: RunRequest,
     ) -> Result<(MailboxSubmitResult, mpsc::UnboundedReceiver<AgentEvent>), MailboxError> {
-        let (thread_id, messages) = validate_run_inputs(spec.thread_id, spec.messages)?;
+        let (thread_id, messages) = validate_run_inputs(request.thread_id, request.messages)?;
 
-        let job = self.build_job(&thread_id, spec.agent_id.as_deref(), messages);
+        let job = self.build_job(&thread_id, request.agent_id.as_deref(), messages);
         let job_id = job.job_id.clone();
         let mailbox_id = job.mailbox_id.clone();
 
@@ -295,11 +288,11 @@ impl Mailbox {
     /// Returns job_id + thread_id for status polling.
     pub async fn submit_background(
         self: &Arc<Self>,
-        spec: RunSpec,
+        request: RunRequest,
     ) -> Result<MailboxSubmitResult, MailboxError> {
-        let (thread_id, messages) = validate_run_inputs(spec.thread_id, spec.messages)?;
+        let (thread_id, messages) = validate_run_inputs(request.thread_id, request.messages)?;
 
-        let job = self.build_job(&thread_id, spec.agent_id.as_deref(), messages);
+        let job = self.build_job(&thread_id, request.agent_id.as_deref(), messages);
         let job_id = job.job_id.clone();
         let mailbox_id = job.mailbox_id.clone();
 
@@ -706,7 +699,7 @@ impl Mailbox {
         )
     }
 
-    /// Build a MailboxJob from a RunSpec.
+    /// Build a MailboxJob from validated run inputs.
     fn build_job(
         &self,
         thread_id: &str,
@@ -909,15 +902,11 @@ mod tests {
     }
 
     #[test]
-    fn run_spec_fields() {
-        let spec = RunSpec {
-            thread_id: "t-1".into(),
-            agent_id: Some("agent-a".into()),
-            messages: vec![Message::user("hello")],
-        };
-        assert_eq!(spec.thread_id, "t-1");
-        assert_eq!(spec.agent_id.as_deref(), Some("agent-a"));
-        assert_eq!(spec.messages.len(), 1);
+    fn run_request_fields() {
+        let req = RunRequest::new("t-1", vec![Message::user("hello")]).with_agent_id("agent-a");
+        assert_eq!(req.thread_id, "t-1");
+        assert_eq!(req.agent_id.as_deref(), Some("agent-a"));
+        assert_eq!(req.messages.len(), 1);
     }
 
     #[test]
@@ -961,12 +950,9 @@ mod tests {
         let runtime = make_runtime();
         let mailbox = make_mailbox(runtime, store.clone());
 
-        let spec = RunSpec {
-            thread_id: "thread-1".into(),
-            agent_id: Some("agent-1".into()),
-            messages: vec![Message::user("hello")],
-        };
-        let result = mailbox.submit_background(spec).await.unwrap();
+        let request =
+            RunRequest::new("thread-1", vec![Message::user("hello")]).with_agent_id("agent-1");
+        let result = mailbox.submit_background(request).await.unwrap();
 
         assert_eq!(result.thread_id, "thread-1");
         assert!(!result.job_id.is_empty());
@@ -983,12 +969,9 @@ mod tests {
         let mailbox = make_mailbox(runtime, store.clone());
 
         // Submit a job with available_at in the future so it stays Queued.
-        let spec = RunSpec {
-            thread_id: "thread-cancel".into(),
-            agent_id: Some("agent-1".into()),
-            messages: vec![Message::user("hello")],
-        };
-        let result = mailbox.submit_background(spec).await.unwrap();
+        let request =
+            RunRequest::new("thread-cancel", vec![Message::user("hello")]).with_agent_id("agent-1");
+        let result = mailbox.submit_background(request).await.unwrap();
         let job_id = result.job_id.clone();
 
         // The job might already be dispatched (claimed). Load it to check.
@@ -1010,12 +993,9 @@ mod tests {
         let mailbox = make_mailbox(runtime, store.clone());
 
         for i in 0..3 {
-            let spec = RunSpec {
-                thread_id: "thread-list".into(),
-                agent_id: Some(format!("agent-{i}")),
-                messages: vec![Message::user("msg")],
-            };
-            mailbox.submit_background(spec).await.unwrap();
+            let request = RunRequest::new("thread-list", vec![Message::user("msg")])
+                .with_agent_id(format!("agent-{i}"));
+            mailbox.submit_background(request).await.unwrap();
         }
 
         let jobs = mailbox

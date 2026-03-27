@@ -13,10 +13,11 @@ use awaken_contract::contract::message::Message;
 use crate::app::AppState;
 use crate::http_run::wire_sse_relay;
 use crate::http_sse::{sse_body_stream, sse_response};
-use crate::mailbox::{MailboxDispatchStatus, RunSpec};
+use crate::mailbox::MailboxDispatchStatus;
 use crate::protocols::a2a::http::a2a_routes;
 use crate::protocols::ag_ui::http::ag_ui_routes;
 use crate::protocols::ai_sdk_v6::http::ai_sdk_routes;
+use awaken_runtime::RunRequest;
 
 /// API error type returned by route handlers.
 #[derive(Debug)]
@@ -363,13 +364,13 @@ async fn post_thread_messages(
         ));
     }
 
+    let mut request = RunRequest::new(id.clone(), messages);
+    if let Some(aid) = payload.agent_id {
+        request = request.with_agent_id(aid);
+    }
     let result = st
         .mailbox
-        .submit_background(RunSpec {
-            thread_id: id.clone(),
-            agent_id: payload.agent_id,
-            messages,
-        })
+        .submit_background(request)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
@@ -418,11 +419,7 @@ async fn push_mailbox(
 
     let result = st
         .mailbox
-        .submit_background(RunSpec {
-            thread_id: id,
-            agent_id: None,
-            messages,
-        })
+        .submit_background(RunRequest::new(id, messages))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
@@ -487,14 +484,10 @@ async fn start_run(
     let messages = convert_run_messages(payload.messages);
     let (thread_id, messages) = crate::request::prepare_run_inputs(payload.thread_id, messages)?;
 
-    let spec = RunSpec {
-        thread_id,
-        agent_id: Some(agent_id),
-        messages,
-    };
+    let request = RunRequest::new(thread_id, messages).with_agent_id(agent_id);
     let (_result, event_rx) = st
         .mailbox
-        .submit(spec)
+        .submit(request)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let encoder = awaken_contract::contract::transport::Identity::default();
@@ -576,14 +569,10 @@ async fn push_run_inputs(
         ));
     }
 
-    let spec = RunSpec {
-        thread_id: run.thread_id,
-        agent_id: Some(run.agent_id),
-        messages,
-    };
+    let request = RunRequest::new(run.thread_id, messages).with_agent_id(run.agent_id);
     let _ = st
         .mailbox
-        .submit_background(spec)
+        .submit_background(request)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 

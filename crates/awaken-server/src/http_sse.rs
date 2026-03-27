@@ -37,6 +37,11 @@ pub fn format_sse_data(json: &str) -> Bytes {
     Bytes::from(format!("data: {json}\n\n"))
 }
 
+/// Format an agent event as an SSE frame with an event ID for resumability.
+pub fn format_sse_data_with_id(json: &str, id: u64) -> Bytes {
+    Bytes::from(format!("id: {id}\ndata: {json}\n\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,6 +70,12 @@ mod tests {
 
         let items: Vec<Bytes> = stream.map(|r| r.unwrap()).collect().await;
         assert!(items.is_empty());
+    }
+
+    #[test]
+    fn format_sse_data_with_id_produces_correct_format() {
+        let result = format_sse_data_with_id(r#"{"type":"test"}"#, 42);
+        assert_eq!(result, Bytes::from("id: 42\ndata: {\"type\":\"test\"}\n\n"));
     }
 
     #[test]
