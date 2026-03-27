@@ -33,7 +33,7 @@ use awaken_ext_skills::{
     InMemorySkillRegistry, SkillDiscoveryPlugin, SkillRegistry,
 };
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_runtime::engine::GenaiExecutor;
+use awaken_runtime::engine::{GenaiExecutor, LlmRetryPolicy, RetryingExecutor};
 use awaken_runtime::plugins::Plugin;
 use awaken_runtime::policies::{
     ConsecutiveErrorsPolicy, StopConditionPlugin, StopPolicy, TimeoutPolicy, TokenBudgetPolicy,
@@ -447,7 +447,7 @@ Deterministic compatibility directives:\n\
     // -- Build genai client and provider --
     // Use scripted executor for deterministic testing when no LLM key is set.
 
-    let executor: Arc<dyn LlmExecutor> = if std::env::var("OPENAI_BASE_URL").is_ok()
+    let base_executor: Arc<dyn LlmExecutor> = if std::env::var("OPENAI_BASE_URL").is_ok()
         || std::env::var("OPENAI_API_KEY").is_ok()
     {
         let client = build_genai_client();
@@ -456,6 +456,11 @@ Deterministic compatibility directives:\n\
         tracing::info!("No LLM API key found, using scripted executor for deterministic testing");
         Arc::new(scripted_executor::ScriptedLlmExecutor::new())
     };
+
+    let executor: Arc<dyn LlmExecutor> = Arc::new(RetryingExecutor::new(
+        base_executor,
+        LlmRetryPolicy::default(),
+    ));
 
     // -- MCP --
 
