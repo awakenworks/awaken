@@ -1,5 +1,7 @@
 #![allow(missing_docs)]
 
+pub mod prelude;
+
 // ── Crate-level re-exports for modular access ──
 pub use awaken_stores as stores;
 
@@ -11,6 +13,8 @@ pub use awaken_ext_mcp as ext_mcp;
 pub use awaken_ext_observability as ext_observability;
 #[cfg(feature = "permission")]
 pub use awaken_ext_permission as ext_permission;
+#[cfg(feature = "reminder")]
+pub use awaken_ext_reminder as ext_reminder;
 #[cfg(feature = "skills")]
 pub use awaken_ext_skills as ext_skills;
 #[cfg(feature = "server")]

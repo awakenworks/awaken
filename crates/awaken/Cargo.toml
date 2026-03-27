@@ -11,18 +11,21 @@ awaken-ext-observability = { workspace = true, optional = true }
 awaken-ext-mcp = { workspace = true, optional = true }
 awaken-ext-skills = { workspace = true, optional = true }
 awaken-ext-generative-ui = { workspace = true, optional = true }
+awaken-ext-reminder = { workspace = true, optional = true }
 awaken-stores = { workspace = true }
 awaken-server = { workspace = true, optional = true }
+serde_json = { workspace = true }
 
 [features]
-default = ["permission", "observability"]
+default = ["permission", "observability", "skills", "mcp", "reminder", "generative-ui"]
 permission = ["dep:awaken-ext-permission"]
 observability = ["dep:awaken-ext-observability"]
 mcp = ["dep:awaken-ext-mcp"]
 skills = ["dep:awaken-ext-skills"]
+reminder = ["dep:awaken-ext-reminder"]
 server = ["dep:awaken-server"]
 generative-ui = ["dep:awaken-ext-generative-ui"]
-full = ["permission", "observability", "mcp", "skills", "server", "generative-ui"]
+full = ["permission", "observability", "mcp", "skills", "reminder", "server", "generative-ui"]
 
 [dev-dependencies]
 tokio = { workspace = true }
