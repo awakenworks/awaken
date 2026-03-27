@@ -14,19 +14,30 @@ use clap::Parser;
 use tower_http::cors::{Any, CorsLayer};
 
 use awaken_contract::MailboxStore;
+use awaken_contract::ProfileStore;
 use awaken_contract::contract::executor::LlmExecutor;
+use awaken_contract::contract::inference::ContextWindowPolicy;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_ext_generative_ui::A2uiPlugin;
 use awaken_ext_mcp::{McpServerConnectionConfig, McpToolRegistryManager};
 use awaken_ext_observability::{InMemorySink, ObservabilityPlugin};
-use awaken_ext_permission::PermissionPlugin;
+use awaken_ext_permission::{
+    PermissionConfigKey, PermissionPlugin, PermissionRuleEntry, PermissionRulesConfig,
+    ToolPermissionBehavior,
+};
 use awaken_ext_reminder::ReminderPlugin;
-use awaken_ext_skills::{FsSkillRegistryManager, SkillDiscoveryPlugin, SkillRegistry};
+use awaken_ext_skills::{
+    CompositeSkillRegistry, EmbeddedSkill, EmbeddedSkillData, FsSkillRegistryManager,
+    InMemorySkillRegistry, SkillDiscoveryPlugin, SkillRegistry,
+};
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::engine::GenaiExecutor;
 use awaken_runtime::plugins::Plugin;
+use awaken_runtime::policies::{
+    ConsecutiveErrorsPolicy, StopConditionPlugin, StopPolicy, TimeoutPolicy, TokenBudgetPolicy,
+};
 use awaken_runtime::registry::traits::ModelEntry;
 use awaken_server::app::{AppState, ServerConfig};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
@@ -227,11 +238,7 @@ Deterministic compatibility directives:\n\
         model: "default".into(),
         system_prompt: base_prompt.clone(),
         max_rounds: args.max_rounds,
-        plugin_ids: if has_skills_dir {
-            vec!["skills-discovery".into(), "frontend_tools".into()]
-        } else {
-            vec!["frontend_tools".into()]
-        },
+        plugin_ids: vec!["skills-discovery".into(), "frontend_tools".into()],
         ..Default::default()
     };
     let limited_agent = AgentSpec {
@@ -290,6 +297,122 @@ Deterministic compatibility directives:\n\
         plugin_ids: vec!["generative-ui".into()],
         ..Default::default()
     };
+
+    // Profile agent: demonstrates cross-run key-value persistence via ProfileStore.
+    // The InMemoryStore wired via `with_profile_store` below backs `ProfileAccess`
+    // so plugins/tools can read and write scoped profile entries.
+    let profile_agent = AgentSpec {
+        id: "profile".into(),
+        model: "default".into(),
+        system_prompt: "You are a stateful assistant that remembers user preferences \
+            across runs using profile storage. When the user sets a preference, \
+            acknowledge it. When asked to recall, retrieve it from the profile store."
+            .into(),
+        max_rounds: args.max_rounds,
+        plugin_ids: vec!["permission".into()],
+        ..Default::default()
+    };
+
+    // Creative agent: demonstrates per-agent context window policy.
+    // InferenceOverride (temperature, reasoning_effort, etc.) is a per-run
+    // concern set via `RunRequest::with_overrides` — it is not an AgentSpec field.
+    // This agent instead shows ContextWindowPolicy configuration.
+    let creative_agent = AgentSpec {
+        id: "creative".into(),
+        model: "default".into(),
+        system_prompt: "You are a creative writing assistant. Produce vivid, \
+            imaginative prose. Use metaphors and varied sentence structures."
+            .into(),
+        max_rounds: args.max_rounds,
+        context_policy: Some(ContextWindowPolicy {
+            max_context_tokens: 128_000,
+            max_output_tokens: 4_096,
+            min_recent_messages: 6,
+            enable_prompt_cache: false,
+            ..Default::default()
+        }),
+        plugin_ids: vec!["permission".into()],
+        ..Default::default()
+    };
+
+    // Compact agent: demonstrates ContextWindowPolicy with auto-compaction enabled.
+    let compact_agent = AgentSpec {
+        id: "compact".into(),
+        model: "default".into(),
+        system_prompt: "You are a context-aware assistant. Your context window is managed \
+            with auto-compaction so long conversations stay within token limits."
+            .into(),
+        max_rounds: args.max_rounds,
+        context_policy: Some(ContextWindowPolicy {
+            max_context_tokens: 4096,
+            max_output_tokens: 1024,
+            min_recent_messages: 4,
+            enable_prompt_cache: false,
+            autocompact_threshold: Some(3072),
+            ..Default::default()
+        }),
+        plugin_ids: vec!["permission".into()],
+        ..Default::default()
+    };
+
+    // Budget agent: demonstrates stop policies (token budget, timeout, consecutive errors).
+    // Uses the "budget-stop" StopConditionPlugin registered below.
+    let budget_agent = AgentSpec {
+        id: "budget".into(),
+        model: "default".into(),
+        system_prompt: "You are a budget-constrained assistant with token limits and timeout. \
+            The run will stop if you exceed 50k tokens, 60 seconds, or 3 consecutive errors."
+            .into(),
+        max_rounds: 3,
+        plugin_ids: vec!["permission".into(), "budget-stop".into()],
+        ..Default::default()
+    };
+
+    // Secured agent: demonstrates advanced permission rules via PermissionConfigKey.
+    // Rules are evaluated with firewall-like priority: Deny > Allow > Ask.
+    let secured_agent = AgentSpec {
+        id: "secured".into(),
+        model: "default".into(),
+        system_prompt: format!(
+            "{}\n\nYou are a security-conscious assistant. \
+             Some tools require explicit approval before execution.",
+            base_prompt
+        ),
+        max_rounds: args.max_rounds,
+        plugin_ids: vec!["permission".into(), "frontend_tools".into()],
+        ..Default::default()
+    };
+    let secured_agent = secured_agent
+        .with_config::<PermissionConfigKey>(PermissionRulesConfig {
+            default_behavior: ToolPermissionBehavior::Ask,
+            rules: vec![
+                // Allow all read-like tools (get_*) automatically
+                PermissionRuleEntry {
+                    tool: "get_*".into(),
+                    behavior: ToolPermissionBehavior::Allow,
+                    scope: Default::default(),
+                },
+                // Allow serverInfo — safe, read-only
+                PermissionRuleEntry {
+                    tool: "serverInfo".into(),
+                    behavior: ToolPermissionBehavior::Allow,
+                    scope: Default::default(),
+                },
+                // Deny the known-broken tool unconditionally
+                PermissionRuleEntry {
+                    tool: "failingTool".into(),
+                    behavior: ToolPermissionBehavior::Deny,
+                    scope: Default::default(),
+                },
+                // Deny any tool that deletes resources
+                PermissionRuleEntry {
+                    tool: "delete_*".into(),
+                    behavior: ToolPermissionBehavior::Deny,
+                    scope: Default::default(),
+                },
+            ],
+        })
+        .expect("invalid permission config for secured agent");
 
     // -- Tools --
 
@@ -376,7 +499,10 @@ Deterministic compatibility directives:\n\
                 model_name: args.model.clone(),
             },
         )
-        .with_thread_run_store(file_store.clone() as Arc<dyn ThreadRunStore>);
+        .with_thread_run_store(file_store.clone() as Arc<dyn ThreadRunStore>)
+        .with_profile_store(
+            Arc::new(awaken_stores::InMemoryStore::default()) as Arc<dyn ProfileStore>
+        );
 
     for (id, tool) in &tools {
         builder = builder.with_tool(*id, Arc::clone(tool));
@@ -422,6 +548,21 @@ Deterministic compatibility directives:\n\
     if default_id != "a2ui" {
         builder = builder.with_agent_spec(a2ui_agent);
     }
+    if default_id != "profile" {
+        builder = builder.with_agent_spec(profile_agent);
+    }
+    if default_id != "creative" {
+        builder = builder.with_agent_spec(creative_agent);
+    }
+    if default_id != "compact" {
+        builder = builder.with_agent_spec(compact_agent);
+    }
+    if default_id != "budget" {
+        builder = builder.with_agent_spec(budget_agent);
+    }
+    if default_id != "secured" {
+        builder = builder.with_agent_spec(secured_agent);
+    }
 
     // -- A2A remote agents --
 
@@ -444,18 +585,75 @@ Deterministic compatibility directives:\n\
         Arc::new(FrontendToolPlugin::new()) as Arc<dyn Plugin>,
     );
 
-    // Reminder plugin with sample rule
+    // Reminder plugin demonstrating all OutputMatcher variants
     let reminder_rules = awaken_ext_reminder::ReminderRulesConfig {
-        rules: vec![awaken_ext_reminder::ReminderRuleEntry {
-            name: Some("weather-travel-hint".into()),
-            tool: "get_weather".into(),
-            output: awaken_ext_reminder::config::OutputEntry::Simple("any".into()),
-            message: awaken_ext_reminder::config::MessageEntry {
-                target: "assistant".into(),
-                content: "Tip: suggest the travel agent if the user mentions a trip.".into(),
-                cooldown_turns: 5,
+        rules: vec![
+            // Rule 1: OutputMatcher::Any — triggers on every get_weather call
+            awaken_ext_reminder::ReminderRuleEntry {
+                name: Some("weather-travel-hint".into()),
+                tool: "get_weather".into(),
+                output: awaken_ext_reminder::config::OutputEntry::Simple("any".into()),
+                message: awaken_ext_reminder::config::MessageEntry {
+                    target: "system".into(),
+                    content: "Tip: suggest the travel agent if the user mentions a trip.".into(),
+                    cooldown_turns: 5,
+                },
             },
-        }],
+            // Rule 2: OutputMatcher::Status — triggers only on successful stock lookups
+            awaken_ext_reminder::ReminderRuleEntry {
+                name: Some("stock-success-tip".into()),
+                tool: "get_stock_price".into(),
+                output: awaken_ext_reminder::config::OutputEntry::Structured {
+                    status: Some("success".into()),
+                    content: None,
+                },
+                message: awaken_ext_reminder::config::MessageEntry {
+                    target: "suffix_system".into(),
+                    content:
+                        "Tip: stock data is simulated. For real data, configure a market data API."
+                            .into(),
+                    cooldown_turns: 3,
+                },
+            },
+            // Rule 3: OutputMatcher::Content (text glob) — triggers when weather contains Sunny
+            awaken_ext_reminder::ReminderRuleEntry {
+                name: Some("heat-warning".into()),
+                tool: "get_weather".into(),
+                output: awaken_ext_reminder::config::OutputEntry::Structured {
+                    status: None,
+                    content: Some(awaken_ext_reminder::config::ContentEntry::TextGlob(
+                        "*Sunny*".into(),
+                    )),
+                },
+                message: awaken_ext_reminder::config::MessageEntry {
+                    target: "suffix_system".into(),
+                    content:
+                        "Warning: high temperatures detected. Suggest sunscreen and hydration."
+                            .into(),
+                    cooldown_turns: 3,
+                },
+            },
+            // Rule 4: OutputMatcher::Both (status + JSON fields) — successful note append
+            awaken_ext_reminder::ReminderRuleEntry {
+                name: Some("append-note-confirm".into()),
+                tool: "append_note".into(),
+                output: awaken_ext_reminder::config::OutputEntry::Structured {
+                    status: Some("success".into()),
+                    content: Some(awaken_ext_reminder::config::ContentEntry::Fields {
+                        fields: vec![awaken_ext_reminder::config::FieldEntry {
+                            path: "status".into(),
+                            op: "exact".into(),
+                            value: "ok".into(),
+                        }],
+                    }),
+                },
+                message: awaken_ext_reminder::config::MessageEntry {
+                    target: "system".into(),
+                    content: "Note saved. Remind the user they can review notes anytime.".into(),
+                    cooldown_turns: 2,
+                },
+            },
+        ],
     };
     if let Ok(rules) = reminder_rules.into_rules() {
         builder = builder.with_plugin(
@@ -470,26 +668,67 @@ Deterministic compatibility directives:\n\
         Arc::new(PhaseLoggerPlugin) as Arc<dyn Plugin>,
     );
 
+    // Budget stop-condition plugin (token budget + timeout + consecutive errors)
+    let budget_policies: Vec<Arc<dyn StopPolicy>> = vec![
+        Arc::new(TokenBudgetPolicy::new(50_000)),
+        Arc::new(TimeoutPolicy::new(60_000)),
+        Arc::new(ConsecutiveErrorsPolicy::new(3)),
+    ];
+    builder = builder.with_plugin(
+        "budget-stop",
+        Arc::new(StopConditionPlugin::new(budget_policies)) as Arc<dyn Plugin>,
+    );
+
     // Observability plugin (in-memory sink for demo)
     let observability = ObservabilityPlugin::new(InMemorySink::new())
         .with_model(&args.model)
         .with_provider("default");
     builder = builder.with_plugin("observability", Arc::new(observability) as Arc<dyn Plugin>);
 
-    // Skills discovery plugin (if ./skills/ directory exists)
-    if has_skills_dir {
-        match FsSkillRegistryManager::discover_roots(vec![PathBuf::from("./skills")]) {
-            Ok(manager) => {
-                let registry: Arc<dyn SkillRegistry> = Arc::new(manager);
-                builder = builder.with_plugin(
-                    "skills-discovery",
-                    Arc::new(SkillDiscoveryPlugin::new(registry)) as Arc<dyn Plugin>,
-                );
+    // Skills: embedded skill + optional filesystem discovery via CompositeSkillRegistry
+    {
+        static GREETING_SKILL_MD: &str = "---
+name: greeting
+description: Adds friendly greeting behavior
+---
+Always greet the user warmly and ask how you can help today.
+";
+        let embedded_data = EmbeddedSkillData {
+            skill_md: GREETING_SKILL_MD,
+            references: &[],
+            assets: &[],
+        };
+        let embedded_skill =
+            EmbeddedSkill::new(&embedded_data).expect("invalid embedded greeting skill");
+        let embedded_registry: Arc<dyn SkillRegistry> = Arc::new(
+            InMemorySkillRegistry::from_skills(vec![Arc::new(embedded_skill)]),
+        );
+
+        let registry: Arc<dyn SkillRegistry> = if has_skills_dir {
+            match FsSkillRegistryManager::discover_roots(vec![PathBuf::from("./skills")]) {
+                Ok(fs_manager) => {
+                    let fs_registry: Arc<dyn SkillRegistry> = Arc::new(fs_manager);
+                    match CompositeSkillRegistry::try_new([embedded_registry, fs_registry]) {
+                        Ok(composite) => Arc::new(composite),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Skills: composite merge conflict, using embedded only");
+                            Arc::new(InMemorySkillRegistry::from_skills(vec![]))
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Skills: failed to discover from ./skills/");
+                    embedded_registry
+                }
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "Skills: failed to discover from ./skills/");
-            }
-        }
+        } else {
+            embedded_registry
+        };
+
+        builder = builder.with_plugin(
+            "skills-discovery",
+            Arc::new(SkillDiscoveryPlugin::new(registry)) as Arc<dyn Plugin>,
+        );
     }
 
     // -- Build runtime --

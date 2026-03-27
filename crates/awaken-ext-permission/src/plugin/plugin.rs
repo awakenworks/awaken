@@ -1,9 +1,11 @@
-use awaken_contract::StateError;
 use awaken_contract::model::Phase;
-use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
-use awaken_runtime::state::{KeyScope, StateKeyOptions};
+use awaken_contract::registry_spec::AgentSpec;
+use awaken_contract::{PluginConfigKey, StateError};
+use awaken_runtime::plugins::{ConfigSchema, Plugin, PluginDescriptor, PluginRegistrar};
+use awaken_runtime::state::{KeyScope, MutationBatch, StateKeyOptions};
 
-use crate::state::{PermissionOverridesKey, PermissionPolicyKey};
+use crate::config::{PermissionConfigKey, PermissionRulesConfig};
+use crate::state::{PermissionAction, PermissionOverridesKey, PermissionPolicyKey};
 
 use super::checker::PermissionInterceptHook;
 
@@ -44,6 +46,39 @@ impl Plugin for PermissionPlugin {
             Phase::BeforeToolExecute,
             PermissionInterceptHook,
         )?;
+
+        Ok(())
+    }
+
+    fn config_schemas(&self) -> Vec<ConfigSchema> {
+        vec![ConfigSchema {
+            key: PermissionConfigKey::KEY,
+            json_schema: serde_json::to_value(schemars::schema_for!(PermissionRulesConfig))
+                .unwrap_or_default(),
+        }]
+    }
+
+    fn on_activate(
+        &self,
+        agent_spec: &AgentSpec,
+        patch: &mut MutationBatch,
+    ) -> Result<(), StateError> {
+        let config: PermissionRulesConfig = agent_spec.config::<PermissionConfigKey>()?;
+
+        // Seed default behavior from config
+        if config.default_behavior != Default::default() {
+            patch.update::<PermissionPolicyKey>(PermissionAction::SetDefault {
+                behavior: config.default_behavior,
+            });
+        }
+
+        // Seed rules from config entries
+        for entry in &config.rules {
+            patch.update::<PermissionPolicyKey>(PermissionAction::SetRule {
+                pattern: entry.tool.clone(),
+                behavior: entry.behavior,
+            });
+        }
 
         Ok(())
     }
