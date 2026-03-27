@@ -43,9 +43,8 @@ struct AgUiRunRequest {
     agent_id: Option<String>,
     #[serde(default)]
     messages: Vec<AgUiMessage>,
-    #[serde(default)]
-    #[allow(dead_code)] // deserialized from AG-UI request, reserved for context forwarding
-    context: Option<Value>,
+    #[serde(default, alias = "context")]
+    state: Option<Value>,
     #[serde(default)]
     #[allow(dead_code)] // deserialized from AG-UI request, reserved for resume handling
     resume: Option<AgUiResumePayload>,
@@ -144,7 +143,8 @@ async fn ag_ui_run(
 ) -> Result<Response, ApiError> {
     let agent_id = payload.agent_id;
     let messages = convert_messages(payload.messages);
-    let (thread_id, messages) = crate::mailbox::prepare_run_inputs(payload.thread_id, messages)?;
+    let (thread_id, messages) =
+        crate::mailbox::prepare_run_inputs(payload.thread_id, messages, payload.state)?;
 
     let spec = RunSpec {
         thread_id,

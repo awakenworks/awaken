@@ -793,6 +793,7 @@ impl Mailbox {
 pub fn prepare_run_inputs(
     thread_id: Option<String>,
     messages: Vec<Message>,
+    frontend_state: Option<serde_json::Value>,
 ) -> Result<(String, Vec<Message>), ApiError> {
     if messages.is_empty() {
         return Err(ApiError::BadRequest(
@@ -803,6 +804,19 @@ pub fn prepare_run_inputs(
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
         .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+
+    let mut messages = messages;
+    if let Some(state) = frontend_state {
+        if !state.is_null() {
+            let state_text = serde_json::to_string_pretty(&state).unwrap_or_default();
+            if !state_text.is_empty() && state_text != "{}" {
+                let ctx_msg =
+                    Message::internal_system(format!("Current frontend state:\n{state_text}"));
+                messages.insert(0, ctx_msg);
+            }
+        }
+    }
+
     Ok((thread_id, messages))
 }
 
@@ -964,15 +978,43 @@ mod tests {
     #[test]
     fn prepare_run_inputs_generates_thread_id() {
         let msgs = vec![Message::user("hi")];
-        let (thread_id, messages) = prepare_run_inputs(None, msgs).unwrap();
+        let (thread_id, messages) = prepare_run_inputs(None, msgs, None).unwrap();
         assert!(!thread_id.is_empty());
         assert_eq!(messages.len(), 1);
     }
 
     #[test]
     fn prepare_run_inputs_empty_messages_errors() {
-        let result = prepare_run_inputs(None, vec![]);
+        let result = prepare_run_inputs(None, vec![], None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn prepare_run_inputs_injects_state_as_internal_system_message() {
+        use awaken_contract::contract::message::{Role, Visibility};
+        let msgs = vec![Message::user("hello")];
+        let state = Some(serde_json::json!({"todos": ["buy milk"]}));
+        let (_, prepared) = prepare_run_inputs(None, msgs, state).unwrap();
+        assert_eq!(prepared.len(), 2);
+        assert_eq!(prepared[0].role, Role::System);
+        assert_eq!(prepared[0].visibility, Visibility::Internal);
+        assert!(prepared[0].text().contains("todos"));
+        assert_eq!(prepared[1].text(), "hello");
+    }
+
+    #[test]
+    fn prepare_run_inputs_skips_empty_state() {
+        let msgs = vec![Message::user("hello")];
+        let state = Some(serde_json::json!({}));
+        let (_, prepared) = prepare_run_inputs(None, msgs, state).unwrap();
+        assert_eq!(prepared.len(), 1);
+    }
+
+    #[test]
+    fn prepare_run_inputs_skips_null_state() {
+        let msgs = vec![Message::user("hello")];
+        let (_, prepared) = prepare_run_inputs(None, msgs, None).unwrap();
+        assert_eq!(prepared.len(), 1);
     }
 
     #[test]

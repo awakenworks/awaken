@@ -35,6 +35,8 @@ struct AiSdkChatRequest {
     thread_id: Option<String>,
     #[serde(rename = "agentId", alias = "agent_id", default)]
     agent_id: Option<String>,
+    #[serde(default)]
+    state: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -189,7 +191,8 @@ async fn ai_sdk_chat(
 ) -> Result<Response, ApiError> {
     let agent_id = payload.agent_id;
     let messages = convert_messages(payload.messages);
-    let (thread_id, messages) = crate::mailbox::prepare_run_inputs(payload.thread_id, messages)?;
+    let (thread_id, messages) =
+        crate::mailbox::prepare_run_inputs(payload.thread_id, messages, payload.state)?;
 
     let spec = RunSpec {
         thread_id,
