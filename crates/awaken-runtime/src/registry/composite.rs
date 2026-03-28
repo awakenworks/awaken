@@ -157,11 +157,6 @@ impl CompositeAgentSpecRegistry {
         *cache = new_cache;
         Ok(())
     }
-
-    /// Manually refresh the remote agent cache (re-runs discovery).
-    pub async fn refresh(&self) -> Result<(), DiscoveryError> {
-        self.discover().await
-    }
 }
 
 impl AgentSpecRegistry for CompositeAgentSpecRegistry {
