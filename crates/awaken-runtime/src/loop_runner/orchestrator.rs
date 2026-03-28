@@ -106,7 +106,7 @@ pub(super) async fn run_agent_loop_impl(
         #[cfg(feature = "handoff")]
         if let Some(Some(active_id)) =
             store.read::<awaken_contract::contract::run_input::ActiveAgentIdKey>()
-            && active_id != agent.id
+            && active_id != agent.id()
         {
             match resolver.resolve(&active_id) {
                 Ok(resolved) => {
@@ -146,7 +146,7 @@ pub(super) async fn run_agent_loop_impl(
                         }
                     }
 
-                    tracing::info!(from = %agent.id, to = %active_id, "agent_handoff");
+                    tracing::info!(from = %agent.id(), to = %active_id, "agent_handoff");
                     agent = resolved.config;
                     env = resolved.env;
                 }

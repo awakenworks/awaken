@@ -134,17 +134,17 @@ async fn recover_truncation(
     while should_retry(
         &stream_result,
         ctx.truncation_state,
-        ctx.agent.max_continuation_retries,
+        ctx.agent.max_continuation_retries(),
     ) {
         let partial_text = stream_result.text();
         ctx.messages
             .push(Arc::new(Message::assistant(&partial_text)));
         ctx.messages.push(Arc::new(continuation_message()));
 
-        let has_sys = !ctx.agent.system_prompt.is_empty();
+        let has_sys = !ctx.agent.system_prompt().is_empty();
         let mut cont_messages: Vec<Message> = Vec::new();
         if has_sys {
-            cont_messages.push(Message::system(&ctx.agent.system_prompt));
+            cont_messages.push(Message::system(ctx.agent.system_prompt()));
         }
         cont_messages.extend(ctx.messages.iter().map(|m| (**m).clone()));
         let cont_messages = awaken_contract::contract::transform::apply_transforms(
@@ -251,7 +251,7 @@ async fn run_inference_phase(
     let store = ctx.runtime.store();
 
     // LLM compaction
-    if let Some(ref policy) = ctx.agent.context_policy
+    if let Some(policy) = ctx.agent.context_policy()
         && let Some(threshold) = policy.autocompact_threshold
     {
         let token_est = awaken_contract::contract::transform::estimate_tokens_arc(ctx.messages);
@@ -263,10 +263,10 @@ async fn run_inference_phase(
     // Read context messages from persistent store (populated by AddContextMessage handler)
     let context_msgs = take_context_messages(store)?;
 
-    let has_system_prompt = !ctx.agent.system_prompt.is_empty();
+    let has_system_prompt = !ctx.agent.system_prompt().is_empty();
     let mut request_messages: Vec<Message> = Vec::new();
     if has_system_prompt {
-        request_messages.push(Message::system(&ctx.agent.system_prompt));
+        request_messages.push(Message::system(ctx.agent.system_prompt()));
     }
     request_messages.extend(ctx.messages.iter().map(|m| (**m).clone()));
 
@@ -286,8 +286,7 @@ async fn run_inference_phase(
     let start = std::time::Instant::now();
     let enable_prompt_cache = ctx
         .agent
-        .context_policy
-        .as_ref()
+        .context_policy()
         .is_some_and(|p| p.enable_prompt_cache);
     let request = InferenceRequest {
         model: ctx.agent.model.clone(),

@@ -4769,8 +4769,8 @@ async fn mixed_suspended_and_completed_tools() {
 async fn agent_config_defaults() {
     let llm = Arc::new(ScriptedLlm::new(vec![]));
     let config = AgentConfig::new("test", "gpt-4", "sys", llm);
-    assert_eq!(config.max_rounds, 16);
-    assert!(config.system_prompt == "sys");
+    assert_eq!(config.max_rounds(), 16);
+    assert!(config.system_prompt() == "sys");
     assert!(config.tools.is_empty());
 }
 
@@ -4783,8 +4783,8 @@ async fn agent_config_builder_chain() {
         .with_tool(Arc::new(CalcTool));
 
     assert_eq!(config.model, "gpt-4");
-    assert_eq!(config.max_rounds, 5);
-    assert_eq!(config.system_prompt, "You are helpful.");
+    assert_eq!(config.max_rounds(), 5);
+    assert_eq!(config.system_prompt(), "You are helpful.");
     assert_eq!(config.tools.len(), 2);
     assert!(config.tools.contains_key("echo"));
     assert!(config.tools.contains_key("calc"));

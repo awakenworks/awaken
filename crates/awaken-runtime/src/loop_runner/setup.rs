@@ -58,7 +58,7 @@ pub(super) async fn prepare_run(
     }
 
     // Trim to latest compaction boundary — skip already-summarized history
-    if agent.context_policy.is_some() {
+    if agent.context_policy().is_some() {
         crate::context::trim_to_compaction_boundary(&mut messages);
     }
 

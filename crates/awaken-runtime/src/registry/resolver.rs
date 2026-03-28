@@ -17,7 +17,7 @@ pub struct ResolvedAgent {
 impl std::fmt::Debug for ResolvedAgent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResolvedAgent")
-            .field("agent_id", &self.config.id)
+            .field("agent_id", &self.config.id())
             .finish_non_exhaustive()
     }
 }

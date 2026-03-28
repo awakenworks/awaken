@@ -3,6 +3,7 @@
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::inference::ContextWindowPolicy;
 use awaken_contract::contract::tool::Tool;
+use awaken_contract::registry_spec::AgentSpec;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -11,24 +12,16 @@ use crate::execution::{SequentialToolExecutor, ToolExecutor};
 /// The sole interface the agent loop sees.
 #[derive(Clone)]
 pub struct AgentConfig {
-    pub id: String,
-    /// Model registry ID — the key used to look up the model entry.
-    pub model_id: String,
-    /// Actual model name for API calls (resolved from ModelEntry).
+    /// The source agent specification.
+    pub spec: Arc<AgentSpec>,
+    /// Actual model name for API calls (resolved from ModelEntry, may differ from spec.model).
     pub model: String,
-    pub system_prompt: String,
-    pub max_rounds: usize,
     pub tools: HashMap<String, Arc<dyn Tool>>,
     pub llm_executor: Arc<dyn LlmExecutor>,
     pub tool_executor: Arc<dyn ToolExecutor>,
-    /// Context window management policy. `None` disables compaction and truncation.
-    pub context_policy: Option<ContextWindowPolicy>,
     /// Context summarizer for LLM-based compaction. `None` disables LLM compaction
     /// (hard truncation still works if `context_policy` is set).
     pub context_summarizer: Option<Arc<dyn crate::context::ContextSummarizer>>,
-    /// Maximum number of continuation retries when the LLM response is truncated
-    /// at `MaxTokens` with incomplete tool calls. `0` disables truncation recovery.
-    pub max_continuation_retries: usize,
 }
 
 impl AgentConfig {
@@ -39,20 +32,59 @@ impl AgentConfig {
         llm_executor: Arc<dyn LlmExecutor>,
     ) -> Self {
         let model = model.into();
-        Self {
+        let spec = Arc::new(AgentSpec {
             id: id.into(),
-            model_id: model.clone(),
-            model,
+            model: model.clone(),
             system_prompt: system_prompt.into(),
             max_rounds: 16,
+            max_continuation_retries: 2,
+            context_policy: None,
+            plugin_ids: Vec::new(),
+            active_hook_filter: Default::default(),
+            allowed_tools: None,
+            excluded_tools: None,
+            endpoint: None,
+            delegates: Vec::new(),
+            sections: Default::default(),
+            registry: None,
+        });
+        Self {
+            spec,
+            model,
             tools: HashMap::new(),
             llm_executor,
             tool_executor: Arc::new(SequentialToolExecutor),
-            context_policy: None,
             context_summarizer: None,
-            max_continuation_retries: 2,
         }
     }
+
+    // -- delegation accessors -------------------------------------------------
+
+    pub fn id(&self) -> &str {
+        &self.spec.id
+    }
+
+    pub fn model_id(&self) -> &str {
+        &self.spec.model
+    }
+
+    pub fn system_prompt(&self) -> &str {
+        &self.spec.system_prompt
+    }
+
+    pub fn max_rounds(&self) -> usize {
+        self.spec.max_rounds
+    }
+
+    pub fn context_policy(&self) -> Option<&ContextWindowPolicy> {
+        self.spec.context_policy.as_ref()
+    }
+
+    pub fn max_continuation_retries(&self) -> usize {
+        self.spec.max_continuation_retries
+    }
+
+    // -- builder methods ------------------------------------------------------
 
     #[must_use]
     pub fn with_tool_executor(mut self, executor: Arc<dyn ToolExecutor>) -> Self {
@@ -62,7 +94,9 @@ impl AgentConfig {
 
     #[must_use]
     pub fn with_max_rounds(mut self, max_rounds: usize) -> Self {
-        self.max_rounds = max_rounds;
+        let mut spec = (*self.spec).clone();
+        spec.max_rounds = max_rounds;
+        self.spec = Arc::new(spec);
         self
     }
 
@@ -84,7 +118,9 @@ impl AgentConfig {
 
     #[must_use]
     pub fn with_context_policy(mut self, policy: ContextWindowPolicy) -> Self {
-        self.context_policy = Some(policy);
+        let mut spec = (*self.spec).clone();
+        spec.context_policy = Some(policy);
+        self.spec = Arc::new(spec);
         self
     }
 
@@ -99,7 +135,9 @@ impl AgentConfig {
 
     #[must_use]
     pub fn with_max_continuation_retries(mut self, n: usize) -> Self {
-        self.max_continuation_retries = n;
+        let mut spec = (*self.spec).clone();
+        spec.max_continuation_retries = n;
+        self.spec = Arc::new(spec);
         self
     }
 
@@ -165,20 +203,20 @@ mod tests {
     #[test]
     fn config_new_defaults() {
         let config = AgentConfig::new("agent-1", "model-1", "system prompt", mock_executor());
-        assert_eq!(config.id, "agent-1");
+        assert_eq!(config.id(), "agent-1");
         assert_eq!(config.model, "model-1");
-        assert_eq!(config.system_prompt, "system prompt");
-        assert_eq!(config.max_rounds, 16);
+        assert_eq!(config.system_prompt(), "system prompt");
+        assert_eq!(config.max_rounds(), 16);
         assert!(config.tools.is_empty());
-        assert!(config.context_policy.is_none());
+        assert!(config.context_policy().is_none());
         assert!(config.context_summarizer.is_none());
-        assert_eq!(config.max_continuation_retries, 2);
+        assert_eq!(config.max_continuation_retries(), 2);
     }
 
     #[test]
     fn config_with_max_rounds() {
         let config = AgentConfig::new("a", "m", "s", mock_executor()).with_max_rounds(100);
-        assert_eq!(config.max_rounds, 100);
+        assert_eq!(config.max_rounds(), 100);
     }
 
     #[test]
@@ -233,24 +271,21 @@ mod tests {
             compaction_raw_suffix_messages: 3,
         };
         let config = AgentConfig::new("a", "m", "s", mock_executor()).with_context_policy(policy);
-        assert!(config.context_policy.is_some());
-        assert_eq!(
-            config.context_policy.as_ref().unwrap().max_context_tokens,
-            8000
-        );
+        assert!(config.context_policy().is_some());
+        assert_eq!(config.context_policy().unwrap().max_context_tokens, 8000);
     }
 
     #[test]
     fn config_with_max_continuation_retries() {
         let config =
             AgentConfig::new("a", "m", "s", mock_executor()).with_max_continuation_retries(5);
-        assert_eq!(config.max_continuation_retries, 5);
+        assert_eq!(config.max_continuation_retries(), 5);
     }
 
     #[test]
     fn config_model_id_equals_model_by_default() {
         let config = AgentConfig::new("a", "claude-3", "s", mock_executor());
-        assert_eq!(config.model_id, "claude-3");
+        assert_eq!(config.model_id(), "claude-3");
         assert_eq!(config.model, "claude-3");
     }
 
@@ -260,9 +295,9 @@ mod tests {
             .with_max_rounds(50)
             .with_max_continuation_retries(3);
         let cloned = config.clone();
-        assert_eq!(cloned.id, "a");
-        assert_eq!(cloned.max_rounds, 50);
-        assert_eq!(cloned.max_continuation_retries, 3);
+        assert_eq!(cloned.id(), "a");
+        assert_eq!(cloned.max_rounds(), 50);
+        assert_eq!(cloned.max_continuation_retries(), 3);
     }
 
     #[test]
@@ -280,8 +315,8 @@ mod tests {
             .with_tool(Arc::new(TestTool { id: "t1".into() }))
             .with_tool(Arc::new(TestTool { id: "t2".into() }));
 
-        assert_eq!(config.max_rounds, 10);
-        assert_eq!(config.max_continuation_retries, 0);
+        assert_eq!(config.max_rounds(), 10);
+        assert_eq!(config.max_continuation_retries(), 0);
         assert_eq!(config.tools.len(), 2);
     }
 
@@ -338,7 +373,7 @@ mod tests {
     fn config_system_prompt_preserved_verbatim() {
         let prompt = "You are a helpful assistant.\nBe concise.\nDo not hallucinate.";
         let config = AgentConfig::new("a", "m", prompt, mock_executor());
-        assert_eq!(config.system_prompt, prompt);
+        assert_eq!(config.system_prompt(), prompt);
     }
 
     #[test]
@@ -366,13 +401,13 @@ mod tests {
     #[test]
     fn config_default_max_continuation_retries() {
         let config = AgentConfig::new("a", "m", "s", mock_executor());
-        assert_eq!(config.max_continuation_retries, 2);
+        assert_eq!(config.max_continuation_retries(), 2);
     }
 
     #[test]
     fn config_zero_max_rounds() {
         let config = AgentConfig::new("a", "m", "s", mock_executor()).with_max_rounds(0);
-        assert_eq!(config.max_rounds, 0);
+        assert_eq!(config.max_rounds(), 0);
     }
 
     // -----------------------------------------------------------------------
@@ -401,31 +436,28 @@ mod tests {
             .with_context_policy(policy)
             .with_tool_executor(Arc::new(crate::execution::SequentialToolExecutor));
 
-        assert_eq!(config.id, "full-agent");
+        assert_eq!(config.id(), "full-agent");
         assert_eq!(config.model, "gpt-4");
-        assert_eq!(config.system_prompt, "Be helpful.");
-        assert_eq!(config.max_rounds, 32);
-        assert_eq!(config.max_continuation_retries, 10);
+        assert_eq!(config.system_prompt(), "Be helpful.");
+        assert_eq!(config.max_rounds(), 32);
+        assert_eq!(config.max_continuation_retries(), 10);
         assert_eq!(config.tools.len(), 3);
-        assert!(config.context_policy.is_some());
-        assert_eq!(
-            config.context_policy.as_ref().unwrap().max_context_tokens,
-            16000
-        );
+        assert!(config.context_policy().is_some());
+        assert_eq!(config.context_policy().unwrap().max_context_tokens, 16000);
         assert_eq!(config.tool_executor.name(), "sequential");
     }
 
     #[test]
     fn config_empty_system_prompt() {
         let config = AgentConfig::new("a", "m", "", mock_executor());
-        assert_eq!(config.system_prompt, "");
+        assert_eq!(config.system_prompt(), "");
     }
 
     #[test]
     fn config_system_prompt_with_unicode() {
         let prompt = "You are \u{1F916} a helpful assistant. \u{2764}";
         let config = AgentConfig::new("a", "m", prompt, mock_executor());
-        assert_eq!(config.system_prompt, prompt);
+        assert_eq!(config.system_prompt(), prompt);
     }
 
     #[test]
@@ -477,20 +509,20 @@ mod tests {
         let mut config = AgentConfig::new("a", "original-model", "s", mock_executor());
         // Manually change model_name (simulating what resolve pipeline does)
         config.model = "resolved-model-name".into();
-        assert_eq!(config.model_id, "original-model");
+        assert_eq!(config.model_id(), "original-model");
         assert_eq!(config.model, "resolved-model-name");
     }
 
     #[test]
     fn config_large_max_rounds() {
         let config = AgentConfig::new("a", "m", "s", mock_executor()).with_max_rounds(usize::MAX);
-        assert_eq!(config.max_rounds, usize::MAX);
+        assert_eq!(config.max_rounds(), usize::MAX);
     }
 
     #[test]
     fn config_zero_continuation_retries_disables_recovery() {
         let config =
             AgentConfig::new("a", "m", "s", mock_executor()).with_max_continuation_retries(0);
-        assert_eq!(config.max_continuation_retries, 0);
+        assert_eq!(config.max_continuation_retries(), 0);
     }
 }

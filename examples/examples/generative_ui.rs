@@ -146,7 +146,7 @@ impl AgentResolver for MultiAgentResolver {
         let config = self
             .agents
             .iter()
-            .find(|a| a.id == agent_id)
+            .find(|a| a.id() == agent_id)
             .ok_or_else(|| RuntimeError::AgentNotFound {
                 agent_id: agent_id.to_string(),
             })?

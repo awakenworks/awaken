@@ -160,9 +160,9 @@ pub fn build_agent_env(
     agent: &crate::agent::config::AgentConfig,
 ) -> Result<ExecutionEnv, StateError> {
     let mut all_plugins =
-        crate::registry::resolve::inject_default_plugins(plugins.to_vec(), agent.max_rounds);
+        crate::registry::resolve::inject_default_plugins(plugins.to_vec(), agent.max_rounds());
 
-    if let Some(ref policy) = agent.context_policy {
+    if let Some(policy) = agent.context_policy() {
         all_plugins.push(Arc::new(crate::context::ContextTransformPlugin::new(
             policy.clone(),
         )));

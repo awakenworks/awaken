@@ -62,17 +62,12 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedAgent, Re
     let spec_arc = Arc::new(spec);
 
     let config = AgentConfig {
-        id: spec_arc.id.clone(),
-        model_id: spec_arc.model.clone(),
+        spec: spec_arc.clone(),
         model: model_name,
-        system_prompt: spec_arc.system_prompt.clone(),
-        max_rounds: spec_arc.max_rounds,
         tools,
         llm_executor: executor,
         tool_executor: Arc::new(SequentialToolExecutor),
-        context_policy: spec_arc.context_policy.clone(),
         context_summarizer: None,
-        max_continuation_retries: spec_arc.max_continuation_retries,
     };
 
     let env = env.with_agent_spec(spec_arc);
@@ -530,7 +525,7 @@ mod tests {
         );
 
         let run = resolve(&regs, "agent-1").unwrap();
-        assert_eq!(run.config.id, "agent-1");
+        assert_eq!(run.config.id(), "agent-1");
         assert_eq!(run.config.model, "claude-opus-4-20250514");
         assert_eq!(run.config.tools.len(), 2);
         assert!(run.config.tools.contains_key("read"));
@@ -846,10 +841,10 @@ mod tests {
 
         let resolver = RegistrySetResolver::new(regs);
         let resolved = resolver.resolve("my-agent").unwrap();
-        assert_eq!(resolved.config.id, "my-agent");
-        assert_eq!(resolved.config.model_id, "test-model");
+        assert_eq!(resolved.config.id(), "my-agent");
+        assert_eq!(resolved.config.model_id(), "test-model");
         assert_eq!(resolved.config.model, "claude-test");
-        assert_eq!(resolved.config.system_prompt, "You are helpful.");
+        assert_eq!(resolved.config.system_prompt(), "You are helpful.");
         assert_eq!(resolved.config.tools.len(), 2);
         assert!(resolved.config.tools.contains_key("read"));
     }
@@ -1266,7 +1261,7 @@ mod tests {
         );
 
         let run = resolve(&regs, "a").unwrap();
-        assert_eq!(run.config.max_rounds, 42);
+        assert_eq!(run.config.max_rounds(), 42);
     }
 
     #[test]
@@ -1291,7 +1286,7 @@ mod tests {
 
         let run = resolve(&regs, "a").unwrap();
         assert_eq!(
-            run.config.system_prompt,
+            run.config.system_prompt(),
             "Custom instructions for the agent."
         );
     }
@@ -1389,9 +1384,9 @@ mod tests {
 
         let run = resolve(&regs, "default-agent").unwrap();
         let spec = run.env.agent_spec.as_ref().unwrap();
-        assert_eq!(run.config.max_rounds, 16);
-        assert_eq!(run.config.max_continuation_retries, 2);
-        assert!(run.config.context_policy.is_none());
+        assert_eq!(run.config.max_rounds(), 16);
+        assert_eq!(run.config.max_continuation_retries(), 2);
+        assert!(run.config.context_policy().is_none());
         assert!(spec.allowed_tools.is_none());
         assert!(spec.excluded_tools.is_none());
         assert!(spec.plugin_ids.is_empty());

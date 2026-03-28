@@ -397,10 +397,10 @@ mod tests {
             .unwrap();
 
         let resolved = runtime.resolver().resolve("my-agent").unwrap();
-        assert_eq!(resolved.config.id, "my-agent");
+        assert_eq!(resolved.config.id(), "my-agent");
         assert_eq!(resolved.config.model, "claude-test");
-        assert_eq!(resolved.config.system_prompt, "Be helpful.");
-        assert_eq!(resolved.config.max_rounds, 10);
+        assert_eq!(resolved.config.system_prompt(), "Be helpful.");
+        assert_eq!(resolved.config.max_rounds(), 10);
         assert!(resolved.config.tools.contains_key("search"));
     }
 
