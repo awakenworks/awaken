@@ -57,7 +57,13 @@ export function createTransport(
 
       const bodyMessages =
         trigger === "regenerate-message"
-          ? []
+          ? (() => {
+              // Backend requires at least one message; resend last user message
+              const lastUser = [...messages]
+                .reverse()
+                .find((m) => m.role === "user");
+              return lastUser ? [lastUser] : [];
+            })()
           : [
               ...interactionMessages,
               ...(newUserMessages.length > 0
@@ -69,7 +75,7 @@ export function createTransport(
 
       return {
         body: {
-          id: sessionId,
+          threadId: sessionId,
           runId: crypto.randomUUID(),
           messages: bodyMessages,
           ...(trigger ? { trigger } : {}),

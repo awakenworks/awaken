@@ -51,11 +51,20 @@ export async function patchThreadTitle(
   threadId: string,
   title: string,
 ): Promise<void> {
-  await fetch(`${BACKEND_URL}/v1/threads/${encodeURIComponent(threadId)}/metadata`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title }),
-  });
+  try {
+    await fetch(
+      `${BACKEND_URL}/v1/threads/${encodeURIComponent(threadId)}/metadata`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      },
+    );
+    // Silently ignore non-OK responses — thread may not exist yet
+    // (created on first run, not when frontend generates session ID)
+  } catch {
+    // Ignore network errors for non-critical metadata update
+  }
 }
 
 export async function deleteThread(threadId: string): Promise<void> {
