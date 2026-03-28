@@ -7,11 +7,8 @@ import {
   type Spec,
   type ComponentRegistry,
 } from "@json-render/react";
-import {
-  Renderer as OpenUIRenderer,
-  createLibrary,
-  type Library,
-} from "@openuidev/react-lang";
+import { Renderer as OpenUIRenderer } from "@openuidev/react-lang";
+import { openuiLibrary } from "@openuidev/react-ui";
 
 // ---------------------------------------------------------------------------
 // 1. JSON Render Panel
@@ -81,8 +78,6 @@ export function JsonRenderPanel({ data }: JsonRenderPanelProps) {
 // 2. OpenUI Panel
 // ---------------------------------------------------------------------------
 
-const emptyLibrary: Library = createLibrary({ components: [] });
-
 interface OpenUIPanelProps {
   /** Raw openui-lang response text. */
   response: string;
@@ -100,7 +95,7 @@ export function OpenUIPanel({
     <div data-testid="openui-panel" className="my-2">
       <OpenUIRenderer
         response={response}
-        library={emptyLibrary}
+        library={openuiLibrary}
         isStreaming={isStreaming}
       />
     </div>
