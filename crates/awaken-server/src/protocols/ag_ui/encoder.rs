@@ -678,4 +678,589 @@ mod tests {
             assert_eq!(int.reason.as_deref(), Some("tool_approval"));
         }
     }
+
+    // ── State machine and event ordering tests ─────────────────────────
+
+    /// Helper: extract AG-UI event type name from an Event variant.
+    fn event_type_name(e: &Event) -> &'static str {
+        match e {
+            Event::RunStarted { .. } => "RUN_STARTED",
+            Event::RunFinished { .. } => "RUN_FINISHED",
+            Event::RunError { .. } => "RUN_ERROR",
+            Event::StepStarted { .. } => "STEP_STARTED",
+            Event::StepFinished { .. } => "STEP_FINISHED",
+            Event::TextMessageStart { .. } => "TEXT_MESSAGE_START",
+            Event::TextMessageContent { .. } => "TEXT_MESSAGE_CONTENT",
+            Event::TextMessageEnd { .. } => "TEXT_MESSAGE_END",
+            Event::ReasoningMessageStart { .. } => "REASONING_MESSAGE_START",
+            Event::ReasoningMessageContent { .. } => "REASONING_MESSAGE_CONTENT",
+            Event::ReasoningMessageEnd { .. } => "REASONING_MESSAGE_END",
+            Event::ReasoningEncryptedValue { .. } => "REASONING_ENCRYPTED_VALUE",
+            Event::ToolCallStart { .. } => "TOOL_CALL_START",
+            Event::ToolCallArgs { .. } => "TOOL_CALL_ARGS",
+            Event::ToolCallEnd { .. } => "TOOL_CALL_END",
+            Event::ToolCallResult { .. } => "TOOL_CALL_RESULT",
+            Event::StateSnapshot { .. } => "STATE_SNAPSHOT",
+            Event::StateDelta { .. } => "STATE_DELTA",
+            Event::MessagesSnapshot { .. } => "MESSAGES_SNAPSHOT",
+            Event::ActivitySnapshot { .. } => "ACTIVITY_SNAPSHOT",
+            Event::ActivityDelta { .. } => "ACTIVITY_DELTA",
+            Event::Custom { .. } => "CUSTOM",
+        }
+    }
+
+    /// Collect all event type names from an encoder fed a sequence of AgentEvents.
+    fn collect_types(enc: &mut AgUiEncoder, inputs: &[AgentEvent]) -> Vec<&'static str> {
+        let mut all = Vec::new();
+        for ev in inputs {
+            all.extend(enc.on_agent_event(ev).iter().map(event_type_name));
+        }
+        all
+    }
+
+    #[test]
+    fn multi_tool_parallel_calls_in_one_step() {
+        let mut enc = AgUiEncoder::new();
+        let types = collect_types(
+            &mut enc,
+            &[
+                AgentEvent::StepStart {
+                    message_id: "m1".into(),
+                },
+                AgentEvent::TextDelta {
+                    delta: "Let me search.".into(),
+                },
+                AgentEvent::ToolCallStart {
+                    id: "c1".into(),
+                    name: "search".into(),
+                },
+                AgentEvent::ToolCallStart {
+                    id: "c2".into(),
+                    name: "fetch".into(),
+                },
+                AgentEvent::ToolCallDone {
+                    id: "c1".into(),
+                    message_id: "m1".into(),
+                    result: ToolResult::success("search", json!({"hits": 3})),
+                    outcome: ToolCallOutcome::Succeeded,
+                },
+                AgentEvent::ToolCallDone {
+                    id: "c2".into(),
+                    message_id: "m1".into(),
+                    result: ToolResult::success("fetch", json!({"status": 200})),
+                    outcome: ToolCallOutcome::Succeeded,
+                },
+                AgentEvent::StepEnd,
+            ],
+        );
+
+        // TEXT_MESSAGE_END must appear before the first TOOL_CALL_START
+        let text_end_pos = types
+            .iter()
+            .position(|t| *t == "TEXT_MESSAGE_END")
+            .expect("TEXT_MESSAGE_END missing");
+        let first_tool_start_pos = types
+            .iter()
+            .position(|t| *t == "TOOL_CALL_START")
+            .expect("TOOL_CALL_START missing");
+        assert!(
+            text_end_pos < first_tool_start_pos,
+            "TEXT_MESSAGE_END ({text_end_pos}) must precede TOOL_CALL_START ({first_tool_start_pos})"
+        );
+
+        // Both tool results appear
+        assert_eq!(
+            types.iter().filter(|t| **t == "TOOL_CALL_RESULT").count(),
+            2
+        );
+        // Two TOOL_CALL_START events
+        assert_eq!(types.iter().filter(|t| **t == "TOOL_CALL_START").count(), 2);
+    }
+
+    #[test]
+    fn consecutive_tool_steps_then_summary() {
+        let mut enc = AgUiEncoder::new();
+        let types = collect_types(
+            &mut enc,
+            &[
+                // Step 1: tool
+                AgentEvent::StepStart {
+                    message_id: "m1".into(),
+                },
+                AgentEvent::ToolCallStart {
+                    id: "c1".into(),
+                    name: "search".into(),
+                },
+                AgentEvent::ToolCallDone {
+                    id: "c1".into(),
+                    message_id: "m1".into(),
+                    result: ToolResult::success("search", json!("result1")),
+                    outcome: ToolCallOutcome::Succeeded,
+                },
+                AgentEvent::StepEnd,
+                // Step 2: tool
+                AgentEvent::StepStart {
+                    message_id: "m2".into(),
+                },
+                AgentEvent::ToolCallStart {
+                    id: "c2".into(),
+                    name: "fetch".into(),
+                },
+                AgentEvent::ToolCallDone {
+                    id: "c2".into(),
+                    message_id: "m2".into(),
+                    result: ToolResult::success("fetch", json!("result2")),
+                    outcome: ToolCallOutcome::Succeeded,
+                },
+                AgentEvent::StepEnd,
+                // Step 3: summary text
+                AgentEvent::StepStart {
+                    message_id: "m3".into(),
+                },
+                AgentEvent::TextDelta {
+                    delta: "Summary".into(),
+                },
+                AgentEvent::StepEnd,
+                // Run finish
+                AgentEvent::RunFinish {
+                    thread_id: "t1".into(),
+                    run_id: "r1".into(),
+                    result: None,
+                    termination: TerminationReason::NaturalEnd,
+                },
+            ],
+        );
+
+        assert_eq!(
+            types.iter().filter(|t| **t == "STEP_STARTED").count(),
+            3,
+            "expected 3 STEP_STARTED"
+        );
+        assert_eq!(
+            types.iter().filter(|t| **t == "STEP_FINISHED").count(),
+            3,
+            "expected 3 STEP_FINISHED"
+        );
+
+        // Verify proper nesting: no STEP_STARTED while a step is open
+        let mut depth = 0i32;
+        for t in &types {
+            match *t {
+                "STEP_STARTED" => {
+                    depth += 1;
+                    assert_eq!(depth, 1, "nested STEP_STARTED detected");
+                }
+                "STEP_FINISHED" => {
+                    depth -= 1;
+                    assert!(depth >= 0, "extra STEP_FINISHED");
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(depth, 0, "unclosed step at end");
+    }
+
+    #[test]
+    fn reasoning_then_text_does_not_auto_close_reasoning() {
+        // The encoder does NOT auto-close reasoning when text starts.
+        // Both reasoning and text can be open simultaneously.
+        let mut enc = AgUiEncoder::new();
+        enc.message_id = "m1".into();
+        let types = collect_types(
+            &mut enc,
+            &[
+                AgentEvent::StepStart {
+                    message_id: "m1".into(),
+                },
+                AgentEvent::ReasoningDelta {
+                    delta: "think".into(),
+                },
+                AgentEvent::TextDelta {
+                    delta: "answer".into(),
+                },
+            ],
+        );
+
+        // Reasoning opens first
+        let reasoning_start_pos = types
+            .iter()
+            .position(|t| *t == "REASONING_MESSAGE_START")
+            .expect("REASONING_MESSAGE_START missing");
+        let text_start_pos = types
+            .iter()
+            .position(|t| *t == "TEXT_MESSAGE_START")
+            .expect("TEXT_MESSAGE_START missing");
+        assert!(reasoning_start_pos < text_start_pos);
+
+        // No REASONING_MESSAGE_END emitted yet (encoder doesn't auto-close reasoning for text)
+        assert!(
+            !types.contains(&"REASONING_MESSAGE_END"),
+            "reasoning should NOT be auto-closed when text starts"
+        );
+
+        // Both are still open, so StepEnd should close both
+        let step_end_types: Vec<&str> = enc
+            .on_agent_event(&AgentEvent::StepEnd)
+            .iter()
+            .map(event_type_name)
+            .collect();
+        assert!(step_end_types.contains(&"TEXT_MESSAGE_END"));
+        assert!(step_end_types.contains(&"REASONING_MESSAGE_END"));
+        assert!(step_end_types.contains(&"STEP_FINISHED"));
+    }
+
+    #[test]
+    fn step_end_closes_both_text_and_reasoning() {
+        let mut enc = AgUiEncoder::new();
+        enc.message_id = "m1".into();
+        let types = collect_types(
+            &mut enc,
+            &[
+                AgentEvent::StepStart {
+                    message_id: "m1".into(),
+                },
+                AgentEvent::TextDelta {
+                    delta: "hello".into(),
+                },
+                AgentEvent::ReasoningDelta {
+                    delta: "thinking".into(),
+                },
+                AgentEvent::StepEnd,
+            ],
+        );
+
+        // Both ends must appear before STEP_FINISHED
+        let text_end_pos = types
+            .iter()
+            .position(|t| *t == "TEXT_MESSAGE_END")
+            .expect("TEXT_MESSAGE_END missing");
+        let reasoning_end_pos = types
+            .iter()
+            .position(|t| *t == "REASONING_MESSAGE_END")
+            .expect("REASONING_MESSAGE_END missing");
+        let step_finished_pos = types
+            .iter()
+            .position(|t| *t == "STEP_FINISHED")
+            .expect("STEP_FINISHED missing");
+
+        assert!(
+            text_end_pos < step_finished_pos,
+            "TEXT_MESSAGE_END must precede STEP_FINISHED"
+        );
+        assert!(
+            reasoning_end_pos < step_finished_pos,
+            "REASONING_MESSAGE_END must precede STEP_FINISHED"
+        );
+    }
+
+    #[test]
+    fn tool_call_closes_both_text_and_reasoning() {
+        let mut enc = AgUiEncoder::new();
+        enc.message_id = "m1".into();
+        let types = collect_types(
+            &mut enc,
+            &[
+                AgentEvent::StepStart {
+                    message_id: "m1".into(),
+                },
+                AgentEvent::TextDelta {
+                    delta: "planning".into(),
+                },
+                AgentEvent::ReasoningDelta {
+                    delta: "hmm".into(),
+                },
+                AgentEvent::ToolCallStart {
+                    id: "c1".into(),
+                    name: "exec".into(),
+                },
+            ],
+        );
+
+        // Both TEXT_MESSAGE_END and REASONING_MESSAGE_END must appear before TOOL_CALL_START
+        let text_end_pos = types
+            .iter()
+            .position(|t| *t == "TEXT_MESSAGE_END")
+            .expect("TEXT_MESSAGE_END missing");
+        let reasoning_end_pos = types
+            .iter()
+            .position(|t| *t == "REASONING_MESSAGE_END")
+            .expect("REASONING_MESSAGE_END missing");
+        let tool_start_pos = types
+            .iter()
+            .position(|t| *t == "TOOL_CALL_START")
+            .expect("TOOL_CALL_START missing");
+
+        assert!(
+            text_end_pos < tool_start_pos,
+            "TEXT_MESSAGE_END must precede TOOL_CALL_START"
+        );
+        assert!(
+            reasoning_end_pos < tool_start_pos,
+            "REASONING_MESSAGE_END must precede TOOL_CALL_START"
+        );
+    }
+
+    #[test]
+    fn suspended_termination_closes_text_and_emits_interrupt() {
+        let mut enc = AgUiEncoder::new();
+        enc.message_id = "m1".into();
+        let types = collect_types(
+            &mut enc,
+            &[
+                AgentEvent::StepStart {
+                    message_id: "m1".into(),
+                },
+                AgentEvent::TextDelta {
+                    delta: "working...".into(),
+                },
+                AgentEvent::RunFinish {
+                    thread_id: "t1".into(),
+                    run_id: "r1".into(),
+                    result: None,
+                    termination: TerminationReason::Suspended,
+                },
+            ],
+        );
+
+        // TEXT_MESSAGE_END must be emitted
+        assert!(
+            types.contains(&"TEXT_MESSAGE_END"),
+            "TEXT_MESSAGE_END missing on suspended termination"
+        );
+
+        // RUN_FINISHED with outcome="interrupt"
+        assert!(
+            types.contains(&"RUN_FINISHED"),
+            "RUN_FINISHED missing on suspended termination"
+        );
+
+        // Verify the interrupt payload on the actual event
+        let mut enc2 = AgUiEncoder::new();
+        enc2.message_id = "m1".into();
+        enc2.on_agent_event(&AgentEvent::StepStart {
+            message_id: "m1".into(),
+        });
+        enc2.on_agent_event(&AgentEvent::TextDelta {
+            delta: "working...".into(),
+        });
+        let events = enc2.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::Suspended,
+        });
+        let finished = events
+            .iter()
+            .find(|e| matches!(e, Event::RunFinished { .. }));
+        if let Some(Event::RunFinished { outcome, .. }) = finished {
+            assert_eq!(outcome.as_deref(), Some("interrupt"));
+        } else {
+            panic!("RUN_FINISHED event not found");
+        }
+    }
+
+    #[test]
+    fn terminal_guard_blocks_all_subsequent_events() {
+        let mut enc = AgUiEncoder::new();
+        let mut all = Vec::new();
+
+        // RunStart then Error sets finished=true
+        all.extend(enc.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::Error {
+            message: "fatal".into(),
+            code: Some("INTERNAL".into()),
+        }));
+
+        // All subsequent events must produce empty output
+        assert!(
+            enc.on_agent_event(&AgentEvent::TextDelta {
+                delta: "ignored".into()
+            })
+            .is_empty(),
+            "TextDelta after Error must be empty"
+        );
+        assert!(
+            enc.on_agent_event(&AgentEvent::StepStart {
+                message_id: "m1".into()
+            })
+            .is_empty(),
+            "StepStart after Error must be empty"
+        );
+        assert!(
+            enc.on_agent_event(&AgentEvent::ToolCallStart {
+                id: "c1".into(),
+                name: "search".into()
+            })
+            .is_empty(),
+            "ToolCallStart after Error must be empty"
+        );
+        assert!(
+            enc.on_agent_event(&AgentEvent::ReasoningDelta {
+                delta: "think".into()
+            })
+            .is_empty(),
+            "ReasoningDelta after Error must be empty"
+        );
+        assert!(
+            enc.on_agent_event(&AgentEvent::RunFinish {
+                thread_id: "t1".into(),
+                run_id: "r1".into(),
+                result: None,
+                termination: TerminationReason::NaturalEnd,
+            })
+            .is_empty(),
+            "RunFinish after Error must be empty"
+        );
+
+        // Verify the pre-guard events are correct
+        let pre_types: Vec<&str> = all.iter().map(event_type_name).collect();
+        assert_eq!(pre_types, vec!["RUN_STARTED", "RUN_ERROR"]);
+    }
+
+    #[test]
+    fn empty_step_produces_only_started_and_finished() {
+        let mut enc = AgUiEncoder::new();
+        let types = collect_types(
+            &mut enc,
+            &[
+                AgentEvent::StepStart {
+                    message_id: "m1".into(),
+                },
+                AgentEvent::StepEnd,
+            ],
+        );
+
+        assert_eq!(
+            types,
+            vec!["STEP_STARTED", "STEP_FINISHED"],
+            "empty step should only produce STEP_STARTED + STEP_FINISHED"
+        );
+    }
+
+    #[test]
+    fn tool_call_resumed_produces_tool_call_result() {
+        let mut enc = AgUiEncoder::new();
+        enc.message_id = "r1".into();
+        let events = enc.on_agent_event(&AgentEvent::StepStart {
+            message_id: "m1".into(),
+        });
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::StepStarted { .. }))
+        );
+
+        let events = enc.on_agent_event(&AgentEvent::ToolCallResumed {
+            target_id: "c1".into(),
+            result: json!({"ok": true}),
+        });
+
+        assert_eq!(events.len(), 1);
+        if let Event::ToolCallResult {
+            tool_call_id,
+            content,
+            message_id,
+            ..
+        } = &events[0]
+        {
+            assert_eq!(tool_call_id, "c1");
+            assert_eq!(message_id, "m1"); // message_id updated by StepStart
+            let parsed: serde_json::Value = serde_json::from_str(content).unwrap();
+            assert_eq!(parsed, json!({"ok": true}));
+        } else {
+            panic!("expected TOOL_CALL_RESULT, got {:?}", events[0]);
+        }
+    }
+
+    #[test]
+    fn activity_snapshot_and_delta_passthrough() {
+        let mut enc = AgUiEncoder::new();
+
+        // ActivitySnapshot
+        let events = enc.on_agent_event(&AgentEvent::ActivitySnapshot {
+            message_id: "a1".into(),
+            activity_type: "progress".into(),
+            content: json!({"pct": 50}),
+            replace: Some(false),
+        });
+        assert_eq!(events.len(), 1);
+        if let Event::ActivitySnapshot {
+            message_id,
+            activity_type,
+            content,
+            replace,
+            ..
+        } = &events[0]
+        {
+            assert_eq!(message_id, "a1");
+            assert_eq!(activity_type, "progress");
+            assert_eq!(content.get("pct"), Some(&json!(50)));
+            assert_eq!(*replace, Some(false));
+        } else {
+            panic!("expected ACTIVITY_SNAPSHOT");
+        }
+
+        // ActivityDelta
+        let events = enc.on_agent_event(&AgentEvent::ActivityDelta {
+            message_id: "a1".into(),
+            activity_type: "progress".into(),
+            patch: vec![json!({"op": "replace", "path": "/pct", "value": 75})],
+        });
+        assert_eq!(events.len(), 1);
+        if let Event::ActivityDelta {
+            message_id,
+            activity_type,
+            patch,
+            ..
+        } = &events[0]
+        {
+            assert_eq!(message_id, "a1");
+            assert_eq!(activity_type, "progress");
+            assert_eq!(patch.len(), 1);
+            assert_eq!(patch[0]["op"], "replace");
+        } else {
+            panic!("expected ACTIVITY_DELTA");
+        }
+    }
+
+    #[test]
+    fn messages_snapshot_passthrough() {
+        let mut enc = AgUiEncoder::new();
+        let events = enc.on_agent_event(&AgentEvent::MessagesSnapshot {
+            messages: vec![json!({"role": "user", "content": "hi"})],
+        });
+
+        assert_eq!(events.len(), 1);
+        if let Event::MessagesSnapshot { messages, .. } = &events[0] {
+            assert_eq!(messages.len(), 1);
+            assert_eq!(messages[0]["role"], "user");
+            assert_eq!(messages[0]["content"], "hi");
+        } else {
+            panic!("expected MESSAGES_SNAPSHOT");
+        }
+    }
+
+    #[test]
+    fn inference_complete_is_dropped() {
+        let mut enc = AgUiEncoder::new();
+        let events = enc.on_agent_event(&AgentEvent::InferenceComplete {
+            model: "gpt-5.4".into(),
+            usage: Some(awaken_contract::contract::inference::TokenUsage {
+                prompt_tokens: Some(100),
+                completion_tokens: Some(50),
+                total_tokens: Some(150),
+                ..Default::default()
+            }),
+            duration_ms: 1000,
+        });
+
+        assert!(
+            events.is_empty(),
+            "InferenceComplete must produce empty Vec (AG-UI has no matching event type)"
+        );
+    }
 }
