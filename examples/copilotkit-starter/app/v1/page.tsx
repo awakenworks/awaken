@@ -431,8 +431,8 @@ function BaseStarterDemo({ agentId }: { agentId: "default" | "permission" | "sto
               <OpenUIPanel
                 response={[
                   "<Card title='Build Report'>",
-                  "  <Text>Tests: 42 passed, 0 failed</Text>",
-                  "  <Text>Coverage: 91%</Text>",
+                  "  <TextContent>Tests: 42 passed, 0 failed</TextContent>",
+                  "  <TextContent>Coverage: 91%</TextContent>",
                   "</Card>",
                 ].join("\n")}
               />
