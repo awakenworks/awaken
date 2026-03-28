@@ -12,6 +12,8 @@ import { AskUserDialog } from "@/components/tools/ask-user-dialog";
 import { WeatherCard } from "@/components/tools/weather-card";
 import { getMcpUiContent, McpAppFrame } from "@/components/tools/mcp-app-frame";
 import { A2uiSurface, extractSurfaceId, type A2uiMessage } from "@/components/tools/a2ui-surface";
+import { JsonRenderPanel, OpenUIPanel, A2UIPanel } from "@/components/tools/generative-ui-renderers";
+import type { GenerativeUISnapshot } from "@/hooks/use-chat-session";
 import { useMemo } from "react";
 
 type MessageListProps = {
@@ -30,6 +32,7 @@ type MessageListProps = {
     output: Record<string, unknown>,
   ) => Promise<void> | void;
   onSendMessage?: (text: string) => void;
+  generativeUI?: Record<string, GenerativeUISnapshot>;
 };
 
 export function MessageList({
@@ -44,6 +47,7 @@ export function MessageList({
   onAskSubmit,
   onFrontendToolSubmit,
   onSendMessage,
+  generativeUI = {},
 }: MessageListProps) {
   const isDark = themeMode === "dark";
   const itemClass = isDark ? "border-slate-700" : "border-slate-100";
@@ -130,6 +134,10 @@ export function MessageList({
             </>
           )}
         </div>
+      ))}
+      {/* Generative UI panels from activity snapshots */}
+      {Object.values(generativeUI).map((snapshot) => (
+        <GenerativeUIRenderer key={snapshot.messageId ?? snapshot.activityType} snapshot={snapshot} isStreaming={isLoading} />
       ))}
       {isLoading && (
         <div className={`py-2 text-sm ${loadingClass}`}>Thinking...</div>
@@ -299,17 +307,22 @@ function ToolPartRenderer({
             errorText={tool.errorText}
           />
           {isLastForSurface && (
-            <A2uiSurface
-              messages={surfaceMessages as never[]}
-              onEvent={(surfaceId, eventName, context) => {
-                if (onSendMessage) {
-                  const ctx = JSON.stringify(context);
-                  onSendMessage(
-                    `[A2UI event on surface "${surfaceId}": ${eventName}] ${ctx}`,
-                  );
-                }
-              }}
-            />
+            <>
+              {/* Official @a2ui/lit Web Component renderer */}
+              <A2UIPanel messages={surfaceMessages} />
+              {/* Fallback pure-React renderer */}
+              <A2uiSurface
+                messages={surfaceMessages as never[]}
+                onEvent={(surfaceId, eventName, context) => {
+                  if (onSendMessage) {
+                    const ctx = JSON.stringify(context);
+                    onSendMessage(
+                      `[A2UI event on surface "${surfaceId}": ${eventName}] ${ctx}`,
+                    );
+                  }
+                }}
+              />
+            </>
           )}
         </div>
       );
@@ -498,6 +511,45 @@ function ToolPartRenderer({
           Permission denied
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Generative UI activity snapshot renderer
+// ---------------------------------------------------------------------------
+
+function GenerativeUIRenderer({
+  snapshot,
+  isStreaming,
+}: {
+  snapshot: GenerativeUISnapshot;
+  isStreaming: boolean;
+}) {
+  const content = snapshot.content as Record<string, unknown> | undefined;
+  if (!content) return null;
+
+  const activityType = snapshot.activityType;
+
+  if (activityType === "generative-ui.json-render") {
+    // content.content holds the json-render Spec
+    const specData = content.content ?? content;
+    return <JsonRenderPanel data={specData} />;
+  }
+
+  if (activityType === "generative-ui.openui-lang") {
+    // content.content holds the raw openui-lang text
+    const response = typeof content.content === "string" ? content.content : "";
+    return <OpenUIPanel response={response} isStreaming={isStreaming} />;
+  }
+
+  // Fallback: render raw JSON for unknown generative-ui types
+  return (
+    <div data-testid="generative-ui-unknown" className="my-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
+      <div className="text-xs font-semibold text-slate-500 mb-1">{activityType}</div>
+      <pre className="text-xs text-slate-600 overflow-x-auto">
+        {JSON.stringify(content, null, 2)}
+      </pre>
     </div>
   );
 }

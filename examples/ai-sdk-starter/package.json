@@ -13,7 +13,10 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@a2ui/lit": "^0.8.3",
     "@ai-sdk/react": "^3.0.81",
+    "@json-render/react": "^0.16.0",
+    "@openuidev/react-lang": "^0.1.4",
     "ai": "^6.0.79",
     "react": "19",
     "react-dom": "19",
