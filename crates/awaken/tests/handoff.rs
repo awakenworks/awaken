@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use awaken::agent::state::{
     ContextMessageStore, ContextThrottleState, RunLifecycle, ToolCallStates,
 };
-use awaken::contract::run_input::ActiveAgentIdKey;
+use awaken::contract::active_agent::ActiveAgentIdKey;
 use awaken::registry::AgentSpec;
 use awaken::*;
 use serde_json::json;

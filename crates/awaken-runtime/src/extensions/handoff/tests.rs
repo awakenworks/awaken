@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use awaken_contract::contract::run_input::ActiveAgentIdKey;
+use awaken_contract::contract::active_agent::ActiveAgentIdKey;
 use awaken_contract::model::Phase;
 
 use crate::phase::{ExecutionEnv, PhaseRuntime};
@@ -88,7 +88,7 @@ fn plugin_registers_state_key() {
     let registry = store.registry.lock();
     assert!(registry.keys_by_name.contains_key("agent_handoff"));
     assert!(registry.keys_by_name.contains_key(
-        <awaken_contract::contract::run_input::ActiveAgentIdKey as crate::state::StateKey>::KEY,
+        <awaken_contract::contract::active_agent::ActiveAgentIdKey as crate::state::StateKey>::KEY,
     ));
     assert_eq!(
         registry
@@ -100,7 +100,7 @@ fn plugin_registers_state_key() {
     assert_eq!(
         registry
             .keys_by_name
-            .get(<awaken_contract::contract::run_input::ActiveAgentIdKey as crate::state::StateKey>::KEY)
+            .get(<awaken_contract::contract::active_agent::ActiveAgentIdKey as crate::state::StateKey>::KEY)
             .map(|reg| reg.scope),
         Some(KeyScope::Thread)
     );

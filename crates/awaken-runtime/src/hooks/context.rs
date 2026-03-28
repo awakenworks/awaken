@@ -8,7 +8,6 @@ use awaken_contract::StateError;
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::inference::LLMResponse;
 use awaken_contract::contract::message::Message;
-use awaken_contract::contract::run_input::RunInput;
 use awaken_contract::contract::tool::ToolResult;
 use awaken_contract::model::Phase;
 use awaken_contract::registry_spec::{AgentSpec, PluginConfigKey};
@@ -18,7 +17,7 @@ use awaken_contract::registry_spec::{AgentSpec, PluginConfigKey};
 /// Three input sources per ADR-0009:
 /// - `agent_spec`: immutable agent configuration (model, active_hook_filter, sections)
 /// - `snapshot`: shared runtime state (StateKeys)
-/// - `run_input`: per-run caller input (overrides, identity)
+/// - `run_identity`: per-run identity (thread_id, run_id, etc.)
 #[derive(Clone)]
 pub struct PhaseContext {
     pub phase: Phase,
@@ -27,8 +26,8 @@ pub struct PhaseContext {
     /// Active agent spec (resolved from registry at each phase boundary).
     pub agent_spec: Arc<AgentSpec>,
 
-    /// Per-run caller input (overrides, identity). Immutable for the run.
-    pub run_input: Arc<RunInput>,
+    /// Per-run identity (thread_id, run_id, etc.). Immutable for the run.
+    pub run_identity: RunIdentity,
 
     /// Messages accumulated in the current run.
     pub messages: Arc<[Arc<Message>]>,
@@ -59,7 +58,7 @@ impl PhaseContext {
             phase,
             snapshot,
             agent_spec: Arc::new(AgentSpec::default()),
-            run_input: Arc::new(RunInput::default()),
+            run_identity: RunIdentity::default(),
             messages: Arc::from([]),
             tool_name: None,
             tool_call_id: None,
@@ -98,14 +97,8 @@ impl PhaseContext {
     }
 
     #[must_use]
-    pub fn with_run_input(mut self, run_input: Arc<RunInput>) -> Self {
-        self.run_input = run_input;
-        self
-    }
-
-    #[must_use]
     pub fn with_run_identity(mut self, identity: RunIdentity) -> Self {
-        Arc::make_mut(&mut self.run_input).identity = identity;
+        self.run_identity = identity;
         self
     }
 
@@ -204,25 +197,6 @@ mod tests {
     }
 
     #[test]
-    fn phase_context_with_run_input() {
-        let input = Arc::new(RunInput {
-            model_override: Some("gpt-4o-mini".into()),
-            identity: RunIdentity::new(
-                "t1".into(),
-                None,
-                "r1".into(),
-                None,
-                "agent".into(),
-                RunOrigin::User,
-            ),
-            ..Default::default()
-        });
-        let ctx = PhaseContext::new(Phase::RunStart, empty_snapshot()).with_run_input(input);
-        assert_eq!(ctx.run_input.model_override.as_deref(), Some("gpt-4o-mini"));
-        assert_eq!(ctx.run_input.identity.thread_id, "t1");
-    }
-
-    #[test]
     fn phase_context_with_run_identity() {
         let ctx = PhaseContext::new(Phase::RunStart, empty_snapshot()).with_run_identity(
             RunIdentity::new(
@@ -234,7 +208,7 @@ mod tests {
                 RunOrigin::User,
             ),
         );
-        assert_eq!(ctx.run_input.identity.thread_id, "t1");
+        assert_eq!(ctx.run_identity.thread_id, "t1");
     }
 
     #[test]
@@ -288,7 +262,7 @@ mod tests {
             .with_tool_info("calc", "c1", None)
             .with_tool_result(ToolResult::success("calc", serde_json::json!(42)));
 
-        assert_eq!(ctx.run_input.identity.thread_id, "t1");
+        assert_eq!(ctx.run_identity.thread_id, "t1");
         assert_eq!(ctx.messages.len(), 1);
         assert_eq!(ctx.tool_name.as_deref(), Some("calc"));
         assert!(ctx.tool_result.is_some());

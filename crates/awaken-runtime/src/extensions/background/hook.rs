@@ -22,7 +22,7 @@ impl PhaseHook for BackgroundTaskSyncHook {
     async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         match ctx.phase {
             Phase::RunStart => {
-                let thread_id = &ctx.run_input.identity.thread_id;
+                let thread_id = &ctx.run_identity.thread_id;
                 let snapshot = ctx
                     .state::<BackgroundTaskStateKey>()
                     .cloned()

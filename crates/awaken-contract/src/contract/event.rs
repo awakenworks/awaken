@@ -2,7 +2,7 @@
 
 use super::inference::TokenUsage;
 use super::lifecycle::TerminationReason;
-use super::suspension::{ResumeDecisionAction, ToolCallOutcome};
+use super::suspension::ToolCallOutcome;
 use super::tool::ToolResult;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -160,26 +160,6 @@ impl StreamEvent {
             event,
         }
     }
-}
-
-// ── Run IO contracts ────────────────────────────────────────────────
-
-/// Input to start or resume a run.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum RunInput {
-    /// A new user message to process.
-    UserMessage { text: String },
-    /// Resume a suspended run with a decision.
-    ResumeDecision {
-        /// The tool call ID being resolved.
-        tool_call_id: String,
-        /// Resume or cancel.
-        action: ResumeDecisionAction,
-        /// Optional payload for the decision.
-        #[serde(default, skip_serializing_if = "Value::is_null")]
-        payload: Value,
-    },
 }
 
 /// Output stream type alias for a run.
@@ -613,57 +593,6 @@ mod tests {
         let parsed: StreamEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.seq, 0);
         assert!(matches!(parsed.event, AgentEvent::RunStart { .. }));
-    }
-
-    // ── RunInput tests ──
-
-    #[test]
-    fn run_input_user_message_serde_roundtrip() {
-        let input = RunInput::UserMessage {
-            text: "hello".into(),
-        };
-        let json = serde_json::to_string(&input).unwrap();
-        assert!(json.contains("\"type\":\"user_message\""));
-        assert!(json.contains("\"text\":\"hello\""));
-
-        let parsed: RunInput = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, RunInput::UserMessage { text } if text == "hello"));
-    }
-
-    #[test]
-    fn run_input_resume_decision_serde_roundtrip() {
-        let input = RunInput::ResumeDecision {
-            tool_call_id: "c1".into(),
-            action: ResumeDecisionAction::Resume,
-            payload: json!({"approved": true}),
-        };
-        let json = serde_json::to_string(&input).unwrap();
-        assert!(json.contains("\"type\":\"resume_decision\""));
-
-        let parsed: RunInput = serde_json::from_str(&json).unwrap();
-        if let RunInput::ResumeDecision {
-            tool_call_id,
-            action,
-            payload,
-        } = parsed
-        {
-            assert_eq!(tool_call_id, "c1");
-            assert_eq!(action, ResumeDecisionAction::Resume);
-            assert_eq!(payload["approved"], true);
-        } else {
-            panic!("wrong variant");
-        }
-    }
-
-    #[test]
-    fn run_input_resume_decision_omits_null_payload() {
-        let input = RunInput::ResumeDecision {
-            tool_call_id: "c1".into(),
-            action: ResumeDecisionAction::Cancel,
-            payload: Value::Null,
-        };
-        let json = serde_json::to_string(&input).unwrap();
-        assert!(!json.contains("payload"));
     }
 
     // ── Wire format detail tests ──

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use awaken_contract::StateError;
-use awaken_contract::contract::run_input::ActiveAgentIdKey;
+use awaken_contract::contract::active_agent::ActiveAgentIdKey;
 use awaken_contract::model::Phase;
 use awaken_contract::registry_spec::AgentSpec;
 

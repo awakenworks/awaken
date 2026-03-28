@@ -1,7 +1,7 @@
 //! Integration tests verifying cross-module contract compatibility in awaken-contract.
 
 use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::event::{AgentEvent, RunInput, StreamEvent};
+use awaken_contract::contract::event::{AgentEvent, StreamEvent};
 use awaken_contract::contract::inference::{
     ContextCompactionMode, ContextWindowPolicy, InferenceError, InferenceModelOverride,
     InferenceOverride, LLMResponse, ReasoningEffort, StopReason, StreamResult, TokenUsage,
@@ -11,7 +11,7 @@ use awaken_contract::contract::message::{Message, MessageMetadata, Role, ToolCal
 use awaken_contract::contract::storage::{
     MessageQuery, RunPage, RunQuery, RunRecord, StorageError,
 };
-use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallOutcome};
+use awaken_contract::contract::suspension::ToolCallOutcome;
 use awaken_contract::contract::tool::{ToolDescriptor, ToolError, ToolResult};
 use serde_json::json;
 
@@ -412,44 +412,6 @@ fn stream_result_to_message_to_event_pipeline() {
         assert_eq!(u.total_tokens, Some(120));
     } else {
         panic!("expected InferenceComplete");
-    }
-}
-
-#[test]
-fn run_input_resume_decision_drives_tool_call_resumed_event() {
-    let input = RunInput::ResumeDecision {
-        tool_call_id: "c1".into(),
-        action: ResumeDecisionAction::Resume,
-        payload: json!({"approved": true, "reason": "looks safe"}),
-    };
-
-    let wire = serde_json::to_string(&input).unwrap();
-    let parsed: RunInput = serde_json::from_str(&wire).unwrap();
-
-    if let RunInput::ResumeDecision {
-        tool_call_id,
-        action,
-        payload,
-    } = &parsed
-    {
-        // Simulate: runtime produces ToolCallResumed from the decision
-        let event = AgentEvent::ToolCallResumed {
-            target_id: tool_call_id.clone(),
-            result: payload.clone(),
-        };
-
-        let event_wire = serde_json::to_string(&event).unwrap();
-        let event_parsed: AgentEvent = serde_json::from_str(&event_wire).unwrap();
-
-        if let AgentEvent::ToolCallResumed { target_id, result } = event_parsed {
-            assert_eq!(target_id, "c1");
-            assert_eq!(result["approved"], true);
-        } else {
-            panic!("expected ToolCallResumed");
-        }
-        assert_eq!(*action, ResumeDecisionAction::Resume);
-    } else {
-        panic!("expected ResumeDecision");
     }
 }
 

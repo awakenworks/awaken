@@ -5,9 +5,9 @@ use std::sync::Arc;
 use crate::loop_runner::{
     AgentLoopError, AgentLoopParams, AgentRunResult, prepare_resume, run_agent_loop,
 };
+use awaken_contract::contract::active_agent::ActiveAgentIdKey;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::run_input::ActiveAgentIdKey;
 use awaken_contract::state::PersistedState;
 
 use super::AgentRuntime;
@@ -219,6 +219,7 @@ mod tests {
     use crate::{PhaseContext, PhaseHook};
     use async_trait::async_trait;
     use awaken_contract::PersistedState;
+    use awaken_contract::contract::active_agent::ActiveAgentIdKey;
     use awaken_contract::contract::content::ContentBlock;
     use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
     use awaken_contract::contract::executor::{
@@ -227,7 +228,6 @@ mod tests {
     use awaken_contract::contract::inference::{InferenceOverride, StopReason, StreamResult};
     use awaken_contract::contract::lifecycle::RunStatus;
     use awaken_contract::contract::message::Message;
-    use awaken_contract::contract::run_input::ActiveAgentIdKey;
     use awaken_contract::contract::storage::{
         RunQuery, RunRecord, RunStore, ThreadRunStore, ThreadStore,
     };
