@@ -114,105 +114,9 @@ impl PhaseRuntime {
         base_ctx: PhaseContext,
         max_rounds: usize,
     ) -> Result<PhaseRunReport, StateError> {
-        let phase = base_ctx.phase;
         let _guard = self.execution_lock.lock().await;
-        let mut total_processed = 0;
-        let mut total_skipped = 0;
-        let mut total_failed = 0;
-        let mut total_effects = 0;
-        let mut effect_report = EffectDispatchReport {
-            attempted: 0,
-            dispatched: 0,
-            failed: 0,
-        };
-        let mut rounds = 0;
-
-        loop {
-            rounds += 1;
-            if rounds > max_rounds {
-                return Err(StateError::PhaseRunLoopExceeded { phase, max_rounds });
-            }
-
-            let queued = self
-                .store
-                .read::<PendingScheduledActions>()
-                .unwrap_or_default();
-
-            let matching: Vec<_> = queued
-                .into_iter()
-                .filter(|envelope| {
-                    envelope.action.phase == phase
-                        && env
-                            .scheduled_action_handlers
-                            .contains_key(&envelope.action.key)
-                })
-                .collect();
-
-            tracing::debug!(phase = ?phase, actions = matching.len(), "execute_loop_start");
-
-            if matching.is_empty() {
-                if rounds == 1 {
-                    total_skipped = self
-                        .store
-                        .read::<PendingScheduledActions>()
-                        .unwrap_or_default()
-                        .iter()
-                        .filter(|envelope| envelope.action.phase != phase)
-                        .count();
-                }
-                break;
-            }
-
-            for envelope in matching {
-                let handler = env
-                    .scheduled_action_handlers
-                    .get(&envelope.action.key)
-                    .cloned()
-                    .expect("handler existence verified in filter above");
-
-                let ctx = base_ctx.clone().with_snapshot(self.store.snapshot());
-                let mut command = match handler
-                    .handle_erased(&ctx, envelope.action.payload.clone())
-                    .await
-                {
-                    Ok(command) => command,
-                    Err(err) => {
-                        self.dead_letter(envelope, err.to_string())?;
-                        total_failed += 1;
-                        continue;
-                    }
-                };
-                total_effects += command.effects.len();
-                command.patch.update::<PendingScheduledActions>(
-                    ScheduledActionQueueUpdate::Remove { id: envelope.id },
-                );
-                match self.submit_command_inner(env, command).await {
-                    Ok(report) => {
-                        total_processed += 1;
-                        effect_report.attempted += report.effect_report.attempted;
-                        effect_report.dispatched += report.effect_report.dispatched;
-                        effect_report.failed += report.effect_report.failed;
-                    }
-                    Err(err) => {
-                        self.dead_letter(
-                            envelope,
-                            format!("failed to submit action command: {err}"),
-                        )?;
-                        total_failed += 1;
-                    }
-                }
-            }
-        }
-
-        Ok(PhaseRunReport {
-            phase,
-            rounds,
-            processed_scheduled_actions: total_processed,
-            skipped_scheduled_actions: total_skipped,
-            failed_scheduled_actions: total_failed,
-            generated_effects: total_effects,
-            effect_report,
-        })
+        self.execute_scheduled_actions(env, &base_ctx, max_rounds)
+            .await
     }
 
     async fn run_phase_ctx_inner(
@@ -228,8 +132,39 @@ impl PhaseRuntime {
             }
         }
 
-        let phase = base_ctx.phase;
         let _guard = self.execution_lock.lock().await;
+
+        let (hook_effects, hook_effect_report) =
+            self.gather_and_commit_hooks(env, &base_ctx).await?;
+
+        // Check cancellation after hooks, before scheduled action execution
+        if let Some(token) = base_ctx.cancellation_token.as_ref() {
+            if token.is_cancelled() {
+                return Err(StateError::Cancelled);
+            }
+        }
+
+        let mut report = self
+            .execute_scheduled_actions(env, &base_ctx, max_rounds)
+            .await?;
+
+        report.generated_effects += hook_effects;
+        report.effect_report.attempted += hook_effect_report.attempted;
+        report.effect_report.dispatched += hook_effect_report.dispatched;
+        report.effect_report.failed += hook_effect_report.failed;
+
+        Ok(report)
+    }
+
+    /// Convergence loop that processes pending scheduled actions matching the
+    /// phase until no more remain. Callers must hold the execution lock.
+    async fn execute_scheduled_actions(
+        &self,
+        env: &ExecutionEnv,
+        base_ctx: &PhaseContext,
+        max_rounds: usize,
+    ) -> Result<PhaseRunReport, StateError> {
+        let phase = base_ctx.phase;
         let mut total_processed = 0;
         let mut total_skipped = 0;
         let mut total_failed = 0;
@@ -240,20 +175,6 @@ impl PhaseRuntime {
             failed: 0,
         };
         let mut rounds = 0;
-
-        let (hook_effects, hook_effect_report) =
-            self.gather_and_commit_hooks(env, &base_ctx).await?;
-        total_effects += hook_effects;
-        effect_report.attempted += hook_effect_report.attempted;
-        effect_report.dispatched += hook_effect_report.dispatched;
-        effect_report.failed += hook_effect_report.failed;
-
-        // Check cancellation after hooks, before scheduled action execution
-        if let Some(token) = base_ctx.cancellation_token.as_ref() {
-            if token.is_cancelled() {
-                return Err(StateError::Cancelled);
-            }
-        }
 
         loop {
             rounds += 1;
@@ -266,7 +187,6 @@ impl PhaseRuntime {
                 .read::<PendingScheduledActions>()
                 .unwrap_or_default();
 
-            // Process actions matching this phase that have a registered handler.
             let matching: Vec<_> = queued
                 .into_iter()
                 .filter(|envelope| {
@@ -277,7 +197,7 @@ impl PhaseRuntime {
                 })
                 .collect();
 
-            tracing::debug!(phase = ?phase, actions = matching.len(), "execute_start");
+            tracing::debug!(phase = ?phase, actions = matching.len(), "execute_scheduled_actions");
 
             if matching.is_empty() {
                 if rounds == 1 {
