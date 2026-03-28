@@ -68,14 +68,14 @@ pub struct TaskSummary {
 
 /// Handle for cancelling a running task.
 #[derive(Clone)]
-pub struct CancellationHandle {
+pub struct TaskCancellationHandle {
     sender: watch::Sender<bool>,
 }
 
-impl CancellationHandle {
-    pub(crate) fn new() -> (Self, CancellationToken) {
+impl TaskCancellationHandle {
+    pub(crate) fn new() -> (Self, TaskCancellationToken) {
         let (tx, rx) = watch::channel(false);
-        (Self { sender: tx }, CancellationToken { receiver: rx })
+        (Self { sender: tx }, TaskCancellationToken { receiver: rx })
     }
 
     pub fn cancel(&self) {
@@ -85,11 +85,11 @@ impl CancellationHandle {
 
 /// Token that a task checks for cancellation.
 #[derive(Clone)]
-pub struct CancellationToken {
+pub struct TaskCancellationToken {
     receiver: watch::Receiver<bool>,
 }
 
-impl CancellationToken {
+impl TaskCancellationToken {
     pub fn is_cancelled(&self) -> bool {
         *self.receiver.borrow()
     }

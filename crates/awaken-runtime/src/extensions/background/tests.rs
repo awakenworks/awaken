@@ -15,7 +15,7 @@ use super::state::{
     BackgroundTaskStateAction, BackgroundTaskStateKey, BackgroundTaskStateSnapshot,
     BackgroundTaskView, BackgroundTaskViewAction, PersistedTaskMeta, TaskViewEntry,
 };
-use super::types::{CancellationHandle, TaskResult, TaskStatus, TaskSummary};
+use super::types::{TaskCancellationHandle, TaskResult, TaskStatus, TaskSummary};
 
 #[test]
 fn task_status_terminal_check() {
@@ -311,7 +311,7 @@ fn background_task_view_reduce_clear() {
 
 #[test]
 fn cancellation_token_check() {
-    let (handle, token) = CancellationHandle::new();
+    let (handle, token) = TaskCancellationHandle::new();
     assert!(!token.is_cancelled());
     handle.cancel();
     assert!(token.is_cancelled());
