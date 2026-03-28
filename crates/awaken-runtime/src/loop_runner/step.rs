@@ -64,7 +64,7 @@ pub(super) struct StepContext<'a> {
     pub run_created_at: u64,
 }
 
-fn make_ctx(
+pub(super) fn make_ctx(
     phase: Phase,
     msgs: &[Arc<Message>],
     identity: &RunIdentity,

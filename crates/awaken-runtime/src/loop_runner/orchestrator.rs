@@ -1,13 +1,9 @@
 //! Main agent loop orchestration.
 
-use std::sync::Arc;
-
 use crate::context::TruncationState;
-use crate::hooks::PhaseContext;
 use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::lifecycle::TerminationReason;
-use awaken_contract::contract::message::{Message, Role, gen_message_id};
+use awaken_contract::contract::message::{Role, gen_message_id};
 use awaken_contract::model::Phase;
 
 use super::checkpoint::{
@@ -15,7 +11,7 @@ use super::checkpoint::{
 };
 use super::resume::{WaitOutcome, wait_for_resume_or_cancel};
 use super::setup::{PreparedRun, prepare_run};
-use super::step::{StepContext, StepOutcome, execute_step};
+use super::step::{self, StepContext, StepOutcome, execute_step};
 use super::{AgentLoopError, AgentLoopParams, AgentRunResult, commit_update, now_ms};
 use crate::agent::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
 use crate::state::MutationBatch;
@@ -61,16 +57,6 @@ pub(super) async fn run_agent_loop_impl(
     let mut steps: usize = 0;
     let mut truncation_state = TruncationState::new();
 
-    let make_ctx = |phase: Phase, msgs: &[Arc<Message>], identity: &RunIdentity| -> PhaseContext {
-        let ctx = PhaseContext::new(phase, store.snapshot())
-            .with_run_identity(identity.clone())
-            .with_messages(msgs.to_vec());
-        match cancellation_token.as_ref() {
-            Some(token) => ctx.with_cancellation_token(token.clone()),
-            None => ctx,
-        }
-    };
-
     // --- Run lifecycle: Start ---
     commit_update::<RunLifecycle>(
         store,
@@ -88,7 +74,16 @@ pub(super) async fn run_agent_loop_impl(
     .await;
 
     match runtime
-        .run_phase_with_context(&env, make_ctx(Phase::RunStart, &messages, &run_identity))
+        .run_phase_with_context(
+            &env,
+            step::make_ctx(
+                Phase::RunStart,
+                &messages,
+                &run_identity,
+                store,
+                cancellation_token.as_ref(),
+            ),
+        )
         .await
     {
         Ok(_) => {}
@@ -287,7 +282,16 @@ pub(super) async fn run_agent_loop_impl(
     }
 
     match runtime
-        .run_phase_with_context(&env, make_ctx(Phase::RunEnd, &messages, &run_identity))
+        .run_phase_with_context(
+            &env,
+            step::make_ctx(
+                Phase::RunEnd,
+                &messages,
+                &run_identity,
+                store,
+                cancellation_token.as_ref(),
+            ),
+        )
         .await
     {
         Ok(_) | Err(awaken_contract::StateError::Cancelled) => {}
