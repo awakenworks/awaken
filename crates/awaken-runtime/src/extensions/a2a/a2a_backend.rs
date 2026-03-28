@@ -1,9 +1,11 @@
 //! Remote A2A agent delegation backend -- HTTP client for A2A protocol.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use awaken_contract::contract::content::ContentBlock;
+use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::message::{Message, Role};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -167,6 +169,7 @@ impl AgentBackend for A2aBackend {
         &self,
         agent_id: &str,
         messages: Vec<Message>,
+        _event_sink: Arc<dyn EventSink>,
     ) -> Result<DelegateRunResult, AgentBackendError> {
         // Extract prompt text from user messages
         let prompt = messages

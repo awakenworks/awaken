@@ -5,6 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
 use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
 };
@@ -12,8 +13,9 @@ use awaken_contract::contract::tool::{
 use crate::registry::AgentResolver;
 
 use super::a2a_backend::{A2aBackend, A2aConfig};
-use super::backend::{AgentBackend, DelegateRunStatus};
+use super::backend::AgentBackend;
 use super::local_backend::LocalBackend;
+use super::progress_sink::ProgressForwardingSink;
 
 /// Unified tool for agent delegation.
 ///
@@ -99,7 +101,7 @@ impl Tool for AgentTool {
         Ok(())
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
         let prompt = args
             .get("prompt")
             .and_then(Value::as_str)
@@ -116,7 +118,14 @@ impl Tool for AgentTool {
         let tool_id = format!("agent_run_{}", self.agent_id);
         let messages = vec![awaken_contract::contract::message::Message::user(&prompt)];
 
-        match self.backend.execute(&self.agent_id, messages).await {
+        // Build a forwarding sink: if parent has a sink, filter through ProgressForwardingSink;
+        // otherwise use NullEventSink
+        let sink: Arc<dyn EventSink> = match &ctx.activity_sink {
+            Some(parent_sink) => Arc::new(ProgressForwardingSink::new(parent_sink.clone())),
+            None => Arc::new(NullEventSink),
+        };
+
+        match self.backend.execute(&self.agent_id, messages, sink).await {
             Ok(result) => {
                 let status_str = result.status.to_string();
                 Ok(ToolResult::success(

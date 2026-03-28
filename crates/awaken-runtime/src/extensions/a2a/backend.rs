@@ -1,6 +1,9 @@
 //! Agent delegation backend trait and shared types.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
+use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::message::Message;
 
 /// Result of a sub-agent execution.
@@ -44,10 +47,14 @@ impl std::fmt::Display for DelegateRunStatus {
 #[async_trait]
 pub trait AgentBackend: Send + Sync {
     /// Execute a sub-agent with the given messages and return the result.
+    ///
+    /// The `event_sink` receives filtered child events (e.g. tool-call progress)
+    /// that should be forwarded to the parent's event stream.
     async fn execute(
         &self,
         agent_id: &str,
         messages: Vec<Message>,
+        event_sink: Arc<dyn EventSink>,
     ) -> Result<DelegateRunResult, AgentBackendError>;
 }
 

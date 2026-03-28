@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use awaken_contract::contract::content::ContentBlock;
+use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::contract::message::Message;
@@ -92,6 +93,7 @@ impl AgentBackend for MockBackend {
         &self,
         _agent_id: &str,
         _messages: Vec<Message>,
+        _event_sink: Arc<dyn EventSink>,
     ) -> Result<DelegateRunResult, AgentBackendError> {
         Ok(self.result.clone())
     }
@@ -107,6 +109,7 @@ impl AgentBackend for FailingBackend {
         &self,
         _agent_id: &str,
         _messages: Vec<Message>,
+        _event_sink: Arc<dyn EventSink>,
     ) -> Result<DelegateRunResult, AgentBackendError> {
         Err(AgentBackendError::ExecutionFailed(self.error.clone()))
     }
