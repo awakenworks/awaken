@@ -450,6 +450,212 @@ mod tests {
     }
 
     #[test]
+    fn step_start_text_step_end_run_finish_emits_both_step_and_run_finished() {
+        let mut enc = AgUiEncoder::new();
+        enc.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        });
+        enc.on_agent_event(&AgentEvent::StepStart {
+            message_id: "m1".into(),
+        });
+        enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "hello".into(),
+        });
+
+        let step_end_events = enc.on_agent_event(&AgentEvent::StepEnd);
+        assert!(
+            step_end_events
+                .iter()
+                .any(|e| matches!(e, Event::StepFinished { .. })),
+            "StepEnd must produce StepFinished"
+        );
+
+        let run_events = enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::NaturalEnd,
+        });
+        assert!(
+            run_events
+                .iter()
+                .any(|e| matches!(e, Event::RunFinished { .. })),
+            "RunFinish must produce RunFinished"
+        );
+    }
+
+    #[test]
+    fn missing_step_end_before_run_finish_still_emits_run_finished() {
+        // Simulates the pre-fix scenario where Terminated skipped StepEnd.
+        // The encoder itself doesn't inject a missing StepFinished — it just
+        // produces RunFinished. This test documents that behavior.
+        let mut enc = AgUiEncoder::new();
+        enc.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        });
+        enc.on_agent_event(&AgentEvent::StepStart {
+            message_id: "m1".into(),
+        });
+        enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "hello".into(),
+        });
+
+        // No StepEnd — jump straight to RunFinish
+        let run_events = enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::NaturalEnd,
+        });
+        // Encoder closes open text message but does NOT emit StepFinished
+        assert!(
+            !run_events
+                .iter()
+                .any(|e| matches!(e, Event::StepFinished { .. })),
+            "Encoder should not inject StepFinished on its own"
+        );
+        assert!(
+            run_events
+                .iter()
+                .any(|e| matches!(e, Event::RunFinished { .. })),
+            "RunFinished must still be emitted"
+        );
+    }
+
+    #[test]
+    fn full_tool_call_lifecycle_event_ordering() {
+        // Simulates: RunStart -> StepStart -> TextDelta -> ToolCallStart -> ToolCallDelta ->
+        //            ToolCallReady -> ToolCallDone -> StepEnd -> StepStart -> TextDelta -> StepEnd -> RunFinish
+        // Verifies: every STEP_STARTED has a matching STEP_FINISHED, RUN_FINISHED is last
+        let mut enc = AgUiEncoder::new();
+        let mut all_events = Vec::new();
+
+        // Step 1: inference + tool call
+        all_events.extend(enc.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        }));
+        all_events.extend(enc.on_agent_event(&AgentEvent::StepStart {
+            message_id: "m1".into(),
+        }));
+        all_events.extend(enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "Let me check.".into(),
+        }));
+        all_events.extend(enc.on_agent_event(&AgentEvent::ToolCallStart {
+            id: "c1".into(),
+            name: "weather".into(),
+        }));
+        all_events.extend(enc.on_agent_event(&AgentEvent::ToolCallDelta {
+            id: "c1".into(),
+            args_delta: "{}".into(),
+        }));
+        all_events.extend(enc.on_agent_event(&AgentEvent::ToolCallReady {
+            id: "c1".into(),
+            name: "weather".into(),
+            arguments: json!({}),
+        }));
+        all_events.extend(enc.on_agent_event(&AgentEvent::ToolCallDone {
+            id: "c1".into(),
+            message_id: "m1".into(),
+            result: ToolResult::success("weather", json!({"temp": 70})),
+            outcome: ToolCallOutcome::Succeeded,
+        }));
+        all_events.extend(enc.on_agent_event(&AgentEvent::StepEnd));
+
+        // Step 2: summary
+        all_events.extend(enc.on_agent_event(&AgentEvent::StepStart {
+            message_id: "m2".into(),
+        }));
+        all_events.extend(enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "It's 70F.".into(),
+        }));
+        all_events.extend(enc.on_agent_event(&AgentEvent::StepEnd));
+
+        // Run finish
+        all_events.extend(enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::NaturalEnd,
+        }));
+
+        // Verify ordering
+        let types: Vec<&str> = all_events
+            .iter()
+            .map(|e| match e {
+                Event::RunStarted { .. } => "RUN_STARTED",
+                Event::RunFinished { .. } => "RUN_FINISHED",
+                Event::StepStarted { .. } => "STEP_STARTED",
+                Event::StepFinished { .. } => "STEP_FINISHED",
+                Event::TextMessageStart { .. } => "TEXT_MESSAGE_START",
+                Event::TextMessageContent { .. } => "TEXT_MESSAGE_CONTENT",
+                Event::TextMessageEnd { .. } => "TEXT_MESSAGE_END",
+                Event::ToolCallStart { .. } => "TOOL_CALL_START",
+                Event::ToolCallArgs { .. } => "TOOL_CALL_ARGS",
+                Event::ToolCallEnd { .. } => "TOOL_CALL_END",
+                Event::ToolCallResult { .. } => "TOOL_CALL_RESULT",
+                _ => "OTHER",
+            })
+            .collect();
+
+        // RUN_STARTED must be first
+        assert_eq!(types[0], "RUN_STARTED");
+
+        // RUN_FINISHED must be last
+        assert_eq!(*types.last().unwrap(), "RUN_FINISHED");
+
+        // Count: 2 STEP_STARTED, 2 STEP_FINISHED
+        assert_eq!(types.iter().filter(|t| **t == "STEP_STARTED").count(), 2);
+        assert_eq!(types.iter().filter(|t| **t == "STEP_FINISHED").count(), 2);
+
+        // Every STEP_STARTED has a matching STEP_FINISHED before the next STEP_STARTED
+        let mut step_depth = 0i32;
+        for t in &types {
+            match *t {
+                "STEP_STARTED" => {
+                    step_depth += 1;
+                    assert_eq!(step_depth, 1, "nested steps detected");
+                }
+                "STEP_FINISHED" => {
+                    step_depth -= 1;
+                    assert!(step_depth >= 0, "extra STEP_FINISHED");
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(step_depth, 0, "unclosed step");
+    }
+
+    #[test]
+    fn error_termination_still_produces_valid_sequence() {
+        let mut enc = AgUiEncoder::new();
+        let mut all = Vec::new();
+        all.extend(enc.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t".into(),
+            run_id: "r".into(),
+            parent_run_id: None,
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::StepStart {
+            message_id: "m".into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t".into(),
+            run_id: "r".into(),
+            result: None,
+            termination: TerminationReason::Error("boom".into()),
+        }));
+        // Should have RUN_STARTED, STEP_STARTED, RUN_ERROR
+        assert!(all.iter().any(|e| matches!(e, Event::RunStarted { .. })));
+        assert!(all.iter().any(|e| matches!(e, Event::StepStarted { .. })));
+        assert!(all.iter().any(|e| matches!(e, Event::RunError { .. })));
+    }
+
+    #[test]
     fn suspended_termination_emits_interrupt() {
         let mut enc = AgUiEncoder::new();
         let events = enc.on_agent_event(&AgentEvent::RunFinish {

@@ -187,15 +187,59 @@ pub(super) async fn run_agent_loop_impl(
         };
         match step_result {
             StepOutcome::Cancelled => {
+                // Close the current step before breaking.
+                complete_step(
+                    store,
+                    runtime,
+                    &agent.env,
+                    sink.as_ref(),
+                    checkpoint_store,
+                    &messages,
+                    &run_identity,
+                    run_created_at,
+                    total_input_tokens,
+                    total_output_tokens,
+                )
+                .await?;
                 break TerminationReason::Cancelled;
             }
             StepOutcome::NaturalEnd => {
                 break TerminationReason::NaturalEnd;
             }
             StepOutcome::Blocked(reason) => {
+                // Close the current step before breaking.
+                complete_step(
+                    store,
+                    runtime,
+                    &agent.env,
+                    sink.as_ref(),
+                    checkpoint_store,
+                    &messages,
+                    &run_identity,
+                    run_created_at,
+                    total_input_tokens,
+                    total_output_tokens,
+                )
+                .await?;
                 break TerminationReason::Blocked(reason);
             }
             StepOutcome::Terminated(reason) => {
+                // Close the current step before terminating.
+                // check_termination() fires inside run_step() before complete_step(),
+                // so the step is still open when we reach here.
+                complete_step(
+                    store,
+                    runtime,
+                    &agent.env,
+                    sink.as_ref(),
+                    checkpoint_store,
+                    &messages,
+                    &run_identity,
+                    run_created_at,
+                    total_input_tokens,
+                    total_output_tokens,
+                )
+                .await?;
                 break reason;
             }
             StepOutcome::Suspended => {
