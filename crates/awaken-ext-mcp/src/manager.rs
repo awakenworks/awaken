@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
+use awaken_contract::contract::progress::ProgressStatus;
 use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
 };
@@ -245,14 +246,12 @@ async fn emit_mcp_progress(
     if !should_emit_progress(gate, normalized_progress, update.message.as_deref()) {
         return;
     }
-    let content = serde_json::json!({
-        "progress": normalized_progress,
-        "loaded": update.progress,
-        "total": update.total,
-        "message": update.message,
-    });
-    ctx.report_activity("mcp.progress", &content.to_string())
-        .await;
+    ctx.report_progress(
+        ProgressStatus::Running,
+        update.message.as_deref(),
+        Some(normalized_progress),
+    )
+    .await;
 }
 
 fn map_mcp_error(e: McpTransportError) -> ToolError {
