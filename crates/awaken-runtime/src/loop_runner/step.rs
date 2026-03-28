@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use crate::agent::config::AgentConfig;
 use crate::cancellation::CancellationToken;
 use crate::context::{TruncationState, continuation_message, should_retry};
 use crate::hooks::PhaseContext;
-use crate::phase::{ExecutionEnv, PhaseRuntime};
+use crate::phase::PhaseRuntime;
+use crate::registry::ResolvedAgent;
 use crate::state::StateCommand;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
@@ -49,8 +49,7 @@ pub(super) enum StepOutcome {
 
 /// Context passed into each step of the agent loop.
 pub(super) struct StepContext<'a> {
-    pub agent: &'a mut AgentConfig,
-    pub env: &'a mut ExecutionEnv,
+    pub agent: &'a mut ResolvedAgent,
     pub messages: &'a mut Vec<Arc<Message>>,
     pub runtime: &'a PhaseRuntime,
     pub sink: Arc<dyn EventSink>,
@@ -103,7 +102,7 @@ async fn run_phase_and_check(
     match ctx
         .runtime
         .run_phase_with_context(
-            ctx.env,
+            &ctx.agent.env,
             make_ctx(
                 phase,
                 ctx.messages,
@@ -202,7 +201,7 @@ async fn run_before_inference(
     // GATHER only — returns merged StateCommand without committing
     let mut cmd = ctx
         .runtime
-        .collect_commands(ctx.env, phase_ctx.clone())
+        .collect_commands(&ctx.agent.env, phase_ctx.clone())
         .await?;
 
     // Extract known action payloads directly from the command
@@ -212,7 +211,7 @@ async fn run_before_inference(
 
     // Commit remaining state mutations + unrecognized actions (including AddContextMessage)
     if !cmd.is_empty() {
-        ctx.runtime.submit_command(ctx.env, cmd).await?;
+        ctx.runtime.submit_command(&ctx.agent.env, cmd).await?;
     }
 
     // Run EXECUTE loop for remaining actions (e.g. AddContextMessage handler)
@@ -223,7 +222,9 @@ async fn run_before_inference(
         store,
         ctx.cancellation_token,
     );
-    ctx.runtime.run_execute_loop(ctx.env, exec_ctx).await?;
+    ctx.runtime
+        .run_execute_loop(&ctx.agent.env, exec_ctx)
+        .await?;
 
     // Check termination after phase completes
     let termination = check_termination(store).map(StepOutcome::Terminated);
@@ -276,7 +277,7 @@ async fn run_inference_phase(
 
     let mut tools = ctx.agent.tool_descriptors();
     apply_tool_filter_payloads(&mut tools, exclusion_payloads, inclusion_payloads);
-    let transform_arcs = ctx.env.transform_arcs();
+    let transform_arcs = ctx.agent.env.transform_arcs();
     let request_messages = awaken_contract::contract::transform::apply_transforms(
         request_messages,
         &tools,
@@ -345,13 +346,13 @@ async fn intercept_tool_call(
     // GATHER only — extract intercept actions directly
     let mut cmd = ctx
         .runtime
-        .collect_commands(ctx.env, before_ctx.clone())
+        .collect_commands(&ctx.agent.env, before_ctx.clone())
         .await?;
     let intercept_payloads = extract_actions::<ToolInterceptAction>(&mut cmd.scheduled_actions);
 
     // Commit remaining state mutations + other actions
     if !cmd.is_empty() {
-        ctx.runtime.submit_command(ctx.env, cmd).await?;
+        ctx.runtime.submit_command(&ctx.agent.env, cmd).await?;
         // Run EXECUTE for any remaining handler-based actions
         let exec_ctx = make_ctx(
             Phase::BeforeToolExecute,
@@ -361,7 +362,9 @@ async fn intercept_tool_call(
             ctx.cancellation_token,
         )
         .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
-        ctx.runtime.run_execute_loop(ctx.env, exec_ctx).await?;
+        ctx.runtime
+            .run_execute_loop(&ctx.agent.env, exec_ctx)
+            .await?;
     }
 
     // Resolve winning intercept from extracted payloads
@@ -424,13 +427,18 @@ async fn complete_tool_call(
     )
     .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()))
     .with_tool_result(tool_result.clone());
-    let after_cmd = ctx.runtime.collect_commands(ctx.env, after_ctx).await?;
+    let after_cmd = ctx
+        .runtime
+        .collect_commands(&ctx.agent.env, after_ctx)
+        .await?;
     if !after_cmd.is_empty() {
         lifecycle_cmd.extend(after_cmd)?;
     }
 
     // Commit state
-    ctx.runtime.submit_command(ctx.env, lifecycle_cmd).await?;
+    ctx.runtime
+        .submit_command(&ctx.agent.env, lifecycle_cmd)
+        .await?;
 
     // Append tool message to conversation
     let tool_content = tool_result_to_content(tool_result);
@@ -483,7 +491,7 @@ async fn execute_tools_with_interception(
                     updated_at: now_ms(),
                     resume_mode: ticket.resume_mode,
                 });
-                ctx.runtime.submit_command(ctx.env, cmd).await?;
+                ctx.runtime.submit_command(&ctx.agent.env, cmd).await?;
                 ctx.messages.push(Arc::new(Message::tool(
                     &call.id,
                     format!("Tool '{}' suspended: awaiting decision", call.name),
@@ -518,14 +526,7 @@ async fn execute_tools_with_interception(
         call_id: String::new(),
         tool_name: String::new(),
         run_identity: ctx.run_identity.clone(),
-        agent_spec: make_ctx(
-            Phase::BeforeToolExecute,
-            ctx.messages,
-            ctx.run_identity,
-            store,
-            ctx.cancellation_token,
-        )
-        .agent_spec,
+        agent_spec: ctx.agent.spec.clone(),
         snapshot: store.snapshot(),
         activity_sink: Some(ctx.sink.clone()),
     };
@@ -659,7 +660,7 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
     .with_llm_response(llm_response);
     match ctx
         .runtime
-        .run_phase_with_context(ctx.env, after_inf_ctx)
+        .run_phase_with_context(&ctx.agent.env, after_inf_ctx)
         .await
     {
         Ok(_) => {}
@@ -677,7 +678,7 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
         complete_step(
             store,
             ctx.runtime,
-            ctx.env,
+            &ctx.agent.env,
             ctx.sink.as_ref(),
             ctx.checkpoint_store,
             ctx.messages,

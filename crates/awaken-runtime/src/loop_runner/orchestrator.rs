@@ -43,7 +43,6 @@ pub(super) async fn run_agent_loop_impl(
     // --- Setup: resolve, trim, resume ---
     let PreparedRun {
         mut agent,
-        mut env,
         mut messages,
     } = prepare_run(
         resolver,
@@ -75,7 +74,7 @@ pub(super) async fn run_agent_loop_impl(
 
     match runtime
         .run_phase_with_context(
-            &env,
+            &agent.env,
             step::make_ctx(
                 Phase::RunStart,
                 &messages,
@@ -119,7 +118,7 @@ pub(super) async fn run_agent_loop_impl(
                     // Deactivate old plugins
                     {
                         let mut deactivate_patch = MutationBatch::new();
-                        for plugin in &env.plugins {
+                        for plugin in &agent.env.plugins {
                             plugin
                                 .on_deactivate(&mut deactivate_patch)
                                 .map_err(AgentLoopError::PhaseError)?;
@@ -132,11 +131,11 @@ pub(super) async fn run_agent_loop_impl(
                     }
 
                     // Activate new plugins
-                    if let Some(ref spec) = resolved.env.agent_spec {
+                    {
                         let mut activate_patch = MutationBatch::new();
                         for plugin in &resolved.env.plugins {
                             plugin
-                                .on_activate(spec, &mut activate_patch)
+                                .on_activate(&resolved.spec, &mut activate_patch)
                                 .map_err(AgentLoopError::PhaseError)?;
                         }
                         if !activate_patch.is_empty() {
@@ -147,8 +146,7 @@ pub(super) async fn run_agent_loop_impl(
                     }
 
                     tracing::info!(from = %agent.id(), to = %active_id, "agent_handoff");
-                    agent = resolved.config;
-                    env = resolved.env;
+                    agent = resolved;
                 }
                 Err(e) => {
                     tracing::error!(agent_id = %active_id, error = %e, "handoff_resolve_failed");
@@ -167,7 +165,6 @@ pub(super) async fn run_agent_loop_impl(
 
         let mut step_ctx = StepContext {
             agent: &mut agent,
-            env: &mut env,
             messages: &mut messages,
             runtime,
             sink: sink.clone(),
@@ -212,7 +209,7 @@ pub(super) async fn run_agent_loop_impl(
                 complete_step(
                     store,
                     runtime,
-                    &env,
+                    &agent.env,
                     sink.as_ref(),
                     checkpoint_store,
                     &messages,
@@ -250,7 +247,7 @@ pub(super) async fn run_agent_loop_impl(
                 complete_step(
                     store,
                     runtime,
-                    &env,
+                    &agent.env,
                     sink.as_ref(),
                     checkpoint_store,
                     &messages,
@@ -283,7 +280,7 @@ pub(super) async fn run_agent_loop_impl(
 
     match runtime
         .run_phase_with_context(
-            &env,
+            &agent.env,
             step::make_ctx(
                 Phase::RunEnd,
                 &messages,

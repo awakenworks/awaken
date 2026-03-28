@@ -7,13 +7,10 @@ use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::contract::message::Message;
-use awaken_contract::contract::tool::{Tool, ToolCallContext, ToolError, ToolResult};
+use awaken_contract::contract::tool::{Tool, ToolCallContext};
 use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
 
-use crate::agent::config::AgentConfig;
-use crate::execution::SequentialToolExecutor;
 use crate::loop_runner::build_agent_env;
-use crate::phase::ExecutionEnv;
 use crate::registry::{AgentResolver, ResolvedAgent};
 
 use super::a2a_backend::A2aConfig;
@@ -72,14 +69,14 @@ impl AgentResolver for MockResolver {
             .ok_or(crate::error::RuntimeError::ResolveFailed {
                 message: format!("agent not found: {}", agent_id),
             })?;
-        let config = AgentConfig::new(
+        let mut agent = ResolvedAgent::new(
             &spec.id,
             &spec.model,
             &spec.system_prompt,
             Arc::new(MockExecutor),
         );
-        let env = build_agent_env(&[], &config).unwrap_or_else(|_| ExecutionEnv::empty());
-        Ok(ResolvedAgent { config, env })
+        agent.env = build_agent_env(&[], &agent).unwrap_or_else(|_| agent.env);
+        Ok(agent)
     }
 }
 

@@ -3,7 +3,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::agent::config::AgentConfig;
 use crate::error::RuntimeError;
 use crate::execution::SequentialToolExecutor;
 use crate::phase::ExecutionEnv;
@@ -58,21 +57,18 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedAgent, Re
     // Stage 3: Tool pipeline
     let tools = build_tool_set(registries, &spec, &env)?;
 
-    // Build AgentConfig + ExecutionEnv
+    // Build ResolvedAgent with all fields
     let spec_arc = Arc::new(spec);
 
-    let config = AgentConfig {
-        spec: spec_arc.clone(),
+    Ok(ResolvedAgent {
+        spec: spec_arc,
         model: model_name,
         tools,
         llm_executor: executor,
         tool_executor: Arc::new(SequentialToolExecutor),
         context_summarizer: None,
-    };
-
-    let env = env.with_agent_spec(spec_arc);
-
-    Ok(ResolvedAgent { config, env })
+        env,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -525,11 +521,11 @@ mod tests {
         );
 
         let run = resolve(&regs, "agent-1").unwrap();
-        assert_eq!(run.config.id(), "agent-1");
-        assert_eq!(run.config.model, "claude-opus-4-20250514");
-        assert_eq!(run.config.tools.len(), 2);
-        assert!(run.config.tools.contains_key("read"));
-        assert!(run.config.tools.contains_key("write"));
+        assert_eq!(run.id(), "agent-1");
+        assert_eq!(run.model, "claude-opus-4-20250514");
+        assert_eq!(run.tools.len(), 2);
+        assert!(run.tools.contains_key("read"));
+        assert!(run.tools.contains_key("write"));
         assert_eq!(run.env.plugins.len(), 3); // user plugin + LoopActionHandlersPlugin + MaxRoundsPlugin
     }
 
@@ -681,8 +677,8 @@ mod tests {
         );
 
         let run = resolve(&regs, "a").unwrap();
-        assert_eq!(run.config.tools.len(), 1);
-        assert!(run.config.tools.contains_key("read"));
+        assert_eq!(run.tools.len(), 1);
+        assert!(run.tools.contains_key("read"));
     }
 
     #[test]
@@ -715,10 +711,10 @@ mod tests {
         );
 
         let run = resolve(&regs, "a").unwrap();
-        assert_eq!(run.config.tools.len(), 2);
-        assert!(run.config.tools.contains_key("read"));
-        assert!(run.config.tools.contains_key("write"));
-        assert!(!run.config.tools.contains_key("delete"));
+        assert_eq!(run.tools.len(), 2);
+        assert!(run.tools.contains_key("read"));
+        assert!(run.tools.contains_key("write"));
+        assert!(!run.tools.contains_key("delete"));
     }
 
     #[test]
@@ -753,11 +749,11 @@ mod tests {
         );
 
         let run = resolve(&regs, "a").unwrap();
-        assert_eq!(run.config.tools.len(), 2);
-        assert!(run.config.tools.contains_key("read"));
-        assert!(run.config.tools.contains_key("write"));
-        assert!(!run.config.tools.contains_key("delete"));
-        assert!(!run.config.tools.contains_key("exec"));
+        assert_eq!(run.tools.len(), 2);
+        assert!(run.tools.contains_key("read"));
+        assert!(run.tools.contains_key("write"));
+        assert!(!run.tools.contains_key("delete"));
+        assert!(!run.tools.contains_key("exec"));
     }
 
     #[test]
@@ -841,12 +837,12 @@ mod tests {
 
         let resolver = RegistrySetResolver::new(regs);
         let resolved = resolver.resolve("my-agent").unwrap();
-        assert_eq!(resolved.config.id(), "my-agent");
-        assert_eq!(resolved.config.model_id(), "test-model");
-        assert_eq!(resolved.config.model, "claude-test");
-        assert_eq!(resolved.config.system_prompt(), "You are helpful.");
-        assert_eq!(resolved.config.tools.len(), 2);
-        assert!(resolved.config.tools.contains_key("read"));
+        assert_eq!(resolved.id(), "my-agent");
+        assert_eq!(resolved.model_id(), "test-model");
+        assert_eq!(resolved.model, "claude-test");
+        assert_eq!(resolved.system_prompt(), "You are helpful.");
+        assert_eq!(resolved.tools.len(), 2);
+        assert!(resolved.tools.contains_key("read"));
     }
 
     #[test]
@@ -1070,7 +1066,7 @@ mod tests {
         );
 
         let run = resolve(&regs, "a").unwrap();
-        assert!(run.config.tools.contains_key("plugin_tool"));
+        assert!(run.tools.contains_key("plugin_tool"));
     }
 
     #[test]
@@ -1147,8 +1143,8 @@ mod tests {
         );
 
         let run = resolve(&regs, "a").unwrap();
-        assert!(!run.config.tools.contains_key("plugin_tool"));
-        assert!(run.config.tools.contains_key("global_tool"));
+        assert!(!run.tools.contains_key("plugin_tool"));
+        assert!(run.tools.contains_key("global_tool"));
     }
 
     #[test]
@@ -1184,8 +1180,8 @@ mod tests {
         );
 
         let run = resolve(&regs, "a").unwrap();
-        assert!(run.config.tools.contains_key("plugin_tool"));
-        assert!(!run.config.tools.contains_key("global_tool"));
+        assert!(run.tools.contains_key("plugin_tool"));
+        assert!(!run.tools.contains_key("global_tool"));
     }
 
     // -----------------------------------------------------------------------
@@ -1237,7 +1233,7 @@ mod tests {
         );
 
         let run = resolve(&regs, "a").unwrap();
-        assert!(run.config.tools.is_empty());
+        assert!(run.tools.is_empty());
     }
 
     #[test]
@@ -1261,7 +1257,7 @@ mod tests {
         );
 
         let run = resolve(&regs, "a").unwrap();
-        assert_eq!(run.config.max_rounds(), 42);
+        assert_eq!(run.max_rounds(), 42);
     }
 
     #[test]
@@ -1285,10 +1281,7 @@ mod tests {
         );
 
         let run = resolve(&regs, "a").unwrap();
-        assert_eq!(
-            run.config.system_prompt(),
-            "Custom instructions for the agent."
-        );
+        assert_eq!(run.system_prompt(), "Custom instructions for the agent.");
     }
 
     #[test]
@@ -1307,7 +1300,7 @@ mod tests {
         );
 
         let run = resolve(&regs, "a").unwrap();
-        assert_eq!(run.config.model, "claude-opus-4-20250514");
+        assert_eq!(run.model, "claude-opus-4-20250514");
     }
 
     #[test]
@@ -1334,10 +1327,7 @@ mod tests {
         );
 
         let run = resolve(&regs, "a").unwrap();
-        assert!(
-            run.config.tools.is_empty(),
-            "empty allow list removes all tools"
-        );
+        assert!(run.tools.is_empty(), "empty allow list removes all tools");
     }
 
     #[test]
@@ -1361,8 +1351,8 @@ mod tests {
         );
 
         let run = resolve(&regs, "a").unwrap();
-        assert_eq!(run.config.tools.len(), 1);
-        assert!(run.config.tools.contains_key("read"));
+        assert_eq!(run.tools.len(), 1);
+        assert!(run.tools.contains_key("read"));
     }
 
     #[test]
@@ -1383,14 +1373,13 @@ mod tests {
         );
 
         let run = resolve(&regs, "default-agent").unwrap();
-        let spec = run.env.agent_spec.as_ref().unwrap();
-        assert_eq!(run.config.max_rounds(), 16);
-        assert_eq!(run.config.max_continuation_retries(), 2);
-        assert!(run.config.context_policy().is_none());
-        assert!(spec.allowed_tools.is_none());
-        assert!(spec.excluded_tools.is_none());
-        assert!(spec.plugin_ids.is_empty());
-        assert!(spec.delegates.is_empty());
+        assert_eq!(run.max_rounds(), 16);
+        assert_eq!(run.max_continuation_retries(), 2);
+        assert!(run.context_policy().is_none());
+        assert!(run.spec.allowed_tools.is_none());
+        assert!(run.spec.excluded_tools.is_none());
+        assert!(run.spec.plugin_ids.is_empty());
+        assert!(run.spec.delegates.is_empty());
     }
 
     #[test]

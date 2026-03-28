@@ -12,8 +12,8 @@ use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
 
 use super::{AgentLoopError, commit_update, now_ms, tool_result_to_content};
-use crate::agent::config::AgentConfig;
 use crate::agent::state::{ToolCallStates, ToolCallStatesUpdate};
+use crate::registry::ResolvedAgent;
 
 pub(super) enum WaitOutcome {
     Resumed,
@@ -107,7 +107,7 @@ fn normalize_decision_result(
 /// standard tool pipeline. The `arguments` field already reflects the
 /// resume mode (set by `prepare_resume`).
 pub(super) async fn detect_and_replay_resume(
-    agent: &AgentConfig,
+    agent: &ResolvedAgent,
     store: &crate::state::StateStore,
     run_identity: &RunIdentity,
     messages: &mut Vec<Arc<Message>>,
@@ -128,7 +128,7 @@ pub(super) async fn detect_and_replay_resume(
         call_id: String::new(),
         tool_name: String::new(),
         run_identity: run_identity.clone(),
-        agent_spec: std::sync::Arc::new(awaken_contract::registry_spec::AgentSpec::default()),
+        agent_spec: agent.spec.clone(),
         snapshot: store.snapshot(),
         activity_sink: None,
     };
@@ -172,7 +172,7 @@ pub(super) async fn wait_for_resume_or_cancel(
     decision_rx: Option<&mut UnboundedReceiver<Vec<(String, ToolCallResume)>>>,
     cancellation_token: Option<&CancellationToken>,
     store: &crate::state::StateStore,
-    agent: &AgentConfig,
+    agent: &ResolvedAgent,
     run_identity: &RunIdentity,
     messages: &mut Vec<Arc<Message>>,
 ) -> Result<WaitOutcome, AgentLoopError> {

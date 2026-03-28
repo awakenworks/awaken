@@ -4,7 +4,6 @@
 //! cross-hook state visibility, stop conditions, and phase interaction.
 
 use async_trait::async_trait;
-use awaken::agent::config::AgentConfig;
 use awaken::agent::state::{
     ContextThrottleState, RunLifecycle, SetInferenceOverride, ToolCallStates,
 };
@@ -18,7 +17,7 @@ use awaken::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken::contract::message::{Message, ToolCall};
 use awaken::contract::suspension::{ToolCallOutcome, ToolCallStatus};
 use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
-use awaken::execution::{ParallelToolExecutor, SequentialToolExecutor, ToolExecutor};
+use awaken::execution::ParallelToolExecutor;
 use awaken::loop_runner::{AgentLoopParams, build_agent_env, run_agent_loop};
 use awaken::registry::AgentSpec;
 use awaken::*;
@@ -151,21 +150,21 @@ fn make_runtime() -> PhaseRuntime {
     rt
 }
 
-/// Test resolver that wraps a fixed AgentConfig + optional user plugins.
+/// Test resolver that wraps a fixed ResolvedAgent + optional user plugins.
 struct FixedResolver {
-    agent: AgentConfig,
+    agent: ResolvedAgent,
     user_plugins: Vec<Arc<dyn Plugin>>,
 }
 
 impl FixedResolver {
-    fn new(agent: AgentConfig) -> Self {
+    fn new(agent: ResolvedAgent) -> Self {
         Self {
             agent,
             user_plugins: vec![],
         }
     }
 
-    fn with_plugins(agent: AgentConfig, plugins: Vec<Arc<dyn Plugin>>) -> Self {
+    fn with_plugins(agent: ResolvedAgent, plugins: Vec<Arc<dyn Plugin>>) -> Self {
         Self {
             agent,
             user_plugins: plugins,
@@ -175,11 +174,9 @@ impl FixedResolver {
 
 impl AgentResolver for FixedResolver {
     fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, RuntimeError> {
-        let env = build_agent_env(&self.user_plugins, &self.agent)?;
-        Ok(ResolvedAgent {
-            config: self.agent.clone(),
-            env,
-        })
+        let mut agent = self.agent.clone();
+        agent.env = build_agent_env(&self.user_plugins, &agent)?;
+        Ok(agent)
     }
 }
 
@@ -227,7 +224,7 @@ async fn sequential_partial_failure_both_produce_results() {
         ]),
         text_step("Done."),
     ]));
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(FailingTool));
     let rt = make_runtime();
@@ -271,7 +268,7 @@ async fn sequential_stops_after_first_suspension_in_loop() {
         ToolCall::new("c1", "suspending", json!({})),
         ToolCall::new("c2", "echo", json!({"message": "should not run"})),
     ])]));
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(SuspendingTool))
         .with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
@@ -318,7 +315,7 @@ async fn parallel_both_tools_execute() {
         ]),
         text_step("Done."),
     ]));
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
     let rt = make_runtime();
@@ -357,7 +354,7 @@ async fn parallel_partial_failure() {
         ]),
         text_step("Done."),
     ]));
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(FailingTool))
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
@@ -401,7 +398,7 @@ async fn parallel_does_not_stop_on_suspension() {
         ToolCall::new("c1", "suspending", json!({})),
         ToolCall::new("c2", "counting", json!({})),
     ])]));
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(SuspendingTool))
         .with_tool(Arc::new(CountingTool {
             call_count: call_count.clone(),
@@ -452,7 +449,7 @@ async fn suspension_sets_run_to_waiting() {
         "suspending",
         json!({}),
     )])]));
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
@@ -483,7 +480,7 @@ async fn suspension_tool_call_state_is_suspended() {
         "suspending",
         json!({}),
     )])]));
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
@@ -570,7 +567,7 @@ async fn hook_state_mutation_is_not_visible_to_sibling_hook() {
 
     let observed = Arc::new(Mutex::new(None));
     let llm = Arc::new(ScriptedLlm::new(vec![text_step("done")]));
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let rt = make_runtime();
     rt.store()
         .install_plugin(HookPlugin {
@@ -620,7 +617,7 @@ async fn max_rounds_precise_count() {
             })
             .collect(),
     ));
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_max_rounds(3)
         .with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
@@ -683,7 +680,7 @@ async fn terminate_via_state_in_after_inference_hook() {
         tool_step(vec![ToolCall::new("c1", "echo", json!({}))]),
         text_step("should not reach"),
     ]));
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(TermHookPlugin)];
@@ -744,7 +741,7 @@ async fn phase_sequence_with_tool_call() {
         tool_step(vec![ToolCall::new("c1", "echo", json!({"message": "hi"}))]),
         text_step("Done."),
     ]));
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(LogPlugin(phases.clone()))];
@@ -811,7 +808,7 @@ async fn phase_sequence_on_suspension() {
         "suspending",
         json!({}),
     )])]));
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let rt = make_runtime();
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(LogPlugin(phases.clone()))];
@@ -882,7 +879,7 @@ async fn profile_sections_available_in_loop_hooks() {
     }
 
     let llm = Arc::new(ScriptedLlm::new(vec![text_step("ok")]));
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let rt = make_runtime();
 
     let cfg_plugin = Arc::new(CfgPlugin(observed.clone()));
@@ -917,7 +914,7 @@ async fn empty_tool_calls_treated_as_natural_end() {
         stop_reason: Some(StopReason::ToolUse), // misleading stop_reason
         has_incomplete_tool_calls: false,
     }]));
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
@@ -955,7 +952,7 @@ async fn multiple_steps_accumulate_messages() {
         )]),
         text_step("Final answer."),
     ]));
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
@@ -983,7 +980,7 @@ async fn multiple_steps_accumulate_messages() {
 #[tokio::test]
 async fn run_lifecycle_run_id_matches_identity() {
     let llm = Arc::new(ScriptedLlm::new(vec![text_step("ok")]));
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
     let custom_id = RunIdentity::new(
@@ -1026,7 +1023,7 @@ async fn batch_approval_both_tools_execute_in_loop() {
         ]),
         text_step("Done."),
     ]));
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool_executor(Arc::new(ParallelToolExecutor::batch_approval()));
     let rt = make_runtime();
@@ -1063,7 +1060,7 @@ async fn batch_approval_suspension_still_executes_all() {
         ToolCall::new("c1", "suspending", json!({})),
         ToolCall::new("c2", "counting", json!({})),
     ])]));
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(SuspendingTool))
         .with_tool(Arc::new(CountingTool {
             call_count: call_count.clone(),
@@ -1108,7 +1105,7 @@ async fn streaming_partial_failure_in_loop() {
         ]),
         text_step("Done."),
     ]));
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(FailingTool))
         .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
@@ -1209,7 +1206,7 @@ async fn before_inference_hook_override_reaches_request() {
     let llm = Arc::new(CapturingLlm {
         captured: Mutex::new(Vec::new()),
     });
-    let agent = AgentConfig::new("test", "m", "sys", llm.clone());
+    let agent = ResolvedAgent::new("test", "m", "sys", llm.clone());
     let rt = make_runtime();
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OverridePlugin)];
@@ -1319,7 +1316,7 @@ async fn multiple_hooks_merge_inference_overrides_last_wins() {
     let llm = Arc::new(CapturingLlm {
         captured: Mutex::new(Vec::new()),
     });
-    let agent = AgentConfig::new("test", "m", "sys", llm.clone());
+    let agent = ResolvedAgent::new("test", "m", "sys", llm.clone());
     let rt = make_runtime();
 
     let user_plugins: Vec<Arc<dyn Plugin>> =
@@ -1383,7 +1380,7 @@ async fn no_override_hook_leaves_overrides_none() {
     let llm = Arc::new(CapturingLlm {
         captured: Mutex::new(Vec::new()),
     });
-    let agent = AgentConfig::new("test", "m", "sys", llm.clone());
+    let agent = ResolvedAgent::new("test", "m", "sys", llm.clone());
     let rt = make_runtime();
 
     // No override plugins
@@ -1490,7 +1487,7 @@ async fn override_consumed_each_step_not_leaked() {
     let llm = Arc::new(CapturingLlm {
         captured: Mutex::new(Vec::new()),
     });
-    let agent = AgentConfig::new("test", "m", "sys", llm.clone()).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm.clone()).with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
 
     let emitted = Arc::new(AtomicUsize::new(0));
@@ -1593,7 +1590,7 @@ async fn context_message_injected_into_request() {
     let llm = Arc::new(CapturingLlm {
         captured: Mutex::new(Vec::new()),
     });
-    let agent = AgentConfig::new("test", "m", "sys", llm.clone());
+    let agent = ResolvedAgent::new("test", "m", "sys", llm.clone());
     let rt = make_runtime();
 
     let user_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(ContextPlugin)];
@@ -1619,7 +1616,7 @@ async fn context_message_injected_into_request() {
     let msgs = &captured[0];
 
     // Expected order:
-    // [0] system prompt ("sys" from AgentConfig)
+    // [0] system prompt ("sys" from ResolvedAgent)
     // [1] system context message ("You are a helpful assistant") — System target, after base
     // [2] user message ("hello")
     // [3] suffix system ("Remember: be concise") — SuffixSystem target, at end
@@ -1725,7 +1722,7 @@ async fn context_messages_not_leaked_to_next_step() {
     let llm = Arc::new(CapturingLlm {
         captured: Mutex::new(Vec::new()),
     });
-    let agent = AgentConfig::new("test", "m", "sys", llm.clone()).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm.clone()).with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
 
     let emitted = Arc::new(AtomicUsize::new(0));

@@ -212,7 +212,6 @@ fn active_agent_from_state(state: &PersistedState) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use crate::agent::config::AgentConfig;
     use crate::loop_runner::build_agent_env;
     use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
     use crate::registry::{AgentResolver, ResolvedAgent};
@@ -315,17 +314,15 @@ mod tests {
     }
 
     struct FixedResolver {
-        agent: AgentConfig,
+        agent: ResolvedAgent,
         plugins: Vec<Arc<dyn Plugin>>,
     }
 
     impl AgentResolver for FixedResolver {
         fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, crate::error::RuntimeError> {
-            let env = build_agent_env(&self.plugins, &self.agent)?;
-            Ok(ResolvedAgent {
-                config: self.agent.clone(),
-                env,
-            })
+            let mut agent = self.agent.clone();
+            agent.env = build_agent_env(&self.plugins, &agent)?;
+            Ok(agent)
         }
     }
 
@@ -510,7 +507,7 @@ mod tests {
             has_incomplete_tool_calls: false,
         }]));
         let resolver = Arc::new(FixedResolver {
-            agent: AgentConfig::new("agent", "m", "sys", llm.clone()),
+            agent: ResolvedAgent::new("agent", "m", "sys", llm.clone()),
             plugins: vec![],
         });
         let runtime = AgentRuntime::new(resolver);
@@ -573,7 +570,7 @@ mod tests {
             calls: AtomicUsize::new(0),
         });
         let resolver = Arc::new(FixedResolver {
-            agent: AgentConfig::new("agent", "m", "sys", llm).with_tool(tool),
+            agent: ResolvedAgent::new("agent", "m", "sys", llm).with_tool(tool),
             plugins: vec![],
         });
         let runtime = Arc::new(AgentRuntime::new(resolver));
@@ -647,7 +644,7 @@ mod tests {
         ]));
         let saw_marker = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let resolver = Arc::new(FixedResolver {
-            agent: AgentConfig::new("agent", "m", "sys", llm)
+            agent: ResolvedAgent::new("agent", "m", "sys", llm)
                 .with_tool(Arc::new(WriterTool))
                 .with_tool(Arc::new(ReaderTool {
                     saw_marker: saw_marker.clone(),
@@ -690,7 +687,7 @@ mod tests {
             has_incomplete_tool_calls: false,
         }]));
         let resolver = Arc::new(FixedResolver {
-            agent: AgentConfig::new("agent", "m", "sys", llm),
+            agent: ResolvedAgent::new("agent", "m", "sys", llm),
             plugins: vec![],
         });
         let store = Arc::new(InMemoryStore::new());
@@ -738,7 +735,7 @@ mod tests {
             has_incomplete_tool_calls: false,
         }]));
         let resolver = Arc::new(FixedResolver {
-            agent: AgentConfig::new("agent", "m", "sys", llm),
+            agent: ResolvedAgent::new("agent", "m", "sys", llm),
             plugins: vec![],
         });
         let store = Arc::new(InMemoryStore::new());
@@ -791,7 +788,7 @@ mod tests {
             has_incomplete_tool_calls: false,
         }]));
         let resolver = Arc::new(FixedResolver {
-            agent: AgentConfig::new("agent", "m", "sys", llm),
+            agent: ResolvedAgent::new("agent", "m", "sys", llm),
             plugins: vec![],
         });
         let store = Arc::new(InMemoryStore::new());
@@ -845,7 +842,7 @@ mod tests {
             },
         ]));
         let resolver = Arc::new(FixedResolver {
-            agent: AgentConfig::new("agent", "m", "sys", llm),
+            agent: ResolvedAgent::new("agent", "m", "sys", llm),
             plugins: vec![Arc::new(ThreadCounterPlugin)],
         });
         let store = Arc::new(InMemoryStore::new());
@@ -998,7 +995,7 @@ mod tests {
             has_incomplete_tool_calls: false,
         }]));
         let resolver = Arc::new(FixedResolver {
-            agent: AgentConfig::new("agent", "m", "sys", llm.clone())
+            agent: ResolvedAgent::new("agent", "m", "sys", llm.clone())
                 .with_max_continuation_retries(2),
             plugins: vec![],
         });
@@ -1091,7 +1088,7 @@ mod tests {
             call_count: AtomicUsize::new(0),
         });
         let resolver = Arc::new(FixedResolver {
-            agent: AgentConfig::new("agent", "m", "sys", llm.clone())
+            agent: ResolvedAgent::new("agent", "m", "sys", llm.clone())
                 .with_max_continuation_retries(2),
             plugins: vec![],
         });

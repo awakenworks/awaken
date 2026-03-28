@@ -5,12 +5,12 @@
 //! Requires: OPENAI_API_KEY (or other provider key) + model env var
 
 use async_trait::async_trait;
-use awaken::agent::config::AgentConfig;
 use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::EventSink;
 use awaken::contract::message::Message;
 use awaken::engine::GenaiExecutor;
 use awaken::loop_runner::build_agent_env;
+use awaken::registry::ResolvedAgent;
 use awaken::stores::InMemoryStore;
 use awaken::*;
 use std::sync::Arc;
@@ -28,16 +28,14 @@ impl EventSink for ConsoleSink {
 }
 
 struct SimpleResolver {
-    agent: AgentConfig,
+    agent: ResolvedAgent,
 }
 
 impl AgentResolver for SimpleResolver {
     fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, awaken::RuntimeError> {
-        let env = build_agent_env(&[], &self.agent)?;
-        Ok(ResolvedAgent {
-            config: self.agent.clone(),
-            env,
-        })
+        let mut agent = self.agent.clone();
+        agent.env = build_agent_env(&[], &agent)?;
+        Ok(agent)
     }
 }
 
@@ -46,7 +44,7 @@ async fn main() {
     let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
     let llm = Arc::new(GenaiExecutor::new());
 
-    let agent = AgentConfig::new(
+    let agent = ResolvedAgent::new(
         "chat",
         &model,
         "You are a helpful assistant. Be concise. Remember what the user tells you.",

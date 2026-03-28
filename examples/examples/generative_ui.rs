@@ -25,10 +25,7 @@ use awaken_ext_generative_ui::openui;
 use awaken_ext_generative_ui::run_streaming_subagent;
 use awaken_runtime::loop_runner::{AgentLoopParams, build_agent_env, run_agent_loop};
 use awaken_runtime::plugins::Plugin;
-use awaken_runtime::{
-    AgentResolver, PhaseRuntime, ResolvedAgent, RuntimeError, StateStore,
-    agent::config::AgentConfig,
-};
+use awaken_runtime::{AgentResolver, PhaseRuntime, ResolvedAgent, RuntimeError, StateStore};
 
 // ---------------------------------------------------------------------------
 // Scripted LLM — returns canned responses in sequence
@@ -138,12 +135,12 @@ impl Tool for RenderUITool {
 // ---------------------------------------------------------------------------
 
 struct MultiAgentResolver {
-    agents: Vec<AgentConfig>,
+    agents: Vec<ResolvedAgent>,
 }
 
 impl AgentResolver for MultiAgentResolver {
     fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, RuntimeError> {
-        let config = self
+        let mut agent = self
             .agents
             .iter()
             .find(|a| a.id() == agent_id)
@@ -151,8 +148,8 @@ impl AgentResolver for MultiAgentResolver {
                 agent_id: agent_id.to_string(),
             })?
             .clone();
-        let env = build_agent_env(&[], &config)?;
-        Ok(ResolvedAgent { config, env })
+        agent.env = build_agent_env(&[], &agent)?;
+        Ok(agent)
     }
 }
 
@@ -250,7 +247,7 @@ async fn main() {
     ]));
 
     // -- Build agent configs --
-    let sub_agent_config = AgentConfig::new(
+    let sub_agent = ResolvedAgent::new(
         "ui-agent",
         "mock",
         openui::system_prompt("Card, Metric, Chart, Table"),
@@ -260,14 +257,14 @@ async fn main() {
     // Build the resolver first (without the parent tool), then wrap in Arc
     // so we can share it with the RenderUITool.
     let resolver = Arc::new(MultiAgentResolver {
-        agents: vec![sub_agent_config],
+        agents: vec![sub_agent],
     });
 
     let render_tool: Arc<dyn Tool> = Arc::new(RenderUITool {
         resolver: resolver.clone(),
     });
 
-    let parent_config = AgentConfig::new(
+    let parent_agent = ResolvedAgent::new(
         "parent",
         "mock",
         "You are a dashboard assistant. Use the render_ui tool to create UI components.",
@@ -278,12 +275,9 @@ async fn main() {
     // Now build the final resolver with both agents.
     let full_resolver = Arc::new(MultiAgentResolver {
         agents: vec![
-            parent_config.clone(),
-            // Re-create sub-agent config (the LLM is shared via Arc so this is fine)
-            resolver
-                .resolve("ui-agent")
-                .expect("ui-agent must resolve")
-                .config,
+            parent_agent.clone(),
+            // Re-use sub-agent (the LLM is shared via Arc so this is fine)
+            resolver.resolve("ui-agent").expect("ui-agent must resolve"),
         ],
     });
 

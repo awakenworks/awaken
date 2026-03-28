@@ -1,7 +1,6 @@
 #![allow(missing_docs)]
 
 use async_trait::async_trait;
-use awaken::agent::config::AgentConfig;
 use awaken::agent::state::{
     ContextMessageStore, ContextThrottleState, RunLifecycle, ToolCallStates,
 };
@@ -180,21 +179,21 @@ fn test_identity() -> RunIdentity {
     )
 }
 
-/// Test resolver that wraps a fixed AgentConfig + optional user plugins.
+/// Test resolver that wraps a fixed ResolvedAgent + optional user plugins.
 struct FixedResolver {
-    agent: AgentConfig,
+    agent: ResolvedAgent,
     user_plugins: Vec<Arc<dyn Plugin>>,
 }
 
 impl FixedResolver {
-    fn new(agent: AgentConfig) -> Self {
+    fn new(agent: ResolvedAgent) -> Self {
         Self {
             agent,
             user_plugins: vec![],
         }
     }
 
-    fn with_plugins(agent: AgentConfig, plugins: Vec<Arc<dyn Plugin>>) -> Self {
+    fn with_plugins(agent: ResolvedAgent, plugins: Vec<Arc<dyn Plugin>>) -> Self {
         Self {
             agent,
             user_plugins: plugins,
@@ -204,11 +203,9 @@ impl FixedResolver {
 
 impl AgentResolver for FixedResolver {
     fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, RuntimeError> {
-        let env = build_agent_env(&self.user_plugins, &self.agent)?;
-        Ok(ResolvedAgent {
-            config: self.agent.clone(),
-            env,
-        })
+        let mut agent = self.agent.clone();
+        agent.env = build_agent_env(&self.user_plugins, &agent)?;
+        Ok(agent)
     }
 }
 
@@ -231,7 +228,7 @@ async fn single_step_natural_end() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "You are helpful.", llm);
+    let agent = ResolvedAgent::new("test", "gpt-4o", "You are helpful.", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -282,7 +279,7 @@ async fn tool_call_then_response() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -328,7 +325,7 @@ async fn tool_call_state_machine_transitions() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -377,7 +374,7 @@ async fn multiple_tool_calls_in_one_step() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm)
+    let agent = ResolvedAgent::new("test", "gpt-4o", "helpful", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(CalcTool));
     let runtime = make_runtime();
@@ -426,7 +423,7 @@ async fn max_rounds_exceeded() {
             .collect(),
     ));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm)
+    let agent = ResolvedAgent::new("test", "gpt-4o", "helpful", llm)
         .with_max_rounds(3)
         .with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
@@ -483,7 +480,7 @@ async fn unknown_tool_returns_error_result_not_crash() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
+    let agent = ResolvedAgent::new("test", "gpt-4o", "helpful", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -538,7 +535,8 @@ async fn failing_tool_produces_error_result_continues_loop() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(FailingTool));
+    let agent =
+        ResolvedAgent::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(FailingTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -572,7 +570,7 @@ async fn events_have_correct_sequence_for_single_step() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
+    let agent = ResolvedAgent::new("test", "gpt-4o", "helpful", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -645,7 +643,7 @@ async fn events_have_correct_sequence_with_tool_call() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -710,7 +708,7 @@ async fn lifecycle_state_reflects_custom_run_id() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
+    let agent = ResolvedAgent::new("test", "gpt-4o", "helpful", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -781,7 +779,7 @@ async fn phase_hooks_fire_during_loop() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
+    let agent = ResolvedAgent::new("test", "gpt-4o", "helpful", llm);
     let runtime = make_runtime();
 
     let tracker_plugin = Arc::new(TrackerPlugin(Arc::clone(&hook_phases)));
@@ -840,7 +838,7 @@ async fn tool_suspension_transitions_run_to_waiting() {
         json!({"action": "delete"}),
     )]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -879,7 +877,7 @@ async fn resume_with_use_decision_as_tool_result() {
         // After resume: LLM sees the decision result and ends
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -966,7 +964,7 @@ async fn resume_with_cancel_marks_tool_cancelled() {
         json!({"action": "delete"}),
     )]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -1048,7 +1046,7 @@ async fn resume_with_replay_tool_call() {
         json!({"message": "hello"}),
     )]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(SuspendingTool))
         .with_tool(Arc::new(EchoTool)); // echo registered for replay
     let runtime = make_runtime();
@@ -1090,7 +1088,7 @@ async fn resume_with_replay_tool_call() {
     }
 
     let llm2 = Arc::new(ScriptedLlm::new(vec![]));
-    let agent2 = AgentConfig::new("test", "m", "sys", llm2).with_tool(Arc::new(DangerousEcho));
+    let agent2 = ResolvedAgent::new("test", "m", "sys", llm2).with_tool(Arc::new(DangerousEcho));
     let resolver2 = FixedResolver::new(agent2);
 
     let messages = vec![
@@ -1148,7 +1146,7 @@ async fn resume_with_pass_decision_to_tool() {
         json!({"original": true}),
     )]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -1183,7 +1181,7 @@ async fn resume_with_pass_decision_to_tool() {
         "c1",
         json!({"original": true}),
     )]));
-    let agent2 = AgentConfig::new("test", "m", "sys", llm2).with_tool(Arc::new(SuspendingTool));
+    let agent2 = ResolvedAgent::new("test", "m", "sys", llm2).with_tool(Arc::new(SuspendingTool));
     let resolver2 = FixedResolver::new(agent2);
 
     let result = run_agent_loop(AgentLoopParams {
@@ -1220,7 +1218,7 @@ async fn resume_with_pass_decision_to_tool() {
 
     let llm3 = Arc::new(ScriptedLlm::new(vec![]));
     let agent3 =
-        AgentConfig::new("test", "m", "sys", llm3).with_tool(Arc::new(DangerousPassthrough));
+        ResolvedAgent::new("test", "m", "sys", llm3).with_tool(Arc::new(DangerousPassthrough));
     let resolver3 = FixedResolver::new(agent3);
 
     let messages = vec![
@@ -1269,7 +1267,7 @@ async fn resume_with_pass_decision_to_tool() {
 #[tokio::test]
 async fn resume_rejects_non_waiting_run() {
     let llm = Arc::new(ScriptedLlm::new(vec![]));
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -1319,7 +1317,7 @@ async fn resume_rejects_unknown_call_id() {
         json!({}),
     )]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -1440,7 +1438,7 @@ async fn cancel_during_streaming_terminates_run() {
 
     let deltas: Vec<&str> = (0..10).map(|_| "tok ").collect();
     let llm = Arc::new(SlowStreamingLlm::new(deltas, 50));
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
@@ -1481,7 +1479,7 @@ async fn cancel_before_inference_terminates_immediately() {
 
     let deltas: Vec<&str> = (0..100).map(|_| "tok ").collect();
     let llm = Arc::new(SlowStreamingLlm::new(deltas, 100));
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
@@ -1536,7 +1534,7 @@ async fn state_snapshot_emitted_after_phase() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -1747,7 +1745,7 @@ async fn frontend_tool_intercept_suspend_and_resume() {
         }
     }
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(AskUserTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(AskUserTool));
 
     let frontend_plugin = Arc::new(FrontendToolInterceptPluginWrapper {
         plugin: FrontendToolInterceptPlugin {
@@ -1916,7 +1914,7 @@ async fn tool_intercept_block_terminates_run() {
         json!({"message": "hello"}),
     )]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let blocking_plugin = Arc::new(BlockingPluginWrapper(BlockingPlugin {
         blocked_tool: "echo".into(),
         reason: "tool is forbidden".into(),
@@ -2045,7 +2043,7 @@ async fn tool_intercept_set_result_skips_execution() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(TrackedEchoTool(Arc::clone(&executed))));
 
     let intercepted_result = ToolResult::success_with_message(
@@ -2101,7 +2099,7 @@ async fn suspended_tool_preserves_state_across_resume() {
         json!({"action": "rm -rf"}),
     )]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -2208,7 +2206,7 @@ async fn decision_channel_resume_resolves_suspended_call() {
         }
     }
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(DangerousApproved));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(DangerousApproved));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -2266,7 +2264,7 @@ async fn cancel_decision_marks_tool_cancelled() {
         // After cancel decision, LLM sees cancellation and ends
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -2321,7 +2319,7 @@ async fn permission_hook_blocks_denied_tool() {
         json!({"message": "hello"}),
     )]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let permission_plugin = Arc::new(BlockingPluginWrapper(BlockingPlugin {
         blocked_tool: "echo".into(),
         reason: "permission denied by policy".into(),
@@ -2402,7 +2400,7 @@ async fn intercept_suspend_preserves_ticket_resume_mode() {
         }
     }
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(FrontendTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(FrontendTool));
 
     let frontend_plugin = Arc::new(FrontendToolInterceptPluginWrapper {
         plugin: FrontendToolInterceptPlugin {
@@ -2513,7 +2511,7 @@ async fn multiple_tool_calls_partial_intercept() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(CalcTool));
 
@@ -2585,7 +2583,7 @@ async fn intercept_set_result_emits_tool_call_done_event() {
         "set-result output".to_string(),
     );
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let set_result_plugin = Arc::new(SetResultPluginWrapper(SetResultPlugin {
         target_tool: "echo".into(),
         result: intercepted_result.clone(),
@@ -2659,7 +2657,7 @@ async fn resume_with_normalize_decision_result_boolean() {
         json!({"action": "deploy", "target": "prod"}),
     )]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -2712,7 +2710,7 @@ async fn resume_with_normalize_decision_result_boolean() {
         "c2",
         json!({"action": "deploy"}),
     )]));
-    let agent2 = AgentConfig::new("test", "m", "sys", llm2).with_tool(Arc::new(SuspendingTool));
+    let agent2 = ResolvedAgent::new("test", "m", "sys", llm2).with_tool(Arc::new(SuspendingTool));
     let resolver2 = FixedResolver::new(agent2);
 
     let result2 = run_agent_loop(AgentLoopParams {
@@ -2835,7 +2833,7 @@ async fn concurrent_suspend_and_resume_via_channel() {
         // After both resume, LLM ends
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::with_plugins(agent, vec![Arc::new(SuspendAllPluginWrapper)]);
 
@@ -2917,7 +2915,7 @@ async fn tool_call_lifecycle_complete_transitions_in_loop() {
         // After resume, LLM ends
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
@@ -3043,7 +3041,7 @@ async fn parallel_tools_one_fails_other_succeeds() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm)
+    let agent = ResolvedAgent::new("test", "gpt-4o", "helpful", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(FailingTool));
     let runtime = make_runtime();
@@ -3104,7 +3102,7 @@ async fn sequential_tools_stop_after_first_suspension() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm)
+    let agent = ResolvedAgent::new("test", "gpt-4o", "helpful", llm)
         .with_tool(Arc::new(SuspendingTool))
         .with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
@@ -3167,7 +3165,7 @@ async fn stop_policy_max_rounds_terminates() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm)
+    let agent = ResolvedAgent::new("test", "gpt-4o", "helpful", llm)
         .with_max_rounds(1)
         .with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
@@ -3230,7 +3228,7 @@ async fn cancel_during_tool_execution() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(SlowTool));
+    let agent = ResolvedAgent::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(SlowTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -3281,7 +3279,7 @@ async fn empty_tool_calls_natural_end() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool)); // Tools registered but not used
+    let agent = ResolvedAgent::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(EchoTool)); // Tools registered but not used
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -3389,7 +3387,7 @@ async fn context_message_injected_before_inference() {
     let llm = Arc::new(RecordingLlm::new());
     let llm_clone = Arc::clone(&llm);
 
-    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
+    let agent = ResolvedAgent::new("test", "gpt-4o", "helpful", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::with_plugins(agent, vec![Arc::new(ContextInjectorPlugin)]);
 
@@ -3474,7 +3472,7 @@ async fn tool_execution_preserves_arguments() {
     ]));
 
     let agent =
-        AgentConfig::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(ArgReturningTool));
+        ResolvedAgent::new("test", "gpt-4o", "helpful", llm).with_tool(Arc::new(ArgReturningTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -3622,7 +3620,7 @@ impl LlmExecutor for ModelRecordingLlm {
 #[tokio::test]
 async fn retry_startup_error_propagates() {
     let llm = Arc::new(CountingLlm::new(1, vec![]));
-    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm);
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -3652,7 +3650,7 @@ async fn retry_startup_error_propagates() {
     );
 }
 
-/// 2. Model name in inference request matches AgentConfig.model.
+/// 2. Model name in inference request matches ResolvedAgent.model.
 #[tokio::test]
 async fn inference_request_uses_configured_model_name() {
     let llm = Arc::new(ModelRecordingLlm::new(vec![StreamResult {
@@ -3664,7 +3662,7 @@ async fn inference_request_uses_configured_model_name() {
     }]));
     let llm_clone = Arc::clone(&llm);
 
-    let agent = AgentConfig::new("test", "claude-3-opus", "sys", llm);
+    let agent = ResolvedAgent::new("test", "claude-3-opus", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -3714,7 +3712,7 @@ async fn truncation_with_tool_calls_no_retry() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm)
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_max_continuation_retries(2);
     let runtime = make_runtime();
@@ -3817,7 +3815,7 @@ async fn truncation_recovery_exhausts_retries() {
 
     let llm = Arc::new(AlwaysTruncatingLlm::new());
     let llm_ref = Arc::clone(&llm);
-    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm)
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm)
         .with_max_continuation_retries(2)
         .with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
@@ -3944,7 +3942,7 @@ async fn truncation_recovery_preserves_truncated_text() {
     let llm = Arc::new(TruncationStreamLlm::new());
     let llm_ref = Arc::clone(&llm);
 
-    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm)
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm)
         .with_max_continuation_retries(2)
         .with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
@@ -4011,7 +4009,7 @@ async fn run_finish_has_matching_thread_id() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm);
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -4141,7 +4139,7 @@ async fn all_tools_suspended_pauses_run() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::with_plugins(agent, vec![Arc::new(SuspendAllWrapper)]);
 
@@ -4199,7 +4197,7 @@ async fn completed_tool_round_clears_state_at_next_step() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -4273,7 +4271,7 @@ async fn after_inference_stop_prevents_tool_execution() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm)
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm)
         .with_tool(Arc::new(TrackedTool(Arc::clone(&tool_executed))));
 
     let stop_plugin = Arc::new(StopConditionPlugin::new(vec![Arc::new(AlwaysStopPolicy)]));
@@ -4322,7 +4320,7 @@ async fn natural_end_no_tools_completes_immediately() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm);
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -4402,7 +4400,7 @@ async fn unknown_tool_in_multi_call_doesnt_crash() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm)
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(CalcTool));
     let runtime = make_runtime();
@@ -4498,8 +4496,8 @@ async fn permission_denied_does_not_replay_tool() {
         json!({"message": "blocked"}),
     )]));
 
-    let agent =
-        AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(CountingEchoTool(exec_count)));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
+        .with_tool(Arc::new(CountingEchoTool(exec_count)));
     let blocking_plugin = Arc::new(BlockingPluginWrapper(BlockingPlugin {
         blocked_tool: "echo".into(),
         reason: "permission denied".into(),
@@ -4546,7 +4544,7 @@ async fn decision_for_unknown_call_id_returns_error() {
         json!({"action": "test"}),
     )]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -4622,7 +4620,7 @@ async fn decision_channel_rejects_illegal_transition() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -4682,7 +4680,7 @@ async fn mixed_suspended_and_completed_tools() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm)
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(SuspendingTool))
         .with_tool(Arc::new(CalcTool));
@@ -4768,7 +4766,7 @@ async fn mixed_suspended_and_completed_tools() {
 #[tokio::test]
 async fn agent_config_defaults() {
     let llm = Arc::new(ScriptedLlm::new(vec![]));
-    let config = AgentConfig::new("test", "gpt-4", "sys", llm);
+    let config = ResolvedAgent::new("test", "gpt-4", "sys", llm);
     assert_eq!(config.max_rounds(), 16);
     assert!(config.system_prompt() == "sys");
     assert!(config.tools.is_empty());
@@ -4777,7 +4775,7 @@ async fn agent_config_defaults() {
 #[tokio::test]
 async fn agent_config_builder_chain() {
     let llm = Arc::new(ScriptedLlm::new(vec![]));
-    let config = AgentConfig::new("test", "gpt-4", "You are helpful.", llm)
+    let config = ResolvedAgent::new("test", "gpt-4", "You are helpful.", llm)
         .with_max_rounds(5)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(CalcTool));
@@ -4798,7 +4796,7 @@ async fn agent_config_with_tools_batch() {
         Arc::new(CalcTool),
         Arc::new(FailingTool),
     ];
-    let config = AgentConfig::new("test", "m", "s", llm).with_tools(tools);
+    let config = ResolvedAgent::new("test", "m", "s", llm).with_tools(tools);
 
     assert_eq!(config.tools.len(), 3);
     assert!(config.tools.contains_key("echo"));
@@ -4835,7 +4833,7 @@ async fn tool_descriptor_with_parameters_schema() {
 #[tokio::test]
 async fn tool_descriptors_sorted_by_id() {
     let llm = Arc::new(ScriptedLlm::new(vec![]));
-    let config = AgentConfig::new("test", "m", "s", llm)
+    let config = ResolvedAgent::new("test", "m", "s", llm)
         .with_tool(Arc::new(CalcTool))
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(FailingTool));
@@ -4874,7 +4872,7 @@ async fn parallel_tools_all_succeed() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm)
+    let agent = ResolvedAgent::new("test", "gpt-4o", "helpful", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(CalcTool));
     let runtime = make_runtime();
@@ -4942,7 +4940,7 @@ async fn parallel_tools_mixed_outcomes_preserve_results() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm)
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(FailingTool))
         .with_tool(Arc::new(CalcTool));
@@ -5053,7 +5051,7 @@ async fn system_prompt_included_in_inference_request() {
     let llm = Arc::new(SystemPromptRecordingLlm::new());
     let llm_clone = Arc::clone(&llm);
 
-    let agent = AgentConfig::new("test", "gpt-4o", "You are a helpful assistant.", llm);
+    let agent = ResolvedAgent::new("test", "gpt-4o", "You are a helpful assistant.", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -5126,7 +5124,7 @@ async fn message_ordering_preserved_in_inference_request() {
     });
     let llm_ref = Arc::clone(&llm);
 
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -5199,7 +5197,7 @@ async fn tool_descriptors_sent_to_llm() {
     });
     let llm_ref = Arc::clone(&llm);
 
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(CalcTool));
     let runtime = make_runtime();
@@ -5248,7 +5246,7 @@ async fn run_identity_fields_propagate_to_lifecycle() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm);
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -5355,7 +5353,7 @@ async fn context_message_suffix_system_injected() {
     });
     let llm_clone = Arc::clone(&llm);
 
-    let agent = AgentConfig::new("test", "gpt-4o", "helpful", llm);
+    let agent = ResolvedAgent::new("test", "gpt-4o", "helpful", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::with_plugins(agent, vec![Arc::new(SuffixInjectorPlugin)]);
 
@@ -5465,7 +5463,7 @@ async fn multiple_context_messages_injected() {
     });
     let llm_clone = Arc::clone(&llm);
 
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::with_plugins(agent, vec![Arc::new(MultiContextPlugin)]);
 
@@ -5553,7 +5551,7 @@ async fn phase_hooks_fire_with_tool_call_phases() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
 
     let tracker = Arc::new(DetailedTrackerPlugin(Arc::clone(&recorded_phases)));
@@ -5623,7 +5621,7 @@ async fn step_count_increments_with_tool_calls() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -5669,7 +5667,7 @@ async fn token_usage_reported_in_inference_events() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -5724,7 +5722,7 @@ async fn blocking_plugin_allows_non_targeted_tool() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(CalcTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(CalcTool));
     let blocking_plugin = Arc::new(BlockingPluginWrapper(BlockingPlugin {
         blocked_tool: "echo".into(),
         reason: "echo is blocked".into(),
@@ -5823,7 +5821,7 @@ async fn set_result_intercept_on_specific_tool_only() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(TrackingEchoTool3(Arc::clone(&executed))))
         .with_tool(Arc::new(TrackingCalcTool2(Arc::clone(&executed))));
 
@@ -5940,7 +5938,7 @@ async fn phase_hook_receives_tool_context() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let observer_plugin = Arc::new(ToolContextPlugin {
         observer: ToolContextObserver {
@@ -6017,7 +6015,7 @@ async fn llm_error_on_second_step_propagates() {
     let llm = Arc::new(FailOnSecondCallLlm {
         call_count: Mutex::new(0),
     });
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -6098,7 +6096,7 @@ async fn after_inference_hook_sees_llm_response() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::with_plugins(
         agent,
@@ -6192,7 +6190,7 @@ async fn after_tool_execute_hook_sees_tool_result() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::with_plugins(
         agent,
@@ -6244,7 +6242,7 @@ async fn max_rounds_two_stops_after_two_tool_steps() {
             .collect(),
     ));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_max_rounds(2)
         .with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
@@ -6299,7 +6297,7 @@ async fn step_start_events_contain_step_number() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -6343,7 +6341,7 @@ async fn suspension_preserves_original_arguments() {
         original_args.clone(),
     )]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -6408,7 +6406,7 @@ async fn second_tool_not_executed_after_first_suspends() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(SuspendingTool))
         .with_tool(Arc::new(TrackingEchoTool2(executed)));
     let runtime = make_runtime();
@@ -6453,7 +6451,7 @@ async fn run_start_event_emitted_first() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -6496,7 +6494,7 @@ async fn run_finish_event_emitted_last() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -6552,7 +6550,7 @@ async fn tool_call_events_contain_correct_metadata() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -6630,7 +6628,7 @@ async fn three_step_loop_tool_tool_response() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "gpt-4o", "sys", llm)
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(CalcTool));
     let runtime = make_runtime();
@@ -6684,7 +6682,7 @@ async fn lifecycle_transitions_running_to_done() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -6721,7 +6719,7 @@ async fn lifecycle_transitions_running_to_waiting() {
         json!({}),
     )]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -6755,7 +6753,7 @@ async fn lifecycle_transitions_running_to_done_on_cancel() {
     use awaken::CancellationToken;
 
     let llm = Arc::new(SlowStreamingLlm::new(vec!["tok "; 10].to_vec(), 50));
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -6804,7 +6802,7 @@ async fn text_delta_events_emitted_for_text_response() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -6862,7 +6860,7 @@ async fn parallel_tools_have_independent_state_entries() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(CalcTool));
     let runtime = make_runtime();
@@ -6914,7 +6912,7 @@ async fn parallel_tools_succeed_and_suspend_independent_states() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
@@ -6966,7 +6964,7 @@ async fn parallel_tools_both_fail_independently() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(FailingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(FailingTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -7025,7 +7023,7 @@ async fn parallel_same_tool_distinct_results() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -7089,7 +7087,7 @@ async fn sequential_steps_see_fresh_tool_state() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -7141,7 +7139,7 @@ async fn state_snapshot_revision_increases_across_steps() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -7197,7 +7195,7 @@ async fn state_snapshot_contains_extensions_with_lifecycle() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -7260,7 +7258,7 @@ async fn state_snapshot_count_matches_steps_plus_finish() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -7306,7 +7304,7 @@ async fn state_snapshot_at_suspension_includes_waiting_status() {
         json!({"action": "nuke"}),
     )]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -7358,7 +7356,7 @@ async fn export_persisted_after_run_has_positive_revision() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -7402,7 +7400,7 @@ async fn checkpoint_store_receives_data() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -7457,7 +7455,7 @@ async fn checkpoint_includes_correct_step_count() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -7497,7 +7495,7 @@ async fn checkpoint_contains_state_blob() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -7540,7 +7538,7 @@ async fn checkpoint_stores_thread_messages() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -7586,7 +7584,7 @@ async fn checkpoint_records_agent_id() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -7658,7 +7656,7 @@ async fn llm_receives_all_user_messages() {
     });
     let llm_ref = Arc::clone(&llm);
 
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -7738,7 +7736,7 @@ async fn tool_results_visible_in_next_step_messages() {
     });
     let llm_ref = Arc::clone(&llm);
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -7840,7 +7838,7 @@ async fn context_injection_additive_not_destructive() {
     });
     let llm_ref = Arc::clone(&llm);
 
-    let agent = AgentConfig::new("test", "m", "Original system prompt", llm);
+    let agent = ResolvedAgent::new("test", "m", "Original system prompt", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::with_plugins(agent, vec![Arc::new(AdditivePlugin)]);
 
@@ -7902,7 +7900,7 @@ async fn token_usage_accumulates_across_steps() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -7966,7 +7964,7 @@ async fn tool_descriptors_present_even_when_unused() {
     });
     let llm_ref = Arc::clone(&llm);
 
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(CalcTool))
         .with_tool(Arc::new(FailingTool));
@@ -8071,7 +8069,7 @@ async fn run_start_and_run_end_hooks_fire_exactly_once() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::with_plugins(agent, vec![Arc::new(RunBoundaryPlugin(counter))]);
 
@@ -8165,7 +8163,7 @@ async fn step_start_fires_per_step() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::with_plugins(agent, vec![Arc::new(StepCounterPlugin(counter))]);
 
@@ -8254,7 +8252,7 @@ async fn before_inference_hook_sees_step_count() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver =
         FixedResolver::with_plugins(agent, vec![Arc::new(StepCountObserverPlugin(observer))]);
@@ -8354,7 +8352,7 @@ async fn plugin_context_mutation_visible_in_same_step() {
     });
     let llm_ref = Arc::clone(&llm);
 
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::with_plugins(
         agent,
@@ -8443,7 +8441,7 @@ async fn multiple_plugins_same_phase_both_fire() {
         has_incomplete_tool_calls: false,
     }]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::with_plugins(
         agent,
@@ -8529,7 +8527,7 @@ async fn tool_result_message_contains_output() {
     });
     let llm_ref = Arc::clone(&llm);
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -8608,7 +8606,7 @@ async fn failed_tool_result_message_indicates_error() {
     });
     let llm_ref = Arc::clone(&llm);
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(FailingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(FailingTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -8689,7 +8687,7 @@ async fn unknown_tool_result_indicates_not_found() {
     });
     let llm_ref = Arc::clone(&llm);
 
-    let agent = AgentConfig::new("test", "m", "sys", llm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -8742,7 +8740,7 @@ async fn tool_call_start_emitted_before_done() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -8800,7 +8798,7 @@ async fn multiple_tools_each_get_start_done_pair() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(CalcTool));
     let runtime = make_runtime();
@@ -8877,7 +8875,7 @@ async fn replay_tool_call_executes_original_tool() {
         "c1",
         json!({"action": "deploy", "env": "prod"}),
     )]));
-    let agent1 = AgentConfig::new("test", "m", "sys", llm1).with_tool(Arc::new(SuspendingTool));
+    let agent1 = ResolvedAgent::new("test", "m", "sys", llm1).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
     let resolver1 = FixedResolver::new(agent1);
 
@@ -8918,7 +8916,7 @@ async fn replay_tool_call_executes_original_tool() {
     // Second run: tool re-executes
     let args_tracker = Arc::clone(&tool_args);
     let llm2 = Arc::new(ScriptedLlm::new(vec![]));
-    let agent2 = AgentConfig::new("test", "m", "sys", llm2)
+    let agent2 = ResolvedAgent::new("test", "m", "sys", llm2)
         .with_tool(Arc::new(ArgTrackingTool(args_tracker)));
     let resolver2 = FixedResolver::new(agent2);
 
@@ -8968,7 +8966,7 @@ async fn use_decision_replaces_args_with_decision_result() {
         json!({"original": true}),
     )]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -9022,7 +9020,7 @@ async fn pass_decision_updates_args_for_tool() {
         json!({"original_key": "original_value"}),
     )]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -9076,7 +9074,7 @@ async fn cancel_resume_transitions_to_cancelled_status() {
         json!({}),
     )]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -9129,7 +9127,7 @@ async fn resume_with_empty_decision_result_succeeds() {
         json!({"key": "val"}),
     )]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -9204,7 +9202,7 @@ async fn three_step_events_have_correct_overall_sequence() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(CalcTool));
     let runtime = make_runtime();
@@ -9274,7 +9272,7 @@ async fn suspend_on_step_two_preserves_first_step_context() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
@@ -9356,7 +9354,7 @@ async fn error_on_third_step_after_two_successful_steps() {
     let llm = Arc::new(FailOnThirdLlm {
         call_count: Mutex::new(0),
     });
-    let agent = AgentConfig::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
 
@@ -9414,7 +9412,7 @@ async fn mixed_tool_counts_per_step() {
         },
     ]));
 
-    let agent = AgentConfig::new("test", "m", "sys", llm)
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(CalcTool));
     let runtime = make_runtime();
@@ -9459,7 +9457,7 @@ async fn full_suspend_resume_complete_lifecycle() {
         "c1",
         json!({"action": "build"}),
     )]));
-    let agent1 = AgentConfig::new("test", "m", "sys", llm1).with_tool(Arc::new(SuspendingTool));
+    let agent1 = ResolvedAgent::new("test", "m", "sys", llm1).with_tool(Arc::new(SuspendingTool));
     let runtime = make_runtime();
     let resolver1 = FixedResolver::new(agent1);
 
@@ -9503,7 +9501,7 @@ async fn full_suspend_resume_complete_lifecycle() {
 
     // Run 2: Resume -> complete
     let llm2 = Arc::new(ScriptedLlm::new(vec![])); // LLM just returns text
-    let agent2 = AgentConfig::new("test", "m", "sys", llm2).with_tool(Arc::new(SuspendingTool));
+    let agent2 = ResolvedAgent::new("test", "m", "sys", llm2).with_tool(Arc::new(SuspendingTool));
     let resolver2 = FixedResolver::new(agent2);
 
     let messages = vec![

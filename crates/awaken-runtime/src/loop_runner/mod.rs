@@ -157,7 +157,7 @@ pub struct AgentLoopParams<'a> {
 /// Prefer `AgentRuntime::run()` for production use.
 pub fn build_agent_env(
     plugins: &[Arc<dyn crate::plugins::Plugin>],
-    agent: &crate::agent::config::AgentConfig,
+    agent: &crate::registry::ResolvedAgent,
 ) -> Result<ExecutionEnv, StateError> {
     let mut all_plugins =
         crate::registry::resolve::inject_default_plugins(plugins.to_vec(), agent.max_rounds());

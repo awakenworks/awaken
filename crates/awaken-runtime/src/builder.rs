@@ -397,11 +397,11 @@ mod tests {
             .unwrap();
 
         let resolved = runtime.resolver().resolve("my-agent").unwrap();
-        assert_eq!(resolved.config.id(), "my-agent");
-        assert_eq!(resolved.config.model, "claude-test");
-        assert_eq!(resolved.config.system_prompt(), "Be helpful.");
-        assert_eq!(resolved.config.max_rounds(), 10);
-        assert!(resolved.config.tools.contains_key("search"));
+        assert_eq!(resolved.id(), "my-agent");
+        assert_eq!(resolved.model, "claude-test");
+        assert_eq!(resolved.system_prompt(), "Be helpful.");
+        assert_eq!(resolved.max_rounds(), 10);
+        assert!(resolved.tools.contains_key("search"));
     }
 
     #[test]
@@ -478,9 +478,9 @@ mod tests {
             .unwrap();
 
         let resolved = runtime.resolver().resolve("agent").unwrap();
-        assert!(resolved.config.tools.contains_key("t1"));
-        assert!(resolved.config.tools.contains_key("t2"));
-        assert!(resolved.config.tools.contains_key("t3"));
+        assert!(resolved.tools.contains_key("t1"));
+        assert!(resolved.tools.contains_key("t2"));
+        assert!(resolved.tools.contains_key("t3"));
     }
 
     #[test]
@@ -552,7 +552,7 @@ mod tests {
 
         let resolved = runtime.resolver().resolve("agent").unwrap();
         // The model should be resolved to the actual model name
-        assert_eq!(resolved.config.model, "gpt-4-turbo");
+        assert_eq!(resolved.model, "gpt-4-turbo");
     }
 
     #[test]

@@ -11,7 +11,7 @@ use awaken_contract::contract::message::{Message, ToolCall};
 use futures::StreamExt;
 
 use super::AgentLoopError;
-use crate::agent::config::AgentConfig;
+use crate::registry::ResolvedAgent;
 
 /// Execute LLM inference with streaming, emitting delta events via sink.
 ///
@@ -22,7 +22,7 @@ use crate::agent::config::AgentConfig;
 /// waiting for the next token, the stream is dropped and the partially accumulated
 /// result is returned with `StopReason::EndTurn` (graceful cancel — no error).
 pub(super) async fn execute_streaming(
-    agent: &AgentConfig,
+    agent: &ResolvedAgent,
     request: InferenceRequest,
     sink: &dyn EventSink,
     cancellation_token: Option<&CancellationToken>,
@@ -152,7 +152,7 @@ pub(super) async fn execute_streaming(
 ///
 /// Skips compaction if the estimated token savings are below `MIN_COMPACTION_GAIN_TOKENS`.
 pub(super) async fn compact_with_llm(
-    agent: &AgentConfig,
+    agent: &ResolvedAgent,
     messages: &mut Vec<Arc<Message>>,
     policy: &awaken_contract::contract::inference::ContextWindowPolicy,
 ) -> Result<(), AgentLoopError> {

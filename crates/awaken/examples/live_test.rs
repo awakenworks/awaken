@@ -5,13 +5,13 @@
 //! Requires: OPENAI_API_KEY (or ANTHROPIC_API_KEY, etc.) + model env var
 
 use async_trait::async_trait;
-use awaken::agent::config::AgentConfig;
 use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::EventSink;
 use awaken::contract::identity::{RunIdentity, RunOrigin};
 use awaken::contract::message::Message;
 use awaken::engine::GenaiExecutor;
 use awaken::loop_runner::{AgentLoopParams, LoopStatePlugin, build_agent_env, run_agent_loop};
+use awaken::registry::ResolvedAgent;
 use awaken::*;
 use std::sync::Arc;
 
@@ -42,16 +42,14 @@ impl EventSink for ConsoleSink {
 }
 
 struct SimpleResolver {
-    agent: AgentConfig,
+    agent: ResolvedAgent,
 }
 
 impl AgentResolver for SimpleResolver {
     fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, awaken::RuntimeError> {
-        let env = build_agent_env(&[], &self.agent)?;
-        Ok(ResolvedAgent {
-            config: self.agent.clone(),
-            env,
-        })
+        let mut agent = self.agent.clone();
+        agent.env = build_agent_env(&[], &agent)?;
+        Ok(agent)
     }
 }
 
@@ -63,7 +61,7 @@ async fn main() {
     println!("Model: {model}\n");
 
     let llm = Arc::new(GenaiExecutor::new());
-    let agent = AgentConfig::new(
+    let agent = ResolvedAgent::new(
         "live-test",
         &model,
         "You are a helpful assistant. Be concise.",

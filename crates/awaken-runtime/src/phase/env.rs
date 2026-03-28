@@ -10,19 +10,20 @@ use crate::plugins::{Plugin, PluginRegistrar};
 use awaken_contract::StateError;
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::model::Phase;
-use awaken_contract::registry_spec::AgentSpec;
 
 use crate::plugins::{KeyRegistration, ProfileKeyRegistration, RequestTransformArc};
 
 use super::{EffectHandlerArc, PhaseHookArc, ScheduledActionHandlerArc};
 
 /// A phase hook with its owning plugin ID.
+#[derive(Clone)]
 pub(crate) struct TaggedPhaseHook {
     pub(crate) plugin_id: String,
     pub(crate) hook: PhaseHookArc,
 }
 
 /// A request transform with its owning plugin ID.
+#[derive(Clone)]
 pub(crate) struct TaggedRequestTransform {
     pub(crate) plugin_id: String,
     pub(crate) transform: RequestTransformArc,
@@ -33,6 +34,7 @@ pub(crate) struct TaggedRequestTransform {
 /// Built from a set of plugins via `ExecutionEnv::from_plugins()`.
 /// Passed to `PhaseRuntime` methods for each phase execution.
 /// Not shared across agent runs — each resolve produces a new one.
+#[derive(Clone)]
 pub struct ExecutionEnv {
     pub(crate) phase_hooks: HashMap<Phase, Vec<TaggedPhaseHook>>,
     pub(crate) scheduled_action_handlers: HashMap<String, ScheduledActionHandlerArc>,
@@ -48,8 +50,6 @@ pub struct ExecutionEnv {
     pub(crate) plugins: Vec<Arc<dyn Plugin>>,
     /// Profile key registrations collected from all plugins.
     pub profile_key_registrations: Vec<ProfileKeyRegistration>,
-    /// Agent spec for lifecycle hooks. Set by the resolve pipeline.
-    pub(crate) agent_spec: Option<Arc<AgentSpec>>,
 }
 
 impl ExecutionEnv {
@@ -166,7 +166,6 @@ impl ExecutionEnv {
             profile_key_registrations: all_profile_key_registrations,
             tools: all_tools,
             plugins: plugins.to_vec(),
-            agent_spec: None,
         })
     }
 
@@ -181,7 +180,6 @@ impl ExecutionEnv {
             profile_key_registrations: Vec::new(),
             tools: HashMap::new(),
             plugins: Vec::new(),
-            agent_spec: None,
         }
     }
 
@@ -191,12 +189,6 @@ impl ExecutionEnv {
             .iter()
             .map(|t| Arc::clone(&t.transform))
             .collect()
-    }
-
-    /// Attach an agent spec for lifecycle hooks.
-    pub fn with_agent_spec(mut self, spec: Arc<AgentSpec>) -> Self {
-        self.agent_spec = Some(spec);
-        self
     }
 
     /// Get all tagged hooks for a phase.
