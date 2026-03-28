@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import {
   Renderer as JsonRenderRenderer,
+  JSONUIProvider,
   type Spec,
   type ComponentRegistry,
 } from "@json-render/react";
@@ -65,11 +66,13 @@ export function JsonRenderPanel({ data }: JsonRenderPanelProps) {
 
   return (
     <div data-testid="json-render-panel" className="my-2">
-      <JsonRenderRenderer
-        spec={spec}
-        registry={fallbackRegistry}
-        loading={false}
-      />
+      <JSONUIProvider registry={fallbackRegistry}>
+        <JsonRenderRenderer
+          spec={spec}
+          registry={fallbackRegistry}
+          loading={false}
+        />
+      </JSONUIProvider>
     </div>
   );
 }
