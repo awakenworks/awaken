@@ -51,11 +51,47 @@ struct AgUiRunRequest {
     agent_id: Option<String>,
     #[serde(default)]
     messages: Vec<AgUiMessage>,
-    #[serde(default, alias = "context")]
+    #[serde(default)]
     state: Option<Value>,
+    /// AG-UI `context` array — accepted as an alternative/supplement to `state`.
+    #[serde(default)]
+    context: Option<Value>,
     #[serde(default)]
     #[allow(dead_code)] // deserialized from AG-UI request, reserved for resume handling
     resume: Option<AgUiResumePayload>,
+}
+
+impl AgUiRunRequest {
+    /// Return the effective frontend context by merging `state` and `context`.
+    /// CopilotKit sends both fields; the old `alias = "context"` on `state`
+    /// caused serde to reject the request as a duplicate field.
+    fn effective_state(
+        self,
+    ) -> (
+        Option<String>,
+        Option<String>,
+        Vec<AgUiMessage>,
+        Option<Value>,
+        Option<AgUiResumePayload>,
+    ) {
+        let state = match (self.state, self.context) {
+            (Some(s), None) | (Some(s), Some(Value::Null)) => Some(s),
+            (None, Some(c)) | (Some(Value::Null), Some(c)) => Some(c),
+            (Some(Value::Object(mut s)), Some(Value::Object(c))) => {
+                s.extend(c);
+                Some(Value::Object(s))
+            }
+            (Some(s), Some(_)) => Some(s), // state wins for non-object values
+            (None, None) => None,
+        };
+        (
+            self.thread_id,
+            self.agent_id,
+            self.messages,
+            state,
+            self.resume,
+        )
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -173,10 +209,10 @@ async fn ag_ui_run_agent_scoped(
 }
 
 async fn ag_ui_run_inner(st: AppState, payload: AgUiRunRequest) -> Result<Response, ApiError> {
-    let agent_id = payload.agent_id;
-    let messages = convert_messages(payload.messages);
-    let (thread_id, messages) = crate::request::prepare_run_inputs(payload.thread_id, messages)?;
-    let messages = crate::request::inject_frontend_context(messages, payload.state);
+    let (thread_id_raw, agent_id, raw_messages, state, _resume) = payload.effective_state();
+    let messages = convert_messages(raw_messages);
+    let (thread_id, messages) = crate::request::prepare_run_inputs(thread_id_raw, messages)?;
+    let messages = crate::request::inject_frontend_context(messages, state);
 
     let mut request = RunRequest::new(thread_id, messages);
     if let Some(id) = agent_id {
@@ -280,5 +316,47 @@ mod tests {
         let converted = convert_messages(msgs);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].content.len(), 2);
+    }
+
+    #[test]
+    fn deserialize_request_with_state_and_context() {
+        // CopilotKit sends both `state` and `context` in the same request.
+        // Previously `context` was a serde alias for `state`, causing a
+        // "duplicate field" deserialization error.
+        let raw = json!({
+            "threadId": "t1",
+            "messages": [{"role": "user", "content": "hi"}],
+            "state": {"key": "from_state"},
+            "context": [{"type": "text", "text": "extra"}]
+        });
+        let req: AgUiRunRequest = serde_json::from_value(raw).expect("should deserialize");
+        assert!(req.state.is_some());
+        assert!(req.context.is_some());
+    }
+
+    #[test]
+    fn effective_state_merges_objects() {
+        let raw = json!({
+            "threadId": "t1",
+            "messages": [],
+            "state": {"a": 1},
+            "context": {"b": 2}
+        });
+        let req: AgUiRunRequest = serde_json::from_value(raw).unwrap();
+        let (_, _, _, state, _) = req.effective_state();
+        let obj = state.unwrap();
+        assert_eq!(obj["a"], json!(1));
+        assert_eq!(obj["b"], json!(2));
+    }
+
+    #[test]
+    fn effective_state_context_only() {
+        let raw = json!({
+            "messages": [],
+            "context": [{"type": "text"}]
+        });
+        let req: AgUiRunRequest = serde_json::from_value(raw).unwrap();
+        let (_, _, _, state, _) = req.effective_state();
+        assert!(state.is_some());
     }
 }
