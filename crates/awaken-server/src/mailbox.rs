@@ -23,6 +23,7 @@ use awaken_contract::contract::mailbox::{
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::StorageError;
 use awaken_contract::contract::suspension::{ToolCallOutcome, ToolCallResume};
+use awaken_contract::now_ms;
 use awaken_runtime::{AgentRuntime, RunRequest};
 
 use crate::transport::channel_sink::ChannelEventSink;
@@ -836,14 +837,6 @@ fn classify_error(
             }
         }
     }
-}
-
-/// Current time in milliseconds since UNIX epoch.
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64
 }
 
 // ── Tests ────────────────────────────────────────────────────────────

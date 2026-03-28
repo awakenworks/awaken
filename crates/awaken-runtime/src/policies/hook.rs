@@ -6,6 +6,7 @@ use crate::hooks::{PhaseContext, PhaseHook};
 use crate::state::StateCommand;
 use awaken_contract::StateError;
 use awaken_contract::contract::lifecycle::TerminationReason;
+use awaken_contract::now_ms;
 
 use super::policy::{StopDecision, StopPolicy, StopPolicyStats};
 use super::state::{StopConditionStatsKey, StopConditionStatsState};
@@ -17,15 +18,8 @@ pub(super) struct StopConditionHook {
 }
 
 impl StopConditionHook {
-    fn now_ms() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64
-    }
-
     fn build_stats(&self, ctx: &PhaseContext) -> (StopConditionStatsState, StopPolicyStats) {
-        let now = Self::now_ms();
+        let now = now_ms();
         let mut state = ctx
             .state::<StopConditionStatsKey>()
             .cloned()
@@ -109,7 +103,7 @@ impl PhaseHook for StopConditionHook {
                 let (_, done_reason) = reason.to_run_status();
                 cmd.update::<RunLifecycle>(RunLifecycleUpdate::Done {
                     done_reason: done_reason.unwrap_or_default(),
-                    updated_at: Self::now_ms(),
+                    updated_at: now_ms(),
                 });
                 return Ok(cmd);
             }

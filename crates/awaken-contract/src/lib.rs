@@ -7,6 +7,10 @@ pub mod model;
 pub mod registry_spec;
 pub mod state;
 pub mod thread;
+pub mod time;
+
+// ── time ──
+pub use time::now_ms;
 
 // ── error ──
 pub use error::{StateError, UnknownKeyPolicy};

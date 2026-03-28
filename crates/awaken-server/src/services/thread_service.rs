@@ -12,8 +12,8 @@ pub async fn create_thread(
     if let Some(t) = title {
         thread.metadata.title = Some(t);
     }
-    thread.metadata.created_at = Some(now_millis());
-    thread.metadata.updated_at = Some(now_millis());
+    thread.metadata.created_at = Some(now_ms());
+    thread.metadata.updated_at = Some(now_ms());
     store.save_thread(&thread).await?;
     Ok(thread)
 }
@@ -46,18 +46,12 @@ pub async fn update_thread_title(
         .await?
         .ok_or_else(|| StorageError::NotFound(thread_id.to_string()))?;
     thread.metadata.title = Some(title);
-    thread.metadata.updated_at = Some(now_millis());
+    thread.metadata.updated_at = Some(now_ms());
     store.save_thread(&thread).await?;
     Ok(thread)
 }
 
-fn now_millis() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
+use awaken_contract::now_ms;
 
 #[cfg(test)]
 mod tests {

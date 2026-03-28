@@ -105,12 +105,7 @@ pub struct AgentRunResult {
 
 // -- Shared helpers --
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64
-}
+pub(crate) use awaken_contract::now_ms;
 
 fn commit_update<S: crate::state::StateKey>(
     store: &crate::state::StateStore,
