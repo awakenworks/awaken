@@ -77,52 +77,80 @@ impl StateKey for PermissionPolicyKey {
     }
 }
 
-impl PermissionPolicy {
-    fn upsert_tool_rule(&mut self, tool_id: String, behavior: ToolPermissionBehavior) {
-        let rule = PermissionRule::new_tool(tool_id, behavior)
+// ---------------------------------------------------------------------------
+// Shared reduce helpers
+// ---------------------------------------------------------------------------
+
+fn upsert_tool_rule(
+    rules: &mut HashMap<String, PermissionRule>,
+    tool_id: String,
+    behavior: ToolPermissionBehavior,
+    source: PermissionRuleSource,
+) {
+    let rule = PermissionRule::new_tool(tool_id, behavior)
+        .with_scope(PermissionRuleScope::Thread)
+        .with_source(source);
+    rules.insert(rule.subject.key(), rule);
+}
+
+fn upsert_pattern_rule(
+    rules: &mut HashMap<String, PermissionRule>,
+    pattern_str: String,
+    behavior: ToolPermissionBehavior,
+    source: PermissionRuleSource,
+) {
+    if let Ok(pattern) = parse_pattern(&pattern_str) {
+        let rule = PermissionRule::new_pattern(pattern, behavior)
             .with_scope(PermissionRuleScope::Thread)
-            .with_source(PermissionRuleSource::Runtime);
-        self.rules.insert(rule.subject.key(), rule);
+            .with_source(source);
+        rules.insert(rule.subject.key(), rule);
     }
+}
 
-    fn upsert_pattern_rule(&mut self, pattern_str: String, behavior: ToolPermissionBehavior) {
-        if let Ok(pattern) = parse_pattern(&pattern_str) {
-            let rule = PermissionRule::new_pattern(pattern, behavior)
-                .with_scope(PermissionRuleScope::Thread)
-                .with_source(PermissionRuleSource::Runtime);
-            self.rules.insert(rule.subject.key(), rule);
+/// Shared reducer for all [`PermissionAction`] variants except `SetDefault`,
+/// which is a no-op in this function (only meaningful for [`PermissionPolicy`]).
+fn reduce_permission_action(
+    rules: &mut HashMap<String, PermissionRule>,
+    action: PermissionAction,
+    source: PermissionRuleSource,
+) {
+    match action {
+        PermissionAction::SetTool { tool_id, behavior } => {
+            upsert_tool_rule(rules, tool_id, behavior, source);
         }
+        PermissionAction::SetRule { pattern, behavior } => {
+            upsert_pattern_rule(rules, pattern, behavior, source);
+        }
+        PermissionAction::AllowTool { tool_id } => {
+            upsert_tool_rule(rules, tool_id, ToolPermissionBehavior::Allow, source);
+        }
+        PermissionAction::DenyTool { tool_id } => {
+            upsert_tool_rule(rules, tool_id, ToolPermissionBehavior::Deny, source);
+        }
+        PermissionAction::RemoveTool { tool_id } => {
+            rules.remove(
+                &PermissionRule::new_tool(tool_id, ToolPermissionBehavior::Ask)
+                    .subject
+                    .key(),
+            );
+        }
+        PermissionAction::RemoveRule { pattern } => {
+            if let Ok(parsed) = parse_pattern(&pattern) {
+                rules.remove(&PermissionSubject::pattern(parsed).key());
+            }
+        }
+        PermissionAction::ClearTools => rules.clear(),
+        PermissionAction::SetDefault { .. } => {}
     }
+}
 
+impl PermissionPolicy {
     fn reduce(&mut self, action: PermissionAction) {
-        match action {
-            PermissionAction::SetDefault { behavior } => self.default_behavior = behavior,
-            PermissionAction::SetTool { tool_id, behavior } => {
-                self.upsert_tool_rule(tool_id, behavior);
-            }
-            PermissionAction::SetRule { pattern, behavior } => {
-                self.upsert_pattern_rule(pattern, behavior);
-            }
-            PermissionAction::AllowTool { tool_id } => {
-                self.upsert_tool_rule(tool_id, ToolPermissionBehavior::Allow);
-            }
-            PermissionAction::DenyTool { tool_id } => {
-                self.upsert_tool_rule(tool_id, ToolPermissionBehavior::Deny);
-            }
-            PermissionAction::RemoveTool { tool_id } => {
-                self.rules.remove(
-                    &PermissionRule::new_tool(tool_id, ToolPermissionBehavior::Ask)
-                        .subject
-                        .key(),
-                );
-            }
-            PermissionAction::RemoveRule { pattern } => {
-                if let Ok(parsed) = parse_pattern(&pattern) {
-                    self.rules.remove(&PermissionSubject::pattern(parsed).key());
-                }
-            }
-            PermissionAction::ClearTools => self.rules.clear(),
+        if let PermissionAction::SetDefault { behavior } = action {
+            self.default_behavior = behavior;
+            return;
         }
+        reduce_permission_action(&mut self.rules, action, PermissionRuleSource::Runtime);
     }
 }
 
@@ -157,52 +185,8 @@ impl StateKey for PermissionOverridesKey {
 }
 
 impl PermissionOverrides {
-    fn upsert_tool_rule(&mut self, tool_id: String, behavior: ToolPermissionBehavior) {
-        let rule = PermissionRule::new_tool(tool_id, behavior)
-            .with_scope(PermissionRuleScope::Thread)
-            .with_source(PermissionRuleSource::Skill);
-        self.rules.insert(rule.subject.key(), rule);
-    }
-
-    fn upsert_pattern_rule(&mut self, pattern_str: String, behavior: ToolPermissionBehavior) {
-        if let Ok(pattern) = parse_pattern(&pattern_str) {
-            let rule = PermissionRule::new_pattern(pattern, behavior)
-                .with_scope(PermissionRuleScope::Thread)
-                .with_source(PermissionRuleSource::Skill);
-            self.rules.insert(rule.subject.key(), rule);
-        }
-    }
-
     fn reduce(&mut self, action: PermissionAction) {
-        match action {
-            PermissionAction::SetTool { tool_id, behavior } => {
-                self.upsert_tool_rule(tool_id, behavior);
-            }
-            PermissionAction::SetRule { pattern, behavior } => {
-                self.upsert_pattern_rule(pattern, behavior);
-            }
-            PermissionAction::AllowTool { tool_id } => {
-                self.upsert_tool_rule(tool_id, ToolPermissionBehavior::Allow);
-            }
-            PermissionAction::DenyTool { tool_id } => {
-                self.upsert_tool_rule(tool_id, ToolPermissionBehavior::Deny);
-            }
-            PermissionAction::RemoveTool { tool_id } => {
-                self.rules.remove(
-                    &PermissionRule::new_tool(tool_id, ToolPermissionBehavior::Ask)
-                        .subject
-                        .key(),
-                );
-            }
-            PermissionAction::RemoveRule { pattern } => {
-                if let Ok(parsed) = parse_pattern(&pattern) {
-                    self.rules.remove(&PermissionSubject::pattern(parsed).key());
-                }
-            }
-            PermissionAction::ClearTools => self.rules.clear(),
-            // SetDefault has no run-scoped equivalent.
-            PermissionAction::SetDefault { .. } => {}
-        }
+        reduce_permission_action(&mut self.rules, action, PermissionRuleSource::Skill);
     }
 }
 
