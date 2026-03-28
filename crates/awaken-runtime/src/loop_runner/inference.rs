@@ -216,7 +216,7 @@ pub(super) async fn compact_with_llm(
 
     // Replace messages up to boundary with the summary
     let post_tokens =
-        awaken_contract::contract::transform::estimate_tokens_arc(&messages[boundary + 1..]);
+        awaken_contract::contract::transform::estimate_tokens(&messages[boundary + 1..]);
     messages.drain(..=boundary);
     messages.insert(
         0,

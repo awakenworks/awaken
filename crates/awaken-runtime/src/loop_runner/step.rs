@@ -255,7 +255,7 @@ async fn run_inference_phase(
     if let Some(policy) = ctx.agent.context_policy()
         && let Some(threshold) = policy.autocompact_threshold
     {
-        let token_est = awaken_contract::contract::transform::estimate_tokens_arc(ctx.messages);
+        let token_est = awaken_contract::contract::transform::estimate_tokens(ctx.messages);
         if token_est >= threshold {
             compact_with_llm(ctx.agent, ctx.messages, policy).await?;
         }

@@ -4,6 +4,8 @@
 //! the assembled message list before it is sent to the LLM executor.
 //! Transforms are applied in registration order after context message injection.
 
+use std::borrow::Borrow;
+
 use super::content::ContentBlock;
 use super::message::Message;
 use super::tool::ToolDescriptor;
@@ -60,13 +62,13 @@ pub fn estimate_message_tokens(msg: &Message) -> usize {
 }
 
 /// Estimate total token count for a slice of messages.
-pub fn estimate_tokens(messages: &[Message]) -> usize {
-    messages.iter().map(estimate_message_tokens).sum()
-}
-
-/// Estimate total token count for Arc-wrapped messages.
-pub fn estimate_tokens_arc(messages: &[std::sync::Arc<Message>]) -> usize {
-    messages.iter().map(|m| estimate_message_tokens(m)).sum()
+///
+/// Accepts both `&[Message]` and `&[Arc<Message>]` via the `Borrow<Message>` bound.
+pub fn estimate_tokens<M: Borrow<Message>>(messages: &[M]) -> usize {
+    messages
+        .iter()
+        .map(|m| estimate_message_tokens(m.borrow()))
+        .sum()
 }
 
 /// Estimate token count for tool descriptors.
@@ -158,7 +160,7 @@ mod tests {
 
     #[test]
     fn estimate_tokens_empty_messages() {
-        assert_eq!(estimate_tokens(&[]), 0);
+        assert_eq!(estimate_tokens::<Message>(&[]), 0);
     }
 
     #[test]
