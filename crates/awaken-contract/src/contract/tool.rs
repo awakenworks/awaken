@@ -341,18 +341,26 @@ impl ToolCallContext {
         progress: Option<f64>,
     ) {
         if let Some(sink) = &self.activity_sink {
+            let parent_call_id = self.run_identity.parent_tool_call_id.clone();
+            let parent_node_id = parent_call_id
+                .as_ref()
+                .map(|id| format!("tool_call:{id}"))
+                .or_else(|| Some(format!("run:{}", self.run_identity.run_id)));
             let state = ToolCallProgressState {
                 schema: "tool-call-progress.v1".into(),
-                node_id: self.call_id.clone(),
+                node_id: format!("tool_call:{}", self.call_id),
                 call_id: self.call_id.clone(),
                 tool_name: self.tool_name.clone(),
                 status,
                 progress,
                 loaded: None,
                 total: None,
-                message: message.map(|s| s.to_string()),
-                parent_node_id: None,
-                parent_call_id: None,
+                message: message.map(ToOwned::to_owned),
+                parent_node_id,
+                parent_call_id,
+                run_id: Some(self.run_identity.run_id.clone()),
+                parent_run_id: self.run_identity.parent_run_id.clone(),
+                thread_id: Some(self.run_identity.thread_id.clone()),
             };
             let content = serde_json::to_value(&state).unwrap_or_default();
             sink.emit(AgentEvent::ActivitySnapshot {
@@ -819,7 +827,7 @@ mod tests {
                 assert_eq!(content["tool_name"], "search");
                 assert_eq!(content["progress"], 0.5);
                 assert_eq!(content["message"], "Searching...");
-                assert_eq!(content["node_id"], "call-1");
+                assert_eq!(content["node_id"], "tool_call:call-1");
                 assert_eq!(content["call_id"], "call-1");
                 assert_eq!(*replace, Some(true));
             }
@@ -833,6 +841,78 @@ mod tests {
         let ctx = ToolCallContext::test_default();
         ctx.report_progress(ProgressStatus::Running, None, None)
             .await;
+    }
+
+    #[tokio::test]
+    async fn report_progress_populates_lineage_fields() {
+        use crate::contract::event::AgentEvent;
+        use crate::contract::event_sink::VecEventSink;
+        use crate::contract::identity::RunIdentity;
+        use crate::contract::progress::ProgressStatus;
+
+        let sink = Arc::new(VecEventSink::new());
+        let mut ctx = ToolCallContext::test_default();
+        ctx.call_id = "call-7".into();
+        ctx.tool_name = "fetch".into();
+        ctx.run_identity = RunIdentity {
+            run_id: "run-abc".into(),
+            parent_run_id: Some("run-parent".into()),
+            thread_id: "thread-xyz".into(),
+            parent_tool_call_id: Some("parent-call-1".into()),
+            ..RunIdentity::default()
+        };
+        ctx.activity_sink = Some(sink.clone() as Arc<dyn EventSink>);
+
+        ctx.report_progress(ProgressStatus::Running, None, None)
+            .await;
+
+        let events = sink.events();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AgentEvent::ActivitySnapshot { content, .. } => {
+                assert_eq!(content["node_id"], "tool_call:call-7");
+                assert_eq!(content["run_id"], "run-abc");
+                assert_eq!(content["parent_run_id"], "run-parent");
+                assert_eq!(content["thread_id"], "thread-xyz");
+                assert_eq!(content["parent_call_id"], "parent-call-1");
+                assert_eq!(content["parent_node_id"], "tool_call:parent-call-1");
+            }
+            other => panic!("expected ActivitySnapshot, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn report_progress_parent_node_id_falls_back_to_run_when_no_parent_call() {
+        use crate::contract::event::AgentEvent;
+        use crate::contract::event_sink::VecEventSink;
+        use crate::contract::identity::RunIdentity;
+        use crate::contract::progress::ProgressStatus;
+
+        let sink = Arc::new(VecEventSink::new());
+        let mut ctx = ToolCallContext::test_default();
+        ctx.call_id = "call-8".into();
+        ctx.tool_name = "fetch".into();
+        ctx.run_identity = RunIdentity {
+            run_id: "run-xyz".into(),
+            parent_tool_call_id: None,
+            ..RunIdentity::default()
+        };
+        ctx.activity_sink = Some(sink.clone() as Arc<dyn EventSink>);
+
+        ctx.report_progress(ProgressStatus::Pending, None, None)
+            .await;
+
+        let events = sink.events();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AgentEvent::ActivitySnapshot { content, .. } => {
+                assert_eq!(content["parent_node_id"], "run:run-xyz");
+                assert!(
+                    content.get("parent_call_id").is_none() || content["parent_call_id"].is_null()
+                );
+            }
+            other => panic!("expected ActivitySnapshot, got: {other:?}"),
+        }
     }
 
     // ── ToolStatus serde tests (migrated from uncarve) ──
@@ -1314,7 +1394,7 @@ mod tests {
                 assert_eq!(content["progress"], 0.75);
                 assert_eq!(content["tool_name"], "test_tool");
                 assert_eq!(content["call_id"], "call-100");
-                assert_eq!(content["node_id"], "call-100");
+                assert_eq!(content["node_id"], "tool_call:call-100");
                 assert_eq!(content["schema"], "tool-call-progress.v1");
             }
             other => panic!("expected ActivitySnapshot, got: {other:?}"),

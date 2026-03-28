@@ -37,6 +37,15 @@ pub struct ToolCallProgressState {
     /// Parent tool call ID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_call_id: Option<String>,
+    /// Run ID of the owning agent run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// Parent run ID (set when this run was spawned by another run).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<String>,
+    /// Thread ID of the owning thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
 }
 
 fn default_schema() -> String {
@@ -72,6 +81,9 @@ mod tests {
             message: Some("Searching...".into()),
             parent_node_id: None,
             parent_call_id: None,
+            run_id: None,
+            parent_run_id: None,
+            thread_id: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         let parsed: ToolCallProgressState = serde_json::from_str(&json).unwrap();
@@ -109,6 +121,9 @@ mod tests {
             message: None,
             parent_node_id: None,
             parent_call_id: None,
+            run_id: None,
+            parent_run_id: None,
+            thread_id: None,
         };
         let value: serde_json::Value = serde_json::to_value(&state).unwrap();
         let obj = value.as_object().unwrap();
@@ -118,6 +133,9 @@ mod tests {
         assert!(!obj.contains_key("message"));
         assert!(!obj.contains_key("parent_node_id"));
         assert!(!obj.contains_key("parent_call_id"));
+        assert!(!obj.contains_key("run_id"));
+        assert!(!obj.contains_key("parent_run_id"));
+        assert!(!obj.contains_key("thread_id"));
     }
 
     #[test]
@@ -173,6 +191,9 @@ mod tests {
             message: None,
             parent_node_id: Some("parent-1".into()),
             parent_call_id: Some("parent-1".into()),
+            run_id: None,
+            parent_run_id: None,
+            thread_id: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("parent_node_id"));
@@ -180,6 +201,34 @@ mod tests {
         let parsed: ToolCallProgressState = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.parent_node_id.as_deref(), Some("parent-1"));
         assert_eq!(parsed.parent_call_id.as_deref(), Some("parent-1"));
+    }
+
+    #[test]
+    fn progress_state_lineage_fields_roundtrip() {
+        let state = ToolCallProgressState {
+            schema: "tool-call-progress.v1".into(),
+            node_id: "tool_call:call-42".into(),
+            call_id: "call-42".into(),
+            tool_name: "search".into(),
+            status: ProgressStatus::Running,
+            progress: None,
+            loaded: None,
+            total: None,
+            message: None,
+            parent_node_id: Some("run:run-1".into()),
+            parent_call_id: None,
+            run_id: Some("run-1".into()),
+            parent_run_id: Some("run-0".into()),
+            thread_id: Some("thread-abc".into()),
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(json.contains("run_id"));
+        assert!(json.contains("parent_run_id"));
+        assert!(json.contains("thread_id"));
+        let parsed: ToolCallProgressState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.run_id.as_deref(), Some("run-1"));
+        assert_eq!(parsed.parent_run_id.as_deref(), Some("run-0"));
+        assert_eq!(parsed.thread_id.as_deref(), Some("thread-abc"));
     }
 
     #[test]
