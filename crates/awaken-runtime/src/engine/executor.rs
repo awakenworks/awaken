@@ -7,7 +7,7 @@ use genai::chat::{ChatOptions, ChatStreamEvent};
 
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::executor::{
-    InferenceExecutionError, InferenceRequest, InferenceStream, LlmExecutor, StreamEvent,
+    InferenceExecutionError, InferenceRequest, InferenceStream, LlmExecutor, LlmStreamEvent,
 };
 use awaken_contract::contract::inference::{StopReason, StreamResult};
 
@@ -185,25 +185,25 @@ impl LlmExecutor for GenaiExecutor {
                                 match output {
                                     StreamOutput::TextDelta(delta) => {
                                         return Some((
-                                            Ok(StreamEvent::TextDelta(delta)),
+                                            Ok(LlmStreamEvent::TextDelta(delta)),
                                             (stream, collector),
                                         ));
                                     }
                                     StreamOutput::ReasoningDelta(delta) => {
                                         return Some((
-                                            Ok(StreamEvent::ReasoningDelta(delta)),
+                                            Ok(LlmStreamEvent::ReasoningDelta(delta)),
                                             (stream, collector),
                                         ));
                                     }
                                     StreamOutput::ToolCallStart { id, name } => {
                                         return Some((
-                                            Ok(StreamEvent::ToolCallStart { id, name }),
+                                            Ok(LlmStreamEvent::ToolCallStart { id, name }),
                                             (stream, collector),
                                         ));
                                     }
                                     StreamOutput::ToolCallDelta { id, args_delta } => {
                                         return Some((
-                                            Ok(StreamEvent::ToolCallDelta { id, args_delta }),
+                                            Ok(LlmStreamEvent::ToolCallDelta { id, args_delta }),
                                             (stream, collector),
                                         ));
                                     }
@@ -214,7 +214,7 @@ impl LlmExecutor for GenaiExecutor {
                                             let stop =
                                                 result.stop_reason.unwrap_or(StopReason::EndTurn);
                                             return Some((
-                                                Ok(StreamEvent::Stop(stop)),
+                                                Ok(LlmStreamEvent::Stop(stop)),
                                                 (stream, StreamCollector::new()),
                                             ));
                                         }

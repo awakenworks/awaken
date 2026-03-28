@@ -39,7 +39,7 @@ pub enum InferenceExecutionError {
 
 /// A token-level streaming event from the LLM.
 #[derive(Debug, Clone)]
-pub enum StreamEvent {
+pub enum LlmStreamEvent {
     /// Incremental text content.
     TextDelta(String),
     /// Incremental reasoning/thinking content.
@@ -56,13 +56,13 @@ pub enum StreamEvent {
     Stop(super::inference::StopReason),
 }
 
-/// A boxed stream of `StreamEvent`s.
+/// A boxed stream of `LlmStreamEvent`s.
 ///
 /// Implementors wrap their provider-specific streaming response into this type.
 /// The loop runner consumes events, emits deltas via `EventSink`, and collects
 /// the final `StreamResult`.
 pub type InferenceStream = std::pin::Pin<
-    Box<dyn futures::Stream<Item = Result<StreamEvent, InferenceExecutionError>> + Send>,
+    Box<dyn futures::Stream<Item = Result<LlmStreamEvent, InferenceExecutionError>> + Send>,
 >;
 
 /// Abstraction over LLM inference backends.
@@ -102,10 +102,10 @@ pub trait LlmExecutor: Send + Sync {
     fn name(&self) -> &str;
 }
 
-/// Convert a collected `StreamResult` into a sequence of `StreamEvent`s.
+/// Convert a collected `StreamResult` into a sequence of `LlmStreamEvent`s.
 pub fn collected_to_stream_events(
     result: StreamResult,
-) -> Vec<Result<StreamEvent, InferenceExecutionError>> {
+) -> Vec<Result<LlmStreamEvent, InferenceExecutionError>> {
     use super::content::ContentBlock;
     let mut events = Vec::new();
 
@@ -113,10 +113,10 @@ pub fn collected_to_stream_events(
     for block in &result.content {
         match block {
             ContentBlock::Text { text } if !text.is_empty() => {
-                events.push(Ok(StreamEvent::TextDelta(text.clone())));
+                events.push(Ok(LlmStreamEvent::TextDelta(text.clone())));
             }
             ContentBlock::Thinking { thinking } if !thinking.is_empty() => {
-                events.push(Ok(StreamEvent::ReasoningDelta(thinking.clone())));
+                events.push(Ok(LlmStreamEvent::ReasoningDelta(thinking.clone())));
             }
             _ => {}
         }
@@ -124,13 +124,13 @@ pub fn collected_to_stream_events(
 
     // Emit tool calls
     for call in &result.tool_calls {
-        events.push(Ok(StreamEvent::ToolCallStart {
+        events.push(Ok(LlmStreamEvent::ToolCallStart {
             id: call.id.clone(),
             name: call.name.clone(),
         }));
         let args = serde_json::to_string(&call.arguments).unwrap_or_default();
         if !args.is_empty() {
-            events.push(Ok(StreamEvent::ToolCallDelta {
+            events.push(Ok(LlmStreamEvent::ToolCallDelta {
                 id: call.id.clone(),
                 args_delta: args,
             }));
@@ -139,12 +139,12 @@ pub fn collected_to_stream_events(
 
     // Emit usage
     if let Some(usage) = result.usage {
-        events.push(Ok(StreamEvent::Usage(usage)));
+        events.push(Ok(LlmStreamEvent::Usage(usage)));
     }
 
     // Emit stop reason
     if let Some(stop) = result.stop_reason {
-        events.push(Ok(StreamEvent::Stop(stop)));
+        events.push(Ok(LlmStreamEvent::Stop(stop)));
     }
 
     events

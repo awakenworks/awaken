@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::cancellation::CancellationToken;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::executor::{InferenceRequest, StreamEvent};
+use awaken_contract::contract::executor::{InferenceRequest, LlmStreamEvent};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::contract::message::{Message, ToolCall};
 use futures::StreamExt;
@@ -67,14 +67,14 @@ pub(super) async fn execute_streaming(
         let event = event_result?;
 
         match event {
-            StreamEvent::TextDelta(delta) => {
+            LlmStreamEvent::TextDelta(delta) => {
                 current_text.push_str(&delta);
                 sink.emit(AgentEvent::TextDelta { delta }).await;
             }
-            StreamEvent::ReasoningDelta(delta) => {
+            LlmStreamEvent::ReasoningDelta(delta) => {
                 sink.emit(AgentEvent::ReasoningDelta { delta }).await;
             }
-            StreamEvent::ToolCallStart { id, name } => {
+            LlmStreamEvent::ToolCallStart { id, name } => {
                 sink.emit(AgentEvent::ToolCallStart {
                     id: id.clone(),
                     name: name.clone(),
@@ -84,19 +84,19 @@ pub(super) async fn execute_streaming(
                 current_tool_args.insert(id.clone(), String::new());
                 tool_order.push(id);
             }
-            StreamEvent::ToolCallDelta { id, args_delta } => {
+            LlmStreamEvent::ToolCallDelta { id, args_delta } => {
                 if let Some(buf) = current_tool_args.get_mut(&id) {
                     buf.push_str(&args_delta);
                 }
                 sink.emit(AgentEvent::ToolCallDelta { id, args_delta })
                     .await;
             }
-            StreamEvent::ContentBlockStop => {
+            LlmStreamEvent::ContentBlockStop => {
                 if !current_text.is_empty() {
                     content_blocks.push(ContentBlock::text(std::mem::take(&mut current_text)));
                 }
             }
-            StreamEvent::Usage(u) => {
+            LlmStreamEvent::Usage(u) => {
                 if let Some(v) = u.prompt_tokens {
                     *total_input_tokens = total_input_tokens.saturating_add(v.max(0) as u64);
                 }
@@ -105,7 +105,7 @@ pub(super) async fn execute_streaming(
                 }
                 usage = Some(u);
             }
-            StreamEvent::Stop(reason) => {
+            LlmStreamEvent::Stop(reason) => {
                 stop_reason = Some(reason);
             }
         }

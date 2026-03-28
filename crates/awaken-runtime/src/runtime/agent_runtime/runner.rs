@@ -931,30 +931,30 @@ mod tests {
                     + '_,
             >,
         > {
-            use awaken_contract::contract::executor::{InferenceStream, StreamEvent};
+            use awaken_contract::contract::executor::{InferenceStream, LlmStreamEvent};
             use awaken_contract::contract::inference::TokenUsage;
 
             Box::pin(async move {
                 let n = self.call_count.fetch_add(1, Ordering::SeqCst);
                 if n == 0 {
                     // First call: emit a tool call with truncated JSON, then MaxTokens
-                    let events: Vec<Result<StreamEvent, InferenceExecutionError>> = vec![
-                        Ok(StreamEvent::TextDelta("partial ".into())),
-                        Ok(StreamEvent::ToolCallStart {
+                    let events: Vec<Result<LlmStreamEvent, InferenceExecutionError>> = vec![
+                        Ok(LlmStreamEvent::TextDelta("partial ".into())),
+                        Ok(LlmStreamEvent::ToolCallStart {
                             id: "tc1".into(),
                             name: "calculator".into(),
                         }),
                         // Truncated JSON: missing closing brace
-                        Ok(StreamEvent::ToolCallDelta {
+                        Ok(LlmStreamEvent::ToolCallDelta {
                             id: "tc1".into(),
                             args_delta: r#"{"expr": "1+1"#.into(),
                         }),
-                        Ok(StreamEvent::Usage(TokenUsage {
+                        Ok(LlmStreamEvent::Usage(TokenUsage {
                             prompt_tokens: Some(50),
                             completion_tokens: Some(100),
                             ..Default::default()
                         })),
-                        Ok(StreamEvent::Stop(StopReason::MaxTokens)),
+                        Ok(LlmStreamEvent::Stop(StopReason::MaxTokens)),
                     ];
                     Ok(Box::pin(futures::stream::iter(events)) as InferenceStream)
                 } else {
@@ -1052,28 +1052,28 @@ mod tests {
                         + '_,
                 >,
             > {
-                use awaken_contract::contract::executor::{InferenceStream, StreamEvent};
+                use awaken_contract::contract::executor::{InferenceStream, LlmStreamEvent};
                 use awaken_contract::contract::inference::TokenUsage;
 
                 Box::pin(async move {
                     self.call_count.fetch_add(1, Ordering::SeqCst);
                     // Always return truncated tool call
-                    let events: Vec<Result<StreamEvent, InferenceExecutionError>> = vec![
-                        Ok(StreamEvent::TextDelta("truncated ".into())),
-                        Ok(StreamEvent::ToolCallStart {
+                    let events: Vec<Result<LlmStreamEvent, InferenceExecutionError>> = vec![
+                        Ok(LlmStreamEvent::TextDelta("truncated ".into())),
+                        Ok(LlmStreamEvent::ToolCallStart {
                             id: format!("tc{}", self.call_count.load(Ordering::SeqCst)),
                             name: "calculator".into(),
                         }),
-                        Ok(StreamEvent::ToolCallDelta {
+                        Ok(LlmStreamEvent::ToolCallDelta {
                             id: format!("tc{}", self.call_count.load(Ordering::SeqCst)),
                             args_delta: r#"{"incomplete"#.into(),
                         }),
-                        Ok(StreamEvent::Usage(TokenUsage {
+                        Ok(LlmStreamEvent::Usage(TokenUsage {
                             prompt_tokens: Some(50),
                             completion_tokens: Some(100),
                             ..Default::default()
                         })),
-                        Ok(StreamEvent::Stop(StopReason::MaxTokens)),
+                        Ok(LlmStreamEvent::Stop(StopReason::MaxTokens)),
                     ];
                     Ok(Box::pin(futures::stream::iter(events)) as InferenceStream)
                 })

@@ -1406,7 +1406,7 @@ impl LlmExecutor for SlowStreamingLlm {
                 + '_,
         >,
     > {
-        use awaken::contract::executor::StreamEvent;
+        use awaken::contract::executor::LlmStreamEvent;
         use futures::StreamExt as _;
         let deltas = self.deltas.clone();
         let delay = self.delay_ms;
@@ -1416,12 +1416,13 @@ impl LlmExecutor for SlowStreamingLlm {
                 |(mut iter, delay)| async move {
                     let delta = iter.next()?;
                     tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                    let event: Result<StreamEvent, InferenceExecutionError> =
-                        Ok(StreamEvent::TextDelta(delta));
+                    let event: Result<LlmStreamEvent, InferenceExecutionError> =
+                        Ok(LlmStreamEvent::TextDelta(delta));
                     Some((event, (iter, delay)))
                 },
             );
-            let stop = futures::stream::once(async { Ok(StreamEvent::Stop(StopReason::EndTurn)) });
+            let stop =
+                futures::stream::once(async { Ok(LlmStreamEvent::Stop(StopReason::EndTurn)) });
             let combined = stream.chain(stop);
             Ok(Box::pin(combined) as awaken::contract::executor::InferenceStream)
         })
@@ -3747,7 +3748,7 @@ async fn truncation_with_tool_calls_no_retry() {
 ///    Uses a custom execute_stream to produce truncated tool calls each time.
 #[tokio::test]
 async fn truncation_recovery_exhausts_retries() {
-    use awaken::contract::executor::StreamEvent as LlmStreamEvent;
+    use awaken::contract::executor::LlmStreamEvent;
 
     struct AlwaysTruncatingLlm {
         call_count: Mutex<usize>,
@@ -3860,7 +3861,7 @@ async fn truncation_recovery_exhausts_retries() {
 ///    (which `execute_streaming` detects as `has_incomplete_tool_calls`).
 #[tokio::test]
 async fn truncation_recovery_preserves_truncated_text() {
-    use awaken::contract::executor::StreamEvent as LlmStreamEvent;
+    use awaken::contract::executor::LlmStreamEvent;
 
     struct TruncationStreamLlm {
         call_count: Mutex<usize>,

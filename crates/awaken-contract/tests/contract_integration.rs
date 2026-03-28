@@ -1,7 +1,7 @@
 //! Integration tests verifying cross-module contract compatibility in awaken-contract.
 
 use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::event::{AgentEvent, StreamEvent};
+use awaken_contract::contract::event::{AgentEvent, WireEvent};
 use awaken_contract::contract::inference::{
     ContextCompactionMode, ContextWindowPolicy, InferenceError, InferenceModelOverride,
     InferenceOverride, LLMResponse, ReasoningEffort, StopReason, StreamResult, TokenUsage,
@@ -58,9 +58,9 @@ fn stream_event_wraps_tool_call_done_with_tool_result() {
         outcome: ToolCallOutcome::Succeeded,
     };
 
-    let se = StreamEvent::new(5, "2026-01-01T00:00:00Z", event);
+    let se = WireEvent::new(5, "2026-01-01T00:00:00Z", event);
     let wire = serde_json::to_string(&se).unwrap();
-    let parsed: StreamEvent = serde_json::from_str(&wire).unwrap();
+    let parsed: WireEvent = serde_json::from_str(&wire).unwrap();
 
     assert_eq!(parsed.seq, 5);
     if let AgentEvent::ToolCallDone {
