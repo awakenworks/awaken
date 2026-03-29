@@ -1042,6 +1042,7 @@ mod tests {
                 data: serde_json::json!("ok"),
                 message: None,
                 suspension: None,
+                metadata: Default::default(),
             },
             outcome: ToolCallOutcome::Succeeded,
         })
@@ -1058,6 +1059,7 @@ mod tests {
                 data: serde_json::json!("pending"),
                 message: None,
                 suspension: None,
+                metadata: Default::default(),
             },
             outcome: ToolCallOutcome::Suspended,
         })

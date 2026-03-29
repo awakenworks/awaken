@@ -162,6 +162,7 @@ impl Tool for SkillActivateTool {
             }),
             message: Some(format!("Launching skill: {}", meta.id)),
             suspension: None,
+            metadata: Default::default(),
         })
     }
 }

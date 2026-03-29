@@ -1,5 +1,6 @@
 //! Tool descriptor, result types, execution context, and async execution trait.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -47,6 +48,10 @@ pub struct ToolResult {
     /// Optional suspension ticket.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suspension: Option<Box<crate::contract::suspension::SuspendTicket>>,
+    /// Structured metadata attached by the tool executor (e.g. MCP server info,
+    /// UI hints). Separate from the tool result data payload.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: HashMap<String, Value>,
 }
 
 impl ToolResult {
@@ -69,8 +74,8 @@ impl ToolResult {
             status: ToolStatus::Success,
             data: data.into(),
             message: None,
-
             suspension: None,
+            metadata: HashMap::new(),
         }
     }
 
@@ -85,8 +90,8 @@ impl ToolResult {
             status: ToolStatus::Success,
             data: data.into(),
             message: Some(message.into()),
-
             suspension: None,
+            metadata: HashMap::new(),
         }
     }
 
@@ -108,8 +113,8 @@ impl ToolResult {
             status: ToolStatus::Error,
             data: Value::Null,
             message: Some(message.into()),
-
             suspension: None,
+            metadata: HashMap::new(),
         }
     }
 
@@ -131,8 +136,8 @@ impl ToolResult {
                 }
             }),
             message: Some(format!("[{code}] {message}")),
-
             suspension: None,
+            metadata: HashMap::new(),
         }
     }
 
@@ -143,8 +148,8 @@ impl ToolResult {
             status: ToolStatus::Pending,
             data: Value::Null,
             message: Some(message.into()),
-
             suspension: None,
+            metadata: HashMap::new(),
         }
     }
 
@@ -159,8 +164,8 @@ impl ToolResult {
             status: ToolStatus::Pending,
             data: Value::Null,
             message: Some(message.into()),
-
             suspension: Some(Box::new(ticket)),
+            metadata: HashMap::new(),
         }
     }
 
@@ -182,6 +187,13 @@ impl ToolResult {
     /// Convert to JSON value for serialization.
     pub fn to_json(&self) -> Value {
         serde_json::to_value(self).unwrap_or(Value::Null)
+    }
+
+    /// Attach a single metadata key-value pair.
+    #[must_use]
+    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
+        self.metadata.insert(key.into(), value.into());
+        self
     }
 }
 
