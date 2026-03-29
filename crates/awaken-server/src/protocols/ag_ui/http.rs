@@ -59,13 +59,25 @@ struct AgUiRunRequest {
     #[serde(default)]
     #[allow(dead_code)] // deserialized from AG-UI request, reserved for resume handling
     resume: Option<AgUiResumePayload>,
+    /// Frontend tool definitions sent by CopilotKit / AG-UI clients.
+    #[serde(default)]
+    tools: Vec<AgUiToolDefinition>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgUiToolDefinition {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    parameters: Option<serde_json::Value>,
 }
 
 impl AgUiRunRequest {
     /// Return the effective frontend context by merging `state` and `context`.
     /// CopilotKit sends both fields; the old `alias = "context"` on `state`
     /// caused serde to reject the request as a duplicate field.
-    fn effective_state(
+    fn into_parts(
         self,
     ) -> (
         Option<String>,
@@ -73,6 +85,7 @@ impl AgUiRunRequest {
         Vec<AgUiMessage>,
         Option<Value>,
         Option<AgUiResumePayload>,
+        Vec<AgUiToolDefinition>,
     ) {
         let state = match (self.state, self.context) {
             (Some(s), None) | (Some(s), Some(Value::Null)) => Some(s),
@@ -90,6 +103,7 @@ impl AgUiRunRequest {
             self.messages,
             state,
             self.resume,
+            self.tools,
         )
     }
 }
@@ -209,14 +223,34 @@ async fn ag_ui_run_agent_scoped(
 }
 
 async fn ag_ui_run_inner(st: AppState, payload: AgUiRunRequest) -> Result<Response, ApiError> {
-    let (thread_id_raw, agent_id, raw_messages, state, _resume) = payload.effective_state();
+    let (thread_id_raw, agent_id, raw_messages, state, _resume, frontend_tools) =
+        payload.into_parts();
     let messages = convert_messages(raw_messages);
     let (thread_id, messages) = crate::request::prepare_run_inputs(thread_id_raw, messages)?;
     let messages = crate::request::inject_frontend_context(messages, state);
 
+    // Convert AG-UI frontend tool definitions into ToolDescriptor values
+    let frontend_tools: Vec<awaken_contract::contract::tool::ToolDescriptor> = frontend_tools
+        .into_iter()
+        .map(|t| {
+            awaken_contract::contract::tool::ToolDescriptor::new(
+                &t.name,
+                &t.name,
+                t.description.as_deref().unwrap_or("Frontend tool"),
+            )
+            .with_parameters(
+                t.parameters
+                    .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}})),
+            )
+        })
+        .collect();
+
     let mut request = RunRequest::new(thread_id, messages);
     if let Some(id) = agent_id {
         request = request.with_agent_id(id);
+    }
+    if !frontend_tools.is_empty() {
+        request = request.with_frontend_tools(frontend_tools);
     }
     let (_result, event_rx) = st
         .mailbox
@@ -335,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn effective_state_merges_objects() {
+    fn into_parts_merges_objects() {
         let raw = json!({
             "threadId": "t1",
             "messages": [],
@@ -343,20 +377,20 @@ mod tests {
             "context": {"b": 2}
         });
         let req: AgUiRunRequest = serde_json::from_value(raw).unwrap();
-        let (_, _, _, state, _) = req.effective_state();
+        let (_, _, _, state, _, _) = req.into_parts();
         let obj = state.unwrap();
         assert_eq!(obj["a"], json!(1));
         assert_eq!(obj["b"], json!(2));
     }
 
     #[test]
-    fn effective_state_context_only() {
+    fn into_parts_context_only() {
         let raw = json!({
             "messages": [],
             "context": [{"type": "text"}]
         });
         let req: AgUiRunRequest = serde_json::from_value(raw).unwrap();
-        let (_, _, _, state, _) = req.effective_state();
+        let (_, _, _, state, _, _) = req.into_parts();
         assert!(state.is_some());
     }
 }

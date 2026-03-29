@@ -38,6 +38,19 @@ impl Tool for A2uiRenderTool {
              Each message must be a v0.9 A2UI object with exactly one of: \
              createSurface, updateComponents, updateDataModel, or deleteSurface.",
         )
+        .with_parameters(serde_json::json!({
+            "type": "object",
+            "required": ["messages"],
+            "properties": {
+                "messages": {
+                    "type": "array",
+                    "description": "Array of A2UI v0.9 message objects. Each object must include \
+                        \"version\": \"v0.9\" and exactly one of: createSurface, \
+                        updateComponents, updateDataModel, or deleteSurface.",
+                    "items": { "type": "object" }
+                }
+            }
+        }))
     }
 
     fn validate_args(&self, args: &Value) -> Result<(), ToolError> {

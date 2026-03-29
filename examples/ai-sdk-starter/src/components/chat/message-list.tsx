@@ -410,7 +410,7 @@ function ToolPartRenderer({
           value={askAnswers[tool.toolCallId] ?? ""}
           onChange={(v) => onAskAnswerChange(tool.toolCallId, v)}
           onSubmit={onAskSubmit}
-          disabled={isLoading}
+          disabled={false}
           themeMode={themeMode}
         />
       )}
@@ -444,7 +444,7 @@ function ToolPartRenderer({
                     highlighted: true,
                   })
                 }
-                disabled={isLoading}
+                disabled={false}
                 className={
                   themeMode === "dark"
                     ? "rounded-full border border-cyan-700/50 bg-cyan-900/30 px-3 py-1.5 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-800/40 disabled:opacity-50"
@@ -486,7 +486,7 @@ function ToolPartRenderer({
                     color,
                   })
                 }
-                disabled={isLoading}
+                disabled={false}
                 className={
                   themeMode === "dark"
                     ? "inline-flex items-center gap-2 rounded-full border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-100 transition hover:bg-slate-700 disabled:opacity-50"

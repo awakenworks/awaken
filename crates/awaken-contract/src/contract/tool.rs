@@ -428,6 +428,53 @@ impl ToolCallContext {
     }
 }
 
+/// A tool backed by a frontend-defined descriptor.
+///
+/// When the LLM calls this tool, execution suspends with
+/// `UseDecisionAsToolResult` so the protocol layer can forward the call
+/// to the frontend for client-side handling.
+pub struct FrontEndTool {
+    descriptor: ToolDescriptor,
+}
+
+impl FrontEndTool {
+    pub fn new(descriptor: ToolDescriptor) -> Self {
+        Self { descriptor }
+    }
+}
+
+#[async_trait]
+impl Tool for FrontEndTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        self.descriptor.clone()
+    }
+
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+        use super::suspension::{PendingToolCall, SuspendTicket, Suspension, ToolCallResumeMode};
+
+        let tool_name = &self.descriptor.id;
+        let call_id = ctx.call_id.clone();
+
+        let ticket = SuspendTicket::new(
+            Suspension {
+                id: call_id.clone(),
+                action: format!("tool:{tool_name}"),
+                message: String::new(),
+                parameters: args.clone(),
+                ..Default::default()
+            },
+            PendingToolCall::new(&call_id, tool_name, args),
+            ToolCallResumeMode::UseDecisionAsToolResult,
+        );
+
+        Ok(ToolResult::suspended_with(
+            tool_name,
+            "Waiting for frontend",
+            ticket,
+        ))
+    }
+}
+
 /// Async trait for implementing agent tools.
 #[async_trait]
 pub trait Tool: Send + Sync {

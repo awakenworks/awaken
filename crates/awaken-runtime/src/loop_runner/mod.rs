@@ -64,6 +64,7 @@ impl crate::plugins::Plugin for LoopStatePlugin {
         })?;
         r.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
         r.register_key::<ContextMessageStore>(StateKeyOptions::default())?;
+
         Ok(())
     }
 }
@@ -146,6 +147,12 @@ pub struct AgentLoopParams<'a> {
     pub decision_rx: Option<mpsc::UnboundedReceiver<Vec<(String, ToolCallResume)>>>,
     /// Inference parameter overrides for this run.
     pub overrides: Option<InferenceOverride>,
+    /// Frontend-defined tool descriptors to merge into the resolved agent.
+    ///
+    /// These are tools defined by the frontend (e.g. CopilotKit `useFrontendTool`)
+    /// whose execution happens client-side. They are made visible to the LLM but
+    /// have no executor — the runtime intercepts them before execution and suspends.
+    pub frontend_tools: Vec<awaken_contract::contract::tool::ToolDescriptor>,
 }
 
 /// Build an execution environment for the agent loop.

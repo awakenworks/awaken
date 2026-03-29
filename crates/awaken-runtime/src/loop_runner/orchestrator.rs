@@ -31,6 +31,7 @@ pub(super) async fn run_agent_loop_impl(
         cancellation_token,
         decision_rx,
         overrides: initial_overrides,
+        frontend_tools,
     } = params;
 
     let store = runtime.store();
@@ -52,6 +53,17 @@ pub(super) async fn run_agent_loop_impl(
         &run_identity,
     )
     .await?;
+
+    // Inject frontend-defined tools as executable FrontEndTool instances.
+    // Each suspends on execute(), so the protocol layer forwards the call
+    // to the frontend for client-side handling.
+    for desc in frontend_tools {
+        let id = desc.id.clone();
+        agent.tools.insert(
+            id,
+            std::sync::Arc::new(awaken_contract::contract::tool::FrontEndTool::new(desc)),
+        );
+    }
 
     let mut steps: usize = 0;
     let mut truncation_state = TruncationState::new();

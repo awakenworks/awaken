@@ -244,6 +244,7 @@ async fn single_step_natural_end() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -295,6 +296,7 @@ async fn tool_call_then_response() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -341,6 +343,7 @@ async fn tool_call_state_machine_transitions() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -392,6 +395,7 @@ async fn multiple_tool_calls_in_one_step() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -441,6 +445,7 @@ async fn max_rounds_exceeded() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -496,6 +501,7 @@ async fn unknown_tool_returns_error_result_not_crash() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap(); // Should NOT error — unknown tool produces ToolResult::error
@@ -552,6 +558,7 @@ async fn failing_tool_produces_error_result_continues_loop() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -586,6 +593,7 @@ async fn events_have_correct_sequence_for_single_step() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -659,6 +667,7 @@ async fn events_have_correct_sequence_with_tool_call() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -733,6 +742,7 @@ async fn lifecycle_state_reflects_custom_run_id() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -798,6 +808,7 @@ async fn phase_hooks_fire_during_loop() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -854,6 +865,7 @@ async fn tool_suspension_transitions_run_to_waiting() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -894,6 +906,7 @@ async fn resume_with_use_decision_as_tool_result() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -941,6 +954,7 @@ async fn resume_with_use_decision_as_tool_result() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -981,6 +995,7 @@ async fn resume_with_cancel_marks_tool_cancelled() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -1027,6 +1042,7 @@ async fn resume_with_cancel_marks_tool_cancelled() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -1065,6 +1081,7 @@ async fn resume_with_replay_tool_call() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -1131,6 +1148,7 @@ async fn resume_with_replay_tool_call() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -1168,6 +1186,7 @@ async fn resume_with_pass_decision_to_tool() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await;
     // This might not work because tool_call name is "passthrough" but we only have "dangerous".
@@ -1195,6 +1214,7 @@ async fn resume_with_pass_decision_to_tool() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -1257,6 +1277,7 @@ async fn resume_with_pass_decision_to_tool() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -1284,6 +1305,7 @@ async fn resume_rejects_non_waiting_run() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -1333,6 +1355,7 @@ async fn resume_rejects_unknown_call_id() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -1463,6 +1486,7 @@ async fn cancel_during_streaming_terminates_run() {
         cancellation_token: Some(token),
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -1499,6 +1523,7 @@ async fn cancel_before_inference_terminates_immediately() {
         cancellation_token: Some(token),
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -1551,6 +1576,7 @@ async fn state_snapshot_emitted_after_phase() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -1770,6 +1796,7 @@ async fn frontend_tool_intercept_suspend_and_resume() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -1835,6 +1862,7 @@ async fn frontend_tool_intercept_suspend_and_resume() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -1936,6 +1964,7 @@ async fn tool_intercept_block_terminates_run() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -2072,6 +2101,7 @@ async fn tool_intercept_set_result_skips_execution() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -2116,6 +2146,7 @@ async fn suspended_tool_preserves_state_across_resume() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -2174,6 +2205,7 @@ async fn suspended_tool_preserves_state_across_resume() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -2241,6 +2273,7 @@ async fn decision_channel_resume_resolves_suspended_call() {
         cancellation_token: None,
         decision_rx: Some(rx),
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -2299,6 +2332,7 @@ async fn cancel_decision_marks_tool_cancelled() {
         cancellation_token: None,
         decision_rx: Some(rx),
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -2341,6 +2375,7 @@ async fn permission_hook_blocks_denied_tool() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -2425,6 +2460,7 @@ async fn intercept_suspend_preserves_ticket_resume_mode() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -2485,6 +2521,7 @@ async fn intercept_suspend_preserves_ticket_resume_mode() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -2537,6 +2574,7 @@ async fn multiple_tool_calls_partial_intercept() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -2605,6 +2643,7 @@ async fn intercept_set_result_emits_tool_call_done_event() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -2674,6 +2713,7 @@ async fn resume_with_normalize_decision_result_boolean() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -2725,6 +2765,7 @@ async fn resume_with_normalize_decision_result_boolean() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -2880,6 +2921,7 @@ async fn concurrent_suspend_and_resume_via_channel() {
         cancellation_token: None,
         decision_rx: Some(rx),
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -2934,6 +2976,7 @@ async fn tool_call_lifecycle_complete_transitions_in_loop() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -3002,6 +3045,7 @@ async fn tool_call_lifecycle_complete_transitions_in_loop() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -3060,6 +3104,7 @@ async fn parallel_tools_one_fails_other_succeeds() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -3121,6 +3166,7 @@ async fn sequential_tools_stop_after_first_suspension() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -3184,6 +3230,7 @@ async fn stop_policy_max_rounds_terminates() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -3254,6 +3301,7 @@ async fn cancel_during_tool_execution() {
         cancellation_token: Some(token),
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -3296,6 +3344,7 @@ async fn empty_tool_calls_natural_end() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -3404,6 +3453,7 @@ async fn context_message_injected_before_inference() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -3489,6 +3539,7 @@ async fn tool_execution_preserves_arguments() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -3637,6 +3688,7 @@ async fn retry_startup_error_propagates() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await;
 
@@ -3679,6 +3731,7 @@ async fn inference_request_uses_configured_model_name() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -3731,6 +3784,7 @@ async fn truncation_with_tool_calls_no_retry() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -3834,6 +3888,7 @@ async fn truncation_recovery_exhausts_retries() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -3961,6 +4016,7 @@ async fn truncation_recovery_preserves_truncated_text() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -4035,6 +4091,7 @@ async fn run_finish_has_matching_thread_id() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -4156,6 +4213,7 @@ async fn all_tools_suspended_pauses_run() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -4214,6 +4272,7 @@ async fn completed_tool_round_clears_state_at_next_step() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -4291,6 +4350,7 @@ async fn after_inference_stop_prevents_tool_execution() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -4337,6 +4397,7 @@ async fn natural_end_no_tools_completes_immediately() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -4419,6 +4480,7 @@ async fn unknown_tool_in_multi_call_doesnt_crash() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -4519,6 +4581,7 @@ async fn permission_denied_does_not_replay_tool() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -4561,6 +4624,7 @@ async fn decision_for_unknown_call_id_returns_error() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -4637,6 +4701,7 @@ async fn decision_channel_rejects_illegal_transition() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -4700,6 +4765,7 @@ async fn mixed_suspended_and_completed_tools() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -4891,6 +4957,7 @@ async fn parallel_tools_all_succeed() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -4960,6 +5027,7 @@ async fn parallel_tools_mixed_outcomes_preserve_results() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -5068,6 +5136,7 @@ async fn system_prompt_included_in_inference_request() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -5144,6 +5213,7 @@ async fn message_ordering_preserved_in_inference_request() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -5216,6 +5286,7 @@ async fn tool_descriptors_sent_to_llm() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -5272,6 +5343,7 @@ async fn run_identity_fields_propagate_to_lifecycle() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -5370,6 +5442,7 @@ async fn context_message_suffix_system_injected() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -5480,6 +5553,7 @@ async fn multiple_context_messages_injected() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -5570,6 +5644,7 @@ async fn phase_hooks_fire_with_tool_call_phases() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -5638,6 +5713,7 @@ async fn step_count_increments_with_tool_calls() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -5684,6 +5760,7 @@ async fn token_usage_reported_in_inference_events() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -5744,6 +5821,7 @@ async fn blocking_plugin_allows_non_targeted_tool() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -5846,6 +5924,7 @@ async fn set_result_intercept_on_specific_tool_only() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -5961,6 +6040,7 @@ async fn phase_hook_receives_tool_context() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -6032,6 +6112,7 @@ async fn llm_error_on_second_step_propagates() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await;
 
@@ -6118,6 +6199,7 @@ async fn after_inference_hook_sees_llm_response() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -6212,6 +6294,7 @@ async fn after_tool_execute_hook_sees_tool_result() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -6261,6 +6344,7 @@ async fn max_rounds_two_stops_after_two_tool_steps() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -6314,6 +6398,7 @@ async fn step_start_events_contain_step_number() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -6358,6 +6443,7 @@ async fn suspension_preserves_original_arguments() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -6425,6 +6511,7 @@ async fn second_tool_not_executed_after_first_suspends() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -6468,6 +6555,7 @@ async fn run_start_event_emitted_first() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -6511,6 +6599,7 @@ async fn run_finish_event_emitted_last() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -6567,6 +6656,7 @@ async fn tool_call_events_contain_correct_metadata() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -6647,6 +6737,7 @@ async fn three_step_loop_tool_tool_response() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -6699,6 +6790,7 @@ async fn lifecycle_transitions_running_to_done() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -6736,6 +6828,7 @@ async fn lifecycle_transitions_running_to_waiting() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -6773,6 +6866,7 @@ async fn lifecycle_transitions_running_to_done_on_cancel() {
         cancellation_token: Some(token),
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -6819,6 +6913,7 @@ async fn text_delta_events_emitted_for_text_response() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -6879,6 +6974,7 @@ async fn parallel_tools_have_independent_state_entries() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -6931,6 +7027,7 @@ async fn parallel_tools_succeed_and_suspend_independent_states() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -6981,6 +7078,7 @@ async fn parallel_tools_both_fail_independently() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -7040,6 +7138,7 @@ async fn parallel_same_tool_distinct_results() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -7104,6 +7203,7 @@ async fn sequential_steps_see_fresh_tool_state() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -7156,6 +7256,7 @@ async fn state_snapshot_revision_increases_across_steps() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -7212,6 +7313,7 @@ async fn state_snapshot_contains_extensions_with_lifecycle() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -7275,6 +7377,7 @@ async fn state_snapshot_count_matches_steps_plus_finish() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -7321,6 +7424,7 @@ async fn state_snapshot_at_suspension_includes_waiting_status() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -7373,6 +7477,7 @@ async fn export_persisted_after_run_has_positive_revision() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -7419,6 +7524,7 @@ async fn checkpoint_store_receives_data() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -7474,6 +7580,7 @@ async fn checkpoint_includes_correct_step_count() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -7514,6 +7621,7 @@ async fn checkpoint_contains_state_blob() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -7557,6 +7665,7 @@ async fn checkpoint_stores_thread_messages() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -7611,6 +7720,7 @@ async fn checkpoint_records_agent_id() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -7677,6 +7787,7 @@ async fn llm_receives_all_user_messages() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -7753,6 +7864,7 @@ async fn tool_results_visible_in_next_step_messages() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -7855,6 +7967,7 @@ async fn context_injection_additive_not_destructive() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -7917,6 +8030,7 @@ async fn token_usage_accumulates_across_steps() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -7984,6 +8098,7 @@ async fn tool_descriptors_present_even_when_unused() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -8086,6 +8201,7 @@ async fn run_start_and_run_end_hooks_fire_exactly_once() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -8180,6 +8296,7 @@ async fn step_start_fires_per_step() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -8270,6 +8387,7 @@ async fn before_inference_hook_sees_step_count() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -8372,6 +8490,7 @@ async fn plugin_context_mutation_visible_in_same_step() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -8464,6 +8583,7 @@ async fn multiple_plugins_same_phase_both_fire() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -8544,6 +8664,7 @@ async fn tool_result_message_contains_output() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -8623,6 +8744,7 @@ async fn failed_tool_result_message_indicates_error() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -8704,6 +8826,7 @@ async fn unknown_tool_result_indicates_not_found() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -8757,6 +8880,7 @@ async fn tool_call_start_emitted_before_done() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -8817,6 +8941,7 @@ async fn multiple_tools_each_get_start_done_pair() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -8892,6 +9017,7 @@ async fn replay_tool_call_executes_original_tool() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -8945,6 +9071,7 @@ async fn replay_tool_call_executes_original_tool() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -8983,6 +9110,7 @@ async fn use_decision_replaces_args_with_decision_result() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -9037,6 +9165,7 @@ async fn pass_decision_updates_args_for_tool() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -9091,6 +9220,7 @@ async fn cancel_resume_transitions_to_cancelled_status() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -9144,6 +9274,7 @@ async fn resume_with_empty_decision_result_succeeds() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -9221,6 +9352,7 @@ async fn three_step_events_have_correct_overall_sequence() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -9291,6 +9423,7 @@ async fn suspend_on_step_two_preserves_first_step_context() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -9371,6 +9504,7 @@ async fn error_on_third_step_after_two_successful_steps() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await;
 
@@ -9431,6 +9565,7 @@ async fn mixed_tool_counts_per_step() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -9474,6 +9609,7 @@ async fn full_suspend_resume_complete_lifecycle() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();
@@ -9525,6 +9661,7 @@ async fn full_suspend_resume_complete_lifecycle() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .unwrap();

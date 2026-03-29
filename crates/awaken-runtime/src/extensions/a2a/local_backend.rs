@@ -75,6 +75,7 @@ impl AgentBackend for LocalBackend {
             cancellation_token: None,
             decision_rx: None,
             overrides: None,
+            frontend_tools: Vec::new(),
         })
         .await
         .map_err(|e| {

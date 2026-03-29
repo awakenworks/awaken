@@ -55,6 +55,7 @@ impl AgentRuntime {
             agent_id,
             overrides,
             decisions,
+            frontend_tools,
         } = request;
         let agent_id = self.resolve_agent_id(agent_id, &thread_id).await?;
 
@@ -146,6 +147,7 @@ impl AgentRuntime {
             cancellation_token: Some(cancellation_token),
             decision_rx: Some(decision_rx),
             overrides,
+            frontend_tools,
         })
         .await;
 

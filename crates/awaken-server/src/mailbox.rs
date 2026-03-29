@@ -208,6 +208,7 @@ impl Mailbox {
         self: &Arc<Self>,
         request: RunRequest,
     ) -> Result<(MailboxSubmitResult, mpsc::UnboundedReceiver<AgentEvent>), MailboxError> {
+        let frontend_tools = request.frontend_tools;
         let (thread_id, messages) = validate_run_inputs(request.thread_id, request.messages)?;
 
         let job = self.build_job(&thread_id, request.agent_id.as_deref(), messages);
@@ -260,6 +261,7 @@ impl Mailbox {
                 claim_token,
                 mailbox_id,
                 suspended,
+                frontend_tools,
             );
 
             Ok((
@@ -511,6 +513,7 @@ impl Mailbox {
             claim_token,
             mailbox_id.to_string(),
             suspended,
+            Vec::new(),
         );
     }
 
@@ -605,6 +608,7 @@ impl Mailbox {
         claim_token: String,
         mailbox_id: String,
         suspended: Arc<AtomicBool>,
+        frontend_tools: Vec<awaken_contract::contract::tool::ToolDescriptor>,
     ) {
         let this = Arc::clone(self);
         let job_id = job.job_id.clone();
@@ -621,6 +625,9 @@ impl Mailbox {
                 awaken_runtime::RunRequest::new(job.mailbox_id.clone(), job.messages.clone());
             if !job.agent_id.is_empty() {
                 request = request.with_agent_id(job.agent_id.clone());
+            }
+            if !frontend_tools.is_empty() {
+                request = request.with_frontend_tools(frontend_tools);
             }
 
             let result = this.runtime.run(request, Arc::new(sink)).await;

@@ -67,6 +67,7 @@ pub async fn run_streaming_subagent(
             cancellation_token: None,
             decision_rx: None,
             overrides: None,
+            frontend_tools: Vec::new(),
         })
         .await
         .map_err(|e| ToolError::ExecutionFailed(format!("sub-agent failed: {e}")))?;

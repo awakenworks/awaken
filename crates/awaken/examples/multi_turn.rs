@@ -1,8 +1,9 @@
 //! Multi-turn conversation using AgentRuntime with persistent thread storage.
 //!
-//! Run: cargo run --example multi_turn
+//! Run with BigModel GLM:
+//!   LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4/ LLM_API_KEY=<key> LLM_MODEL=GLM-4.7-Flash cargo run --example multi_turn
 //!
-//! Requires: OPENAI_API_KEY (or other provider key) + model env var
+//! Also supports: OPENAI_API_KEY + OPENAI_MODEL, or ANTHROPIC_API_KEY, etc.
 
 use async_trait::async_trait;
 use awaken::contract::event::AgentEvent;
@@ -39,10 +40,42 @@ impl AgentResolver for SimpleResolver {
     }
 }
 
+fn build_llm_executor() -> GenaiExecutor {
+    if let (Ok(mut base_url), Ok(api_key)) =
+        (std::env::var("LLM_BASE_URL"), std::env::var("LLM_API_KEY"))
+    {
+        use genai::adapter::AdapterKind;
+        use genai::resolver::{AuthData, Endpoint};
+        use genai::{ModelIden, ServiceTarget};
+
+        if !base_url.ends_with('/') {
+            base_url.push('/');
+        }
+        let adapter = match std::env::var("LLM_ADAPTER").as_deref() {
+            Ok("anthropic") => AdapterKind::Anthropic,
+            _ => AdapterKind::OpenAI,
+        };
+        let client = genai::Client::builder()
+            .with_service_target_resolver_fn(move |st: ServiceTarget| {
+                Ok(ServiceTarget {
+                    endpoint: Endpoint::from_owned(base_url.clone()),
+                    auth: AuthData::from_single(api_key.clone()),
+                    model: ModelIden::new(adapter, st.model.model_name),
+                })
+            })
+            .build();
+        GenaiExecutor::with_client(client)
+    } else {
+        GenaiExecutor::new()
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
-    let llm = Arc::new(GenaiExecutor::new());
+    let model = std::env::var("LLM_MODEL")
+        .or_else(|_| std::env::var("OPENAI_MODEL"))
+        .unwrap_or_else(|_| "gpt-4o-mini".into());
+    let llm = Arc::new(build_llm_executor());
 
     let agent = ResolvedAgent::new(
         "chat",

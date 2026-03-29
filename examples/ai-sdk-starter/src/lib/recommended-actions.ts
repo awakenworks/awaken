@@ -134,13 +134,4 @@ export const RECOMMENDED_ACTIONS: StarterAction[] = [
       "Use the serverInfo tool. I want to test permission denial flow.",
     agentId: "permission",
   },
-  {
-    id: "demo-finish",
-    scenarioId: "backend.finish.stop_policy",
-    title: "Stop On Tool",
-    capability: "Stop Policy",
-    prompt:
-      "Use the finish tool with summary 'demo complete' so this run stops via stop policy.",
-    agentId: "stopper",
-  },
 ];

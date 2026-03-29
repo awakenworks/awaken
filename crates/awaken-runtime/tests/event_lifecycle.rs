@@ -64,6 +64,7 @@ fn event_type(e: &AgentEvent) -> &'static str {
         AgentEvent::ActivitySnapshot { .. } => "activity_snapshot",
         AgentEvent::ActivityDelta { .. } => "activity_delta",
         AgentEvent::ToolCallResumed { .. } => "tool_call_resumed",
+        AgentEvent::ToolCallStreamDelta { .. } => "tool_call_stream_delta",
         AgentEvent::Error { .. } => "error",
     }
 }

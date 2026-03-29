@@ -389,6 +389,13 @@ async fn complete_tool_call(
         ToolCallOutcome::Failed => ToolCallStatus::Failed,
     };
 
+    // Extract resume_mode from suspension ticket (if any)
+    let resume_mode = tool_result
+        .suspension
+        .as_ref()
+        .map(|t| t.resume_mode)
+        .unwrap_or_default();
+
     // State transition: Running → terminal status
     let mut lifecycle_cmd = tool_call_state_cmd(call, ToolCallStatus::Running);
     lifecycle_cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
@@ -397,7 +404,7 @@ async fn complete_tool_call(
         arguments: call.arguments.clone(),
         status: terminal_status,
         updated_at: now_ms(),
-        resume_mode: ToolCallResumeMode::default(),
+        resume_mode,
     });
 
     tracing::info!(
@@ -407,15 +414,22 @@ async fn complete_tool_call(
         "tool_call_done"
     );
 
-    // Event emission
-    ctx.sink
-        .emit(AgentEvent::ToolCallDone {
-            id: call.id.clone(),
-            message_id: String::new(),
-            result: tool_result.clone(),
-            outcome,
-        })
-        .await;
+    // Event emission — for frontend-tool suspensions (UseDecisionAsToolResult),
+    // do NOT emit ToolCallDone so the tool stays in input-available state.
+    if outcome == ToolCallOutcome::Suspended
+        && resume_mode == ToolCallResumeMode::UseDecisionAsToolResult
+    {
+        // Skip ToolCallDone — frontend renders custom input UI
+    } else {
+        ctx.sink
+            .emit(AgentEvent::ToolCallDone {
+                id: call.id.clone(),
+                message_id: String::new(),
+                result: tool_result.clone(),
+                outcome,
+            })
+            .await;
+    }
 
     // AfterToolExecute phase
     let after_ctx = make_ctx(

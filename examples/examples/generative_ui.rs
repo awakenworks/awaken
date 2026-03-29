@@ -306,6 +306,7 @@ async fn main() {
         cancellation_token: None,
         decision_rx: None,
         overrides: None,
+        frontend_tools: Vec::new(),
     })
     .await
     .expect("agent loop failed");

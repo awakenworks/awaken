@@ -193,6 +193,7 @@ dependencies = [
  "awaken-server",
  "awaken-stores",
  "futures",
+ "genai",
  "serde",
  "serde_json",
  "tokio",

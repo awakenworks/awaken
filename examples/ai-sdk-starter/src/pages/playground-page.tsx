@@ -15,12 +15,7 @@ const AGENT_OPTIONS = [
     title: "Permission Agent",
     desc: "PermissionConfirm flow with one-click approve/deny",
   },
-  {
-    id: "stopper",
-    title: "Stopper Agent",
-    desc: "Stop policy demo via finish tool",
-  },
-  {
+{
     id: "a2ui",
     title: "A2UI Agent",
     desc: "Declarative UI via A2UI protocol (render_a2ui tool)",
