@@ -7,6 +7,7 @@ use awaken_contract::contract::transport::Transcoder;
 use std::collections::HashMap;
 
 use super::types::{BaseEvent, Event, Role};
+use crate::protocols::shared::TerminalGuard;
 
 /// Stateful AG-UI protocol encoder.
 ///
@@ -17,7 +18,7 @@ pub struct AgUiEncoder {
     text_open: bool,
     step_counter: u32,
     reasoning_open: bool,
-    finished: bool,
+    guard: TerminalGuard,
 }
 
 impl AgUiEncoder {
@@ -27,7 +28,7 @@ impl AgUiEncoder {
             text_open: false,
             step_counter: 0,
             reasoning_open: false,
-            finished: false,
+            guard: TerminalGuard::new(),
         }
     }
 
@@ -53,7 +54,7 @@ impl AgUiEncoder {
     }
 
     pub fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<Event> {
-        if self.finished {
+        if self.guard.is_finished() {
             return Vec::new();
         }
 
@@ -178,7 +179,7 @@ impl AgUiEncoder {
                 result,
                 termination,
             } => {
-                self.finished = true;
+                self.guard.mark_finished();
                 let mut events = Vec::new();
                 if let Some(e) = self.close_text() {
                     events.push(e);
@@ -209,7 +210,7 @@ impl AgUiEncoder {
             }
 
             AgentEvent::Error { message, code } => {
-                self.finished = true;
+                self.guard.mark_finished();
                 vec![Event::run_error(message, code.clone())]
             }
 

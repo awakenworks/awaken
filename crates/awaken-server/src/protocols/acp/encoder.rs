@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::types::{PermissionOption, StopReason, ToolCallStatus};
+use crate::protocols::shared::{self, TerminalGuard};
 
 /// ACP protocol events.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -264,16 +265,18 @@ impl AcpEvent {
 /// Stateful ACP encoder.
 #[derive(Debug)]
 pub struct AcpEncoder {
-    finished: bool,
+    guard: TerminalGuard,
 }
 
 impl AcpEncoder {
     pub fn new() -> Self {
-        Self { finished: false }
+        Self {
+            guard: TerminalGuard::new(),
+        }
     }
 
     pub fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<AcpEvent> {
-        if self.finished {
+        if self.guard.is_finished() {
             return Vec::new();
         }
 
@@ -281,6 +284,8 @@ impl AcpEncoder {
             AgentEvent::TextDelta { delta } => vec![AcpEvent::agent_message(delta)],
             AgentEvent::ReasoningDelta { delta } => vec![AcpEvent::agent_thought(delta)],
 
+            // ACP bundles tool lifecycle into a single ToolCallReady -> ToolCallDone flow;
+            // streaming start/delta events have no ACP-protocol equivalent.
             AgentEvent::ToolCallStart { .. } | AgentEvent::ToolCallDelta { .. } => Vec::new(),
 
             AgentEvent::ToolCallReady {
@@ -314,18 +319,21 @@ impl AcpEncoder {
             },
 
             AgentEvent::ToolCallResumed { target_id, result } => {
-                if result.get("error").and_then(Value::as_str).is_some() {
-                    let error_text = result["error"].as_str().unwrap_or("unknown error");
-                    vec![AcpEvent::tool_call_errored(target_id, error_text)]
-                } else if result.get("approved") == Some(&serde_json::json!(false)) {
-                    vec![AcpEvent::tool_call_denied(target_id)]
-                } else {
-                    vec![AcpEvent::tool_call_completed(target_id, result.clone())]
+                match shared::classify_resumed_result(result) {
+                    shared::ResumedOutcome::Error { message } => {
+                        vec![AcpEvent::tool_call_errored(target_id, message)]
+                    }
+                    shared::ResumedOutcome::Denied => {
+                        vec![AcpEvent::tool_call_denied(target_id)]
+                    }
+                    shared::ResumedOutcome::Success => {
+                        vec![AcpEvent::tool_call_completed(target_id, result.clone())]
+                    }
                 }
             }
 
             AgentEvent::RunFinish { termination, .. } => {
-                self.finished = true;
+                self.guard.mark_finished();
                 let stop_reason = map_termination(termination);
                 match termination {
                     TerminationReason::Error(msg) => {
@@ -336,7 +344,7 @@ impl AcpEncoder {
             }
 
             AgentEvent::Error { message, code } => {
-                self.finished = true;
+                self.guard.mark_finished();
                 vec![AcpEvent::error(message, code.clone())]
             }
 
@@ -371,13 +379,18 @@ impl AcpEncoder {
                 )]
             }
 
-            AgentEvent::RunStart { .. }
-            | AgentEvent::StepStart { .. }
-            | AgentEvent::StepEnd
-            | AgentEvent::InferenceComplete { .. }
-            | AgentEvent::ReasoningEncryptedValue { .. }
-            | AgentEvent::MessagesSnapshot { .. }
-            | AgentEvent::ToolCallStreamDelta { .. } => Vec::new(),
+            // ACP has no run/step lifecycle events; session boundary is implicit.
+            AgentEvent::RunStart { .. } => Vec::new(),
+            // ACP has no step concept; inference steps are not surfaced.
+            AgentEvent::StepStart { .. } | AgentEvent::StepEnd => Vec::new(),
+            // ACP has no inference telemetry event; model usage is not surfaced.
+            AgentEvent::InferenceComplete { .. } => Vec::new(),
+            // ACP has no encrypted reasoning transport; reasoning is sent as plaintext thoughts.
+            AgentEvent::ReasoningEncryptedValue { .. } => Vec::new(),
+            // ACP has no messages-snapshot equivalent; state is managed via state_snapshot/state_delta.
+            AgentEvent::MessagesSnapshot { .. } => Vec::new(),
+            // ACP tool results are sent atomically via tool_call_update; streaming deltas are not surfaced.
+            AgentEvent::ToolCallStreamDelta { .. } => Vec::new(),
         }
     }
 }

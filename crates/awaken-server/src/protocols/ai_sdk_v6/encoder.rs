@@ -9,6 +9,7 @@ use awaken_contract::contract::transport::Transcoder;
 use serde_json::{Value, json};
 
 use super::types::UIStreamEvent;
+use crate::protocols::shared::{self, TerminalGuard};
 
 const DATA_EVENT_STATE_SNAPSHOT: &str = "state-snapshot";
 const DATA_EVENT_STATE_DELTA: &str = "state-delta";
@@ -27,7 +28,7 @@ pub struct AiSdkEncoder {
     message_id: String,
     text_open: bool,
     text_counter: u32,
-    finished: bool,
+    guard: TerminalGuard,
     message_id_set: bool,
     open_reasoning_ids: HashSet<String>,
     /// Accumulated streaming output per tool call id.
@@ -40,7 +41,7 @@ impl AiSdkEncoder {
             message_id: String::new(),
             text_open: false,
             text_counter: 0,
-            finished: false,
+            guard: TerminalGuard::new(),
             message_id_set: false,
             open_reasoning_ids: HashSet::new(),
             stream_accumulators: HashMap::new(),
@@ -80,7 +81,7 @@ impl AiSdkEncoder {
     }
 
     pub fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<UIStreamEvent> {
-        if self.finished {
+        if self.guard.is_finished() {
             return Vec::new();
         }
 
@@ -188,16 +189,19 @@ impl AiSdkEncoder {
             }
 
             AgentEvent::ToolCallResumed { target_id, result } => {
-                if result.get("error").and_then(|v| v.as_str()).is_some() {
-                    let error_text = result["error"].as_str().unwrap_or("unknown error");
-                    vec![UIStreamEvent::tool_output_error(target_id, error_text)]
-                } else if result.get("approved") == Some(&json!(false)) {
-                    vec![UIStreamEvent::tool_output_denied(target_id)]
-                } else {
-                    vec![UIStreamEvent::tool_output_available(
-                        target_id,
-                        result.clone(),
-                    )]
+                match shared::classify_resumed_result(result) {
+                    shared::ResumedOutcome::Error { message } => {
+                        vec![UIStreamEvent::tool_output_error(target_id, message)]
+                    }
+                    shared::ResumedOutcome::Denied => {
+                        vec![UIStreamEvent::tool_output_denied(target_id)]
+                    }
+                    shared::ResumedOutcome::Success => {
+                        vec![UIStreamEvent::tool_output_available(
+                            target_id,
+                            result.clone(),
+                        )]
+                    }
                 }
             }
 
@@ -220,7 +224,7 @@ impl AiSdkEncoder {
             }
 
             AgentEvent::RunFinish { termination, .. } => {
-                self.finished = true;
+                self.guard.mark_finished();
                 let mut events = Vec::new();
                 if self.text_open {
                     events.push(self.close_text());
@@ -239,7 +243,7 @@ impl AiSdkEncoder {
             }
 
             AgentEvent::Error { message, .. } => {
-                self.finished = true;
+                self.guard.mark_finished();
                 vec![UIStreamEvent::error(message)]
             }
 
