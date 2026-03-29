@@ -249,6 +249,10 @@ pub struct ToolDescriptor {
     /// JSON Schema for parameters.
     pub parameters: Value,
     pub category: Option<String>,
+    /// Arbitrary key-value metadata attached to the descriptor (e.g. MCP
+    /// server info, UI hints). Not sent to the LLM.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: HashMap<String, Value>,
 }
 
 impl ToolDescriptor {
@@ -263,6 +267,7 @@ impl ToolDescriptor {
             description: description.into(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
             category: None,
+            metadata: HashMap::new(),
         }
     }
 
@@ -275,6 +280,12 @@ impl ToolDescriptor {
     #[must_use]
     pub fn with_category(mut self, category: impl Into<String>) -> Self {
         self.category = Some(category.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
+        self.metadata.insert(key.into(), value.into());
         self
     }
 }

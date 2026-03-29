@@ -33,6 +33,7 @@ use crate::transport::{
 
 const MCP_META_SERVER: &str = "mcp.server";
 const MCP_META_TOOL: &str = "mcp.tool";
+const MCP_META_TRANSPORT: &str = "mcp.transport";
 const MCP_META_UI_RESOURCE_URI: &str = "mcp.ui.resourceUri";
 const MCP_META_UI_CONTENT: &str = "mcp.ui.content";
 const MCP_META_UI_MIME_TYPE: &str = "mcp.ui.mimeType";
@@ -82,20 +83,19 @@ impl McpTool {
         transport_type: TransportTypeId,
     ) -> Self {
         let name = def.title.clone().unwrap_or_else(|| def.name.clone());
-        let desc_text = def
+        let description = def
             .description
             .clone()
             .unwrap_or_else(|| format!("MCP tool {}", def.name));
 
-        // Encode MCP-specific metadata in a JSON description annotation since
-        // awaken's ToolDescriptor does not have a metadata field.
-        let description = format!(
-            "{} [mcp.server={}, mcp.tool={}, mcp.transport={}]",
-            desc_text, server_name, def.name, transport_type
-        );
-
         let mut d = ToolDescriptor::new(tool_id, name, description)
-            .with_parameters(def.input_schema.clone());
+            .with_parameters(def.input_schema.clone())
+            .with_metadata(MCP_META_SERVER, Value::String(server_name.to_string()))
+            .with_metadata(MCP_META_TOOL, Value::String(def.name.clone()))
+            .with_metadata(
+                MCP_META_TRANSPORT,
+                Value::String(transport_type.to_string()),
+            );
 
         if let Some(group) = def.group.clone() {
             d = d.with_category(group);
@@ -856,8 +856,14 @@ mod tests {
         let tool = registry.get("mcp__srv__echo").unwrap();
         let desc = tool.descriptor();
         assert_eq!(desc.id, "mcp__srv__echo");
-        assert!(desc.description.contains("mcp.server=srv"));
-        assert!(desc.description.contains("mcp.tool=echo"));
+        assert_eq!(
+            desc.metadata.get("mcp.server").and_then(|v| v.as_str()),
+            Some("srv")
+        );
+        assert_eq!(
+            desc.metadata.get("mcp.tool").and_then(|v| v.as_str()),
+            Some("echo")
+        );
     }
 
     // ── McpToolRegistry ──

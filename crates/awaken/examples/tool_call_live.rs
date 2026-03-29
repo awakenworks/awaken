@@ -38,6 +38,7 @@ impl Tool for CalculatorTool {
                 "required": ["expression"]
             }),
             category: None,
+            metadata: Default::default(),
         }
     }
 

@@ -242,6 +242,7 @@ mod tests {
                 }
             }),
             category: None,
+            metadata: Default::default(),
         };
         let est = estimate_tool_tokens(&[tool]);
         assert!(est > 10); // name + description + schema

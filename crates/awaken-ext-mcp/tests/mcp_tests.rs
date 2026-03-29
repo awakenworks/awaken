@@ -484,8 +484,14 @@ async fn registry_discovers_tools_and_executes_calls() {
     let desc = tool.descriptor();
     assert_eq!(desc.id, id);
     assert_eq!(desc.name, "Echo");
-    assert!(desc.description.contains("mcp.server=s1"));
-    assert!(desc.description.contains("mcp.tool=echo"));
+    assert_eq!(
+        desc.metadata.get("mcp.server").and_then(|v| v.as_str()),
+        Some("s1")
+    );
+    assert_eq!(
+        desc.metadata.get("mcp.tool").and_then(|v| v.as_str()),
+        Some("echo")
+    );
 
     let ctx = ToolCallContext::test_default();
     let res = tool
@@ -1362,7 +1368,13 @@ async fn connect_http_registry_discovers_tools_and_executes() {
     let tool = registry.get(&tool_id).expect("registry tool");
 
     let descriptor = tool.descriptor();
-    assert!(descriptor.description.contains("mcp.transport=http"));
+    assert_eq!(
+        descriptor
+            .metadata
+            .get("mcp.transport")
+            .and_then(|v| v.as_str()),
+        Some("http")
+    );
 
     let ctx = ToolCallContext::test_default();
     let result = tool
@@ -1669,7 +1681,10 @@ async fn tool_descriptor_has_parameters_from_mcp_schema() {
 
     assert_eq!(desc.name, "Calculator");
     assert!(desc.description.contains("Math operations"));
-    assert!(desc.description.contains("mcp.server=s1"));
+    assert_eq!(
+        desc.metadata.get("mcp.server").and_then(|v| v.as_str()),
+        Some("s1")
+    );
 }
 
 #[tokio::test]

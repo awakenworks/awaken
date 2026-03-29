@@ -231,6 +231,7 @@ mod tests {
                 "c": {"type": "string"}, "d": {"type": "string"},
             }}),
             category: None,
+            metadata: Default::default(),
         };
 
         let output_with_tools = transform.transform(messages, &[big_tool]);
