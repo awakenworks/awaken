@@ -204,6 +204,14 @@ async fn checkpoint_and_load() {
         .unwrap()
         .unwrap();
     assert_eq!(loaded_run.thread_id, "pg-cp-thread");
+
+    let thread = ThreadStore::load_thread(&store, "pg-cp-thread")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(thread.id, "pg-cp-thread");
+    assert!(thread.metadata.created_at.is_some());
+    assert!(thread.metadata.updated_at.is_some());
 }
 
 #[tokio::test]

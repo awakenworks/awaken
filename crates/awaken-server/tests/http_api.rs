@@ -599,6 +599,20 @@ mod integration {
     }
 
     #[tokio::test]
+    async fn list_thread_summaries_includes_latest_run_agent() {
+        let test = make_test_app();
+        let thread_id = seed_thread(&test.store, Some("A2UI Thread")).await;
+        seed_run(&test.store, "run-1", &thread_id, RunStatus::Done).await;
+
+        let (status, body) = get_json(test.router, "/v1/threads/summaries").await;
+        assert_eq!(status, StatusCode::OK);
+        let items = body["items"].as_array().expect("items array");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["id"].as_str(), Some(thread_id.as_str()));
+        assert_eq!(items[0]["agent_id"].as_str(), Some("test-agent"));
+    }
+
+    #[tokio::test]
     async fn get_thread_by_id() {
         let test = make_test_app();
         let id = seed_thread(&test.store, Some("My Thread")).await;
@@ -733,10 +747,40 @@ mod integration {
     }
 
     #[tokio::test]
-    async fn cancel_run_not_found_returns_404() {
+    async fn cancel_thread_not_found_returns_404() {
         let test = make_test_app();
-        let (status, body) =
-            post_json(test.router, "/v1/runs/nonexistent-run/cancel", json!({})).await;
+        let (status, body) = post_json(
+            test.router,
+            "/v1/threads/nonexistent-thread/cancel",
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body["error"].as_str().unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn ai_sdk_cancel_thread_not_found_returns_404() {
+        let test = make_test_app();
+        let (status, body) = post_json(
+            test.router,
+            "/v1/ai-sdk/threads/nonexistent-thread/cancel",
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body["error"].as_str().unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn ag_ui_interrupt_thread_not_found_returns_404() {
+        let test = make_test_app();
+        let (status, body) = post_json(
+            test.router,
+            "/v1/ag-ui/threads/nonexistent-thread/interrupt",
+            json!({}),
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(body["error"].as_str().unwrap().contains("not found"));
     }
@@ -746,7 +790,7 @@ mod integration {
         let test = make_test_app();
         let (status, body) = post_json(
             test.router,
-            "/v1/runs/nonexistent-run/decision",
+            "/v1/threads/nonexistent-thread/decision",
             json!({
                 "toolCallId": "tc-1",
                 "action": "resume",
@@ -761,13 +805,9 @@ mod integration {
     #[tokio::test]
     async fn decision_endpoint_invalid_action_returns_400() {
         let test = make_test_app();
-        // Even though the run doesn't exist, action validation happens first
-        // for a valid run. Let's just verify the contract rejects bad actions
-        // by using a run that doesn't exist (the 404 proves the action validation
-        // path exists). For action validation, we need to test at the route level.
         let (status, _body) = post_json(
             test.router,
-            "/v1/runs/some-run/decision",
+            "/v1/threads/some-thread/decision",
             json!({
                 "toolCallId": "tc-1",
                 "action": "invalid_action",
@@ -775,7 +815,7 @@ mod integration {
             }),
         )
         .await;
-        // Bad action returns 400 before the run lookup
+        // Bad action returns 400 before the thread lookup
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 

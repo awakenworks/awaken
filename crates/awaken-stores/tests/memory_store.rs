@@ -60,11 +60,20 @@ async fn list_threads_paginated() {
 }
 
 #[tokio::test]
-async fn list_threads_sorted() {
+async fn list_threads_sorted_by_recent_activity() {
     let store = InMemoryStore::new();
-    store.save_thread(&Thread::with_id("c")).await.unwrap();
-    store.save_thread(&Thread::with_id("a")).await.unwrap();
-    store.save_thread(&Thread::with_id("b")).await.unwrap();
+    let mut oldest = Thread::with_id("c");
+    oldest.metadata.updated_at = Some(100);
+    oldest.metadata.created_at = Some(100);
+    let mut newest = Thread::with_id("a");
+    newest.metadata.updated_at = Some(300);
+    newest.metadata.created_at = Some(300);
+    let mut middle = Thread::with_id("b");
+    middle.metadata.updated_at = Some(200);
+    middle.metadata.created_at = Some(200);
+    store.save_thread(&oldest).await.unwrap();
+    store.save_thread(&newest).await.unwrap();
+    store.save_thread(&middle).await.unwrap();
 
     let ids = store.list_threads(0, 10).await.unwrap();
     assert_eq!(ids, vec!["a", "b", "c"]);
@@ -298,6 +307,14 @@ async fn checkpoint_persists_messages_and_run() {
     let loaded_run = RunStore::load_run(&store, "run-x").await.unwrap().unwrap();
     assert_eq!(loaded_run.thread_id, "thread-x");
     assert_eq!(loaded_run.updated_at, 42);
+
+    let thread = ThreadStore::load_thread(&store, "thread-x")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(thread.id, "thread-x");
+    assert!(thread.metadata.created_at.is_some());
+    assert!(thread.metadata.updated_at.is_some());
 }
 
 #[tokio::test]

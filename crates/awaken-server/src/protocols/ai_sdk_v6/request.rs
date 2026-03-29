@@ -202,10 +202,12 @@ fn part_to_content_block(part: &Value) -> Option<ContentBlock> {
     }
 }
 
-/// Convert `UIMessage` list to awaken `Message` list.
+/// Convert `UIMessage` list to runtime input messages.
 ///
-/// Preserves the frontend-assigned message ID so that subsequent requests
-/// sending the full messages array can be deduplicated against the store.
+/// Assistant history is already persisted server-side, so incoming assistant
+/// UI messages are intentionally ignored here. This keeps AI SDK's client-side
+/// synthesized assistant history from being written back into the thread on
+/// later turns.
 fn convert_messages(msgs: Vec<UIMessage>) -> Vec<Message> {
     msgs.into_iter()
         .filter_map(|m| {
@@ -216,9 +218,6 @@ fn convert_messages(msgs: Vec<UIMessage>) -> Vec<Message> {
             }
             let mut msg = match m.role.as_str() {
                 "user" => Message::user_with_content(blocks),
-                "assistant" => {
-                    Message::assistant(awaken_contract::contract::content::extract_text(&blocks))
-                }
                 "system" => {
                     Message::system(awaken_contract::contract::content::extract_text(&blocks))
                 }
@@ -378,6 +377,31 @@ mod tests {
         let converted = convert_messages(msgs);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].text(), "hello");
+        assert_eq!(converted[0].id.as_deref(), Some("m1"));
+    }
+
+    #[test]
+    fn convert_ignores_assistant_messages() {
+        let msgs = vec![
+            UIMessage {
+                id: Some("u1".into()),
+                role: "user".into(),
+                parts: vec![raw_part(json!({"type": "text", "text": "hello"}))],
+            },
+            UIMessage {
+                id: Some("a1".into()),
+                role: "assistant".into(),
+                parts: vec![raw_part(json!({"type": "text", "text": "existing"}))],
+            },
+        ];
+
+        let converted = convert_messages(msgs);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(
+            converted[0].role,
+            awaken_contract::contract::message::Role::User
+        );
+        assert_eq!(converted[0].id.as_deref(), Some("u1"));
     }
 
     #[test]

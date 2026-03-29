@@ -68,6 +68,8 @@ fn thread_routes() -> Router<AppState> {
             "/v1/threads/:id",
             get(get_thread).delete(delete_thread).patch(patch_thread),
         )
+        .route("/v1/threads/:id/cancel", post(cancel_thread))
+        .route("/v1/threads/:id/decision", post(submit_thread_decision))
         .route("/v1/threads/:id/interrupt", post(interrupt_thread))
         .route("/v1/threads/:id/metadata", patch(patch_thread))
         .route(
@@ -137,6 +139,11 @@ async fn list_thread_summaries(
 
     let mut items = Vec::with_capacity(ids.len());
     for id in ids {
+        let latest_run = st
+            .store
+            .latest_run(&id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
         if let Some(thread) = st
             .store
             .load_thread(&id)
@@ -147,6 +154,7 @@ async fn list_thread_summaries(
                 "id": thread.id,
                 "title": thread.metadata.title,
                 "updated_at": thread.metadata.updated_at,
+                "agent_id": latest_run.map(|run| run.agent_id),
             }));
         }
     }
@@ -591,6 +599,30 @@ async fn cancel_run(
     Err(ApiError::RunNotFound(id))
 }
 
+async fn cancel_thread(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    let cancelled = st
+        .mailbox
+        .cancel(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    if cancelled {
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "status": "cancel_requested",
+                "thread_id": id,
+            })),
+        )
+            .into_response());
+    }
+
+    Err(ApiError::ThreadNotFound(id))
+}
+
 #[derive(Debug, Deserialize)]
 struct DecisionPayload {
     #[serde(rename = "toolCallId", alias = "tool_call_id")]
@@ -644,6 +676,53 @@ async fn submit_decision(
             .into_response())
     } else {
         Err(ApiError::RunNotFound(id))
+    }
+}
+
+async fn submit_thread_decision(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(payload): Json<DecisionPayload>,
+) -> Result<Response, ApiError> {
+    use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
+
+    let action = match payload.action.as_str() {
+        "resume" => ResumeDecisionAction::Resume,
+        "cancel" => ResumeDecisionAction::Cancel,
+        other => {
+            return Err(ApiError::BadRequest(format!(
+                "invalid action: {other}, expected 'resume' or 'cancel'"
+            )));
+        }
+    };
+
+    let resume = ToolCallResume {
+        decision_id: uuid::Uuid::now_v7().to_string(),
+        action,
+        result: payload.payload.clone(),
+        reason: None,
+        updated_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),
+    };
+
+    let sent = st
+        .mailbox
+        .send_decision(&id, payload.tool_call_id.clone(), resume);
+
+    if sent {
+        Ok((
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "status": "decision_submitted",
+                "thread_id": id,
+                "tool_call_id": payload.tool_call_id,
+            })),
+        )
+            .into_response())
+    } else {
+        Err(ApiError::ThreadNotFound(id))
     }
 }
 

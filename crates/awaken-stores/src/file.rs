@@ -149,29 +149,6 @@ async fn scan_json_dir<T: serde::de::DeserializeOwned>(dir: &Path) -> Result<Vec
     Ok(results)
 }
 
-async fn scan_json_stems(dir: &Path) -> Result<Vec<String>, StorageError> {
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut entries = tokio::fs::read_dir(dir)
-        .await
-        .map_err(|e| StorageError::Io(e.to_string()))?;
-    let mut stems = Vec::new();
-    while let Some(entry) = entries
-        .next_entry()
-        .await
-        .map_err(|e| StorageError::Io(e.to_string()))?
-    {
-        let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "json")
-            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-        {
-            stems.push(stem.to_string());
-        }
-    }
-    Ok(stems)
-}
-
 // ── ThreadStore ─────────────────────────────────────────────────────
 
 #[async_trait]
@@ -214,9 +191,18 @@ impl ThreadStore for FileStore {
     }
 
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError> {
-        let mut stems = scan_json_stems(&self.threads_dir()).await?;
-        stems.sort();
-        Ok(stems.into_iter().skip(offset).take(limit).collect())
+        let mut threads: Vec<Thread> = scan_json_dir(&self.threads_dir()).await?;
+        threads.sort_by(|a, b| {
+            let a_updated = a.metadata.updated_at.or(a.metadata.created_at).unwrap_or(0);
+            let b_updated = b.metadata.updated_at.or(b.metadata.created_at).unwrap_or(0);
+            b_updated.cmp(&a_updated).then_with(|| a.id.cmp(&b.id))
+        });
+        Ok(threads
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .map(|thread| thread.id)
+            .collect())
     }
 
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
@@ -422,6 +408,22 @@ impl ThreadRunStore for FileStore {
     ) -> Result<(), StorageError> {
         validate_id(thread_id, "thread id")?;
         validate_id(&run.run_id, "run id")?;
+
+        let now = current_millis();
+        let mut thread = self
+            .load_thread(thread_id)
+            .await?
+            .unwrap_or_else(|| Thread::with_id(thread_id));
+        thread.metadata.created_at.get_or_insert(now);
+        thread.metadata.updated_at = Some(now);
+        let thread_payload = serde_json::to_string_pretty(&thread)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        atomic_write(
+            &self.threads_dir(),
+            &format!("{thread_id}.json"),
+            &thread_payload,
+        )
+        .await?;
 
         // Write messages
         let msg_payload = serde_json::to_string_pretty(messages)

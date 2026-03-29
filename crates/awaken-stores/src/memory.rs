@@ -58,9 +58,18 @@ impl ThreadStore for InMemoryStore {
 
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError> {
         let guard = self.threads.read().await;
-        let mut ids: Vec<String> = guard.keys().cloned().collect();
-        ids.sort();
-        Ok(ids.into_iter().skip(offset).take(limit).collect())
+        let mut threads: Vec<Thread> = guard.values().cloned().collect();
+        threads.sort_by(|a, b| {
+            let a_updated = a.metadata.updated_at.or(a.metadata.created_at).unwrap_or(0);
+            let b_updated = b.metadata.updated_at.or(b.metadata.created_at).unwrap_or(0);
+            b_updated.cmp(&a_updated).then_with(|| a.id.cmp(&b.id))
+        });
+        Ok(threads
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .map(|thread| thread.id)
+            .collect())
     }
 
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
@@ -162,8 +171,17 @@ impl ThreadRunStore for InMemoryStore {
         messages: &[Message],
         run: &RunRecord,
     ) -> Result<(), StorageError> {
+        let now = current_millis();
+        let mut thread_guard = self.threads.write().await;
         let mut msg_guard = self.messages.write().await;
         let mut run_guard = self.runs.write().await;
+        let mut thread = thread_guard
+            .get(thread_id)
+            .cloned()
+            .unwrap_or_else(|| Thread::with_id(thread_id));
+        thread.metadata.created_at.get_or_insert(now);
+        thread.metadata.updated_at = Some(now);
+        thread_guard.insert(thread_id.to_owned(), thread);
         msg_guard.insert(thread_id.to_owned(), messages.to_vec());
         run_guard.insert(run.run_id.clone(), run.clone());
         Ok(())

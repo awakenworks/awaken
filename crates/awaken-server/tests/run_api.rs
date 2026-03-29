@@ -3,16 +3,15 @@
 //! Mirrors high-value run API tests from uncarve's tirea-agentos-server/tests/run_api.rs,
 //! adapted to awaken's AppState + Mailbox architecture.
 //!
-//! NOTE: Routes using `{id}` path parameters (e.g. `/v1/runs/{id}`,
-//! `/v1/runs/{id}/cancel`) are unreachable due to a mismatch between
-//! axum 0.7's `:id` param syntax and the `{id}` syntax used in routes.rs.
-//! Tests for those endpoints are omitted until the path params are fixed.
+//! NOTE: Control operations (cancel, decision) are now unified under
+//! `/v1/threads/:id/{cancel,decision}`. The `/v1/runs` namespace is
+//! read-only (list, get).
 
 use async_trait::async_trait;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::storage::{RunRecord, RunStore};
+use awaken_contract::contract::storage::{RunRecord, RunStore, ThreadStore};
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::registry::traits::ModelEntry;
@@ -299,6 +298,43 @@ async fn start_run_includes_inference_complete() {
     let inference = find_event(&events, "inference_complete");
     assert!(inference.is_some(), "inference_complete missing in: {body}");
     assert_eq!(inference.unwrap()["model"].as_str(), Some("mock-model"));
+}
+
+#[tokio::test]
+async fn ai_sdk_agent_run_creates_thread_record() {
+    let test = make_test_app();
+    let thread_id = "thread-ai-sdk-persist";
+    let (status, body) = post_json(
+        test.router.clone(),
+        "/v1/ai-sdk/agents/test-agent/runs",
+        json!({
+            "threadId": thread_id,
+            "messages": [
+                {
+                    "role": "user",
+                    "parts": [{ "type": "text", "text": "hello" }]
+                }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+
+    let thread = test
+        .store
+        .load_thread(thread_id)
+        .await
+        .expect("thread lookup should succeed")
+        .expect("thread should be persisted");
+    assert_eq!(thread.id, thread_id);
+
+    let messages = test
+        .store
+        .load_messages(thread_id)
+        .await
+        .expect("messages lookup should succeed")
+        .expect("messages should be persisted");
+    assert!(!messages.is_empty());
 }
 
 // ============================================================================

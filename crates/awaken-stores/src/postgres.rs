@@ -184,7 +184,7 @@ impl ThreadStore for PostgresStore {
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError> {
         self.ensure_schema().await?;
         let sql = format!(
-            "SELECT id FROM {} ORDER BY id LIMIT $1 OFFSET $2",
+            "SELECT id FROM {} ORDER BY updated_at DESC, id ASC LIMIT $1 OFFSET $2",
             self.threads_table
         );
         let rows: Vec<(String,)> = sqlx::query_as(&sql)
@@ -603,6 +603,37 @@ impl ThreadRunStore for PostgresStore {
         let mut tx = self
             .pool
             .begin()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        let load_thread_sql = format!("SELECT data FROM {} WHERE id = $1", self.threads_table);
+        let existing_thread: Option<(serde_json::Value,)> = sqlx::query_as(&load_thread_sql)
+            .bind(thread_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before UNIX epoch")
+            .as_millis() as u64;
+        let mut thread = match existing_thread {
+            Some((data,)) => serde_json::from_value(data)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?,
+            None => Thread::with_id(thread_id),
+        };
+        thread.metadata.created_at.get_or_insert(now);
+        thread.metadata.updated_at = Some(now);
+        let thread_data = serde_json::to_value(&thread)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let thread_sql = format!(
+            "INSERT INTO {} (id, data) VALUES ($1, $2)
+             ON CONFLICT (id) DO UPDATE SET data = $2, updated_at = now()",
+            self.threads_table
+        );
+        sqlx::query(&thread_sql)
+            .bind(thread_id)
+            .bind(&thread_data)
+            .execute(&mut *tx)
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
 

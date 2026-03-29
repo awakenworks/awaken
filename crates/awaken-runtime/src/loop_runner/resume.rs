@@ -4,9 +4,13 @@ use std::sync::Arc;
 
 use crate::cancellation::CancellationToken;
 use awaken_contract::StateError;
+use awaken_contract::contract::event::AgentEvent;
+use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::message::{Message, ToolCall};
-use awaken_contract::contract::suspension::{ToolCallResume, ToolCallResumeMode, ToolCallStatus};
+use awaken_contract::contract::suspension::{
+    ResumeDecisionAction, ToolCallResume, ToolCallResumeMode, ToolCallStatus,
+};
 use awaken_contract::contract::tool::ToolCallContext;
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
@@ -168,11 +172,53 @@ pub(super) async fn detect_and_replay_resume(
     Ok(())
 }
 
+async fn emit_decision_events_and_messages(
+    store: &crate::state::StateStore,
+    sink: &dyn EventSink,
+    messages: &mut Vec<Arc<Message>>,
+    decisions: &[(String, ToolCallResume)],
+) -> Result<(), AgentLoopError> {
+    let tool_call_states = store.read::<ToolCallStates>().unwrap_or_default();
+
+    for (call_id, decision) in decisions {
+        let Some(call_state) = tool_call_states.calls.get(call_id) else {
+            continue;
+        };
+
+        match decision.action {
+            ResumeDecisionAction::Cancel => {
+                sink.emit(AgentEvent::ToolCallResumed {
+                    target_id: call_id.clone(),
+                    result: decision.result.clone(),
+                })
+                .await;
+                messages.push(Arc::new(Message::tool(
+                    call_id,
+                    serde_json::to_string(&decision.result).unwrap_or_else(|_| "null".into()),
+                )));
+            }
+            ResumeDecisionAction::Resume
+                if call_state.resume_mode != ToolCallResumeMode::ReplayToolCall =>
+            {
+                sink.emit(AgentEvent::ToolCallResumed {
+                    target_id: call_id.clone(),
+                    result: decision.result.clone(),
+                })
+                .await;
+            }
+            ResumeDecisionAction::Resume => {}
+        }
+    }
+
+    Ok(())
+}
+
 pub(super) async fn wait_for_resume_or_cancel(
     decision_rx: Option<&mut UnboundedReceiver<Vec<(String, ToolCallResume)>>>,
     cancellation_token: Option<&CancellationToken>,
     store: &crate::state::StateStore,
     agent: &ResolvedAgent,
+    sink: &dyn EventSink,
     run_identity: &RunIdentity,
     messages: &mut Vec<Arc<Message>>,
 ) -> Result<WaitOutcome, AgentLoopError> {
@@ -211,6 +257,7 @@ pub(super) async fn wait_for_resume_or_cancel(
 
         // Each tool call's resume_mode is read from its stored state (set by SuspendTicket).
         // Defaults to ReplayToolCall if no ticket was stored (legacy path).
+        emit_decision_events_and_messages(store, sink, messages, &decisions).await?;
         prepare_resume(store, decisions, None)?;
         detect_and_replay_resume(agent, store, run_identity, messages).await?;
         if !has_suspended_calls(store) {

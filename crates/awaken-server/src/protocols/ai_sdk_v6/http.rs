@@ -16,7 +16,8 @@ use bytes::Bytes;
 use futures::StreamExt;
 use serde_json::{Value, json};
 
-use awaken_contract::contract::content::ContentBlock;
+use awaken_contract::contract::content::{ContentBlock, extract_text};
+use awaken_contract::contract::message::{Message, Role, ToolCall};
 
 use crate::app::AppState;
 use crate::http_run::wire_sse_relay_resumable;
@@ -280,43 +281,135 @@ async fn thread_messages(
 
     let offset = params.offset_or_default();
     let limit = params.clamped_limit();
-    let total = messages.len();
+    let encoded_messages = encode_history_messages(messages);
+    let total = encoded_messages.len();
 
-    let encoded: Vec<Value> = messages
+    let encoded = encoded_messages
         .into_iter()
         .skip(offset)
         .take(limit)
-        .map(|m| {
-            let role = match m.role {
-                awaken_contract::contract::message::Role::System => "system",
-                awaken_contract::contract::message::Role::User => "user",
-                awaken_contract::contract::message::Role::Assistant => "assistant",
-                awaken_contract::contract::message::Role::Tool => "tool",
-            };
-            // Return AI SDK v6 UIMessage format with `parts` (not `content`)
-            let parts: Vec<Value> = m
-                .content
-                .iter()
-                .filter_map(|block| match block {
-                    ContentBlock::Text { text } => {
-                        Some(serde_json::json!({"type": "text", "text": text}))
-                    }
-                    _ => None,
-                })
-                .collect();
-            serde_json::json!({
-                "id": m.id,
-                "role": role,
-                "parts": parts,
-            })
-        })
-        .collect();
+        .collect::<Vec<_>>();
 
     Ok(Json(serde_json::json!({
         "messages": encoded,
         "total": total,
         "has_more": offset + encoded.len() < total,
     })))
+}
+
+fn encode_history_messages(messages: Vec<Message>) -> Vec<Value> {
+    let mut encoded: Vec<Value> = Vec::new();
+    let mut pending_tool_parts: std::collections::HashMap<String, (usize, usize)> =
+        std::collections::HashMap::new();
+
+    for message in messages {
+        match message.role {
+            Role::User | Role::System => {
+                let parts = content_blocks_to_ui_parts(&message.content);
+                if parts.is_empty() {
+                    continue;
+                }
+                encoded.push(json!({
+                    "id": message.id,
+                    "role": match message.role {
+                        Role::User => "user",
+                        Role::System => "system",
+                        _ => unreachable!(),
+                    },
+                    "parts": parts,
+                }));
+            }
+            Role::Assistant => {
+                let mut parts = content_blocks_to_ui_parts(&message.content);
+                let message_index = encoded.len();
+                if let Some(tool_calls) = &message.tool_calls {
+                    for call in tool_calls {
+                        let part_index = parts.len();
+                        parts.push(tool_call_part(call));
+                        pending_tool_parts.insert(call.id.clone(), (message_index, part_index));
+                    }
+                }
+                if parts.is_empty() {
+                    continue;
+                }
+                encoded.push(json!({
+                    "id": message.id,
+                    "role": "assistant",
+                    "parts": parts,
+                }));
+            }
+            Role::Tool => {
+                let Some(call_id) = message.tool_call_id.as_ref() else {
+                    encoded.push(json!({
+                        "id": message.id,
+                        "role": "tool",
+                        "parts": content_blocks_to_ui_parts(&message.content),
+                    }));
+                    continue;
+                };
+
+                let Some((message_index, part_index)) = pending_tool_parts.remove(call_id) else {
+                    encoded.push(json!({
+                        "id": message.id,
+                        "role": "tool",
+                        "parts": content_blocks_to_ui_parts(&message.content),
+                    }));
+                    continue;
+                };
+
+                let Some(message_object) = encoded
+                    .get_mut(message_index)
+                    .and_then(Value::as_object_mut)
+                else {
+                    continue;
+                };
+                let Some(parts) = message_object
+                    .get_mut("parts")
+                    .and_then(Value::as_array_mut)
+                else {
+                    continue;
+                };
+                let Some(part) = parts.get_mut(part_index).and_then(Value::as_object_mut) else {
+                    continue;
+                };
+
+                part.insert(
+                    "state".to_string(),
+                    Value::String("output-available".into()),
+                );
+                part.insert("output".to_string(), parse_tool_message_output(&message));
+                part.insert("providerExecuted".to_string(), Value::Bool(true));
+            }
+        }
+    }
+
+    encoded
+}
+
+fn content_blocks_to_ui_parts(content: &[ContentBlock]) -> Vec<Value> {
+    content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(json!({"type": "text", "text": text})),
+            _ => None,
+        })
+        .collect()
+}
+
+fn tool_call_part(call: &ToolCall) -> Value {
+    json!({
+        "type": format!("tool-{}", call.name),
+        "toolName": call.name,
+        "toolCallId": call.id,
+        "state": "input-available",
+        "input": call.arguments,
+        "providerExecuted": true,
+    })
+}
+
+fn parse_tool_message_output(message: &Message) -> Value {
+    let text = extract_text(&message.content);
+    serde_json::from_str(&text).unwrap_or(Value::String(text))
 }
 
 // ── Cancel / Interrupt ──────────────────────────────────────────────
@@ -420,6 +513,7 @@ fn is_finish_step_frame(frame: &Bytes) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn detects_suspended_finish_frame() {
@@ -430,5 +524,70 @@ mod tests {
         let natural =
             Bytes::from("id: 8\ndata: {\"type\":\"finish\",\"finishReason\":\"stop\"}\n\n");
         assert!(!is_suspended_finish_frame(&natural));
+    }
+
+    #[test]
+    fn encodes_tool_history_as_assistant_tool_parts() {
+        let messages = vec![
+            Message::user("show me a dashboard").with_id("u1".into()),
+            Message::assistant_with_tool_calls(
+                "Generating the dashboard now.",
+                vec![ToolCall::new(
+                    "call-1",
+                    "render_json_ui",
+                    json!({"prompt": "Quarterly dashboard"}),
+                )],
+            )
+            .with_id("a1".into()),
+            Message::tool("call-1", r#"{"content":{"root":"page"},"steps":1}"#)
+                .with_id("t1".into()),
+            Message::assistant("Done.").with_id("a2".into()),
+        ];
+
+        let encoded = encode_history_messages(messages);
+        assert_eq!(encoded.len(), 3);
+
+        let assistant_parts = encoded[1]["parts"].as_array().expect("assistant parts");
+        assert_eq!(assistant_parts[0]["type"].as_str(), Some("text"));
+        assert_eq!(
+            assistant_parts[1]["type"].as_str(),
+            Some("tool-render_json_ui")
+        );
+        assert_eq!(assistant_parts[1]["toolCallId"].as_str(), Some("call-1"));
+        assert_eq!(
+            assistant_parts[1]["state"].as_str(),
+            Some("output-available")
+        );
+        assert_eq!(assistant_parts[1]["providerExecuted"].as_bool(), Some(true));
+        assert_eq!(
+            assistant_parts[1]["output"]["content"]["root"].as_str(),
+            Some("page")
+        );
+    }
+
+    #[test]
+    fn encoded_history_total_matches_encoded_messages() {
+        let messages = vec![
+            Message::user("show me a dashboard").with_id("u1".into()),
+            Message::assistant_with_tool_calls(
+                "Generating the dashboard now.",
+                vec![ToolCall::new(
+                    "call-1",
+                    "render_json_ui",
+                    json!({"prompt": "Quarterly dashboard"}),
+                )],
+            )
+            .with_id("a1".into()),
+            Message::tool("call-1", r#"{"content":{"root":"page"},"steps":1}"#)
+                .with_id("t1".into()),
+        ];
+
+        let encoded = encode_history_messages(messages);
+        assert_eq!(encoded.len(), 2);
+        assert_eq!(
+            encoded.len(),
+            2,
+            "history pagination must use encoded message count"
+        );
     }
 }

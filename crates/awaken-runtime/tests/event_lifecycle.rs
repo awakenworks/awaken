@@ -27,6 +27,53 @@ use awaken_runtime::plugins::Plugin;
 use awaken_runtime::registry::{AgentResolver, ResolvedAgent};
 use awaken_runtime::runtime::{AgentRuntime, RunRequest};
 
+struct ScriptedLlm {
+    responses: std::sync::Mutex<Vec<StreamResult>>,
+}
+
+impl ScriptedLlm {
+    fn new(responses: Vec<StreamResult>) -> Self {
+        Self {
+            responses: std::sync::Mutex::new(responses),
+        }
+    }
+}
+
+#[async_trait]
+impl LlmExecutor for ScriptedLlm {
+    async fn execute(
+        &self,
+        _request: InferenceRequest,
+    ) -> Result<StreamResult, InferenceExecutionError> {
+        let mut responses = self.responses.lock().expect("lock poisoned");
+        Ok(responses.remove(0))
+    }
+
+    fn name(&self) -> &str {
+        "scripted"
+    }
+}
+
+struct SuspendOnceTool {
+    calls: AtomicUsize,
+}
+
+#[async_trait]
+impl Tool for SuspendOnceTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("dangerous", "dangerous", "suspend once")
+    }
+
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        if n == 0 {
+            Ok(ToolResult::suspended("dangerous", "needs approval"))
+        } else {
+            Ok(ToolResult::success("dangerous", json!({"ok": true})))
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -163,6 +210,88 @@ async fn simple_text_response_event_sequence() {
     } else {
         panic!("last event should be RunFinish");
     }
+}
+
+#[tokio::test]
+async fn suspended_tool_cancel_emits_resumed_event_and_finishes() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![ContentBlock::text("tools")],
+            tool_calls: vec![ToolCall::new("c1", "dangerous", json!({"note": "x"}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("understood, not proceeding")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+    let tool = Arc::new(SuspendOnceTool {
+        calls: AtomicUsize::new(0),
+    });
+    let resolver = Arc::new(FixedResolver {
+        agent: ResolvedAgent::new("agent", "m", "sys", llm).with_tool(tool),
+        plugins: vec![],
+    });
+    let runtime = Arc::new(AgentRuntime::new(resolver));
+    let sink = Arc::new(VecEventSink::new());
+
+    let run_task = {
+        let runtime = Arc::clone(&runtime);
+        let sink = sink.clone();
+        tokio::spawn(async move {
+            runtime
+                .run(
+                    RunRequest::new("thread-deny", vec![Message::user("go")])
+                        .with_agent_id("agent"),
+                    sink as Arc<dyn EventSink>,
+                )
+                .await
+        })
+    };
+
+    let mut sent = false;
+    for _ in 0..40 {
+        if runtime.send_decisions(
+            "thread-deny",
+            vec![(
+                "c1".into(),
+                awaken_contract::contract::suspension::ToolCallResume {
+                    decision_id: "d1".into(),
+                    action: awaken_contract::contract::suspension::ResumeDecisionAction::Cancel,
+                    result: json!({"approved": false}),
+                    reason: Some("user denied".into()),
+                    updated_at: 1,
+                },
+            )],
+        ) {
+            sent = true;
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(sent, "should send deny decision while run is active");
+
+    let result = run_task
+        .await
+        .expect("join should succeed")
+        .expect("run should succeed");
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+
+    let events = sink.take();
+    verify_event_ordering(&events);
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallResumed { target_id, result }
+                if target_id == "c1" && result.get("approved") == Some(&json!(false))
+        )),
+        "deny flow should emit ToolCallResumed false: {events:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

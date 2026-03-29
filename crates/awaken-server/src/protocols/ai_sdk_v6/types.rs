@@ -114,6 +114,10 @@ pub enum UIStreamEvent {
         error_text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         dynamic: Option<bool>,
+        /// When `true`, the tool was executed by the provider (server-side).
+        /// Prevents AI SDK auto-resubmission for server-side tool errors.
+        #[serde(rename = "providerExecuted", skip_serializing_if = "Option::is_none")]
+        provider_executed: Option<bool>,
     },
 
     /// Tool output denied.
@@ -342,6 +346,7 @@ impl UIStreamEvent {
             tool_call_id: tool_call_id.into(),
             error_text: error_text.into(),
             dynamic: None,
+            provider_executed: Some(true),
         }
     }
 

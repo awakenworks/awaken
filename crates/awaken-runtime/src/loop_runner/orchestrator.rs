@@ -281,6 +281,7 @@ pub(super) async fn run_agent_loop_impl(
                     cancellation_token.as_ref(),
                     store,
                     &agent,
+                    sink.as_ref(),
                     &run_identity,
                     &mut messages,
                 )

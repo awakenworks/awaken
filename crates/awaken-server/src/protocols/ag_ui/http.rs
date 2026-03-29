@@ -1,7 +1,7 @@
 //! /v1/ag-ui routes.
 
 use axum::extract::{Path, Query, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -26,6 +26,10 @@ pub fn ag_ui_routes() -> Router<AppState> {
         .route(
             "/v1/ag-ui/threads/:thread_id/runs",
             post(ag_ui_run_threaded),
+        )
+        .route(
+            "/v1/ag-ui/threads/:thread_id/interrupt",
+            post(interrupt_thread),
         )
         .route(
             "/v1/ag-ui/agents/:agent_id/runs",
@@ -218,6 +222,31 @@ async fn ag_ui_run_agent_scoped(
 ) -> Result<Response, ApiError> {
     payload.agent_id = Some(agent_id);
     ag_ui_run_inner(st, payload).await
+}
+
+async fn interrupt_thread(
+    State(st): State<AppState>,
+    Path(thread_id): Path<String>,
+) -> Result<Response, ApiError> {
+    let interrupted = st
+        .mailbox
+        .interrupt(&thread_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    if interrupted.active_job.is_some() || interrupted.superseded_count > 0 {
+        return Ok((
+            axum::http::StatusCode::ACCEPTED,
+            Json(serde_json::json!({
+                "status": "interrupt_requested",
+                "thread_id": thread_id,
+                "superseded_jobs": interrupted.superseded_count,
+            })),
+        )
+            .into_response());
+    }
+
+    Err(ApiError::ThreadNotFound(thread_id))
 }
 
 /// Convert an AG-UI resume payload into a `(tool_call_id, ToolCallResume)` pair.
