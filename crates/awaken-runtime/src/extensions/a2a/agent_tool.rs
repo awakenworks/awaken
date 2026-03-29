@@ -125,7 +125,17 @@ impl Tool for AgentTool {
             None => Arc::new(NullEventSink),
         };
 
-        match self.backend.execute(&self.agent_id, messages, sink).await {
+        match self
+            .backend
+            .execute(
+                &self.agent_id,
+                messages,
+                sink,
+                Some(ctx.run_identity.run_id.clone()),
+                Some(ctx.call_id.clone()),
+            )
+            .await
+        {
             Ok(result) => {
                 let status_str = result.status.to_string();
                 Ok(ToolResult::success(

@@ -170,6 +170,8 @@ impl AgentBackend for A2aBackend {
         agent_id: &str,
         messages: Vec<Message>,
         _event_sink: Arc<dyn EventSink>,
+        _parent_run_id: Option<String>,
+        _parent_tool_call_id: Option<String>,
     ) -> Result<DelegateRunResult, AgentBackendError> {
         // Extract prompt text from user messages
         let prompt = messages

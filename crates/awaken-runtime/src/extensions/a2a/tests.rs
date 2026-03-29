@@ -94,6 +94,8 @@ impl AgentBackend for MockBackend {
         _agent_id: &str,
         _messages: Vec<Message>,
         _event_sink: Arc<dyn EventSink>,
+        _parent_run_id: Option<String>,
+        _parent_tool_call_id: Option<String>,
     ) -> Result<DelegateRunResult, AgentBackendError> {
         Ok(self.result.clone())
     }
@@ -110,6 +112,8 @@ impl AgentBackend for FailingBackend {
         _agent_id: &str,
         _messages: Vec<Message>,
         _event_sink: Arc<dyn EventSink>,
+        _parent_run_id: Option<String>,
+        _parent_tool_call_id: Option<String>,
     ) -> Result<DelegateRunResult, AgentBackendError> {
         Err(AgentBackendError::ExecutionFailed(self.error.clone()))
     }

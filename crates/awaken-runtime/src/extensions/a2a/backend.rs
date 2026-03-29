@@ -50,11 +50,16 @@ pub trait AgentBackend: Send + Sync {
     ///
     /// The `event_sink` receives filtered child events (e.g. tool-call progress)
     /// that should be forwarded to the parent's event stream.
+    ///
+    /// `parent_run_id` and `parent_tool_call_id` link the sub-agent's identity
+    /// back to the parent run, enabling progress lineage tree construction.
     async fn execute(
         &self,
         agent_id: &str,
         messages: Vec<Message>,
         event_sink: Arc<dyn EventSink>,
+        parent_run_id: Option<String>,
+        parent_tool_call_id: Option<String>,
     ) -> Result<DelegateRunResult, AgentBackendError>;
 }
 

@@ -32,6 +32,8 @@ impl AgentBackend for LocalBackend {
         agent_id: &str,
         messages: Vec<Message>,
         event_sink: Arc<dyn EventSink>,
+        parent_run_id: Option<String>,
+        parent_tool_call_id: Option<String>,
     ) -> Result<DelegateRunResult, AgentBackendError> {
         // Resolve the target agent
         self.resolver.resolve(agent_id).map_err(|e| {
@@ -50,14 +52,17 @@ impl AgentBackend for LocalBackend {
         // Create sub-agent run identity
         let sub_run_id = uuid::Uuid::now_v7().to_string();
         let thread_id = sub_run_id.clone();
-        let sub_identity = RunIdentity::new(
+        let mut sub_identity = RunIdentity::new(
             thread_id.clone(),
             Some(thread_id),
             sub_run_id,
-            None,
+            parent_run_id,
             agent_id.to_string(),
             RunOrigin::Subagent,
         );
+        if let Some(call_id) = parent_tool_call_id {
+            sub_identity = sub_identity.with_parent_tool_call_id(call_id);
+        }
 
         let result = run_agent_loop(AgentLoopParams {
             resolver: self.resolver.as_ref(),
