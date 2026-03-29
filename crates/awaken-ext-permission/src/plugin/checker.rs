@@ -27,12 +27,9 @@ impl PhaseHook for PermissionInterceptHook {
         };
         let tool_args = ctx.tool_args.clone().unwrap_or_default();
 
-        // If resuming after permission approval, proceed (no intercept)
-        if ctx.resume_input.as_ref().is_some_and(|r| {
+        let is_resume = ctx.resume_input.as_ref().is_some_and(|r| {
             r.action == awaken_contract::contract::suspension::ResumeDecisionAction::Resume
-        }) {
-            return Ok(StateCommand::new());
-        }
+        });
 
         let policy = ctx.state::<PermissionPolicyKey>();
         let overrides = ctx.state::<PermissionOverridesKey>();
@@ -48,6 +45,10 @@ impl PhaseHook for PermissionInterceptHook {
                 })?;
             }
             ToolPermissionBehavior::Ask => {
+                // On resume the user already approved, so skip re-suspension.
+                if is_resume {
+                    return Ok(StateCommand::new());
+                }
                 // For now, suspend without a detailed ticket.
                 // Future: build SuspendTicket with permission confirmation UI schema.
                 use awaken_contract::contract::suspension::{
