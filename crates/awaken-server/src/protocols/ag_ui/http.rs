@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use awaken_contract::contract::message::Message;
+use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
 
 use crate::app::AppState;
 use crate::http_run::wire_sse_relay;
@@ -36,10 +37,8 @@ pub fn ag_ui_routes() -> Router<AppState> {
 #[derive(Debug, Deserialize)]
 struct AgUiResumePayload {
     #[serde(rename = "interruptId", alias = "interrupt_id")]
-    #[allow(dead_code)]
     interrupt_id: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)]
     payload: Option<Value>,
 }
 
@@ -57,7 +56,6 @@ struct AgUiRunRequest {
     #[serde(default)]
     context: Option<Value>,
     #[serde(default)]
-    #[allow(dead_code)] // deserialized from AG-UI request, reserved for resume handling
     resume: Option<AgUiResumePayload>,
     /// Frontend tool definitions sent by CopilotKit / AG-UI clients.
     #[serde(default)]
@@ -222,12 +220,41 @@ async fn ag_ui_run_agent_scoped(
     ag_ui_run_inner(st, payload).await
 }
 
+/// Convert an AG-UI resume payload into a `(tool_call_id, ToolCallResume)` pair.
+fn convert_resume_to_decision(resume: AgUiResumePayload) -> Option<(String, ToolCallResume)> {
+    let tool_call_id = resume.interrupt_id?;
+    let payload = resume.payload.unwrap_or(Value::Null);
+
+    let action = if payload.get("approved").and_then(Value::as_bool) == Some(false) {
+        ResumeDecisionAction::Cancel
+    } else {
+        ResumeDecisionAction::Resume
+    };
+
+    Some((
+        tool_call_id,
+        ToolCallResume {
+            decision_id: uuid::Uuid::now_v7().to_string(),
+            action,
+            result: payload,
+            reason: None,
+            updated_at: awaken_contract::now_ms(),
+        },
+    ))
+}
+
 async fn ag_ui_run_inner(st: AppState, payload: AgUiRunRequest) -> Result<Response, ApiError> {
-    let (thread_id_raw, agent_id, raw_messages, state, _resume, frontend_tools) =
+    let (thread_id_raw, agent_id, raw_messages, state, resume, frontend_tools) =
         payload.into_parts();
     let messages = convert_messages(raw_messages);
     let (thread_id, messages) = crate::request::prepare_run_inputs(thread_id_raw, messages)?;
     let messages = crate::request::inject_frontend_context(messages, state);
+
+    // Convert AG-UI resume payload into a decision for the runtime
+    let decisions: Vec<(String, ToolCallResume)> = resume
+        .and_then(convert_resume_to_decision)
+        .into_iter()
+        .collect();
 
     // Convert AG-UI frontend tool definitions into ToolDescriptor values
     let frontend_tools: Vec<awaken_contract::contract::tool::ToolDescriptor> = frontend_tools
@@ -251,6 +278,9 @@ async fn ag_ui_run_inner(st: AppState, payload: AgUiRunRequest) -> Result<Respon
     }
     if !frontend_tools.is_empty() {
         request = request.with_frontend_tools(frontend_tools);
+    }
+    if !decisions.is_empty() {
+        request = request.with_decisions(decisions);
     }
     let (_result, event_rx) = st
         .mailbox
@@ -381,6 +411,62 @@ mod tests {
         let obj = state.unwrap();
         assert_eq!(obj["a"], json!(1));
         assert_eq!(obj["b"], json!(2));
+    }
+
+    #[test]
+    fn convert_resume_approved_true() {
+        let resume = AgUiResumePayload {
+            interrupt_id: Some("tc_1".into()),
+            payload: Some(json!({"approved": true})),
+        };
+        let (id, tcr) = convert_resume_to_decision(resume).unwrap();
+        assert_eq!(id, "tc_1");
+        assert_eq!(tcr.action, ResumeDecisionAction::Resume);
+        assert_eq!(tcr.result, json!({"approved": true}));
+    }
+
+    #[test]
+    fn convert_resume_approved_false() {
+        let resume = AgUiResumePayload {
+            interrupt_id: Some("tc_2".into()),
+            payload: Some(json!({"approved": false})),
+        };
+        let (id, tcr) = convert_resume_to_decision(resume).unwrap();
+        assert_eq!(id, "tc_2");
+        assert_eq!(tcr.action, ResumeDecisionAction::Cancel);
+    }
+
+    #[test]
+    fn convert_resume_arbitrary_payload() {
+        let resume = AgUiResumePayload {
+            interrupt_id: Some("tc_3".into()),
+            payload: Some(json!({"data": "some result"})),
+        };
+        let (id, tcr) = convert_resume_to_decision(resume).unwrap();
+        assert_eq!(id, "tc_3");
+        assert_eq!(tcr.action, ResumeDecisionAction::Resume);
+        assert_eq!(tcr.result, json!({"data": "some result"}));
+    }
+
+    #[test]
+    fn convert_resume_no_interrupt_id_returns_none() {
+        let resume = AgUiResumePayload {
+            interrupt_id: None,
+            payload: Some(json!({"approved": true})),
+        };
+        assert!(convert_resume_to_decision(resume).is_none());
+    }
+
+    #[test]
+    fn convert_resume_no_payload() {
+        let resume = AgUiResumePayload {
+            interrupt_id: Some("tc_4".into()),
+            payload: None,
+        };
+        let (id, tcr) = convert_resume_to_decision(resume).unwrap();
+        assert_eq!(id, "tc_4");
+        assert_eq!(tcr.action, ResumeDecisionAction::Resume);
+        assert_eq!(tcr.result, Value::Null);
     }
 
     #[test]
