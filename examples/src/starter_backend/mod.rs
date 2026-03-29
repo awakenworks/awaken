@@ -433,6 +433,10 @@ Deterministic compatibility directives:\n\
         model: "default".into(),
         system_prompt: json_render::system_prompt(JSON_RENDER_COMPONENT_CATALOG),
         max_rounds: 1,
+        // Sub-agents generate pure text (UI markup); no tools needed.
+        // Without this, they inherit parent tools and may recursively
+        // call render_* tools, causing a stack overflow.
+        allowed_tools: Some(vec![]),
         ..Default::default()
     };
     let openui_ui_agent = AgentSpec {
@@ -440,6 +444,7 @@ Deterministic compatibility directives:\n\
         model: "default".into(),
         system_prompt: openui::system_prompt(OPENUI_COMPONENT_CATALOG),
         max_rounds: 1,
+        allowed_tools: Some(vec![]),
         ..Default::default()
     };
 

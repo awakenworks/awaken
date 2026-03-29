@@ -94,8 +94,13 @@ impl StreamCollector {
                     entry.name = call.fn_name.clone();
                 }
 
-                // genai provides accumulated arguments, compute delta
-                let args_str = serde_json::to_string(&call.fn_arguments).unwrap_or_default();
+                // genai provides accumulated arguments as Value::String; extract
+                // the raw string to avoid double-encoding via serde_json::to_string
+                // (which would add JSON quotes/escapes and corrupt delta computation).
+                let args_str = match &call.fn_arguments {
+                    Value::String(s) => s.clone(),
+                    other => serde_json::to_string(other).unwrap_or_default(),
+                };
                 let delta = if args_str.len() > prev_args_len {
                     args_str[prev_args_len..].to_string()
                 } else {
@@ -553,5 +558,52 @@ mod tests {
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].name, "new_tool");
         assert_eq!(result.tool_calls[0].id, "captured");
+    }
+
+    /// Verify that Value::String fn_arguments (genai OpenAI streaming format)
+    /// are handled correctly without double-encoding via serde_json::to_string.
+    #[test]
+    fn collector_handles_string_valued_accumulated_tool_args() {
+        use genai::chat::ToolCall as GToolCall;
+
+        let mut c = StreamCollector::new();
+
+        // Chunk 1: tool call start with empty accumulated args (Value::String(""))
+        let o1 = c.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: GToolCall {
+                call_id: "tc1".into(),
+                fn_name: "calculator".into(),
+                fn_arguments: Value::String(String::new()),
+                thought_signatures: None,
+            },
+        }));
+        assert!(matches!(o1, StreamOutput::ToolCallStart { ref name, .. } if name == "calculator"));
+
+        // Chunk 2: accumulated args = r#"{"ex"#
+        let o2 = c.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: GToolCall {
+                call_id: "tc1".into(),
+                fn_name: "calculator".into(),
+                fn_arguments: Value::String(r#"{"ex"#.into()),
+                thought_signatures: None,
+            },
+        }));
+        assert!(matches!(o2, StreamOutput::ToolCallDelta { ref id, .. } if id == "tc1"));
+
+        // Chunk 3: accumulated args = r#"{"expression":"137*42"}"#
+        let o3 = c.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: GToolCall {
+                call_id: "tc1".into(),
+                fn_name: "calculator".into(),
+                fn_arguments: Value::String(r#"{"expression":"137*42"}"#.into()),
+                thought_signatures: None,
+            },
+        }));
+        assert!(matches!(o3, StreamOutput::ToolCallDelta { ref id, .. } if id == "tc1"));
+
+        let result = c.finish();
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].name, "calculator");
+        assert_eq!(result.tool_calls[0].arguments["expression"], "137*42");
     }
 }

@@ -4,9 +4,9 @@
 //! while allowed tools are available for calling.
 //!
 //! Run:
-//!   OPENAI_BASE_URL=https://open.bigmodel.cn/api/paas/v4/ \
-//!   OPENAI_API_KEY=<your-key> \
-//!   OPENAI_MODEL=GLM-4.7-Flash \
+//!   LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4/ \
+//!   LLM_API_KEY=<your-key> \
+//!   LLM_MODEL=GLM-4.7-Flash \
 //!   cargo run --example permission_filter_live
 
 use async_trait::async_trait;

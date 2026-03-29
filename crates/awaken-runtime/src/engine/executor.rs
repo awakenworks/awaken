@@ -57,7 +57,8 @@ impl GenaiExecutor {
             .clone()
             .unwrap_or_default()
             .with_capture_usage(true)
-            .with_capture_content(true);
+            .with_capture_content(true)
+            .with_capture_tool_calls(true);
 
         if let Some(ref ovr) = request.overrides {
             if let Some(temp) = ovr.temperature {
