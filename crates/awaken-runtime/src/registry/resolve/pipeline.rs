@@ -213,6 +213,9 @@ fn resolve_delegate_tools(
                 if let Some(token) = &endpoint.bearer_token {
                     config = config.with_bearer_token(token);
                 }
+                if let Some(ref target_id) = endpoint.agent_id {
+                    config = config.with_target_agent_id(target_id);
+                }
                 config = config
                     .with_poll_interval(std::time::Duration::from_millis(endpoint.poll_interval_ms))
                     .with_timeout(std::time::Duration::from_millis(endpoint.timeout_ms));

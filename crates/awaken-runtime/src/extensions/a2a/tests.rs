@@ -339,6 +339,7 @@ fn remote_endpoint_serde_roundtrip() {
     let endpoint = RemoteEndpoint {
         base_url: "https://api.example.com".into(),
         bearer_token: Some("tok_123".into()),
+        agent_id: None,
         poll_interval_ms: 3000,
         timeout_ms: 60000,
     };

@@ -19,6 +19,9 @@ pub struct A2aConfig {
     pub base_url: String,
     /// Optional bearer token for authentication.
     pub bearer_token: Option<String>,
+    /// Target agent ID on the remote server. If `None`, omits agentId in the
+    /// A2A request and lets the remote server use its default agent.
+    pub target_agent_id: Option<String>,
     /// Interval between poll requests.
     pub poll_interval: Duration,
     /// Maximum time to wait for task completion.
@@ -31,6 +34,7 @@ impl A2aConfig {
         Self {
             base_url: base_url.into(),
             bearer_token: None,
+            target_agent_id: None,
             poll_interval: Duration::from_millis(2000),
             timeout: Duration::from_secs(300),
         }
@@ -39,6 +43,12 @@ impl A2aConfig {
     #[must_use]
     pub fn with_bearer_token(mut self, token: impl Into<String>) -> Self {
         self.bearer_token = Some(token.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_target_agent_id(mut self, id: impl Into<String>) -> Self {
+        self.target_agent_id = Some(id.into());
         self
     }
 
@@ -86,12 +96,15 @@ impl A2aBackend {
             self.config.base_url.trim_end_matches('/')
         );
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "message": {
                 "role": "user",
                 "parts": [{"type": "text", "text": prompt}]
             }
         });
+        if let Some(ref target_id) = self.config.target_agent_id {
+            body["agentId"] = serde_json::Value::String(target_id.clone());
+        }
 
         let response = self
             .build_request(reqwest::Method::POST, &url)
@@ -112,9 +125,12 @@ impl A2aBackend {
     }
 
     /// Fetch current task status from the runs endpoint.
+    ///
+    /// A2A task_send uses `task_id` as the thread_id, so we poll the
+    /// latest run for that thread rather than looking up by run_id.
     async fn fetch_task_status(&self, task_id: &str) -> Result<A2aTaskSnapshot, AgentBackendError> {
         let url = format!(
-            "{}/v1/runs/{}",
+            "{}/v1/threads/{}/runs/latest",
             self.config.base_url.trim_end_matches('/'),
             task_id.trim()
         );

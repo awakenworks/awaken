@@ -32,6 +32,9 @@ tower = { version = "0.5", features = ["util"] }
 awaken-stores = { workspace = true }
 awaken-runtime = { workspace = true }
 async-trait = { workspace = true }
+reqwest = { workspace = true }
+genai = { workspace = true }
+uuid = { workspace = true }
 
 [features]
 default = ["permission"]

@@ -114,6 +114,10 @@ pub struct RemoteEndpoint {
     pub base_url: String,
     #[serde(default)]
     pub bearer_token: Option<String>,
+    /// Target agent ID on the remote server. If `None`, omits the agentId
+    /// field in the A2A request and lets the remote server use its default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     #[serde(default = "default_poll_interval")]
     pub poll_interval_ms: u64,
     #[serde(default = "default_timeout")]
@@ -125,6 +129,7 @@ impl Default for RemoteEndpoint {
         Self {
             base_url: String::new(),
             bearer_token: None,
+            agent_id: None,
             poll_interval_ms: default_poll_interval(),
             timeout_ms: default_timeout(),
         }
