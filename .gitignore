@@ -1,9 +1,32 @@
+# Build
+target/
+rust_out
+
+# Node
 e2e/node_modules/
 examples/ai-sdk-starter/node_modules/
 examples/ai-sdk-starter/dist/
 examples/copilotkit-starter/node_modules/
 examples/copilotkit-starter/.next/
 examples/copilotkit-starter/sessions/
+examples/copilotkit-starter/tsconfig.tsbuildinfo
 examples/copilotkit-starter/test-results/
 e2e/test-results/
+
+# Python
+__pycache__/
+
+# Tools
+.claude/
+.playwright-mcp/
+.sigdiff/
+.worktrees/
+
+# Sessions / runtime data
+sessions/
+
+# Docs
 docs/superpowers/
+
+# Screenshots
+*.png
