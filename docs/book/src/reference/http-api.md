@@ -20,7 +20,9 @@ Server-Sent Events (SSE).
 | `GET` | `/v1/threads/:id` | Get a thread by ID |
 | `DELETE` | `/v1/threads/:id` | Delete a thread and its messages |
 | `PATCH` | `/v1/threads/:id` | Update thread metadata. Body: `{ "title": "...", "custom": {} }` |
-| `POST` | `/v1/threads/:id/interrupt` | Cancel active run on thread |
+| `POST` | `/v1/threads/:id/interrupt` | Interrupt thread: bumps generation, supersedes queued jobs, cancels active run |
+| `POST` | `/v1/threads/:id/cancel` | Cancel active run on thread |
+| `POST` | `/v1/threads/:id/decision` | Submit HITL decision. Body: `{ "toolCallId": "...", "action": "resume"\|"cancel", "payload": {} }` |
 | `PATCH` | `/v1/threads/:id/metadata` | Update thread metadata (alias) |
 | `GET` | `/v1/threads/:id/messages` | List messages. Query: `?offset=0&limit=50&visibility=all` |
 | `POST` | `/v1/threads/:id/messages` | Submit messages to run. Body: `{ "agent_id": "...", "messages": [...] }` |
@@ -34,9 +36,6 @@ Server-Sent Events (SSE).
 | `GET` | `/v1/runs` | List runs. Query: `?offset=0&limit=50&status=running` |
 | `POST` | `/v1/runs` | Start a run (SSE). Body: `{ "agentId": "...", "threadId": "...", "messages": [...] }` |
 | `GET` | `/v1/runs/:id` | Get run record |
-| `POST` | `/v1/runs/:id/inputs` | Push additional messages to a run |
-| `POST` | `/v1/runs/:id/cancel` | Cancel a run |
-| `POST` | `/v1/runs/:id/decision` | Submit HITL decision. Body: `{ "toolCallId": "...", "action": "resume"\|"cancel", "payload": {} }` |
 
 ## Mailbox
 
