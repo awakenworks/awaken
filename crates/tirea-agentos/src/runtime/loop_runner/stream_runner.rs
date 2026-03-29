@@ -583,15 +583,6 @@ pub(super) fn run_stream(
                 Result<ToolExecutionResult, AgentLoopError>,
             > = tokio::task::JoinSet::new();
             let mut early_tool_tokens: HashMap<String, RunCancellationToken> = HashMap::new();
-            let inference_state_for_early_tools = run_ctx.snapshot().unwrap_or(Value::Null);
-            let run_policy_for_early_tools = run_ctx.run_policy().clone();
-            let run_identity_for_early_tools = run_ctx.run_identity().clone();
-            let caller_context_for_early_tools = prepare_tool_execution_context(&run_ctx)
-                .map(|ctx| ctx.caller_context)
-                .unwrap_or_else(|_| caller_context_for_tool_execution(&run_ctx, &inference_state_for_early_tools));
-            let thread_id_for_early_tools = run_ctx.thread_id().to_string();
-            let thread_messages_for_early_tools = run_ctx.messages().to_vec();
-            let behavior_for_early_tools = agent.behavior_arc();
 
             loop {
                 let next_event = if let Some(ref token) = run_cancellation_token {
@@ -722,24 +713,26 @@ pub(super) fn run_stream(
                                         .as_ref()
                                         .map(tokio_util::sync::CancellationToken::child_token)
                                         .unwrap_or_default();
-                                    let state = inference_state_for_early_tools.clone();
+                                    let state = run_ctx.snapshot().unwrap_or(serde_json::Value::Null);
+                                    let run_policy = run_ctx.run_policy().clone();
+                                    let run_identity_early = run_ctx.run_identity().clone();
+                                    let caller_context = prepare_tool_execution_context(&run_ctx)
+                                        .map(|ctx| ctx.caller_context)
+                                        .unwrap_or_else(|_| caller_context_for_tool_execution(&run_ctx, &state));
+                                    let thread_id = run_ctx.thread_id().to_string();
+                                    let thread_messages = run_ctx.messages().to_vec();
                                     let tool_descriptors = active_tool_descriptors.clone();
                                     let activity_manager = activity_manager.clone();
-                                    let run_policy = run_policy_for_early_tools.clone();
-                                    let run_identity = run_identity_for_early_tools.clone();
-                                    let caller_context = caller_context_for_early_tools.clone();
-                                    let thread_id = thread_id_for_early_tools.clone();
-                                    let thread_messages = thread_messages_for_early_tools.clone();
-                                    let behavior = behavior_for_early_tools.clone();
+                                    let agent_clone = agent.clone();
                                     let task_token = child_token.clone();
 
                                     early_tool_tasks.spawn(async move {
                                         let phase_ctx = super::tool_exec::ToolPhaseContext {
                                             tool_descriptors: &tool_descriptors,
-                                            agent_behavior: Some(behavior.as_ref()),
+                                            agent_behavior: Some(agent_clone.behavior()),
                                             activity_manager,
                                             run_policy: &run_policy,
-                                            run_identity,
+                                            run_identity: run_identity_early,
                                             caller_context,
                                             thread_id: &thread_id,
                                             thread_messages: &thread_messages,
@@ -1081,6 +1074,7 @@ pub(super) fn run_stream(
                             yield emitter.emit_existing(event);
                         }
                     }
+                    cancel_pending_early_tool_executions(&mut early_tool_tokens, &mut early_tool_tasks);
                     finish_run!(reason.clone(), Some(last_text.clone()));
                 }
             }
@@ -1088,6 +1082,7 @@ pub(super) fn run_stream(
             // Check if we need to execute tools
             if !result.needs_tools() {
                 run_state.record_step_without_tools();
+                cancel_pending_early_tool_executions(&mut early_tool_tokens, &mut early_tool_tasks);
                 if is_run_cancelled(run_cancellation_token.as_ref()) {
                     finish_run!(TerminationReason::Cancelled, None);
                 }

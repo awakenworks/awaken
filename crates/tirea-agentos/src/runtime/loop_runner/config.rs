@@ -235,9 +235,6 @@ pub trait Agent: Send + Sync {
         true
     }
 
-    /// The agent behavior as an owned handle for background tasks.
-    fn behavior_arc(&self) -> Arc<dyn AgentBehavior>;
-
     /// Optional per-step tool provider.
     ///
     /// When `None`, the loop uses a static provider derived from the tool map.
@@ -434,10 +431,6 @@ impl Agent for BaseAgent {
 
     fn behavior(&self) -> &dyn AgentBehavior {
         self.behavior.as_ref()
-    }
-
-    fn behavior_arc(&self) -> Arc<dyn AgentBehavior> {
-        self.behavior.clone()
     }
 
     fn state_action_deserializer_registry(
