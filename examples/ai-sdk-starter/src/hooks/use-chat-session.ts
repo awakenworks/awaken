@@ -1,17 +1,9 @@
-import { useChat, type UIMessage } from "@ai-sdk/react";
+import { useChat } from "@ai-sdk/react";
+import type { UIMessage } from "@ai-sdk/react";
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { fetchHistory } from "@/lib/api-client";
+import { parseInferenceMetrics, type InferenceMetrics } from "@/lib/protocol";
 import { createTransport } from "@/lib/transport";
-
-export interface InferenceMetrics {
-  model: string;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    total_tokens?: number;
-  };
-  duration_ms: number;
-}
 
 export type ToolCallProgressStatus =
   | "pending"
@@ -64,6 +56,35 @@ function asStatus(value: unknown): ToolCallProgressStatus {
   }
 }
 
+/** States that indicate a tool invocation has completed (backend or frontend). */
+const TOOL_TERMINAL_STATES = new Set([
+  "output-available",
+  "output-error",
+  "output-denied",
+]);
+
+function isToolPart(
+  part: UIMessage["parts"][number],
+): part is UIMessage["parts"][number] & { state: string } {
+  if (!part || typeof part !== "object" || !("type" in part)) return false;
+  const t = (part as { type: string }).type;
+  return t === "dynamic-tool" || t.startsWith("tool-");
+}
+
+/**
+ * Return true when the last assistant message contains tool parts and ALL of
+ * them have reached a terminal state (output-available / output-error /
+ * output-denied).  This covers both backend-executed tools and frontend tools
+ * that received output via `addToolOutput`.
+ */
+function allToolPartsComplete(messages: UIMessage[]): boolean {
+  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+  if (!lastAssistant) return false;
+  const toolParts = lastAssistant.parts.filter(isToolPart);
+  if (toolParts.length === 0) return false;
+  return toolParts.every((p) => TOOL_TERMINAL_STATES.has(p.state));
+}
+
 function parseToolCallProgressSnapshot(data: unknown): ToolCallProgressNode | null {
   if (!isRecord(data)) return null;
   const activityType = asString(data.activityType);
@@ -103,13 +124,16 @@ export interface GenerativeUISnapshot {
   content: unknown;
 }
 
-export function useChatSession(threadId: string, agentId = "default") {
+export function useChatSession(
+  threadId: string,
+  agentId = "default",
+  onInferenceComplete?: () => void,
+) {
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [metrics, setMetrics] = useState<InferenceMetrics[]>([]);
   const [toolProgress, setToolProgress] = useState<Record<string, ToolCallProgressNode>>({});
   const [generativeUI, setGenerativeUI] = useState<Record<string, GenerativeUISnapshot>>({});
   const [askAnswers, setAskAnswers] = useState<Record<string, string>>({});
-  const autoSubmittedIds = useRef<Set<string>>(new Set());
   const historyLoadToken = useRef(0);
 
   const transport = useMemo(
@@ -119,7 +143,11 @@ export function useChatSession(threadId: string, agentId = "default") {
 
   const onData = useCallback((dataPart: { type: string; data: unknown }) => {
     if (dataPart.type === "data-inference-complete") {
-      setMetrics((prev) => [...prev, dataPart.data as InferenceMetrics]);
+      const metrics = parseInferenceMetrics(dataPart.data);
+      if (metrics) {
+        setMetrics((prev) => [...prev, metrics]);
+      }
+      onInferenceComplete?.();
       return;
     }
     if (dataPart.type === "data-activity-snapshot") {
@@ -147,67 +175,13 @@ export function useChatSession(threadId: string, agentId = "default") {
         }
       }
     }
-  }, []);
-
-  const sendAutomaticallyWhen = useCallback(
-    ({ messages }: { messages: UIMessage[] }) => {
-      const last = messages[messages.length - 1];
-      if (!last) return false;
-
-      const interactionIds = last.parts.flatMap((part) => {
-        if (
-          (part.type === "dynamic-tool" || part.type.startsWith("tool-")) &&
-          "state" in part &&
-          typeof part.state === "string"
-        ) {
-          const state = part.state;
-          const toolCallId =
-            "toolCallId" in part && typeof part.toolCallId === "string"
-              ? part.toolCallId
-              : undefined;
-          const toolName =
-            "toolName" in part && typeof part.toolName === "string"
-              ? part.toolName
-              : part.type.startsWith("tool-")
-                ? part.type.slice("tool-".length)
-                : undefined;
-
-          if (state === "approval-responded") {
-            const approval = (part as { approval?: { id?: unknown } }).approval;
-            if (approval && typeof approval.id === "string") return [approval.id];
-            if (toolCallId) return [toolCallId];
-          }
-
-          if (
-            (toolName === "PermissionConfirm" ||
-              toolName === "askUserQuestion" ||
-              toolName === "highlight_place" ||
-              toolName === "set_background_color") &&
-            (state === "output-available" || state === "output-denied" || state === "output-error")
-          ) {
-            if (toolCallId) return [toolCallId];
-          }
-        }
-        return [];
-      });
-
-      let shouldSend = false;
-      for (const id of interactionIds) {
-        if (!autoSubmittedIds.current.has(id)) {
-          autoSubmittedIds.current.add(id);
-          shouldSend = true;
-        }
-      }
-      return shouldSend;
-    },
-    [],
-  );
+  }, [onInferenceComplete]);
 
   const chat = useChat({
     id: threadId,
     transport,
     onData: onData as never,
-    sendAutomaticallyWhen,
+    sendAutomaticallyWhen: ({ messages }) => allToolPartsComplete(messages),
   });
   const { setMessages, messages: rawMessages } = chat;
 
@@ -233,7 +207,6 @@ export function useChatSession(threadId: string, agentId = "default") {
     setToolProgress({});
     setGenerativeUI({});
     setAskAnswers({});
-    autoSubmittedIds.current = new Set();
     setMessages([]);
 
     if (!threadId) {
