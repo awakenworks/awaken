@@ -224,6 +224,18 @@ pub enum ToolError {
     Internal(String),
 }
 
+/// Error returned by [`TypedTool::validate`] when business-logic validation
+/// rejects the deserialized arguments before execution.
+#[derive(Debug, Error)]
+pub enum ToolValidationError {
+    /// A specific argument value was invalid.
+    #[error("{message}")]
+    InvalidArgument {
+        /// Human-readable description of the validation failure.
+        message: String,
+    },
+}
+
 /// Tool descriptor.
 ///
 /// # Examples
@@ -538,8 +550,8 @@ pub trait TypedTool: Send + Sync {
     }
 
     /// Optional business-logic validation run after deserialization but before
-    /// execution. Return `Err(message)` to reject the arguments.
-    fn validate(&self, _args: &Self::Args) -> Result<(), String> {
+    /// execution. Return `Err(ToolValidationError)` to reject the arguments.
+    fn validate(&self, _args: &Self::Args) -> Result<(), ToolValidationError> {
         Ok(())
     }
 
@@ -570,7 +582,8 @@ impl<T: TypedTool> Tool for T {
     async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
         let typed: T::Args =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
-        self.validate(&typed).map_err(ToolError::InvalidArguments)?;
+        self.validate(&typed)
+            .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
         TypedTool::execute(self, typed, ctx).await
     }
 }
@@ -1586,9 +1599,11 @@ mod tests {
             fn description(&self) -> &str {
                 "Rejects empty names"
             }
-            fn validate(&self, args: &StrictArgs) -> Result<(), String> {
+            fn validate(&self, args: &StrictArgs) -> Result<(), ToolValidationError> {
                 if args.name.is_empty() {
-                    Err("name must not be empty".into())
+                    Err(ToolValidationError::InvalidArgument {
+                        message: "name must not be empty".into(),
+                    })
                 } else {
                     Ok(())
                 }
@@ -1782,6 +1797,27 @@ mod tests {
             };
             // Should not panic
             ctx.stream_output("data").await;
+        }
+    }
+
+    mod tool_validation_error_tests {
+        use super::*;
+
+        #[test]
+        fn invalid_argument_formats_message() {
+            let err = ToolValidationError::InvalidArgument {
+                message: "name must not be empty".into(),
+            };
+            assert_eq!(err.to_string(), "name must not be empty");
+        }
+
+        #[test]
+        fn invalid_argument_is_debug() {
+            let err = ToolValidationError::InvalidArgument {
+                message: "bad".into(),
+            };
+            let debug = format!("{err:?}");
+            assert!(debug.contains("InvalidArgument"));
         }
     }
 }

@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use thiserror::Error;
 
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::message::{Message, Role, Visibility};
@@ -11,6 +12,17 @@ use super::plugin::CompactionConfig;
 
 /// Minimum token savings required to justify a compaction LLM call.
 pub const MIN_COMPACTION_GAIN_TOKENS: usize = 1024;
+
+/// Error returned by [`ContextSummarizer::summarize`].
+#[derive(Debug, Error)]
+pub enum SummarizationError {
+    /// The underlying LLM inference call failed.
+    #[error("inference failed: {0}")]
+    Inference(String),
+    /// The LLM returned an empty summary.
+    #[error("empty summary returned")]
+    EmptySummary,
+}
 
 /// Abstraction for generating conversation summaries during compaction.
 ///
@@ -28,7 +40,7 @@ pub trait ContextSummarizer: Send + Sync {
         transcript: &str,
         previous_summary: Option<&str>,
         executor: &dyn LlmExecutor,
-    ) -> Result<String, String>;
+    ) -> Result<String, SummarizationError>;
 }
 
 /// Default summarizer that reads prompts from [`CompactionConfig`].
@@ -54,7 +66,7 @@ impl ContextSummarizer for DefaultSummarizer {
         transcript: &str,
         previous_summary: Option<&str>,
         executor: &dyn LlmExecutor,
-    ) -> Result<String, String> {
+    ) -> Result<String, SummarizationError> {
         let user_prompt = match previous_summary {
             Some(prev) if !prev.trim().is_empty() => format!(
                 "Update the cumulative summary with the new conversation span.\n\n\
@@ -90,11 +102,11 @@ impl ContextSummarizer for DefaultSummarizer {
         let result = executor
             .execute(request)
             .await
-            .map_err(|e| format!("summarization failed: {e}"))?;
+            .map_err(|e| SummarizationError::Inference(e.to_string()))?;
 
         let text = result.text();
         if text.is_empty() {
-            return Err("empty summary".into());
+            return Err(SummarizationError::EmptySummary);
         }
         Ok(text)
     }
@@ -345,5 +357,17 @@ mod tests {
         use crate::context::plugin::CompactionConfigKey;
         use awaken_contract::registry_spec::PluginConfigKey;
         assert_eq!(CompactionConfigKey::KEY, "compaction");
+    }
+
+    #[test]
+    fn summarization_error_inference_formats_message() {
+        let err = SummarizationError::Inference("timeout".into());
+        assert_eq!(err.to_string(), "inference failed: timeout");
+    }
+
+    #[test]
+    fn summarization_error_empty_summary_formats_message() {
+        let err = SummarizationError::EmptySummary;
+        assert_eq!(err.to_string(), "empty summary returned");
     }
 }

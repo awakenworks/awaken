@@ -15,8 +15,8 @@ pub use plugin::{
     CompactionStateKey, ContextTransformPlugin,
 };
 pub use summarizer::{
-    ContextSummarizer, DefaultSummarizer, MIN_COMPACTION_GAIN_TOKENS, extract_previous_summary,
-    render_transcript,
+    ContextSummarizer, DefaultSummarizer, MIN_COMPACTION_GAIN_TOKENS, SummarizationError,
+    extract_previous_summary, render_transcript,
 };
 pub use transform::{
     ARTIFACT_COMPACT_THRESHOLD_TOKENS, ARTIFACT_PREVIEW_MAX_CHARS, ARTIFACT_PREVIEW_MAX_LINES,

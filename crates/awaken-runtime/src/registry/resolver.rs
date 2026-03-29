@@ -409,6 +409,7 @@ mod tests {
     #[test]
     fn with_context_summarizer() {
         use crate::context::ContextSummarizer;
+        use crate::context::summarizer::SummarizationError;
 
         struct MockSummarizer;
         #[async_trait]
@@ -418,7 +419,7 @@ mod tests {
                 _transcript: &str,
                 _previous_summary: Option<&str>,
                 _executor: &dyn awaken_contract::contract::executor::LlmExecutor,
-            ) -> Result<String, String> {
+            ) -> Result<String, SummarizationError> {
                 Ok("summary".into())
             }
         }
