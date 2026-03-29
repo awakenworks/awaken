@@ -1333,4 +1333,97 @@ mod tests {
             "InferenceComplete must produce empty Vec (AG-UI has no matching event type)"
         );
     }
+
+    #[test]
+    fn tool_call_stream_delta_emits_activity_delta() {
+        let mut enc = AgUiEncoder::new();
+        let events = enc.on_agent_event(&AgentEvent::ToolCallStreamDelta {
+            id: "c1".into(),
+            name: "json_render".into(),
+            delta: "{\"type\":\"text\"".into(),
+        });
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Event::ActivityDelta {
+            message_id,
+            activity_type,
+            ..
+        } if message_id == "c1" && activity_type == "tool-stream-output"));
+
+        // Verify the patch contains the delta
+        if let Event::ActivityDelta { patch, .. } = &events[0] {
+            assert_eq!(patch.len(), 1);
+            assert_eq!(patch[0]["op"], "add");
+            assert_eq!(patch[0]["value"], "{\"type\":\"text\"");
+        } else {
+            panic!("expected ActivityDelta");
+        }
+    }
+
+    #[test]
+    fn tool_call_stream_delta_in_full_lifecycle() {
+        let mut enc = AgUiEncoder::new();
+        let types = collect_types(
+            &mut enc,
+            &[
+                AgentEvent::RunStart {
+                    thread_id: "t1".into(),
+                    run_id: "r1".into(),
+                    parent_run_id: None,
+                },
+                AgentEvent::StepStart {
+                    message_id: "m1".into(),
+                },
+                AgentEvent::ToolCallStart {
+                    id: "c1".into(),
+                    name: "json_render".into(),
+                },
+                AgentEvent::ToolCallDelta {
+                    id: "c1".into(),
+                    args_delta: "{}".into(),
+                },
+                AgentEvent::ToolCallReady {
+                    id: "c1".into(),
+                    name: "json_render".into(),
+                    arguments: json!({}),
+                },
+                // Stream deltas during execution
+                AgentEvent::ToolCallStreamDelta {
+                    id: "c1".into(),
+                    name: "json_render".into(),
+                    delta: "chunk1".into(),
+                },
+                AgentEvent::ToolCallStreamDelta {
+                    id: "c1".into(),
+                    name: "json_render".into(),
+                    delta: "chunk2".into(),
+                },
+                AgentEvent::ToolCallDone {
+                    id: "c1".into(),
+                    message_id: "m1".into(),
+                    result: ToolResult::success("json_render", json!({"rendered": true})),
+                    outcome: ToolCallOutcome::Succeeded,
+                },
+                AgentEvent::StepEnd,
+                AgentEvent::RunFinish {
+                    thread_id: "t1".into(),
+                    run_id: "r1".into(),
+                    result: None,
+                    termination: TerminationReason::NaturalEnd,
+                },
+            ],
+        );
+
+        // Two ACTIVITY_DELTA events from stream deltas
+        assert_eq!(
+            types.iter().filter(|t| **t == "ACTIVITY_DELTA").count(),
+            2,
+            "expected 2 ACTIVITY_DELTA from stream deltas"
+        );
+        // Standard lifecycle events still present
+        assert!(types.contains(&"RUN_STARTED"));
+        assert!(types.contains(&"TOOL_CALL_START"));
+        assert!(types.contains(&"TOOL_CALL_END"));
+        assert!(types.contains(&"TOOL_CALL_RESULT"));
+        assert!(types.contains(&"RUN_FINISHED"));
+    }
 }

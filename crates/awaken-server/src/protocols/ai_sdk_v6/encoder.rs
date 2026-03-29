@@ -779,4 +779,100 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], UIStreamEvent::FinishStep));
     }
+
+    #[test]
+    fn tool_call_stream_delta_emits_preliminary_output() {
+        let mut enc = AiSdkEncoder::new();
+        // First delta
+        let events = enc.on_agent_event(&AgentEvent::ToolCallStreamDelta {
+            id: "c1".into(),
+            name: "json_render".into(),
+            delta: "hello".into(),
+        });
+        assert_eq!(events.len(), 1);
+        let json = serde_json::to_string(&events[0]).unwrap();
+        assert!(json.contains("tool-output-available"));
+        assert!(json.contains("\"preliminary\":true"));
+        assert!(json.contains("hello"));
+    }
+
+    #[test]
+    fn tool_call_stream_delta_accumulates_across_deltas() {
+        let mut enc = AiSdkEncoder::new();
+        // First delta
+        enc.on_agent_event(&AgentEvent::ToolCallStreamDelta {
+            id: "c1".into(),
+            name: "openui".into(),
+            delta: "hello ".into(),
+        });
+        // Second delta — output should contain accumulated text
+        let events = enc.on_agent_event(&AgentEvent::ToolCallStreamDelta {
+            id: "c1".into(),
+            name: "openui".into(),
+            delta: "world".into(),
+        });
+        assert_eq!(events.len(), 1);
+        let json = serde_json::to_string(&events[0]).unwrap();
+        assert!(json.contains("hello world"));
+        assert!(json.contains("\"preliminary\":true"));
+    }
+
+    #[test]
+    fn tool_call_done_clears_stream_accumulator() {
+        let mut enc = AiSdkEncoder::new();
+        // Accumulate some deltas
+        enc.on_agent_event(&AgentEvent::ToolCallStreamDelta {
+            id: "c1".into(),
+            name: "render".into(),
+            delta: "partial".into(),
+        });
+        // ToolCallDone should clear accumulator and emit final output
+        let events = enc.on_agent_event(&AgentEvent::ToolCallDone {
+            id: "c1".into(),
+            message_id: "m1".into(),
+            result: ToolResult::success("render", json!({"final": "result"})),
+            outcome: ToolCallOutcome::Succeeded,
+        });
+        assert_eq!(events.len(), 1);
+        let json = serde_json::to_string(&events[0]).unwrap();
+        // Final output should NOT have preliminary field
+        assert!(!json.contains("preliminary"));
+        assert!(json.contains("final"));
+
+        // New stream delta for same id should start fresh
+        let events = enc.on_agent_event(&AgentEvent::ToolCallStreamDelta {
+            id: "c1".into(),
+            name: "render".into(),
+            delta: "fresh".into(),
+        });
+        let json = serde_json::to_string(&events[0]).unwrap();
+        assert!(json.contains("fresh"));
+        assert!(!json.contains("partial"));
+    }
+
+    #[test]
+    fn multiple_tool_calls_stream_independently() {
+        let mut enc = AiSdkEncoder::new();
+        // Delta for tool c1
+        enc.on_agent_event(&AgentEvent::ToolCallStreamDelta {
+            id: "c1".into(),
+            name: "render_a".into(),
+            delta: "aaa".into(),
+        });
+        // Delta for tool c2
+        enc.on_agent_event(&AgentEvent::ToolCallStreamDelta {
+            id: "c2".into(),
+            name: "render_b".into(),
+            delta: "bbb".into(),
+        });
+        // Second delta for c1
+        let events = enc.on_agent_event(&AgentEvent::ToolCallStreamDelta {
+            id: "c1".into(),
+            name: "render_a".into(),
+            delta: "111".into(),
+        });
+        let json = serde_json::to_string(&events[0]).unwrap();
+        assert!(json.contains("aaa111"));
+        assert!(!json.contains("bbb"));
+    }
 }

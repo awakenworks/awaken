@@ -376,7 +376,8 @@ impl AcpEncoder {
             | AgentEvent::StepEnd
             | AgentEvent::InferenceComplete { .. }
             | AgentEvent::ReasoningEncryptedValue { .. }
-            | AgentEvent::MessagesSnapshot { .. } => Vec::new(),
+            | AgentEvent::MessagesSnapshot { .. }
+            | AgentEvent::ToolCallStreamDelta { .. } => Vec::new(),
         }
     }
 }

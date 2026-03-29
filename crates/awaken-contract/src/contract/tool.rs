@@ -396,6 +396,25 @@ impl ToolCallContext {
         }
     }
 
+    /// Emit a streaming output delta for this tool call.
+    ///
+    /// Sends a [`AgentEvent::ToolCallStreamDelta`] with `id` and `name` from this
+    /// context, and the provided text `delta`. No-op if no `activity_sink` is configured.
+    ///
+    /// Use this for tools that produce incremental text output (e.g. generative UI
+    /// renderers, sub-agent wrappers) that should be streamed to the frontend before
+    /// the tool call completes.
+    pub async fn stream_output(&self, delta: &str) {
+        if let Some(sink) = &self.activity_sink {
+            sink.emit(AgentEvent::ToolCallStreamDelta {
+                id: self.call_id.clone(),
+                name: self.tool_name.clone(),
+                delta: delta.to_string(),
+            })
+            .await;
+        }
+    }
+
     /// Create a minimal context for testing.
     pub fn test_default() -> Self {
         Self {
@@ -1664,6 +1683,58 @@ mod tests {
             let desc = tool.descriptor();
             let args = json!({"message": 123});
             assert!(validate_against_schema(&desc.parameters, &args).is_err());
+        }
+    }
+
+    mod stream_output_tests {
+        use super::*;
+        use crate::contract::event::AgentEvent;
+        use crate::contract::event_sink::EventSink;
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        struct CollectSink(Mutex<Vec<AgentEvent>>);
+
+        #[async_trait::async_trait]
+        impl EventSink for CollectSink {
+            async fn emit(&self, event: AgentEvent) {
+                self.0.lock().await.push(event);
+            }
+        }
+
+        #[tokio::test]
+        async fn stream_output_emits_tool_call_stream_delta() {
+            let sink = Arc::new(CollectSink(Mutex::new(Vec::new())));
+            let ctx = ToolCallContext {
+                call_id: "c1".into(),
+                tool_name: "json_render".into(),
+                activity_sink: Some(sink.clone()),
+                ..ToolCallContext::test_default()
+            };
+
+            ctx.stream_output("hello ").await;
+            ctx.stream_output("world").await;
+
+            let events = sink.0.lock().await;
+            assert_eq!(events.len(), 2);
+            assert!(matches!(&events[0], AgentEvent::ToolCallStreamDelta {
+                id, name, delta
+            } if id == "c1" && name == "json_render" && delta == "hello "));
+            assert!(matches!(&events[1], AgentEvent::ToolCallStreamDelta {
+                id, name, delta
+            } if id == "c1" && name == "json_render" && delta == "world"));
+        }
+
+        #[tokio::test]
+        async fn stream_output_noop_without_sink() {
+            let ctx = ToolCallContext {
+                call_id: "c1".into(),
+                tool_name: "render".into(),
+                activity_sink: None,
+                ..ToolCallContext::test_default()
+            };
+            // Should not panic
+            ctx.stream_output("data").await;
         }
     }
 }

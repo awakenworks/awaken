@@ -55,6 +55,13 @@ pub enum AgentEvent {
         outcome: ToolCallOutcome,
     },
 
+    /// Tool call streaming output delta (incremental text from tool execution).
+    ToolCallStreamDelta {
+        id: String,
+        name: String,
+        delta: String,
+    },
+
     /// Encrypted reasoning delta (opaque token).
     ReasoningEncryptedValue { encrypted_value: String },
 
@@ -393,6 +400,11 @@ mod tests {
                 result: ToolResult::success("t", json!(null)),
                 outcome: ToolCallOutcome::Succeeded,
             },
+            AgentEvent::ToolCallStreamDelta {
+                id: "c".into(),
+                name: "t".into(),
+                delta: "chunk".into(),
+            },
             AgentEvent::ReasoningEncryptedValue {
                 encrypted_value: "enc".into(),
             },
@@ -437,6 +449,21 @@ mod tests {
             let json = serde_json::to_string(&event).unwrap();
             let _parsed: AgentEvent = serde_json::from_str(&json).unwrap();
         }
+    }
+
+    #[test]
+    fn tool_call_stream_delta_serde_roundtrip() {
+        let event = AgentEvent::ToolCallStreamDelta {
+            id: "c1".into(),
+            name: "json_render".into(),
+            delta: "{\"type\":\"text\"".into(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"event_type\":\"tool_call_stream_delta\""));
+        let parsed: AgentEvent = serde_json::from_str(&json).unwrap();
+        assert!(
+            matches!(parsed, AgentEvent::ToolCallStreamDelta { id, name, delta } if id == "c1" && name == "json_render" && delta.contains("text"))
+        );
     }
 
     #[test]
@@ -648,6 +675,11 @@ mod tests {
                 message_id: "m".into(),
                 result: ToolResult::success("t", json!(null)),
                 outcome: ToolCallOutcome::Succeeded,
+            },
+            AgentEvent::ToolCallStreamDelta {
+                id: "c".into(),
+                name: "t".into(),
+                delta: "streaming".into(),
             },
             AgentEvent::StepStart {
                 message_id: "m".into(),

@@ -96,6 +96,10 @@ pub enum UIStreamEvent {
         output: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         dynamic: Option<bool>,
+        /// When `true`, indicates this is a preliminary (streaming) output
+        /// that will be superseded by a final output with `preliminary: false`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        preliminary: Option<bool>,
     },
 
     /// Tool output error.
@@ -299,6 +303,16 @@ impl UIStreamEvent {
             tool_call_id: tool_call_id.into(),
             output,
             dynamic: None,
+            preliminary: None,
+        }
+    }
+
+    pub fn tool_output_preliminary(tool_call_id: impl Into<String>, output: Value) -> Self {
+        Self::ToolOutputAvailable {
+            tool_call_id: tool_call_id.into(),
+            output,
+            dynamic: None,
+            preliminary: Some(true),
         }
     }
 
@@ -594,6 +608,20 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"type\":\"abort\""));
         assert!(!json.contains("reason"));
+    }
+
+    #[test]
+    fn tool_output_preliminary_serde() {
+        let event = UIStreamEvent::tool_output_preliminary("c1", json!("partial data"));
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("tool-output-available"));
+        assert!(json.contains("\"preliminary\":true"));
+        assert!(json.contains("partial data"));
+
+        // Non-preliminary should not contain preliminary field
+        let final_event = UIStreamEvent::tool_output_available("c1", json!("final data"));
+        let final_json = serde_json::to_string(&final_event).unwrap();
+        assert!(!final_json.contains("preliminary"));
     }
 
     #[test]
