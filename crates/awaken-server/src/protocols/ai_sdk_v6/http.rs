@@ -20,7 +20,7 @@ use awaken_contract::contract::content::{ContentBlock, extract_text};
 use awaken_contract::contract::message::{Message, Role, ToolCall};
 
 use crate::app::AppState;
-use crate::http_run::wire_sse_relay_resumable;
+use crate::http_run::wire_sse_relay;
 use crate::http_sse::{sse_body_stream, sse_response};
 use crate::routes::ApiError;
 use crate::transport::replay_buffer::EventReplayBuffer;
@@ -162,8 +162,12 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
         .insert(thread_id.clone(), Arc::clone(&replay_buffer));
 
     let encoder = AiSdkEncoder::new();
-    let sse_rx =
-        wire_sse_relay_resumable(event_rx, encoder, st.config.sse_buffer_size, replay_buffer);
+    let sse_rx = wire_sse_relay(
+        event_rx,
+        encoder,
+        st.config.sse_buffer_size,
+        Some(replay_buffer),
+    );
 
     // Spawn cleanup task: forward frames to client, but keep buffer alive for
     // the full run duration (not tied to client connection). This allows

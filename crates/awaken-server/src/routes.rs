@@ -480,7 +480,7 @@ async fn start_run(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let encoder = awaken_contract::contract::transport::Identity::default();
-    let sse_rx = wire_sse_relay(event_rx, encoder, st.config.sse_buffer_size);
+    let sse_rx = wire_sse_relay(event_rx, encoder, st.config.sse_buffer_size, None);
 
     Ok(sse_response(sse_body_stream(sse_rx)))
 }

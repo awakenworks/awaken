@@ -5,7 +5,6 @@
 //! consume this shared pipeline.
 
 use serde::Serialize;
-use tokio::sync::mpsc;
 
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::transport::Transcoder;
@@ -51,54 +50,19 @@ where
     }
 }
 
-/// Produce a stream of transcoded output items from an unbounded event receiver.
-///
-/// Runs the full prologue -> transcode -> epilogue pipeline. Each output item
-/// is serialized to a JSON `Vec<u8>`. The stream ends when the event channel
-/// closes and the epilogue has been emitted.
-pub fn relay_events<E>(
-    event_rx: mpsc::UnboundedReceiver<AgentEvent>,
-    encoder: E,
-) -> impl futures::Stream<Item = Vec<u8>> + Send + 'static
-where
-    E: Transcoder<Input = AgentEvent> + 'static,
-    E::Output: Serialize + Send + 'static,
-{
-    relay_events_stream(
-        encoder,
-        tokio_stream::wrappers::UnboundedReceiverStream::new(event_rx),
-    )
-}
-
-/// Produce a stream of transcoded output items from a **bounded** event receiver.
-///
-/// Identical to [`relay_events`] but accepts a bounded channel, suitable for
-/// transports where back-pressure is desired (e.g. NATS).
-pub fn relay_events_bounded<E>(
-    event_rx: mpsc::Receiver<AgentEvent>,
-    encoder: E,
-) -> impl futures::Stream<Item = Vec<u8>> + Send + 'static
-where
-    E: Transcoder<Input = AgentEvent> + 'static,
-    E::Output: Serialize + Send + 'static,
-{
-    relay_events_stream(
-        encoder,
-        tokio_stream::wrappers::ReceiverStream::new(event_rx),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use awaken_contract::contract::transport::Identity;
     use futures::StreamExt;
+    use tokio::sync::mpsc;
+    use tokio_stream::wrappers::UnboundedReceiverStream;
 
     #[tokio::test]
     async fn relay_events_identity_transcoder() {
         let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
         let encoder = Identity::<AgentEvent>::default();
-        let stream = relay_events(rx, encoder);
+        let stream = relay_events_stream(encoder, UnboundedReceiverStream::new(rx));
         tokio::pin!(stream);
 
         tx.send(AgentEvent::TextDelta {
@@ -137,7 +101,7 @@ mod tests {
         }
 
         let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
-        let stream = relay_events(rx, TestTranscoder);
+        let stream = relay_events_stream(TestTranscoder, UnboundedReceiverStream::new(rx));
         tokio::pin!(stream);
 
         tx.send(AgentEvent::StepEnd).unwrap();
@@ -156,7 +120,7 @@ mod tests {
     async fn relay_events_empty_stream() {
         let (_tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
         let encoder = Identity::<AgentEvent>::default();
-        let stream = relay_events(rx, encoder);
+        let stream = relay_events_stream(encoder, UnboundedReceiverStream::new(rx));
         tokio::pin!(stream);
 
         drop(_tx);
@@ -170,7 +134,7 @@ mod tests {
     async fn relay_events_bounded_works() {
         let (tx, rx) = mpsc::channel::<AgentEvent>(16);
         let encoder = Identity::<AgentEvent>::default();
-        let stream = relay_events_bounded(rx, encoder);
+        let stream = relay_events_stream(encoder, tokio_stream::wrappers::ReceiverStream::new(rx));
         tokio::pin!(stream);
 
         tx.send(AgentEvent::TextDelta {

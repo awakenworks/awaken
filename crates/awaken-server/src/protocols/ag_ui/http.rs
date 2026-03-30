@@ -318,7 +318,7 @@ async fn ag_ui_run_inner(st: AppState, payload: AgUiRunRequest) -> Result<Respon
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     let encoder = AgUiEncoder::new();
-    let sse_rx = wire_sse_relay(event_rx, encoder, st.config.sse_buffer_size);
+    let sse_rx = wire_sse_relay(event_rx, encoder, st.config.sse_buffer_size, None);
 
     Ok(sse_response(sse_body_stream(sse_rx)))
 }

@@ -4,25 +4,30 @@ use bytes::Bytes;
 use futures::StreamExt;
 use serde::Serialize;
 use tokio::sync::mpsc;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::transport::Transcoder;
 
-use crate::event_relay::relay_events;
+use crate::event_relay::relay_events_stream;
 use crate::http_sse::format_sse_data;
 use crate::transport::replay_buffer::EventReplayBuffer;
 
 /// Spawn a background task that consumes agent events from a receiver,
 /// transcodes them via the protocol encoder, and sends SSE frames to the response.
 ///
-/// Uses the shared [`relay_events`] pipeline for the prologue→transcode→epilogue
+/// Uses the shared [`relay_events_stream`] pipeline for the prologue->transcode->epilogue
 /// logic and wraps each serialized item as an SSE `data:` frame.
+///
+/// When `replay_buffer` is provided, each SSE frame is assigned a sequential ID
+/// and stored for client reconnection.
 ///
 /// Returns the SSE byte receiver to feed into an HTTP response body.
 pub fn wire_sse_relay<E>(
     event_rx: mpsc::UnboundedReceiver<AgentEvent>,
     encoder: E,
     buffer_size: usize,
+    replay_buffer: Option<std::sync::Arc<EventReplayBuffer>>,
 ) -> mpsc::Receiver<Bytes>
 where
     E: Transcoder<Input = AgentEvent> + 'static,
@@ -31,7 +36,8 @@ where
     let (sse_tx, sse_rx) = mpsc::channel::<Bytes>(buffer_size);
 
     tokio::spawn(async move {
-        let mut stream = std::pin::pin!(relay_events(event_rx, encoder));
+        let event_stream = UnboundedReceiverStream::new(event_rx);
+        let mut stream = std::pin::pin!(relay_events_stream(encoder, event_stream));
         while let Some(json_bytes) = stream.next().await {
             let json = match String::from_utf8(json_bytes) {
                 Ok(s) => s,
@@ -40,40 +46,12 @@ where
                     continue;
                 }
             };
-            if sse_tx.send(format_sse_data(&json)).await.is_err() {
-                return;
-            }
-        }
-    });
-
-    sse_rx
-}
-
-/// Like [`wire_sse_relay`], but assigns sequential IDs to each SSE frame
-/// and stores them in a replay buffer for client reconnection.
-pub fn wire_sse_relay_resumable<E>(
-    event_rx: mpsc::UnboundedReceiver<AgentEvent>,
-    encoder: E,
-    buffer_size: usize,
-    replay_buffer: std::sync::Arc<EventReplayBuffer>,
-) -> mpsc::Receiver<Bytes>
-where
-    E: Transcoder<Input = AgentEvent> + 'static,
-    E::Output: Serialize + Send + 'static,
-{
-    let (sse_tx, sse_rx) = mpsc::channel::<Bytes>(buffer_size);
-
-    tokio::spawn(async move {
-        let mut stream = std::pin::pin!(relay_events(event_rx, encoder));
-        while let Some(json_bytes) = stream.next().await {
-            let json = match String::from_utf8(json_bytes) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to decode relay output as UTF-8");
-                    continue;
-                }
+            let frame = if let Some(ref buf) = replay_buffer {
+                let (_seq, frame) = buf.push_json(&json);
+                frame
+            } else {
+                format_sse_data(&json)
             };
-            let (_seq, frame) = replay_buffer.push_json(&json);
             if sse_tx.send(frame).await.is_err() {
                 return;
             }
@@ -106,7 +84,7 @@ mod tests {
     async fn wire_sse_relay_transcodes_identity() {
         let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
         let encoder = Identity::<AgentEvent>::default();
-        let mut sse_rx = wire_sse_relay(rx, encoder, 16);
+        let mut sse_rx = wire_sse_relay(rx, encoder, 16, None);
 
         tx.send(AgentEvent::TextDelta {
             delta: "hello".into(),
@@ -126,7 +104,7 @@ mod tests {
     async fn wire_sse_relay_completes_on_sender_drop() {
         let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
         let encoder = Identity::<AgentEvent>::default();
-        let mut sse_rx = wire_sse_relay(rx, encoder, 16);
+        let mut sse_rx = wire_sse_relay(rx, encoder, 16, None);
 
         drop(tx);
 
@@ -139,7 +117,7 @@ mod tests {
     async fn wire_sse_relay_multiple_events() {
         let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
         let encoder = Identity::<AgentEvent>::default();
-        let mut sse_rx = wire_sse_relay(rx, encoder, 16);
+        let mut sse_rx = wire_sse_relay(rx, encoder, 16, None);
 
         tx.send(AgentEvent::TextDelta { delta: "a".into() })
             .unwrap();
@@ -200,7 +178,7 @@ mod tests {
     async fn wire_sse_relay_with_custom_transcoder() {
         let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
         let encoder = EnvelopeTranscoder::new();
-        let mut sse_rx = wire_sse_relay(rx, encoder, 16);
+        let mut sse_rx = wire_sse_relay(rx, encoder, 16, None);
 
         tx.send(AgentEvent::TextDelta {
             delta: "test".into(),
@@ -225,7 +203,7 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
         let encoder = Identity::<AgentEvent>::default();
         let replay_buffer = std::sync::Arc::new(EventReplayBuffer::new(64));
-        let mut sse_rx = wire_sse_relay_resumable(rx, encoder, 16, replay_buffer);
+        let mut sse_rx = wire_sse_relay(rx, encoder, 16, Some(replay_buffer));
 
         tx.send(AgentEvent::TextDelta { delta: "a".into() })
             .unwrap();
@@ -250,7 +228,7 @@ mod tests {
         let encoder = Identity::<AgentEvent>::default();
         let replay_buffer = std::sync::Arc::new(EventReplayBuffer::new(64));
         let buf_ref = std::sync::Arc::clone(&replay_buffer);
-        let mut sse_rx = wire_sse_relay_resumable(rx, encoder, 16, replay_buffer);
+        let mut sse_rx = wire_sse_relay(rx, encoder, 16, Some(replay_buffer));
 
         tx.send(AgentEvent::TextDelta { delta: "a".into() })
             .unwrap();
@@ -270,7 +248,7 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
         let encoder = Identity::<AgentEvent>::default();
         let replay_buffer = std::sync::Arc::new(EventReplayBuffer::new(64));
-        let mut sse_rx = wire_sse_relay_resumable(rx, encoder, 16, replay_buffer);
+        let mut sse_rx = wire_sse_relay(rx, encoder, 16, Some(replay_buffer));
 
         drop(tx);
         let result = sse_rx.recv().await;
