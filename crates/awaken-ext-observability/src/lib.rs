@@ -3,22 +3,30 @@
 //! Captures per-inference and per-tool metrics via the Phase system,
 //! forwarding them to a pluggable [`MetricsSink`].
 
+mod batching;
 mod composite;
 mod metrics;
+mod persistent;
 mod plugin;
 mod sink;
 mod stats;
 
 #[cfg(feature = "otel")]
 pub mod otel;
+#[cfg(feature = "otel")]
+mod otel_config;
 
+pub use batching::{BatchingConfig, BatchingSink};
 pub use composite::{CompositeSink, CompositeSinkBuilder};
 pub use metrics::{AgentMetrics, DelegationSpan, GenAISpan, HandoffSpan, SuspensionSpan, ToolSpan};
+pub use persistent::{PersistenceConfig, PersistentSink};
 pub use plugin::{OBSERVABILITY_PLUGIN_ID, ObservabilityPlugin};
 pub use sink::{InMemorySink, MetricsSink};
 
 #[cfg(feature = "otel")]
 pub use otel::OtelMetricsSink;
+#[cfg(feature = "otel")]
+pub use otel_config::{OtelConfig, OtelConfigBuilder, OtelProtocol};
 pub use stats::{ModelStats, ToolStats};
 
 // Make private helpers visible to the test module below.
