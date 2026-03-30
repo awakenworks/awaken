@@ -2922,3 +2922,170 @@ fn merge_parallel_after_prior_state_exists() {
     assert_eq!(store.read::<Counter>(), Some(110));
     assert_eq!(store.read::<SharedCounter>(), Some(58));
 }
+
+// ===========================================================================
+// 20. PhaseRuntime — additional coverage
+// ===========================================================================
+
+#[tokio::test]
+async fn run_phase_with_limit_succeeds_within_limit() {
+    // A one-shot action that increments a counter without re-scheduling.
+    // The execute loop converges in 2 rounds (round 1 processes, round 2 finds
+    // nothing left) which is well within the limit of 5.
+    struct OneShotAction;
+    impl ScheduledActionSpec for OneShotAction {
+        const KEY: &'static str = "test.oneshot_action";
+        const PHASE: Phase = Phase::BeforeInference;
+        type Payload = ();
+    }
+
+    struct OneShotHandler;
+    #[async_trait]
+    impl TypedScheduledActionHandler<OneShotAction> for OneShotHandler {
+        async fn handle_typed(
+            &self,
+            _ctx: &PhaseContext,
+            _payload: (),
+        ) -> Result<StateCommand, StateError> {
+            let mut cmd = StateCommand::new();
+            cmd.update::<Counter>(1);
+            Ok(cmd)
+        }
+    }
+
+    struct OneShotPlugin;
+    impl Plugin for OneShotPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "oneshot-limit",
+            }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_key::<Counter>(StateKeyOptions::default())?;
+            r.register_scheduled_action::<OneShotAction, _>(OneShotHandler)
+        }
+    }
+
+    let store = StateStore::new();
+    store.install_plugin(CounterPlugin).unwrap();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(OneShotPlugin)];
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
+
+    // Enqueue two one-shot actions
+    let mut cmd = StateCommand::new();
+    cmd.schedule_action::<OneShotAction>(()).unwrap();
+    cmd.schedule_action::<OneShotAction>(()).unwrap();
+    phase_runtime.submit_command(&env, cmd).await.unwrap();
+
+    let report = phase_runtime
+        .run_phase_with_limit(&env, Phase::BeforeInference, 5)
+        .await
+        .unwrap();
+
+    assert!(report.rounds <= 5, "should converge within limit");
+    assert_eq!(report.processed_scheduled_actions, 2);
+    assert_eq!(store.read::<Counter>(), Some(2));
+}
+
+#[tokio::test]
+async fn run_execute_loop_processes_pending_actions() {
+    // Demonstrates the collect_commands → submit_command → run_phase pipeline:
+    // a hook on one phase schedules an action via collect_commands, we manually
+    // submit it, then run_phase on the action's phase processes the enqueued
+    // action via the internal execute loop.
+
+    struct SchedulingHook;
+    #[async_trait]
+    impl PhaseHook for SchedulingHook {
+        async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+            let mut cmd = StateCommand::new();
+            cmd.schedule_action::<TestAction>("from-hook".to_string())
+                .unwrap();
+            Ok(cmd)
+        }
+    }
+
+    let processed = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    struct ActionHandler(Arc<Mutex<Vec<String>>>);
+    #[async_trait]
+    impl TypedScheduledActionHandler<TestAction> for ActionHandler {
+        async fn handle_typed(
+            &self,
+            _ctx: &PhaseContext,
+            payload: String,
+        ) -> Result<StateCommand, StateError> {
+            self.0.lock().unwrap().push(payload);
+            Ok(StateCommand::new())
+        }
+    }
+
+    struct CollectExecPlugin {
+        processed: Arc<Mutex<Vec<String>>>,
+    }
+    impl Plugin for CollectExecPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "collect-exec",
+            }
+        }
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            // Hook is on RunStart phase, but the action targets BeforeInference.
+            // This way run_phase(BeforeInference) won't re-trigger the hook.
+            r.register_phase_hook("collect-exec", Phase::RunStart, SchedulingHook)?;
+            r.register_scheduled_action::<TestAction, _>(ActionHandler(Arc::clone(&self.processed)))
+        }
+    }
+
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(CollectExecPlugin {
+        processed: Arc::clone(&processed),
+    })];
+    let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
+
+    // Step 1: collect_commands gathers the hook output (without committing)
+    let ctx = PhaseContext::new(Phase::RunStart, store.snapshot());
+    let cmd = phase_runtime.collect_commands(&env, ctx).await.unwrap();
+    assert!(!cmd.is_empty(), "hook should have scheduled an action");
+
+    // Step 2: submit_command commits the command (enqueues the action)
+    phase_runtime.submit_command(&env, cmd).await.unwrap();
+
+    // Step 3: run_phase on BeforeInference processes the pending action via
+    // the execute loop (no hooks fire on this phase for our plugin)
+    let report = phase_runtime
+        .run_phase(&env, Phase::BeforeInference)
+        .await
+        .unwrap();
+
+    // The action scheduled in step 1 was processed in step 3
+    assert_eq!(report.processed_scheduled_actions, 1);
+    let payloads = processed.lock().unwrap();
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0], "from-hook");
+}
+
+#[tokio::test]
+async fn run_phase_cancelled_returns_error() {
+    let store = StateStore::new();
+    let phase_runtime = PhaseRuntime::new(store.clone()).unwrap();
+    let env = ExecutionEnv::empty();
+
+    // Create a token and cancel it before running
+    let token = CancellationToken::new();
+    token.cancel();
+
+    let ctx = PhaseContext::new(Phase::RunStart, store.snapshot()).with_cancellation_token(token);
+
+    let err = phase_runtime
+        .run_phase_with_context(&env, ctx)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(err, StateError::Cancelled),
+        "expected StateError::Cancelled, got: {err:?}"
+    );
+}

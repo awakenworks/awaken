@@ -192,6 +192,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_drop_without_cancel_token_not_cancelled() {
+        let (handle, token) = CancellationToken::new_pair();
+        drop(handle);
+        // token should NOT be cancelled
+        assert!(!token.is_cancelled());
+        // cancelled() should NOT resolve within a short timeout
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(50), token.cancelled()).await;
+        assert!(
+            result.is_err(),
+            "cancelled() should not resolve when handle is dropped"
+        );
+    }
+
+    #[tokio::test]
     async fn cancellation_works_with_select() {
         let token = CancellationToken::new();
         let clone = token.clone();

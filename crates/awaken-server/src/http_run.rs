@@ -254,4 +254,70 @@ mod tests {
         let result = sse_rx.recv().await;
         assert!(result.is_none());
     }
+
+    #[tokio::test]
+    async fn wire_sse_relay_backpressure_with_small_buffer() {
+        let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let encoder = Identity::<AgentEvent>::default();
+        // buffer_size=1 means the SSE mpsc channel can hold at most 1 frame,
+        // forcing the relay task to wait (backpressure) when the consumer is slow.
+        let mut sse_rx = wire_sse_relay(rx, encoder, 1, None);
+
+        let event_count = 20;
+        for i in 0..event_count {
+            tx.send(AgentEvent::TextDelta {
+                delta: format!("msg-{i}"),
+            })
+            .unwrap();
+        }
+        drop(tx);
+
+        let mut chunks = Vec::new();
+        while let Some(chunk) = sse_rx.recv().await {
+            chunks.push(String::from_utf8(chunk.to_vec()).unwrap());
+        }
+
+        // All events must be delivered despite the tiny buffer.
+        assert_eq!(chunks.len(), event_count);
+        for (i, chunk) in chunks.iter().enumerate() {
+            assert!(
+                chunk.contains(&format!("msg-{i}")),
+                "chunk {i} missing expected payload"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wire_sse_relay_without_replay_no_id_prefix() {
+        let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let encoder = Identity::<AgentEvent>::default();
+        // replay_buffer=None means frames should use format_sse_data (no id).
+        let mut sse_rx = wire_sse_relay(rx, encoder, 16, None);
+
+        tx.send(AgentEvent::TextDelta { delta: "x".into() })
+            .unwrap();
+        tx.send(AgentEvent::StepEnd).unwrap();
+        drop(tx);
+
+        let mut chunks = Vec::new();
+        while let Some(chunk) = sse_rx.recv().await {
+            chunks.push(String::from_utf8(chunk.to_vec()).unwrap());
+        }
+
+        assert_eq!(chunks.len(), 2);
+        for (i, chunk) in chunks.iter().enumerate() {
+            assert!(
+                !chunk.contains("id:"),
+                "chunk {i} should not contain an id: prefix without replay_buffer"
+            );
+            assert!(
+                chunk.starts_with("data: "),
+                "chunk {i} should start with data: prefix"
+            );
+            assert!(
+                chunk.ends_with("\n\n"),
+                "chunk {i} should end with double newline"
+            );
+        }
+    }
 }

@@ -178,3 +178,71 @@ impl PluginSource for MapPluginSource {
         self.get_cloned(id)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to create a simple error constructor for tests.
+    fn test_err(msg: String) -> BuildError {
+        BuildError::ToolRegistryConflict(msg)
+    }
+
+    #[test]
+    fn new_creates_empty_registry() {
+        let reg = MapRegistry::<String>::new();
+        assert!(reg.ids().is_empty());
+    }
+
+    #[test]
+    fn register_and_get() {
+        let mut reg = MapRegistry::<String>::new();
+        reg.register("key1", "value1".into(), test_err).unwrap();
+        assert_eq!(reg.get("key1"), Some(&"value1".to_string()));
+    }
+
+    #[test]
+    fn get_missing_key_returns_none() {
+        let reg = MapRegistry::<String>::new();
+        assert_eq!(reg.get("missing"), None);
+    }
+
+    #[test]
+    fn get_cloned_returns_value() {
+        let mut reg = MapRegistry::<String>::new();
+        reg.register("k", "v".into(), test_err).unwrap();
+        assert_eq!(reg.get_cloned("k"), Some("v".to_string()));
+    }
+
+    #[test]
+    fn get_cloned_missing_key_returns_none() {
+        let reg = MapRegistry::<String>::new();
+        assert_eq!(reg.get_cloned("nope"), None);
+    }
+
+    #[test]
+    fn ids_empty_registry() {
+        let reg = MapRegistry::<i32>::new();
+        assert!(reg.ids().is_empty());
+    }
+
+    #[test]
+    fn ids_returns_all_keys() {
+        let mut reg = MapRegistry::<i32>::new();
+        reg.register("a", 1, test_err).unwrap();
+        reg.register("b", 2, test_err).unwrap();
+        reg.register("c", 3, test_err).unwrap();
+
+        let mut ids = reg.ids();
+        ids.sort();
+        assert_eq!(ids, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn register_duplicate_returns_error() {
+        let mut reg = MapRegistry::<String>::new();
+        reg.register("dup", "first".into(), test_err).unwrap();
+        let err = reg.register("dup", "second".into(), test_err).unwrap_err();
+        assert!(err.to_string().contains("already registered"));
+    }
+}

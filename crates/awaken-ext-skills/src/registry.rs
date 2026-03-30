@@ -1308,6 +1308,57 @@ mod tests {
         ));
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fs_registry_manager_start_stop_lifecycle() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        fs::create_dir_all(&root).unwrap();
+
+        let manager = FsSkillRegistryManager::discover_roots(vec![root]).unwrap();
+        assert!(!manager.periodic_refresh_running());
+
+        manager
+            .start_periodic_refresh(Duration::from_secs(60))
+            .unwrap();
+        assert!(manager.periodic_refresh_running());
+
+        let stopped = manager.stop_periodic_refresh();
+        assert!(stopped);
+        assert!(!manager.periodic_refresh_running());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fs_registry_manager_double_start_rejected() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        fs::create_dir_all(&root).unwrap();
+
+        let manager = FsSkillRegistryManager::discover_roots(vec![root]).unwrap();
+        manager
+            .start_periodic_refresh(Duration::from_secs(60))
+            .unwrap();
+
+        let err = manager
+            .start_periodic_refresh(Duration::from_secs(60))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            SkillRegistryManagerError::PeriodicRefreshAlreadyRunning
+        ));
+
+        manager.stop_periodic_refresh();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fs_registry_manager_stop_when_not_running() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        fs::create_dir_all(&root).unwrap();
+
+        let manager = FsSkillRegistryManager::discover_roots(vec![root]).unwrap();
+        assert!(!manager.stop_periodic_refresh());
+    }
+
     // ── validate_dir_name ──
 
     #[test]

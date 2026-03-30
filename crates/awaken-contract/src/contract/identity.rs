@@ -255,6 +255,25 @@ mod tests {
     }
 
     #[test]
+    fn set_excluded_if_absent_does_not_overwrite() {
+        let mut filter = FilterPolicy::new();
+        filter.set_excluded_if_absent(Some(&["first".to_string()]));
+        filter.set_excluded_if_absent(Some(&["second".to_string()]));
+        assert_eq!(filter.excluded(), Some(&["first".to_string()][..]));
+    }
+
+    #[test]
+    fn default_run_policy_all_none() {
+        let policy = RunPolicy::new();
+        assert!(policy.tools.allowed().is_none());
+        assert!(policy.tools.excluded().is_none());
+        assert!(policy.skills.allowed().is_none());
+        assert!(policy.skills.excluded().is_none());
+        assert!(policy.agents.allowed().is_none());
+        assert!(policy.agents.excluded().is_none());
+    }
+
+    #[test]
     fn run_origin_serde_roundtrip() {
         for origin in [RunOrigin::User, RunOrigin::Subagent, RunOrigin::Internal] {
             let json = serde_json::to_string(&origin).unwrap();
