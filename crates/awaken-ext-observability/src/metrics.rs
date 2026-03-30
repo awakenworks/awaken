@@ -4,6 +4,17 @@ use serde::{Deserialize, Serialize};
 
 use super::stats::{ModelStats, ToolStats};
 
+/// Unified event type for all observability events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MetricsEvent {
+    Inference(GenAISpan),
+    Tool(ToolSpan),
+    Suspension(SuspensionSpan),
+    Handoff(HandoffSpan),
+    Delegation(DelegationSpan),
+}
+
 /// A single LLM inference span (OTel GenAI aligned).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenAISpan {
@@ -198,6 +209,34 @@ impl AgentMetrics {
         let mut result: Vec<ModelStats> = map.into_values().collect();
         result.sort_by(|a, b| a.model.cmp(&b.model));
         result
+    }
+
+    /// Get all events as a unified stream, ordered by type
+    /// (inferences, tools, suspensions, handoffs, delegations).
+    pub fn events(&self) -> Vec<MetricsEvent> {
+        let mut events = Vec::with_capacity(
+            self.inferences.len()
+                + self.tools.len()
+                + self.suspensions.len()
+                + self.handoffs.len()
+                + self.delegations.len(),
+        );
+        events.extend(self.inferences.iter().cloned().map(MetricsEvent::Inference));
+        events.extend(self.tools.iter().cloned().map(MetricsEvent::Tool));
+        events.extend(
+            self.suspensions
+                .iter()
+                .cloned()
+                .map(MetricsEvent::Suspension),
+        );
+        events.extend(self.handoffs.iter().cloned().map(MetricsEvent::Handoff));
+        events.extend(
+            self.delegations
+                .iter()
+                .cloned()
+                .map(MetricsEvent::Delegation),
+        );
+        events
     }
 
     /// Tool execution statistics grouped by tool name, sorted by tool name.

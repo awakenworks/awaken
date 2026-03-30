@@ -9,7 +9,7 @@ use opentelemetry::trace::{SpanKind, Status, Tracer};
 use opentelemetry::{KeyValue, trace::TraceContextExt};
 use opentelemetry_sdk::trace::SdkTracer;
 
-use crate::metrics::{AgentMetrics, GenAISpan, ToolSpan};
+use crate::metrics::{AgentMetrics, GenAISpan, MetricsEvent, ToolSpan};
 use crate::sink::MetricsSink;
 
 /// OpenTelemetry-based metrics sink.
@@ -123,10 +123,8 @@ impl OtelMetricsSink {
 
         attrs
     }
-}
 
-impl MetricsSink for OtelMetricsSink {
-    fn on_inference(&self, span: &GenAISpan) {
+    fn record_inference(&self, span: &GenAISpan) {
         let attrs = Self::genai_attributes(span);
         let span_name = format!("{} {}", span.operation, span.model);
 
@@ -145,7 +143,7 @@ impl MetricsSink for OtelMetricsSink {
         cx.span().end();
     }
 
-    fn on_tool(&self, span: &ToolSpan) {
+    fn record_tool(&self, span: &ToolSpan) {
         let attrs = Self::tool_attributes(span);
         let span_name = format!("execute_tool {}", span.name);
 
@@ -162,6 +160,16 @@ impl MetricsSink for OtelMetricsSink {
                 .set_status(Status::error(span.error_type.clone().unwrap_or_default()));
         }
         cx.span().end();
+    }
+}
+
+impl MetricsSink for OtelMetricsSink {
+    fn record(&self, event: &MetricsEvent) {
+        match event {
+            MetricsEvent::Inference(span) => self.record_inference(span),
+            MetricsEvent::Tool(span) => self.record_tool(span),
+            _ => {} // suspension/handoff/delegation: no OTel mapping yet
+        }
     }
 
     fn on_run_end(&self, metrics: &AgentMetrics) {
@@ -204,6 +212,7 @@ impl MetricsSink for OtelMetricsSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metrics::MetricsEvent;
 
     fn sample_genai_span() -> GenAISpan {
         GenAISpan {
@@ -341,8 +350,8 @@ mod tests {
         let sink = OtelMetricsSink::new(tracer);
 
         // Should not panic with noop spans
-        sink.on_inference(&sample_genai_span());
-        sink.on_tool(&sample_tool_span());
+        sink.record(&MetricsEvent::Inference(sample_genai_span()));
+        sink.record(&MetricsEvent::Tool(sample_tool_span()));
         sink.on_run_end(&AgentMetrics {
             inferences: vec![sample_genai_span()],
             tools: vec![sample_tool_span()],

@@ -6,7 +6,7 @@ use awaken_contract::StateError;
 use awaken_contract::contract::tool::ToolStatus;
 use awaken_runtime::{PhaseContext, PhaseHook, StateCommand};
 
-use crate::metrics::{GenAISpan, ToolSpan};
+use crate::metrics::{GenAISpan, MetricsEvent, ToolSpan};
 
 use super::shared::{Inner, extract_cache_tokens, extract_token_counts};
 
@@ -184,7 +184,7 @@ impl PhaseHook for AfterInferenceHook {
             drop(tracing_span);
         }
 
-        s.sink.on_inference(&span);
+        s.sink.record(&MetricsEvent::Inference(span.clone()));
         s.metrics.lock().await.inferences.push(span);
 
         Ok(StateCommand::new())
@@ -279,7 +279,7 @@ impl PhaseHook for AfterToolExecuteHook {
             drop(tracing_span);
         }
 
-        s.sink.on_tool(&span);
+        s.sink.record(&MetricsEvent::Tool(span.clone()));
         s.metrics.lock().await.tools.push(span);
 
         Ok(StateCommand::new())

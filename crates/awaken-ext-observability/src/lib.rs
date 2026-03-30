@@ -18,10 +18,12 @@ mod otel_config;
 
 pub use batching::{BatchingConfig, BatchingSink};
 pub use composite::{CompositeSink, CompositeSinkBuilder};
-pub use metrics::{AgentMetrics, DelegationSpan, GenAISpan, HandoffSpan, SuspensionSpan, ToolSpan};
+pub use metrics::{
+    AgentMetrics, DelegationSpan, GenAISpan, HandoffSpan, MetricsEvent, SuspensionSpan, ToolSpan,
+};
 pub use persistent::{PersistenceConfig, PersistentSink};
 pub use plugin::{OBSERVABILITY_PLUGIN_ID, ObservabilityPlugin};
-pub use sink::{InMemorySink, MetricsSink};
+pub use sink::{InMemorySink, MetricsSink, SinkError};
 
 #[cfg(feature = "otel")]
 pub use otel::OtelMetricsSink;
@@ -207,8 +209,8 @@ mod tests {
     #[test]
     fn test_in_memory_sink_collects() {
         let sink = InMemorySink::new();
-        sink.on_inference(&make_span("test", "openai"));
-        sink.on_tool(&make_tool_span("t", "c1"));
+        sink.record(&MetricsEvent::Inference(make_span("test", "openai")));
+        sink.record(&MetricsEvent::Tool(make_tool_span("t", "c1")));
         let m = sink.metrics();
         assert_eq!(m.inference_count(), 1);
         assert_eq!(m.tool_count(), 1);
@@ -957,7 +959,7 @@ mod tests {
     fn test_in_memory_sink_is_clone() {
         let sink = InMemorySink::new();
         let sink2 = sink.clone();
-        sink.on_inference(&make_span("m", "p"));
+        sink.record(&MetricsEvent::Inference(make_span("m", "p")));
         assert_eq!(sink2.metrics().inference_count(), 1);
     }
 
@@ -966,8 +968,8 @@ mod tests {
     #[test]
     fn test_metrics_sink_trait_object() {
         let sink: Box<dyn MetricsSink> = Box::new(InMemorySink::new());
-        sink.on_inference(&make_span("m", "p"));
-        sink.on_tool(&make_tool_span("t", "c1"));
+        sink.record(&MetricsEvent::Inference(make_span("m", "p")));
+        sink.record(&MetricsEvent::Tool(make_tool_span("t", "c1")));
         sink.on_run_end(&AgentMetrics::default());
     }
 

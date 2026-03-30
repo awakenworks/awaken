@@ -4,10 +4,8 @@ use std::time::Duration;
 
 use tokio::sync::Notify;
 
-use crate::metrics::{
-    AgentMetrics, DelegationSpan, GenAISpan, HandoffSpan, SuspensionSpan, ToolSpan,
-};
-use crate::sink::MetricsSink;
+use crate::metrics::{AgentMetrics, MetricsEvent};
+use crate::sink::{MetricsSink, SinkError};
 
 /// Configuration for [`BatchingSink`].
 pub struct BatchingConfig {
@@ -29,39 +27,23 @@ impl Default for BatchingConfig {
     }
 }
 
-/// Internal buffer holding all event types.
+/// Internal buffer holding all event types as a unified stream.
 #[derive(Default)]
 struct Buffer {
-    inferences: Vec<GenAISpan>,
-    tools: Vec<ToolSpan>,
-    suspensions: Vec<SuspensionSpan>,
-    handoffs: Vec<HandoffSpan>,
-    delegations: Vec<DelegationSpan>,
+    events: Vec<MetricsEvent>,
 }
 
 impl Buffer {
-    /// Total items across all vecs.
     fn len(&self) -> usize {
-        self.inferences.len()
-            + self.tools.len()
-            + self.suspensions.len()
-            + self.handoffs.len()
-            + self.delegations.len()
+        self.events.len()
     }
 
     fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.events.is_empty()
     }
 
-    /// Drain all vecs and return the contents as a new `Buffer`.
-    fn take(&mut self) -> Buffer {
-        Buffer {
-            inferences: std::mem::take(&mut self.inferences),
-            tools: std::mem::take(&mut self.tools),
-            suspensions: std::mem::take(&mut self.suspensions),
-            handoffs: std::mem::take(&mut self.handoffs),
-            delegations: std::mem::take(&mut self.delegations),
-        }
+    fn take(&mut self) -> Vec<MetricsEvent> {
+        std::mem::take(&mut self.events)
     }
 }
 
@@ -79,7 +61,7 @@ pub struct BatchingSink {
     buffer: Arc<Mutex<Buffer>>,
     config: BatchingConfig,
     flush_notify: Arc<Notify>,
-    shutdown_flag: Arc<AtomicBool>,
+    pub(crate) shutdown_flag: Arc<AtomicBool>,
 }
 
 impl BatchingSink {
@@ -125,7 +107,7 @@ impl BatchingSink {
     }
 
     /// Flush buffered events to the inner sink immediately.
-    fn flush_buffer(&self) {
+    pub(crate) fn flush_buffer(&self) {
         flush_to_inner(&self.buffer, &self.inner);
     }
 
@@ -145,72 +127,16 @@ fn flush_to_inner(buffer: &Mutex<Buffer>, inner: &Arc<dyn MetricsSink>) {
         buf.take()
     };
 
-    for span in &batch.inferences {
-        inner.on_inference(span);
-    }
-    for span in &batch.tools {
-        inner.on_tool(span);
-    }
-    for span in &batch.suspensions {
-        inner.on_suspension(span);
-    }
-    for span in &batch.handoffs {
-        inner.on_handoff(span);
-    }
-    for span in &batch.delegations {
-        inner.on_delegation(span);
+    for event in &batch {
+        inner.record(event);
     }
 }
 
 impl MetricsSink for BatchingSink {
-    fn on_inference(&self, span: &GenAISpan) {
+    fn record(&self, event: &MetricsEvent) {
         let mut buf = self.buffer.lock().unwrap();
         if buf.len() < self.config.max_buffer_size {
-            buf.inferences.push(span.clone());
-            if buf.len() >= self.config.max_batch_size {
-                drop(buf);
-                self.flush_notify.notify_one();
-            }
-        }
-    }
-
-    fn on_tool(&self, span: &ToolSpan) {
-        let mut buf = self.buffer.lock().unwrap();
-        if buf.len() < self.config.max_buffer_size {
-            buf.tools.push(span.clone());
-            if buf.len() >= self.config.max_batch_size {
-                drop(buf);
-                self.flush_notify.notify_one();
-            }
-        }
-    }
-
-    fn on_suspension(&self, span: &SuspensionSpan) {
-        let mut buf = self.buffer.lock().unwrap();
-        if buf.len() < self.config.max_buffer_size {
-            buf.suspensions.push(span.clone());
-            if buf.len() >= self.config.max_batch_size {
-                drop(buf);
-                self.flush_notify.notify_one();
-            }
-        }
-    }
-
-    fn on_handoff(&self, span: &HandoffSpan) {
-        let mut buf = self.buffer.lock().unwrap();
-        if buf.len() < self.config.max_buffer_size {
-            buf.handoffs.push(span.clone());
-            if buf.len() >= self.config.max_batch_size {
-                drop(buf);
-                self.flush_notify.notify_one();
-            }
-        }
-    }
-
-    fn on_delegation(&self, span: &DelegationSpan) {
-        let mut buf = self.buffer.lock().unwrap();
-        if buf.len() < self.config.max_buffer_size {
-            buf.delegations.push(span.clone());
+            buf.events.push(event.clone());
             if buf.len() >= self.config.max_batch_size {
                 drop(buf);
                 self.flush_notify.notify_one();
@@ -223,12 +149,12 @@ impl MetricsSink for BatchingSink {
         self.inner.on_run_end(metrics);
     }
 
-    fn flush(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    fn flush(&self) -> Result<(), SinkError> {
         self.flush_buffer();
         self.inner.flush()
     }
 
-    fn shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    fn shutdown(&self) -> Result<(), SinkError> {
         self.shutdown_flag.store(true, Ordering::SeqCst);
         self.flush_notify.notify_one();
         self.flush_buffer();
@@ -239,6 +165,7 @@ impl MetricsSink for BatchingSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metrics::{DelegationSpan, GenAISpan, HandoffSpan, SuspensionSpan, ToolSpan};
     use crate::sink::InMemorySink;
     use std::sync::atomic::AtomicUsize;
 
@@ -328,29 +255,17 @@ mod tests {
     }
 
     impl MetricsSink for TrackingSink {
-        fn on_inference(&self, span: &GenAISpan) {
-            self.inner.on_inference(span);
-        }
-        fn on_tool(&self, span: &ToolSpan) {
-            self.inner.on_tool(span);
+        fn record(&self, event: &MetricsEvent) {
+            self.inner.record(event);
         }
         fn on_run_end(&self, metrics: &AgentMetrics) {
             self.inner.on_run_end(metrics);
         }
-        fn on_suspension(&self, span: &SuspensionSpan) {
-            self.inner.on_suspension(span);
-        }
-        fn on_handoff(&self, span: &HandoffSpan) {
-            self.inner.on_handoff(span);
-        }
-        fn on_delegation(&self, span: &DelegationSpan) {
-            self.inner.on_delegation(span);
-        }
-        fn flush(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        fn flush(&self) -> Result<(), SinkError> {
             self.flush_count.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
-        fn shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        fn shutdown(&self) -> Result<(), SinkError> {
             self.shutdown_count.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -369,11 +284,11 @@ mod tests {
         );
 
         // Add 5 mixed events
-        sink.on_inference(&sample_genai_span());
-        sink.on_tool(&sample_tool_span());
-        sink.on_suspension(&sample_suspension_span());
-        sink.on_handoff(&sample_handoff_span());
-        sink.on_delegation(&sample_delegation_span());
+        sink.record(&MetricsEvent::Inference(sample_genai_span()));
+        sink.record(&MetricsEvent::Tool(sample_tool_span()));
+        sink.record(&MetricsEvent::Suspension(sample_suspension_span()));
+        sink.record(&MetricsEvent::Handoff(sample_handoff_span()));
+        sink.record(&MetricsEvent::Delegation(sample_delegation_span()));
 
         // Inner should have 0 events (still buffered)
         let m = tracking.inner.metrics();
@@ -405,21 +320,14 @@ mod tests {
             },
         );
 
-        // The batch-size trigger notifies the background task, but in sync
-        // tests there is no background task. The notify just fires; the actual
-        // flush happens on the next explicit call. To test the threshold
-        // semantics synchronously, we call flush_buffer after the notify fires.
-        // Instead, we verify the buffer reaches threshold and then manually flush.
-        sink.on_inference(&sample_genai_span());
-        sink.on_tool(&sample_tool_span());
+        sink.record(&MetricsEvent::Inference(sample_genai_span()));
+        sink.record(&MetricsEvent::Tool(sample_tool_span()));
         // Third event triggers notify (batch_size=3)
-        sink.on_suspension(&sample_suspension_span());
+        sink.record(&MetricsEvent::Suspension(sample_suspension_span()));
 
         // In synchronous context, the notify doesn't flush automatically
-        // (no background task). But the buffer should still contain 3 items
-        // because the flush_notify only signals the background task.
-        // To properly test auto-flush, we manually call flush_buffer which
-        // is what the background task would do.
+        // (no background task). Manually call flush_buffer which is what
+        // the background task would do.
         sink.flush_buffer();
 
         let m = tracking.inner.metrics();
@@ -442,7 +350,7 @@ mod tests {
 
         // Add 10 events; only first 5 should be kept
         for _ in 0..10 {
-            sink.on_inference(&sample_genai_span());
+            sink.record(&MetricsEvent::Inference(sample_genai_span()));
         }
 
         assert!(sink.buffered_count() <= 5);
@@ -465,9 +373,9 @@ mod tests {
             },
         );
 
-        sink.on_inference(&sample_genai_span());
-        sink.on_tool(&sample_tool_span());
-        sink.on_delegation(&sample_delegation_span());
+        sink.record(&MetricsEvent::Inference(sample_genai_span()));
+        sink.record(&MetricsEvent::Tool(sample_tool_span()));
+        sink.record(&MetricsEvent::Delegation(sample_delegation_span()));
 
         let run_metrics = AgentMetrics {
             session_duration_ms: 5000,
@@ -494,8 +402,8 @@ mod tests {
             },
         );
 
-        sink.on_inference(&sample_genai_span());
-        sink.on_tool(&sample_tool_span());
+        sink.record(&MetricsEvent::Inference(sample_genai_span()));
+        sink.record(&MetricsEvent::Tool(sample_tool_span()));
 
         sink.shutdown().unwrap();
 
@@ -528,15 +436,15 @@ mod tests {
 
         assert_eq!(sink.buffered_count(), 0);
 
-        sink.on_inference(&sample_genai_span());
+        sink.record(&MetricsEvent::Inference(sample_genai_span()));
         assert_eq!(sink.buffered_count(), 1);
 
-        sink.on_tool(&sample_tool_span());
+        sink.record(&MetricsEvent::Tool(sample_tool_span()));
         assert_eq!(sink.buffered_count(), 2);
 
-        sink.on_suspension(&sample_suspension_span());
-        sink.on_handoff(&sample_handoff_span());
-        sink.on_delegation(&sample_delegation_span());
+        sink.record(&MetricsEvent::Suspension(sample_suspension_span()));
+        sink.record(&MetricsEvent::Handoff(sample_handoff_span()));
+        sink.record(&MetricsEvent::Delegation(sample_delegation_span()));
         assert_eq!(sink.buffered_count(), 5);
 
         // After flush, buffer should be empty

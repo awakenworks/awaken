@@ -3,12 +3,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
-
-use super::metrics::{
-    AgentMetrics, DelegationSpan, GenAISpan, HandoffSpan, SuspensionSpan, ToolSpan,
-};
-use super::sink::MetricsSink;
+use super::metrics::{AgentMetrics, MetricsEvent};
+use super::sink::{MetricsSink, SinkError};
 
 /// Configuration for [`PersistentSink`].
 pub struct PersistenceConfig {
@@ -33,21 +29,30 @@ impl Default for PersistenceConfig {
     }
 }
 
-/// Envelope for events persisted to disk.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum PersistedEvent {
-    Inference(GenAISpan),
-    Tool(ToolSpan),
-    Suspension(SuspensionSpan),
-    Handoff(HandoffSpan),
-    Delegation(DelegationSpan),
-    RunEnd { session_duration_ms: u64 },
+/// Envelope for run-end events persisted to disk (session duration only).
+///
+/// `MetricsEvent` covers the five span types; this wrapper adds the run-end
+/// case so that all persisted lines share a consistent tagged JSON format.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum PersistedLine {
+    RunEnd {
+        #[serde(rename = "type")]
+        line_type: RunEndMarker,
+        session_duration_ms: u64,
+    },
+    Event(Box<MetricsEvent>),
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+enum RunEndMarker {
+    #[serde(rename = "run_end")]
+    RunEnd,
 }
 
 /// A [`MetricsSink`] wrapper that persists events to disk on flush failure.
 ///
-/// All `on_*` calls are forwarded to the inner sink immediately and also
+/// All `record` calls are forwarded to the inner sink immediately and also
 /// buffered locally. On a successful [`MetricsSink::flush`] the buffer is
 /// cleared. On failure the buffer is written as NDJSON to `storage_dir`.
 /// [`retry_persisted`](PersistentSink::retry_persisted) reads those files
@@ -55,7 +60,7 @@ enum PersistedEvent {
 pub struct PersistentSink {
     inner: Arc<dyn MetricsSink>,
     config: PersistenceConfig,
-    pending: Arc<Mutex<Vec<PersistedEvent>>>,
+    pending: Arc<Mutex<Vec<PersistedLine>>>,
 }
 
 impl PersistentSink {
@@ -71,33 +76,30 @@ impl PersistentSink {
         })
     }
 
-    /// Write the given events to an NDJSON file in `storage_dir`.
-    fn persist_to_disk(&self, events: &[PersistedEvent]) -> std::io::Result<()> {
-        if events.is_empty() {
+    /// Write the given lines to an NDJSON file in `storage_dir`.
+    fn persist_to_disk(&self, lines: &[PersistedLine]) -> std::io::Result<()> {
+        if lines.is_empty() {
             return Ok(());
         }
         let filename = format!("failed_events_{}.ndjson", uuid::Uuid::now_v7().hyphenated());
         let path = self.config.storage_dir.join(filename);
         let mut file = std::fs::File::create(&path)?;
-        for event in events {
-            let line = serde_json::to_string(event)
+        for line in lines {
+            let json = serde_json::to_string(line)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-            writeln!(file, "{line}")?;
+            writeln!(file, "{json}")?;
         }
         file.flush()?;
         Ok(())
     }
 
-    /// Replay a single [`PersistedEvent`] through the inner sink.
-    fn replay_event(&self, event: &PersistedEvent) {
-        match event {
-            PersistedEvent::Inference(span) => self.inner.on_inference(span),
-            PersistedEvent::Tool(span) => self.inner.on_tool(span),
-            PersistedEvent::Suspension(span) => self.inner.on_suspension(span),
-            PersistedEvent::Handoff(span) => self.inner.on_handoff(span),
-            PersistedEvent::Delegation(span) => self.inner.on_delegation(span),
-            PersistedEvent::RunEnd {
+    /// Replay a single [`PersistedLine`] through the inner sink.
+    fn replay_line(&self, line: &PersistedLine) {
+        match line {
+            PersistedLine::Event(event) => self.inner.record(event.as_ref()),
+            PersistedLine::RunEnd {
                 session_duration_ms,
+                ..
             } => {
                 let metrics = AgentMetrics {
                     session_duration_ms: *session_duration_ms,
@@ -123,27 +125,27 @@ impl PersistentSink {
             let path = entry.path();
             let file = std::fs::File::open(&path)?;
             let reader = std::io::BufReader::new(file);
-            let mut events = Vec::new();
+            let mut lines = Vec::new();
 
-            for line in reader.lines() {
-                let line = line?;
-                if line.trim().is_empty() {
+            for raw_line in reader.lines() {
+                let raw_line = raw_line?;
+                if raw_line.trim().is_empty() {
                     continue;
                 }
-                let event: PersistedEvent = serde_json::from_str(&line)
+                let line: PersistedLine = serde_json::from_str(&raw_line)
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-                events.push(event);
+                lines.push(line);
             }
 
-            // Replay all events, then attempt flush.
-            for event in &events {
-                self.replay_event(event);
+            // Replay all lines, then attempt flush.
+            for line in &lines {
+                self.replay_line(line);
             }
 
             match self.inner.flush() {
                 Ok(()) => {
                     std::fs::remove_file(&path)?;
-                    total += events.len();
+                    total += lines.len();
                 }
                 Err(_) => {
                     // Leave the file for a future retry attempt.
@@ -161,54 +163,23 @@ impl PersistentSink {
 }
 
 impl MetricsSink for PersistentSink {
-    fn on_inference(&self, span: &GenAISpan) {
-        self.inner.on_inference(span);
+    fn record(&self, event: &MetricsEvent) {
+        self.inner.record(event);
         self.pending
             .lock()
             .unwrap()
-            .push(PersistedEvent::Inference(span.clone()));
-    }
-
-    fn on_tool(&self, span: &ToolSpan) {
-        self.inner.on_tool(span);
-        self.pending
-            .lock()
-            .unwrap()
-            .push(PersistedEvent::Tool(span.clone()));
+            .push(PersistedLine::Event(Box::new(event.clone())));
     }
 
     fn on_run_end(&self, metrics: &AgentMetrics) {
         self.inner.on_run_end(metrics);
-        self.pending.lock().unwrap().push(PersistedEvent::RunEnd {
+        self.pending.lock().unwrap().push(PersistedLine::RunEnd {
+            line_type: RunEndMarker::RunEnd,
             session_duration_ms: metrics.session_duration_ms,
         });
     }
 
-    fn on_suspension(&self, span: &SuspensionSpan) {
-        self.inner.on_suspension(span);
-        self.pending
-            .lock()
-            .unwrap()
-            .push(PersistedEvent::Suspension(span.clone()));
-    }
-
-    fn on_handoff(&self, span: &HandoffSpan) {
-        self.inner.on_handoff(span);
-        self.pending
-            .lock()
-            .unwrap()
-            .push(PersistedEvent::Handoff(span.clone()));
-    }
-
-    fn on_delegation(&self, span: &DelegationSpan) {
-        self.inner.on_delegation(span);
-        self.pending
-            .lock()
-            .unwrap()
-            .push(PersistedEvent::Delegation(span.clone()));
-    }
-
-    fn flush(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    fn flush(&self) -> Result<(), SinkError> {
         match self.inner.flush() {
             Ok(()) => {
                 self.pending.lock().unwrap().clear();
@@ -224,7 +195,7 @@ impl MetricsSink for PersistentSink {
         }
     }
 
-    fn shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    fn shutdown(&self) -> Result<(), SinkError> {
         let flush_result = self.flush();
         let _ = self.inner.shutdown();
         flush_result
@@ -235,6 +206,7 @@ impl MetricsSink for PersistentSink {
 mod tests {
     use super::*;
     use crate::InMemorySink;
+    use crate::metrics::{DelegationSpan, GenAISpan, HandoffSpan, SuspensionSpan, ToolSpan};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// A sink whose `flush()` can be toggled to fail.
@@ -253,27 +225,15 @@ mod tests {
     }
 
     impl MetricsSink for FailableSink {
-        fn on_inference(&self, span: &GenAISpan) {
-            self.inner.on_inference(span);
-        }
-        fn on_tool(&self, span: &ToolSpan) {
-            self.inner.on_tool(span);
+        fn record(&self, event: &MetricsEvent) {
+            self.inner.record(event);
         }
         fn on_run_end(&self, metrics: &AgentMetrics) {
             self.inner.on_run_end(metrics);
         }
-        fn on_suspension(&self, span: &SuspensionSpan) {
-            self.inner.on_suspension(span);
-        }
-        fn on_handoff(&self, span: &HandoffSpan) {
-            self.inner.on_handoff(span);
-        }
-        fn on_delegation(&self, span: &DelegationSpan) {
-            self.inner.on_delegation(span);
-        }
-        fn flush(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        fn flush(&self) -> Result<(), SinkError> {
             if self.fail_flush.load(Ordering::Relaxed) {
-                Err("flush failed".into())
+                Err(SinkError::new("flush failed"))
             } else {
                 Ok(())
             }
@@ -366,11 +326,11 @@ mod tests {
         };
         let sink = PersistentSink::new(Arc::clone(&inner) as Arc<dyn MetricsSink>, config).unwrap();
 
-        sink.on_inference(&sample_genai_span());
-        sink.on_tool(&sample_tool_span());
-        sink.on_suspension(&sample_suspension_span());
-        sink.on_handoff(&sample_handoff_span());
-        sink.on_delegation(&sample_delegation_span());
+        sink.record(&MetricsEvent::Inference(sample_genai_span()));
+        sink.record(&MetricsEvent::Tool(sample_tool_span()));
+        sink.record(&MetricsEvent::Suspension(sample_suspension_span()));
+        sink.record(&MetricsEvent::Handoff(sample_handoff_span()));
+        sink.record(&MetricsEvent::Delegation(sample_delegation_span()));
         sink.on_run_end(&AgentMetrics {
             session_duration_ms: 5000,
             ..Default::default()
@@ -396,8 +356,8 @@ mod tests {
         let sink =
             PersistentSink::new(Arc::clone(&failable) as Arc<dyn MetricsSink>, config).unwrap();
 
-        sink.on_inference(&sample_genai_span());
-        sink.on_tool(&sample_tool_span());
+        sink.record(&MetricsEvent::Inference(sample_genai_span()));
+        sink.record(&MetricsEvent::Tool(sample_tool_span()));
 
         let result = sink.flush();
         assert!(result.is_err());
@@ -427,20 +387,21 @@ mod tests {
         let sink = PersistentSink::new(Arc::clone(&inner) as Arc<dyn MetricsSink>, config).unwrap();
 
         // Manually create an NDJSON file with events
-        let events = vec![
-            PersistedEvent::Inference(sample_genai_span()),
-            PersistedEvent::Tool(sample_tool_span()),
-            PersistedEvent::Suspension(sample_suspension_span()),
-            PersistedEvent::Handoff(sample_handoff_span()),
-            PersistedEvent::Delegation(sample_delegation_span()),
-            PersistedEvent::RunEnd {
+        let lines = vec![
+            PersistedLine::Event(Box::new(MetricsEvent::Inference(sample_genai_span()))),
+            PersistedLine::Event(Box::new(MetricsEvent::Tool(sample_tool_span()))),
+            PersistedLine::Event(Box::new(MetricsEvent::Suspension(sample_suspension_span()))),
+            PersistedLine::Event(Box::new(MetricsEvent::Handoff(sample_handoff_span()))),
+            PersistedLine::Event(Box::new(MetricsEvent::Delegation(sample_delegation_span()))),
+            PersistedLine::RunEnd {
+                line_type: RunEndMarker::RunEnd,
                 session_duration_ms: 9000,
             },
         ];
         let path = dir.join("failed_events_manual.ndjson");
         let mut file = std::fs::File::create(&path).unwrap();
-        for event in &events {
-            writeln!(file, "{}", serde_json::to_string(event).unwrap()).unwrap();
+        for line in &lines {
+            writeln!(file, "{}", serde_json::to_string(line).unwrap()).unwrap();
         }
         drop(file);
 
@@ -468,8 +429,8 @@ mod tests {
 
         // Create an NDJSON file
         let path = dir.join("failed_events_delete_test.ndjson");
-        let event = PersistedEvent::Inference(sample_genai_span());
-        std::fs::write(&path, serde_json::to_string(&event).unwrap() + "\n").unwrap();
+        let line = PersistedLine::Event(Box::new(MetricsEvent::Inference(sample_genai_span())));
+        std::fs::write(&path, serde_json::to_string(&line).unwrap() + "\n").unwrap();
 
         assert!(path.exists());
         sink.retry_persisted().unwrap();
@@ -477,21 +438,22 @@ mod tests {
     }
 
     #[test]
-    fn persisted_event_serde_roundtrip() {
-        let events = vec![
-            PersistedEvent::Inference(sample_genai_span()),
-            PersistedEvent::Tool(sample_tool_span()),
-            PersistedEvent::Suspension(sample_suspension_span()),
-            PersistedEvent::Handoff(sample_handoff_span()),
-            PersistedEvent::Delegation(sample_delegation_span()),
-            PersistedEvent::RunEnd {
+    fn persisted_line_serde_roundtrip() {
+        let lines = vec![
+            PersistedLine::Event(Box::new(MetricsEvent::Inference(sample_genai_span()))),
+            PersistedLine::Event(Box::new(MetricsEvent::Tool(sample_tool_span()))),
+            PersistedLine::Event(Box::new(MetricsEvent::Suspension(sample_suspension_span()))),
+            PersistedLine::Event(Box::new(MetricsEvent::Handoff(sample_handoff_span()))),
+            PersistedLine::Event(Box::new(MetricsEvent::Delegation(sample_delegation_span()))),
+            PersistedLine::RunEnd {
+                line_type: RunEndMarker::RunEnd,
                 session_duration_ms: 42000,
             },
         ];
 
-        for event in &events {
-            let json = serde_json::to_string(event).unwrap();
-            let restored: PersistedEvent = serde_json::from_str(&json).unwrap();
+        for line in &lines {
+            let json = serde_json::to_string(line).unwrap();
+            let restored: PersistedLine = serde_json::from_str(&json).unwrap();
             // Verify round-trip by re-serializing
             let json2 = serde_json::to_string(&restored).unwrap();
             assert_eq!(json, json2);

@@ -6,8 +6,8 @@
 //! exercise cross-type integration through the public surface.
 
 use awaken_ext_observability::{
-    AgentMetrics, CompositeSink, DelegationSpan, GenAISpan, HandoffSpan, InMemorySink, MetricsSink,
-    ObservabilityPlugin, SuspensionSpan, ToolSpan,
+    AgentMetrics, CompositeSink, DelegationSpan, GenAISpan, HandoffSpan, InMemorySink,
+    MetricsEvent, MetricsSink, ObservabilityPlugin, SuspensionSpan, ToolSpan,
 };
 use awaken_runtime::plugins::Plugin;
 
@@ -112,8 +112,12 @@ fn sink_starts_empty() {
 #[test]
 fn sink_records_inferences_via_trait() {
     let sink = InMemorySink::new();
-    sink.on_inference(&make_genai_span("gpt-4", "openai", 100, 50));
-    sink.on_inference(&make_genai_span("gpt-4", "openai", 200, 75));
+    sink.record(&MetricsEvent::Inference(make_genai_span(
+        "gpt-4", "openai", 100, 50,
+    )));
+    sink.record(&MetricsEvent::Inference(make_genai_span(
+        "gpt-4", "openai", 200, 75,
+    )));
 
     let m = sink.metrics();
     assert_eq!(m.inference_count(), 2);
@@ -125,9 +129,9 @@ fn sink_records_inferences_via_trait() {
 #[test]
 fn sink_records_tools_via_trait() {
     let sink = InMemorySink::new();
-    sink.on_tool(&make_tool_span("read_file", false));
-    sink.on_tool(&make_tool_span("write_file", true));
-    sink.on_tool(&make_tool_span("search", false));
+    sink.record(&MetricsEvent::Tool(make_tool_span("read_file", false)));
+    sink.record(&MetricsEvent::Tool(make_tool_span("write_file", true)));
+    sink.record(&MetricsEvent::Tool(make_tool_span("search", false)));
 
     let m = sink.metrics();
     assert_eq!(m.tool_count(), 3);
@@ -137,8 +141,8 @@ fn sink_records_tools_via_trait() {
 #[test]
 fn sink_records_session_duration_on_run_end() {
     let sink = InMemorySink::new();
-    sink.on_inference(&make_genai_span("m", "p", 10, 5));
-    sink.on_tool(&make_tool_span("t", false));
+    sink.record(&MetricsEvent::Inference(make_genai_span("m", "p", 10, 5)));
+    sink.record(&MetricsEvent::Tool(make_tool_span("t", false)));
 
     let run_metrics = AgentMetrics {
         inferences: vec![],
@@ -160,14 +164,16 @@ fn sink_clone_shares_underlying_state() {
     let sink = InMemorySink::new();
     let clone = sink.clone();
 
-    sink.on_inference(&make_genai_span("gpt-4", "openai", 100, 50));
+    sink.record(&MetricsEvent::Inference(make_genai_span(
+        "gpt-4", "openai", 100, 50,
+    )));
 
     let m_from_clone = clone.metrics();
     assert_eq!(m_from_clone.inference_count(), 1);
     assert_eq!(m_from_clone.total_input_tokens(), 100);
 
     // Writing to clone is also visible from original
-    clone.on_tool(&make_tool_span("search", false));
+    clone.record(&MetricsEvent::Tool(make_tool_span("search", false)));
     let m_from_original = sink.metrics();
     assert_eq!(m_from_original.tool_count(), 1);
 }
@@ -179,20 +185,26 @@ fn full_agent_session_simulation() {
     let sink = InMemorySink::new();
 
     // Inference round 1
-    sink.on_inference(&make_genai_span("gpt-4", "openai", 100, 50));
+    sink.record(&MetricsEvent::Inference(make_genai_span(
+        "gpt-4", "openai", 100, 50,
+    )));
 
     // Tool calls from round 1
-    sink.on_tool(&make_tool_span("search", false));
-    sink.on_tool(&make_tool_span("read_file", false));
+    sink.record(&MetricsEvent::Tool(make_tool_span("search", false)));
+    sink.record(&MetricsEvent::Tool(make_tool_span("read_file", false)));
 
     // Inference round 2 (after tool results)
-    sink.on_inference(&make_genai_span("gpt-4", "openai", 200, 75));
+    sink.record(&MetricsEvent::Inference(make_genai_span(
+        "gpt-4", "openai", 200, 75,
+    )));
 
     // Tool call from round 2 (error)
-    sink.on_tool(&make_tool_span("write_file", true));
+    sink.record(&MetricsEvent::Tool(make_tool_span("write_file", true)));
 
     // Inference round 3 (final)
-    sink.on_inference(&make_genai_span("gpt-4", "openai", 150, 40));
+    sink.record(&MetricsEvent::Inference(make_genai_span(
+        "gpt-4", "openai", 150, 40,
+    )));
 
     // Session end
     let final_metrics = AgentMetrics {
@@ -512,33 +524,40 @@ fn composite_sink_with_in_memory_captures_all_events() {
     let composite = CompositeSink::new(vec![sink_a.clone(), sink_b.clone()]);
 
     // Inference
-    composite.on_inference(&make_genai_span("gpt-4", "openai", 100, 50));
-    composite.on_inference(&make_genai_span("claude-3", "anthropic", 200, 75));
+    composite.record(&MetricsEvent::Inference(make_genai_span(
+        "gpt-4", "openai", 100, 50,
+    )));
+    composite.record(&MetricsEvent::Inference(make_genai_span(
+        "claude-3",
+        "anthropic",
+        200,
+        75,
+    )));
 
     // Tools
-    composite.on_tool(&make_tool_span("search", false));
-    composite.on_tool(&make_tool_span("write", true));
+    composite.record(&MetricsEvent::Tool(make_tool_span("search", false)));
+    composite.record(&MetricsEvent::Tool(make_tool_span("write", true)));
 
     // Suspension
-    composite.on_suspension(&SuspensionSpan {
+    composite.record(&MetricsEvent::Suspension(SuspensionSpan {
         tool_call_id: "c1".into(),
         tool_name: "search".into(),
         action: "suspended".into(),
         resume_mode: None,
         duration_ms: None,
         timestamp_ms: 1000,
-    });
+    }));
 
     // Handoff
-    composite.on_handoff(&HandoffSpan {
+    composite.record(&MetricsEvent::Handoff(HandoffSpan {
         from_agent_id: "agent-a".into(),
         to_agent_id: "agent-b".into(),
         reason: Some("escalation".into()),
         timestamp_ms: 2000,
-    });
+    }));
 
     // Delegation
-    composite.on_delegation(&DelegationSpan {
+    composite.record(&MetricsEvent::Delegation(DelegationSpan {
         parent_run_id: "run-1".into(),
         child_run_id: Some("run-2".into()),
         target_agent_id: "worker".into(),
@@ -547,7 +566,7 @@ fn composite_sink_with_in_memory_captures_all_events() {
         success: true,
         error_message: None,
         timestamp_ms: 3000,
-    });
+    }));
 
     // Run end
     composite.on_run_end(&AgentMetrics {

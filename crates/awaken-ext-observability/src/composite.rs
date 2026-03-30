@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
-use crate::metrics::{
-    AgentMetrics, DelegationSpan, GenAISpan, HandoffSpan, SuspensionSpan, ToolSpan,
-};
-use crate::sink::MetricsSink;
+use crate::metrics::{AgentMetrics, MetricsEvent};
+use crate::sink::{MetricsSink, SinkError};
 
 /// Dispatches metrics to multiple sinks sequentially.
 pub struct CompositeSink {
@@ -49,15 +47,9 @@ impl CompositeSinkBuilder {
 }
 
 impl MetricsSink for CompositeSink {
-    fn on_inference(&self, span: &GenAISpan) {
+    fn record(&self, event: &MetricsEvent) {
         for sink in &self.sinks {
-            sink.on_inference(span);
-        }
-    }
-
-    fn on_tool(&self, span: &ToolSpan) {
-        for sink in &self.sinks {
-            sink.on_tool(span);
+            sink.record(event);
         }
     }
 
@@ -67,25 +59,7 @@ impl MetricsSink for CompositeSink {
         }
     }
 
-    fn on_suspension(&self, span: &SuspensionSpan) {
-        for sink in &self.sinks {
-            sink.on_suspension(span);
-        }
-    }
-
-    fn on_handoff(&self, span: &HandoffSpan) {
-        for sink in &self.sinks {
-            sink.on_handoff(span);
-        }
-    }
-
-    fn on_delegation(&self, span: &DelegationSpan) {
-        for sink in &self.sinks {
-            sink.on_delegation(span);
-        }
-    }
-
-    fn flush(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    fn flush(&self) -> Result<(), SinkError> {
         let mut errors = Vec::new();
         for sink in &self.sinks {
             if let Err(e) = sink.flush() {
@@ -95,11 +69,14 @@ impl MetricsSink for CompositeSink {
         if errors.is_empty() {
             Ok(())
         } else {
-            Err(format!("{} sink(s) failed to flush", errors.len()).into())
+            Err(SinkError::new(format!(
+                "{} sink(s) failed to flush",
+                errors.len()
+            )))
         }
     }
 
-    fn shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    fn shutdown(&self) -> Result<(), SinkError> {
         let mut errors = Vec::new();
         for sink in &self.sinks {
             if let Err(e) = sink.shutdown() {
@@ -109,7 +86,10 @@ impl MetricsSink for CompositeSink {
         if errors.is_empty() {
             Ok(())
         } else {
-            Err(format!("{} sink(s) failed to shutdown", errors.len()).into())
+            Err(SinkError::new(format!(
+                "{} sink(s) failed to shutdown",
+                errors.len()
+            )))
         }
     }
 }
@@ -117,6 +97,7 @@ impl MetricsSink for CompositeSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metrics::{DelegationSpan, GenAISpan, HandoffSpan, SuspensionSpan, ToolSpan};
     use crate::sink::InMemorySink;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -192,16 +173,15 @@ mod tests {
     struct FailingSink;
 
     impl MetricsSink for FailingSink {
-        fn on_inference(&self, _span: &GenAISpan) {}
-        fn on_tool(&self, _span: &ToolSpan) {}
+        fn record(&self, _event: &MetricsEvent) {}
         fn on_run_end(&self, _metrics: &AgentMetrics) {}
 
-        fn flush(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-            Err("flush failed".into())
+        fn flush(&self) -> Result<(), SinkError> {
+            Err(SinkError::new("flush failed"))
         }
 
-        fn shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-            Err("shutdown failed".into())
+        fn shutdown(&self) -> Result<(), SinkError> {
+            Err(SinkError::new("shutdown failed"))
         }
     }
 
@@ -219,11 +199,10 @@ mod tests {
     }
 
     impl MetricsSink for CountingSink {
-        fn on_inference(&self, _span: &GenAISpan) {}
-        fn on_tool(&self, _span: &ToolSpan) {}
+        fn record(&self, _event: &MetricsEvent) {}
         fn on_run_end(&self, _metrics: &AgentMetrics) {}
 
-        fn shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        fn shutdown(&self) -> Result<(), SinkError> {
             self.shutdown_count.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -235,11 +214,11 @@ mod tests {
         let sink_b = Arc::new(InMemorySink::new());
         let composite = CompositeSink::new(vec![sink_a.clone(), sink_b.clone()]);
 
-        composite.on_inference(&sample_genai_span());
-        composite.on_tool(&sample_tool_span());
-        composite.on_suspension(&sample_suspension_span());
-        composite.on_handoff(&sample_handoff_span());
-        composite.on_delegation(&sample_delegation_span());
+        composite.record(&MetricsEvent::Inference(sample_genai_span()));
+        composite.record(&MetricsEvent::Tool(sample_tool_span()));
+        composite.record(&MetricsEvent::Suspension(sample_suspension_span()));
+        composite.record(&MetricsEvent::Handoff(sample_handoff_span()));
+        composite.record(&MetricsEvent::Delegation(sample_delegation_span()));
         composite.on_run_end(&AgentMetrics {
             session_duration_ms: 1000,
             ..Default::default()
@@ -263,8 +242,8 @@ mod tests {
         assert_eq!(composite.len(), 0);
 
         // Should not panic on empty dispatch.
-        composite.on_inference(&sample_genai_span());
-        composite.on_tool(&sample_tool_span());
+        composite.record(&MetricsEvent::Inference(sample_genai_span()));
+        composite.record(&MetricsEvent::Tool(sample_tool_span()));
         composite.on_run_end(&AgentMetrics::default());
         assert!(composite.flush().is_ok());
         assert!(composite.shutdown().is_ok());
@@ -307,7 +286,7 @@ mod tests {
         composite.add(sink.clone());
         assert_eq!(composite.len(), 1);
 
-        composite.on_inference(&sample_genai_span());
+        composite.record(&MetricsEvent::Inference(sample_genai_span()));
         assert_eq!(sink.metrics().inference_count(), 1);
     }
 }

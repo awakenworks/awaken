@@ -1,28 +1,62 @@
 use std::sync::{Arc, Mutex};
 
-use super::metrics::{
-    AgentMetrics, DelegationSpan, GenAISpan, HandoffSpan, SuspensionSpan, ToolSpan,
-};
+use super::metrics::{AgentMetrics, MetricsEvent};
+
+/// Error type for sink operations (flush, shutdown).
+#[derive(Debug)]
+pub struct SinkError {
+    pub message: String,
+    pub source: Option<Box<dyn std::error::Error + Send + Sync>>,
+}
+
+impl std::fmt::Display for SinkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for SinkError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source
+            .as_ref()
+            .map(|e| e.as_ref() as &(dyn std::error::Error + 'static))
+    }
+}
+
+impl SinkError {
+    pub fn new(msg: impl Into<String>) -> Self {
+        Self {
+            message: msg.into(),
+            source: None,
+        }
+    }
+
+    pub fn with_source(
+        msg: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            message: msg.into(),
+            source: Some(Box::new(source)),
+        }
+    }
+}
 
 /// Trait for consuming telemetry data.
 pub trait MetricsSink: Send + Sync {
-    fn on_inference(&self, span: &GenAISpan);
-    fn on_tool(&self, span: &ToolSpan);
+    /// Record a single metrics event.
+    fn record(&self, event: &MetricsEvent);
+
+    /// Called at end of run with aggregated metrics.
     fn on_run_end(&self, metrics: &AgentMetrics);
 
-    /// Called when a tool execution is suspended (HITL) or resumed.
-    fn on_suspension(&self, _span: &SuspensionSpan) {}
-    /// Called on agent handoff events.
-    fn on_handoff(&self, _span: &HandoffSpan) {}
-    /// Called on A2A delegation events.
-    fn on_delegation(&self, _span: &DelegationSpan) {}
-
     /// Flush any buffered data. Returns `Ok(())` by default.
-    fn flush(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    fn flush(&self) -> Result<(), SinkError> {
         Ok(())
     }
+
     /// Graceful shutdown. Returns `Ok(())` by default.
-    fn shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    fn shutdown(&self) -> Result<(), SinkError> {
         Ok(())
     }
 }
@@ -44,34 +78,27 @@ impl InMemorySink {
 }
 
 impl MetricsSink for InMemorySink {
-    fn on_inference(&self, span: &GenAISpan) {
-        self.inner.lock().unwrap().inferences.push(span.clone());
-    }
-
-    fn on_tool(&self, span: &ToolSpan) {
-        self.inner.lock().unwrap().tools.push(span.clone());
+    fn record(&self, event: &MetricsEvent) {
+        let mut inner = self.inner.lock().unwrap();
+        match event {
+            MetricsEvent::Inference(s) => inner.inferences.push(s.clone()),
+            MetricsEvent::Tool(s) => inner.tools.push(s.clone()),
+            MetricsEvent::Suspension(s) => inner.suspensions.push(s.clone()),
+            MetricsEvent::Handoff(s) => inner.handoffs.push(s.clone()),
+            MetricsEvent::Delegation(s) => inner.delegations.push(s.clone()),
+        }
     }
 
     fn on_run_end(&self, metrics: &AgentMetrics) {
         self.inner.lock().unwrap().session_duration_ms = metrics.session_duration_ms;
-    }
-
-    fn on_suspension(&self, span: &SuspensionSpan) {
-        self.inner.lock().unwrap().suspensions.push(span.clone());
-    }
-
-    fn on_handoff(&self, span: &HandoffSpan) {
-        self.inner.lock().unwrap().handoffs.push(span.clone());
-    }
-
-    fn on_delegation(&self, span: &DelegationSpan) {
-        self.inner.lock().unwrap().delegations.push(span.clone());
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metrics::{DelegationSpan, GenAISpan, HandoffSpan, SuspensionSpan, ToolSpan};
+    use std::error::Error;
 
     fn sample_genai_span(model: &str, input: i32, output: i32) -> GenAISpan {
         GenAISpan {
@@ -115,8 +142,12 @@ mod tests {
     #[test]
     fn in_memory_sink_records_inferences() {
         let sink = InMemorySink::new();
-        sink.on_inference(&sample_genai_span("gpt-4", 100, 50));
-        sink.on_inference(&sample_genai_span("gpt-4", 200, 75));
+        sink.record(&MetricsEvent::Inference(sample_genai_span(
+            "gpt-4", 100, 50,
+        )));
+        sink.record(&MetricsEvent::Inference(sample_genai_span(
+            "gpt-4", 200, 75,
+        )));
 
         let metrics = sink.metrics();
         assert_eq!(metrics.inferences.len(), 2);
@@ -127,8 +158,8 @@ mod tests {
     #[test]
     fn in_memory_sink_records_tools() {
         let sink = InMemorySink::new();
-        sink.on_tool(&sample_tool_span("read_file", false));
-        sink.on_tool(&sample_tool_span("write_file", true));
+        sink.record(&MetricsEvent::Tool(sample_tool_span("read_file", false)));
+        sink.record(&MetricsEvent::Tool(sample_tool_span("write_file", true)));
 
         let metrics = sink.metrics();
         assert_eq!(metrics.tools.len(), 2);
@@ -161,7 +192,9 @@ mod tests {
     fn in_memory_sink_clone_shares_data() {
         let sink = InMemorySink::new();
         let clone = sink.clone();
-        sink.on_inference(&sample_genai_span("model-a", 10, 5));
+        sink.record(&MetricsEvent::Inference(sample_genai_span(
+            "model-a", 10, 5,
+        )));
 
         let metrics = clone.metrics();
         assert_eq!(metrics.inferences.len(), 1);
@@ -170,9 +203,15 @@ mod tests {
     #[test]
     fn in_memory_sink_stats_by_model() {
         let sink = InMemorySink::new();
-        sink.on_inference(&sample_genai_span("gpt-4", 100, 50));
-        sink.on_inference(&sample_genai_span("gpt-4", 200, 75));
-        sink.on_inference(&sample_genai_span("claude-3", 150, 60));
+        sink.record(&MetricsEvent::Inference(sample_genai_span(
+            "gpt-4", 100, 50,
+        )));
+        sink.record(&MetricsEvent::Inference(sample_genai_span(
+            "gpt-4", 200, 75,
+        )));
+        sink.record(&MetricsEvent::Inference(sample_genai_span(
+            "claude-3", 150, 60,
+        )));
 
         let metrics = sink.metrics();
         let stats = metrics.stats_by_model();
@@ -190,22 +229,22 @@ mod tests {
     #[test]
     fn in_memory_sink_stores_suspensions() {
         let sink = InMemorySink::new();
-        sink.on_suspension(&SuspensionSpan {
+        sink.record(&MetricsEvent::Suspension(SuspensionSpan {
             tool_call_id: "c1".to_string(),
             tool_name: "search".to_string(),
             action: "suspended".to_string(),
             resume_mode: None,
             duration_ms: None,
             timestamp_ms: 1000,
-        });
-        sink.on_suspension(&SuspensionSpan {
+        }));
+        sink.record(&MetricsEvent::Suspension(SuspensionSpan {
             tool_call_id: "c1".to_string(),
             tool_name: "search".to_string(),
             action: "resumed".to_string(),
             resume_mode: Some("use_decision".to_string()),
             duration_ms: Some(5000),
             timestamp_ms: 6000,
-        });
+        }));
 
         let metrics = sink.metrics();
         assert_eq!(metrics.total_suspensions(), 2);
@@ -216,12 +255,12 @@ mod tests {
     #[test]
     fn in_memory_sink_stores_handoffs() {
         let sink = InMemorySink::new();
-        sink.on_handoff(&HandoffSpan {
+        sink.record(&MetricsEvent::Handoff(HandoffSpan {
             from_agent_id: "agent-a".to_string(),
             to_agent_id: "agent-b".to_string(),
             reason: Some("escalation".to_string()),
             timestamp_ms: 1000,
-        });
+        }));
 
         let metrics = sink.metrics();
         assert_eq!(metrics.total_handoffs(), 1);
@@ -232,7 +271,7 @@ mod tests {
     #[test]
     fn in_memory_sink_stores_delegations() {
         let sink = InMemorySink::new();
-        sink.on_delegation(&DelegationSpan {
+        sink.record(&MetricsEvent::Delegation(DelegationSpan {
             parent_run_id: "run-1".to_string(),
             child_run_id: Some("run-2".to_string()),
             target_agent_id: "worker".to_string(),
@@ -241,7 +280,7 @@ mod tests {
             success: true,
             error_message: None,
             timestamp_ms: 3000,
-        });
+        }));
 
         let metrics = sink.metrics();
         assert_eq!(metrics.total_delegations(), 1);
@@ -259,9 +298,9 @@ mod tests {
     #[test]
     fn in_memory_sink_stats_by_tool() {
         let sink = InMemorySink::new();
-        sink.on_tool(&sample_tool_span("read_file", false));
-        sink.on_tool(&sample_tool_span("read_file", false));
-        sink.on_tool(&sample_tool_span("write_file", true));
+        sink.record(&MetricsEvent::Tool(sample_tool_span("read_file", false)));
+        sink.record(&MetricsEvent::Tool(sample_tool_span("read_file", false)));
+        sink.record(&MetricsEvent::Tool(sample_tool_span("write_file", true)));
 
         let metrics = sink.metrics();
         let stats = metrics.stats_by_tool();
@@ -274,5 +313,20 @@ mod tests {
         let write = stats.iter().find(|s| s.name == "write_file").unwrap();
         assert_eq!(write.call_count, 1);
         assert_eq!(write.failure_count, 1);
+    }
+
+    #[test]
+    fn sink_error_display() {
+        let err = SinkError::new("test error");
+        assert_eq!(err.to_string(), "test error");
+        assert!(err.source().is_none());
+    }
+
+    #[test]
+    fn sink_error_with_source() {
+        let source = std::io::Error::new(std::io::ErrorKind::Other, "io error");
+        let err = SinkError::with_source("wrapper", source);
+        assert_eq!(err.to_string(), "wrapper");
+        assert!(err.source().is_some());
     }
 }
