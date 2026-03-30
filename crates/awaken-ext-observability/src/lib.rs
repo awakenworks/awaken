@@ -19,7 +19,8 @@ mod otel_config;
 pub use batching::{BatchingConfig, BatchingSink};
 pub use composite::{CompositeSink, CompositeSinkBuilder};
 pub use metrics::{
-    AgentMetrics, DelegationSpan, GenAISpan, HandoffSpan, MetricsEvent, SuspensionSpan, ToolSpan,
+    AgentMetrics, DelegationSpan, GenAISpan, HandoffSpan, MetricsEvent, SpanContext,
+    SuspensionSpan, ToolSpan,
 };
 pub use persistent::{PersistenceConfig, PersistentSink};
 pub use plugin::{OBSERVABILITY_PLUGIN_ID, ObservabilityPlugin};
@@ -102,6 +103,8 @@ mod tests {
 
     fn make_span(model: &str, provider: &str) -> GenAISpan {
         GenAISpan {
+            context: SpanContext::default(),
+            step_index: None,
             model: model.into(),
             provider: provider.into(),
             operation: "chat".into(),
@@ -126,6 +129,8 @@ mod tests {
 
     fn make_tool_span(name: &str, call_id: &str) -> ToolSpan {
         ToolSpan {
+            context: SpanContext::default(),
+            step_index: None,
             name: name.into(),
             operation: "execute_tool".into(),
             call_id: call_id.into(),
@@ -1077,5 +1082,183 @@ mod tests {
 
         let m = sink.metrics();
         assert_eq!(m.tools[0].tool_type, "function");
+    }
+
+    // ---- SpanContext integration tests ----
+
+    #[tokio::test]
+    async fn span_context_captured_from_run_identity() {
+        use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
+
+        let sink = InMemorySink::new();
+        let plugin = ObservabilityPlugin::new(sink.clone()).with_model("m");
+
+        let identity = RunIdentity::new(
+            "thread-1".into(),
+            None,
+            "run-1".into(),
+            Some("parent-run-1".into()),
+            "agent-1".into(),
+            RunOrigin::Subagent,
+        );
+
+        let ctx = PhaseContext::new(Phase::RunStart, empty_snapshot()).with_run_identity(identity);
+        run_phase(&plugin, &ctx).await;
+
+        // Verify the inner span_context was populated
+        let sc = plugin.inner.span_context.lock().await.clone();
+        assert_eq!(sc.run_id, "run-1");
+        assert_eq!(sc.thread_id, "thread-1");
+        assert_eq!(sc.agent_id, "agent-1");
+        assert_eq!(sc.parent_run_id.as_deref(), Some("parent-run-1"));
+    }
+
+    #[tokio::test]
+    async fn genai_span_has_run_context() {
+        use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
+
+        let sink = InMemorySink::new();
+        let plugin = ObservabilityPlugin::new(sink.clone()).with_model("m");
+
+        let identity = RunIdentity::new(
+            "t1".into(),
+            None,
+            "r1".into(),
+            None,
+            "a1".into(),
+            RunOrigin::User,
+        );
+
+        let ctx = PhaseContext::new(Phase::RunStart, empty_snapshot()).with_run_identity(identity);
+        run_phase(&plugin, &ctx).await;
+
+        let ctx = PhaseContext::new(Phase::BeforeInference, empty_snapshot());
+        run_phase(&plugin, &ctx).await;
+
+        let ctx = PhaseContext::new(Phase::AfterInference, empty_snapshot())
+            .with_llm_response(success_response(Some(usage(10, 5, 15))));
+        run_phase(&plugin, &ctx).await;
+
+        let m = sink.metrics();
+        let span = &m.inferences[0];
+        assert_eq!(span.context.run_id, "r1");
+        assert_eq!(span.context.thread_id, "t1");
+        assert_eq!(span.context.agent_id, "a1");
+        assert!(span.context.parent_run_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn tool_span_has_run_context() {
+        use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
+
+        let sink = InMemorySink::new();
+        let plugin = ObservabilityPlugin::new(sink.clone());
+
+        let identity = RunIdentity::new(
+            "t2".into(),
+            None,
+            "r2".into(),
+            Some("pr2".into()),
+            "a2".into(),
+            RunOrigin::Subagent,
+        );
+
+        let ctx = PhaseContext::new(Phase::RunStart, empty_snapshot()).with_run_identity(identity);
+        run_phase(&plugin, &ctx).await;
+
+        // Need at least one inference so step_counter > 0
+        let ctx = PhaseContext::new(Phase::BeforeInference, empty_snapshot());
+        run_phase(&plugin, &ctx).await;
+        let ctx = PhaseContext::new(Phase::AfterInference, empty_snapshot())
+            .with_llm_response(success_response(Some(usage(10, 5, 15))));
+        run_phase(&plugin, &ctx).await;
+
+        let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot())
+            .with_tool_info("search", "c1", None);
+        run_phase(&plugin, &ctx).await;
+
+        let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+            .with_tool_info("search", "c1", None)
+            .with_tool_result(ToolResult::success("search", serde_json::json!({})));
+        run_phase(&plugin, &ctx).await;
+
+        let m = sink.metrics();
+        let span = &m.tools[0];
+        assert_eq!(span.context.run_id, "r2");
+        assert_eq!(span.context.thread_id, "t2");
+        assert_eq!(span.context.agent_id, "a2");
+        assert_eq!(span.context.parent_run_id.as_deref(), Some("pr2"));
+    }
+
+    #[tokio::test]
+    async fn step_index_increments_per_inference() {
+        let sink = InMemorySink::new();
+        let plugin = ObservabilityPlugin::new(sink.clone()).with_model("m");
+
+        let ctx = PhaseContext::new(Phase::RunStart, empty_snapshot());
+        run_phase(&plugin, &ctx).await;
+
+        for _ in 0..3 {
+            let ctx = PhaseContext::new(Phase::BeforeInference, empty_snapshot());
+            run_phase(&plugin, &ctx).await;
+
+            let ctx = PhaseContext::new(Phase::AfterInference, empty_snapshot())
+                .with_llm_response(success_response(Some(usage(10, 5, 15))));
+            run_phase(&plugin, &ctx).await;
+        }
+
+        let m = sink.metrics();
+        assert_eq!(m.inferences[0].step_index, Some(0));
+        assert_eq!(m.inferences[1].step_index, Some(1));
+        assert_eq!(m.inferences[2].step_index, Some(2));
+    }
+
+    #[tokio::test]
+    async fn tool_span_step_matches_inference() {
+        let sink = InMemorySink::new();
+        let plugin = ObservabilityPlugin::new(sink.clone()).with_model("m");
+
+        let ctx = PhaseContext::new(Phase::RunStart, empty_snapshot());
+        run_phase(&plugin, &ctx).await;
+
+        // First inference (step 0)
+        let ctx = PhaseContext::new(Phase::BeforeInference, empty_snapshot());
+        run_phase(&plugin, &ctx).await;
+        let ctx = PhaseContext::new(Phase::AfterInference, empty_snapshot())
+            .with_llm_response(success_response(Some(usage(10, 5, 15))));
+        run_phase(&plugin, &ctx).await;
+
+        // Tool call from step 0
+        let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot())
+            .with_tool_info("search", "c1", None);
+        run_phase(&plugin, &ctx).await;
+        let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+            .with_tool_info("search", "c1", None)
+            .with_tool_result(ToolResult::success("search", serde_json::json!({})));
+        run_phase(&plugin, &ctx).await;
+
+        // Second inference (step 1)
+        let ctx = PhaseContext::new(Phase::BeforeInference, empty_snapshot());
+        run_phase(&plugin, &ctx).await;
+        let ctx = PhaseContext::new(Phase::AfterInference, empty_snapshot())
+            .with_llm_response(success_response(Some(usage(10, 5, 15))));
+        run_phase(&plugin, &ctx).await;
+
+        // Tool call from step 1
+        let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot())
+            .with_tool_info("write", "c2", None);
+        run_phase(&plugin, &ctx).await;
+        let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+            .with_tool_info("write", "c2", None)
+            .with_tool_result(ToolResult::success("write", serde_json::json!({})));
+        run_phase(&plugin, &ctx).await;
+
+        let m = sink.metrics();
+        // Inference step_index
+        assert_eq!(m.inferences[0].step_index, Some(0));
+        assert_eq!(m.inferences[1].step_index, Some(1));
+        // Tool step_index matches parent inference
+        assert_eq!(m.tools[0].step_index, Some(0));
+        assert_eq!(m.tools[1].step_index, Some(1));
     }
 }

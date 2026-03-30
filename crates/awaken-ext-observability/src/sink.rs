@@ -102,6 +102,8 @@ mod tests {
 
     fn sample_genai_span(model: &str, input: i32, output: i32) -> GenAISpan {
         GenAISpan {
+            context: crate::metrics::SpanContext::default(),
+            step_index: None,
             model: model.to_string(),
             provider: "test-provider".to_string(),
             operation: "chat".to_string(),
@@ -126,6 +128,8 @@ mod tests {
 
     fn sample_tool_span(name: &str, error: bool) -> ToolSpan {
         ToolSpan {
+            context: crate::metrics::SpanContext::default(),
+            step_index: None,
             name: name.to_string(),
             operation: "execute".to_string(),
             call_id: "call_1".to_string(),
@@ -230,6 +234,7 @@ mod tests {
     fn in_memory_sink_stores_suspensions() {
         let sink = InMemorySink::new();
         sink.record(&MetricsEvent::Suspension(SuspensionSpan {
+            context: crate::metrics::SpanContext::default(),
             tool_call_id: "c1".to_string(),
             tool_name: "search".to_string(),
             action: "suspended".to_string(),
@@ -238,6 +243,7 @@ mod tests {
             timestamp_ms: 1000,
         }));
         sink.record(&MetricsEvent::Suspension(SuspensionSpan {
+            context: crate::metrics::SpanContext::default(),
             tool_call_id: "c1".to_string(),
             tool_name: "search".to_string(),
             action: "resumed".to_string(),
@@ -256,6 +262,7 @@ mod tests {
     fn in_memory_sink_stores_handoffs() {
         let sink = InMemorySink::new();
         sink.record(&MetricsEvent::Handoff(HandoffSpan {
+            context: crate::metrics::SpanContext::default(),
             from_agent_id: "agent-a".to_string(),
             to_agent_id: "agent-b".to_string(),
             reason: Some("escalation".to_string()),
@@ -272,6 +279,7 @@ mod tests {
     fn in_memory_sink_stores_delegations() {
         let sink = InMemorySink::new();
         sink.record(&MetricsEvent::Delegation(DelegationSpan {
+            context: crate::metrics::SpanContext::default(),
             parent_run_id: "run-1".to_string(),
             child_run_id: Some("run-2".to_string()),
             target_agent_id: "worker".to_string(),

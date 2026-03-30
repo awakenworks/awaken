@@ -4,6 +4,23 @@ use serde::{Deserialize, Serialize};
 
 use super::stats::{ModelStats, ToolStats};
 
+/// Execution context shared by all observability spans.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SpanContext {
+    /// Run identifier.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub run_id: String,
+    /// Conversation thread identifier.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub thread_id: String,
+    /// Agent identifier.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub agent_id: String,
+    /// Parent run id (for delegated sub-agent runs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<String>,
+}
+
 /// Unified event type for all observability events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -18,6 +35,12 @@ pub enum MetricsEvent {
 /// A single LLM inference span (OTel GenAI aligned).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenAISpan {
+    /// Execution context (run, thread, agent).
+    #[serde(flatten)]
+    pub context: SpanContext,
+    /// Which step in the run (0-based), incremented per inference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_index: Option<u32>,
     /// OTel: `gen_ai.request.model`.
     pub model: String,
     /// OTel: `gen_ai.provider.name`.
@@ -60,6 +83,12 @@ pub struct GenAISpan {
 /// A single tool execution span (OTel GenAI aligned).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSpan {
+    /// Execution context (run, thread, agent).
+    #[serde(flatten)]
+    pub context: SpanContext,
+    /// Step index matching the inference that triggered this tool call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_index: Option<u32>,
     /// OTel: `gen_ai.tool.name`.
     pub name: String,
     /// OTel: `gen_ai.operation.name`.
@@ -82,6 +111,9 @@ impl ToolSpan {
 /// Span for tool suspension/resume events (HITL decisions).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SuspensionSpan {
+    /// Execution context (run, thread, agent).
+    #[serde(flatten)]
+    pub context: SpanContext,
     pub tool_call_id: String,
     pub tool_name: String,
     /// "suspended" or "resumed"
@@ -95,6 +127,9 @@ pub struct SuspensionSpan {
 /// Span for agent handoff events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandoffSpan {
+    /// Execution context (run, thread, agent).
+    #[serde(flatten)]
+    pub context: SpanContext,
     pub from_agent_id: String,
     pub to_agent_id: String,
     pub reason: Option<String>,
@@ -104,6 +139,9 @@ pub struct HandoffSpan {
 /// Span for A2A delegation events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DelegationSpan {
+    /// Execution context (run, thread, agent).
+    #[serde(flatten)]
+    pub context: SpanContext,
     pub parent_run_id: String,
     pub child_run_id: Option<String>,
     pub target_agent_id: String,
@@ -265,6 +303,8 @@ mod tests {
 
     fn make_genai_span(model: &str, input: Option<i32>, output: Option<i32>) -> GenAISpan {
         GenAISpan {
+            context: SpanContext::default(),
+            step_index: None,
             model: model.to_string(),
             provider: "test".to_string(),
             operation: "chat".to_string(),
@@ -292,6 +332,8 @@ mod tests {
 
     fn make_tool_span(name: &str, error: bool) -> ToolSpan {
         ToolSpan {
+            context: SpanContext::default(),
+            step_index: None,
             name: name.to_string(),
             operation: "execute_tool".to_string(),
             call_id: format!("call_{name}"),
@@ -303,6 +345,43 @@ mod tests {
             },
             duration_ms: 50,
         }
+    }
+
+    // ---- SpanContext serde roundtrip ----
+
+    #[test]
+    fn span_context_default_has_empty_fields() {
+        let ctx = SpanContext::default();
+        assert!(ctx.run_id.is_empty());
+        assert!(ctx.thread_id.is_empty());
+        assert!(ctx.agent_id.is_empty());
+        assert!(ctx.parent_run_id.is_none());
+    }
+
+    #[test]
+    fn span_context_serde_roundtrip() {
+        let ctx = SpanContext {
+            run_id: "run-1".to_string(),
+            thread_id: "thread-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            parent_run_id: Some("parent-run-1".to_string()),
+        };
+        let json = serde_json::to_string(&ctx).unwrap();
+        let restored: SpanContext = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.run_id, "run-1");
+        assert_eq!(restored.thread_id, "thread-1");
+        assert_eq!(restored.agent_id, "agent-1");
+        assert_eq!(restored.parent_run_id.as_deref(), Some("parent-run-1"));
+    }
+
+    #[test]
+    fn span_context_serde_skips_empty_fields() {
+        let ctx = SpanContext::default();
+        let json = serde_json::to_string(&ctx).unwrap();
+        assert!(!json.contains("run_id"));
+        assert!(!json.contains("thread_id"));
+        assert!(!json.contains("agent_id"));
+        assert!(!json.contains("parent_run_id"));
     }
 
     // ---- AgentMetrics::default() ----
@@ -594,6 +673,7 @@ mod tests {
     #[test]
     fn suspension_span_serde_roundtrip() {
         let span = SuspensionSpan {
+            context: SpanContext::default(),
             tool_call_id: "c1".to_string(),
             tool_name: "search".to_string(),
             action: "suspended".to_string(),
@@ -612,6 +692,7 @@ mod tests {
     #[test]
     fn handoff_span_serde_roundtrip() {
         let span = HandoffSpan {
+            context: SpanContext::default(),
             from_agent_id: "agent-a".to_string(),
             to_agent_id: "agent-b".to_string(),
             reason: Some("escalation".to_string()),
@@ -627,6 +708,7 @@ mod tests {
     #[test]
     fn delegation_span_serde_roundtrip() {
         let span = DelegationSpan {
+            context: SpanContext::default(),
             parent_run_id: "run-1".to_string(),
             child_run_id: Some("run-2".to_string()),
             target_agent_id: "worker".to_string(),
@@ -651,6 +733,7 @@ mod tests {
         let m = AgentMetrics {
             suspensions: vec![
                 SuspensionSpan {
+                    context: SpanContext::default(),
                     tool_call_id: "c1".to_string(),
                     tool_name: "s".to_string(),
                     action: "suspended".to_string(),
@@ -659,6 +742,7 @@ mod tests {
                     timestamp_ms: 0,
                 },
                 SuspensionSpan {
+                    context: SpanContext::default(),
                     tool_call_id: "c1".to_string(),
                     tool_name: "s".to_string(),
                     action: "resumed".to_string(),
@@ -677,6 +761,7 @@ mod tests {
         let m = AgentMetrics {
             delegations: vec![
                 DelegationSpan {
+                    context: SpanContext::default(),
                     parent_run_id: "r1".to_string(),
                     child_run_id: None,
                     target_agent_id: "w1".to_string(),
@@ -687,6 +772,7 @@ mod tests {
                     timestamp_ms: 0,
                 },
                 DelegationSpan {
+                    context: SpanContext::default(),
                     parent_run_id: "r1".to_string(),
                     child_run_id: None,
                     target_agent_id: "w2".to_string(),
@@ -707,6 +793,7 @@ mod tests {
         let m = AgentMetrics {
             delegations: vec![
                 DelegationSpan {
+                    context: SpanContext::default(),
                     parent_run_id: "r1".to_string(),
                     child_run_id: None,
                     target_agent_id: "w1".to_string(),
@@ -717,6 +804,7 @@ mod tests {
                     timestamp_ms: 0,
                 },
                 DelegationSpan {
+                    context: SpanContext::default(),
                     parent_run_id: "r1".to_string(),
                     child_run_id: None,
                     target_agent_id: "w2".to_string(),
@@ -727,6 +815,7 @@ mod tests {
                     timestamp_ms: 0,
                 },
                 DelegationSpan {
+                    context: SpanContext::default(),
                     parent_run_id: "r1".to_string(),
                     child_run_id: Some("r3".to_string()),
                     target_agent_id: "w3".to_string(),

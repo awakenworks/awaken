@@ -7,7 +7,7 @@
 
 use awaken_ext_observability::{
     AgentMetrics, CompositeSink, DelegationSpan, GenAISpan, HandoffSpan, InMemorySink,
-    MetricsEvent, MetricsSink, ObservabilityPlugin, SuspensionSpan, ToolSpan,
+    MetricsEvent, MetricsSink, ObservabilityPlugin, SpanContext, SuspensionSpan, ToolSpan,
 };
 use awaken_runtime::plugins::Plugin;
 
@@ -15,6 +15,8 @@ use awaken_runtime::plugins::Plugin;
 
 fn make_genai_span(model: &str, provider: &str, input: i32, output: i32) -> GenAISpan {
     GenAISpan {
+        context: SpanContext::default(),
+        step_index: None,
         model: model.into(),
         provider: provider.into(),
         operation: "chat".into(),
@@ -65,6 +67,8 @@ fn make_genai_error_span(model: &str, provider: &str, error_type: &str) -> GenAI
 
 fn make_tool_span(name: &str, error: bool) -> ToolSpan {
     ToolSpan {
+        context: SpanContext::default(),
+        step_index: None,
         name: name.into(),
         operation: "execute_tool".into(),
         call_id: format!("call_{name}"),
@@ -540,6 +544,7 @@ fn composite_sink_with_in_memory_captures_all_events() {
 
     // Suspension
     composite.record(&MetricsEvent::Suspension(SuspensionSpan {
+        context: SpanContext::default(),
         tool_call_id: "c1".into(),
         tool_name: "search".into(),
         action: "suspended".into(),
@@ -550,6 +555,7 @@ fn composite_sink_with_in_memory_captures_all_events() {
 
     // Handoff
     composite.record(&MetricsEvent::Handoff(HandoffSpan {
+        context: SpanContext::default(),
         from_agent_id: "agent-a".into(),
         to_agent_id: "agent-b".into(),
         reason: Some("escalation".into()),
@@ -558,6 +564,7 @@ fn composite_sink_with_in_memory_captures_all_events() {
 
     // Delegation
     composite.record(&MetricsEvent::Delegation(DelegationSpan {
+        context: SpanContext::default(),
         parent_run_id: "run-1".into(),
         child_run_id: Some("run-2".into()),
         target_agent_id: "worker".into(),

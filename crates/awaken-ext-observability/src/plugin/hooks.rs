@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -6,16 +7,40 @@ use awaken_contract::StateError;
 use awaken_contract::contract::tool::ToolStatus;
 use awaken_runtime::{PhaseContext, PhaseHook, StateCommand};
 
-use crate::metrics::{GenAISpan, MetricsEvent, ToolSpan};
+use crate::metrics::{
+    DelegationSpan, GenAISpan, HandoffSpan, MetricsEvent, SpanContext, SuspensionSpan, ToolSpan,
+};
 
 use super::shared::{Inner, extract_cache_tokens, extract_token_counts};
+
+/// Prefix used by AgentTool descriptors (`agent_run_{agent_id}`).
+const DELEGATION_TOOL_PREFIX: &str = "agent_run_";
+
+fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 
 pub(crate) struct RunStartHook(pub(crate) Arc<Inner>);
 
 #[async_trait]
 impl PhaseHook for RunStartHook {
-    async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+    async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         *self.0.run_start.lock().await = Some(Instant::now());
+
+        // Capture execution context from RunIdentity for all subsequent spans.
+        let ri = &ctx.run_identity;
+        *self.0.span_context.lock().await = SpanContext {
+            run_id: ri.run_id.clone(),
+            thread_id: ri.thread_id.clone(),
+            agent_id: ri.agent_id.clone(),
+            parent_run_id: ri.parent_run_id.clone(),
+        };
+        // Reset step counter for the new run.
+        self.0.step_counter.store(0, Ordering::Relaxed);
+
         Ok(StateCommand::new())
     }
 }
@@ -24,8 +49,34 @@ pub(crate) struct BeforeInferenceHook(pub(crate) Arc<Inner>);
 
 #[async_trait]
 impl PhaseHook for BeforeInferenceHook {
-    async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+    async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         let s = &self.0;
+
+        // Detect agent handoff: if the agent_id changed since last inference,
+        // emit a HandoffSpan so Phoenix / external observers see the switch.
+        {
+            let current_ctx = s.span_context.lock().await;
+            let new_agent_id = &ctx.run_identity.agent_id;
+            if !current_ctx.agent_id.is_empty()
+                && !new_agent_id.is_empty()
+                && current_ctx.agent_id != *new_agent_id
+            {
+                let handoff = HandoffSpan {
+                    context: current_ctx.clone(),
+                    from_agent_id: current_ctx.agent_id.clone(),
+                    to_agent_id: new_agent_id.clone(),
+                    reason: None,
+                    timestamp_ms: now_epoch_ms(),
+                };
+                // Must drop the lock before acquiring metrics lock.
+                drop(current_ctx);
+                s.sink.record(&MetricsEvent::Handoff(handoff.clone()));
+                s.metrics.lock().await.handoffs.push(handoff);
+                // Update span context with new agent identity.
+                let mut sc = s.span_context.lock().await;
+                sc.agent_id = new_agent_id.clone();
+            }
+        }
 
         // Close any abandoned inference tracing span from a retried attempt.
         if let Some(previous_span) = s.inference_tracing_span.lock().await.take() {
@@ -119,9 +170,13 @@ impl PhaseHook for AfterInferenceHook {
             extract_token_counts(usage);
         let (cache_read_input_tokens, cache_creation_input_tokens) = extract_cache_tokens(usage);
 
+        let context = s.span_context.lock().await.clone();
+        let step = s.step_counter.fetch_add(1, Ordering::Relaxed);
         let model = s.model.lock().await.clone();
         let provider = s.provider.lock().await.clone();
         let span = GenAISpan {
+            context,
+            step_index: Some(step),
             model,
             provider,
             operation: s.operation.clone(),
@@ -225,7 +280,31 @@ impl PhaseHook for BeforeToolExecuteHook {
         );
 
         if !call_id.is_empty() {
-            s.tool_tracing_span.lock().await.insert(call_id, span);
+            s.tool_tracing_span
+                .lock()
+                .await
+                .insert(call_id.clone(), span);
+        }
+
+        // Detect tool resume: if resume_input is present, this is a previously
+        // suspended tool call being resumed.
+        if let Some(resume) = &ctx.resume_input {
+            let context = s.span_context.lock().await.clone();
+            let resume_mode = match resume.action {
+                awaken_contract::contract::suspension::ResumeDecisionAction::Resume => "resume",
+                awaken_contract::contract::suspension::ResumeDecisionAction::Cancel => "cancel",
+            };
+            let suspension = SuspensionSpan {
+                context,
+                tool_call_id: call_id,
+                tool_name,
+                action: "resumed".to_string(),
+                resume_mode: Some(resume_mode.to_string()),
+                duration_ms: None,
+                timestamp_ms: now_epoch_ms(),
+            };
+            s.sink.record(&MetricsEvent::Suspension(suspension.clone()));
+            s.metrics.lock().await.suspensions.push(suspension);
         }
 
         Ok(StateCommand::new())
@@ -259,7 +338,11 @@ impl PhaseHook for AfterToolExecuteHook {
         };
         let error_message = result.message.clone().filter(|_| error_type.is_some());
 
+        let context = s.span_context.lock().await.clone();
+        let step = s.step_counter.load(Ordering::Relaxed).saturating_sub(1);
         let span = ToolSpan {
+            context,
+            step_index: Some(step),
             name: result.tool_name.clone(),
             operation: "execute_tool".to_string(),
             call_id: call_id.clone(),
@@ -281,6 +364,52 @@ impl PhaseHook for AfterToolExecuteHook {
 
         s.sink.record(&MetricsEvent::Tool(span.clone()));
         s.metrics.lock().await.tools.push(span);
+
+        // Detect tool suspension: ToolStatus::Pending means the tool suspended
+        // (e.g., HITL approval, frontend tool, or permission gate).
+        if result.status == ToolStatus::Pending {
+            let context = s.span_context.lock().await.clone();
+            let suspension = SuspensionSpan {
+                context,
+                tool_call_id: call_id.clone(),
+                tool_name: result.tool_name.clone(),
+                action: "suspended".to_string(),
+                resume_mode: None,
+                duration_ms: None,
+                timestamp_ms: now_epoch_ms(),
+            };
+            s.sink.record(&MetricsEvent::Suspension(suspension.clone()));
+            s.metrics.lock().await.suspensions.push(suspension);
+        }
+
+        // Detect delegation: tool names prefixed with `agent_run_` come from
+        // AgentTool, which delegates work to a sub-agent.
+        if result.tool_name.starts_with(DELEGATION_TOOL_PREFIX) {
+            let context = s.span_context.lock().await.clone();
+            let target_agent_id = result
+                .tool_name
+                .strip_prefix(DELEGATION_TOOL_PREFIX)
+                .unwrap_or_default()
+                .to_string();
+            let is_error = result.status == ToolStatus::Error;
+            let delegation = DelegationSpan {
+                context,
+                parent_run_id: ctx.run_identity.run_id.clone(),
+                child_run_id: None,
+                target_agent_id,
+                tool_call_id: call_id,
+                duration_ms: Some(duration_ms),
+                success: !is_error,
+                error_message: if is_error {
+                    result.message.clone()
+                } else {
+                    None
+                },
+                timestamp_ms: now_epoch_ms(),
+            };
+            s.sink.record(&MetricsEvent::Delegation(delegation.clone()));
+            s.metrics.lock().await.delegations.push(delegation);
+        }
 
         Ok(StateCommand::new())
     }

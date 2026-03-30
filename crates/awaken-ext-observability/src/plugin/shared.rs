@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 use std::time::Instant;
 
 use awaken_contract::contract::inference::TokenUsage;
 use tokio::sync::Mutex;
 
 use crate::metrics::AgentMetrics;
+use crate::metrics::SpanContext;
 use crate::sink::MetricsSink;
 
 pub(crate) fn extract_token_counts(
@@ -54,4 +56,8 @@ pub(crate) struct Inner {
     pub(crate) stop_sequences: Mutex<Vec<String>>,
     pub(crate) inference_tracing_span: Mutex<Option<tracing::Span>>,
     pub(crate) tool_tracing_span: Mutex<HashMap<String, tracing::Span>>,
+    /// Execution context captured from RunIdentity at RunStart.
+    pub(crate) span_context: Mutex<SpanContext>,
+    /// Step counter incremented per inference (0-based).
+    pub(crate) step_counter: AtomicU32,
 }

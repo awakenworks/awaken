@@ -251,6 +251,8 @@ mod tests {
 
     fn sample_genai_span() -> GenAISpan {
         GenAISpan {
+            context: crate::metrics::SpanContext::default(),
+            step_index: None,
             model: "test-model".to_string(),
             provider: "test-provider".to_string(),
             operation: "chat".to_string(),
@@ -275,6 +277,8 @@ mod tests {
 
     fn sample_tool_span() -> ToolSpan {
         ToolSpan {
+            context: crate::metrics::SpanContext::default(),
+            step_index: None,
             name: "read_file".to_string(),
             operation: "execute".to_string(),
             call_id: "call_1".to_string(),
@@ -286,6 +290,7 @@ mod tests {
 
     fn sample_suspension_span() -> SuspensionSpan {
         SuspensionSpan {
+            context: crate::metrics::SpanContext::default(),
             tool_call_id: "c1".to_string(),
             tool_name: "search".to_string(),
             action: "suspended".to_string(),
@@ -297,6 +302,7 @@ mod tests {
 
     fn sample_handoff_span() -> HandoffSpan {
         HandoffSpan {
+            context: crate::metrics::SpanContext::default(),
             from_agent_id: "agent-a".to_string(),
             to_agent_id: "agent-b".to_string(),
             reason: Some("escalation".to_string()),
@@ -306,6 +312,7 @@ mod tests {
 
     fn sample_delegation_span() -> DelegationSpan {
         DelegationSpan {
+            context: crate::metrics::SpanContext::default(),
             parent_run_id: "run-1".to_string(),
             child_run_id: Some("run-2".to_string()),
             target_agent_id: "worker".to_string(),

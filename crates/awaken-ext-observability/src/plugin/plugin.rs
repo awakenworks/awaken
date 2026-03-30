@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 
 use awaken_contract::StateError;
 use awaken_contract::model::Phase;
 use awaken_runtime::{Plugin, PluginDescriptor, PluginRegistrar};
 use tokio::sync::Mutex;
 
-use crate::metrics::AgentMetrics;
+use crate::metrics::{AgentMetrics, SpanContext};
 use crate::sink::MetricsSink;
 
 use super::hooks::{
@@ -38,6 +39,8 @@ impl ObservabilityPlugin {
                 stop_sequences: Mutex::new(Vec::new()),
                 inference_tracing_span: Mutex::new(None),
                 tool_tracing_span: Mutex::new(HashMap::new()),
+                span_context: Mutex::new(SpanContext::default()),
+                step_counter: AtomicU32::new(0),
             }),
         }
     }

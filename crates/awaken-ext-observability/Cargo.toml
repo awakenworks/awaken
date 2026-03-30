@@ -16,15 +16,17 @@ tokio = { workspace = true }
 # Optional OTel
 opentelemetry = { version = "0.28", optional = true }
 opentelemetry_sdk = { version = "0.28", optional = true }
+opentelemetry-otlp = { version = "0.28", optional = true, features = ["http-proto", "reqwest-client"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["time"] }
 futures = { workspace = true }
+futures-util = "0.3"
 tracing-subscriber = { version = "0.3", features = ["fmt", "registry"] }
 
 [features]
 default = []
-otel = ["dep:opentelemetry", "dep:opentelemetry_sdk"]
+otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
 
 [lints]
 workspace = true

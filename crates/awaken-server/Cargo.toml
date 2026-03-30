@@ -31,6 +31,7 @@ http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 awaken-stores = { workspace = true }
 awaken-runtime = { workspace = true }
+awaken-ext-observability = { workspace = true, features = ["otel"] }
 async-trait = { workspace = true }
 reqwest = { workspace = true }
 genai = { workspace = true }
@@ -39,6 +40,7 @@ uuid = { workspace = true }
 [features]
 default = ["permission"]
 permission = ["dep:awaken-ext-permission"]
+otel = []
 
 [lints]
 workspace = true
