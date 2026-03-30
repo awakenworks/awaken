@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
+use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
 use awaken_contract::contract::inference::{LLMResponse, StreamResult, TokenUsage};
+use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
 use awaken_contract::contract::tool::ToolResult;
 use awaken_contract::model::Phase;
 use awaken_contract::state::{Snapshot, StateMap};
@@ -371,4 +373,268 @@ fn extract_cache_tokens_with_none() {
     let (read, creation) = extract_cache_tokens(None);
     assert!(read.is_none());
     assert!(creation.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Handoff detection
+// ---------------------------------------------------------------------------
+
+fn identity(agent: &str) -> RunIdentity {
+    RunIdentity::new(
+        "t1".into(),
+        None,
+        "r1".into(),
+        None,
+        agent.into(),
+        RunOrigin::User,
+    )
+}
+
+#[tokio::test]
+async fn handoff_detected_on_agent_change() {
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone()).with_model("m");
+
+    // RunStart with agent-A seeds the span context.
+    let ctx =
+        PhaseContext::new(Phase::RunStart, empty_snapshot()).with_run_identity(identity("agent-a"));
+    run_phase(&plugin, &ctx).await;
+
+    // BeforeInference with agent-B should detect handoff.
+    let ctx = PhaseContext::new(Phase::BeforeInference, empty_snapshot())
+        .with_run_identity(identity("agent-b"));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = sink.metrics();
+    assert_eq!(metrics.handoffs.len(), 1);
+    assert_eq!(metrics.handoffs[0].from_agent_id, "agent-a");
+    assert_eq!(metrics.handoffs[0].to_agent_id, "agent-b");
+    assert!(metrics.handoffs[0].timestamp_ms > 0);
+}
+
+#[tokio::test]
+async fn no_handoff_on_same_agent() {
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone()).with_model("m");
+
+    let ctx =
+        PhaseContext::new(Phase::RunStart, empty_snapshot()).with_run_identity(identity("agent-a"));
+    run_phase(&plugin, &ctx).await;
+
+    let ctx = PhaseContext::new(Phase::BeforeInference, empty_snapshot())
+        .with_run_identity(identity("agent-a"));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = sink.metrics();
+    assert!(metrics.handoffs.is_empty());
+}
+
+#[tokio::test]
+async fn no_handoff_on_first_inference() {
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone()).with_model("m");
+
+    // No RunStart -- span_context.agent_id is empty.
+    let ctx = PhaseContext::new(Phase::BeforeInference, empty_snapshot())
+        .with_run_identity(identity("agent-a"));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = sink.metrics();
+    assert!(metrics.handoffs.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Suspension detection
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn suspension_detected_on_pending_tool() {
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone());
+
+    let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot())
+        .with_tool_info("approve", "c1", None);
+    run_phase(&plugin, &ctx).await;
+
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+        .with_tool_info("approve", "c1", None)
+        .with_tool_result(ToolResult::suspended("approve", "awaiting approval"));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = sink.metrics();
+    // Should have both a ToolSpan and a SuspensionSpan.
+    assert_eq!(metrics.tools.len(), 1);
+    assert_eq!(metrics.suspensions.len(), 1);
+    assert_eq!(metrics.suspensions[0].action, "suspended");
+    assert_eq!(metrics.suspensions[0].tool_call_id, "c1");
+    assert_eq!(metrics.suspensions[0].tool_name, "approve");
+    assert!(metrics.suspensions[0].timestamp_ms > 0);
+}
+
+#[tokio::test]
+async fn no_suspension_on_success_tool() {
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone());
+
+    let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot())
+        .with_tool_info("search", "c1", None);
+    run_phase(&plugin, &ctx).await;
+
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+        .with_tool_info("search", "c1", None)
+        .with_tool_result(ToolResult::success("search", serde_json::json!({})));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = sink.metrics();
+    assert!(metrics.suspensions.is_empty());
+}
+
+#[tokio::test]
+async fn resume_detected_on_before_tool_with_resume_input() {
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone());
+
+    let resume = ToolCallResume {
+        decision_id: "d1".into(),
+        action: ResumeDecisionAction::Resume,
+        result: serde_json::Value::Null,
+        reason: None,
+        updated_at: 0,
+    };
+
+    let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot())
+        .with_tool_info("approve", "c1", None)
+        .with_resume_input(resume);
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = sink.metrics();
+    assert_eq!(metrics.suspensions.len(), 1);
+    assert_eq!(metrics.suspensions[0].action, "resumed");
+    assert_eq!(
+        metrics.suspensions[0].resume_mode.as_deref(),
+        Some("resume")
+    );
+    assert_eq!(metrics.suspensions[0].tool_call_id, "c1");
+}
+
+// ---------------------------------------------------------------------------
+// Delegation detection
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn delegation_detected_on_agent_tool() {
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone());
+
+    // Seed identity so delegation span has a parent_run_id.
+    let ctx = PhaseContext::new(Phase::RunStart, empty_snapshot())
+        .with_run_identity(identity("orchestrator"));
+    run_phase(&plugin, &ctx).await;
+
+    let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot())
+        .with_tool_info("agent_run_worker", "c1", None)
+        .with_run_identity(identity("orchestrator"));
+    run_phase(&plugin, &ctx).await;
+
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+        .with_tool_info("agent_run_worker", "c1", None)
+        .with_run_identity(identity("orchestrator"))
+        .with_tool_result(ToolResult::success(
+            "agent_run_worker",
+            serde_json::json!({"agent_id": "worker", "status": "completed"}),
+        ));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = sink.metrics();
+    assert_eq!(metrics.delegations.len(), 1);
+    assert_eq!(metrics.delegations[0].target_agent_id, "worker");
+    assert_eq!(metrics.delegations[0].parent_run_id, "r1");
+    assert!(metrics.delegations[0].success);
+    assert!(metrics.delegations[0].error_message.is_none());
+    assert!(metrics.delegations[0].child_run_id.is_none());
+}
+
+#[tokio::test]
+async fn delegation_extracts_child_run_id_from_metadata() {
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone());
+
+    let ctx = PhaseContext::new(Phase::RunStart, empty_snapshot())
+        .with_run_identity(identity("orchestrator"));
+    run_phase(&plugin, &ctx).await;
+
+    let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot())
+        .with_tool_info("agent_run_worker", "c1", None)
+        .with_run_identity(identity("orchestrator"));
+    run_phase(&plugin, &ctx).await;
+
+    let tool_result = ToolResult::success(
+        "agent_run_worker",
+        serde_json::json!({"agent_id": "worker", "status": "completed"}),
+    )
+    .with_metadata(
+        "child_run_id",
+        serde_json::Value::String("child-456".into()),
+    );
+
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+        .with_tool_info("agent_run_worker", "c1", None)
+        .with_run_identity(identity("orchestrator"))
+        .with_tool_result(tool_result);
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = sink.metrics();
+    assert_eq!(metrics.delegations.len(), 1);
+    assert_eq!(
+        metrics.delegations[0].child_run_id.as_deref(),
+        Some("child-456")
+    );
+    assert!(metrics.delegations[0].success);
+}
+
+#[tokio::test]
+async fn delegation_not_detected_on_regular_tool() {
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone());
+
+    let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot())
+        .with_tool_info("search", "c1", None);
+    run_phase(&plugin, &ctx).await;
+
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+        .with_tool_info("search", "c1", None)
+        .with_tool_result(ToolResult::success("search", serde_json::json!({})));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = sink.metrics();
+    assert!(metrics.delegations.is_empty());
+}
+
+#[tokio::test]
+async fn delegation_records_error_on_failure() {
+    let sink = InMemorySink::new();
+    let plugin = ObservabilityPlugin::new(sink.clone());
+
+    let ctx = PhaseContext::new(Phase::RunStart, empty_snapshot())
+        .with_run_identity(identity("orchestrator"));
+    run_phase(&plugin, &ctx).await;
+
+    let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot())
+        .with_tool_info("agent_run_worker", "c1", None)
+        .with_run_identity(identity("orchestrator"));
+    run_phase(&plugin, &ctx).await;
+
+    let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+        .with_tool_info("agent_run_worker", "c1", None)
+        .with_run_identity(identity("orchestrator"))
+        .with_tool_result(ToolResult::error("agent_run_worker", "sub-agent failed"));
+    run_phase(&plugin, &ctx).await;
+
+    let metrics = sink.metrics();
+    assert_eq!(metrics.delegations.len(), 1);
+    assert!(!metrics.delegations[0].success);
+    assert_eq!(
+        metrics.delegations[0].error_message.as_deref(),
+        Some("sub-agent failed")
+    );
 }

@@ -138,7 +138,7 @@ impl Tool for AgentTool {
         {
             Ok(result) => {
                 let status_str = result.status.to_string();
-                Ok(ToolResult::success(
+                let mut tool_result = ToolResult::success(
                     &tool_id,
                     json!({
                         "agent_id": result.agent_id,
@@ -146,7 +146,14 @@ impl Tool for AgentTool {
                         "response": result.response,
                         "steps": result.steps,
                     }),
-                ))
+                );
+                if let Some(ref child_run_id) = result.run_id {
+                    tool_result = tool_result.with_metadata(
+                        "child_run_id",
+                        serde_json::Value::String(child_run_id.clone()),
+                    );
+                }
+                Ok(tool_result)
             }
             Err(e) => Ok(ToolResult::error(&tool_id, e.to_string())),
         }

@@ -8,13 +8,14 @@ use tokio::task::JoinHandle;
 use crate::cancellation::{CancellationHandle, CancellationToken};
 
 use super::state::{BackgroundTaskStateSnapshot, PersistedTaskMeta};
-use super::types::{TaskId, TaskResult, TaskStatus, TaskSummary};
+use super::types::{TaskId, TaskParentContext, TaskResult, TaskStatus, TaskSummary};
 
 struct LiveTask {
     task_id: TaskId,
     owner_thread_id: String,
     task_type: String,
     description: String,
+    parent_context: TaskParentContext,
     status: TaskStatus,
     error: Option<String>,
     result: Option<serde_json::Value>,
@@ -53,6 +54,7 @@ impl BackgroundTaskManager {
         owner_thread_id: &str,
         task_type: &str,
         description: &str,
+        parent_context: TaskParentContext,
         task_fn: F,
     ) -> TaskId
     where
@@ -90,6 +92,7 @@ impl BackgroundTaskManager {
             owner_thread_id: owner_thread_id.to_string(),
             task_type: task_type.to_string(),
             description: description.to_string(),
+            parent_context,
             status: TaskStatus::Running,
             error: None,
             result: None,
@@ -130,6 +133,7 @@ impl BackgroundTaskManager {
                 result: t.result.clone(),
                 created_at_ms: t.created_at_ms,
                 completed_at_ms: t.completed_at_ms,
+                parent_context: t.parent_context.clone(),
             })
             .collect()
     }
@@ -146,6 +150,7 @@ impl BackgroundTaskManager {
             result: t.result.clone(),
             created_at_ms: t.created_at_ms,
             completed_at_ms: t.completed_at_ms,
+            parent_context: t.parent_context.clone(),
         })
     }
 
@@ -180,6 +185,7 @@ impl BackgroundTaskManager {
                     owner_thread_id: owner_thread_id.to_string(),
                     task_type: meta.task_type.clone(),
                     description: meta.description.clone(),
+                    parent_context: meta.parent_context.clone(),
                     status: meta.status,
                     error: meta.error.clone(),
                     result: None,
@@ -205,6 +211,7 @@ impl BackgroundTaskManager {
                     error: t.error.clone(),
                     created_at_ms: t.created_at_ms,
                     completed_at_ms: t.completed_at_ms,
+                    parent_context: t.parent_context.clone(),
                 };
                 (t.task_id.clone(), meta)
             })

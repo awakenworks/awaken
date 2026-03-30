@@ -200,6 +200,7 @@ async fn agent_tool_with_mock_backend_success() {
             status: DelegateRunStatus::Completed,
             response: Some("done!".into()),
             steps: 3,
+            run_id: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "A helper agent", backend);
@@ -225,6 +226,7 @@ async fn agent_tool_with_mock_backend_failure() {
             status: DelegateRunStatus::Failed("out of memory".into()),
             response: None,
             steps: 0,
+            run_id: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -479,6 +481,7 @@ impl AgentBackend for CapturingBackend {
             status: DelegateRunStatus::Completed,
             response: Some("done".into()),
             steps: 1,
+            run_id: None,
         })
     }
 }
@@ -559,4 +562,55 @@ fn agent_backend_error_display() {
 
     let err = AgentBackendError::RemoteError("timeout".into());
     assert!(err.to_string().contains("remote error"));
+}
+
+// -- child_run_id propagation --
+
+#[tokio::test]
+async fn agent_tool_propagates_child_run_id_in_metadata() {
+    let backend = Arc::new(MockBackend {
+        result: DelegateRunResult {
+            agent_id: "helper".into(),
+            status: DelegateRunStatus::Completed,
+            response: Some("done".into()),
+            steps: 1,
+            run_id: Some("child-run-123".into()),
+        },
+    });
+    let tool = AgentTool::with_backend("helper", "desc", backend);
+    let ctx = ToolCallContext::test_default();
+
+    let result = tool
+        .execute(json!({"prompt": "help me"}), &ctx)
+        .await
+        .unwrap();
+
+    assert!(result.is_success());
+    assert_eq!(
+        result.metadata.get("child_run_id").and_then(|v| v.as_str()),
+        Some("child-run-123")
+    );
+}
+
+#[tokio::test]
+async fn agent_tool_omits_child_run_id_when_none() {
+    let backend = Arc::new(MockBackend {
+        result: DelegateRunResult {
+            agent_id: "helper".into(),
+            status: DelegateRunStatus::Completed,
+            response: Some("done".into()),
+            steps: 1,
+            run_id: None,
+        },
+    });
+    let tool = AgentTool::with_backend("helper", "desc", backend);
+    let ctx = ToolCallContext::test_default();
+
+    let result = tool
+        .execute(json!({"prompt": "help me"}), &ctx)
+        .await
+        .unwrap();
+
+    assert!(result.is_success());
+    assert!(result.metadata.get("child_run_id").is_none());
 }

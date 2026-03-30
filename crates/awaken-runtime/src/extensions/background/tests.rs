@@ -17,7 +17,7 @@ use super::state::{
 };
 use crate::cancellation::CancellationToken;
 
-use super::types::{TaskResult, TaskStatus, TaskSummary};
+use super::types::{TaskParentContext, TaskResult, TaskStatus, TaskSummary};
 
 #[test]
 fn task_status_terminal_check() {
@@ -52,10 +52,16 @@ fn task_result_status() {
 async fn manager_spawn_and_list() {
     let manager = Arc::new(BackgroundTaskManager::new());
     let _id = manager
-        .spawn("thread-1", "test", "my task", |cancel| async move {
-            cancel.cancelled().await;
-            TaskResult::Cancelled
-        })
+        .spawn(
+            "thread-1",
+            "test",
+            "my task",
+            TaskParentContext::default(),
+            |cancel| async move {
+                cancel.cancelled().await;
+                TaskResult::Cancelled
+            },
+        )
         .await;
 
     let tasks = manager.list("thread-1").await;
@@ -73,9 +79,13 @@ async fn manager_spawn_and_list() {
 async fn manager_task_completes() {
     let manager = Arc::new(BackgroundTaskManager::new());
     let id = manager
-        .spawn("thread-1", "test", "fast task", |_| async {
-            TaskResult::Success(serde_json::json!({"answer": 42}))
-        })
+        .spawn(
+            "thread-1",
+            "test",
+            "fast task",
+            TaskParentContext::default(),
+            |_| async { TaskResult::Success(serde_json::json!({"answer": 42})) },
+        )
         .await;
 
     // Wait briefly for task completion
@@ -91,9 +101,13 @@ async fn manager_task_completes() {
 async fn manager_task_fails() {
     let manager = Arc::new(BackgroundTaskManager::new());
     let id = manager
-        .spawn("thread-1", "test", "failing task", |_| async {
-            TaskResult::Failed("oops".into())
-        })
+        .spawn(
+            "thread-1",
+            "test",
+            "failing task",
+            TaskParentContext::default(),
+            |_| async { TaskResult::Failed("oops".into()) },
+        )
         .await;
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -107,10 +121,16 @@ async fn manager_task_fails() {
 async fn manager_cancel() {
     let manager = Arc::new(BackgroundTaskManager::new());
     let id = manager
-        .spawn("thread-1", "test", "cancellable", |cancel| async move {
-            cancel.cancelled().await;
-            TaskResult::Cancelled
-        })
+        .spawn(
+            "thread-1",
+            "test",
+            "cancellable",
+            TaskParentContext::default(),
+            |cancel| async move {
+                cancel.cancelled().await;
+                TaskResult::Cancelled
+            },
+        )
         .await;
 
     assert!(manager.cancel(&id).await);
@@ -158,6 +178,7 @@ async fn run_start_restores_persisted_metadata_into_manager() {
             error: None,
             created_at_ms: 100,
             completed_at_ms: Some(200),
+            parent_context: TaskParentContext::default(),
         },
     );
     let mut patch = store.begin_mutation();
@@ -187,6 +208,7 @@ fn persisted_task_meta_from_summary() {
         result: Some(serde_json::json!({"ok": true})),
         created_at_ms: 1000,
         completed_at_ms: Some(2000),
+        parent_context: TaskParentContext::default(),
     };
     let meta = PersistedTaskMeta::from_summary(&summary);
     assert_eq!(meta.task_id, "bg_0");
@@ -205,6 +227,7 @@ fn persisted_task_meta_serde_roundtrip() {
         error: Some("timeout".into()),
         created_at_ms: 100,
         completed_at_ms: Some(200),
+        parent_context: TaskParentContext::default(),
     };
     let json = serde_json::to_string(&meta).unwrap();
     let decoded: PersistedTaskMeta = serde_json::from_str(&json).unwrap();
@@ -222,6 +245,7 @@ fn background_task_state_snapshot_reduce_upsert() {
         error: None,
         created_at_ms: 100,
         completed_at_ms: None,
+        parent_context: TaskParentContext::default(),
     };
     snapshot.reduce(BackgroundTaskStateAction::Upsert(meta));
     assert_eq!(snapshot.tasks.len(), 1);
@@ -236,6 +260,7 @@ fn background_task_state_snapshot_reduce_upsert() {
         error: None,
         created_at_ms: 100,
         completed_at_ms: Some(200),
+        parent_context: TaskParentContext::default(),
     };
     snapshot.reduce(BackgroundTaskStateAction::Upsert(meta2));
     assert_eq!(snapshot.tasks.len(), 1);
@@ -253,6 +278,7 @@ fn background_task_state_snapshot_reduce_replace_all() {
         error: None,
         created_at_ms: 50,
         completed_at_ms: Some(60),
+        parent_context: TaskParentContext::default(),
     }));
 
     let mut new_tasks = HashMap::new();
@@ -266,6 +292,7 @@ fn background_task_state_snapshot_reduce_replace_all() {
             error: None,
             created_at_ms: 100,
             completed_at_ms: None,
+            parent_context: TaskParentContext::default(),
         },
     );
     snapshot.reduce(BackgroundTaskStateAction::ReplaceAll { tasks: new_tasks });
@@ -327,21 +354,37 @@ fn cancellation_token_check() {
 async fn manager_multiple_concurrent_tasks() {
     let manager = Arc::new(BackgroundTaskManager::new());
     let id1 = manager
-        .spawn("thread-1", "shell", "task A", |cancel| async move {
-            cancel.cancelled().await;
-            TaskResult::Cancelled
-        })
+        .spawn(
+            "thread-1",
+            "shell",
+            "task A",
+            TaskParentContext::default(),
+            |cancel| async move {
+                cancel.cancelled().await;
+                TaskResult::Cancelled
+            },
+        )
         .await;
     let id2 = manager
-        .spawn("thread-1", "http", "task B", |cancel| async move {
-            cancel.cancelled().await;
-            TaskResult::Cancelled
-        })
+        .spawn(
+            "thread-1",
+            "http",
+            "task B",
+            TaskParentContext::default(),
+            |cancel| async move {
+                cancel.cancelled().await;
+                TaskResult::Cancelled
+            },
+        )
         .await;
     let id3 = manager
-        .spawn("thread-1", "shell", "task C", |_| async {
-            TaskResult::Success(serde_json::json!("done"))
-        })
+        .spawn(
+            "thread-1",
+            "shell",
+            "task C",
+            TaskParentContext::default(),
+            |_| async { TaskResult::Success(serde_json::json!("done")) },
+        )
         .await;
 
     // Wait for the instant task to finish
@@ -373,9 +416,13 @@ async fn manager_get_nonexistent_returns_none() {
 async fn manager_cancel_already_completed_returns_false() {
     let manager = Arc::new(BackgroundTaskManager::new());
     let id = manager
-        .spawn("thread-1", "test", "fast", |_| async {
-            TaskResult::Success(serde_json::json!(true))
-        })
+        .spawn(
+            "thread-1",
+            "test",
+            "fast",
+            TaskParentContext::default(),
+            |_| async { TaskResult::Success(serde_json::json!(true)) },
+        )
         .await;
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -392,9 +439,15 @@ async fn manager_cancel_already_completed_returns_false() {
 async fn manager_task_result_retrieval_after_success() {
     let manager = Arc::new(BackgroundTaskManager::new());
     let id = manager
-        .spawn("thread-1", "test", "result task", |_| async {
-            TaskResult::Success(serde_json::json!({"key": "value", "nested": [1, 2, 3]}))
-        })
+        .spawn(
+            "thread-1",
+            "test",
+            "result task",
+            TaskParentContext::default(),
+            |_| async {
+                TaskResult::Success(serde_json::json!({"key": "value", "nested": [1, 2, 3]}))
+            },
+        )
         .await;
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -411,14 +464,22 @@ async fn manager_task_result_retrieval_after_success() {
 async fn manager_persisted_snapshot_includes_all_tasks() {
     let manager = Arc::new(BackgroundTaskManager::new());
     let _id1 = manager
-        .spawn("thread-1", "shell", "build", |_| async {
-            TaskResult::Success(serde_json::json!(null))
-        })
+        .spawn(
+            "thread-1",
+            "shell",
+            "build",
+            TaskParentContext::default(),
+            |_| async { TaskResult::Success(serde_json::json!(null)) },
+        )
         .await;
     let _id2 = manager
-        .spawn("thread-2", "http", "fetch", |_| async {
-            TaskResult::Failed("timeout".into())
-        })
+        .spawn(
+            "thread-2",
+            "http",
+            "fetch",
+            TaskParentContext::default(),
+            |_| async { TaskResult::Failed("timeout".into()) },
+        )
         .await;
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -438,10 +499,16 @@ async fn manager_restore_skips_existing_live_tasks() {
 
     // Spawn a live task with a known id pattern
     let live_id = manager
-        .spawn("thread-1", "shell", "live task", |cancel| async move {
-            cancel.cancelled().await;
-            TaskResult::Cancelled
-        })
+        .spawn(
+            "thread-1",
+            "shell",
+            "live task",
+            TaskParentContext::default(),
+            |cancel| async move {
+                cancel.cancelled().await;
+                TaskResult::Cancelled
+            },
+        )
         .await;
 
     // Build a snapshot that includes the same task id and a new one
@@ -456,6 +523,7 @@ async fn manager_restore_skips_existing_live_tasks() {
             error: None,
             created_at_ms: 1,
             completed_at_ms: Some(2),
+            parent_context: TaskParentContext::default(),
         },
     );
     snapshot.tasks.insert(
@@ -468,6 +536,7 @@ async fn manager_restore_skips_existing_live_tasks() {
             error: Some("err".into()),
             created_at_ms: 10,
             completed_at_ms: Some(20),
+            parent_context: TaskParentContext::default(),
         },
     );
 
@@ -491,13 +560,19 @@ async fn manager_restore_skips_existing_live_tasks() {
 async fn manager_task_ids_are_sequential() {
     let manager = Arc::new(BackgroundTaskManager::new());
     let id1 = manager
-        .spawn("t", "test", "a", |_| async { TaskResult::Cancelled })
+        .spawn("t", "test", "a", TaskParentContext::default(), |_| async {
+            TaskResult::Cancelled
+        })
         .await;
     let id2 = manager
-        .spawn("t", "test", "b", |_| async { TaskResult::Cancelled })
+        .spawn("t", "test", "b", TaskParentContext::default(), |_| async {
+            TaskResult::Cancelled
+        })
         .await;
     let id3 = manager
-        .spawn("t", "test", "c", |_| async { TaskResult::Cancelled })
+        .spawn("t", "test", "c", TaskParentContext::default(), |_| async {
+            TaskResult::Cancelled
+        })
         .await;
 
     // IDs should be bg_0, bg_1, bg_2
@@ -517,9 +592,13 @@ async fn run_end_persists_task_state() {
 
     // Spawn and complete a task
     let _id = manager
-        .spawn("thread-persist", "shell", "compile", |_| async {
-            TaskResult::Success(serde_json::json!({"status": "ok"}))
-        })
+        .spawn(
+            "thread-persist",
+            "shell",
+            "compile",
+            TaskParentContext::default(),
+            |_| async { TaskResult::Success(serde_json::json!({"status": "ok"})) },
+        )
         .await;
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -543,19 +622,29 @@ async fn manager_task_status_transitions_correctly() {
 
     // Spawn a task that blocks until cancelled, verify Running
     let running_id = manager
-        .spawn("t", "test", "blocks", |cancel| async move {
-            cancel.cancelled().await;
-            TaskResult::Cancelled
-        })
+        .spawn(
+            "t",
+            "test",
+            "blocks",
+            TaskParentContext::default(),
+            |cancel| async move {
+                cancel.cancelled().await;
+                TaskResult::Cancelled
+            },
+        )
         .await;
     let summary = manager.get(&running_id).await.unwrap();
     assert_eq!(summary.status, TaskStatus::Running);
 
     // Spawn a task that succeeds, verify Completed
     let success_id = manager
-        .spawn("t", "test", "succeeds", |_| async {
-            TaskResult::Success(serde_json::json!("ok"))
-        })
+        .spawn(
+            "t",
+            "test",
+            "succeeds",
+            TaskParentContext::default(),
+            |_| async { TaskResult::Success(serde_json::json!("ok")) },
+        )
         .await;
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let summary = manager.get(&success_id).await.unwrap();
@@ -564,9 +653,13 @@ async fn manager_task_status_transitions_correctly() {
 
     // Spawn a task that fails, verify Failed
     let fail_id = manager
-        .spawn("t", "test", "fails", |_| async {
-            TaskResult::Failed("boom".into())
-        })
+        .spawn(
+            "t",
+            "test",
+            "fails",
+            TaskParentContext::default(),
+            |_| async { TaskResult::Failed("boom".into()) },
+        )
         .await;
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let summary = manager.get(&fail_id).await.unwrap();
@@ -590,19 +683,29 @@ async fn manager_concurrent_spawn_and_cancel() {
     let mut blocking_ids = Vec::new();
     for i in 0..3 {
         let id = manager
-            .spawn("t", "test", &format!("blocking-{i}"), |cancel| async move {
-                cancel.cancelled().await;
-                TaskResult::Cancelled
-            })
+            .spawn(
+                "t",
+                "test",
+                &format!("blocking-{i}"),
+                TaskParentContext::default(),
+                |cancel| async move {
+                    cancel.cancelled().await;
+                    TaskResult::Cancelled
+                },
+            )
             .await;
         blocking_ids.push(id);
     }
     let mut completing_ids = Vec::new();
     for i in 0..2 {
         let id = manager
-            .spawn("t", "test", &format!("completing-{i}"), |_| async {
-                TaskResult::Success(serde_json::json!("done"))
-            })
+            .spawn(
+                "t",
+                "test",
+                &format!("completing-{i}"),
+                TaskParentContext::default(),
+                |_| async { TaskResult::Success(serde_json::json!("done")) },
+            )
             .await;
         completing_ids.push(id);
     }
@@ -654,17 +757,27 @@ async fn persisted_snapshot_excludes_running_tasks() {
 
     // One completed task
     let _completed_id = manager
-        .spawn("t", "shell", "done-task", |_| async {
-            TaskResult::Success(serde_json::json!(null))
-        })
+        .spawn(
+            "t",
+            "shell",
+            "done-task",
+            TaskParentContext::default(),
+            |_| async { TaskResult::Success(serde_json::json!(null)) },
+        )
         .await;
 
     // One running task
     let running_id = manager
-        .spawn("t", "http", "running-task", |cancel| async move {
-            cancel.cancelled().await;
-            TaskResult::Cancelled
-        })
+        .spawn(
+            "t",
+            "http",
+            "running-task",
+            TaskParentContext::default(),
+            |cancel| async move {
+                cancel.cancelled().await;
+                TaskResult::Cancelled
+            },
+        )
         .await;
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -703,6 +816,7 @@ async fn restore_updates_counter_correctly() {
                 error: None,
                 created_at_ms: 100,
                 completed_at_ms: Some(200),
+                parent_context: TaskParentContext::default(),
             },
         );
     }
@@ -711,9 +825,13 @@ async fn restore_updates_counter_correctly() {
 
     // Spawn a new task — its ID must be higher than bg_10
     let new_id = manager
-        .spawn("t", "test", "new-after-restore", |_| async {
-            TaskResult::Success(serde_json::json!(null))
-        })
+        .spawn(
+            "t",
+            "test",
+            "new-after-restore",
+            TaskParentContext::default(),
+            |_| async { TaskResult::Success(serde_json::json!(null)) },
+        )
         .await;
 
     // The counter should have been bumped to at least 11
@@ -735,6 +853,7 @@ fn task_summary_serde_roundtrip() {
         result: None,
         created_at_ms: 1000,
         completed_at_ms: Some(2000),
+        parent_context: TaskParentContext::default(),
     };
     let json = serde_json::to_string(&summary).unwrap();
     let decoded: TaskSummary = serde_json::from_str(&json).unwrap();
@@ -743,4 +862,147 @@ fn task_summary_serde_roundtrip() {
     assert_eq!(decoded.error.as_deref(), Some("connection refused"));
     assert!(decoded.result.is_none());
     assert_eq!(decoded.completed_at_ms, Some(2000));
+}
+
+#[tokio::test]
+async fn spawn_with_parent_context_preserves_lineage() {
+    let manager = Arc::new(BackgroundTaskManager::new());
+    let ctx = TaskParentContext {
+        run_id: Some("run-abc".into()),
+        call_id: Some("call-xyz".into()),
+        agent_id: Some("agent-007".into()),
+    };
+    let id = manager
+        .spawn("thread-1", "test", "lineage task", ctx.clone(), |_| async {
+            TaskResult::Success(serde_json::json!({"ok": true}))
+        })
+        .await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let summary = manager.get(&id).await.unwrap();
+    assert_eq!(summary.status, TaskStatus::Completed);
+    assert_eq!(summary.parent_context.run_id.as_deref(), Some("run-abc"));
+    assert_eq!(summary.parent_context.call_id.as_deref(), Some("call-xyz"));
+    assert_eq!(
+        summary.parent_context.agent_id.as_deref(),
+        Some("agent-007")
+    );
+
+    // Verify it also appears in list()
+    let tasks = manager.list("thread-1").await;
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].parent_context, ctx);
+
+    // Verify persisted snapshot includes parent context
+    let snapshot = manager.persisted_snapshot().await;
+    let meta = snapshot.get(&id).unwrap();
+    assert_eq!(meta.parent_context.run_id.as_deref(), Some("run-abc"));
+    assert_eq!(meta.parent_context.call_id.as_deref(), Some("call-xyz"));
+    assert_eq!(meta.parent_context.agent_id.as_deref(), Some("agent-007"));
+}
+
+#[test]
+fn persisted_task_meta_with_parent_context_serde_roundtrip() {
+    let meta = PersistedTaskMeta {
+        task_id: "bg_99".into(),
+        task_type: "delegation".into(),
+        description: "delegated work".into(),
+        status: TaskStatus::Completed,
+        error: None,
+        created_at_ms: 500,
+        completed_at_ms: Some(600),
+        parent_context: TaskParentContext {
+            run_id: Some("run-123".into()),
+            call_id: None,
+            agent_id: Some("agent-a".into()),
+        },
+    };
+    let json = serde_json::to_string(&meta).unwrap();
+    let decoded: PersistedTaskMeta = serde_json::from_str(&json).unwrap();
+    assert_eq!(decoded, meta);
+    assert_eq!(decoded.parent_context.run_id.as_deref(), Some("run-123"));
+    assert!(decoded.parent_context.call_id.is_none());
+    assert_eq!(decoded.parent_context.agent_id.as_deref(), Some("agent-a"));
+}
+
+#[test]
+fn persisted_task_meta_without_parent_context_deserializes_default() {
+    // Backward compatibility: JSON without parent_context field should deserialize fine
+    let json = r#"{
+        "task_id": "bg_old",
+        "task_type": "shell",
+        "description": "legacy task",
+        "status": "completed",
+        "created_at_ms": 100,
+        "completed_at_ms": 200
+    }"#;
+    let decoded: PersistedTaskMeta = serde_json::from_str(json).unwrap();
+    assert_eq!(decoded.task_id, "bg_old");
+    assert!(decoded.parent_context.is_empty());
+}
+
+#[test]
+fn task_parent_context_is_empty() {
+    assert!(TaskParentContext::default().is_empty());
+    assert!(
+        !TaskParentContext {
+            run_id: Some("r".into()),
+            ..Default::default()
+        }
+        .is_empty()
+    );
+    assert!(
+        !TaskParentContext {
+            call_id: Some("c".into()),
+            ..Default::default()
+        }
+        .is_empty()
+    );
+    assert!(
+        !TaskParentContext {
+            agent_id: Some("a".into()),
+            ..Default::default()
+        }
+        .is_empty()
+    );
+}
+
+#[test]
+fn task_summary_with_empty_parent_context_omits_field_in_json() {
+    let summary = TaskSummary {
+        task_id: "bg_0".into(),
+        task_type: "test".into(),
+        description: "no parent".into(),
+        status: TaskStatus::Running,
+        error: None,
+        result: None,
+        created_at_ms: 100,
+        completed_at_ms: None,
+        parent_context: TaskParentContext::default(),
+    };
+    let json = serde_json::to_string(&summary).unwrap();
+    assert!(!json.contains("parent_context"));
+}
+
+#[test]
+fn task_summary_with_parent_context_includes_field_in_json() {
+    let summary = TaskSummary {
+        task_id: "bg_0".into(),
+        task_type: "test".into(),
+        description: "with parent".into(),
+        status: TaskStatus::Running,
+        error: None,
+        result: None,
+        created_at_ms: 100,
+        completed_at_ms: None,
+        parent_context: TaskParentContext {
+            run_id: Some("run-1".into()),
+            call_id: None,
+            agent_id: None,
+        },
+    };
+    let json = serde_json::to_string(&summary).unwrap();
+    assert!(json.contains("parent_context"));
+    assert!(json.contains("run-1"));
 }

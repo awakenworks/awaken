@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::StateKey;
 
-use super::types::{TaskId, TaskStatus, TaskSummary};
+use super::types::{TaskId, TaskParentContext, TaskStatus, TaskSummary};
 
 /// Cached task view stored in the state store for prompt injection.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -70,6 +70,8 @@ pub struct PersistedTaskMeta {
     pub created_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at_ms: Option<u64>,
+    #[serde(default)]
+    pub parent_context: TaskParentContext,
 }
 
 impl PersistedTaskMeta {
@@ -83,6 +85,7 @@ impl PersistedTaskMeta {
             error: summary.error.clone(),
             created_at_ms: summary.created_at_ms,
             completed_at_ms: summary.completed_at_ms,
+            parent_context: summary.parent_context.clone(),
         }
     }
 }

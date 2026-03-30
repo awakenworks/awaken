@@ -235,6 +235,7 @@ impl AgentBackend for A2aBackend {
             status,
             response: snapshot.output_text,
             steps,
+            run_id: None,
         })
     }
 }

@@ -49,6 +49,24 @@ impl TaskResult {
     }
 }
 
+/// Optional parent execution context for background task lineage tracking.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskParentContext {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+}
+
+impl TaskParentContext {
+    /// Returns `true` when no lineage fields are set.
+    pub fn is_empty(&self) -> bool {
+        self.run_id.is_none() && self.call_id.is_none() && self.agent_id.is_none()
+    }
+}
+
 /// Summary of a background task visible to tools and plugins.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskSummary {
@@ -63,4 +81,6 @@ pub struct TaskSummary {
     pub created_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "TaskParentContext::is_empty")]
+    pub parent_context: TaskParentContext,
 }

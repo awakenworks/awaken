@@ -51,6 +51,7 @@ impl AgentBackend for LocalBackend {
 
         // Create sub-agent run identity
         let sub_run_id = uuid::Uuid::now_v7().to_string();
+        let child_run_id = sub_run_id.clone();
         let thread_id = sub_run_id.clone();
         let mut sub_identity = RunIdentity::new(
             thread_id.clone(),
@@ -107,6 +108,7 @@ impl AgentBackend for LocalBackend {
             status,
             response,
             steps: result.steps,
+            run_id: Some(child_run_id),
         })
     }
 }

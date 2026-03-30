@@ -17,6 +17,8 @@ pub struct DelegateRunResult {
     pub response: Option<String>,
     /// Number of steps executed.
     pub steps: usize,
+    /// Child run ID for observability lineage (local delegates only).
+    pub run_id: Option<String>,
 }
 
 /// Terminal status of a delegated agent run.
