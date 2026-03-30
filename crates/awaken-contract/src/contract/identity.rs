@@ -102,96 +102,67 @@ impl RunIdentity {
     }
 }
 
+/// Allow/exclude filter for a single resource kind (tools, skills, or agents).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FilterPolicy {
+    allowed: Option<Vec<String>>,
+    excluded: Option<Vec<String>>,
+}
+
+impl FilterPolicy {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn allowed(&self) -> Option<&[String]> {
+        self.allowed.as_deref()
+    }
+
+    pub fn excluded(&self) -> Option<&[String]> {
+        self.excluded.as_deref()
+    }
+
+    pub fn set_allowed_if_absent(&mut self, values: Option<&[String]>) {
+        if self.allowed.is_none() {
+            self.allowed = Self::normalize(values);
+        }
+    }
+
+    pub fn set_excluded_if_absent(&mut self, values: Option<&[String]>) {
+        if self.excluded.is_none() {
+            self.excluded = Self::normalize(values);
+        }
+    }
+
+    fn normalize(values: Option<&[String]>) -> Option<Vec<String>> {
+        let parsed: Vec<String> = values
+            .into_iter()
+            .flatten()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .collect();
+        if parsed.is_empty() {
+            None
+        } else {
+            Some(parsed)
+        }
+    }
+}
+
 /// Strongly typed scope and execution policy carried with a resolved run.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RunPolicy {
-    allowed_tools: Option<Vec<String>>,
-    excluded_tools: Option<Vec<String>>,
-    allowed_skills: Option<Vec<String>>,
-    excluded_skills: Option<Vec<String>>,
-    allowed_agents: Option<Vec<String>>,
-    excluded_agents: Option<Vec<String>>,
+    pub tools: FilterPolicy,
+    pub skills: FilterPolicy,
+    pub agents: FilterPolicy,
 }
 
 impl RunPolicy {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    pub fn allowed_tools(&self) -> Option<&[String]> {
-        self.allowed_tools.as_deref()
-    }
-
-    pub fn excluded_tools(&self) -> Option<&[String]> {
-        self.excluded_tools.as_deref()
-    }
-
-    pub fn allowed_skills(&self) -> Option<&[String]> {
-        self.allowed_skills.as_deref()
-    }
-
-    pub fn excluded_skills(&self) -> Option<&[String]> {
-        self.excluded_skills.as_deref()
-    }
-
-    pub fn allowed_agents(&self) -> Option<&[String]> {
-        self.allowed_agents.as_deref()
-    }
-
-    pub fn excluded_agents(&self) -> Option<&[String]> {
-        self.excluded_agents.as_deref()
-    }
-
-    pub fn set_allowed_tools_if_absent(&mut self, values: Option<&[String]>) {
-        if self.allowed_tools.is_none() {
-            self.allowed_tools = normalize_scope_values(values);
-        }
-    }
-
-    pub fn set_excluded_tools_if_absent(&mut self, values: Option<&[String]>) {
-        if self.excluded_tools.is_none() {
-            self.excluded_tools = normalize_scope_values(values);
-        }
-    }
-
-    pub fn set_allowed_skills_if_absent(&mut self, values: Option<&[String]>) {
-        if self.allowed_skills.is_none() {
-            self.allowed_skills = normalize_scope_values(values);
-        }
-    }
-
-    pub fn set_excluded_skills_if_absent(&mut self, values: Option<&[String]>) {
-        if self.excluded_skills.is_none() {
-            self.excluded_skills = normalize_scope_values(values);
-        }
-    }
-
-    pub fn set_allowed_agents_if_absent(&mut self, values: Option<&[String]>) {
-        if self.allowed_agents.is_none() {
-            self.allowed_agents = normalize_scope_values(values);
-        }
-    }
-
-    pub fn set_excluded_agents_if_absent(&mut self, values: Option<&[String]>) {
-        if self.excluded_agents.is_none() {
-            self.excluded_agents = normalize_scope_values(values);
-        }
-    }
-}
-
-fn normalize_scope_values(values: Option<&[String]>) -> Option<Vec<String>> {
-    let parsed: Vec<String> = values
-        .into_iter()
-        .flatten()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .collect();
-    if parsed.is_empty() {
-        None
-    } else {
-        Some(parsed)
     }
 }
 
@@ -200,18 +171,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn run_policy_normalizes_values() {
-        let mut policy = RunPolicy::new();
-        policy.set_allowed_tools_if_absent(Some(&[" a ".to_string(), "".to_string()]));
-        assert_eq!(policy.allowed_tools(), Some(&["a".to_string()][..]));
+    fn filter_policy_normalizes_values() {
+        let mut filter = FilterPolicy::new();
+        filter.set_allowed_if_absent(Some(&[" a ".to_string(), "".to_string()]));
+        assert_eq!(filter.allowed(), Some(&["a".to_string()][..]));
     }
 
     #[test]
-    fn run_policy_if_absent_does_not_overwrite() {
+    fn filter_policy_if_absent_does_not_overwrite() {
+        let mut filter = FilterPolicy::new();
+        filter.set_allowed_if_absent(Some(&["first".to_string()]));
+        filter.set_allowed_if_absent(Some(&["second".to_string()]));
+        assert_eq!(filter.allowed(), Some(&["first".to_string()][..]));
+    }
+
+    #[test]
+    fn run_policy_delegates_to_filter_policy() {
         let mut policy = RunPolicy::new();
-        policy.set_allowed_tools_if_absent(Some(&["first".to_string()]));
-        policy.set_allowed_tools_if_absent(Some(&["second".to_string()]));
-        assert_eq!(policy.allowed_tools(), Some(&["first".to_string()][..]));
+        policy
+            .tools
+            .set_allowed_if_absent(Some(&["read".to_string()]));
+        policy
+            .skills
+            .set_excluded_if_absent(Some(&["debug".to_string()]));
+        policy
+            .agents
+            .set_allowed_if_absent(Some(&["bot".to_string()]));
+        assert_eq!(policy.tools.allowed(), Some(&["read".to_string()][..]));
+        assert_eq!(policy.skills.excluded(), Some(&["debug".to_string()][..]));
+        assert_eq!(policy.agents.allowed(), Some(&["bot".to_string()][..]));
     }
 
     #[test]
@@ -256,13 +244,14 @@ mod tests {
     }
 
     #[test]
-    fn run_policy_empty_values_normalize_to_none() {
-        let mut policy = RunPolicy::new();
-        policy.set_excluded_tools_if_absent(Some(&[" ".to_string(), "".to_string()]));
-        policy.set_allowed_agents_if_absent(None);
+    fn filter_policy_empty_values_normalize_to_none() {
+        let mut tools = FilterPolicy::new();
+        tools.set_excluded_if_absent(Some(&[" ".to_string(), "".to_string()]));
+        assert!(tools.excluded().is_none());
 
-        assert!(policy.excluded_tools().is_none());
-        assert!(policy.allowed_agents().is_none());
+        let mut agents = FilterPolicy::new();
+        agents.set_allowed_if_absent(None);
+        assert!(agents.allowed().is_none());
     }
 
     #[test]
