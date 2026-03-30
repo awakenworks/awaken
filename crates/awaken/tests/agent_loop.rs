@@ -9672,3 +9672,169 @@ async fn full_suspend_resume_complete_lifecycle() {
     let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.status, RunStatus::Done);
 }
+
+// ---------------------------------------------------------------------------
+// Inference error on first call produces Err (no RunFinish emitted)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn inference_error_produces_error_termination() {
+    struct AlwaysFailLlm;
+
+    #[async_trait]
+    impl LlmExecutor for AlwaysFailLlm {
+        async fn execute(
+            &self,
+            _req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            Err(InferenceExecutionError::Provider("provider is down".into()))
+        }
+
+        fn name(&self) -> &str {
+            "always-fail"
+        }
+    }
+
+    let llm = Arc::new(AlwaysFailLlm);
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("hello")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+    })
+    .await;
+
+    assert!(
+        result.is_err(),
+        "first-call LLM error should propagate as Err"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("provider is down"),
+        "error should contain the provider message, got: {err_msg}"
+    );
+
+    // No RunFinish event should be emitted on error path
+    let events = sink.take();
+    let has_run_finish = events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::RunFinish { .. }));
+    assert!(
+        !has_run_finish,
+        "RunFinish should not be emitted when the loop returns Err"
+    );
+
+    // RunStart should still have been emitted
+    let has_run_start = events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::RunStart { .. }));
+    assert!(
+        has_run_start,
+        "RunStart should still be emitted before the error"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Token usage values accumulate correctly across steps
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn token_usage_values_accumulated_across_steps() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![],
+            tool_calls: vec![ToolCall::new("c1", "echo", json!({"message": "a"}))],
+            usage: Some(TokenUsage {
+                prompt_tokens: Some(100),
+                completion_tokens: Some(50),
+                total_tokens: Some(150),
+                ..Default::default()
+            }),
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("done")],
+            tool_calls: vec![],
+            usage: Some(TokenUsage {
+                prompt_tokens: Some(200),
+                completion_tokens: Some(30),
+                total_tokens: Some(230),
+                ..Default::default()
+            }),
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let sink = Arc::new(VecEventSink::new());
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(result.steps, 2, "should have 2 steps: tool call + final");
+
+    let events = sink.take();
+    let inference_usages: Vec<&TokenUsage> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::InferenceComplete { usage, .. } => usage.as_ref(),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        inference_usages.len(),
+        2,
+        "should have two inference events"
+    );
+
+    // Step 1: 100 prompt + 50 completion
+    assert_eq!(inference_usages[0].prompt_tokens, Some(100));
+    assert_eq!(inference_usages[0].completion_tokens, Some(50));
+
+    // Step 2: 200 prompt + 30 completion
+    assert_eq!(inference_usages[1].prompt_tokens, Some(200));
+    assert_eq!(inference_usages[1].completion_tokens, Some(30));
+
+    // Verify totals: 300 input, 80 output
+    let total_input: i32 = inference_usages
+        .iter()
+        .filter_map(|u| u.prompt_tokens)
+        .sum();
+    let total_output: i32 = inference_usages
+        .iter()
+        .filter_map(|u| u.completion_tokens)
+        .sum();
+    assert_eq!(total_input, 300, "total input tokens should be 300");
+    assert_eq!(total_output, 80, "total output tokens should be 80");
+}

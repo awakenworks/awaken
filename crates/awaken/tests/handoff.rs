@@ -408,3 +408,169 @@ async fn deactivate_plugin_mid_run_via_configure() {
         assert_eq!(entries.len(), 1); // Still just the RunStart entry
     }
 }
+
+// ---------------------------------------------------------------------------
+// on_deactivate lifecycle tests
+// ---------------------------------------------------------------------------
+
+/// A plugin that tracks on_activate/on_deactivate calls via state keys.
+mod lifecycle_tracking {
+    use awaken::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    pub struct LifecycleLog {
+        pub events: Vec<String>,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub enum LifecycleAction {
+        Push(String),
+        Clear,
+    }
+
+    pub struct LifecycleLogKey;
+
+    impl StateKey for LifecycleLogKey {
+        const KEY: &'static str = "test.lifecycle_log";
+        type Value = LifecycleLog;
+        type Update = LifecycleAction;
+
+        fn apply(value: &mut Self::Value, update: Self::Update) {
+            match update {
+                LifecycleAction::Push(event) => value.events.push(event),
+                LifecycleAction::Clear => value.events.clear(),
+            }
+        }
+    }
+
+    /// A plugin that records on_activate and on_deactivate calls in state.
+    pub struct LifecycleTrackingPlugin {
+        pub name: &'static str,
+    }
+
+    impl Plugin for LifecycleTrackingPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: self.name }
+        }
+
+        fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+            r.register_key::<LifecycleLogKey>(StateKeyOptions::default())?;
+            Ok(())
+        }
+
+        fn on_activate(
+            &self,
+            _agent_spec: &awaken::registry::AgentSpec,
+            patch: &mut MutationBatch,
+        ) -> Result<(), StateError> {
+            patch.update::<LifecycleLogKey>(LifecycleAction::Push(format!(
+                "activate:{}",
+                self.name
+            )));
+            Ok(())
+        }
+
+        fn on_deactivate(&self, patch: &mut MutationBatch) -> Result<(), StateError> {
+            patch.update::<LifecycleLogKey>(LifecycleAction::Push(format!(
+                "deactivate:{}",
+                self.name
+            )));
+            Ok(())
+        }
+    }
+}
+
+/// A plugin that only registers LifecycleLogKey for state storage.
+struct LifecycleLogPlugin;
+
+impl Plugin for LifecycleLogPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
+            name: "lifecycle-log-store",
+        }
+    }
+
+    fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+        r.register_key::<lifecycle_tracking::LifecycleLogKey>(StateKeyOptions::default())?;
+        Ok(())
+    }
+}
+
+/// on_deactivate writes state mutations that are applied by the caller.
+#[test]
+fn on_deactivate_mutations_applied_to_store() {
+    use lifecycle_tracking::*;
+
+    let store = StateStore::new();
+    // Install a key-registration plugin so the state key is available
+    store.install_plugin(LifecycleLogPlugin).unwrap();
+
+    let plugin = LifecycleTrackingPlugin { name: "tracker" };
+    let spec = awaken::registry::AgentSpec::default();
+
+    // Activate
+    let mut activate_patch = MutationBatch::new();
+    plugin.on_activate(&spec, &mut activate_patch).unwrap();
+    store.commit(activate_patch).unwrap();
+
+    let log = store.read::<LifecycleLogKey>().unwrap();
+    assert_eq!(log.events, vec!["activate:tracker"]);
+
+    // Deactivate
+    let mut deactivate_patch = MutationBatch::new();
+    plugin.on_deactivate(&mut deactivate_patch).unwrap();
+    store.commit(deactivate_patch).unwrap();
+
+    let log = store.read::<LifecycleLogKey>().unwrap();
+    assert_eq!(log.events, vec!["activate:tracker", "deactivate:tracker"]);
+}
+
+/// Simulates the orchestrator's deactivate-then-activate flow during handoff.
+#[test]
+fn deactivate_activate_cycle_mirrors_orchestrator() {
+    use lifecycle_tracking::*;
+
+    let store = StateStore::new();
+    store.install_plugin(LifecycleLogPlugin).unwrap();
+
+    let plugin = LifecycleTrackingPlugin { name: "tracker" };
+    let spec = awaken::registry::AgentSpec::default();
+
+    // Initial activation (as in setup.rs)
+    let mut patch = MutationBatch::new();
+    plugin.on_activate(&spec, &mut patch).unwrap();
+    store.commit(patch).unwrap();
+
+    // Simulate handoff: deactivate old, activate new
+    let mut deactivate_patch = MutationBatch::new();
+    plugin.on_deactivate(&mut deactivate_patch).unwrap();
+    store.commit(deactivate_patch).unwrap();
+
+    let mut activate_patch = MutationBatch::new();
+    plugin.on_activate(&spec, &mut activate_patch).unwrap();
+    store.commit(activate_patch).unwrap();
+
+    let log = store.read::<LifecycleLogKey>().unwrap();
+    assert_eq!(
+        log.events,
+        vec!["activate:tracker", "deactivate:tracker", "activate:tracker",]
+    );
+}
+
+/// Default Plugin trait on_deactivate is a no-op that succeeds.
+#[test]
+fn default_on_deactivate_is_noop() {
+    struct NoopPlugin;
+
+    impl Plugin for NoopPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: "noop" }
+        }
+    }
+
+    let plugin = NoopPlugin;
+    let mut patch = MutationBatch::new();
+    plugin.on_deactivate(&mut patch).unwrap();
+    assert!(patch.is_empty());
+}

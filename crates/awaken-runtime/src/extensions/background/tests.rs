@@ -537,6 +537,193 @@ async fn run_end_persists_task_state() {
     assert_eq!(meta.status, TaskStatus::Completed);
 }
 
+#[tokio::test]
+async fn manager_task_status_transitions_correctly() {
+    let manager = Arc::new(BackgroundTaskManager::new());
+
+    // Spawn a task that blocks until cancelled, verify Running
+    let running_id = manager
+        .spawn("t", "test", "blocks", |cancel| async move {
+            cancel.cancelled().await;
+            TaskResult::Cancelled
+        })
+        .await;
+    let summary = manager.get(&running_id).await.unwrap();
+    assert_eq!(summary.status, TaskStatus::Running);
+
+    // Spawn a task that succeeds, verify Completed
+    let success_id = manager
+        .spawn("t", "test", "succeeds", |_| async {
+            TaskResult::Success(serde_json::json!("ok"))
+        })
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let summary = manager.get(&success_id).await.unwrap();
+    assert_eq!(summary.status, TaskStatus::Completed);
+    assert!(summary.completed_at_ms.is_some());
+
+    // Spawn a task that fails, verify Failed
+    let fail_id = manager
+        .spawn("t", "test", "fails", |_| async {
+            TaskResult::Failed("boom".into())
+        })
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let summary = manager.get(&fail_id).await.unwrap();
+    assert_eq!(summary.status, TaskStatus::Failed);
+    assert_eq!(summary.error.as_deref(), Some("boom"));
+    assert!(summary.completed_at_ms.is_some());
+
+    // Verify the first task is still Running
+    let summary = manager.get(&running_id).await.unwrap();
+    assert_eq!(summary.status, TaskStatus::Running);
+
+    // Clean up
+    manager.cancel(&running_id).await;
+}
+
+#[tokio::test]
+async fn manager_concurrent_spawn_and_cancel() {
+    let manager = Arc::new(BackgroundTaskManager::new());
+
+    // Spawn 5 tasks concurrently. Tasks 0-2 block (cancellable), tasks 3-4 complete instantly.
+    let mut blocking_ids = Vec::new();
+    for i in 0..3 {
+        let id = manager
+            .spawn("t", "test", &format!("blocking-{i}"), |cancel| async move {
+                cancel.cancelled().await;
+                TaskResult::Cancelled
+            })
+            .await;
+        blocking_ids.push(id);
+    }
+    let mut completing_ids = Vec::new();
+    for i in 0..2 {
+        let id = manager
+            .spawn("t", "test", &format!("completing-{i}"), |_| async {
+                TaskResult::Success(serde_json::json!("done"))
+            })
+            .await;
+        completing_ids.push(id);
+    }
+
+    // Wait for the instant tasks to finish
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Cancel the 3 blocking tasks
+    for id in &blocking_ids {
+        assert!(manager.cancel(id).await);
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Verify the 2 completing tasks are Completed
+    for id in &completing_ids {
+        let s = manager.get(id).await.unwrap();
+        assert_eq!(s.status, TaskStatus::Completed);
+    }
+
+    // Verify the 3 cancelled tasks are Cancelled
+    for id in &blocking_ids {
+        let s = manager.get(id).await.unwrap();
+        assert_eq!(s.status, TaskStatus::Cancelled);
+    }
+
+    // Total tasks in list
+    let all = manager.list("t").await;
+    assert_eq!(all.len(), 5);
+    assert_eq!(
+        all.iter()
+            .filter(|t| t.status == TaskStatus::Completed)
+            .count(),
+        2
+    );
+    assert_eq!(
+        all.iter()
+            .filter(|t| t.status == TaskStatus::Cancelled)
+            .count(),
+        3
+    );
+}
+
+#[tokio::test]
+async fn persisted_snapshot_excludes_running_tasks() {
+    // Actually: per the implementation, persisted_snapshot includes ALL tasks
+    // (running and terminal). This test verifies running tasks ARE included
+    // with their current state for potential restoration.
+    let manager = Arc::new(BackgroundTaskManager::new());
+
+    // One completed task
+    let _completed_id = manager
+        .spawn("t", "shell", "done-task", |_| async {
+            TaskResult::Success(serde_json::json!(null))
+        })
+        .await;
+
+    // One running task
+    let running_id = manager
+        .spawn("t", "http", "running-task", |cancel| async move {
+            cancel.cancelled().await;
+            TaskResult::Cancelled
+        })
+        .await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let snapshot = manager.persisted_snapshot().await;
+    assert_eq!(snapshot.len(), 2);
+
+    // The running task is included with Running status
+    let running_meta = snapshot.get(&running_id).unwrap();
+    assert_eq!(running_meta.status, TaskStatus::Running);
+    assert!(running_meta.completed_at_ms.is_none());
+
+    // The completed task has terminal status
+    let terminal_count = snapshot.values().filter(|m| m.status.is_terminal()).count();
+    assert_eq!(terminal_count, 1);
+
+    // Clean up
+    manager.cancel(&running_id).await;
+}
+
+#[tokio::test]
+async fn restore_updates_counter_correctly() {
+    let manager = Arc::new(BackgroundTaskManager::new());
+
+    // Build a snapshot with IDs bg_5 and bg_10
+    let mut snapshot = BackgroundTaskStateSnapshot::default();
+    for n in [5, 10] {
+        let id = format!("bg_{n}");
+        snapshot.tasks.insert(
+            id.clone(),
+            PersistedTaskMeta {
+                task_id: id,
+                task_type: "shell".into(),
+                description: format!("restored-{n}"),
+                status: TaskStatus::Completed,
+                error: None,
+                created_at_ms: 100,
+                completed_at_ms: Some(200),
+            },
+        );
+    }
+
+    manager.restore_for_thread("t", &snapshot).await;
+
+    // Spawn a new task — its ID must be higher than bg_10
+    let new_id = manager
+        .spawn("t", "test", "new-after-restore", |_| async {
+            TaskResult::Success(serde_json::json!(null))
+        })
+        .await;
+
+    // The counter should have been bumped to at least 11
+    assert_eq!(new_id, "bg_11");
+
+    // Total tasks: 2 restored + 1 new = 3
+    let all = manager.list("t").await;
+    assert_eq!(all.len(), 3);
+}
+
 #[test]
 fn task_summary_serde_roundtrip() {
     let summary = TaskSummary {

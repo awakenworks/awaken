@@ -490,7 +490,277 @@ async fn tool_call_flow_complete_lifecycle() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 4: Event ordering invariants on all scenarios combined
+// Test 4: Error event on inference failure
+// ---------------------------------------------------------------------------
+
+struct FailingLlmExecutor;
+
+#[async_trait]
+impl LlmExecutor for FailingLlmExecutor {
+    async fn execute(
+        &self,
+        _req: InferenceRequest,
+    ) -> Result<StreamResult, InferenceExecutionError> {
+        Err(InferenceExecutionError::Provider("model overloaded".into()))
+    }
+
+    fn name(&self) -> &str {
+        "failing-mock"
+    }
+}
+
+#[tokio::test]
+async fn error_event_emitted_on_inference_failure() {
+    let llm = Arc::new(FailingLlmExecutor);
+    let resolver = Arc::new(FixedResolver {
+        agent: ResolvedAgent::new("test", "m", "sys", llm),
+        plugins: vec![],
+    });
+    let runtime = AgentRuntime::new(resolver);
+    let sink = Arc::new(VecEventSink::new());
+
+    let result = runtime
+        .run(
+            RunRequest::new("thread-err", vec![Message::user("hello")]).with_agent_id("test"),
+            sink.clone() as Arc<dyn EventSink>,
+        )
+        .await;
+
+    // The run should return an error because inference failed
+    assert!(result.is_err(), "run should fail on inference error");
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("inference failed"),
+        "error should be InferenceFailed, got: {err}"
+    );
+
+    let events = sink.take();
+    let types: Vec<&str> = events.iter().map(event_type).collect();
+
+    // RunStart should always be the first event, even on failure
+    assert!(
+        !types.is_empty(),
+        "at least RunStart should have been emitted"
+    );
+    assert_eq!(
+        types[0], "run_start",
+        "first event must be run_start even on failure, got: {types:?}"
+    );
+
+    // When inference fails, the error propagates before RunFinish is emitted,
+    // so RunFinish should NOT be present in the stream.
+    assert!(
+        !types.contains(&"run_finish"),
+        "run_finish should not appear when inference errors out, got: {types:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: ActivitySnapshot emitted during tool execution
+// ---------------------------------------------------------------------------
+
+struct ActivityReportingToolMockExecutor {
+    call_count: AtomicUsize,
+}
+
+#[async_trait]
+impl LlmExecutor for ActivityReportingToolMockExecutor {
+    async fn execute(
+        &self,
+        _req: InferenceRequest,
+    ) -> Result<StreamResult, InferenceExecutionError> {
+        let count = self.call_count.fetch_add(1, Ordering::Relaxed);
+        if count == 0 {
+            Ok(StreamResult {
+                content: vec![],
+                tool_calls: vec![ToolCall::new(
+                    "call_act",
+                    "reporting_tool",
+                    json!({"task": "report"}),
+                )],
+                usage: Some(TokenUsage::default()),
+                stop_reason: Some(StopReason::ToolUse),
+                has_incomplete_tool_calls: false,
+            })
+        } else {
+            Ok(StreamResult {
+                content: vec![ContentBlock::text("Done reporting")],
+                tool_calls: vec![],
+                usage: Some(TokenUsage::default()),
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+    }
+
+    fn name(&self) -> &str {
+        "activity-mock"
+    }
+}
+
+/// A tool that emits an ActivitySnapshot via the context's activity_sink.
+struct ReportingTool;
+
+#[async_trait]
+impl Tool for ReportingTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(
+            "reporting_tool",
+            "reporting_tool",
+            "Reports activity progress",
+        )
+    }
+
+    async fn execute(&self, _args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+        // Emit an activity snapshot through the context
+        ctx.report_activity("progress", "50% complete").await;
+        Ok(ToolResult::success(
+            "reporting_tool",
+            json!({"status": "done"}),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn activity_snapshot_emitted_during_tool_execution() {
+    let llm = Arc::new(ActivityReportingToolMockExecutor {
+        call_count: AtomicUsize::new(0),
+    });
+    let resolver = Arc::new(FixedResolver {
+        agent: ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(ReportingTool)),
+        plugins: vec![],
+    });
+    let runtime = AgentRuntime::new(resolver);
+    let sink = Arc::new(VecEventSink::new());
+
+    runtime
+        .run(
+            RunRequest::new("thread-activity", vec![Message::user("do task")])
+                .with_agent_id("test"),
+            sink.clone() as Arc<dyn EventSink>,
+        )
+        .await
+        .expect("run should succeed");
+
+    let events = sink.take();
+    let types: Vec<&str> = events.iter().map(event_type).collect();
+
+    // Verify ordering invariants
+    verify_event_ordering(&events);
+
+    // ActivitySnapshot should be present
+    assert!(
+        types.contains(&"activity_snapshot"),
+        "should contain activity_snapshot: {types:?}"
+    );
+
+    // ActivitySnapshot should appear between tool_call_start and tool_call_done
+    let tool_start_idx = types.iter().position(|t| *t == "tool_call_start").unwrap();
+    let tool_done_idx = types.iter().position(|t| *t == "tool_call_done").unwrap();
+    let activity_idx = types
+        .iter()
+        .position(|t| *t == "activity_snapshot")
+        .unwrap();
+
+    assert!(
+        activity_idx > tool_start_idx,
+        "activity_snapshot ({activity_idx}) should come after tool_call_start ({tool_start_idx}): {types:?}"
+    );
+    assert!(
+        activity_idx < tool_done_idx,
+        "activity_snapshot ({activity_idx}) should come before tool_call_done ({tool_done_idx}): {types:?}"
+    );
+
+    // Verify the activity snapshot content
+    let activity_event = events
+        .iter()
+        .find(|e| matches!(e, AgentEvent::ActivitySnapshot { .. }))
+        .unwrap();
+    if let AgentEvent::ActivitySnapshot {
+        activity_type,
+        content,
+        ..
+    } = activity_event
+    {
+        assert_eq!(activity_type, "progress");
+        assert_eq!(content, &json!("50% complete"));
+    } else {
+        panic!("expected ActivitySnapshot");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: StateSnapshot emitted after StepEnd
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn state_snapshot_emitted_after_step() {
+    let llm = Arc::new(MockLlmExecutor::new().with_responses(vec!["Simple reply".into()]));
+    let resolver = Arc::new(FixedResolver {
+        agent: ResolvedAgent::new("test", "m", "sys", llm),
+        plugins: vec![],
+    });
+    let runtime = AgentRuntime::new(resolver);
+    let sink = Arc::new(VecEventSink::new());
+
+    runtime
+        .run(
+            RunRequest::new("thread-state", vec![Message::user("hi")]).with_agent_id("test"),
+            sink.clone() as Arc<dyn EventSink>,
+        )
+        .await
+        .expect("run should succeed");
+
+    let events = sink.take();
+    let types: Vec<&str> = events.iter().map(event_type).collect();
+
+    // Verify ordering invariants
+    verify_event_ordering(&events);
+
+    // StateSnapshot should be present
+    assert!(
+        types.contains(&"state_snapshot"),
+        "should contain state_snapshot: {types:?}"
+    );
+
+    // The orchestrator emits state_snapshot as part of complete_step (before step_end)
+    // and also before run_finish. Verify that at least one state_snapshot exists
+    // and that a state_snapshot appears before run_finish.
+    let last_state_snapshot_idx = types.iter().rposition(|t| *t == "state_snapshot").unwrap();
+    let run_finish_idx = types.iter().rposition(|t| *t == "run_finish").unwrap();
+    assert!(
+        last_state_snapshot_idx < run_finish_idx,
+        "state_snapshot ({last_state_snapshot_idx}) should appear before run_finish ({run_finish_idx}): {types:?}"
+    );
+
+    // Verify that within complete_step, state_snapshot is emitted before step_end.
+    // Find the first step_end and look for a state_snapshot before it.
+    let first_step_end_idx = types.iter().position(|t| *t == "step_end").unwrap();
+    let has_snapshot_before_step_end = types[..first_step_end_idx]
+        .iter()
+        .any(|t| *t == "state_snapshot");
+    assert!(
+        has_snapshot_before_step_end,
+        "state_snapshot should appear before step_end: {types:?}"
+    );
+
+    // Verify the state snapshot is a valid JSON object
+    let snapshot_event = events
+        .iter()
+        .find(|e| matches!(e, AgentEvent::StateSnapshot { .. }))
+        .unwrap();
+    if let AgentEvent::StateSnapshot { snapshot } = snapshot_event {
+        assert!(
+            snapshot.is_object(),
+            "state snapshot should be a JSON object"
+        );
+    } else {
+        panic!("expected StateSnapshot");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: Event ordering invariants on all scenarios combined
 // ---------------------------------------------------------------------------
 
 #[tokio::test]

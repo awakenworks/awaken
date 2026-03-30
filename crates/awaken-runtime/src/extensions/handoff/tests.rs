@@ -6,7 +6,7 @@ use awaken_contract::model::Phase;
 
 use crate::phase::{ExecutionEnv, PhaseRuntime};
 use crate::plugins::Plugin;
-use crate::state::{KeyScope, StateStore};
+use crate::state::{KeyScope, MutationBatch, StateStore};
 
 use super::*;
 
@@ -393,4 +393,178 @@ fn handoff_full_lifecycle_via_store() {
 
     let state = store.read::<ActiveAgentKey>().unwrap();
     assert!(HandoffPlugin::effective_agent(&state).is_none());
+}
+
+// ---------------------------------------------------------------------------
+// on_deactivate lifecycle tests
+// ---------------------------------------------------------------------------
+
+/// Helper: create a store with handoff keys registered via ExecutionEnv,
+/// returning (store, plugin_arc) so on_deactivate can be called on the Arc.
+fn store_with_handoff_plugin() -> (StateStore, Arc<HandoffPlugin>) {
+    let store = StateStore::new();
+    let plugin = Arc::new(HandoffPlugin::new(HashMap::new()));
+    let plugin_dyn: Arc<dyn Plugin> = plugin.clone();
+    let env = ExecutionEnv::from_plugins(&[plugin_dyn], &Default::default()).unwrap();
+    store.register_keys(&env.key_registrations).unwrap();
+    (store, plugin)
+}
+
+#[test]
+fn on_deactivate_clears_active_agent_key() {
+    let (store, plugin) = store_with_handoff_plugin();
+
+    // Set up active agent state
+    let mut patch = store.begin_mutation();
+    patch.update::<ActiveAgentKey>(HandoffAction::Activate {
+        agent: "fast".into(),
+    });
+    patch.update::<ActiveAgentIdKey>(Some("fast".into()));
+    store.commit(patch).unwrap();
+
+    // Verify state is set
+    let state = store.read::<ActiveAgentKey>().unwrap();
+    assert_eq!(state.active_agent.as_deref(), Some("fast"));
+    assert_eq!(store.read::<ActiveAgentIdKey>(), Some(Some("fast".into())));
+
+    // Call on_deactivate and commit its mutations
+    let mut deactivate_patch = store.begin_mutation();
+    plugin.on_deactivate(&mut deactivate_patch).unwrap();
+    store.commit(deactivate_patch).unwrap();
+
+    // Both keys should be cleared
+    let state = store.read::<ActiveAgentKey>().unwrap();
+    assert!(state.active_agent.is_none());
+    assert!(state.requested_agent.is_none());
+    assert_eq!(store.read::<ActiveAgentIdKey>(), Some(None));
+}
+
+#[test]
+fn on_deactivate_clears_requested_agent_too() {
+    let (store, plugin) = store_with_handoff_plugin();
+
+    // Set up state with both active and requested agents
+    let mut patch = store.begin_mutation();
+    patch.update::<ActiveAgentKey>(HandoffAction::Activate {
+        agent: "fast".into(),
+    });
+    patch.update::<ActiveAgentKey>(HandoffAction::Request {
+        agent: "deep".into(),
+    });
+    patch.update::<ActiveAgentIdKey>(Some("fast".into()));
+    store.commit(patch).unwrap();
+
+    let state = store.read::<ActiveAgentKey>().unwrap();
+    assert_eq!(state.active_agent.as_deref(), Some("fast"));
+    assert_eq!(state.requested_agent.as_deref(), Some("deep"));
+
+    // Deactivate clears both
+    let mut deactivate_patch = store.begin_mutation();
+    plugin.on_deactivate(&mut deactivate_patch).unwrap();
+    store.commit(deactivate_patch).unwrap();
+
+    let state = store.read::<ActiveAgentKey>().unwrap();
+    assert!(state.active_agent.is_none());
+    assert!(state.requested_agent.is_none());
+    assert_eq!(store.read::<ActiveAgentIdKey>(), Some(None));
+}
+
+#[test]
+fn on_deactivate_is_idempotent() {
+    let (store, plugin) = store_with_handoff_plugin();
+
+    // Call on_deactivate on already-empty state (no prior activation)
+    let mut patch = store.begin_mutation();
+    plugin.on_deactivate(&mut patch).unwrap();
+    store.commit(patch).unwrap();
+
+    // Should still succeed; state should be cleared/default
+    let state = store.read::<ActiveAgentKey>();
+    // Either None (never written) or cleared
+    if let Some(state) = state {
+        assert!(state.active_agent.is_none());
+        assert!(state.requested_agent.is_none());
+    }
+
+    // Call again — still fine
+    let mut patch = store.begin_mutation();
+    plugin.on_deactivate(&mut patch).unwrap();
+    store.commit(patch).unwrap();
+}
+
+#[test]
+fn on_deactivate_then_reactivate_via_on_activate() {
+    let (store, plugin) = store_with_handoff_plugin();
+
+    let spec = awaken_contract::registry_spec::AgentSpec::default();
+
+    // Activate plugin
+    let mut activate_patch = store.begin_mutation();
+    plugin.on_activate(&spec, &mut activate_patch).unwrap();
+    store.commit(activate_patch).unwrap();
+
+    // Set agent state
+    let mut patch = store.begin_mutation();
+    patch.update::<ActiveAgentKey>(HandoffAction::Activate {
+        agent: "fast".into(),
+    });
+    patch.update::<ActiveAgentIdKey>(Some("fast".into()));
+    store.commit(patch).unwrap();
+
+    // Deactivate
+    let mut deactivate_patch = store.begin_mutation();
+    plugin.on_deactivate(&mut deactivate_patch).unwrap();
+    store.commit(deactivate_patch).unwrap();
+
+    let state = store.read::<ActiveAgentKey>().unwrap();
+    assert!(state.active_agent.is_none());
+    assert_eq!(store.read::<ActiveAgentIdKey>(), Some(None));
+
+    // Reactivate
+    let mut activate_patch = store.begin_mutation();
+    plugin.on_activate(&spec, &mut activate_patch).unwrap();
+    store.commit(activate_patch).unwrap();
+
+    // State should still be cleared (on_activate for HandoffPlugin is a no-op)
+    let state = store.read::<ActiveAgentKey>().unwrap();
+    assert!(state.active_agent.is_none());
+    assert_eq!(store.read::<ActiveAgentIdKey>(), Some(None));
+}
+
+#[tokio::test]
+async fn on_deactivate_clears_state_after_phase_run() {
+    let store = StateStore::new();
+    let runtime = PhaseRuntime::new(store.clone()).unwrap();
+    let plugin = Arc::new(HandoffPlugin::new(HashMap::new()));
+    let plugin_ref: Arc<dyn Plugin> = plugin.clone();
+    let env = ExecutionEnv::from_plugins(&[plugin_ref], &Default::default()).unwrap();
+    store.register_keys(&env.key_registrations).unwrap();
+
+    // Request and sync a handoff via the phase hook
+    let mut patch = store.begin_mutation();
+    patch.update::<ActiveAgentKey>(request_handoff("reviewer"));
+    store.commit(patch).unwrap();
+
+    runtime.run_phase(&env, Phase::RunStart).await.unwrap();
+
+    // Verify active agent is set after phase run
+    assert_eq!(
+        store.read::<ActiveAgentIdKey>(),
+        Some(Some("reviewer".into()))
+    );
+    let state = store.read::<ActiveAgentKey>().unwrap();
+    assert_eq!(state.active_agent.as_deref(), Some("reviewer"));
+
+    // Now simulate deactivation (as orchestrator would do during handoff)
+    let mut deactivate_patch = store.begin_mutation();
+    for p in &env.plugins {
+        p.on_deactivate(&mut deactivate_patch).unwrap();
+    }
+    store.commit(deactivate_patch).unwrap();
+
+    // State should be fully cleared
+    let state = store.read::<ActiveAgentKey>().unwrap();
+    assert!(state.active_agent.is_none());
+    assert!(state.requested_agent.is_none());
+    assert_eq!(store.read::<ActiveAgentIdKey>(), Some(None));
 }

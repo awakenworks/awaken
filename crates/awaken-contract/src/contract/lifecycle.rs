@@ -353,4 +353,140 @@ mod tests {
         let json = serde_json::to_string(&reason).unwrap();
         assert!(!json.contains("detail"));
     }
+
+    #[test]
+    fn termination_reason_from_done_reason_malformed_input() {
+        // Empty string: falls through to the catch-all, becomes Error("").
+        let empty = TerminationReason::from_done_reason("");
+        assert_eq!(empty, TerminationReason::Error(String::new()));
+
+        // Unknown prefix without colon: becomes Error with the whole string.
+        let unknown = TerminationReason::from_done_reason("gibberish_no_prefix");
+        assert_eq!(
+            unknown,
+            TerminationReason::Error("gibberish_no_prefix".to_string())
+        );
+
+        // Extra colons in blocked value: everything after "blocked:" is kept as-is.
+        let extra_colons = TerminationReason::from_done_reason("blocked:reason:with:colons");
+        assert_eq!(
+            extra_colons,
+            TerminationReason::Blocked("reason:with:colons".to_string())
+        );
+
+        // Extra colons in stopped value: everything after "stopped:" is kept as code.
+        let stopped_colons = TerminationReason::from_done_reason("stopped:code:extra");
+        assert_eq!(
+            stopped_colons,
+            TerminationReason::Stopped(StoppedReason::new("code:extra"))
+        );
+
+        // Extra colons in error value: everything after "error:" is kept.
+        let error_colons = TerminationReason::from_done_reason("error:msg:detail");
+        assert_eq!(
+            error_colons,
+            TerminationReason::Error("msg:detail".to_string())
+        );
+
+        // Prefix with empty value after colon.
+        let blocked_empty = TerminationReason::from_done_reason("blocked:");
+        assert_eq!(blocked_empty, TerminationReason::Blocked(String::new()));
+
+        let stopped_empty = TerminationReason::from_done_reason("stopped:");
+        assert_eq!(
+            stopped_empty,
+            TerminationReason::Stopped(StoppedReason::new(""))
+        );
+
+        let error_empty = TerminationReason::from_done_reason("error:");
+        assert_eq!(error_empty, TerminationReason::Error(String::new()));
+    }
+
+    #[test]
+    fn stop_condition_all_variants_serde() {
+        use serde_json::json;
+
+        let cases: Vec<(StopConditionSpec, serde_json::Value)> = vec![
+            (
+                StopConditionSpec::MaxRounds { rounds: 10 },
+                json!({"type": "max_rounds", "rounds": 10}),
+            ),
+            (
+                StopConditionSpec::Timeout { seconds: 300 },
+                json!({"type": "timeout", "seconds": 300}),
+            ),
+            (
+                StopConditionSpec::TokenBudget { max_total: 50_000 },
+                json!({"type": "token_budget", "max_total": 50000}),
+            ),
+            (
+                StopConditionSpec::ConsecutiveErrors { max: 3 },
+                json!({"type": "consecutive_errors", "max": 3}),
+            ),
+            (
+                StopConditionSpec::StopOnTool {
+                    tool_name: "finish".into(),
+                },
+                json!({"type": "stop_on_tool", "tool_name": "finish"}),
+            ),
+            (
+                StopConditionSpec::ContentMatch {
+                    pattern: r"(?i)complete".into(),
+                },
+                json!({"type": "content_match", "pattern": "(?i)complete"}),
+            ),
+            (
+                StopConditionSpec::LoopDetection { window: 4 },
+                json!({"type": "loop_detection", "window": 4}),
+            ),
+        ];
+
+        for (spec, expected_json) in &cases {
+            // Verify serialization matches expected JSON structure.
+            let serialized = serde_json::to_value(spec).unwrap();
+            assert_eq!(
+                &serialized, expected_json,
+                "Serialization mismatch for {spec:?}"
+            );
+
+            // Verify deserialization from expected JSON produces the correct variant.
+            let parsed: StopConditionSpec = serde_json::from_value(expected_json.clone()).unwrap();
+            assert_eq!(
+                &parsed, spec,
+                "Deserialization mismatch for {expected_json}"
+            );
+        }
+    }
+
+    #[test]
+    fn run_status_all_valid_transitions() {
+        // Valid transitions (including self-transitions).
+        let valid = [
+            (RunStatus::Running, RunStatus::Running),
+            (RunStatus::Running, RunStatus::Waiting),
+            (RunStatus::Running, RunStatus::Done),
+            (RunStatus::Waiting, RunStatus::Running),
+            (RunStatus::Waiting, RunStatus::Waiting),
+            (RunStatus::Waiting, RunStatus::Done),
+            (RunStatus::Done, RunStatus::Done),
+        ];
+        for (from, to) in &valid {
+            assert!(
+                from.can_transition_to(*to),
+                "Expected valid transition: {from:?} -> {to:?}"
+            );
+        }
+
+        // Invalid transitions: Done cannot go back to Running or Waiting.
+        let invalid = [
+            (RunStatus::Done, RunStatus::Running),
+            (RunStatus::Done, RunStatus::Waiting),
+        ];
+        for (from, to) in &invalid {
+            assert!(
+                !from.can_transition_to(*to),
+                "Expected invalid transition: {from:?} -> {to:?}"
+            );
+        }
+    }
 }
