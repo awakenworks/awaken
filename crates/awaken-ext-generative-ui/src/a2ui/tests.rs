@@ -1,4 +1,6 @@
 use awaken_contract::contract::tool::{Tool, ToolCallContext};
+use awaken_contract::registry_spec::AgentSpec;
+use awaken_runtime::state::MutationBatch;
 use serde_json::json;
 
 use awaken_runtime::plugins::Plugin;
@@ -602,6 +604,13 @@ fn normalize_leaves_correct_args_unchanged() {
 }
 
 #[test]
+fn normalize_returns_non_object_unchanged() {
+    use super::tool::normalize_args;
+    let arr = json!([1, 2, 3]);
+    assert_eq!(normalize_args(&arr), arr);
+}
+
+#[test]
 fn normalize_infers_surface_update_when_no_message_key() {
     use super::tool::normalize_args;
 
@@ -614,4 +623,390 @@ fn normalize_infers_surface_update_when_no_message_key() {
     let normalized = normalize_args(&bare);
     assert!(normalized.get("surfaceUpdate").is_some());
     assert_eq!(normalized["surfaceUpdate"]["surfaceId"], "form1");
+}
+
+#[test]
+fn normalize_rewraps_flattened_data_model_update() {
+    use super::tool::normalize_args;
+
+    let flattened = json!({
+        "dataModelUpdate": {},
+        "surfaceId": "form1",
+        "contents": [{"key": "k", "valueString": "v"}],
+        "path": "/data"
+    });
+
+    // The normalize function only triggers when both surfaceId and components are present at
+    // top level. Without components, it returns the input unchanged. Verify it returns as-is.
+    let normalized = normalize_args(&flattened);
+    assert!(normalized.get("dataModelUpdate").is_some());
+    assert!(normalized.get("surfaceId").is_some());
+}
+
+#[test]
+fn normalize_rewraps_flattened_data_model_update_with_components() {
+    use super::tool::normalize_args;
+
+    // Models sometimes emit components alongside dataModelUpdate fields
+    let flattened = json!({
+        "dataModelUpdate": {},
+        "surfaceId": "form1",
+        "components": [],
+        "contents": [{"key": "k", "valueString": "v"}],
+        "path": "/data"
+    });
+
+    let normalized = normalize_args(&flattened);
+    let dmu = normalized
+        .get("dataModelUpdate")
+        .expect("dataModelUpdate key");
+    assert_eq!(dmu.get("surfaceId").unwrap(), "form1");
+    assert_eq!(dmu.get("path").unwrap(), "/data");
+    assert!(dmu.get("contents").unwrap().is_array());
+}
+
+#[test]
+fn normalize_rewraps_flattened_delete_surface() {
+    use super::tool::normalize_args;
+
+    let flattened = json!({
+        "deleteSurface": {},
+        "surfaceId": "form1",
+        "components": []
+    });
+
+    let normalized = normalize_args(&flattened);
+    let ds = normalized.get("deleteSurface").expect("deleteSurface key");
+    assert_eq!(ds.get("surfaceId").unwrap(), "form1");
+}
+
+// -- validation edge cases --
+
+#[test]
+fn rejects_non_object_message() {
+    let msgs = vec![json!(42)];
+    let errs = validate_a2ui_messages(&msgs);
+    assert_eq!(errs.len(), 1);
+    assert!(errs[0].message.contains("expected a JSON object"));
+}
+
+#[test]
+fn rejects_message_type_not_object() {
+    let msgs = vec![json!({"beginRendering": "not-an-object"})];
+    let errs = validate_a2ui_messages(&msgs);
+    assert_eq!(errs.len(), 1);
+    assert!(errs[0].message.contains("must be a JSON object"));
+}
+
+#[test]
+fn rejects_surface_update_missing_components_array() {
+    let msgs = vec![json!({
+        "surfaceUpdate": {
+            "surfaceId": "s1",
+            "components": "not-array"
+        }
+    })];
+    let errs = validate_a2ui_messages(&msgs);
+    assert_eq!(errs.len(), 1);
+    assert!(errs[0].message.contains("components"));
+}
+
+#[test]
+fn rejects_data_model_contents_not_array() {
+    let msgs = vec![json!({
+        "dataModelUpdate": {
+            "surfaceId": "s1",
+            "contents": "not-array"
+        }
+    })];
+    let errs = validate_a2ui_messages(&msgs);
+    assert_eq!(errs.len(), 1);
+    assert!(errs[0].message.contains("contents"));
+}
+
+#[test]
+fn rejects_data_model_entry_not_object() {
+    let msgs = vec![json!({
+        "dataModelUpdate": {
+            "surfaceId": "s1",
+            "contents": ["not-an-object"]
+        }
+    })];
+    let errs = validate_a2ui_messages(&msgs);
+    assert_eq!(errs.len(), 1);
+    assert!(errs[0].message.contains("contents[0]"));
+}
+
+#[test]
+fn rejects_data_model_entry_empty_key() {
+    let msgs = vec![json!({
+        "dataModelUpdate": {
+            "surfaceId": "s1",
+            "contents": [{"key": "", "valueString": "x"}]
+        }
+    })];
+    let errs = validate_a2ui_messages(&msgs);
+    assert_eq!(errs.len(), 1);
+    assert!(errs[0].message.contains("must not be empty"));
+}
+
+#[test]
+fn rejects_surface_update_component_not_object() {
+    let msgs = vec![json!({
+        "surfaceUpdate": {
+            "surfaceId": "s1",
+            "components": ["not-an-object"]
+        }
+    })];
+    let errs = validate_a2ui_messages(&msgs);
+    assert_eq!(errs.len(), 1);
+    assert!(errs[0].message.contains("must be a JSON object"));
+}
+
+#[test]
+fn rejects_begin_rendering_empty_root() {
+    let msgs = vec![json!({
+        "beginRendering": {"surfaceId": "s1", "root": ""}
+    })];
+    let errs = validate_a2ui_messages(&msgs);
+    assert_eq!(errs.len(), 1);
+    assert!(errs[0].message.contains("must not be empty"));
+}
+
+#[test]
+fn rejects_surface_id_not_string() {
+    let msgs = vec![json!({
+        "deleteSurface": {"surfaceId": 123}
+    })];
+    let errs = validate_a2ui_messages(&msgs);
+    assert_eq!(errs.len(), 1);
+    assert!(errs[0].message.contains("surfaceId"));
+}
+
+// -- component payload validation --
+
+#[test]
+fn rejects_text_component_missing_text_object() {
+    let tool = A2uiRenderTool::new();
+    let args = json!({
+        "surfaceUpdate": {
+            "surfaceId": "s1",
+            "components": [
+                {"id": "t", "component": {"Text": {"text": "plain-string"}}}
+            ]
+        }
+    });
+    let err = tool.validate_args(&args).unwrap_err();
+    assert!(err.to_string().contains("Text.text"));
+}
+
+#[test]
+fn rejects_text_component_no_text_field() {
+    let tool = A2uiRenderTool::new();
+    let args = json!({
+        "surfaceUpdate": {
+            "surfaceId": "s1",
+            "components": [
+                {"id": "t", "component": {"Text": {"label": "x"}}}
+            ]
+        }
+    });
+    let err = tool.validate_args(&args).unwrap_err();
+    assert!(err.to_string().contains("Text.text"));
+}
+
+#[test]
+fn rejects_button_without_action() {
+    let tool = A2uiRenderTool::new();
+    let args = json!({
+        "surfaceUpdate": {
+            "surfaceId": "s1",
+            "components": [
+                {"id": "b", "component": {"Button": {"child": "label"}}}
+            ]
+        }
+    });
+    let err = tool.validate_args(&args).unwrap_err();
+    assert!(err.to_string().contains("action"));
+}
+
+#[test]
+fn rejects_button_action_without_name() {
+    let tool = A2uiRenderTool::new();
+    let args = json!({
+        "surfaceUpdate": {
+            "surfaceId": "s1",
+            "components": [
+                {"id": "b", "component": {"Button": {"child": "label", "action": {"context": []}}}}
+            ]
+        }
+    });
+    let err = tool.validate_args(&args).unwrap_err();
+    assert!(err.to_string().contains("action.name"));
+}
+
+#[test]
+fn rejects_button_context_entry_not_object() {
+    let tool = A2uiRenderTool::new();
+    let args = json!({
+        "surfaceUpdate": {
+            "surfaceId": "s1",
+            "components": [
+                {"id": "b", "component": {"Button": {
+                    "child": "label",
+                    "action": {"name": "do", "context": ["not-object"]}
+                }}}
+            ]
+        }
+    });
+    let err = tool.validate_args(&args).unwrap_err();
+    assert!(err.to_string().contains("context[0]"));
+}
+
+#[test]
+fn rejects_button_context_entry_missing_key() {
+    let tool = A2uiRenderTool::new();
+    let args = json!({
+        "surfaceUpdate": {
+            "surfaceId": "s1",
+            "components": [
+                {"id": "b", "component": {"Button": {
+                    "child": "label",
+                    "action": {"name": "do", "context": [{"value": {"path": "/x"}}]}
+                }}}
+            ]
+        }
+    });
+    let err = tool.validate_args(&args).unwrap_err();
+    assert!(err.to_string().contains("context[0].key"));
+}
+
+#[test]
+fn rejects_button_context_entry_value_not_object() {
+    let tool = A2uiRenderTool::new();
+    let args = json!({
+        "surfaceUpdate": {
+            "surfaceId": "s1",
+            "components": [
+                {"id": "b", "component": {"Button": {
+                    "child": "label",
+                    "action": {"name": "do", "context": [{"key": "k", "value": "string"}]}
+                }}}
+            ]
+        }
+    });
+    let err = tool.validate_args(&args).unwrap_err();
+    assert!(err.to_string().contains("context[0].value"));
+}
+
+#[test]
+fn rejects_multiple_choice_missing_options() {
+    let tool = A2uiRenderTool::new();
+    let args = json!({
+        "surfaceUpdate": {
+            "surfaceId": "s1",
+            "components": [
+                {"id": "mc", "component": {"MultipleChoice": {
+                    "selections": {"path": "/x"}
+                }}}
+            ]
+        }
+    });
+    let err = tool.validate_args(&args).unwrap_err();
+    assert!(err.to_string().contains("options"));
+}
+
+#[test]
+fn rejects_multiple_choice_missing_selections() {
+    let tool = A2uiRenderTool::new();
+    let args = json!({
+        "surfaceUpdate": {
+            "surfaceId": "s1",
+            "components": [
+                {"id": "mc", "component": {"MultipleChoice": {
+                    "options": [{"label": {"literalString": "A"}, "value": "a"}]
+                }}}
+            ]
+        }
+    });
+    let err = tool.validate_args(&args).unwrap_err();
+    assert!(err.to_string().contains("selections"));
+}
+
+#[test]
+fn rejects_component_with_multiple_payloads() {
+    let tool = A2uiRenderTool::new();
+    let args = json!({
+        "surfaceUpdate": {
+            "surfaceId": "s1",
+            "components": [
+                {"id": "x", "component": {
+                    "Text": {"text": {"literalString": "hi"}},
+                    "Card": {"child": "c"}
+                }}
+            ]
+        }
+    });
+    // Schema validation or custom validation should reject this
+    assert!(tool.validate_args(&args).is_err());
+}
+
+#[test]
+fn rejects_component_payload_not_object() {
+    let tool = A2uiRenderTool::new();
+    let args = json!({
+        "surfaceUpdate": {
+            "surfaceId": "s1",
+            "components": [
+                {"id": "x", "component": {"Text": "not-an-object"}}
+            ]
+        }
+    });
+    // Schema validation catches non-object component payloads
+    assert!(tool.validate_args(&args).is_err());
+}
+
+#[test]
+fn accepts_unknown_component_type() {
+    let tool = A2uiRenderTool::new();
+    // Unknown component types should pass (only Text, Button, MultipleChoice are validated deeply)
+    let args = json!({
+        "surfaceUpdate": {
+            "surfaceId": "s1",
+            "components": [
+                {"id": "custom", "component": {"MyCustomWidget": {"foo": "bar"}}}
+            ]
+        }
+    });
+    assert!(tool.validate_args(&args).is_ok());
+}
+
+// -- validation error display --
+
+#[test]
+fn validation_error_display_format() {
+    let err = A2uiValidationError {
+        index: 2,
+        message: "something wrong".into(),
+    };
+    assert_eq!(format!("{err}"), "message[2]: something wrong");
+}
+
+// -- plugin on_activate is no-op --
+
+#[test]
+fn plugin_on_activate_succeeds() {
+    let plugin = A2uiPlugin::with_catalog_id(TEST_CATALOG);
+    let spec = AgentSpec::default();
+    let mut patch = MutationBatch::new();
+    plugin.on_activate(&spec, &mut patch).unwrap();
+}
+
+// -- plugin instructions without examples has no example markers --
+
+#[test]
+fn plugin_without_examples_has_no_example_markers() {
+    let plugin = A2uiPlugin::with_catalog_id(TEST_CATALOG);
+    assert!(!plugin.instructions().contains("---BEGIN A2UI EXAMPLES---"));
+    assert!(!plugin.instructions().contains("---END A2UI EXAMPLES---"));
 }

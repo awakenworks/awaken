@@ -372,7 +372,7 @@ fn is_numeric_index(segment: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::{compile_output, system_prompt};
 
@@ -449,5 +449,493 @@ mod tests {
             "Approved"
         );
         assert_eq!(compiled["elements"]["workspace"]["children"], json!([]));
+    }
+
+    // -- compile_output error paths --
+
+    #[test]
+    fn rejects_empty_input() {
+        let err = compile_output("").expect_err("empty input should fail");
+        assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn rejects_whitespace_only_input() {
+        let err = compile_output("   \n\n  ").expect_err("whitespace-only should fail");
+        assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn rejects_invalid_json_fallback() {
+        // No valid patches, so it tries to parse the whole thing as JSON
+        let err = compile_output("not valid json at all").expect_err("invalid JSON should fail");
+        assert!(err.contains("invalid JSON output"));
+    }
+
+    #[test]
+    fn rejects_complete_json_missing_root() {
+        let err = compile_output(r#"{"elements":{"w":{"type":"Card"}}}"#)
+            .expect_err("missing root should fail");
+        assert!(err.contains("non-empty string root"));
+    }
+
+    #[test]
+    fn rejects_complete_json_with_empty_root() {
+        let err = compile_output(r#"{"root":"","elements":{"w":{"type":"Card"}}}"#)
+            .expect_err("empty root should fail");
+        assert!(err.contains("non-empty string root"));
+    }
+
+    #[test]
+    fn rejects_complete_json_root_not_in_elements() {
+        let err = compile_output(r#"{"root":"missing","elements":{"w":{"type":"Card"}}}"#)
+            .expect_err("root not in elements should fail");
+        assert!(err.contains("does not exist in elements"));
+    }
+
+    #[test]
+    fn rejects_non_object_spec() {
+        let err = compile_output(r#"[1,2,3]"#).expect_err("array should fail");
+        assert!(err.contains("JSON object"));
+    }
+
+    #[test]
+    fn rejects_complete_json_missing_elements() {
+        let err = compile_output(r#"{"root":"w"}"#).expect_err("missing elements should fail");
+        assert!(err.contains("elements object"));
+    }
+
+    // -- move operation --
+
+    #[test]
+    fn supports_move_operation() {
+        let compiled = compile_output(
+            r#"{"op":"add","path":"/root","value":"w"}
+{"op":"add","path":"/elements/w","value":{"type":"Card","props":{},"children":[]}}
+{"op":"add","path":"/temp","value":"hello"}
+{"op":"move","path":"/state","from":"/temp"}"#,
+        )
+        .expect("move should work");
+        assert_eq!(compiled["state"], "hello");
+        assert!(compiled.get("temp").is_none());
+    }
+
+    #[test]
+    fn move_without_from_fails() {
+        let err = compile_output(
+            r#"{"op":"add","path":"/root","value":"w"}
+{"op":"move","path":"/state"}"#,
+        )
+        .expect_err("move without from should fail");
+        assert!(err.contains("missing `from`"));
+    }
+
+    #[test]
+    fn move_from_nonexistent_path_is_noop() {
+        // move from a path that doesn't exist should silently succeed
+        let compiled = compile_output(
+            r#"{"op":"add","path":"/root","value":"w"}
+{"op":"add","path":"/elements/w","value":{"type":"Card","props":{},"children":[]}}
+{"op":"move","path":"/dest","from":"/nonexistent"}"#,
+        )
+        .expect("move from nonexistent should succeed");
+        assert!(compiled.get("dest").is_none());
+    }
+
+    // -- copy operation --
+
+    #[test]
+    fn supports_copy_operation() {
+        let compiled = compile_output(
+            r#"{"op":"add","path":"/root","value":"w"}
+{"op":"add","path":"/elements/w","value":{"type":"Card","props":{},"children":[]}}
+{"op":"add","path":"/source","value":"data"}
+{"op":"copy","path":"/dest","from":"/source"}"#,
+        )
+        .expect("copy should work");
+        assert_eq!(compiled["source"], "data");
+        assert_eq!(compiled["dest"], "data");
+    }
+
+    #[test]
+    fn copy_without_from_fails() {
+        let err = compile_output(
+            r#"{"op":"add","path":"/root","value":"w"}
+{"op":"copy","path":"/dest"}"#,
+        )
+        .expect_err("copy without from should fail");
+        assert!(err.contains("missing `from`"));
+    }
+
+    #[test]
+    fn copy_from_nonexistent_path_is_noop() {
+        let compiled = compile_output(
+            r#"{"op":"add","path":"/root","value":"w"}
+{"op":"add","path":"/elements/w","value":{"type":"Card","props":{},"children":[]}}
+{"op":"copy","path":"/dest","from":"/nonexistent"}"#,
+        )
+        .expect("copy from nonexistent should succeed");
+        assert!(compiled.get("dest").is_none());
+    }
+
+    // -- test operation --
+
+    #[test]
+    fn test_op_passes_when_values_match() {
+        let compiled = compile_output(
+            r#"{"op":"add","path":"/root","value":"w"}
+{"op":"add","path":"/elements/w","value":{"type":"Card","props":{},"children":[]}}
+{"op":"test","path":"/root","value":"w"}"#,
+        )
+        .expect("test op should pass when values match");
+        assert_eq!(compiled["root"], "w");
+    }
+
+    #[test]
+    fn test_op_fails_when_values_differ() {
+        let err = compile_output(
+            r#"{"op":"add","path":"/root","value":"w"}
+{"op":"test","path":"/root","value":"wrong"}"#,
+        )
+        .expect_err("test op should fail when values differ");
+        assert!(err.contains("test patch failed"));
+    }
+
+    #[test]
+    fn test_op_fails_when_path_missing() {
+        let err = compile_output(
+            r#"{"op":"add","path":"/root","value":"w"}
+{"op":"test","path":"/nonexistent","value":"x"}"#,
+        )
+        .expect_err("test op should fail for missing path");
+        assert!(err.contains("test patch failed"));
+    }
+
+    #[test]
+    fn test_op_without_value_fails() {
+        let err = compile_output(
+            r#"{"op":"add","path":"/root","value":"w"}
+{"op":"test","path":"/root"}"#,
+        )
+        .expect_err("test op without value should fail");
+        assert!(err.contains("missing `value`"));
+    }
+
+    // -- unsupported operation --
+
+    #[test]
+    fn rejects_unsupported_operation() {
+        let err = compile_output(
+            r#"{"op":"add","path":"/root","value":"w"}
+{"op":"bogus","path":"/foo","value":1}"#,
+        )
+        .expect_err("unsupported op should fail");
+        assert!(err.contains("unsupported spec stream operation"));
+    }
+
+    // -- skips blank/invalid lines --
+
+    #[test]
+    fn skips_blank_lines_in_stream() {
+        let compiled = compile_output(
+            r#"{"op":"add","path":"/root","value":"w"}
+
+{"op":"add","path":"/elements/w","value":{"type":"Card","props":{},"children":[]}}
+
+"#,
+        )
+        .expect("blank lines should be skipped");
+        assert_eq!(compiled["root"], "w");
+    }
+
+    #[test]
+    fn skips_unparseable_lines() {
+        let compiled = compile_output(
+            r#"{"op":"add","path":"/root","value":"w"}
+this is not json
+{"op":"add","path":"/elements/w","value":{"type":"Card","props":{},"children":[]}}"#,
+        )
+        .expect("unparseable lines should be skipped");
+        assert_eq!(compiled["root"], "w");
+    }
+
+    #[test]
+    fn skips_patches_with_empty_path() {
+        let compiled = compile_output(
+            r#"{"op":"add","path":"/root","value":"w"}
+{"op":"add","path":"","value":"ignored"}
+{"op":"add","path":"/elements/w","value":{"type":"Card","props":{},"children":[]}}"#,
+        )
+        .expect("empty-path patches should be skipped");
+        assert_eq!(compiled["root"], "w");
+    }
+
+    // -- JSON Pointer tilde escaping --
+
+    #[test]
+    fn handles_tilde_escape_in_paths() {
+        use super::parse_json_pointer;
+        let segments = parse_json_pointer("/a~1b/c~0d");
+        assert_eq!(segments, vec!["a/b".to_string(), "c~d".to_string()]);
+    }
+
+    // -- get_by_path --
+
+    #[test]
+    fn get_by_path_root() {
+        use super::get_by_path;
+        let val = json!({"a": 1});
+        assert_eq!(get_by_path(&val, ""), Some(&json!({"a": 1})));
+        assert_eq!(get_by_path(&val, "/"), Some(&json!({"a": 1})));
+    }
+
+    #[test]
+    fn get_by_path_array_index() {
+        use super::get_by_path;
+        let val = json!({"items": [10, 20, 30]});
+        assert_eq!(get_by_path(&val, "/items/1"), Some(&json!(20)));
+    }
+
+    #[test]
+    fn get_by_path_invalid_array_index() {
+        use super::get_by_path;
+        let val = json!({"items": [10, 20]});
+        assert_eq!(get_by_path(&val, "/items/abc"), None);
+        assert_eq!(get_by_path(&val, "/items/99"), None);
+    }
+
+    #[test]
+    fn get_by_path_through_non_container() {
+        use super::get_by_path;
+        let val = json!({"x": 42});
+        assert_eq!(get_by_path(&val, "/x/nested"), None);
+    }
+
+    // -- set_by_path --
+
+    #[test]
+    fn set_by_path_replaces_root() {
+        use super::set_by_path;
+        let mut val = json!({"old": true});
+        set_by_path(&mut val, "", json!("replaced"));
+        assert_eq!(val, json!("replaced"));
+    }
+
+    #[test]
+    fn set_by_path_slash_replaces_root() {
+        use super::set_by_path;
+        let mut val = json!({"old": true});
+        set_by_path(&mut val, "/", json!("replaced"));
+        assert_eq!(val, json!("replaced"));
+    }
+
+    #[test]
+    fn set_by_path_into_array() {
+        use super::set_by_path;
+        let mut val = json!({"arr": [1, 2, 3]});
+        set_by_path(&mut val, "/arr/1", json!(99));
+        assert_eq!(val["arr"], json!([1, 99, 3]));
+    }
+
+    #[test]
+    fn set_by_path_extends_array() {
+        use super::set_by_path;
+        let mut val = json!({"arr": [1]});
+        set_by_path(&mut val, "/arr/3", json!(99));
+        assert_eq!(val["arr"], json!([1, Value::Null, Value::Null, 99]));
+    }
+
+    #[test]
+    fn set_by_path_array_dash() {
+        use super::set_by_path;
+        let mut val = json!({"arr": [1, 2]});
+        set_by_path(&mut val, "/arr/-", json!(3));
+        assert_eq!(val["arr"], json!([1, 2, 3]));
+    }
+
+    // -- add_by_path --
+
+    #[test]
+    fn add_by_path_root_replacement() {
+        use super::add_by_path;
+        let mut val = json!({"old": true});
+        add_by_path(&mut val, "", json!("new"));
+        assert_eq!(val, json!("new"));
+    }
+
+    #[test]
+    fn add_by_path_array_insert_at_index() {
+        use super::add_by_path;
+        let mut val = json!({"arr": [1, 2, 3]});
+        add_by_path(&mut val, "/arr/1", json!(99));
+        assert_eq!(val["arr"], json!([1, 99, 2, 3]));
+    }
+
+    #[test]
+    fn add_by_path_array_dash_appends() {
+        use super::add_by_path;
+        let mut val = json!({"arr": [1, 2]});
+        add_by_path(&mut val, "/arr/-", json!(3));
+        assert_eq!(val["arr"], json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn add_by_path_on_non_container_last_segment() {
+        use super::add_by_path;
+        let mut val = json!({"x": 42});
+        // x is a scalar; adding /x/- triggers ensure_parent_container to overwrite
+        // the scalar with an object, then add_by_path inserts into it
+        add_by_path(&mut val, "/x/child", json!("value"));
+        assert_eq!(val["x"]["child"], json!("value"));
+    }
+
+    // -- remove_by_path --
+
+    #[test]
+    fn remove_by_path_root_is_noop() {
+        use super::remove_by_path;
+        let mut val = json!({"a": 1});
+        remove_by_path(&mut val, "");
+        assert_eq!(val, json!({"a": 1}));
+    }
+
+    #[test]
+    fn remove_by_path_from_array() {
+        use super::remove_by_path;
+        let mut val = json!({"arr": [10, 20, 30]});
+        remove_by_path(&mut val, "/arr/1");
+        assert_eq!(val["arr"], json!([10, 30]));
+    }
+
+    #[test]
+    fn remove_by_path_out_of_bounds_is_noop() {
+        use super::remove_by_path;
+        let mut val = json!({"arr": [10]});
+        remove_by_path(&mut val, "/arr/5");
+        assert_eq!(val["arr"], json!([10]));
+    }
+
+    #[test]
+    fn remove_by_path_from_object() {
+        use super::remove_by_path;
+        let mut val = json!({"a": 1, "b": 2});
+        remove_by_path(&mut val, "/a");
+        assert_eq!(val, json!({"b": 2}));
+    }
+
+    #[test]
+    fn remove_by_path_nonexistent_parent_is_noop() {
+        use super::remove_by_path;
+        let mut val = json!({"a": 1});
+        remove_by_path(&mut val, "/missing/child");
+        assert_eq!(val, json!({"a": 1}));
+    }
+
+    #[test]
+    fn remove_by_path_non_numeric_array_index_is_noop() {
+        use super::remove_by_path;
+        let mut val = json!({"arr": [10, 20]});
+        remove_by_path(&mut val, "/arr/abc");
+        assert_eq!(val["arr"], json!([10, 20]));
+    }
+
+    // -- ensure_parent_container edge cases --
+
+    #[test]
+    fn ensure_parent_container_creates_nested_containers() {
+        use super::add_by_path;
+        // "-" is treated as a string key in objects (not an array append)
+        // when the parent container is an object
+        let mut val = json!({});
+        add_by_path(&mut val, "/data/items/-", json!("first"));
+        // "items" is an object because "-" is not purely numeric
+        // "-" becomes a key in the "items" object
+        assert_eq!(val["data"]["items"]["-"], json!("first"));
+    }
+
+    #[test]
+    fn ensure_parent_container_overwrites_scalar() {
+        use super::add_by_path;
+        let mut val = json!({"x": "scalar"});
+        // x is a string but we're trying to navigate into it
+        add_by_path(&mut val, "/x/nested", json!("deep"));
+        assert_eq!(val["x"]["nested"], json!("deep"));
+    }
+
+    // -- is_numeric_index --
+
+    #[test]
+    fn is_numeric_index_checks() {
+        use super::is_numeric_index;
+        assert!(is_numeric_index("0"));
+        assert!(is_numeric_index("123"));
+        assert!(!is_numeric_index(""));
+        assert!(!is_numeric_index("abc"));
+        assert!(!is_numeric_index("-"));
+        assert!(!is_numeric_index("12a"));
+    }
+
+    // -- ACTIVITY_TYPE constant --
+
+    #[test]
+    fn activity_type_constant() {
+        assert_eq!(super::ACTIVITY_TYPE, "generative-ui.json-render");
+    }
+
+    // -- system_prompt includes catalog --
+
+    #[test]
+    fn system_prompt_includes_catalog() {
+        let prompt = system_prompt(r#"[{"Card":{}},{"Text":{}}]"#);
+        assert!(prompt.contains(r#"[{"Card":{}},{"Text":{}}]"#));
+        assert!(prompt.contains("Available Components"));
+    }
+
+    // -- full round-trip with move and copy --
+
+    #[test]
+    fn full_round_trip_with_copy_and_move() {
+        let compiled = compile_output(
+            r#"{"op":"add","path":"/root","value":"main"}
+{"op":"add","path":"/elements/main","value":{"type":"Card","props":{"title":"Original"},"children":[]}}
+{"op":"copy","path":"/elements/backup","from":"/elements/main"}
+{"op":"move","path":"/elements/primary","from":"/elements/main"}
+{"op":"replace","path":"/root","value":"primary"}"#,
+        )
+        .expect("round trip should work");
+
+        // main was moved to primary
+        assert!(compiled["elements"].get("main").is_none());
+        assert_eq!(compiled["elements"]["primary"]["type"], "Card");
+        // backup was copied before the move
+        assert_eq!(compiled["elements"]["backup"]["type"], "Card");
+        assert_eq!(compiled["root"], "primary");
+    }
+
+    // -- add with no value defaults to null --
+
+    #[test]
+    fn add_without_value_uses_null() {
+        let compiled = compile_output(
+            r#"{"op":"add","path":"/root","value":"w"}
+{"op":"add","path":"/elements/w","value":{"type":"Card","props":{},"children":[]}}
+{"op":"add","path":"/nullfield"}"#,
+        )
+        .expect("add without value should use null");
+        assert_eq!(compiled["nullfield"], json!(null));
+    }
+
+    // -- replace without value uses null --
+
+    #[test]
+    fn replace_without_value_uses_null() {
+        let compiled = compile_output(
+            r#"{"op":"add","path":"/root","value":"w"}
+{"op":"add","path":"/elements/w","value":{"type":"Card","props":{},"children":[]}}
+{"op":"add","path":"/field","value":"something"}
+{"op":"replace","path":"/field"}"#,
+        )
+        .expect("replace without value should use null");
+        assert_eq!(compiled["field"], json!(null));
     }
 }

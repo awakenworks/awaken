@@ -15,6 +15,7 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 
 [dev-dependencies]
+awaken-runtime = { workspace = true, features = ["test-utils"] }
 tokio = { workspace = true }
 
 [lints]

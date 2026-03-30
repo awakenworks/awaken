@@ -180,3 +180,117 @@ async fn active_instructions_empty_for_no_active_skills() {
     let rendered = plugin.render_active_instructions(vec![]).await;
     assert!(rendered.is_empty());
 }
+
+#[tokio::test]
+async fn active_instructions_skips_unknown_skill() {
+    let (_td, skills) = make_skills();
+    let plugin = ActiveSkillInstructionsPlugin::new(make_registry(skills));
+    let rendered = plugin
+        .render_active_instructions(vec!["nonexistent-skill".to_string()])
+        .await;
+    assert!(
+        rendered.is_empty(),
+        "unknown skill should produce empty output"
+    );
+}
+
+#[tokio::test]
+async fn active_instructions_deduplicates_ids() {
+    let td = TempDir::new().unwrap();
+    let root = td.path().join("skills");
+    fs::create_dir_all(root.join("docx")).unwrap();
+    fs::write(
+        root.join("docx").join("SKILL.md"),
+        "---\nname: docx\ndescription: ok\n---\nUse docx.\n",
+    )
+    .unwrap();
+
+    let result = FsSkill::discover(root).unwrap();
+    let skills = FsSkill::into_arc_skills(result.skills);
+    let plugin = ActiveSkillInstructionsPlugin::new(make_registry(skills));
+    let rendered = plugin
+        .render_active_instructions(vec!["docx".to_string(), "docx".to_string()])
+        .await;
+    // Should only contain one skill_instruction block despite duplicate IDs
+    assert_eq!(
+        rendered.matches("<skill_instruction").count(),
+        1,
+        "duplicate IDs should be deduped"
+    );
+}
+
+#[tokio::test]
+async fn active_instructions_renders_sorted_order() {
+    let td = TempDir::new().unwrap();
+    let root = td.path().join("skills");
+    fs::create_dir_all(root.join("z-skill")).unwrap();
+    fs::create_dir_all(root.join("a-skill")).unwrap();
+    fs::write(
+        root.join("z-skill").join("SKILL.md"),
+        "---\nname: z-skill\ndescription: ok\n---\nZ instructions.\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("a-skill").join("SKILL.md"),
+        "---\nname: a-skill\ndescription: ok\n---\nA instructions.\n",
+    )
+    .unwrap();
+
+    let result = FsSkill::discover(root).unwrap();
+    let skills = FsSkill::into_arc_skills(result.skills);
+    let plugin = ActiveSkillInstructionsPlugin::new(make_registry(skills));
+    let rendered = plugin
+        .render_active_instructions(vec!["z-skill".to_string(), "a-skill".to_string()])
+        .await;
+    let a_pos = rendered.find("a-skill").expect("should contain a-skill");
+    let z_pos = rendered.find("z-skill").expect("should contain z-skill");
+    assert!(
+        a_pos < z_pos,
+        "skills should be rendered in sorted order (a before z)"
+    );
+}
+
+#[tokio::test]
+async fn active_instructions_skips_skill_with_empty_body() {
+    let td = TempDir::new().unwrap();
+    let root = td.path().join("skills");
+    fs::create_dir_all(root.join("empty-body")).unwrap();
+    fs::write(
+        root.join("empty-body").join("SKILL.md"),
+        "---\nname: empty-body\ndescription: ok\n---\n   \n",
+    )
+    .unwrap();
+
+    let result = FsSkill::discover(root).unwrap();
+    let skills = FsSkill::into_arc_skills(result.skills);
+    let plugin = ActiveSkillInstructionsPlugin::new(make_registry(skills));
+    let rendered = plugin
+        .render_active_instructions(vec!["empty-body".to_string()])
+        .await;
+    assert!(
+        rendered.is_empty(),
+        "skill with whitespace-only body should produce empty output"
+    );
+}
+
+#[tokio::test]
+async fn active_instructions_mixed_valid_and_unknown() {
+    let td = TempDir::new().unwrap();
+    let root = td.path().join("skills");
+    fs::create_dir_all(root.join("real-skill")).unwrap();
+    fs::write(
+        root.join("real-skill").join("SKILL.md"),
+        "---\nname: real-skill\ndescription: ok\n---\nReal instructions.\n",
+    )
+    .unwrap();
+
+    let result = FsSkill::discover(root).unwrap();
+    let skills = FsSkill::into_arc_skills(result.skills);
+    let plugin = ActiveSkillInstructionsPlugin::new(make_registry(skills));
+    let rendered = plugin
+        .render_active_instructions(vec!["nonexistent".to_string(), "real-skill".to_string()])
+        .await;
+    assert!(rendered.contains("<active_skill_instructions>"));
+    assert!(rendered.contains("Real instructions."));
+    assert!(!rendered.contains("nonexistent"));
+}

@@ -453,4 +453,369 @@ mod tests {
             .to_string();
         assert!(err.contains("invalid script arguments"));
     }
+
+    // --- materialize_reference_bytes ---
+
+    #[test]
+    fn reference_bytes_basic() {
+        let bytes = b"hello world";
+        let r = materialize_reference_bytes("s1", "references/doc.md", bytes).unwrap();
+        assert_eq!(r.skill, "s1");
+        assert_eq!(r.path, "references/doc.md");
+        assert_eq!(r.content, "hello world");
+        assert!(!r.truncated);
+        assert_eq!(r.bytes, 11);
+        assert!(!r.sha256.is_empty());
+    }
+
+    #[test]
+    fn reference_bytes_truncates_oversized() {
+        let bytes = vec![b'A'; MAX_REFERENCE_BYTES + 100];
+        let r = materialize_reference_bytes("s1", "references/big.txt", &bytes).unwrap();
+        assert!(r.truncated);
+        assert_eq!(r.content.len(), MAX_REFERENCE_BYTES);
+        assert_eq!(r.bytes, (MAX_REFERENCE_BYTES + 100) as u64);
+    }
+
+    #[test]
+    fn reference_bytes_rejects_non_utf8() {
+        let bytes = vec![0xFF, 0xFE, 0x80];
+        let err = materialize_reference_bytes("s1", "references/bin.dat", &bytes)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("utf-8"));
+    }
+
+    #[test]
+    fn reference_bytes_rejects_wrong_prefix() {
+        let err = materialize_reference_bytes("s1", "assets/doc.md", b"hi")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("expected under references"));
+    }
+
+    // --- materialize_asset_bytes ---
+
+    #[test]
+    fn asset_bytes_basic() {
+        let bytes = vec![0x89, 0x50, 0x4e, 0x47];
+        let a = materialize_asset_bytes("s1", "assets/logo.png", &bytes, None).unwrap();
+        assert_eq!(a.skill, "s1");
+        assert_eq!(a.path, "assets/logo.png");
+        assert_eq!(a.encoding, "base64");
+        assert!(!a.truncated);
+        assert_eq!(a.bytes, 4);
+        assert_eq!(a.media_type.as_deref(), Some("image/png"));
+    }
+
+    #[test]
+    fn asset_bytes_truncates_oversized() {
+        let bytes = vec![0x42; MAX_ASSET_BYTES + 200];
+        let a = materialize_asset_bytes("s1", "assets/big.bin", &bytes, None).unwrap();
+        assert!(a.truncated);
+        assert_eq!(a.bytes, (MAX_ASSET_BYTES + 200) as u64);
+    }
+
+    #[test]
+    fn asset_bytes_uses_explicit_media_type() {
+        let a = materialize_asset_bytes(
+            "s1",
+            "assets/x.bin",
+            b"data",
+            Some("application/custom".to_string()),
+        )
+        .unwrap();
+        assert_eq!(a.media_type.as_deref(), Some("application/custom"));
+    }
+
+    #[test]
+    fn asset_bytes_rejects_wrong_prefix() {
+        let err = materialize_asset_bytes("s1", "references/x.png", b"data", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("expected under assets"));
+    }
+
+    // --- normalize_relative_path ---
+
+    #[test]
+    fn normalize_rejects_empty() {
+        let err = normalize_relative_path("").unwrap_err().to_string();
+        assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn normalize_rejects_whitespace_only() {
+        let err = normalize_relative_path("   ").unwrap_err().to_string();
+        assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn normalize_rejects_absolute() {
+        let err = normalize_relative_path("/etc/passwd")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("absolute"));
+    }
+
+    #[test]
+    fn normalize_rejects_parent_dir() {
+        let err = normalize_relative_path("../secret")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("parent_dir"));
+    }
+
+    #[test]
+    fn normalize_strips_curdir() {
+        let p = normalize_relative_path("./references/doc.md").unwrap();
+        assert_eq!(p.to_string_lossy(), "references/doc.md");
+    }
+
+    #[test]
+    fn normalize_rejects_dot_only() {
+        let err = normalize_relative_path(".").unwrap_err().to_string();
+        assert!(err.contains("empty"));
+    }
+
+    // --- normalize_material_path ---
+
+    #[test]
+    fn material_path_with_url_scheme_valid() {
+        // The URL check triggers on "://" anywhere in the path, then checks prefix is "references/"
+        let p = normalize_material_path("references/http://example.com/doc", "references").unwrap();
+        assert_eq!(p, "references/http://example.com/doc");
+    }
+
+    #[test]
+    fn material_path_with_url_scheme_wrong_prefix() {
+        let err = normalize_material_path("assets/http://example.com", "references")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("expected under references"));
+    }
+
+    #[test]
+    fn material_path_non_url_rejects_empty_after_normalize() {
+        let err = normalize_material_path("", "references")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("empty"));
+    }
+
+    // --- validate_script_args ---
+
+    #[test]
+    fn script_args_rejects_nul_byte() {
+        let args = vec!["hello\0world".to_string()];
+        let err = validate_script_args(&args).unwrap_err().to_string();
+        assert!(err.contains("NUL byte"));
+    }
+
+    #[test]
+    fn script_args_rejects_single_oversized_arg() {
+        let args = vec!["x".repeat(MAX_SCRIPT_ARG_BYTES + 1)];
+        let err = validate_script_args(&args).unwrap_err().to_string();
+        assert!(err.contains(&format!("exceeds {MAX_SCRIPT_ARG_BYTES}")));
+    }
+
+    #[test]
+    fn script_args_rejects_total_oversized() {
+        // Each arg is just under the single-arg limit, but total exceeds
+        let arg_size = MAX_SCRIPT_ARG_BYTES;
+        let num_args = (MAX_SCRIPT_ARGS_TOTAL_BYTES / arg_size) + 1;
+        let args: Vec<String> = (0..num_args).map(|_| "x".repeat(arg_size)).collect();
+        let err = validate_script_args(&args).unwrap_err().to_string();
+        assert!(err.contains("total argument size"));
+    }
+
+    #[test]
+    fn script_args_accepts_valid() {
+        let args = vec!["--flag".to_string(), "value".to_string()];
+        assert!(validate_script_args(&args).is_ok());
+    }
+
+    // --- runtime_for_script ---
+
+    #[test]
+    fn runtime_for_sh_script() {
+        let (prog, _) = runtime_for_script(Path::new("test.sh")).unwrap();
+        assert_eq!(prog, "bash");
+    }
+
+    #[test]
+    fn runtime_for_py_script() {
+        let (prog, _) = runtime_for_script(Path::new("test.py")).unwrap();
+        assert_eq!(prog, "python3");
+    }
+
+    #[test]
+    fn runtime_for_js_script() {
+        let (prog, _) = runtime_for_script(Path::new("test.js")).unwrap();
+        assert_eq!(prog, "node");
+    }
+
+    #[test]
+    fn runtime_for_unsupported_extension() {
+        let err = runtime_for_script(Path::new("test.rb"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("runtime not supported"));
+    }
+
+    #[test]
+    fn runtime_for_no_extension() {
+        let err = runtime_for_script(Path::new("script"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("runtime not supported"));
+    }
+
+    // --- infer_media_type ---
+
+    #[test]
+    fn infer_media_type_common_formats() {
+        assert_eq!(
+            infer_media_type(Path::new("x.png")),
+            Some("image/png".to_string())
+        );
+        assert_eq!(
+            infer_media_type(Path::new("x.jpg")),
+            Some("image/jpeg".to_string())
+        );
+        assert_eq!(
+            infer_media_type(Path::new("x.jpeg")),
+            Some("image/jpeg".to_string())
+        );
+        assert_eq!(
+            infer_media_type(Path::new("x.gif")),
+            Some("image/gif".to_string())
+        );
+        assert_eq!(
+            infer_media_type(Path::new("x.webp")),
+            Some("image/webp".to_string())
+        );
+        assert_eq!(
+            infer_media_type(Path::new("x.svg")),
+            Some("image/svg+xml".to_string())
+        );
+        assert_eq!(
+            infer_media_type(Path::new("x.pdf")),
+            Some("application/pdf".to_string())
+        );
+        assert_eq!(
+            infer_media_type(Path::new("x.json")),
+            Some("application/json".to_string())
+        );
+        assert_eq!(
+            infer_media_type(Path::new("x.md")),
+            Some("text/markdown".to_string())
+        );
+        assert_eq!(
+            infer_media_type(Path::new("x.txt")),
+            Some("text/plain".to_string())
+        );
+        assert_eq!(
+            infer_media_type(Path::new("x.csv")),
+            Some("text/csv".to_string())
+        );
+        assert_eq!(
+            infer_media_type(Path::new("x.yaml")),
+            Some("application/yaml".to_string())
+        );
+        assert_eq!(
+            infer_media_type(Path::new("x.yml")),
+            Some("application/yaml".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_media_type_unknown_extension() {
+        assert_eq!(infer_media_type(Path::new("x.xyz")), None);
+    }
+
+    #[test]
+    fn infer_media_type_no_extension() {
+        assert_eq!(infer_media_type(Path::new("Makefile")), None);
+    }
+
+    // --- truncate_bytes ---
+
+    #[test]
+    fn truncate_bytes_no_truncation() {
+        let (s, t) = truncate_bytes(b"hello", 10);
+        assert_eq!(s, "hello");
+        assert!(!t);
+    }
+
+    #[test]
+    fn truncate_bytes_exact_limit() {
+        let (s, t) = truncate_bytes(b"hello", 5);
+        assert_eq!(s, "hello");
+        assert!(!t);
+    }
+
+    #[test]
+    fn truncate_bytes_over_limit() {
+        let (s, t) = truncate_bytes(b"hello world", 5);
+        assert_eq!(s, "hello");
+        assert!(t);
+    }
+
+    // --- load_reference_material with filesystem ---
+
+    #[test]
+    fn load_reference_rejects_path_with_parent_dir() {
+        let td = TempDir::new().unwrap();
+        let err = load_reference_material("s1", td.path(), "../references/x.md")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("parent_dir"));
+    }
+
+    #[test]
+    fn load_asset_rejects_non_asset_prefix() {
+        let td = TempDir::new().unwrap();
+        fs::create_dir_all(td.path().join("references")).unwrap();
+        fs::write(td.path().join("references").join("x.md"), "hi").unwrap();
+        let err = load_asset_material("s1", td.path(), "references/x.md")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("expected under assets"));
+    }
+
+    #[test]
+    fn load_reference_nonexistent_file() {
+        let td = TempDir::new().unwrap();
+        fs::create_dir_all(td.path().join("references")).unwrap();
+        let err = load_reference_material("s1", td.path(), "references/missing.md")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("io error") || err.contains("No such file"));
+    }
+
+    #[test]
+    fn load_asset_nonexistent_file() {
+        let td = TempDir::new().unwrap();
+        fs::create_dir_all(td.path().join("assets")).unwrap();
+        let err = load_asset_material("s1", td.path(), "assets/missing.png")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("io error") || err.contains("No such file"));
+    }
+
+    // --- require_prefix ---
+
+    #[test]
+    fn require_prefix_rejects_wrong_prefix() {
+        let rel = PathBuf::from("assets/x.md");
+        let err = require_prefix(&rel, "references").unwrap_err().to_string();
+        assert!(err.contains("expected under references"));
+    }
+
+    #[test]
+    fn require_prefix_accepts_correct() {
+        let rel = PathBuf::from("references/x.md");
+        assert!(require_prefix(&rel, "references").is_ok());
+    }
 }
