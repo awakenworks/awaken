@@ -421,7 +421,7 @@ mod tests {
             origin: MailboxJobOrigin::User,
             sender_id: None,
             parent_run_id: None,
-            overrides: None,
+            request_extras: None,
             priority: 128,
             dedupe_key: None,
             generation: 0,

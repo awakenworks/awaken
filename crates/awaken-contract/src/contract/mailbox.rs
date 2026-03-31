@@ -282,7 +282,7 @@ mod tests {
             origin: MailboxJobOrigin::User,
             sender_id: Some("user-42".to_string()),
             parent_run_id: None,
-            overrides: Some(serde_json::json!({"temperature": 0.7})),
+            request_extras: Some(serde_json::json!({"overrides": {"temperature": 0.7}})),
             priority: 128,
             dedupe_key: Some("req-xyz".to_string()),
             generation: 1,
@@ -312,7 +312,7 @@ mod tests {
         assert_eq!(parsed.origin, MailboxJobOrigin::User);
         assert_eq!(parsed.sender_id.as_deref(), Some("user-42"));
         assert!(parsed.parent_run_id.is_none());
-        assert!(parsed.overrides.is_some());
+        assert!(parsed.request_extras.is_some());
         assert_eq!(parsed.priority, 128);
         assert_eq!(parsed.dedupe_key.as_deref(), Some("req-xyz"));
         assert_eq!(parsed.generation, 1);

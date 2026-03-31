@@ -1304,8 +1304,10 @@ mod tests {
         let runtime = make_runtime();
         let mailbox = make_mailbox(runtime, store);
 
-        let messages = vec![Message::user("test")];
-        let job = mailbox.build_job("thread-42", Some("agent-x"), messages.clone());
+        let request =
+            RunRequest::new("thread-42", vec![Message::user("test")]).with_agent_id("agent-x");
+        let messages = request.messages.clone();
+        let job = mailbox.build_job(&request, "thread-42", messages);
 
         assert_eq!(job.mailbox_id, "thread-42");
         assert_eq!(job.agent_id, "agent-x");
@@ -1320,6 +1322,8 @@ mod tests {
         assert!(job.lease_until.is_none());
         assert!(job.last_error.is_none());
         assert!(matches!(job.origin, MailboxJobOrigin::User));
+        // request_extras is None when no overrides/decisions/frontend_tools
+        assert!(job.request_extras.is_none());
     }
 
     #[tokio::test]
@@ -1328,8 +1332,29 @@ mod tests {
         let runtime = make_runtime();
         let mailbox = make_mailbox(runtime, store);
 
-        let job = mailbox.build_job("thread-1", None, vec![Message::user("hi")]);
+        let request = RunRequest::new("thread-1", vec![Message::user("hi")]);
+        let messages = request.messages.clone();
+        let job = mailbox.build_job(&request, "thread-1", messages);
         assert_eq!(job.agent_id, "");
+    }
+
+    #[tokio::test]
+    async fn build_job_preserves_request_extras() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store);
+
+        let request = RunRequest::new("thread-ext", vec![Message::user("hi")])
+            .with_agent_id("a1")
+            .with_frontend_tools(vec![awaken_contract::contract::tool::ToolDescriptor::new(
+                "ft1", "FT1", "desc",
+            )]);
+        let messages = request.messages.clone();
+        let job = mailbox.build_job(&request, "thread-ext", messages);
+
+        assert!(job.request_extras.is_some());
+        let extras = job.request_extras.unwrap();
+        assert!(extras["frontend_tools"].is_array());
     }
 
     // ── MailboxError variants ──────────────────────────────────────
