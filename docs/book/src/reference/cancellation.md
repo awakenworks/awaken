@@ -109,6 +109,30 @@ tokio::select! {
 }
 ```
 
+## Auto-cancellation on new message
+
+When a new message is submitted to a thread that already has an active run
+(e.g. a run suspended while waiting for tool approval), the runtime
+automatically cancels the old run before starting the new one.
+
+This prevents the `ThreadAlreadyRunning` error and avoids infinite retry
+loops. The sequence is:
+
+1. `Mailbox::submit()` detects an active run on the thread.
+2. Calls `AgentRuntime::cancel_and_wait_by_thread()` which signals the
+   `CancellationToken` and waits (up to 5 seconds) for the `RunSlotGuard`
+   to drop and free the thread slot.
+3. The old run emits `RunFinish` with `TerminationReason::Cancelled`.
+4. Before the new run starts inference, `strip_unpaired_tool_calls()`
+   removes any orphaned tool calls from the message history that were
+   left by the cancelled run (assistant messages with `tool_calls` that
+   have no matching `Tool` role response).
+
+This ensures clean handoff between runs without leaving dangling state
+that would confuse the LLM.
+
 ## Key Files
 
 - `crates/awaken-runtime/src/cancellation.rs` -- `CancellationToken` implementation
+- `crates/awaken-runtime/src/runtime/agent_runtime/active_registry.rs` -- run tracking with completion notification
+- `crates/awaken-runtime/src/runtime/agent_runtime/runner.rs` -- `strip_unpaired_tool_calls()`
