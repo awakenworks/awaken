@@ -233,18 +233,21 @@ impl AiSdkEncoder {
             }
 
             AgentEvent::RunFinish { termination, .. } => {
-                // For Suspended termination, suppress the finish event.
-                // The SSE stream stays open so the frontend can render
-                // interactive UI for tool parts in `input-available` state
-                // (e.g. color picker, user question). The user's interaction
-                // submits via addToolOutput → decision channel → orchestrator
-                // resumes and emits subsequent events on the same stream.
+                // For Suspended termination, emit finish(tool-calls) to tell
+                // the frontend to render interactive tool UI, then mark the
+                // guard finished. Turn 1 SSE closes. When the frontend submits
+                // tool output (Turn 2), the HTTP handler reconnects the event
+                // sink via ReconnectableEventSink and the resumed run emits
+                // events on the new SSE stream.
                 if matches!(termination, TerminationReason::Suspended) {
+                    self.guard.mark_finished();
                     let mut events = Vec::new();
                     if self.text_open {
                         events.push(self.close_text());
                     }
                     events.extend(self.close_all_reasoning());
+                    events.push(UIStreamEvent::finish_step());
+                    events.push(UIStreamEvent::finish_with_reason("tool-calls"));
                     return events;
                 }
                 self.guard.mark_finished();
@@ -682,9 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn run_finish_suspended_emits_tool_calls_finish_without_guard() {
-        // Suspended RunFinish is suppressed — stream stays open for
-        // frontend tool interaction via the same SSE connection.
+    fn run_finish_suspended_emits_finish_tool_calls_and_marks_guard() {
         let mut enc = AiSdkEncoder::new();
         let events = enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
@@ -692,19 +693,139 @@ mod tests {
             result: None,
             termination: TerminationReason::Suspended,
         });
+        // Should emit finish-step + finish(tool-calls)
         assert!(
-            !events
+            events
                 .iter()
-                .any(|e| matches!(e, UIStreamEvent::Finish { .. })),
-            "suspended should not emit finish"
+                .any(|e| matches!(e, UIStreamEvent::Finish { finish_reason, .. }
+                if finish_reason.as_deref() == Some("tool-calls")))
         );
-        // Guard should NOT be set — subsequent events should still work
+        // Guard IS set — Turn 1 SSE closes
+        let text_events = enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "blocked".into(),
+        });
+        assert!(
+            text_events.is_empty(),
+            "guard should block after suspended finish"
+        );
+        // RunStart resets the guard for Turn 2
+        enc.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        });
         let text_events = enc.on_agent_event(&AgentEvent::TextDelta {
             delta: "resumed".into(),
         });
         assert!(
             !text_events.is_empty(),
-            "guard should not block after suspended"
+            "RunStart should reset guard for Turn 2"
+        );
+    }
+
+    #[test]
+    fn two_turn_reconnect_lifecycle() {
+        // Simulates the full Turn 1 (suspend) → Turn 2 (resume) flow.
+        // Each turn uses a separate encoder (HTTP handler creates one per request).
+
+        // ── Turn 1: user message → tool call → suspend ──
+        let mut enc1 = AiSdkEncoder::new();
+        let mut turn1 = Vec::new();
+        turn1.extend(enc1.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        }));
+        turn1.extend(enc1.on_agent_event(&AgentEvent::StepStart {
+            message_id: "m1".into(),
+        }));
+        turn1.extend(enc1.on_agent_event(&AgentEvent::ToolCallStart {
+            id: "tc1".into(),
+            name: "set_background_color".into(),
+        }));
+        turn1.extend(enc1.on_agent_event(&AgentEvent::ToolCallReady {
+            id: "tc1".into(),
+            name: "set_background_color".into(),
+            arguments: serde_json::json!({"colors": ["#dbeafe"]}),
+        }));
+        turn1.extend(enc1.on_agent_event(&AgentEvent::ToolCallDone {
+            id: "tc1".into(),
+            message_id: "m1".into(),
+            result: ToolResult::suspended("set_background_color", "awaiting input"),
+            outcome: ToolCallOutcome::Suspended,
+        }));
+        turn1.extend(enc1.on_agent_event(&AgentEvent::StepEnd));
+        turn1.extend(enc1.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::Suspended,
+        }));
+
+        // Turn 1 should end with finish(tool-calls)
+        let turn1_json: Vec<String> = turn1
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap())
+            .collect();
+        assert!(
+            turn1_json.iter().any(|j| j.contains("tool-calls")),
+            "Turn 1 should emit finish(tool-calls)"
+        );
+        assert!(
+            turn1_json
+                .iter()
+                .any(|j| j.contains("tool-input-available")),
+            "Turn 1 should contain tool-input-available"
+        );
+
+        // After Turn 1 finishes, encoder guard is set — events are blocked
+        let blocked = enc1.on_agent_event(&AgentEvent::TextDelta {
+            delta: "should be blocked".into(),
+        });
+        assert!(blocked.is_empty(), "guard should block after Turn 1 finish");
+
+        // ── Turn 2: resume via reconnected SSE ──
+        // HTTP handler creates a NEW encoder for the new SSE stream
+        let mut enc2 = AiSdkEncoder::new();
+        let mut turn2 = Vec::new();
+        // RunStart on the resumed run resets the new encoder's guard
+        turn2.extend(enc2.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        }));
+        turn2.extend(enc2.on_agent_event(&AgentEvent::ToolCallResumed {
+            target_id: "tc1".into(),
+            result: serde_json::json!({"selected_color": "#dbeafe"}),
+        }));
+        turn2.extend(enc2.on_agent_event(&AgentEvent::StepStart {
+            message_id: "m2".into(),
+        }));
+        turn2.extend(enc2.on_agent_event(&AgentEvent::TextDelta {
+            delta: "Color set to blue!".into(),
+        }));
+        turn2.extend(enc2.on_agent_event(&AgentEvent::StepEnd));
+        turn2.extend(enc2.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::NaturalEnd,
+        }));
+
+        // Turn 2 should contain the resumed text and finish(stop)
+        let turn2_json: Vec<String> = turn2
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap())
+            .collect();
+        assert!(
+            turn2_json.iter().any(|j| j.contains("Color set to blue!")),
+            "Turn 2 should contain resumed text"
+        );
+        assert!(
+            turn2_json
+                .iter()
+                .any(|j| j.contains("\"finishReason\":\"stop\"")),
+            "Turn 2 should finish with stop"
         );
     }
 
@@ -992,14 +1113,19 @@ mod tests {
             termination: TerminationReason::Suspended,
         }));
 
-        // A finish(tool-calls) should have been emitted (without guard)
+        // finish(tool-calls) was emitted for Turn 1
         let finish_count = all
             .iter()
             .filter(|e| matches!(e, UIStreamEvent::Finish { .. }))
             .count();
-        assert_eq!(finish_count, 0, "RunFinish(Suspended) should be suppressed");
+        assert_eq!(finish_count, 1, "Turn 1 should emit finish(tool-calls)");
 
-        // Phase 2: resume → ToolCallResumed → continued execution → real finish
+        // Phase 2 (Turn 2): RunStart resets guard → resume → finish
+        all.extend(enc.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        }));
         all.extend(enc.on_agent_event(&AgentEvent::ToolCallResumed {
             target_id: "tc1".into(),
             result: serde_json::json!({"approved": true}),
@@ -1018,15 +1144,12 @@ mod tests {
             termination: TerminationReason::NaturalEnd,
         }));
 
-        // One finish: only the real NaturalEnd (suspended was suppressed)
+        // Two finishes: tool-calls (Turn 1) + stop (Turn 2)
         let finish_count = all
             .iter()
             .filter(|e| matches!(e, UIStreamEvent::Finish { .. }))
             .count();
-        assert_eq!(
-            finish_count, 1,
-            "should have one finish event (natural end only)"
-        );
+        assert_eq!(finish_count, 2, "should have two finish events");
 
         // Resumed text should appear
         let json_all: Vec<String> = all

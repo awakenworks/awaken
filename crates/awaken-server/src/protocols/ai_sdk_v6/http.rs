@@ -123,36 +123,63 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
     } = processed;
 
     // If the request contains tool-call decisions and the thread has an
-    // active (suspended) run, deliver the decisions via the decision
-    // channel to resume the existing run. This handles the AI SDK
-    // `sendAutomaticallyWhen` pattern where `addToolOutput` triggers a
-    // new HTTP POST that includes both messages and decisions.
+    // active (suspended) run, reconnect the event sink and deliver
+    // decisions to resume the run on a fresh SSE stream.
     if !decisions.is_empty() {
-        let mut any_delivered = false;
-        for (tool_call_id, resume) in &decisions {
-            if st
-                .mailbox
-                .send_decision(&thread_id, tool_call_id.clone(), resume.clone())
-            {
-                any_delivered = true;
+        let (new_event_tx, new_event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let reconnected = st.mailbox.reconnect_sink(&thread_id, new_event_tx).await;
+
+        if reconnected {
+            let mut any_delivered = false;
+            for (tool_call_id, resume) in &decisions {
+                if st
+                    .mailbox
+                    .send_decision(&thread_id, tool_call_id.clone(), resume.clone())
+                {
+                    any_delivered = true;
+                }
+            }
+
+            if any_delivered {
+                // Wire the reconnected channel to a fresh SSE stream.
+                let replay_buffer =
+                    Arc::new(EventReplayBuffer::new(st.config.replay_buffer_capacity));
+                st.replay_buffers
+                    .lock()
+                    .insert(thread_id.clone(), Arc::clone(&replay_buffer));
+
+                let encoder = AiSdkEncoder::new();
+                let sse_rx = wire_sse_relay(
+                    new_event_rx,
+                    encoder,
+                    st.config.sse_buffer_size,
+                    Some(Arc::clone(&replay_buffer)),
+                );
+
+                let buffers = Arc::clone(&st.replay_buffers);
+                let replay_buf = Arc::clone(&replay_buffer);
+                let tid = thread_id;
+                let mut rx = sse_rx;
+                let (final_tx, final_rx) =
+                    tokio::sync::mpsc::channel::<Bytes>(st.config.sse_buffer_size);
+                tokio::spawn(async move {
+                    while let Some(frame) = rx.recv().await {
+                        if final_tx.send(frame).await.is_err() {
+                            break;
+                        }
+                    }
+                    replay_buf.close_subscribers();
+                    buffers.lock().remove(&tid);
+                });
+
+                return Ok(sse_response(sse_body_stream(final_rx)));
             }
         }
-        if any_delivered {
-            // Decisions were delivered to the active run. Stream from the
-            // existing SSE connection — the orchestrator will resume and
-            // emit events on the original stream.
-            let response = stream_existing_thread_from_now(&st, &thread_id)?;
-            return Ok(response);
-        }
-        // If no decisions were delivered (no active run), fall through
-        // to the normal submit path which starts a new run.
+        // If reconnect or decision delivery failed, fall through.
     }
 
     if resume_only {
-        // Pure resume with no messages and no active run. This commonly
-        // happens when AI SDK's `sendAutomaticallyWhen` fires after a
-        // frontend tool's output was already consumed. Return an empty
-        // stream rather than an error — the frontend ignores it.
+        // Pure resume with no active run — return empty stream.
         let (_, rx) = tokio::sync::mpsc::unbounded_channel();
         let encoder = AiSdkEncoder::new();
         let sse_rx = crate::http_run::wire_sse_relay(rx, encoder, st.config.sse_buffer_size, None);

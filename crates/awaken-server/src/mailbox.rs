@@ -26,7 +26,7 @@ use awaken_contract::contract::suspension::{ToolCallOutcome, ToolCallResume};
 use awaken_contract::now_ms;
 use awaken_runtime::{AgentRuntime, RunRequest};
 
-use crate::transport::channel_sink::ChannelEventSink;
+use crate::transport::channel_sink::ReconnectableEventSink;
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -114,6 +114,7 @@ enum MailboxWorkerStatus {
     Running {
         job_id: String,
         lease_handle: JoinHandle<()>,
+        sink: Arc<ReconnectableEventSink>,
     },
 }
 
@@ -251,6 +252,9 @@ impl Mailbox {
                 Arc::clone(&suspended),
             );
 
+            // Create reconnectable sink for SSE reconnection on resume.
+            let reconnectable_sink = Arc::new(ReconnectableEventSink::new(event_tx.clone()));
+
             // Update worker state.
             let worker = self.get_or_create_worker(&mailbox_id).await;
             {
@@ -258,6 +262,7 @@ impl Mailbox {
                 w.status = MailboxWorkerStatus::Running {
                     job_id: job_id.clone(),
                     lease_handle,
+                    sink: Arc::clone(&reconnectable_sink),
                 };
             }
 
@@ -265,6 +270,7 @@ impl Mailbox {
             self.spawn_execution(
                 claimed_job,
                 event_tx.clone(),
+                reconnectable_sink,
                 claim_token,
                 mailbox_id,
                 suspended,
@@ -377,6 +383,29 @@ impl Mailbox {
     /// Forward a tool-call decision to an active run.
     pub fn send_decision(&self, id: &str, tool_call_id: String, resume: ToolCallResume) -> bool {
         self.runtime.send_decision(id, tool_call_id, resume)
+    }
+
+    /// Reconnect the event sink for an active (suspended) run.
+    ///
+    /// Replaces the underlying channel sender so subsequent events flow to
+    /// `new_tx`. Returns `true` if the thread has an active worker.
+    pub async fn reconnect_sink(
+        &self,
+        thread_id: &str,
+        new_tx: mpsc::UnboundedSender<AgentEvent>,
+    ) -> bool {
+        let workers = self.workers.read().await;
+        let Some(worker) = workers.get(thread_id) else {
+            return false;
+        };
+        let w = worker.lock().await;
+        match &w.status {
+            MailboxWorkerStatus::Running { sink, .. } => {
+                sink.reconnect(new_tx).await;
+                true
+            }
+            MailboxWorkerStatus::Idle => false,
+        }
     }
 
     // ── Query ────────────────────────────────────────────────────────
@@ -501,6 +530,10 @@ impl Mailbox {
             Arc::clone(&suspended),
         );
 
+        // Create channel for background dispatch (events go nowhere unless observed).
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let reconnectable_sink = Arc::new(ReconnectableEventSink::new(event_tx.clone()));
+
         // Update worker state.
         let worker = self.get_or_create_worker(mailbox_id).await;
         {
@@ -508,15 +541,14 @@ impl Mailbox {
             w.status = MailboxWorkerStatus::Running {
                 job_id: job_id.clone(),
                 lease_handle,
+                sink: Arc::clone(&reconnectable_sink),
             };
         }
-
-        // Create channel for background dispatch (events go nowhere unless observed).
-        let (event_tx, _event_rx) = mpsc::unbounded_channel();
 
         self.spawn_execution(
             job,
             event_tx,
+            reconnectable_sink,
             claim_token,
             mailbox_id.to_string(),
             suspended,
@@ -612,6 +644,7 @@ impl Mailbox {
         self: &Arc<Self>,
         job: MailboxJob,
         event_tx: mpsc::UnboundedSender<AgentEvent>,
+        reconnectable_sink: Arc<ReconnectableEventSink>,
         claim_token: String,
         mailbox_id: String,
         suspended: Arc<AtomicBool>,
@@ -621,9 +654,8 @@ impl Mailbox {
         let job_id = job.job_id.clone();
 
         tokio::spawn(async move {
-            let inner_sink: Arc<dyn EventSink> = Arc::new(ChannelEventSink::new(event_tx.clone()));
             let sink = SuspensionAwareSink {
-                inner: inner_sink,
+                inner: reconnectable_sink as Arc<dyn EventSink>,
                 suspended,
             };
 

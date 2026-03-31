@@ -244,8 +244,8 @@ fn natural_end_maps_to_stop_reason() {
 }
 
 #[test]
-fn suspended_emits_nothing() {
-    // Suspended RunFinish is suppressed — stream stays open
+fn suspended_emits_finish_tool_calls() {
+    // Suspended RunFinish emits finish(tool-calls) and marks guard
     let mut enc = AiSdkEncoder::new();
     let events = enc.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
@@ -254,9 +254,10 @@ fn suspended_emits_nothing() {
         termination: TerminationReason::Suspended,
     });
     assert!(
-        !events
+        events
             .iter()
-            .any(|e| matches!(e, UIStreamEvent::Finish { .. }))
+            .any(|e| matches!(e, UIStreamEvent::Finish { finish_reason, .. }
+                if finish_reason.as_deref() == Some("tool-calls")))
     );
 }
 
