@@ -170,7 +170,8 @@ function ActiveChatPanel({
     );
   }
 
-  const showWelcome = messages.length === 0 && recommendedActions.length > 0;
+  const showWelcome =
+    messages.length === 0 && !isLoading && recommendedActions.length > 0;
 
   return (
     <div className="flex h-full flex-col">
