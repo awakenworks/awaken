@@ -327,14 +327,16 @@ impl UIStreamEvent {
         }
     }
 
-    /// Client-side (resumed) tool output — no providerExecuted flag.
+    /// Resumed tool output — marked as providerExecuted so frontend
+    /// `sendAutomaticallyWhen` skips it (the result was already delivered
+    /// to the LLM via the backend's decision channel).
     pub fn tool_output_resumed(tool_call_id: impl Into<String>, output: Value) -> Self {
         Self::ToolOutputAvailable {
             tool_call_id: tool_call_id.into(),
             output,
             dynamic: None,
             preliminary: None,
-            provider_executed: None,
+            provider_executed: Some(true),
         }
     }
 
