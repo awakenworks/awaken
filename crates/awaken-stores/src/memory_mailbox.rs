@@ -73,6 +73,14 @@ impl MailboxStore for InMemoryMailboxStore {
     ) -> Result<Vec<MailboxJob>, StorageError> {
         let mut jobs = self.jobs.write().await;
 
+        // Same mailbox must not have two Claimed jobs concurrently.
+        let has_claimed = jobs
+            .values()
+            .any(|j| j.mailbox_id == mailbox_id && j.status == MailboxJobStatus::Claimed);
+        if has_claimed {
+            return Ok(vec![]);
+        }
+
         // Collect eligible job IDs, sorted by (priority ASC, created_at ASC).
         let mut eligible: Vec<&String> = jobs
             .iter()

@@ -79,8 +79,11 @@ pub struct MailboxJob {
     pub sender_id: Option<String>,
     /// Parent-child run linkage.
     pub parent_run_id: Option<String>,
-    /// Inference overrides, serialized.
-    pub overrides: Option<Value>,
+    /// Opaque RunRequest extras (overrides, decisions, frontend_tools, etc.)
+    /// serialized as JSON. Mailbox does not inspect this; it is passed
+    /// through to `spawn_execution` which reconstructs the full RunRequest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_extras: Option<Value>,
 
     // ── queue semantics ──
     /// 0 = highest, 255 = lowest, default 128.

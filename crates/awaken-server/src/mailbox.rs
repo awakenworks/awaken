@@ -5,7 +5,7 @@
 //! enqueue, lease-based claim, execution via [`AgentRuntime`], and lifecycle
 //! management (lease renewal, sweep, GC).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -111,6 +111,9 @@ impl Default for MailboxConfig {
 /// Per-thread worker status.
 enum MailboxWorkerStatus {
     Idle,
+    /// Transitional: claim in progress. Prevents TOCTOU race where two
+    /// concurrent dispatches both see Idle and both try to claim.
+    Claiming,
     Running {
         job_id: String,
         lease_handle: JoinHandle<()>,
@@ -118,17 +121,15 @@ enum MailboxWorkerStatus {
     },
 }
 
-/// Per-thread worker with pending job buffer.
+/// Per-thread worker. Store is the sole queue authority.
 struct MailboxWorker {
     status: MailboxWorkerStatus,
-    pending: VecDeque<MailboxJob>,
 }
 
 impl Default for MailboxWorker {
     fn default() -> Self {
         Self {
             status: MailboxWorkerStatus::Idle,
-            pending: VecDeque::new(),
         }
     }
 }
@@ -209,17 +210,31 @@ impl Mailbox {
         self: &Arc<Self>,
         request: RunRequest,
     ) -> Result<(MailboxSubmitResult, mpsc::UnboundedReceiver<AgentEvent>), MailboxError> {
-        let frontend_tools = request.frontend_tools;
-        let (thread_id, messages) = validate_run_inputs(request.thread_id, request.messages)?;
+        let (thread_id, messages) =
+            validate_run_inputs(request.thread_id.clone(), request.messages.clone())?;
 
-        // Cancel any existing active run on this thread before starting a new one.
-        // This handles the common case where a suspended run (awaiting tool approval)
-        // should be abandoned when the user sends a new message.
-        if self.runtime.cancel_and_wait_by_thread(&thread_id).await {
-            tracing::info!(thread_id = %thread_id, "cancelled existing run for new submission");
+        // Step 1: Interrupt — bump generation, supersede stale queued jobs.
+        let now = now_ms();
+        match self.store.interrupt(&thread_id, now).await {
+            Ok(interrupt) => {
+                // Step 2: Cancel active runtime run if the interrupt found one.
+                if interrupt.active_job.is_some() {
+                    if self.runtime.cancel_and_wait_by_thread(&thread_id).await {
+                        tracing::info!(
+                            thread_id = %thread_id,
+                            superseded = interrupt.superseded_count,
+                            "interrupted thread for new submission"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(thread_id = %thread_id, error = %e, "interrupt failed, falling back to cancel");
+                self.runtime.cancel_and_wait_by_thread(&thread_id).await;
+            }
         }
 
-        let job = self.build_job(&thread_id, request.agent_id.as_deref(), messages);
+        let job = self.build_job(&request, &thread_id, messages);
         let job_id = job.job_id.clone();
         let mailbox_id = job.mailbox_id.clone();
 
@@ -274,7 +289,6 @@ impl Mailbox {
                 claim_token,
                 mailbox_id,
                 suspended,
-                frontend_tools,
             );
 
             Ok((
@@ -306,9 +320,10 @@ impl Mailbox {
         self: &Arc<Self>,
         request: RunRequest,
     ) -> Result<MailboxSubmitResult, MailboxError> {
-        let (thread_id, messages) = validate_run_inputs(request.thread_id, request.messages)?;
+        let (thread_id, messages) =
+            validate_run_inputs(request.thread_id.clone(), request.messages.clone())?;
 
-        let job = self.build_job(&thread_id, request.agent_id.as_deref(), messages);
+        let job = self.build_job(&request, &thread_id, messages);
         let job_id = job.job_id.clone();
         let mailbox_id = job.mailbox_id.clone();
 
@@ -326,10 +341,10 @@ impl Mailbox {
                     self.dispatch_job(&mailbox_id).await;
                     MailboxDispatchStatus::Running
                 }
-                MailboxWorkerStatus::Running { .. } => {
-                    let pending_ahead = w.pending.len();
-                    w.pending.push_back(job);
-                    MailboxDispatchStatus::Queued { pending_ahead }
+                MailboxWorkerStatus::Claiming | MailboxWorkerStatus::Running { .. } => {
+                    // Job stays in store queue; will be dispatched when
+                    // current run completes.
+                    MailboxDispatchStatus::Queued { pending_ahead: 0 }
                 }
             }
         };
@@ -370,13 +385,6 @@ impl Mailbox {
             self.runtime.cancel(thread_id);
         }
 
-        // Clear local pending buffer.
-        let workers = self.workers.read().await;
-        if let Some(worker) = workers.get(thread_id) {
-            let mut w = worker.lock().await;
-            w.pending.clear();
-        }
-
         Ok(result)
     }
 
@@ -404,7 +412,7 @@ impl Mailbox {
                 sink.reconnect(new_tx).await;
                 true
             }
-            MailboxWorkerStatus::Idle => false,
+            MailboxWorkerStatus::Idle | MailboxWorkerStatus::Claiming => false,
         }
     }
 
@@ -433,35 +441,13 @@ impl Mailbox {
 
         // Reclaim expired leases from previous process crash.
         let reclaimed = self.store.reclaim_expired_leases(now, 100).await?;
-        for job in &reclaimed {
-            if job.status == MailboxJobStatus::Queued {
-                let worker = self.get_or_create_worker(&job.mailbox_id).await;
-                let mut w = worker.lock().await;
-                w.pending.push_back(job.clone());
-            }
-        }
         total += reclaimed.len();
 
-        // Reload all queued mailbox IDs.
+        // Reload all queued mailbox IDs and try to dispatch.
         let mailbox_ids = self.store.queued_mailbox_ids().await?;
         for mailbox_id in &mailbox_ids {
-            let jobs = self
-                .store
-                .list_jobs(mailbox_id, Some(&[MailboxJobStatus::Queued]), 100, 0)
-                .await?;
-            let count = jobs.len();
-            let worker = self.get_or_create_worker(mailbox_id).await;
-            {
-                let mut w = worker.lock().await;
-                for job in jobs {
-                    w.pending.push_back(job);
-                }
-            }
-            total += count;
-        }
-
-        // Try to dispatch for each mailbox.
-        for mailbox_id in &mailbox_ids {
+            // Ensure worker exists for each mailbox with queued jobs.
+            self.get_or_create_worker(mailbox_id).await;
             self.try_dispatch_next(mailbox_id).await;
         }
 
@@ -502,6 +488,11 @@ impl Mailbox {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(error = %e, mailbox_id, "failed to claim job");
+                // Revert Claiming → Idle
+                let workers = self.workers.read().await;
+                if let Some(worker) = workers.get(mailbox_id) {
+                    worker.lock().await.status = MailboxWorkerStatus::Idle;
+                }
                 return;
             }
         };
@@ -552,11 +543,10 @@ impl Mailbox {
             claim_token,
             mailbox_id.to_string(),
             suspended,
-            Vec::new(),
         );
     }
 
-    /// Pop pending or claim from store for the next job.
+    /// Claim from store and dispatch the next job for this mailbox.
     async fn try_dispatch_next(self: &Arc<Self>, mailbox_id: &str) {
         let worker = {
             let workers = self.workers.read().await;
@@ -566,27 +556,16 @@ impl Mailbox {
             }
         };
 
-        let should_dispatch = {
-            let w = worker.lock().await;
-            matches!(w.status, MailboxWorkerStatus::Idle)
-        };
-
-        if !should_dispatch {
-            return;
+        // Atomically transition Idle → Claiming to prevent TOCTOU race.
+        {
+            let mut w = worker.lock().await;
+            if !matches!(w.status, MailboxWorkerStatus::Idle) {
+                return;
+            }
+            w.status = MailboxWorkerStatus::Claiming;
         }
 
-        // Try popping from local buffer first.
-        let has_pending = {
-            let w = worker.lock().await;
-            !w.pending.is_empty()
-        };
-
-        if has_pending {
-            self.dispatch_job(mailbox_id).await;
-        } else {
-            // Try claiming from store.
-            self.dispatch_job(mailbox_id).await;
-        }
+        self.dispatch_job(mailbox_id).await;
     }
 
     /// Spawn a lease renewal task that periodically extends the lease.
@@ -648,7 +627,6 @@ impl Mailbox {
         claim_token: String,
         mailbox_id: String,
         suspended: Arc<AtomicBool>,
-        frontend_tools: Vec<awaken_contract::contract::tool::ToolDescriptor>,
     ) {
         let this = Arc::clone(self);
         let job_id = job.job_id.clone();
@@ -664,8 +642,30 @@ impl Mailbox {
             if !job.agent_id.is_empty() {
                 request = request.with_agent_id(job.agent_id.clone());
             }
-            if !frontend_tools.is_empty() {
-                request = request.with_frontend_tools(frontend_tools);
+            // Reconstruct RunRequest extras from opaque payload.
+            if let Some(ref extras) = job.request_extras {
+                if let Ok(overrides) = serde_json::from_value(extras["overrides"].clone()) {
+                    request = request.with_overrides(overrides);
+                }
+                if let Ok(decisions) = serde_json::from_value::<
+                    Vec<(
+                        String,
+                        awaken_contract::contract::suspension::ToolCallResume,
+                    )>,
+                >(extras["decisions"].clone())
+                {
+                    if !decisions.is_empty() {
+                        request = request.with_decisions(decisions);
+                    }
+                }
+                if let Ok(tools) = serde_json::from_value::<
+                    Vec<awaken_contract::contract::tool::ToolDescriptor>,
+                >(extras["frontend_tools"].clone())
+                {
+                    if !tools.is_empty() {
+                        request = request.with_frontend_tools(tools);
+                    }
+                }
             }
 
             let result = this.runtime.run(request, Arc::new(sink)).await;
@@ -764,23 +764,36 @@ impl Mailbox {
     /// Build a MailboxJob from validated run inputs.
     fn build_job(
         &self,
+        request: &RunRequest,
         thread_id: &str,
-        agent_id: Option<&str>,
         messages: Vec<Message>,
     ) -> MailboxJob {
+        // Serialize RunRequest extras that Mailbox doesn't inspect.
+        let extras = serde_json::json!({
+            "overrides": request.overrides,
+            "decisions": request.decisions,
+            "frontend_tools": request.frontend_tools,
+        });
+        let request_extras =
+            if extras == serde_json::json!({"overrides":null,"decisions":[],"frontend_tools":[]}) {
+                None
+            } else {
+                Some(extras)
+            };
+
         let now = now_ms();
         MailboxJob {
             job_id: uuid::Uuid::now_v7().to_string(),
             mailbox_id: thread_id.to_string(),
-            agent_id: agent_id.unwrap_or_default().to_string(),
+            agent_id: request.agent_id.as_deref().unwrap_or_default().to_string(),
             messages,
             origin: MailboxJobOrigin::User,
             sender_id: None,
             parent_run_id: None,
-            overrides: None,
+            request_extras,
             priority: 128,
             dedupe_key: None,
-            generation: 0, // Set by store on enqueue.
+            generation: 0,
             status: MailboxJobStatus::Queued,
             available_at: now,
             attempt_count: 0,
@@ -804,12 +817,8 @@ impl Mailbox {
                     tracing::info!(count = reclaimed.len(), "sweep reclaimed expired leases");
                     for job in reclaimed {
                         if job.status == MailboxJobStatus::Queued {
-                            let worker = self.get_or_create_worker(&job.mailbox_id).await;
                             let mailbox_id = job.mailbox_id.clone();
-                            {
-                                let mut w = worker.lock().await;
-                                w.pending.push_back(job);
-                            }
+                            self.get_or_create_worker(&mailbox_id).await;
                             self.try_dispatch_next(&mailbox_id).await;
                         }
                     }
@@ -992,11 +1001,11 @@ mod tests {
     #[test]
     fn dispatch_status_enum_variants() {
         let running = MailboxDispatchStatus::Running;
-        let queued = MailboxDispatchStatus::Queued { pending_ahead: 2 };
+        let queued = MailboxDispatchStatus::Queued { pending_ahead: 0 };
         assert!(matches!(running, MailboxDispatchStatus::Running));
         assert!(matches!(
             queued,
-            MailboxDispatchStatus::Queued { pending_ahead: 2 }
+            MailboxDispatchStatus::Queued { pending_ahead: 0 }
         ));
     }
 
@@ -1359,7 +1368,7 @@ mod tests {
     // ── Interrupt test ──────────────────────────────────────────────
 
     #[tokio::test]
-    async fn interrupt_clears_pending() {
+    async fn interrupt_bumps_generation() {
         let store = make_store();
         let runtime = make_runtime();
         let mailbox = make_mailbox(runtime, store.clone());
