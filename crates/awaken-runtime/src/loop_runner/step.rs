@@ -512,20 +512,29 @@ async fn emit_suspend_completion(
     call: &ToolCall,
     ticket: &SuspendTicket,
 ) {
-    if ticket.resume_mode == ToolCallResumeMode::ReplayToolCall {
-        let suspend_result = awaken_contract::contract::tool::ToolResult::suspended(
-            &call.name,
-            &format!("Tool '{}' suspended: awaiting approval", call.name),
-        );
-        ctx.sink
-            .emit(AgentEvent::ToolCallDone {
-                id: call.id.clone(),
-                message_id: String::new(),
-                result: suspend_result,
-                outcome: ToolCallOutcome::Suspended,
-            })
-            .await;
-    }
+    // Emit ToolCallDone(Pending) so protocol encoders can signal the
+    // frontend that a tool call is awaiting a decision.
+    // - AG-UI: Pending → no event (TOOL_CALL_END was already sent)
+    // - AI SDK: Pending → tool_approval_request for permission tools
+    //
+    // For UseDecisionAsToolResult (frontend tools), the frontend already
+    // knows about the tool call from TOOL_CALL_START/ARGS/END events and
+    // renders its own input UI (e.g. color picker). The ToolCallDone(Pending)
+    // is still emitted for consistency — encoders that don't need it return
+    // an empty Vec.
+    let _ = ticket; // all modes emit the event now
+    let suspend_result = awaken_contract::contract::tool::ToolResult::suspended(
+        &call.name,
+        &format!("Tool '{}' suspended: awaiting approval", call.name),
+    );
+    ctx.sink
+        .emit(AgentEvent::ToolCallDone {
+            id: call.id.clone(),
+            message_id: String::new(),
+            result: suspend_result,
+            outcome: ToolCallOutcome::Suspended,
+        })
+        .await;
     ctx.messages.push(Arc::new(Message::tool(
         &call.id,
         format!("Tool '{}' suspended: awaiting decision", call.name),
