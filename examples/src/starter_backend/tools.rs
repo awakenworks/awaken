@@ -473,34 +473,7 @@ impl Tool for AskUserQuestionTool {
     }
 }
 
-pub struct SetBackgroundColorTool;
-
-#[async_trait]
-impl Tool for SetBackgroundColorTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new(
-            "set_background_color",
-            "Set Background Color",
-            "Frontend tool: ask UI to change chat background color.",
-        )
-        .with_parameters(json!({
-            "type": "object",
-            "properties": {
-                "colors": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Allowed colors for quick selection"
-                }
-            },
-            "required": ["colors"]
-        }))
-    }
-
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
-        Ok(ToolResult::error(
-            "set_background_color",
-            "frontend tool should be intercepted before backend execution",
-        )
-        .into())
-    }
-}
+// set_background_color: Pure frontend tool — no backend struct needed.
+// Registered by the frontend via AG-UI/AI SDK `tools` array.
+// The runtime wraps it as FrontEndTool (returns success with args).
+// Frontend renders the color picker UI and submits via addToolOutput.

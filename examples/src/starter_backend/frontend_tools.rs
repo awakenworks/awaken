@@ -14,15 +14,20 @@ use awaken_runtime::{PhaseContext, PhaseHook, StateCommand};
 
 const FRONTEND_TOOLS_PLUGIN_NAME: &str = "frontend_tools";
 
-/// Plugin that intercepts frontend tool calls (askUserQuestion, set_background_color)
-/// and suspends execution so the frontend can handle them.
+/// Plugin that intercepts the askUserQuestion tool call and suspends
+/// execution so the frontend can collect user input and send it back.
+///
+/// `set_background_color` is NOT intercepted — it is registered as a
+/// FrontEndTool via the AI SDK `tools` array and executes immediately.
+/// The frontend renders its own color picker UI and submits the result
+/// via `addToolOutput` / `sendAutomaticallyWhen`.
 pub struct FrontendToolPlugin {
     tools: HashSet<&'static str>,
 }
 
 impl FrontendToolPlugin {
     pub fn new() -> Self {
-        let tools = HashSet::from(["askUserQuestion", "set_background_color"]);
+        let tools = HashSet::from(["askUserQuestion"]);
         Self { tools }
     }
 }
