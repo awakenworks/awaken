@@ -27,7 +27,7 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const [frontendBgColor, setFrontendBgColor] = useState<string | null>(null);
   const [resolvedThreadId, setResolvedThreadId] = useState(threadId);
-  const pendingRef = useRef<string | null>(null);
+  const pendingRef = useRef<{ text: string; files?: FileList } | null>(null);
 
   useEffect(() => {
     setResolvedThreadId(threadId);
@@ -36,10 +36,10 @@ export function ChatPanel({
 
   // Draft mode: no thread yet
   if (!resolvedThreadId) {
-    const handleDraftSend = (text: string) => {
+    const handleDraftSend = (text: string, files?: FileList) => {
       if (onRequestThread) {
         const newId = onRequestThread();
-        pendingRef.current = text;
+        pendingRef.current = { text, files };
         setResolvedThreadId(newId);
       }
     };
@@ -79,7 +79,7 @@ function WelcomeScreen({
 }: {
   actions: StarterAction[];
   agentId: string;
-  onSend: (text: string) => void;
+  onSend: (text: string, files?: FileList) => void;
 }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-4">
@@ -152,14 +152,22 @@ function ActiveChatPanel({
   // Send pending message once chat session is loaded
   useEffect(() => {
     if (historyLoaded && pendingRef.current) {
-      const text = pendingRef.current;
+      const { text, files } = pendingRef.current;
       pendingRef.current = null;
-      sendMessage({ text });
+      if (files && files.length > 0) {
+        sendMessage({ text, files });
+      } else {
+        sendMessage({ text });
+      }
     }
   }, [historyLoaded, sendMessage, pendingRef]);
 
-  const handleSend = (text: string) => {
-    sendMessage({ text });
+  const handleSend = (text: string, files?: FileList) => {
+    if (files && files.length > 0) {
+      sendMessage({ text, files });
+    } else {
+      sendMessage({ text });
+    }
   };
 
   if (!historyLoaded) {

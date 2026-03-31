@@ -67,6 +67,20 @@ export function FilePart({
   url: string;
   mediaType?: string;
 }) {
+  const isImage = mediaType?.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(url);
+
+  if (isImage) {
+    return (
+      <div data-testid="file-part" className="my-1">
+        <img
+          src={url}
+          alt="uploaded image"
+          className="max-h-48 max-w-xs rounded-lg border border-slate-200 dark:border-slate-700"
+        />
+      </div>
+    );
+  }
+
   return (
     <div data-testid="file-part" className="my-1">
       <strong>File:</strong>{" "}
@@ -76,9 +90,8 @@ export function FilePart({
         rel="noreferrer"
         className="text-cyan-700 underline"
       >
-        {url}
+        {mediaType ?? "download"}
       </a>
-      {mediaType ? ` [${mediaType}]` : ""}
     </div>
   );
 }
