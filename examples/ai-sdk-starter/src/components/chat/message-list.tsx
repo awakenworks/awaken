@@ -412,13 +412,14 @@ function ToolPartRenderer({
       : [];
   const placeOptions =
     highlightCandidates.length > 0 ? highlightCandidates : ["Eiffel Tower", "Tokyo Station", "Golden Gate Bridge"];
-  const requestedColors =
-    name === "set_background_color" && tool.input != null && typeof tool.input === "object"
-      ? (((tool.input as Record<string, unknown>).colors as unknown[]) ??
-          ((tool.input as Record<string, unknown>).palette as unknown[]) ??
-          [])
-          .filter((value): value is string => typeof value === "string" && value.length > 0)
+  const requestedColors = (() => {
+    if (name !== "set_background_color" || tool.input == null || typeof tool.input !== "object") return [];
+    const inp = tool.input as Record<string, unknown>;
+    const raw = inp.colors ?? inp.palette ?? [];
+    return Array.isArray(raw)
+      ? raw.filter((v): v is string => typeof v === "string" && v.length > 0)
       : [];
+  })();
   const colorOptions =
     requestedColors.length > 0
       ? requestedColors
@@ -512,9 +513,9 @@ function ToolPartRenderer({
                 : "mb-2 text-sm text-slate-800"
             }
           >
-            Select a background color for this chat panel:
+            🎨 Pick a background color:
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-3">
             {colorOptions.map((color, index) => (
               <button
                 key={`${color}-${index}`}
@@ -522,24 +523,41 @@ function ToolPartRenderer({
                 data-testid={`set-background-color-option-${index}`}
                 onClick={() =>
                   onFrontendToolSubmit(tool.toolCallId, "set_background_color", {
-                    color,
+                    selected_color: color,
                   })
                 }
                 disabled={false}
-                className={
-                  themeMode === "dark"
-                    ? "inline-flex items-center gap-2 rounded-full border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-100 transition hover:bg-slate-700 disabled:opacity-50"
-                    : "inline-flex items-center gap-2 rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 transition hover:bg-slate-100 disabled:opacity-50"
-                }
+                className="group relative flex flex-col items-center gap-1 rounded-lg border border-slate-300 p-2 transition hover:scale-105 hover:shadow-md dark:border-slate-600"
               >
                 <span
-                  className="h-3 w-3 rounded-full border border-slate-400/60"
+                  className="h-8 w-8 rounded-md border border-slate-400/40"
                   style={{ backgroundColor: color }}
                 />
-                {color}
+                <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                  {color}
+                </span>
               </button>
             ))}
           </div>
+        </div>
+      )}
+      {tool.state === "output-available" && name === "set_background_color" && tool.output != null && (
+        <div
+          data-testid="set-background-color-result"
+          className={
+            themeMode === "dark"
+              ? "mt-2 flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200"
+              : "mt-2 flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+          }
+        >
+          <span
+            className="h-4 w-4 rounded-full border border-slate-400/40"
+            style={{ backgroundColor: (tool.output as Record<string, unknown>)?.selected_color as string ?? "" }}
+          />
+          Background set to{" "}
+          <code className="rounded bg-slate-100 px-1 text-xs dark:bg-slate-800">
+            {(tool.output as Record<string, unknown>)?.selected_color as string ?? "unknown"}
+          </code>
         </div>
       )}
       {tool.state === "output-denied" && (

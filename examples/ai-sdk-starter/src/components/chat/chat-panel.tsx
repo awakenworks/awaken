@@ -189,7 +189,8 @@ function ActiveChatPanel({
           style={
             frontendBgColor
               ? {
-                  backgroundImage: `linear-gradient(180deg, ${frontendBgColor}22 0%, transparent 36%)`,
+                  backgroundColor: `${frontendBgColor}30`,
+                  transition: "background-color 0.3s ease",
                 }
               : undefined
           }
@@ -220,9 +221,9 @@ function ActiveChatPanel({
               onFrontendToolSubmit={async (toolCallId, toolName, output) => {
                 if (
                   toolName === "set_background_color" &&
-                  typeof output.color === "string"
+                  typeof output.selected_color === "string"
                 ) {
-                  setFrontendBgColor(output.color);
+                  setFrontendBgColor(output.selected_color);
                 }
                 await addToolOutput({
                   tool: toolName as never,
