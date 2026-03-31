@@ -840,6 +840,65 @@ mod tests {
         assert!(claimed.claim_token.is_some());
     }
 
+    #[tokio::test]
+    async fn claim_skips_if_mailbox_already_has_claimed() {
+        let store = InMemoryMailboxStore::new();
+        let job1 = make_job("m-1", "agent-1");
+        let job2 = make_job("m-1", "agent-1");
+        store.enqueue(&job1).await.unwrap();
+        store.enqueue(&job2).await.unwrap();
+
+        // Claim first job.
+        let claimed = store.claim("m-1", "c-1", 30_000, 1000, 1).await.unwrap();
+        assert_eq!(claimed.len(), 1);
+
+        // Second claim() should return empty — same mailbox already has Claimed.
+        let claimed2 = store.claim("m-1", "c-1", 30_000, 1000, 1).await.unwrap();
+        assert!(claimed2.is_empty());
+    }
+
+    #[tokio::test]
+    async fn claim_job_rejects_if_mailbox_already_has_claimed() {
+        let store = InMemoryMailboxStore::new();
+        let job1 = make_job("m-1", "agent-1");
+        let job2 = make_job("m-1", "agent-1");
+        let id1 = job1.job_id.clone();
+        let id2 = job2.job_id.clone();
+        store.enqueue(&job1).await.unwrap();
+        store.enqueue(&job2).await.unwrap();
+
+        // Claim first by ID.
+        let claimed = store.claim_job(&id1, "c-1", 30_000, 1000).await.unwrap();
+        assert!(claimed.is_some());
+
+        // claim_job for second should fail — same mailbox already has Claimed.
+        let claimed2 = store.claim_job(&id2, "c-1", 30_000, 1000).await.unwrap();
+        assert!(claimed2.is_none());
+    }
+
+    #[tokio::test]
+    async fn claim_resumes_after_ack() {
+        let store = InMemoryMailboxStore::new();
+        let job1 = make_job("m-1", "agent-1");
+        let job2 = make_job("m-1", "agent-1");
+        let id1 = job1.job_id.clone();
+        let token1;
+        store.enqueue(&job1).await.unwrap();
+        store.enqueue(&job2).await.unwrap();
+
+        // Claim first.
+        let claimed = store.claim("m-1", "c-1", 30_000, 1000, 1).await.unwrap();
+        assert_eq!(claimed.len(), 1);
+        token1 = claimed[0].claim_token.clone().unwrap();
+
+        // Ack first → Accepted.
+        store.ack(&id1, &token1, 2000).await.unwrap();
+
+        // Now claim should succeed for second job.
+        let claimed2 = store.claim("m-1", "c-1", 30_000, 2000, 1).await.unwrap();
+        assert_eq!(claimed2.len(), 1);
+    }
+
     // ── Concurrency & parallelism tests ─────────────────────────────
 
     #[tokio::test]

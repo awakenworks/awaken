@@ -54,16 +54,16 @@ impl RunRequestExtras {
         }
     }
 
-    fn to_value(&self) -> Option<serde_json::Value> {
+    fn to_value(&self) -> Result<Option<serde_json::Value>, serde_json::Error> {
         if self.overrides.is_none() && self.decisions.is_empty() && self.frontend_tools.is_empty() {
-            None
+            Ok(None)
         } else {
-            serde_json::to_value(self).ok()
+            serde_json::to_value(self).map(Some)
         }
     }
 
-    fn from_value(value: &serde_json::Value) -> Option<Self> {
-        serde_json::from_value(value.clone()).ok()
+    fn from_value(value: &serde_json::Value) -> Result<Self, serde_json::Error> {
+        serde_json::from_value(value.clone())
     }
 
     fn apply_to(self, mut request: awaken_runtime::RunRequest) -> awaken_runtime::RunRequest {
@@ -95,8 +95,8 @@ pub struct MailboxSubmitResult {
 pub enum MailboxDispatchStatus {
     /// Job was claimed and is executing now.
     Running,
-    /// Job is queued behind `pending_ahead` other jobs.
-    Queued { pending_ahead: usize },
+    /// Job is queued, waiting for the current run to finish.
+    Queued,
 }
 
 /// Mailbox service errors.
@@ -394,10 +394,10 @@ impl Mailbox {
                 let w = worker.lock().await;
                 match &w.status {
                     MailboxWorkerStatus::Running { .. } => MailboxDispatchStatus::Running,
-                    _ => MailboxDispatchStatus::Queued { pending_ahead: 0 },
+                    _ => MailboxDispatchStatus::Queued,
                 }
             } else {
-                MailboxDispatchStatus::Queued { pending_ahead: 0 }
+                MailboxDispatchStatus::Queued
             }
         };
 
@@ -530,6 +530,7 @@ impl Mailbox {
     // ── Internal: dispatch ───────────────────────────────────────────
 
     /// Claim a job from the store and start execution.
+    /// Claim a job from the store and start execution.
     async fn dispatch_job(self: &Arc<Self>, mailbox_id: &str) {
         let now = now_ms();
         let claimed = match self
@@ -540,22 +541,14 @@ impl Mailbox {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(error = %e, mailbox_id, "failed to claim job");
-                // Revert Claiming → Idle
-                let workers = self.workers.read().await;
-                if let Some(worker) = workers.get(mailbox_id) {
-                    worker.lock().await.status = MailboxWorkerStatus::Idle;
-                }
+                revert_claiming_to_idle(&self.workers, mailbox_id).await;
                 return;
             }
         };
 
         let Some(job) = claimed.into_iter().next() else {
-            // No jobs to claim, mark worker idle.
-            let workers = self.workers.read().await;
-            if let Some(worker) = workers.get(mailbox_id) {
-                let mut w = worker.lock().await;
-                w.status = MailboxWorkerStatus::Idle;
-            }
+            // No jobs to claim.
+            revert_claiming_to_idle(&self.workers, mailbox_id).await;
             return;
         };
 
@@ -694,13 +687,29 @@ impl Mailbox {
             if !job.agent_id.is_empty() {
                 request = request.with_agent_id(job.agent_id.clone());
             }
+            // Restore origin metadata.
+            let origin_str = match job.origin {
+                MailboxJobOrigin::A2A => "a2a",
+                MailboxJobOrigin::Internal => "internal",
+                MailboxJobOrigin::User => "user",
+            };
+            request = request.with_origin(origin_str);
+            if let Some(ref sid) = job.sender_id {
+                request = request.with_sender_id(sid.clone());
+            }
+            if let Some(ref prid) = job.parent_run_id {
+                request = request.with_parent_run_id(prid.clone());
+            }
             // Reconstruct RunRequest extras from opaque payload.
-            if let Some(extras) = job
-                .request_extras
-                .as_ref()
-                .and_then(RunRequestExtras::from_value)
-            {
-                request = extras.apply_to(request);
+            if let Some(ref extras_value) = job.request_extras {
+                match RunRequestExtras::from_value(extras_value) {
+                    Ok(extras) => {
+                        request = extras.apply_to(request);
+                    }
+                    Err(e) => {
+                        tracing::error!(job_id, error = %e, "failed to deserialize RunRequestExtras");
+                    }
+                }
             }
 
             let result = this.runtime.run(request, Arc::new(sink)).await;
@@ -804,7 +813,10 @@ impl Mailbox {
         messages: Vec<Message>,
     ) -> MailboxJob {
         let extras = RunRequestExtras::from_request(request);
-        let request_extras = extras.to_value();
+        let request_extras = extras.to_value().unwrap_or_else(|e| {
+            tracing::error!(error = %e, "failed to serialize RunRequestExtras");
+            None
+        });
 
         let now = now_ms();
         MailboxJob {
@@ -812,9 +824,13 @@ impl Mailbox {
             mailbox_id: thread_id.to_string(),
             agent_id: request.agent_id.as_deref().unwrap_or_default().to_string(),
             messages,
-            origin: MailboxJobOrigin::User,
-            sender_id: None,
-            parent_run_id: None,
+            origin: match request.origin.as_deref() {
+                Some("a2a") => MailboxJobOrigin::A2A,
+                Some("internal") => MailboxJobOrigin::Internal,
+                _ => MailboxJobOrigin::User,
+            },
+            sender_id: request.sender_id.clone(),
+            parent_run_id: request.parent_run_id.clone(),
             request_extras,
             priority: 128,
             dedupe_key: None,
@@ -868,6 +884,21 @@ impl Mailbox {
             Err(e) => {
                 tracing::warn!(error = %e, "GC failed");
             }
+        }
+    }
+}
+
+/// Revert worker from Claiming → Idle, but only if still in Claiming state.
+/// Prevents overwriting a Running state set by a concurrent dispatch.
+async fn revert_claiming_to_idle(
+    workers: &tokio::sync::RwLock<HashMap<String, Arc<tokio::sync::Mutex<MailboxWorker>>>>,
+    mailbox_id: &str,
+) {
+    let workers = workers.read().await;
+    if let Some(worker) = workers.get(mailbox_id) {
+        let mut w = worker.lock().await;
+        if matches!(w.status, MailboxWorkerStatus::Claiming) {
+            w.status = MailboxWorkerStatus::Idle;
         }
     }
 }
@@ -1026,12 +1057,9 @@ mod tests {
     #[test]
     fn dispatch_status_enum_variants() {
         let running = MailboxDispatchStatus::Running;
-        let queued = MailboxDispatchStatus::Queued { pending_ahead: 0 };
+        let queued = MailboxDispatchStatus::Queued;
         assert!(matches!(running, MailboxDispatchStatus::Running));
-        assert!(matches!(
-            queued,
-            MailboxDispatchStatus::Queued { pending_ahead: 0 }
-        ));
+        assert!(matches!(queued, MailboxDispatchStatus::Queued));
     }
 
     #[tokio::test]
@@ -1382,6 +1410,79 @@ mod tests {
         assert!(extras["frontend_tools"].is_array());
     }
 
+    #[test]
+    fn run_request_extras_serde_roundtrip() {
+        use awaken_contract::contract::tool::ToolDescriptor;
+        let extras = RunRequestExtras {
+            overrides: None,
+            decisions: vec![],
+            frontend_tools: vec![ToolDescriptor::new("ft1", "FT1", "desc")],
+        };
+        let value = extras.to_value().unwrap().unwrap();
+        let parsed = RunRequestExtras::from_value(&value).unwrap();
+        assert_eq!(parsed.frontend_tools.len(), 1);
+        assert_eq!(parsed.frontend_tools[0].id, "ft1");
+        assert!(parsed.decisions.is_empty());
+        assert!(parsed.overrides.is_none());
+    }
+
+    #[test]
+    fn run_request_extras_empty_returns_none() {
+        let extras = RunRequestExtras {
+            overrides: None,
+            decisions: vec![],
+            frontend_tools: vec![],
+        };
+        assert!(extras.to_value().unwrap().is_none());
+    }
+
+    #[test]
+    fn run_request_extras_apply_to_request() {
+        use awaken_contract::contract::tool::ToolDescriptor;
+        let extras = RunRequestExtras {
+            overrides: None,
+            decisions: vec![],
+            frontend_tools: vec![ToolDescriptor::new("ft1", "FT1", "desc")],
+        };
+        let request = RunRequest::new("t1", vec![Message::user("hi")]);
+        let applied = extras.apply_to(request);
+        assert_eq!(applied.frontend_tools.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn build_job_preserves_origin_metadata() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store);
+
+        let request = RunRequest::new("thread-meta", vec![Message::user("hi")])
+            .with_agent_id("a1")
+            .with_origin("a2a")
+            .with_sender_id("sender-42")
+            .with_parent_run_id("parent-run-1");
+        let messages = request.messages.clone();
+        let job = mailbox.build_job(&request, "thread-meta", messages);
+
+        assert!(matches!(job.origin, MailboxJobOrigin::A2A));
+        assert_eq!(job.sender_id.as_deref(), Some("sender-42"));
+        assert_eq!(job.parent_run_id.as_deref(), Some("parent-run-1"));
+    }
+
+    #[tokio::test]
+    async fn build_job_defaults_origin_to_user() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store);
+
+        let request = RunRequest::new("thread-default", vec![Message::user("hi")]);
+        let messages = request.messages.clone();
+        let job = mailbox.build_job(&request, "thread-default", messages);
+
+        assert!(matches!(job.origin, MailboxJobOrigin::User));
+        assert!(job.sender_id.is_none());
+        assert!(job.parent_run_id.is_none());
+    }
+
     // ── MailboxError variants ──────────────────────────────────────
 
     #[test]
@@ -1408,11 +1509,8 @@ mod tests {
 
     #[test]
     fn dispatch_status_queued_zero() {
-        let status = MailboxDispatchStatus::Queued { pending_ahead: 0 };
-        assert!(matches!(
-            status,
-            MailboxDispatchStatus::Queued { pending_ahead: 0 }
-        ));
+        let status = MailboxDispatchStatus::Queued;
+        assert!(matches!(status, MailboxDispatchStatus::Queued));
     }
 
     // ── Interrupt test ──────────────────────────────────────────────

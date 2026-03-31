@@ -122,13 +122,18 @@ impl AgentRuntime {
 
         // Create run identity
         let run_id = uuid::Uuid::now_v7().to_string();
+        let run_origin = match request.origin.as_deref() {
+            Some("a2a") => awaken_contract::contract::identity::RunOrigin::A2A,
+            Some("internal") => awaken_contract::contract::identity::RunOrigin::Internal,
+            _ => awaken_contract::contract::identity::RunOrigin::User,
+        };
         let run_identity = RunIdentity::new(
             thread_id.clone(),
             None,
             run_id.clone(),
-            None,
+            request.parent_run_id.clone(),
             agent_id.clone(),
-            awaken_contract::contract::identity::RunOrigin::User,
+            run_origin,
         );
 
         // Create channels for external control
