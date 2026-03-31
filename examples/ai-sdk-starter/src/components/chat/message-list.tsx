@@ -17,7 +17,7 @@ import {
   type A2uiMessage,
 } from "@/components/tools/a2ui-protocol";
 import { JsonRenderPanel, OpenUIPanel, A2UIPanel } from "@/components/tools/generative-ui-renderers";
-import { useMemo } from "react";
+import React, { useMemo } from "react";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -238,6 +238,84 @@ function PartRenderer({
     );
   }
   return null;
+}
+
+function ColorPickerForm({
+  toolCallId,
+  colorOptions,
+  onSubmit,
+  themeMode,
+}: {
+  toolCallId: string;
+  colorOptions: string[];
+  onSubmit: (toolCallId: string, toolName: string, output: Record<string, unknown>) => void;
+  themeMode: "light" | "dark";
+}) {
+  const [selected, setSelected] = React.useState<string | null>(null);
+  const cardClass =
+    themeMode === "dark"
+      ? "mt-2 rounded-lg border border-slate-700 bg-slate-900 p-4"
+      : "mt-2 rounded-lg border border-slate-200 bg-white p-4";
+  const labelClass =
+    themeMode === "dark" ? "text-sm text-slate-200" : "text-sm text-slate-700";
+
+  return (
+    <div data-testid="set-background-color-dialog" className={cardClass}>
+      <div className={`mb-3 font-medium ${labelClass}`}>
+        🎨 Choose a background color
+      </div>
+      <div className="flex flex-col gap-2">
+        {colorOptions.map((color, index) => {
+          const isSelected = selected === color;
+          return (
+            <label
+              key={`${color}-${index}`}
+              data-testid={`set-background-color-option-${index}`}
+              className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 transition ${
+                isSelected
+                  ? "border-blue-500 bg-blue-50 dark:border-blue-400 dark:bg-blue-950"
+                  : "border-slate-200 hover:border-slate-300 dark:border-slate-700 dark:hover:border-slate-600"
+              }`}
+            >
+              <input
+                type="radio"
+                name={`color-${toolCallId}`}
+                value={color}
+                checked={isSelected}
+                onChange={() => setSelected(color)}
+                className="h-4 w-4 accent-blue-500"
+              />
+              <span
+                className="h-5 w-5 rounded border border-slate-400/40"
+                style={{ backgroundColor: color }}
+              />
+              <span className="font-mono text-xs text-slate-600 dark:text-slate-300">
+                {color}
+              </span>
+            </label>
+          );
+        })}
+      </div>
+      <button
+        type="button"
+        disabled={!selected}
+        onClick={() => {
+          if (selected) {
+            onSubmit(toolCallId, "set_background_color", {
+              selected_color: selected,
+            });
+          }
+        }}
+        className={`mt-3 rounded-md px-4 py-1.5 text-sm font-medium text-white transition ${
+          selected
+            ? "bg-blue-600 hover:bg-blue-700"
+            : "cursor-not-allowed bg-slate-300 dark:bg-slate-700"
+        }`}
+      >
+        Apply
+      </button>
+    </div>
+  );
 }
 
 function ToolPartRenderer({
@@ -498,48 +576,12 @@ function ToolPartRenderer({
         </div>
       )}
       {tool.state === "input-available" && name === "set_background_color" && (
-        <div
-          data-testid="set-background-color-dialog"
-          className={
-            themeMode === "dark"
-              ? "mt-2 rounded-lg border border-slate-700 bg-slate-900 p-3"
-              : "mt-2 rounded-lg border border-slate-200 bg-white p-3"
-          }
-        >
-          <div
-            className={
-              themeMode === "dark"
-                ? "mb-2 text-sm text-slate-200"
-                : "mb-2 text-sm text-slate-800"
-            }
-          >
-            🎨 Pick a background color:
-          </div>
-          <div className="flex flex-wrap gap-3">
-            {colorOptions.map((color, index) => (
-              <button
-                key={`${color}-${index}`}
-                type="button"
-                data-testid={`set-background-color-option-${index}`}
-                onClick={() =>
-                  onFrontendToolSubmit(tool.toolCallId, "set_background_color", {
-                    selected_color: color,
-                  })
-                }
-                disabled={false}
-                className="group relative flex flex-col items-center gap-1 rounded-lg border border-slate-300 p-2 transition hover:scale-105 hover:shadow-md dark:border-slate-600"
-              >
-                <span
-                  className="h-8 w-8 rounded-md border border-slate-400/40"
-                  style={{ backgroundColor: color }}
-                />
-                <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
-                  {color}
-                </span>
-              </button>
-            ))}
-          </div>
-        </div>
+        <ColorPickerForm
+          toolCallId={tool.toolCallId}
+          colorOptions={colorOptions}
+          onSubmit={onFrontendToolSubmit}
+          themeMode={themeMode}
+        />
       )}
       {tool.state === "output-available" && name === "set_background_color" && tool.output != null && (
         <div
