@@ -214,6 +214,7 @@ fn make_agent_spec_deny_all() -> AgentSpec {
         system_prompt: "sys".into(),
         max_rounds: 16,
         max_continuation_retries: 2,
+        reasoning_effort: None,
         context_policy: None,
         plugin_ids: Vec::new(),
         active_hook_filter: Default::default(),
