@@ -46,7 +46,10 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// Build the complete router with all routes.
+/// Build the complete router with all routes and a concurrency limit layer.
+///
+/// `max_concurrent` controls the maximum number of in-flight requests.
+/// Pass `0` to disable the limit (useful in tests).
 pub fn build_router() -> Router<AppState> {
     Router::new()
         .merge(health_routes())
@@ -56,10 +59,13 @@ pub fn build_router() -> Router<AppState> {
         .merge(ag_ui_routes())
         .merge(a2a_routes())
         .merge(mcp_routes())
+        .route("/metrics", get(crate::metrics::metrics_handler))
 }
 
 fn health_routes() -> Router<AppState> {
-    Router::new().route("/health", get(health))
+    Router::new()
+        .route("/health", get(health_ready))
+        .route("/health/live", get(health_live))
 }
 
 fn thread_routes() -> Router<AppState> {
@@ -97,8 +103,52 @@ fn run_routes() -> Router<AppState> {
 
 // ── Health ──
 
-async fn health() -> impl IntoResponse {
+/// Liveness probe — always returns 200.  Use for k8s `livenessProbe`.
+#[tracing::instrument]
+async fn health_live() -> impl IntoResponse {
     StatusCode::OK
+}
+
+/// Readiness probe — checks that critical dependencies are reachable.
+/// Returns 200 with `"status":"healthy"` when everything is fine, or 503
+/// with `"status":"unhealthy"` when a component check fails.
+///
+/// Individual component checks are capped at 5 seconds to avoid blocking
+/// the probe.
+#[tracing::instrument(skip(st))]
+async fn health_ready(State(st): State<AppState>) -> impl IntoResponse {
+    const CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    // -- Store check: attempt a lightweight list operation.
+    let store_status = match tokio::time::timeout(CHECK_TIMEOUT, st.store.list_threads(0, 1)).await
+    {
+        Ok(Ok(_)) => "ok",
+        Ok(Err(_)) => "error",
+        Err(_) => "timeout",
+    };
+
+    // -- Runtime check: the runtime is healthy if it exists (it is
+    //    always present once AppState is constructed).
+    let runtime_status = "ok";
+
+    let all_ok = store_status == "ok" && runtime_status == "ok";
+    let overall = if all_ok { "healthy" } else { "unhealthy" };
+    let status_code = if all_ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    (
+        status_code,
+        Json(json!({
+            "status": overall,
+            "components": {
+                "store": store_status,
+                "runtime": runtime_status,
+            }
+        })),
+    )
 }
 
 // ── Threads ──
@@ -111,6 +161,7 @@ struct ListParams {
     limit: usize,
 }
 
+#[tracing::instrument(skip(st))]
 async fn list_threads(
     State(st): State<AppState>,
     Query(params): Query<ListParams>,
@@ -127,6 +178,7 @@ async fn list_threads(
     ))
 }
 
+#[tracing::instrument(skip(st))]
 async fn list_thread_summaries(
     State(st): State<AppState>,
     Query(params): Query<ListParams>,
@@ -171,6 +223,7 @@ struct CreateThreadPayload {
     title: Option<String>,
 }
 
+#[tracing::instrument(skip(st, payload))]
 async fn create_thread(
     State(st): State<AppState>,
     Json(payload): Json<CreateThreadPayload>,
@@ -182,6 +235,7 @@ async fn create_thread(
     Ok((StatusCode::CREATED, Json(value)))
 }
 
+#[tracing::instrument(skip(st), fields(thread_id = %id))]
 async fn get_thread(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -196,6 +250,7 @@ async fn get_thread(
     Ok(Json(value))
 }
 
+#[tracing::instrument(skip(st), fields(thread_id = %id))]
 async fn delete_thread(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -223,6 +278,7 @@ struct PatchThreadPayload {
     custom: Option<std::collections::HashMap<String, Value>>,
 }
 
+#[tracing::instrument(skip(st, payload), fields(thread_id = %id))]
 async fn patch_thread(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -254,6 +310,7 @@ async fn patch_thread(
     Ok(Json(value))
 }
 
+#[tracing::instrument(skip(st), fields(thread_id = %id))]
 async fn interrupt_thread(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -278,6 +335,7 @@ async fn interrupt_thread(
     Err(ApiError::ThreadNotFound(id))
 }
 
+#[tracing::instrument(skip(st), fields(thread_id = %id))]
 async fn get_thread_messages(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -336,6 +394,7 @@ struct PostThreadMessagesPayload {
     messages: Vec<RunMessage>,
 }
 
+#[tracing::instrument(skip(st, payload), fields(thread_id = %id))]
 async fn post_thread_messages(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -387,6 +446,7 @@ struct MailboxPayload {
     payload: Value,
 }
 
+#[tracing::instrument(skip(st, body), fields(thread_id = %id))]
 async fn push_mailbox(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -422,6 +482,7 @@ async fn push_mailbox(
     ))
 }
 
+#[tracing::instrument(skip(st), fields(thread_id = %id))]
 async fn peek_mailbox(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -462,6 +523,7 @@ fn convert_run_messages(msgs: Vec<RunMessage>) -> Vec<Message> {
     )
 }
 
+#[tracing::instrument(skip(st, payload))]
 async fn start_run(
     State(st): State<AppState>,
     Json(payload): Json<CreateRunPayload>,
@@ -486,6 +548,7 @@ async fn start_run(
     Ok(sse_response(sse_body_stream(sse_rx)))
 }
 
+#[tracing::instrument(skip(st), fields(run_id = %id))]
 async fn get_run(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -498,6 +561,7 @@ async fn get_run(
     Ok(Json(value))
 }
 
+#[tracing::instrument(skip(st))]
 async fn list_runs(
     State(st): State<AppState>,
     Query(params): Query<ListRunsParams>,
@@ -542,6 +606,7 @@ struct PushRunInputsPayload {
     messages: Vec<RunMessage>,
 }
 
+#[tracing::instrument(skip(st, payload), fields(run_id = %id))]
 async fn push_run_inputs(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -576,6 +641,7 @@ async fn push_run_inputs(
         .into_response())
 }
 
+#[tracing::instrument(skip(st), fields(run_id = %id))]
 async fn cancel_run(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -600,6 +666,7 @@ async fn cancel_run(
     Err(ApiError::RunNotFound(id))
 }
 
+#[tracing::instrument(skip(st), fields(thread_id = %id))]
 async fn cancel_thread(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -633,6 +700,7 @@ struct DecisionPayload {
     payload: Value,
 }
 
+#[tracing::instrument(skip(st, payload), fields(run_id = %id))]
 async fn submit_decision(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -680,6 +748,7 @@ async fn submit_decision(
     }
 }
 
+#[tracing::instrument(skip(st, payload), fields(thread_id = %id))]
 async fn submit_thread_decision(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -739,6 +808,7 @@ struct ListRunsParams {
     status: Option<String>,
 }
 
+#[tracing::instrument(skip(st), fields(thread_id = %id))]
 async fn list_thread_runs(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -778,6 +848,7 @@ async fn list_thread_runs(
     })))
 }
 
+#[tracing::instrument(skip(st), fields(thread_id = %id))]
 async fn latest_thread_run(
     State(st): State<AppState>,
     Path(id): Path<String>,

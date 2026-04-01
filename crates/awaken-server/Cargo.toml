@@ -15,15 +15,20 @@ futures = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal", "time"] }
 axum = { version = "0.7", default-features = false, features = ["http1", "json", "query", "tokio"] }
-tower = "0.5"
+tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.6", features = ["trace"] }
 async-stream = "0.3"
 tokio-stream = "0.1"
 bytes = "1"
 parking_lot = { workspace = true }
+arc-swap = "1"
 
 # MCP server
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["server", "client"] }
+
+# Metrics / observability
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
 
 # Optional
 awaken-ext-permission = { workspace = true, optional = true }

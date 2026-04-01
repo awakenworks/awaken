@@ -1,6 +1,8 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use parking_lot::Mutex;
 
 use tokio::sync::Notify;
 
@@ -113,14 +115,14 @@ impl BatchingSink {
 
     /// Get current buffer size (total items across all event types).
     pub fn buffered_count(&self) -> usize {
-        self.buffer.lock().unwrap().len()
+        self.buffer.lock().len()
     }
 }
 
 /// Drain the buffer and forward all events to the inner sink.
 fn flush_to_inner(buffer: &Mutex<Buffer>, inner: &Arc<dyn MetricsSink>) {
     let batch = {
-        let mut buf = buffer.lock().unwrap();
+        let mut buf = buffer.lock();
         if buf.is_empty() {
             return;
         }
@@ -134,7 +136,7 @@ fn flush_to_inner(buffer: &Mutex<Buffer>, inner: &Arc<dyn MetricsSink>) {
 
 impl MetricsSink for BatchingSink {
     fn record(&self, event: &MetricsEvent) {
-        let mut buf = self.buffer.lock().unwrap();
+        let mut buf = self.buffer.lock();
         if buf.len() < self.config.max_buffer_size {
             buf.events.push(event.clone());
             if buf.len() >= self.config.max_batch_size {

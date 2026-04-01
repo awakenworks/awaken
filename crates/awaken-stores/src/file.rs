@@ -26,10 +26,25 @@ pub struct FileStore {
 
 impl FileStore {
     /// Create a new file store rooted at `base_path`.
+    ///
+    /// If a `.checkpoint_pending` marker is detected (leftover from a crash
+    /// during [`ThreadRunStore::checkpoint`]), a warning is logged. The data
+    /// files are individually atomic (complete or absent) so the store is
+    /// still usable, but the three checkpoint files may be mutually
+    /// inconsistent.
     pub fn new(base_path: impl Into<PathBuf>) -> Self {
-        Self {
-            base_path: base_path.into(),
+        let base_path = base_path.into();
+        let marker = base_path.join(".checkpoint_pending");
+        if marker.exists() {
+            tracing::warn!(
+                path = %marker.display(),
+                "stale .checkpoint_pending marker detected — a previous checkpoint \
+                 may be incomplete; thread/messages/run state could be inconsistent"
+            );
+            // Remove the stale marker so we don't warn on every restart.
+            let _ = std::fs::remove_file(&marker);
         }
+        Self { base_path }
     }
 
     fn threads_dir(&self) -> PathBuf {
@@ -99,6 +114,8 @@ async fn atomic_write(dir: &Path, filename: &str, content: &str) -> Result<(), S
         tokio::fs::rename(&tmp_path, &target)
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
+        // Sync parent directory to ensure rename is durable on Linux ext4/XFS
+        dir_fsync(dir).await?;
         Ok::<(), StorageError>(())
     }
     .await;
@@ -108,6 +125,171 @@ async fn atomic_write(dir: &Path, filename: &str, content: &str) -> Result<(), S
         return Err(e);
     }
     Ok(())
+}
+
+/// Like [`atomic_write`] but fails with [`StorageError::AlreadyExists`] if the
+/// target file already exists, using `O_CREAT | O_EXCL` to avoid TOCTOU races.
+async fn atomic_write_exclusive(
+    dir: &Path,
+    filename: &str,
+    content: &str,
+    exists_id: &str,
+) -> Result<(), StorageError> {
+    if !dir.exists() {
+        tokio::fs::create_dir_all(dir)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+    }
+
+    let target = dir.join(filename);
+
+    // Atomically claim the target path — fails if another writer got there first.
+    let lock_result = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)
+        .await;
+
+    match lock_result {
+        Ok(_lock_file) => { /* drop immediately; we'll overwrite via rename */ }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(StorageError::AlreadyExists(exists_id.to_owned()));
+        }
+        Err(e) => return Err(StorageError::Io(e.to_string())),
+    }
+
+    // Write to a temp file and rename over the lock file.
+    let tmp_path = dir.join(format!(
+        ".{}.{}.tmp",
+        filename.trim_end_matches(".json"),
+        uuid::Uuid::now_v7().simple()
+    ));
+
+    let write_result = async {
+        let mut file = tokio::fs::File::create(&tmp_path)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        file.write_all(content.as_bytes())
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        file.flush()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        file.sync_all()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        drop(file);
+        tokio::fs::rename(&tmp_path, &target)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        dir_fsync(dir).await?;
+        Ok::<(), StorageError>(())
+    }
+    .await;
+
+    if let Err(e) = write_result {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        // Also clean up the lock file we created
+        let _ = tokio::fs::remove_file(&target).await;
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Fsync a directory to ensure metadata (renames) are durable.
+async fn dir_fsync(dir: &Path) -> Result<(), StorageError> {
+    let dir_file = tokio::fs::File::open(dir)
+        .await
+        .map_err(|e| StorageError::Io(e.to_string()))?;
+    dir_file
+        .sync_all()
+        .await
+        .map_err(|e| StorageError::Io(e.to_string()))?;
+    Ok(())
+}
+
+/// A prepared (but not yet committed) temp file, ready to be renamed into place.
+struct StagedWrite {
+    tmp_path: PathBuf,
+    target: PathBuf,
+    dir: PathBuf,
+}
+
+/// Write content to a temp file in `dir`, fsync it, and return the staged write
+/// without performing the rename. The caller is responsible for calling
+/// [`commit_staged_writes`] to atomically install all staged files.
+async fn stage_write(
+    dir: &Path,
+    filename: &str,
+    content: &str,
+) -> Result<StagedWrite, StorageError> {
+    if !dir.exists() {
+        tokio::fs::create_dir_all(dir)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+    }
+    let target = dir.join(filename);
+    let tmp_path = dir.join(format!(
+        ".{}.{}.tmp",
+        filename.trim_end_matches(".json"),
+        uuid::Uuid::now_v7().simple()
+    ));
+    let mut file = tokio::fs::File::create(&tmp_path)
+        .await
+        .map_err(|e| StorageError::Io(e.to_string()))?;
+    file.write_all(content.as_bytes())
+        .await
+        .map_err(|e| StorageError::Io(e.to_string()))?;
+    file.flush()
+        .await
+        .map_err(|e| StorageError::Io(e.to_string()))?;
+    file.sync_all()
+        .await
+        .map_err(|e| StorageError::Io(e.to_string()))?;
+    drop(file);
+    Ok(StagedWrite {
+        tmp_path,
+        target,
+        dir: dir.to_path_buf(),
+    })
+}
+
+/// Rename all staged temp files into their targets and fsync each parent dir.
+/// A `.checkpoint_pending` marker in `base_dir` brackets the rename sequence so
+/// that crash-recovery can detect incomplete checkpoints.
+async fn commit_staged_writes(base_dir: &Path, writes: &[StagedWrite]) -> Result<(), StorageError> {
+    let marker = base_dir.join(".checkpoint_pending");
+    // Create marker before renames
+    tokio::fs::write(&marker, b"pending")
+        .await
+        .map_err(|e| StorageError::Io(e.to_string()))?;
+    dir_fsync(base_dir).await?;
+
+    // Collect unique parent dirs that need fsync
+    let mut synced_dirs = std::collections::HashSet::new();
+
+    for w in writes {
+        tokio::fs::rename(&w.tmp_path, &w.target)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        synced_dirs.insert(w.dir.clone());
+    }
+
+    // Fsync each unique parent directory
+    for dir in &synced_dirs {
+        dir_fsync(dir).await?;
+    }
+
+    // Remove marker — checkpoint is fully committed
+    let _ = tokio::fs::remove_file(&marker).await;
+    Ok(())
+}
+
+/// Clean up staged temp files on error.
+async fn cleanup_staged_writes(writes: &[StagedWrite]) {
+    for w in writes {
+        let _ = tokio::fs::remove_file(&w.tmp_path).await;
+    }
 }
 
 async fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>, StorageError> {
@@ -260,16 +442,13 @@ impl ThreadStore for FileStore {
 impl RunStore for FileStore {
     async fn create_run(&self, record: &RunRecord) -> Result<(), StorageError> {
         validate_id(&record.run_id, "run id")?;
-        let path = self.runs_dir().join(format!("{}.json", record.run_id));
-        if path.exists() {
-            return Err(StorageError::AlreadyExists(record.run_id.clone()));
-        }
         let payload = serde_json::to_string_pretty(record)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        atomic_write(
+        atomic_write_exclusive(
             &self.runs_dir(),
             &format!("{}.json", record.run_id),
             &payload,
+            &record.run_id,
         )
         .await
     }
@@ -331,6 +510,13 @@ fn owner_dir_name(owner: &ProfileOwner) -> String {
     }
 }
 
+/// Returns the current time in milliseconds since the UNIX epoch.
+///
+/// # Panics
+///
+/// Panics if the system clock is set before the UNIX epoch (1970-01-01).
+/// This is a truly exceptional condition that indicates a severely
+/// misconfigured system and cannot be meaningfully recovered from.
 fn current_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -416,34 +602,44 @@ impl ThreadRunStore for FileStore {
             .unwrap_or_else(|| Thread::with_id(thread_id));
         thread.metadata.created_at.get_or_insert(now);
         thread.metadata.updated_at = Some(now);
+
+        // Serialize all payloads up-front so we fail before any I/O.
         let thread_payload = serde_json::to_string_pretty(&thread)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        atomic_write(
-            &self.threads_dir(),
-            &format!("{thread_id}.json"),
-            &thread_payload,
-        )
-        .await?;
-
-        // Write messages
         let msg_payload = serde_json::to_string_pretty(messages)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        atomic_write(
-            &self.messages_dir(),
-            &format!("{thread_id}.json"),
-            &msg_payload,
-        )
-        .await?;
-
-        // Write run record
         let run_payload = serde_json::to_string_pretty(run)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        atomic_write(
-            &self.runs_dir(),
-            &format!("{}.json", run.run_id),
-            &run_payload,
-        )
-        .await
+
+        // Stage all three writes (temp files fsynced but not yet renamed).
+        let thread_file = &format!("{thread_id}.json");
+        let run_file = &format!("{}.json", run.run_id);
+
+        let staged_thread = stage_write(&self.threads_dir(), thread_file, &thread_payload).await?;
+        let staged_msgs = match stage_write(&self.messages_dir(), thread_file, &msg_payload).await {
+            Ok(s) => s,
+            Err(e) => {
+                cleanup_staged_writes(&[staged_thread]).await;
+                return Err(e);
+            }
+        };
+        let staged_run = match stage_write(&self.runs_dir(), run_file, &run_payload).await {
+            Ok(s) => s,
+            Err(e) => {
+                cleanup_staged_writes(&[staged_thread, staged_msgs]).await;
+                return Err(e);
+            }
+        };
+
+        let writes = [staged_thread, staged_msgs, staged_run];
+
+        // Commit: marker → renames → dir fsyncs → remove marker.
+        if let Err(e) = commit_staged_writes(&self.base_path, &writes).await {
+            cleanup_staged_writes(&writes).await;
+            return Err(e);
+        }
+
+        Ok(())
     }
 }
 

@@ -1,20 +1,21 @@
-//! LLM retry policy with optional model fallback.
+//! LLM retry policy with exponential backoff and optional model fallback.
 //!
 //! Provides [`LlmRetryPolicy`] for configuring retry behavior and
 //! [`RetryingExecutor`] which wraps any [`LlmExecutor`] to apply the policy.
-//!
-//! Delay between retries is **not** handled here because the async timer
-//! (`tokio::time::sleep`) is only available as a dev-dependency. Callers
-//! that need backoff should inject delay logic via a custom executor or
-//! middleware.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::StreamResult;
+
+use super::circuit_breaker::CircuitBreaker;
+
+/// Maximum backoff cap (8 seconds).
+const MAX_BACKOFF_MS: u64 = 8_000;
 
 /// Policy for retrying failed LLM inference.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -23,6 +24,14 @@ pub struct LlmRetryPolicy {
     pub max_retries: u32,
     /// Fallback model names to try in order after the primary model exhausts retries.
     pub fallback_models: Vec<String>,
+    /// Base delay in milliseconds for exponential backoff between retries.
+    /// Actual delay = min(base_ms * 2^attempt, 8000ms). Set to 0 to disable backoff.
+    #[serde(default = "default_backoff_base_ms")]
+    pub backoff_base_ms: u64,
+}
+
+fn default_backoff_base_ms() -> u64 {
+    500
 }
 
 impl Default for LlmRetryPolicy {
@@ -30,6 +39,7 @@ impl Default for LlmRetryPolicy {
         Self {
             max_retries: 2,
             fallback_models: Vec::new(),
+            backoff_base_ms: default_backoff_base_ms(),
         }
     }
 }
@@ -54,6 +64,24 @@ impl LlmRetryPolicy {
         self.fallback_models.push(model.into());
         self
     }
+
+    /// Set the backoff base delay in milliseconds.
+    pub fn with_backoff_base_ms(mut self, ms: u64) -> Self {
+        self.backoff_base_ms = ms;
+        self
+    }
+
+    /// Compute the backoff delay for a given retry attempt (0-indexed).
+    fn backoff_delay(&self, attempt: u32) -> Duration {
+        if self.backoff_base_ms == 0 {
+            return Duration::ZERO;
+        }
+        let delay_ms = self
+            .backoff_base_ms
+            .saturating_mul(1u64 << attempt.min(16))
+            .min(MAX_BACKOFF_MS);
+        Duration::from_millis(delay_ms)
+    }
 }
 
 /// Whether an error is retryable.
@@ -77,12 +105,23 @@ fn is_retryable(err: &InferenceExecutionError) -> bool {
 pub struct RetryingExecutor {
     inner: Arc<dyn LlmExecutor>,
     policy: LlmRetryPolicy,
+    circuit_breaker: Option<Arc<CircuitBreaker>>,
 }
 
 impl RetryingExecutor {
     /// Wrap an executor with a retry policy.
     pub fn new(inner: Arc<dyn LlmExecutor>, policy: LlmRetryPolicy) -> Self {
-        Self { inner, policy }
+        Self {
+            inner,
+            policy,
+            circuit_breaker: None,
+        }
+    }
+
+    /// Attach a circuit breaker that is checked before each attempt.
+    pub fn with_circuit_breaker(mut self, cb: Arc<CircuitBreaker>) -> Self {
+        self.circuit_breaker = Some(cb);
+        self
     }
 
     /// Attempt execution with retries for a single model variant of the request.
@@ -93,15 +132,33 @@ impl RetryingExecutor {
         let mut last_error = None;
 
         for attempt in 0..=self.policy.max_retries {
+            // Check circuit breaker before each attempt.
+            if let Some(ref cb) = self.circuit_breaker {
+                cb.check(&request.model)?;
+            }
+
             match self.inner.execute(request.clone()).await {
-                Ok(result) => return Ok(result),
+                Ok(result) => {
+                    if let Some(ref cb) = self.circuit_breaker {
+                        cb.record_success(&request.model);
+                    }
+                    return Ok(result);
+                }
                 Err(err) => {
+                    if let Some(ref cb) = self.circuit_breaker {
+                        cb.record_failure(&request.model);
+                    }
                     if !is_retryable(&err) {
                         return Err(err);
                     }
                     last_error = Some(err);
                     if attempt == self.policy.max_retries {
                         break;
+                    }
+                    // Exponential backoff between retries (not before the first attempt).
+                    let delay = self.policy.backoff_delay(attempt);
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
                     }
                 }
             }
@@ -168,6 +225,11 @@ mod tests {
     use awaken_contract::contract::inference::{StopReason, TokenUsage};
     use awaken_contract::contract::message::Message;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// All test policies use zero backoff so tests run instantly.
+    fn test_policy() -> LlmRetryPolicy {
+        LlmRetryPolicy::default().with_backoff_base_ms(0)
+    }
 
     /// Mock executor that fails a configurable number of times before succeeding.
     struct FailNThenSucceed {
@@ -288,7 +350,10 @@ mod tests {
     #[tokio::test]
     async fn no_retry_policy_first_failure_is_terminal() {
         let inner = Arc::new(FailNThenSucceed::new(1));
-        let executor = RetryingExecutor::new(inner.clone(), LlmRetryPolicy::no_retry());
+        let executor = RetryingExecutor::new(
+            inner.clone(),
+            LlmRetryPolicy::no_retry().with_backoff_base_ms(0),
+        );
 
         let result = executor.execute(test_request()).await;
         assert!(result.is_err());
@@ -298,7 +363,7 @@ mod tests {
     #[tokio::test]
     async fn retry_succeeds_on_second_attempt() {
         let inner = Arc::new(FailNThenSucceed::new(1));
-        let policy = LlmRetryPolicy::default().with_max_retries(2);
+        let policy = test_policy().with_max_retries(2);
         let executor = RetryingExecutor::new(inner.clone(), policy);
 
         let result = executor.execute(test_request()).await;
@@ -309,7 +374,7 @@ mod tests {
     #[tokio::test]
     async fn retry_exhausts_all_attempts_returns_last_error() {
         let inner = Arc::new(FailNThenSucceed::new(100)); // never succeeds
-        let policy = LlmRetryPolicy::default().with_max_retries(3);
+        let policy = test_policy().with_max_retries(3);
         let executor = RetryingExecutor::new(inner.clone(), policy);
 
         let result = executor.execute(test_request()).await;
@@ -322,7 +387,7 @@ mod tests {
     async fn non_retryable_error_is_not_retried() {
         let inner =
             Arc::new(FailNThenSucceed::new(1).with_error(|_| InferenceExecutionError::Cancelled));
-        let policy = LlmRetryPolicy::default().with_max_retries(5);
+        let policy = test_policy().with_max_retries(5);
         let executor = RetryingExecutor::new(inner.clone(), policy);
 
         let result = executor.execute(test_request()).await;
@@ -335,7 +400,7 @@ mod tests {
         let inner = Arc::new(ModelRecorder::always_fail_with(
             InferenceExecutionError::RateLimited("overloaded".into()),
         ));
-        let policy = LlmRetryPolicy::default()
+        let policy = test_policy()
             .with_max_retries(1)
             .with_fallback_model("fallback-a")
             .with_fallback_model("fallback-b");
@@ -359,12 +424,8 @@ mod tests {
 
     #[tokio::test]
     async fn fallback_succeeds_after_primary_fails() {
-        // Fails 4 times then succeeds. With max_retries=1:
-        // primary: 2 calls (fail), fallback: 2 calls (fail), then call 5 succeeds.
-        // Actually we need a model-aware mock for this. Let's use a simpler approach:
-        // fail 3 times (primary 2 + fallback first attempt), succeed on 4th.
         let inner = Arc::new(FailNThenSucceed::new(3));
-        let policy = LlmRetryPolicy::default()
+        let policy = test_policy()
             .with_max_retries(1)
             .with_fallback_model("fallback-model");
         let executor = RetryingExecutor::new(inner.clone(), policy);
@@ -378,7 +439,7 @@ mod tests {
     #[tokio::test]
     async fn succeeds_on_first_try_no_retry_needed() {
         let inner = Arc::new(FailNThenSucceed::new(0)); // never fails
-        let policy = LlmRetryPolicy::default().with_max_retries(3);
+        let policy = test_policy().with_max_retries(3);
         let executor = RetryingExecutor::new(inner.clone(), policy);
 
         let result = executor.execute(test_request()).await;
@@ -389,14 +450,12 @@ mod tests {
     #[tokio::test]
     async fn retrying_executor_delegates_name() {
         let inner = Arc::new(FailNThenSucceed::new(0));
-        let executor = RetryingExecutor::new(inner, LlmRetryPolicy::default());
+        let executor = RetryingExecutor::new(inner, test_policy());
         assert_eq!(executor.name(), "mock");
     }
 
     #[tokio::test]
     async fn non_retryable_error_during_fallback_stops_immediately() {
-        // Primary fails with retryable, fallback fails with non-retryable (Cancelled).
-        // Should stop without trying further fallbacks.
         let call_count = Arc::new(AtomicU32::new(0));
         let cc = call_count.clone();
 
@@ -414,7 +473,6 @@ mod tests {
                 if request.model.starts_with("primary") {
                     Err(InferenceExecutionError::Provider("down".into()))
                 } else {
-                    // Fallback returns non-retryable error
                     let _ = n;
                     Err(InferenceExecutionError::Cancelled)
                 }
@@ -426,7 +484,7 @@ mod tests {
         }
 
         let inner = Arc::new(PrimaryRetryableFallbackFatal { calls: cc });
-        let policy = LlmRetryPolicy::default()
+        let policy = test_policy()
             .with_max_retries(0)
             .with_fallback_model("fallback-a")
             .with_fallback_model("fallback-b");
@@ -443,6 +501,7 @@ mod tests {
         let policy = LlmRetryPolicy::default();
         assert_eq!(policy.max_retries, 2);
         assert!(policy.fallback_models.is_empty());
+        assert_eq!(policy.backoff_base_ms, 500);
     }
 
     #[test]
@@ -483,9 +542,94 @@ mod tests {
         let policy = LlmRetryPolicy::default()
             .with_max_retries(5)
             .with_fallback_model("model-a")
-            .with_fallback_model("model-b");
+            .with_fallback_model("model-b")
+            .with_backoff_base_ms(100);
         assert_eq!(policy.max_retries, 5);
         assert_eq!(policy.fallback_models, vec!["model-a", "model-b"]);
+        assert_eq!(policy.backoff_base_ms, 100);
+    }
+
+    // -----------------------------------------------------------------------
+    // Backoff delay tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn backoff_delay_zero_base() {
+        let policy = LlmRetryPolicy::default().with_backoff_base_ms(0);
+        assert_eq!(policy.backoff_delay(0), Duration::ZERO);
+        assert_eq!(policy.backoff_delay(5), Duration::ZERO);
+    }
+
+    #[test]
+    fn backoff_delay_exponential() {
+        let policy = LlmRetryPolicy::default().with_backoff_base_ms(500);
+        assert_eq!(policy.backoff_delay(0), Duration::from_millis(500)); // 500 * 2^0
+        assert_eq!(policy.backoff_delay(1), Duration::from_millis(1000)); // 500 * 2^1
+        assert_eq!(policy.backoff_delay(2), Duration::from_millis(2000)); // 500 * 2^2
+        assert_eq!(policy.backoff_delay(3), Duration::from_millis(4000)); // 500 * 2^3
+    }
+
+    #[test]
+    fn backoff_delay_caps_at_max() {
+        let policy = LlmRetryPolicy::default().with_backoff_base_ms(500);
+        // 500 * 2^4 = 8000 (at the cap)
+        assert_eq!(policy.backoff_delay(4), Duration::from_millis(8000));
+        // 500 * 2^5 = 16000, capped to 8000
+        assert_eq!(policy.backoff_delay(5), Duration::from_millis(8000));
+    }
+
+    // -----------------------------------------------------------------------
+    // Circuit breaker integration tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn circuit_breaker_blocks_when_open() {
+        use crate::engine::circuit_breaker::CircuitBreakerConfig;
+
+        let inner = Arc::new(FailNThenSucceed::new(100));
+        let cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 2,
+            cooldown: std::time::Duration::from_secs(60),
+            half_open_max: 1,
+        }));
+
+        // Pre-open the circuit breaker
+        cb.record_failure("primary-model");
+        cb.record_failure("primary-model");
+
+        let policy = test_policy().with_max_retries(3);
+        let executor = RetryingExecutor::new(inner.clone(), policy).with_circuit_breaker(cb);
+
+        let result = executor.execute(test_request()).await;
+        assert!(result.is_err());
+        // Should not have called inner at all — circuit breaker rejected
+        assert_eq!(inner.call_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_records_success() {
+        use crate::engine::circuit_breaker::CircuitBreakerConfig;
+
+        let inner = Arc::new(FailNThenSucceed::new(0));
+        let cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 2,
+            cooldown: std::time::Duration::from_secs(60),
+            half_open_max: 1,
+        }));
+
+        // Record one failure — not enough to trip
+        cb.record_failure("primary-model");
+
+        let policy = test_policy().with_max_retries(1);
+        let executor =
+            RetryingExecutor::new(inner.clone(), policy).with_circuit_breaker(cb.clone());
+
+        let result = executor.execute(test_request()).await;
+        assert!(result.is_ok());
+
+        // After success, a subsequent failure should not trip (counter was reset)
+        cb.record_failure("primary-model");
+        assert!(cb.check("primary-model").is_ok());
     }
 
     // -----------------------------------------------------------------------
@@ -498,7 +642,7 @@ mod tests {
             FailNThenSucceed::new(2)
                 .with_error(|_| InferenceExecutionError::RateLimited("rate limited".into())),
         );
-        let policy = LlmRetryPolicy::default().with_max_retries(3);
+        let policy = test_policy().with_max_retries(3);
         let executor = RetryingExecutor::new(inner.clone(), policy);
 
         let result = executor.execute(test_request()).await;
@@ -512,7 +656,7 @@ mod tests {
             FailNThenSucceed::new(1)
                 .with_error(|_| InferenceExecutionError::Timeout("timed out".into())),
         );
-        let policy = LlmRetryPolicy::default().with_max_retries(2);
+        let policy = test_policy().with_max_retries(2);
         let executor = RetryingExecutor::new(inner.clone(), policy);
 
         let result = executor.execute(test_request()).await;
@@ -523,7 +667,7 @@ mod tests {
     #[tokio::test]
     async fn zero_retries_with_fallback_tries_fallback_once() {
         let inner = Arc::new(FailNThenSucceed::new(1)); // primary fails, fallback succeeds
-        let policy = LlmRetryPolicy::default()
+        let policy = test_policy()
             .with_max_retries(0)
             .with_fallback_model("fallback");
         let executor = RetryingExecutor::new(inner.clone(), policy);
@@ -536,7 +680,7 @@ mod tests {
     #[tokio::test]
     async fn no_fallbacks_configured_returns_primary_error() {
         let inner = Arc::new(FailNThenSucceed::new(100));
-        let policy = LlmRetryPolicy::default().with_max_retries(1);
+        let policy = test_policy().with_max_retries(1);
         // No fallback models
         let executor = RetryingExecutor::new(inner.clone(), policy);
 
@@ -547,14 +691,13 @@ mod tests {
 
     #[tokio::test]
     async fn all_error_types_handled() {
-        // Test each retryable error type
         for error_fn in [
             (|_: u32| InferenceExecutionError::Provider("down".into())) as fn(u32) -> _,
             |_| InferenceExecutionError::RateLimited("429".into()),
             |_| InferenceExecutionError::Timeout("timeout".into()),
         ] {
             let inner = Arc::new(FailNThenSucceed::new(1).with_error(error_fn));
-            let policy = LlmRetryPolicy::default().with_max_retries(2);
+            let policy = test_policy().with_max_retries(2);
             let executor = RetryingExecutor::new(inner.clone(), policy);
 
             let result = executor.execute(test_request()).await;
@@ -565,7 +708,7 @@ mod tests {
     #[tokio::test]
     async fn max_retries_zero_and_no_fallback_just_one_attempt() {
         let inner = Arc::new(FailNThenSucceed::new(100));
-        let policy = LlmRetryPolicy::no_retry();
+        let policy = LlmRetryPolicy::no_retry().with_backoff_base_ms(0);
         let executor = RetryingExecutor::new(inner.clone(), policy);
 
         let result = executor.execute(test_request()).await;
@@ -578,9 +721,8 @@ mod tests {
         let recorder = Arc::new(ModelRecorder::always_fail_with(
             InferenceExecutionError::Provider("down".into()),
         ));
-        // This will always fail, but let's use a different mock that succeeds
         let inner = Arc::new(FailNThenSucceed::new(0)); // never fails
-        let policy = LlmRetryPolicy::default()
+        let policy = test_policy()
             .with_max_retries(3)
             .with_fallback_model("fallback-a");
         let executor = RetryingExecutor::new(inner.clone(), policy);
@@ -600,19 +742,27 @@ mod tests {
         let policy = LlmRetryPolicy::default()
             .with_max_retries(5)
             .with_fallback_model("fallback-a")
-            .with_fallback_model("fallback-b");
+            .with_fallback_model("fallback-b")
+            .with_backoff_base_ms(200);
         let json = serde_json::to_string(&policy).unwrap();
         let parsed: LlmRetryPolicy = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.max_retries, 5);
         assert_eq!(parsed.fallback_models, vec!["fallback-a", "fallback-b"]);
+        assert_eq!(parsed.backoff_base_ms, 200);
+    }
+
+    #[test]
+    fn retry_policy_serde_default_backoff() {
+        // Deserializing without backoff_base_ms should use the default.
+        let json = r#"{"max_retries":2,"fallback_models":[]}"#;
+        let parsed: LlmRetryPolicy = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.backoff_base_ms, 500);
     }
 
     #[tokio::test]
     async fn retry_budget_exact_boundary() {
-        // max_retries=2 means 3 total attempts (1 initial + 2 retries).
-        // Fail exactly 2 times, succeed on attempt 3.
         let inner = Arc::new(FailNThenSucceed::new(2));
-        let policy = LlmRetryPolicy::default().with_max_retries(2);
+        let policy = test_policy().with_max_retries(2);
         let executor = RetryingExecutor::new(inner.clone(), policy);
 
         let result = executor.execute(test_request()).await;
@@ -622,9 +772,8 @@ mod tests {
 
     #[tokio::test]
     async fn retry_budget_one_over_boundary() {
-        // max_retries=2, fail 3 times = should exhaust budget
         let inner = Arc::new(FailNThenSucceed::new(3));
-        let policy = LlmRetryPolicy::default().with_max_retries(2);
+        let policy = test_policy().with_max_retries(2);
         let executor = RetryingExecutor::new(inner.clone(), policy);
 
         let result = executor.execute(test_request()).await;

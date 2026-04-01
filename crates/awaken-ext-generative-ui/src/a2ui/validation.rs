@@ -47,7 +47,13 @@ fn single_component_entry<'a>(
         ));
     }
 
-    let (name, payload) = component.iter().next().expect("single component entry");
+    // len() == 1 was verified above, so iter().next() is guaranteed Some.
+    let Some((name, payload)) = component.iter().next() else {
+        return Some(err(
+            "\"surfaceUpdate.components[*].component\" must contain exactly one component payload"
+                .to_string(),
+        ));
+    };
     let payload_obj = match payload.as_object() {
         Some(payload_obj) => payload_obj,
         None => {

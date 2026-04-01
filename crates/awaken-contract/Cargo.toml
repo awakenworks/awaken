@@ -15,6 +15,7 @@ schemars = { workspace = true }
 jsonschema = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+parking_lot = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

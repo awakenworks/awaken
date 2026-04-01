@@ -1,7 +1,9 @@
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
+
+use parking_lot::Mutex;
 
 use super::metrics::{AgentMetrics, MetricsEvent};
 use super::sink::{MetricsSink, SinkError};
@@ -158,7 +160,7 @@ impl PersistentSink {
 
     /// Number of events buffered since the last successful flush.
     pub fn pending_count(&self) -> usize {
-        self.pending.lock().unwrap().len()
+        self.pending.lock().len()
     }
 }
 
@@ -167,13 +169,12 @@ impl MetricsSink for PersistentSink {
         self.inner.record(event);
         self.pending
             .lock()
-            .unwrap()
             .push(PersistedLine::Event(Box::new(event.clone())));
     }
 
     fn on_run_end(&self, metrics: &AgentMetrics) {
         self.inner.on_run_end(metrics);
-        self.pending.lock().unwrap().push(PersistedLine::RunEnd {
+        self.pending.lock().push(PersistedLine::RunEnd {
             line_type: RunEndMarker::RunEnd,
             session_duration_ms: metrics.session_duration_ms,
         });
@@ -182,11 +183,11 @@ impl MetricsSink for PersistentSink {
     fn flush(&self) -> Result<(), SinkError> {
         match self.inner.flush() {
             Ok(()) => {
-                self.pending.lock().unwrap().clear();
+                self.pending.lock().clear();
                 Ok(())
             }
             Err(e) => {
-                let pending: Vec<_> = self.pending.lock().unwrap().drain(..).collect();
+                let pending: Vec<_> = self.pending.lock().drain(..).collect();
                 if !pending.is_empty() {
                     let _ = self.persist_to_disk(&pending);
                 }

@@ -92,7 +92,7 @@ pub use awaken_ext_reminder::{
 pub use awaken_ext_generative_ui::A2uiPlugin;
 
 #[cfg(feature = "server")]
-pub use awaken_server::app::{AppState, ServerConfig};
+pub use awaken_server::app::{AppState, ServerConfig, ShutdownConfig, serve, serve_with_shutdown};
 #[cfg(feature = "server")]
 pub use awaken_server::mailbox::{Mailbox, MailboxConfig};
 #[cfg(feature = "server")]

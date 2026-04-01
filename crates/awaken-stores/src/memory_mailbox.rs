@@ -149,7 +149,10 @@ impl MailboxStore for InMemoryMailboxStore {
         }
 
         // Re-borrow after the shared check above.
-        let job = jobs.get_mut(job_id).unwrap();
+        // SAFETY: job_id was already found via `get_mut` above, so this cannot fail.
+        let job = jobs
+            .get_mut(job_id)
+            .ok_or_else(|| StorageError::Io("job disappeared during claim".into()))?;
         let token = Uuid::now_v7().to_string();
         job.status = MailboxJobStatus::Claimed;
         job.claim_token = Some(token);

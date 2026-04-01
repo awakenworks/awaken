@@ -473,8 +473,17 @@ fn run_query_defaults() {
 // ============================================================================
 
 #[tokio::test]
-async fn health_endpoint_returns_ok() {
+async fn health_readiness_returns_ok() {
     let test = make_test_app();
-    let (status, _body) = get_json(test.router, "/health").await;
+    let (status, body) = get_json(test.router, "/health").await;
+    assert_eq!(status, StatusCode::OK);
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["status"], "healthy");
+}
+
+#[tokio::test]
+async fn health_liveness_returns_ok() {
+    let test = make_test_app();
+    let (status, _body) = get_json(test.router, "/health/live").await;
     assert_eq!(status, StatusCode::OK);
 }

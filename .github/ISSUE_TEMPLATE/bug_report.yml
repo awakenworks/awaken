@@ -1,0 +1,85 @@
+name: Bug report
+description: Report an incorrect behavior, regression, or broken developer workflow.
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please include a minimal reproduction and the affected crate, example, or workflow.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is wrong?
+    validations:
+      required: true
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Affected area
+      options:
+        - crates/awaken-contract
+        - crates/awaken-runtime
+        - crates/awaken-server
+        - crates/awaken-stores
+        - crates/awaken-tool-pattern
+        - crates/awaken-ext-permission
+        - crates/awaken-ext-observability
+        - crates/awaken-ext-mcp
+        - crates/awaken-ext-skills
+        - crates/awaken-ext-reminder
+        - crates/awaken-ext-generative-ui
+        - crates/awaken-ext-deferred-tools
+        - examples/ai-sdk-starter
+        - examples/copilotkit-starter
+        - docs/book
+        - CI or scripts
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Include commands, code, or steps to reproduce the issue.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Rust, Node.js, OS, and any relevant provider or backend configuration.
+      placeholder: |
+        - OS:
+        - rustc:
+        - node:
+        - npm:
+        - provider/model:
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I read CONTRIBUTING.md.
+          required: true
+        - label: I searched for existing issues and discussions.
+          required: true

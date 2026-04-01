@@ -1,9 +1,12 @@
 //! GenAI-backed LLM executor implementation.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use futures::StreamExt;
 use genai::Client;
 use genai::chat::{ChatOptions, ChatStreamEvent};
+use reqwest::StatusCode;
 
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::executor::{
@@ -14,6 +17,9 @@ use awaken_contract::contract::inference::{StopReason, StreamResult};
 use super::convert::{build_chat_request, from_genai_tool_call, map_stop_reason, map_usage};
 use super::streaming::{StreamCollector, StreamOutput};
 
+/// Default timeout for LLM inference calls (120 seconds).
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// LLM executor backed by the `genai` crate.
 ///
 /// Supports all providers that genai supports: OpenAI, Anthropic, Gemini, Ollama, etc.
@@ -22,6 +28,7 @@ use super::streaming::{StreamCollector, StreamOutput};
 pub struct GenaiExecutor {
     client: Client,
     default_options: Option<ChatOptions>,
+    default_timeout: Duration,
 }
 
 impl GenaiExecutor {
@@ -33,6 +40,7 @@ impl GenaiExecutor {
         Self {
             client: Client::default(),
             default_options: None,
+            default_timeout: DEFAULT_TIMEOUT,
         }
     }
 
@@ -41,6 +49,7 @@ impl GenaiExecutor {
         Self {
             client,
             default_options: None,
+            default_timeout: DEFAULT_TIMEOUT,
         }
     }
 
@@ -48,6 +57,13 @@ impl GenaiExecutor {
     #[must_use]
     pub fn with_options(mut self, options: ChatOptions) -> Self {
         self.default_options = Some(options);
+        self
+    }
+
+    /// Set the default timeout for inference calls.
+    #[must_use]
+    pub fn with_timeout(mut self, duration: Duration) -> Self {
+        self.default_timeout = duration;
         self
     }
 
@@ -76,13 +92,51 @@ impl GenaiExecutor {
     }
 
     fn map_error(e: genai::Error) -> InferenceExecutionError {
-        let msg = e.to_string();
-        if msg.contains("rate") || msg.contains("429") {
+        tracing::warn!(error = ?e, "LLM inference error");
+
+        // Try structured matching on status codes first.
+        if let Some(status) = Self::extract_status_code(&e) {
+            let msg = format!("{e:#}");
+            return match status.as_u16() {
+                429 => InferenceExecutionError::RateLimited(msg),
+                408 | 504 => InferenceExecutionError::Timeout(msg),
+                500 | 502 | 503 => InferenceExecutionError::Provider(msg),
+                _ => InferenceExecutionError::Provider(msg),
+            };
+        }
+
+        // Fall back to string matching for errors without structured status codes.
+        let msg = format!("{e:#}");
+        let lower = msg.to_lowercase();
+        if lower.contains("rate") || lower.contains("429") || lower.contains("too many requests") {
             InferenceExecutionError::RateLimited(msg)
-        } else if msg.contains("timeout") || msg.contains("timed out") {
+        } else if lower.contains("timeout") || lower.contains("timed out") {
             InferenceExecutionError::Timeout(msg)
-        } else {
+        } else if lower.contains("overloaded")
+            || lower.contains("503")
+            || lower.contains("502")
+            || lower.contains("500")
+        {
             InferenceExecutionError::Provider(msg)
+        } else {
+            tracing::warn!(error_msg = %msg, "unclassified LLM error — consider adding a pattern");
+            InferenceExecutionError::Provider(msg)
+        }
+    }
+
+    /// Extract an HTTP status code from structured `genai::Error` variants.
+    fn extract_status_code(e: &genai::Error) -> Option<StatusCode> {
+        match e {
+            genai::Error::HttpError { status, .. } => Some(*status),
+            genai::Error::WebAdapterCall { webc_error, .. }
+            | genai::Error::WebModelCall { webc_error, .. } => {
+                if let genai::webc::Error::ResponseFailedStatus { status, .. } = webc_error {
+                    Some(*status)
+                } else {
+                    None
+                }
+            }
+            _ => None,
         }
     }
 }
@@ -109,11 +163,19 @@ impl LlmExecutor for GenaiExecutor {
         );
         let opts = self.build_options(&request);
 
-        let response = self
-            .client
-            .exec_chat(&model, chat_req, Some(&opts))
-            .await
-            .map_err(Self::map_error)?;
+        let timeout_dur = self.default_timeout;
+        let response = tokio::time::timeout(
+            timeout_dur,
+            self.client.exec_chat(&model, chat_req, Some(&opts)),
+        )
+        .await
+        .map_err(|_| {
+            InferenceExecutionError::Timeout(format!(
+                "inference timeout after {}s",
+                timeout_dur.as_secs()
+            ))
+        })?
+        .map_err(Self::map_error)?;
 
         // Extract text
         let text = response.content.first_text().unwrap_or("").to_string();
@@ -169,11 +231,19 @@ impl LlmExecutor for GenaiExecutor {
             let mut opts = self.build_options(&request);
             opts = opts.with_capture_content(true);
 
-            let stream_response = self
-                .client
-                .exec_chat_stream(&model, chat_req, Some(&opts))
-                .await
-                .map_err(Self::map_error)?;
+            let timeout_dur = self.default_timeout;
+            let stream_response = tokio::time::timeout(
+                timeout_dur,
+                self.client.exec_chat_stream(&model, chat_req, Some(&opts)),
+            )
+            .await
+            .map_err(|_| {
+                InferenceExecutionError::Timeout(format!(
+                    "inference timeout after {}s",
+                    timeout_dur.as_secs()
+                ))
+            })?
+            .map_err(Self::map_error)?;
 
             let event_stream = futures::stream::unfold(
                 (stream_response.stream, StreamCollector::new()),
@@ -453,5 +523,95 @@ mod tests {
             matches!(mapped, InferenceExecutionError::Provider(_)),
             "expected Provider, got {mapped:?}"
         );
+    }
+
+    #[test]
+    fn map_error_too_many_requests() {
+        let err = genai::Error::Internal("Too Many Requests".into());
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::RateLimited(_)),
+            "expected RateLimited, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_overloaded() {
+        let err = genai::Error::Internal("server overloaded".into());
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::Provider(_)),
+            "expected Provider, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_503_string() {
+        let err = genai::Error::Internal("503 Service Unavailable".into());
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::Provider(_)),
+            "expected Provider, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_http_429_structured() {
+        let err = genai::Error::HttpError {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            canonical_reason: "Too Many Requests".into(),
+            body: "rate limited".into(),
+        };
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::RateLimited(_)),
+            "expected RateLimited, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_http_500_structured() {
+        let err = genai::Error::HttpError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            canonical_reason: "Internal Server Error".into(),
+            body: "oops".into(),
+        };
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::Provider(_)),
+            "expected Provider, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_http_504_structured() {
+        let err = genai::Error::HttpError {
+            status: StatusCode::GATEWAY_TIMEOUT,
+            canonical_reason: "Gateway Timeout".into(),
+            body: "timeout".into(),
+        };
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::Timeout(_)),
+            "expected Timeout, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_preserves_full_chain() {
+        let err = genai::Error::Internal("rate limit exceeded".into());
+        let mapped = GenaiExecutor::map_error(err);
+        let msg = match mapped {
+            InferenceExecutionError::RateLimited(m) => m,
+            other => panic!("expected RateLimited, got {other:?}"),
+        };
+        // format!("{e:#}") should give us the full chain
+        assert!(msg.contains("rate limit exceeded"), "msg was: {msg}");
+    }
+
+    #[test]
+    fn with_timeout_builder() {
+        let exec = GenaiExecutor::new().with_timeout(Duration::from_secs(30));
+        assert_eq!(exec.default_timeout, Duration::from_secs(30));
     }
 }

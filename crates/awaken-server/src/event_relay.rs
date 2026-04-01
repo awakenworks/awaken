@@ -13,6 +13,7 @@ use awaken_contract::contract::transport::Transcoder;
 ///
 /// The `event_stream` parameter accepts any `futures::Stream` of `AgentEvent`.
 /// Both unbounded and bounded receivers can be adapted via wrapper streams.
+#[tracing::instrument(skip_all)]
 pub fn relay_events_stream<E, S>(
     mut encoder: E,
     event_stream: S,

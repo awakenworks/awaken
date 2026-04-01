@@ -30,6 +30,7 @@ fn server_config_serde_roundtrip() {
         address: "127.0.0.1:8080".to_string(),
         sse_buffer_size: 128,
         replay_buffer_capacity: 512,
+        ..Default::default()
     };
     let json = serde_json::to_string(&config).unwrap();
     let parsed: ServerConfig = serde_json::from_str(&json).unwrap();
@@ -945,9 +946,19 @@ mod integration {
     }
 
     #[tokio::test]
-    async fn health_endpoint_returns_200() {
+    async fn health_readiness_returns_healthy_json() {
         let test = make_test_app();
-        let (status, _body) = get_json(test.router, "/health").await;
+        let (status, body) = get_json(test.router, "/health").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "healthy");
+        assert_eq!(body["components"]["store"], "ok");
+        assert_eq!(body["components"]["runtime"], "ok");
+    }
+
+    #[tokio::test]
+    async fn health_liveness_returns_200() {
+        let test = make_test_app();
+        let (status, _body) = get_json(test.router, "/health/live").await;
         assert_eq!(status, StatusCode::OK);
     }
 

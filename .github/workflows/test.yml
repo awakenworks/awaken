@@ -1,0 +1,50 @@
+name: Test
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    name: Rust Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --locked
+
+  ai-sdk-starter-build:
+    # Build the frontend example to catch TypeScript errors
+    name: AI SDK Starter Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/ai-sdk-starter
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: examples/ai-sdk-starter/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
+  copilotkit-starter-build:
+    name: CopilotKit Starter Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/copilotkit-starter
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: examples/copilotkit-starter/package-lock.json
+      - run: npm ci
+      - run: npm run build

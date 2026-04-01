@@ -5,7 +5,7 @@
 //!
 //! Feature-gated behind `otel`.
 
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use opentelemetry::trace::{SpanKind, Status, Tracer};
 use opentelemetry::{KeyValue, trace::TraceContextExt};
@@ -52,7 +52,7 @@ impl OtelMetricsSink {
 
     /// Return the root session context, creating the root span lazily.
     fn ensure_root_context(&self) -> opentelemetry::Context {
-        let mut root = self.root_context.lock().unwrap();
+        let mut root = self.root_context.lock();
         if let Some(ref cx) = *root {
             return cx.clone();
         }
@@ -217,7 +217,7 @@ impl OtelMetricsSink {
         inference_cx.span().end_with_timestamp(end_time);
 
         // Store so tool spans become children of this inference.
-        *self.current_inference_cx.lock().unwrap() = Some(inference_cx);
+        *self.current_inference_cx.lock() = Some(inference_cx);
     }
 
     fn record_tool(&self, span: &ToolSpan) {
@@ -231,7 +231,6 @@ impl OtelMetricsSink {
         let parent_cx = self
             .current_inference_cx
             .lock()
-            .unwrap()
             .clone()
             .unwrap_or_else(|| self.ensure_root_context());
 
@@ -334,7 +333,7 @@ impl MetricsSink for OtelMetricsSink {
         ];
 
         // End the root session span (created lazily during record()).
-        let mut root = self.root_context.lock().unwrap();
+        let mut root = self.root_context.lock();
         if let Some(cx) = root.take() {
             let span_ref = cx.span();
             span_ref.set_attributes(session_attrs);
@@ -342,7 +341,7 @@ impl MetricsSink for OtelMetricsSink {
         }
 
         // Clear inference context for potential reuse.
-        *self.current_inference_cx.lock().unwrap() = None;
+        *self.current_inference_cx.lock() = None;
     }
 }
 

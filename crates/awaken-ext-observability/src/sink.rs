@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use super::metrics::{AgentMetrics, MetricsEvent};
 
@@ -73,13 +75,13 @@ impl InMemorySink {
     }
 
     pub fn metrics(&self) -> AgentMetrics {
-        self.inner.lock().unwrap().clone()
+        self.inner.lock().clone()
     }
 }
 
 impl MetricsSink for InMemorySink {
     fn record(&self, event: &MetricsEvent) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         match event {
             MetricsEvent::Inference(s) => inner.inferences.push(s.clone()),
             MetricsEvent::Tool(s) => inner.tools.push(s.clone()),
@@ -90,7 +92,7 @@ impl MetricsSink for InMemorySink {
     }
 
     fn on_run_end(&self, metrics: &AgentMetrics) {
-        self.inner.lock().unwrap().session_duration_ms = metrics.session_duration_ms;
+        self.inner.lock().session_duration_ms = metrics.session_duration_ms;
     }
 }
 

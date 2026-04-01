@@ -1,0 +1,41 @@
+name: Question
+description: Ask for clarification about APIs, examples, contribution flow, or expected behavior.
+labels:
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please include what you already checked so maintainers can answer quickly.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What do you need help understanding?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Include links, commands, errors, or relevant files.
+  - type: dropdown
+    id: checked
+    attributes:
+      label: What did you check first?
+      options:
+        - README.md
+        - CONTRIBUTING.md
+        - docs/book
+        - example README files
+        - source code
+        - existing issues/discussions
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched for existing issues and discussions.
+          required: true

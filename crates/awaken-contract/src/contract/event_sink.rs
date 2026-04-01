@@ -21,12 +21,14 @@ pub trait EventSink: Send + Sync {
 
 /// Collects events in a `Vec` (default, for backward compatibility).
 ///
-/// Uses `std::sync::Mutex` intentionally: the critical sections are trivially
-/// short (push / take / clone) and never cross an `.await` point, making a
+/// Uses `parking_lot::Mutex`: the critical sections are trivially short
+/// (push / take / clone) and never cross an `.await` point, making a
 /// blocking mutex both correct and cheaper than `tokio::sync::Mutex`.
+/// `parking_lot::Mutex` is preferred over `std::sync::Mutex` because it
+/// does not poison, avoiding cascade panics.
 #[derive(Default)]
 pub struct VecEventSink {
-    events: std::sync::Mutex<Vec<AgentEvent>>,
+    events: parking_lot::Mutex<Vec<AgentEvent>>,
 }
 
 impl VecEventSink {
@@ -37,19 +39,19 @@ impl VecEventSink {
 
     /// Take all collected events, leaving the buffer empty.
     pub fn take(&self) -> Vec<AgentEvent> {
-        std::mem::take(&mut *self.events.lock().expect("event sink poisoned"))
+        std::mem::take(&mut *self.events.lock())
     }
 
     /// Clone all collected events without clearing the buffer.
     pub fn events(&self) -> Vec<AgentEvent> {
-        self.events.lock().expect("event sink poisoned").clone()
+        self.events.lock().clone()
     }
 }
 
 #[async_trait]
 impl EventSink for VecEventSink {
     async fn emit(&self, event: AgentEvent) {
-        self.events.lock().expect("event sink poisoned").push(event);
+        self.events.lock().push(event);
     }
 }
 

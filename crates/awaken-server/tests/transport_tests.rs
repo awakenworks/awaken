@@ -100,11 +100,11 @@ async fn sse_body_stream_empty_on_immediate_close() {
 
 #[tokio::test]
 async fn wire_sse_relay_transcodes_identity() {
-    let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let (tx, rx) = mpsc::channel::<AgentEvent>(256);
     let encoder = Identity::<AgentEvent>::default();
     let mut sse_rx = wire_sse_relay(rx, encoder, 16, None);
 
-    tx.send(AgentEvent::TextDelta {
+    tx.try_send(AgentEvent::TextDelta {
         delta: "hello".into(),
     })
     .unwrap();
@@ -120,7 +120,7 @@ async fn wire_sse_relay_transcodes_identity() {
 
 #[tokio::test]
 async fn wire_sse_relay_completes_on_sender_drop() {
-    let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let (tx, rx) = mpsc::channel::<AgentEvent>(256);
     let encoder = Identity::<AgentEvent>::default();
     let mut sse_rx = wire_sse_relay(rx, encoder, 16, None);
     drop(tx);
@@ -129,15 +129,15 @@ async fn wire_sse_relay_completes_on_sender_drop() {
 
 #[tokio::test]
 async fn wire_sse_relay_multiple_events() {
-    let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let (tx, rx) = mpsc::channel::<AgentEvent>(256);
     let encoder = Identity::<AgentEvent>::default();
     let mut sse_rx = wire_sse_relay(rx, encoder, 16, None);
 
-    tx.send(AgentEvent::TextDelta { delta: "a".into() })
+    tx.try_send(AgentEvent::TextDelta { delta: "a".into() })
         .unwrap();
-    tx.send(AgentEvent::TextDelta { delta: "b".into() })
+    tx.try_send(AgentEvent::TextDelta { delta: "b".into() })
         .unwrap();
-    tx.send(AgentEvent::StepEnd).unwrap();
+    tx.try_send(AgentEvent::StepEnd).unwrap();
     drop(tx);
 
     let mut chunks = Vec::new();
@@ -184,11 +184,11 @@ impl Transcoder for EnvelopeTranscoder {
 
 #[tokio::test]
 async fn wire_sse_relay_with_custom_transcoder() {
-    let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let (tx, rx) = mpsc::channel::<AgentEvent>(256);
     let encoder = EnvelopeTranscoder::new();
     let mut sse_rx = wire_sse_relay(rx, encoder, 16, None);
 
-    tx.send(AgentEvent::TextDelta {
+    tx.try_send(AgentEvent::TextDelta {
         delta: "test".into(),
     })
     .unwrap();
@@ -207,7 +207,7 @@ async fn wire_sse_relay_with_custom_transcoder() {
 
 #[tokio::test]
 async fn wire_sse_relay_empty_stream_emits_prologue_and_epilogue() {
-    let (_tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let (_tx, rx) = mpsc::channel::<AgentEvent>(256);
     let encoder = EnvelopeTranscoder::new();
     let mut sse_rx = wire_sse_relay(rx, encoder, 16, None);
     drop(_tx);
@@ -239,13 +239,13 @@ impl Transcoder for MinimalEncoder {
 
 #[tokio::test]
 async fn wire_sse_relay_minimal_encoder() {
-    let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let (tx, rx) = mpsc::channel::<AgentEvent>(256);
     let encoder = MinimalEncoder;
     let mut sse_rx = wire_sse_relay(rx, encoder, 16, None);
 
-    tx.send(AgentEvent::TextDelta { delta: "a".into() })
+    tx.try_send(AgentEvent::TextDelta { delta: "a".into() })
         .unwrap();
-    tx.send(AgentEvent::TextDelta { delta: "b".into() })
+    tx.try_send(AgentEvent::TextDelta { delta: "b".into() })
         .unwrap();
     drop(tx);
 
@@ -287,13 +287,13 @@ impl Transcoder for FanoutEncoder {
 
 #[tokio::test]
 async fn wire_sse_relay_fanout_encoder() {
-    let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let (tx, rx) = mpsc::channel::<AgentEvent>(256);
     let encoder = FanoutEncoder;
     let mut sse_rx = wire_sse_relay(rx, encoder, 16, None);
 
-    tx.send(AgentEvent::TextDelta { delta: "hi".into() })
+    tx.try_send(AgentEvent::TextDelta { delta: "hi".into() })
         .unwrap();
-    tx.send(AgentEvent::StepEnd).unwrap();
+    tx.try_send(AgentEvent::StepEnd).unwrap();
     drop(tx);
 
     let mut chunks = Vec::new();
@@ -395,21 +395,21 @@ fn encode_acp_event_to_sse() {
 
 #[tokio::test]
 async fn wire_sse_relay_with_ag_ui_encoder() {
-    let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let (tx, rx) = mpsc::channel::<AgentEvent>(256);
     let encoder = AgUiEncoder::new();
     let mut sse_rx = wire_sse_relay(rx, encoder, 16, None);
 
-    tx.send(AgentEvent::RunStart {
+    tx.try_send(AgentEvent::RunStart {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         parent_run_id: None,
     })
     .unwrap();
-    tx.send(AgentEvent::TextDelta {
+    tx.try_send(AgentEvent::TextDelta {
         delta: "hello".into(),
     })
     .unwrap();
-    tx.send(AgentEvent::RunFinish {
+    tx.try_send(AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: None,
@@ -439,21 +439,21 @@ async fn wire_sse_relay_with_ag_ui_encoder() {
 
 #[tokio::test]
 async fn wire_sse_relay_with_ai_sdk_encoder() {
-    let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let (tx, rx) = mpsc::channel::<AgentEvent>(256);
     let encoder = AiSdkEncoder::new();
     let mut sse_rx = wire_sse_relay(rx, encoder, 16, None);
 
-    tx.send(AgentEvent::RunStart {
+    tx.try_send(AgentEvent::RunStart {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         parent_run_id: None,
     })
     .unwrap();
-    tx.send(AgentEvent::TextDelta {
+    tx.try_send(AgentEvent::TextDelta {
         delta: "hello".into(),
     })
     .unwrap();
-    tx.send(AgentEvent::RunFinish {
+    tx.try_send(AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: None,
@@ -482,15 +482,15 @@ async fn wire_sse_relay_with_ai_sdk_encoder() {
 
 #[tokio::test]
 async fn wire_sse_relay_with_acp_encoder() {
-    let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let (tx, rx) = mpsc::channel::<AgentEvent>(256);
     let encoder = AcpEncoder::new();
     let mut sse_rx = wire_sse_relay(rx, encoder, 16, None);
 
-    tx.send(AgentEvent::TextDelta {
+    tx.try_send(AgentEvent::TextDelta {
         delta: "hello".into(),
     })
     .unwrap();
-    tx.send(AgentEvent::RunFinish {
+    tx.try_send(AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: None,
@@ -519,15 +519,15 @@ async fn resumable_relay_frames_have_sequential_ids() {
     use awaken_server::transport::replay_buffer::EventReplayBuffer;
     use std::sync::Arc;
 
-    let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let (tx, rx) = mpsc::channel::<AgentEvent>(256);
     let buffer = Arc::new(EventReplayBuffer::new(100));
     let mut sse_rx = wire_sse_relay(rx, Identity::<AgentEvent>::default(), 16, Some(buffer));
 
-    tx.send(AgentEvent::TextDelta { delta: "a".into() })
+    tx.try_send(AgentEvent::TextDelta { delta: "a".into() })
         .unwrap();
-    tx.send(AgentEvent::TextDelta { delta: "b".into() })
+    tx.try_send(AgentEvent::TextDelta { delta: "b".into() })
         .unwrap();
-    tx.send(AgentEvent::StepEnd).unwrap();
+    tx.try_send(AgentEvent::StepEnd).unwrap();
     drop(tx);
 
     let mut chunks = Vec::new();
@@ -558,14 +558,14 @@ async fn resumable_relay_populates_buffer() {
     use awaken_server::transport::replay_buffer::EventReplayBuffer;
     use std::sync::Arc;
 
-    let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let (tx, rx) = mpsc::channel::<AgentEvent>(256);
     let buffer = Arc::new(EventReplayBuffer::new(100));
     let buffer_clone = Arc::clone(&buffer);
     let mut sse_rx = wire_sse_relay(rx, Identity::<AgentEvent>::default(), 16, Some(buffer));
 
-    tx.send(AgentEvent::TextDelta { delta: "x".into() })
+    tx.try_send(AgentEvent::TextDelta { delta: "x".into() })
         .unwrap();
-    tx.send(AgentEvent::TextDelta { delta: "y".into() })
+    tx.try_send(AgentEvent::TextDelta { delta: "y".into() })
         .unwrap();
     drop(tx);
 
@@ -581,13 +581,13 @@ async fn resumable_relay_replay_after_partial_consumption() {
     use awaken_server::transport::replay_buffer::EventReplayBuffer;
     use std::sync::Arc;
 
-    let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let (tx, rx) = mpsc::channel::<AgentEvent>(256);
     let buffer = Arc::new(EventReplayBuffer::new(100));
     let buffer_clone = Arc::clone(&buffer);
     let mut sse_rx = wire_sse_relay(rx, Identity::<AgentEvent>::default(), 16, Some(buffer));
 
     for i in 0..5 {
-        tx.send(AgentEvent::TextDelta {
+        tx.try_send(AgentEvent::TextDelta {
             delta: format!("msg{i}"),
         })
         .unwrap();
@@ -653,22 +653,22 @@ async fn resumable_relay_with_ai_sdk_encoder() {
     use awaken_server::transport::replay_buffer::EventReplayBuffer;
     use std::sync::Arc;
 
-    let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let (tx, rx) = mpsc::channel::<AgentEvent>(256);
     let buffer = Arc::new(EventReplayBuffer::new(100));
     let buffer_clone = Arc::clone(&buffer);
     let mut sse_rx = wire_sse_relay(rx, AiSdkEncoder::new(), 16, Some(buffer));
 
-    tx.send(AgentEvent::RunStart {
+    tx.try_send(AgentEvent::RunStart {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         parent_run_id: None,
     })
     .unwrap();
-    tx.send(AgentEvent::TextDelta {
+    tx.try_send(AgentEvent::TextDelta {
         delta: "hello".into(),
     })
     .unwrap();
-    tx.send(AgentEvent::RunFinish {
+    tx.try_send(AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: None,

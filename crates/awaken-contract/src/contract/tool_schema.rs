@@ -15,6 +15,9 @@ pub fn generate_tool_schema<T: schemars::JsonSchema>() -> Value {
     });
     let generator = settings.into_generator();
     let schema = generator.into_root_schema_for::<T>();
+    // serde_json::to_value on a schemars RootSchema is infallible because
+    // RootSchema implements Serialize with no fallible custom logic and all
+    // field types are JSON-native. An Err here would indicate a serde bug.
     let mut value = serde_json::to_value(schema).expect("schema serialization cannot fail");
 
     // Remove top-level meta keys that LLMs don't need.

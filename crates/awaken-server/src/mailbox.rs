@@ -18,7 +18,7 @@ use tokio::task::JoinHandle;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::mailbox::{
-    MailboxInterrupt, MailboxJob, MailboxJobOrigin, MailboxJobStatus, MailboxStore,
+    MailboxInterrupt, MailboxJob, MailboxJobStatus, MailboxStore,
 };
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::StorageError;
@@ -27,6 +27,10 @@ use awaken_contract::now_ms;
 use awaken_runtime::{AgentRuntime, RunRequest};
 
 use crate::transport::channel_sink::ReconnectableEventSink;
+
+/// Guard window for inline-claimed jobs: if the process crashes between
+/// enqueue and cancel, the sweep will reclaim the job after this period.
+const INLINE_CLAIM_GUARD_MS: u64 = 60_000;
 
 // ── RunRequest ↔ MailboxJob conversion ───────────────────────────────
 
@@ -141,6 +145,8 @@ pub struct MailboxConfig {
     pub default_max_attempts: u32,
     /// Default retry delay in milliseconds (default 250).
     pub default_retry_delay_ms: u64,
+    /// Maximum retry delay in milliseconds for exponential backoff (default 30_000).
+    pub max_retry_delay_ms: u64,
 }
 
 impl Default for MailboxConfig {
@@ -154,6 +160,7 @@ impl Default for MailboxConfig {
             gc_ttl: Duration::from_secs(24 * 60 * 60),
             default_max_attempts: 5,
             default_retry_delay_ms: 250,
+            max_retry_delay_ms: 30_000,
         }
     }
 }
@@ -220,6 +227,15 @@ impl EventSink for SuspensionAwareSink {
     }
 }
 
+/// RAII guard that decrements the active-runs gauge on drop.
+struct ActiveRunGuard;
+
+impl Drop for ActiveRunGuard {
+    fn drop(&mut self) {
+        crate::metrics::dec_active_runs();
+    }
+}
+
 // ── Mailbox service ──────────────────────────────────────────────────
 
 /// Unified persistent run queue.
@@ -254,14 +270,18 @@ impl Mailbox {
 
     // ── Submission ───────────────────────────────────────────────────
 
+    /// Default bounded channel capacity for the runtime→SSE relay.
+    const EVENT_CHANNEL_CAPACITY: usize = 256;
+
     /// Submit a run for streaming. Returns event receiver immediately.
     ///
     /// The job is persisted (WAL), then claimed inline by this process.
     /// The caller wires `event_rx` to their transport (SSE, WebSocket, etc).
+    #[tracing::instrument(skip(self, request), fields(thread_id = %request.thread_id))]
     pub async fn submit(
         self: &Arc<Self>,
         request: RunRequest,
-    ) -> Result<(MailboxSubmitResult, mpsc::UnboundedReceiver<AgentEvent>), MailboxError> {
+    ) -> Result<(MailboxSubmitResult, mpsc::Receiver<AgentEvent>), MailboxError> {
         let (thread_id, messages) =
             validate_run_inputs(request.thread_id.clone(), request.messages.clone())?;
 
@@ -291,9 +311,11 @@ impl Mailbox {
         let mailbox_id = job.mailbox_id.clone();
 
         // WAL: persist before anything else.
-        // Use u64::MAX for available_at to prevent sweep from grabbing it.
+        // Set available_at slightly in the future to prevent sweep from grabbing
+        // the job during the inline claim window. If the process crashes before
+        // the claim completes, sweep will reclaim the job after the guard period.
         let mut wal_job = job;
-        wal_job.available_at = u64::MAX;
+        wal_job.available_at = now_ms() + INLINE_CLAIM_GUARD_MS;
         self.store.enqueue(&wal_job).await?;
 
         // Inline claim.
@@ -303,7 +325,7 @@ impl Mailbox {
             .claim_job(&job_id, &self.consumer_id, self.config.lease_ms, now)
             .await?;
 
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (event_tx, event_rx) = mpsc::channel(Self::EVENT_CHANNEL_CAPACITY);
 
         if let Some(claimed_job) = claimed {
             let claim_token = claimed_job.claim_token.clone().unwrap_or_default();
@@ -354,7 +376,7 @@ impl Mailbox {
         } else {
             // Inline claim failed (another claimed job exists for this
             // mailbox). Cancel the orphaned job to prevent it from
-            // lingering with available_at=MAX.
+            // lingering with the guard available_at.
             let now_fix = now_ms();
             if let Err(e) = self.store.cancel(&job_id, now_fix).await {
                 tracing::warn!(job_id, error = %e, "failed to cancel unclaimed inline job");
@@ -369,6 +391,7 @@ impl Mailbox {
     ///
     /// Job is persisted with `available_at = now`, dispatch is event-driven.
     /// Returns job_id + thread_id for status polling.
+    #[tracing::instrument(skip(self, request), fields(thread_id = %request.thread_id))]
     pub async fn submit_background(
         self: &Arc<Self>,
         request: RunRequest,
@@ -451,11 +474,7 @@ impl Mailbox {
     ///
     /// Replaces the underlying channel sender so subsequent events flow to
     /// `new_tx`. Returns `true` if the thread has an active worker.
-    pub async fn reconnect_sink(
-        &self,
-        thread_id: &str,
-        new_tx: mpsc::UnboundedSender<AgentEvent>,
-    ) -> bool {
+    pub async fn reconnect_sink(&self, thread_id: &str, new_tx: mpsc::Sender<AgentEvent>) -> bool {
         let workers = self.workers.read().await;
         let Some(worker) = workers.get(thread_id) else {
             return false;
@@ -463,7 +482,7 @@ impl Mailbox {
         let w = worker.lock().await;
         match &w.status {
             MailboxWorkerStatus::Running { sink, .. } => {
-                sink.reconnect(new_tx).await;
+                sink.reconnect(new_tx);
                 true
             }
             MailboxWorkerStatus::Idle | MailboxWorkerStatus::Claiming => false,
@@ -489,6 +508,7 @@ impl Mailbox {
     // ── Lifecycle ────────────────────────────────────────────────────
 
     /// Recover on startup: reload Queued jobs, buffer, dispatch idle threads.
+    #[tracing::instrument(skip(self))]
     pub async fn recover(self: &Arc<Self>) -> Result<usize, MailboxError> {
         let now = now_ms();
         let mut total = 0;
@@ -509,7 +529,10 @@ impl Mailbox {
     }
 
     /// Run sweep + GC loop forever. Call from `tokio::spawn`.
-    pub async fn run_maintenance_loop(self: Arc<Self>) {
+    ///
+    /// When `app_state` is provided, also purges stale replay buffers on
+    /// each GC cycle to prevent unbounded growth.
+    pub async fn run_maintenance_loop(self: Arc<Self>, app_state: Option<crate::app::AppState>) {
         let mut sweep_interval = tokio::time::interval(self.config.sweep_interval);
         let mut gc_interval = tokio::time::interval(self.config.gc_interval);
 
@@ -524,6 +547,10 @@ impl Mailbox {
                 }
                 _ = gc_interval.tick() => {
                     self.run_gc().await;
+                    // Purge stale replay buffers (5 min TTL).
+                    if let Some(ref st) = app_state {
+                        st.purge_stale_replay_buffers(Duration::from_secs(300));
+                    }
                 }
             }
         }
@@ -532,7 +559,7 @@ impl Mailbox {
     // ── Internal: dispatch ───────────────────────────────────────────
 
     /// Claim a job from the store and start execution.
-    /// Claim a job from the store and start execution.
+    #[tracing::instrument(skip(self), fields(mailbox_id = %mailbox_id))]
     async fn dispatch_job(self: &Arc<Self>, mailbox_id: &str) {
         let now = now_ms();
         let claimed = match self
@@ -569,7 +596,7 @@ impl Mailbox {
         );
 
         // Create channel for background dispatch (events go nowhere unless observed).
-        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let (event_tx, _event_rx) = mpsc::channel(Self::EVENT_CHANNEL_CAPACITY);
         let reconnectable_sink = Arc::new(ReconnectableEventSink::new(event_tx.clone()));
 
         // Update worker state.
@@ -594,6 +621,7 @@ impl Mailbox {
     }
 
     /// Claim from store and dispatch the next job for this mailbox.
+    #[tracing::instrument(skip(self), fields(mailbox_id = %mailbox_id))]
     async fn try_dispatch_next(self: &Arc<Self>, mailbox_id: &str) {
         let worker = {
             let workers = self.workers.read().await;
@@ -666,10 +694,11 @@ impl Mailbox {
     }
 
     /// Spawn the actual execution task for a claimed job.
+    #[tracing::instrument(skip(self, event_tx, reconnectable_sink, suspended), fields(job_id = %job.job_id, mailbox_id = %mailbox_id))]
     fn spawn_execution(
         self: &Arc<Self>,
         job: MailboxJob,
-        event_tx: mpsc::UnboundedSender<AgentEvent>,
+        event_tx: mpsc::Sender<AgentEvent>,
         reconnectable_sink: Arc<ReconnectableEventSink>,
         claim_token: String,
         mailbox_id: String,
@@ -679,6 +708,9 @@ impl Mailbox {
         let job_id = job.job_id.clone();
 
         tokio::spawn(async move {
+            crate::metrics::inc_active_runs();
+            let _guard = ActiveRunGuard;
+
             let sink = SuspensionAwareSink {
                 inner: reconnectable_sink as Arc<dyn EventSink>,
                 suspended,
@@ -744,7 +776,10 @@ impl Mailbox {
                             msg.clone(),
                         ),
                     });
-                    let retry_at = now + this.config.default_retry_delay_ms;
+                    let backoff_factor = 2u64.pow(job.attempt_count.saturating_sub(1).min(6));
+                    let retry_at = now
+                        + (this.config.default_retry_delay_ms * backoff_factor)
+                            .min(this.config.max_retry_delay_ms);
                     if let Err(e) = this
                         .store
                         .nack(&job_id, &claim_token, retry_at, &msg, now)
@@ -891,6 +926,69 @@ impl Mailbox {
                 tracing::warn!(error = %e, "GC failed");
             }
         }
+
+        // Clean up idle workers with no queued jobs.
+        self.gc_idle_workers().await;
+    }
+
+    /// Remove workers in `Idle` state that have no queued jobs in the store.
+    ///
+    /// This prevents the `workers` HashMap from growing unbounded as new
+    /// threads are created and their runs complete.
+    async fn gc_idle_workers(&self) {
+        let idle_keys: Vec<String> = {
+            let workers = self.workers.read().await;
+            let mut keys = Vec::new();
+            for (mailbox_id, worker) in workers.iter() {
+                let w = worker.lock().await;
+                if matches!(w.status, MailboxWorkerStatus::Idle) {
+                    keys.push(mailbox_id.clone());
+                }
+            }
+            keys
+        };
+
+        if idle_keys.is_empty() {
+            return;
+        }
+
+        // Check store for queued jobs before removing.
+        let mut removed = 0usize;
+        let mut workers = self.workers.write().await;
+        for mailbox_id in &idle_keys {
+            // Re-check under write lock: status might have changed.
+            let still_idle = if let Some(worker) = workers.get(mailbox_id) {
+                let w = worker.lock().await;
+                matches!(w.status, MailboxWorkerStatus::Idle)
+            } else {
+                false
+            };
+            if !still_idle {
+                continue;
+            }
+
+            // Only remove if the store has no queued jobs for this mailbox.
+            let has_queued = self
+                .store
+                .list_jobs(
+                    mailbox_id,
+                    Some(&[MailboxJobStatus::Queued, MailboxJobStatus::Claimed]),
+                    1,
+                    0,
+                )
+                .await
+                .map(|jobs| !jobs.is_empty())
+                .unwrap_or(true); // Err → keep worker to be safe
+
+            if !has_queued {
+                workers.remove(mailbox_id);
+                removed += 1;
+            }
+        }
+
+        if removed > 0 {
+            tracing::debug!(removed, "GC removed idle workers");
+        }
     }
 }
 
@@ -978,6 +1076,7 @@ fn classify_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_contract::contract::mailbox::MailboxJobOrigin;
     use awaken_contract::contract::message::Message;
     use awaken_stores::InMemoryMailboxStore;
 
@@ -1026,6 +1125,7 @@ mod tests {
         assert_eq!(config.gc_ttl, Duration::from_secs(24 * 60 * 60));
         assert_eq!(config.default_max_attempts, 5);
         assert_eq!(config.default_retry_delay_ms, 250);
+        assert_eq!(config.max_retry_delay_ms, 30_000);
     }
 
     #[test]
@@ -1349,10 +1449,12 @@ mod tests {
             gc_ttl: Duration::from_secs(3600),
             default_max_attempts: 3,
             default_retry_delay_ms: 500,
+            max_retry_delay_ms: 60_000,
         };
         assert_eq!(config.lease_ms, 5_000);
         assert_eq!(config.default_max_attempts, 3);
         assert_eq!(config.default_retry_delay_ms, 500);
+        assert_eq!(config.max_retry_delay_ms, 60_000);
     }
 
     // ── build_job field validation ──────────────────────────────────
@@ -1792,7 +1894,7 @@ mod tests {
         // Create a worker but don't start a run.
         mailbox.get_or_create_worker("thread-idle").await;
 
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
         let result = mailbox.reconnect_sink("thread-idle", tx).await;
         assert!(!result, "reconnect should fail for idle worker");
     }
@@ -1803,7 +1905,7 @@ mod tests {
         let runtime = make_runtime();
         let mailbox = make_mailbox(runtime, store);
 
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
         let result = mailbox.reconnect_sink("nonexistent", tx).await;
         assert!(!result, "reconnect should fail for unknown thread");
     }
@@ -1818,7 +1920,7 @@ mod tests {
         // spawn_execution resetting to Idle when StubResolver fails).
         let worker = mailbox.get_or_create_worker("thread-reconnect").await;
         {
-            let reconnectable = Arc::new(ReconnectableEventSink::new(mpsc::unbounded_channel().0));
+            let reconnectable = Arc::new(ReconnectableEventSink::new(mpsc::channel(16).0));
             let mut w = worker.lock().await;
             w.status = MailboxWorkerStatus::Running {
                 job_id: "job-fake".into(),
@@ -1827,7 +1929,7 @@ mod tests {
             };
         }
 
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(16);
         let result = mailbox.reconnect_sink("thread-reconnect", tx).await;
         assert!(result, "reconnect should succeed for running worker");
     }

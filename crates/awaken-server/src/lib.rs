@@ -6,6 +6,7 @@ pub mod http_run;
 pub mod http_sse;
 pub mod mailbox;
 pub mod message_convert;
+pub mod metrics;
 pub mod protocols;
 pub mod query;
 pub mod request;

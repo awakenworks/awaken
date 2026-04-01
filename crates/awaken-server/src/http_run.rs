@@ -4,7 +4,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use serde::Serialize;
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::wrappers::ReceiverStream;
 
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::transport::Transcoder;
@@ -13,7 +13,16 @@ use crate::event_relay::relay_events_stream;
 use crate::http_sse::format_sse_data;
 use crate::transport::replay_buffer::EventReplayBuffer;
 
-/// Spawn a background task that consumes agent events from a receiver,
+/// RAII guard that decrements the SSE connections gauge on drop.
+struct SseConnectionGuard;
+
+impl Drop for SseConnectionGuard {
+    fn drop(&mut self) {
+        crate::metrics::dec_sse_connections();
+    }
+}
+
+/// Spawn a background task that consumes agent events from a bounded receiver,
 /// transcodes them via the protocol encoder, and sends SSE frames to the response.
 ///
 /// Uses the shared [`relay_events_stream`] pipeline for the prologue->transcode->epilogue
@@ -23,8 +32,9 @@ use crate::transport::replay_buffer::EventReplayBuffer;
 /// and stored for client reconnection.
 ///
 /// Returns the SSE byte receiver to feed into an HTTP response body.
+#[tracing::instrument(skip_all)]
 pub fn wire_sse_relay<E>(
-    event_rx: mpsc::UnboundedReceiver<AgentEvent>,
+    event_rx: mpsc::Receiver<AgentEvent>,
     encoder: E,
     buffer_size: usize,
     replay_buffer: Option<std::sync::Arc<EventReplayBuffer>>,
@@ -36,7 +46,10 @@ where
     let (sse_tx, sse_rx) = mpsc::channel::<Bytes>(buffer_size);
 
     tokio::spawn(async move {
-        let event_stream = UnboundedReceiverStream::new(event_rx);
+        crate::metrics::inc_sse_connections();
+        let _sse_guard = SseConnectionGuard;
+
+        let event_stream = ReceiverStream::new(event_rx);
         let mut stream = std::pin::pin!(relay_events_stream(encoder, event_stream));
         while let Some(json_bytes) = stream.next().await {
             let json = match String::from_utf8(json_bytes) {
@@ -82,11 +95,11 @@ mod tests {
 
     #[tokio::test]
     async fn wire_sse_relay_transcodes_identity() {
-        let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let (tx, rx) = mpsc::channel::<AgentEvent>(256);
         let encoder = Identity::<AgentEvent>::default();
         let mut sse_rx = wire_sse_relay(rx, encoder, 16, None);
 
-        tx.send(AgentEvent::TextDelta {
+        tx.try_send(AgentEvent::TextDelta {
             delta: "hello".into(),
         })
         .unwrap();
@@ -102,7 +115,7 @@ mod tests {
 
     #[tokio::test]
     async fn wire_sse_relay_completes_on_sender_drop() {
-        let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let (tx, rx) = mpsc::channel::<AgentEvent>(256);
         let encoder = Identity::<AgentEvent>::default();
         let mut sse_rx = wire_sse_relay(rx, encoder, 16, None);
 
@@ -115,15 +128,15 @@ mod tests {
 
     #[tokio::test]
     async fn wire_sse_relay_multiple_events() {
-        let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let (tx, rx) = mpsc::channel::<AgentEvent>(256);
         let encoder = Identity::<AgentEvent>::default();
         let mut sse_rx = wire_sse_relay(rx, encoder, 16, None);
 
-        tx.send(AgentEvent::TextDelta { delta: "a".into() })
+        tx.try_send(AgentEvent::TextDelta { delta: "a".into() })
             .unwrap();
-        tx.send(AgentEvent::TextDelta { delta: "b".into() })
+        tx.try_send(AgentEvent::TextDelta { delta: "b".into() })
             .unwrap();
-        tx.send(AgentEvent::StepEnd).unwrap();
+        tx.try_send(AgentEvent::StepEnd).unwrap();
         drop(tx);
 
         let mut chunks = Vec::new();
@@ -176,11 +189,11 @@ mod tests {
 
     #[tokio::test]
     async fn wire_sse_relay_with_custom_transcoder() {
-        let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let (tx, rx) = mpsc::channel::<AgentEvent>(256);
         let encoder = EnvelopeTranscoder::new();
         let mut sse_rx = wire_sse_relay(rx, encoder, 16, None);
 
-        tx.send(AgentEvent::TextDelta {
+        tx.try_send(AgentEvent::TextDelta {
             delta: "test".into(),
         })
         .unwrap();
@@ -200,16 +213,16 @@ mod tests {
 
     #[tokio::test]
     async fn resumable_relay_assigns_sequential_ids() {
-        let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let (tx, rx) = mpsc::channel::<AgentEvent>(256);
         let encoder = Identity::<AgentEvent>::default();
         let replay_buffer = std::sync::Arc::new(EventReplayBuffer::new(64));
         let mut sse_rx = wire_sse_relay(rx, encoder, 16, Some(replay_buffer));
 
-        tx.send(AgentEvent::TextDelta { delta: "a".into() })
+        tx.try_send(AgentEvent::TextDelta { delta: "a".into() })
             .unwrap();
-        tx.send(AgentEvent::TextDelta { delta: "b".into() })
+        tx.try_send(AgentEvent::TextDelta { delta: "b".into() })
             .unwrap();
-        tx.send(AgentEvent::StepEnd).unwrap();
+        tx.try_send(AgentEvent::StepEnd).unwrap();
         drop(tx);
 
         let mut chunks = Vec::new();
@@ -224,15 +237,15 @@ mod tests {
 
     #[tokio::test]
     async fn resumable_relay_stores_in_buffer() {
-        let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let (tx, rx) = mpsc::channel::<AgentEvent>(256);
         let encoder = Identity::<AgentEvent>::default();
         let replay_buffer = std::sync::Arc::new(EventReplayBuffer::new(64));
         let buf_ref = std::sync::Arc::clone(&replay_buffer);
         let mut sse_rx = wire_sse_relay(rx, encoder, 16, Some(replay_buffer));
 
-        tx.send(AgentEvent::TextDelta { delta: "a".into() })
+        tx.try_send(AgentEvent::TextDelta { delta: "a".into() })
             .unwrap();
-        tx.send(AgentEvent::TextDelta { delta: "b".into() })
+        tx.try_send(AgentEvent::TextDelta { delta: "b".into() })
             .unwrap();
         drop(tx);
 
@@ -245,7 +258,7 @@ mod tests {
 
     #[tokio::test]
     async fn resumable_relay_completes_on_sender_drop() {
-        let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let (tx, rx) = mpsc::channel::<AgentEvent>(256);
         let encoder = Identity::<AgentEvent>::default();
         let replay_buffer = std::sync::Arc::new(EventReplayBuffer::new(64));
         let mut sse_rx = wire_sse_relay(rx, encoder, 16, Some(replay_buffer));
@@ -257,7 +270,7 @@ mod tests {
 
     #[tokio::test]
     async fn wire_sse_relay_backpressure_with_small_buffer() {
-        let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let (tx, rx) = mpsc::channel::<AgentEvent>(256);
         let encoder = Identity::<AgentEvent>::default();
         // buffer_size=1 means the SSE mpsc channel can hold at most 1 frame,
         // forcing the relay task to wait (backpressure) when the consumer is slow.
@@ -265,7 +278,7 @@ mod tests {
 
         let event_count = 20;
         for i in 0..event_count {
-            tx.send(AgentEvent::TextDelta {
+            tx.try_send(AgentEvent::TextDelta {
                 delta: format!("msg-{i}"),
             })
             .unwrap();
@@ -289,14 +302,14 @@ mod tests {
 
     #[tokio::test]
     async fn wire_sse_relay_without_replay_no_id_prefix() {
-        let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let (tx, rx) = mpsc::channel::<AgentEvent>(256);
         let encoder = Identity::<AgentEvent>::default();
         // replay_buffer=None means frames should use format_sse_data (no id).
         let mut sse_rx = wire_sse_relay(rx, encoder, 16, None);
 
-        tx.send(AgentEvent::TextDelta { delta: "x".into() })
+        tx.try_send(AgentEvent::TextDelta { delta: "x".into() })
             .unwrap();
-        tx.send(AgentEvent::StepEnd).unwrap();
+        tx.try_send(AgentEvent::StepEnd).unwrap();
         drop(tx);
 
         let mut chunks = Vec::new();

@@ -126,7 +126,7 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
     // active (suspended) run, reconnect the event sink and deliver
     // decisions to resume the run on a fresh SSE stream.
     if !decisions.is_empty() {
-        let (new_event_tx, new_event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (new_event_tx, new_event_rx) = tokio::sync::mpsc::channel(256);
         let reconnected = st.mailbox.reconnect_sink(&thread_id, new_event_tx).await;
 
         if reconnected {
@@ -144,9 +144,7 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
                 // Wire the reconnected channel to a fresh SSE stream.
                 let replay_buffer =
                     Arc::new(EventReplayBuffer::new(st.config.replay_buffer_capacity));
-                st.replay_buffers
-                    .lock()
-                    .insert(thread_id.clone(), Arc::clone(&replay_buffer));
+                st.insert_replay_buffer(thread_id.clone(), Arc::clone(&replay_buffer));
 
                 let encoder = AiSdkEncoder::new();
                 let sse_rx = wire_sse_relay(
@@ -156,7 +154,7 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
                     Some(Arc::clone(&replay_buffer)),
                 );
 
-                let buffers = Arc::clone(&st.replay_buffers);
+                let st_cleanup = st.clone();
                 let replay_buf = Arc::clone(&replay_buffer);
                 let tid = thread_id;
                 let mut rx = sse_rx;
@@ -169,7 +167,7 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
                         }
                     }
                     replay_buf.close_subscribers();
-                    buffers.lock().remove(&tid);
+                    st_cleanup.remove_replay_buffer(&tid);
                 });
 
                 return Ok(sse_response(sse_body_stream(final_rx)));
@@ -180,7 +178,7 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
 
     if resume_only {
         // Pure resume with no active run — return empty stream.
-        let (_, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_, rx) = tokio::sync::mpsc::channel(1);
         let encoder = AiSdkEncoder::new();
         let sse_rx = crate::http_run::wire_sse_relay(rx, encoder, st.config.sse_buffer_size, None);
         return Ok(sse_response(sse_body_stream(sse_rx)));
@@ -206,9 +204,7 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
     // Register buffer by thread_id (not run_id). External consumers only see
     // threads — runs are internal state. This matches AI SDK's reconnect URL
     // pattern: `{api}/{chatId}/stream` where chatId = threadId.
-    st.replay_buffers
-        .lock()
-        .insert(thread_id.clone(), Arc::clone(&replay_buffer));
+    st.insert_replay_buffer(thread_id.clone(), Arc::clone(&replay_buffer));
 
     let encoder = AiSdkEncoder::new();
     let sse_rx = wire_sse_relay(
@@ -222,8 +218,10 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
     // the full run duration (not tied to client connection). This allows
     // reconnecting clients to use resume_stream even after the original client
     // disconnects.
-    let buffers = Arc::clone(&st.replay_buffers);
-    let replay_buf_for_cleanup = Arc::clone(st.replay_buffers.lock().get(&thread_id).unwrap());
+    let st_cleanup = st.clone();
+    let replay_buf_for_cleanup = st
+        .get_replay_buffer(&thread_id)
+        .ok_or_else(|| ApiError::Internal("replay buffer disappeared after insert".into()))?;
     let cleanup_thread_id = thread_id;
     let mut sse_rx_forwarded = sse_rx;
     let (final_tx, final_rx) = tokio::sync::mpsc::channel::<Bytes>(st.config.sse_buffer_size);
@@ -256,7 +254,7 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
         // Run is done — close subscribers so reconnected clients get EOF,
         // then remove the buffer from registry.
         replay_buf_for_cleanup.close_subscribers();
-        buffers.lock().remove(&cleanup_thread_id);
+        st_cleanup.remove_replay_buffer(&cleanup_thread_id);
     });
 
     Ok(ai_sdk_sse_response(sse_body_stream(final_rx)))
@@ -265,7 +263,7 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
 // ── SSE stream helpers ──────────────────────────────────────────────
 
 fn stream_existing_thread_from_now(st: &AppState, thread_id: &str) -> Result<Response, ApiError> {
-    let Some(buffer) = st.replay_buffers.lock().get(thread_id).cloned() else {
+    let Some(buffer) = st.get_replay_buffer(thread_id) else {
         return Err(ApiError::BadRequest(
             "no active run available for interaction responses".to_string(),
         ));
@@ -299,7 +297,7 @@ async fn resume_stream(
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    let buffer = st.replay_buffers.lock().get(&thread_id).cloned();
+    let buffer = st.get_replay_buffer(&thread_id);
 
     let Some(buffer) = buffer else {
         // AI SDK expects 204 for "no active stream" — not 404.

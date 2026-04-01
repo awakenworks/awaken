@@ -4,7 +4,9 @@
 //! fixed interval, with cooperative shutdown via a oneshot channel.
 
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use tokio::runtime::Handle;
 use tokio::sync::oneshot;
@@ -55,7 +57,7 @@ impl PeriodicRefresher {
 
         let handle = Handle::try_current().map_err(|e| e.to_string())?;
 
-        let mut guard = self.runtime.lock().expect("poisoned");
+        let mut guard = self.runtime.lock();
         if guard.as_ref().is_some_and(|rt| !rt.join.is_finished()) {
             return Err("periodic refresh already running".into());
         }
@@ -74,7 +76,7 @@ impl PeriodicRefresher {
     /// Returns `true` if a task was actually running.
     pub async fn stop(&self) -> bool {
         let runtime = {
-            let mut guard = self.runtime.lock().expect("poisoned");
+            let mut guard = self.runtime.lock();
             guard.take()
         };
 
@@ -94,7 +96,7 @@ impl PeriodicRefresher {
     /// Also cleans up finished tasks so a subsequent [`start`](Self::start)
     /// can succeed.
     pub fn is_running(&self) -> bool {
-        let mut guard = self.runtime.lock().expect("poisoned");
+        let mut guard = self.runtime.lock();
         if guard.as_ref().is_some_and(|rt| rt.join.is_finished()) {
             *guard = None;
             return false;
