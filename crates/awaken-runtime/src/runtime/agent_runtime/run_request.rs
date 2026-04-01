@@ -1,6 +1,7 @@
 //! RunRequest — unified request for starting or resuming a run.
 
 use awaken_contract::contract::inference::InferenceOverride;
+use awaken_contract::contract::mailbox::MailboxJobOrigin;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::suspension::ToolCallResume;
 use awaken_contract::contract::tool::ToolDescriptor;
@@ -19,15 +20,9 @@ pub struct RunRequest {
     /// Resume decisions for suspended tool calls. Empty = fresh run.
     pub decisions: Vec<(String, ToolCallResume)>,
     /// Frontend-defined tools for this run.
-    ///
-    /// These are tools defined by the frontend (e.g. CopilotKit `useFrontendTool`)
-    /// whose execution happens client-side. They are merged into the resolved
-    /// agent's tool set after resolution.
     pub frontend_tools: Vec<ToolDescriptor>,
-    /// Where this request originated (User, A2A, Internal).
-    pub origin: Option<String>,
-    /// Audit / reply routing identifier.
-    pub sender_id: Option<String>,
+    /// Where this request originated.
+    pub origin: MailboxJobOrigin,
     /// Parent run ID for child run linkage.
     pub parent_run_id: Option<String>,
 }
@@ -41,10 +36,9 @@ impl RunRequest {
             agent_id: None,
             overrides: None,
             decisions: Vec::new(),
-            origin: None,
-            sender_id: None,
-            parent_run_id: None,
             frontend_tools: Vec::new(),
+            origin: MailboxJobOrigin::User,
+            parent_run_id: None,
         }
     }
 
@@ -73,14 +67,8 @@ impl RunRequest {
     }
 
     #[must_use]
-    pub fn with_origin(mut self, origin: impl Into<String>) -> Self {
-        self.origin = Some(origin.into());
-        self
-    }
-
-    #[must_use]
-    pub fn with_sender_id(mut self, sender_id: impl Into<String>) -> Self {
-        self.sender_id = Some(sender_id.into());
+    pub fn with_origin(mut self, origin: MailboxJobOrigin) -> Self {
+        self.origin = origin;
         self
     }
 

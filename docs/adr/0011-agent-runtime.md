@@ -5,6 +5,8 @@
 - **Depends on**: ADR-0001, ADR-0006, ADR-0010
 
 > Storage persistence details in this ADR are partially superseded by ADR-0012 (transactional thread+run checkpoint).
+>
+> Submission durability, queueing, lease ownership, reconnect, and cross-process thread execution ownership are superseded by ADR-0019. `AgentRuntime` remains the execution engine and active-run control surface once a run has been admitted for execution.
 
 ## Context
 
@@ -16,7 +18,7 @@ Reference: uncarve's `AgentOs` + `ThreadRunHandle` + `ActiveThreadRunRegistry` p
 
 ## Decisions
 
-### D1: AgentRuntime — top-level orchestrator
+### D1: AgentRuntime — top-level execution orchestrator
 
 ```rust
 pub struct AgentRuntime {
@@ -27,7 +29,7 @@ pub struct AgentRuntime {
 }
 ```
 
-Single entry point for all run operations: start, cancel, send decisions. Manages the lifecycle of active runs across threads.
+Single entry point for active in-memory run execution operations: start, cancel, send decisions. Manages the lifecycle of active runs across threads after admission.
 
 ### D2: AgentResolver — dynamic agent resolution
 

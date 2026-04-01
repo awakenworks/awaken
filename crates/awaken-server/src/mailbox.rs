@@ -684,21 +684,22 @@ impl Mailbox {
                 suspended,
             };
 
+            // Generation check: if this job was superseded between claim and
+            // execution start, abort without entering the runtime.
+            if let Ok(Some(current_job)) = this.store.load_job(&job_id).await {
+                if current_job.status != MailboxJobStatus::Claimed {
+                    tracing::info!(job_id, status = ?current_job.status, "job no longer claimed, skipping execution");
+                    return;
+                }
+            }
+
             let mut request =
                 awaken_runtime::RunRequest::new(job.mailbox_id.clone(), job.messages.clone());
             if !job.agent_id.is_empty() {
                 request = request.with_agent_id(job.agent_id.clone());
             }
             // Restore origin metadata.
-            let origin_str = match job.origin {
-                MailboxJobOrigin::A2A => "a2a",
-                MailboxJobOrigin::Internal => "internal",
-                MailboxJobOrigin::User => "user",
-            };
-            request = request.with_origin(origin_str);
-            if let Some(ref sid) = job.sender_id {
-                request = request.with_sender_id(sid.clone());
-            }
+            request = request.with_origin(job.origin);
             if let Some(ref prid) = job.parent_run_id {
                 request = request.with_parent_run_id(prid.clone());
             }
@@ -710,10 +711,13 @@ impl Mailbox {
                     }
                     Err(e) => {
                         tracing::error!(job_id, error = %e, "failed to deserialize RunRequestExtras");
-                        // Permanent failure — extras are corrupt.
+                        // Permanent failure — extras are corrupt, dead-letter.
                         let now = now_ms();
                         let msg = format!("corrupt request_extras: {e}");
-                        let _ = this.store.nack(&job_id, &claim_token, now, &msg, now).await;
+                        let _ = this
+                            .store
+                            .dead_letter(&job_id, &claim_token, &msg, now)
+                            .await;
                         return;
                     }
                 }
@@ -830,12 +834,8 @@ impl Mailbox {
             mailbox_id: thread_id.to_string(),
             agent_id: request.agent_id.as_deref().unwrap_or_default().to_string(),
             messages,
-            origin: match request.origin.as_deref() {
-                Some("a2a") => MailboxJobOrigin::A2A,
-                Some("internal") => MailboxJobOrigin::Internal,
-                _ => MailboxJobOrigin::User,
-            },
-            sender_id: request.sender_id.clone(),
+            origin: request.origin,
+            sender_id: None,
             parent_run_id: request.parent_run_id.clone(),
             request_extras,
             priority: 128,
@@ -1463,8 +1463,7 @@ mod tests {
 
         let request = RunRequest::new("thread-meta", vec![Message::user("hi")])
             .with_agent_id("a1")
-            .with_origin("a2a")
-            .with_sender_id("sender-42")
+            .with_origin(MailboxJobOrigin::A2A)
             .with_parent_run_id("parent-run-1");
         let messages = request.messages.clone();
         let job = mailbox
@@ -1472,7 +1471,6 @@ mod tests {
             .unwrap();
 
         assert!(matches!(job.origin, MailboxJobOrigin::A2A));
-        assert_eq!(job.sender_id.as_deref(), Some("sender-42"));
         assert_eq!(job.parent_run_id.as_deref(), Some("parent-run-1"));
     }
 
@@ -1489,7 +1487,6 @@ mod tests {
             .unwrap();
 
         assert!(matches!(job.origin, MailboxJobOrigin::User));
-        assert!(job.sender_id.is_none());
         assert!(job.parent_run_id.is_none());
     }
 
