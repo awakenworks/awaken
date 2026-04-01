@@ -33,6 +33,7 @@
 - [Overview](./reference/overview.md)
 - [Tool Trait](./reference/tool-trait.md)
 - [State Keys](./reference/state-keys.md)
+- [Scheduled Actions](./reference/scheduled-actions.md)
 - [Thread Model](./reference/thread-model.md)
 - [Events](./reference/events.md)
 - [HTTP API](./reference/http-api.md)

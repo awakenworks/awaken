@@ -45,6 +45,11 @@ impl AgentBackend for LocalBackend {
         store
             .install_plugin(crate::loop_runner::LoopStatePlugin)
             .map_err(|e| AgentBackendError::ExecutionFailed(format!("state setup failed: {e}")))?;
+        store
+            .install_plugin(crate::loop_runner::LoopActionHandlersPlugin)
+            .map_err(|e| {
+                AgentBackendError::ExecutionFailed(format!("action handlers setup: {e}"))
+            })?;
 
         let phase_runtime = crate::phase::PhaseRuntime::new(store.clone())
             .map_err(|e| AgentBackendError::ExecutionFailed(format!("phase setup failed: {e}")))?;

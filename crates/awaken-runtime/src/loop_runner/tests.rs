@@ -13,14 +13,16 @@ use awaken_contract::model::{
 };
 
 use super::actions::{
-    LoopActionHandlersPlugin, apply_context_messages, apply_tool_filter_payloads, extract_actions,
+    LoopActionHandlersPlugin, apply_context_messages, apply_tool_filter_payloads,
     merge_override_payloads, resolve_intercept_payloads, take_context_messages,
 };
 use crate::agent::state::{
-    AddContextMessage, ExcludeTool, IncludeOnlyTools, RunLifecycle, RunLifecycleUpdate,
-    SetInferenceOverride,
+    AddContextMessage, ExcludeTool, IncludeOnlyTools, InferenceOverrideState,
+    InferenceOverrideStateAction, InferenceOverrideStateValue, RunLifecycle, RunLifecycleUpdate,
+    SetInferenceOverride, ToolFilterState, ToolFilterStateAction, ToolFilterStateValue,
 };
 use crate::phase::PhaseRuntime;
+use crate::state::StateKey;
 
 /// Helper: create a PhaseRuntime + ExecutionEnv with action handlers registered.
 fn test_runtime() -> (PhaseRuntime, ExecutionEnv) {
@@ -377,32 +379,10 @@ fn text_of_ctx(msg: &ContextMessage) -> String {
 }
 
 // -----------------------------------------------------------------------
-// Tool filter tests (extract_actions + apply_tool_filter_payloads)
+// Tool filter tests (ToolFilterState + apply_tool_filter_payloads)
 // -----------------------------------------------------------------------
 
 use awaken_contract::contract::tool::ToolDescriptor;
-
-/// Helper: build a Vec<ScheduledAction> from ExcludeTool payloads.
-fn make_exclude_actions(tool_ids: &[&str]) -> Vec<ScheduledAction> {
-    tool_ids
-        .iter()
-        .map(|id| {
-            let payload = ExcludeTool::encode_payload(&id.to_string()).expect("encode");
-            ScheduledAction::new(ExcludeTool::PHASE, ExcludeTool::KEY, payload)
-        })
-        .collect()
-}
-
-/// Helper: build a Vec<ScheduledAction> from IncludeOnlyTools payloads.
-fn make_include_actions(tool_id_lists: &[Vec<String>]) -> Vec<ScheduledAction> {
-    tool_id_lists
-        .iter()
-        .map(|ids| {
-            let payload = IncludeOnlyTools::encode_payload(ids).expect("encode");
-            ScheduledAction::new(IncludeOnlyTools::PHASE, IncludeOnlyTools::KEY, payload)
-        })
-        .collect()
-}
 
 /// Helper: create a simple tool descriptor with the given id.
 fn tool(id: &str) -> ToolDescriptor {
@@ -410,13 +390,44 @@ fn tool(id: &str) -> ToolDescriptor {
 }
 
 #[test]
+fn tool_filter_state_accumulates_excludes() {
+    let mut val = ToolFilterStateValue::default();
+    ToolFilterState::apply(&mut val, ToolFilterStateAction::Exclude("search".into()));
+    ToolFilterState::apply(&mut val, ToolFilterStateAction::Exclude("browser".into()));
+    assert_eq!(val.excluded, vec!["search", "browser"]);
+}
+
+#[test]
+fn tool_filter_state_accumulates_include_only() {
+    let mut val = ToolFilterStateValue::default();
+    ToolFilterState::apply(
+        &mut val,
+        ToolFilterStateAction::IncludeOnly(vec!["a".into(), "b".into()]),
+    );
+    ToolFilterState::apply(
+        &mut val,
+        ToolFilterStateAction::IncludeOnly(vec!["c".into()]),
+    );
+    assert_eq!(val.include_only.len(), 2);
+}
+
+#[test]
+fn tool_filter_state_clear_resets() {
+    let mut val = ToolFilterStateValue::default();
+    ToolFilterState::apply(&mut val, ToolFilterStateAction::Exclude("x".into()));
+    ToolFilterState::apply(
+        &mut val,
+        ToolFilterStateAction::IncludeOnly(vec!["y".into()]),
+    );
+    ToolFilterState::apply(&mut val, ToolFilterStateAction::Clear);
+    assert!(val.excluded.is_empty());
+    assert!(val.include_only.is_empty());
+}
+
+#[test]
 fn exclude_tool_removes_from_request() {
     let mut tools = vec![tool("search"), tool("calculator"), tool("browser")];
-    let mut actions = make_exclude_actions(&["search"]);
-    let exclusion_payloads = extract_actions::<ExcludeTool>(&mut actions);
-
-    assert!(actions.is_empty(), "actions should be drained");
-    apply_tool_filter_payloads(&mut tools, exclusion_payloads, vec![]);
+    apply_tool_filter_payloads(&mut tools, vec!["search".into()], vec![]);
 
     let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
     assert!(!ids.contains(&"search"), "search should be excluded");
@@ -433,10 +444,11 @@ fn include_only_tools_filters_to_subset() {
         tool("browser"),
         tool("code_exec"),
     ];
-    let mut actions = make_include_actions(&[vec!["calculator".into(), "browser".into()]]);
-    let inclusion_payloads = extract_actions::<IncludeOnlyTools>(&mut actions);
-
-    apply_tool_filter_payloads(&mut tools, vec![], inclusion_payloads);
+    apply_tool_filter_payloads(
+        &mut tools,
+        vec![],
+        vec![vec!["calculator".into(), "browser".into()]],
+    );
 
     let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids.len(), 2);
@@ -447,12 +459,11 @@ fn include_only_tools_filters_to_subset() {
 #[test]
 fn exclude_and_include_only_combined() {
     let mut tools = vec![tool("search"), tool("calculator"), tool("browser")];
-    let mut actions = make_include_actions(&[vec!["search".into(), "calculator".into()]]);
-    actions.extend(make_exclude_actions(&["search"]));
-
-    let exclusion_payloads = extract_actions::<ExcludeTool>(&mut actions);
-    let inclusion_payloads = extract_actions::<IncludeOnlyTools>(&mut actions);
-    apply_tool_filter_payloads(&mut tools, exclusion_payloads, inclusion_payloads);
+    apply_tool_filter_payloads(
+        &mut tools,
+        vec!["search".into()],
+        vec![vec!["search".into(), "calculator".into()]],
+    );
 
     let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids, vec!["calculator"]);
@@ -461,10 +472,7 @@ fn exclude_and_include_only_combined() {
 #[test]
 fn multiple_exclude_tool_actions() {
     let mut tools = vec![tool("a"), tool("b"), tool("c"), tool("d")];
-    let mut actions = make_exclude_actions(&["a", "c"]);
-    let exclusion_payloads = extract_actions::<ExcludeTool>(&mut actions);
-
-    apply_tool_filter_payloads(&mut tools, exclusion_payloads, vec![]);
+    apply_tool_filter_payloads(&mut tools, vec!["a".into(), "c".into()], vec![]);
 
     let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids, vec!["b", "d"]);
@@ -480,10 +488,7 @@ fn no_filter_actions_leaves_tools_unchanged() {
 #[test]
 fn multiple_include_only_actions_union() {
     let mut tools = vec![tool("a"), tool("b"), tool("c"), tool("d")];
-    let mut actions = make_include_actions(&[vec!["a".into()], vec!["c".into()]]);
-    let inclusion_payloads = extract_actions::<IncludeOnlyTools>(&mut actions);
-
-    apply_tool_filter_payloads(&mut tools, vec![], inclusion_payloads);
+    apply_tool_filter_payloads(&mut tools, vec![], vec![vec!["a".into()], vec!["c".into()]]);
 
     let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids, vec!["a", "c"]);
@@ -503,13 +508,12 @@ fn duplicate_exclude_from_permission_and_deferred_is_idempotent() {
         tool("ToolSearch"),
     ];
 
-    // Simulate: permission hook excludes "denied_and_deferred"
-    let mut actions = make_exclude_actions(&["denied_and_deferred"]);
-    // Simulate: deferred-tools hook also excludes "denied_and_deferred"
-    actions.extend(make_exclude_actions(&["denied_and_deferred"]));
-
-    let exclusion_payloads = extract_actions::<ExcludeTool>(&mut actions);
-    apply_tool_filter_payloads(&mut tools, exclusion_payloads, vec![]);
+    // Simulate merged exclusions from both plugins.
+    apply_tool_filter_payloads(
+        &mut tools,
+        vec!["denied_and_deferred".into(), "denied_and_deferred".into()],
+        vec![],
+    );
 
     let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids, vec!["allowed", "ToolSearch"]);
@@ -526,10 +530,8 @@ fn permission_exclude_wins_over_deferred_promote() {
         tool("ToolSearch"),
     ];
 
-    // Only permission hook excludes (deferred-tools promoted it, so no exclusion from there)
-    let mut actions = make_exclude_actions(&["promoted_but_denied"]);
-    let exclusion_payloads = extract_actions::<ExcludeTool>(&mut actions);
-    apply_tool_filter_payloads(&mut tools, exclusion_payloads, vec![]);
+    // Only permission hook excludes (deferred-tools promoted it, so no exclusion from there).
+    apply_tool_filter_payloads(&mut tools, vec!["promoted_but_denied".into()], vec![]);
 
     let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids, vec!["safe_tool", "ToolSearch"]);
@@ -547,14 +549,12 @@ fn deferred_excludes_and_permission_excludes_are_additive() {
         tool("ToolSearch"),
     ];
 
-    let mut actions = Vec::new();
-    // Permission: exclude "rm"
-    actions.extend(make_exclude_actions(&["rm"]));
-    // Deferred-tools: exclude "calculator" and "browser"
-    actions.extend(make_exclude_actions(&["calculator", "browser"]));
-
-    let exclusion_payloads = extract_actions::<ExcludeTool>(&mut actions);
-    apply_tool_filter_payloads(&mut tools, exclusion_payloads, vec![]);
+    // Merged exclusions from both plugins.
+    apply_tool_filter_payloads(
+        &mut tools,
+        vec!["rm".into(), "calculator".into(), "browser".into()],
+        vec![],
+    );
 
     let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids, vec!["search", "ToolSearch"]);
@@ -562,12 +562,13 @@ fn deferred_excludes_and_permission_excludes_are_additive() {
 
 #[test]
 fn exclude_nonexistent_tool_is_harmless() {
-    // Permission denies a tool that isn't in the tool list (e.g. it was
-    // never registered, or was already excluded by deferred-tools).
+    // Permission denies a tool that isn't in the tool list.
     let mut tools = vec![tool("a"), tool("b")];
-    let mut actions = make_exclude_actions(&["nonexistent", "also_missing"]);
-    let exclusion_payloads = extract_actions::<ExcludeTool>(&mut actions);
-    apply_tool_filter_payloads(&mut tools, exclusion_payloads, vec![]);
+    apply_tool_filter_payloads(
+        &mut tools,
+        vec!["nonexistent".into(), "also_missing".into()],
+        vec![],
+    );
 
     let ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids, vec!["a", "b"]);
@@ -578,7 +579,7 @@ fn exclude_nonexistent_tool_is_harmless() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn inference_override_merges_via_extract() {
+fn inference_override_state_merges_correctly() {
     let ovr1 = awaken_contract::contract::inference::InferenceOverride {
         model: Some("gpt-4".into()),
         temperature: Some(0.7),
@@ -590,25 +591,47 @@ fn inference_override_merges_via_extract() {
         ..Default::default()
     };
 
-    let mut actions = vec![
-        ScheduledAction::new(
-            SetInferenceOverride::PHASE,
-            SetInferenceOverride::KEY,
-            SetInferenceOverride::encode_payload(&ovr1).expect("encode"),
-        ),
-        ScheduledAction::new(
-            SetInferenceOverride::PHASE,
-            SetInferenceOverride::KEY,
-            SetInferenceOverride::encode_payload(&ovr2).expect("encode"),
-        ),
-    ];
+    let mut val = InferenceOverrideStateValue::default();
+    InferenceOverrideState::apply(&mut val, InferenceOverrideStateAction::Merge(ovr1));
+    InferenceOverrideState::apply(&mut val, InferenceOverrideStateAction::Merge(ovr2));
 
-    let override_payloads = extract_actions::<SetInferenceOverride>(&mut actions);
-    assert!(actions.is_empty(), "actions should be drained");
-    assert_eq!(override_payloads.len(), 2);
+    let ovr = val.overrides.expect("should have overrides");
+    assert_eq!(ovr.model.as_deref(), Some("gpt-4"));
+    assert_eq!(ovr.temperature, Some(0.9)); // last-wins
+    assert_eq!(ovr.max_tokens, Some(1000));
+}
+
+#[test]
+fn inference_override_state_clear_resets() {
+    let mut val = InferenceOverrideStateValue::default();
+    InferenceOverrideState::apply(
+        &mut val,
+        InferenceOverrideStateAction::Merge(
+            awaken_contract::contract::inference::InferenceOverride {
+                model: Some("gpt-4".into()),
+                ..Default::default()
+            },
+        ),
+    );
+    InferenceOverrideState::apply(&mut val, InferenceOverrideStateAction::Clear);
+    assert!(val.overrides.is_none());
+}
+
+#[test]
+fn inference_override_merge_helper_works() {
+    let ovr1 = awaken_contract::contract::inference::InferenceOverride {
+        model: Some("gpt-4".into()),
+        temperature: Some(0.7),
+        ..Default::default()
+    };
+    let ovr2 = awaken_contract::contract::inference::InferenceOverride {
+        temperature: Some(0.9),
+        max_tokens: Some(1000),
+        ..Default::default()
+    };
 
     let mut overrides = None;
-    merge_override_payloads(&mut overrides, override_payloads);
+    merge_override_payloads(&mut overrides, vec![ovr1, ovr2]);
     let ovr = overrides.expect("should have overrides");
     assert_eq!(ovr.model.as_deref(), Some("gpt-4"));
     assert_eq!(ovr.temperature, Some(0.9)); // last-wins
@@ -660,27 +683,4 @@ fn intercept_same_priority_keeps_first() {
 fn intercept_empty_returns_none() {
     let winner = resolve_intercept_payloads(vec![]);
     assert!(winner.is_none());
-}
-
-#[test]
-fn extract_actions_leaves_unrelated_actions() {
-    let mut actions = vec![
-        ScheduledAction::new(
-            ExcludeTool::PHASE,
-            ExcludeTool::KEY,
-            ExcludeTool::encode_payload(&"search".to_string()).expect("encode"),
-        ),
-        ScheduledAction::new(
-            AddContextMessage::PHASE,
-            AddContextMessage::KEY,
-            AddContextMessage::encode_payload(&ContextMessage::system("k", "v")).expect("encode"),
-        ),
-    ];
-
-    let excluded = extract_actions::<ExcludeTool>(&mut actions);
-    assert_eq!(excluded.len(), 1);
-    assert_eq!(excluded[0], "search");
-    // AddContextMessage action should remain
-    assert_eq!(actions.len(), 1);
-    assert_eq!(actions[0].key, AddContextMessage::KEY);
 }

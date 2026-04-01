@@ -11,6 +11,7 @@ members = [
     "crates/awaken-ext-skills",
     "crates/awaken-ext-reminder",
     "crates/awaken-ext-generative-ui",
+    "crates/awaken-ext-deferred-tools",
     "crates/awaken-tool-pattern",
     "crates/awaken-server",
     "examples",
@@ -33,6 +34,7 @@ awaken-ext-mcp = { version = "0.1.0", path = "crates/awaken-ext-mcp" }
 awaken-ext-skills = { version = "0.1.0", path = "crates/awaken-ext-skills" }
 awaken-ext-reminder = { version = "0.1.0", path = "crates/awaken-ext-reminder" }
 awaken-ext-generative-ui = { version = "0.1.0", path = "crates/awaken-ext-generative-ui" }
+awaken-ext-deferred-tools = { version = "0.1.0", path = "crates/awaken-ext-deferred-tools" }
 awaken-tool-pattern = { version = "0.1.0", path = "crates/awaken-tool-pattern" }
 awaken-server = { version = "0.1.0", path = "crates/awaken-server" }
 glob-match = "0.2"

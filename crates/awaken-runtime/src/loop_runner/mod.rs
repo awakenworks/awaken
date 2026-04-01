@@ -35,6 +35,7 @@ use futures::channel::mpsc;
 use crate::agent::state::{RunLifecycle, ToolCallStates};
 
 // Re-export submodule items used by external callers
+pub use actions::LoopActionHandlersPlugin;
 pub use resume::prepare_resume;
 
 /// Plugin that registers the core state keys required by the loop runner.

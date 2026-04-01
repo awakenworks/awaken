@@ -43,6 +43,9 @@ pub async fn run_streaming_subagent(
     store
         .install_plugin(awaken_runtime::loop_runner::LoopStatePlugin)
         .map_err(|e| ToolError::ExecutionFailed(format!("state setup: {e}")))?;
+    store
+        .install_plugin(awaken_runtime::loop_runner::LoopActionHandlersPlugin)
+        .map_err(|e| ToolError::ExecutionFailed(format!("action handlers setup: {e}")))?;
     let phase_runtime = awaken_runtime::PhaseRuntime::new(store.clone())
         .map_err(|e| ToolError::ExecutionFailed(format!("phase setup: {e}")))?;
 

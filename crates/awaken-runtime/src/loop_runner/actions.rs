@@ -1,10 +1,10 @@
 //! Action handlers and helpers for loop-consumed actions.
 //!
-//! The orchestrator uses `collect_commands()` to run GATHER hooks, then
-//! `extract_actions` to consume known action types directly from the returned
-//! `StateCommand` — no accumulator state keys needed. Only `AddContextMessage`
-//! still goes through handler-based EXECUTE because `ContextMessageStore` is
-//! legitimate persistent state (not an accumulator).
+//! All scheduled actions flow through the handler queue via
+//! `TypedScheduledActionHandler`. Accumulator actions (`ExcludeTool`,
+//! `IncludeOnlyTools`, `SetInferenceOverride`, `ToolInterceptAction`) write to
+//! transient state keys. The orchestrator reads from state after the EXECUTE
+//! loop and clears the accumulators for the next step/call.
 
 use async_trait::async_trait;
 use std::collections::HashSet;
@@ -15,36 +15,17 @@ use crate::hooks::{PhaseContext, TypedScheduledActionHandler};
 use crate::state::StateCommand;
 use awaken_contract::StateError;
 use awaken_contract::contract::context_message::ContextMessage;
+use awaken_contract::contract::inference::InferenceOverride;
 use awaken_contract::contract::message::{Message, Role};
-use awaken_contract::model::ScheduledActionSpec;
+use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
 
 use crate::agent::state::{
     AddContextMessage, ContextMessageAction, ContextMessageStore, ContextThrottleState,
-    ContextThrottleUpdate, RunLifecycle,
+    ContextThrottleUpdate, ExcludeTool, IncludeOnlyTools, InferenceOverrideState,
+    InferenceOverrideStateAction, RunLifecycle, SetInferenceOverride, ToolFilterState,
+    ToolFilterStateAction, ToolInterceptState, ToolInterceptStateAction,
 };
-
-// ---------------------------------------------------------------------------
-// Action extraction — consume actions directly from StateCommand
-// ---------------------------------------------------------------------------
-
-/// Extract and decode all scheduled actions matching a given spec type.
-/// Removes matched actions from the list, returns decoded payloads.
-pub(super) fn extract_actions<A: ScheduledActionSpec>(
-    actions: &mut Vec<awaken_contract::model::ScheduledAction>,
-) -> Vec<A::Payload> {
-    let mut extracted = Vec::new();
-    actions.retain(|action| {
-        if action.key == A::KEY {
-            if let Ok(payload) = A::decode_payload(action.payload.clone()) {
-                extracted.push(payload);
-            }
-            false
-        } else {
-            true
-        }
-    });
-    extracted
-}
+use awaken_contract::contract::tool_intercept::ToolInterceptAction;
 
 /// Merge multiple inference override payloads with last-wins-per-field semantics.
 pub(super) fn merge_override_payloads(
@@ -124,8 +105,72 @@ pub(super) fn resolve_intercept_payloads(
 }
 
 // ---------------------------------------------------------------------------
-// Action handlers (only AddContextMessage remains handler-based)
+// Action handlers
 // ---------------------------------------------------------------------------
+
+/// Handler for `ExcludeTool` — writes to [`ToolFilterState`].
+pub(super) struct ExcludeToolHandler;
+
+#[async_trait]
+impl TypedScheduledActionHandler<ExcludeTool> for ExcludeToolHandler {
+    async fn handle_typed(
+        &self,
+        _ctx: &PhaseContext,
+        payload: String,
+    ) -> Result<StateCommand, StateError> {
+        let mut cmd = StateCommand::new();
+        cmd.update::<ToolFilterState>(ToolFilterStateAction::Exclude(payload));
+        Ok(cmd)
+    }
+}
+
+/// Handler for `IncludeOnlyTools` — writes to [`ToolFilterState`].
+pub(super) struct IncludeOnlyToolsHandler;
+
+#[async_trait]
+impl TypedScheduledActionHandler<IncludeOnlyTools> for IncludeOnlyToolsHandler {
+    async fn handle_typed(
+        &self,
+        _ctx: &PhaseContext,
+        payload: Vec<String>,
+    ) -> Result<StateCommand, StateError> {
+        let mut cmd = StateCommand::new();
+        cmd.update::<ToolFilterState>(ToolFilterStateAction::IncludeOnly(payload));
+        Ok(cmd)
+    }
+}
+
+/// Handler for `SetInferenceOverride` — writes to [`InferenceOverrideState`].
+pub(super) struct SetInferenceOverrideHandler;
+
+#[async_trait]
+impl TypedScheduledActionHandler<SetInferenceOverride> for SetInferenceOverrideHandler {
+    async fn handle_typed(
+        &self,
+        _ctx: &PhaseContext,
+        payload: InferenceOverride,
+    ) -> Result<StateCommand, StateError> {
+        let mut cmd = StateCommand::new();
+        cmd.update::<InferenceOverrideState>(InferenceOverrideStateAction::Merge(payload));
+        Ok(cmd)
+    }
+}
+
+/// Handler for `ToolInterceptAction` — writes to [`ToolInterceptState`].
+pub(super) struct ToolInterceptHandler;
+
+#[async_trait]
+impl TypedScheduledActionHandler<ToolInterceptAction> for ToolInterceptHandler {
+    async fn handle_typed(
+        &self,
+        _ctx: &PhaseContext,
+        payload: ToolInterceptPayload,
+    ) -> Result<StateCommand, StateError> {
+        let mut cmd = StateCommand::new();
+        cmd.update::<ToolInterceptState>(ToolInterceptStateAction::Push(Box::new(payload)));
+        Ok(cmd)
+    }
+}
 
 /// Handler for `AddContextMessage` — applies throttle logic, upserts accepted
 /// messages into [`ContextMessageStore`], updates [`ContextThrottleState`].
@@ -191,12 +236,14 @@ impl TypedScheduledActionHandler<AddContextMessage> for ContextMessageHandler {
 // Plugin for registering action handlers
 // ---------------------------------------------------------------------------
 
-/// Internal plugin that registers the `AddContextMessage` handler.
+/// Internal plugin that registers all loop action handlers and their
+/// accumulator state keys.
+/// Plugin that registers action handlers and their accumulator state keys.
 ///
-/// The four accumulator actions (`SetInferenceOverride`, `ExcludeTool`,
-/// `IncludeOnlyTools`, `ToolInterceptAction`) are consumed directly by the
-/// orchestrator via `extract_actions` and no longer need handlers.
-pub(crate) struct LoopActionHandlersPlugin;
+/// Installed automatically by `inject_default_plugins` for the main runtime.
+/// External crates that build sub-runtimes (e.g. generative-ui) should also
+/// install this plugin alongside [`LoopStatePlugin`].
+pub struct LoopActionHandlersPlugin;
 
 impl crate::plugins::Plugin for LoopActionHandlersPlugin {
     fn descriptor(&self) -> crate::plugins::PluginDescriptor {
@@ -209,7 +256,19 @@ impl crate::plugins::Plugin for LoopActionHandlersPlugin {
         &self,
         r: &mut crate::plugins::PluginRegistrar,
     ) -> Result<(), awaken_contract::StateError> {
+        use crate::state::StateKeyOptions;
+
+        // State keys for action accumulators
+        r.register_key::<ToolFilterState>(StateKeyOptions::default())?;
+        r.register_key::<InferenceOverrideState>(StateKeyOptions::default())?;
+        r.register_key::<ToolInterceptState>(StateKeyOptions::default())?;
+
+        // Handlers
         r.register_scheduled_action::<AddContextMessage, _>(ContextMessageHandler)?;
+        r.register_scheduled_action::<ExcludeTool, _>(ExcludeToolHandler)?;
+        r.register_scheduled_action::<IncludeOnlyTools, _>(IncludeOnlyToolsHandler)?;
+        r.register_scheduled_action::<SetInferenceOverride, _>(SetInferenceOverrideHandler)?;
+        r.register_scheduled_action::<ToolInterceptAction, _>(ToolInterceptHandler)?;
         Ok(())
     }
 }

@@ -255,6 +255,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-ext-deferred-tools"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "awaken-contract",
+ "awaken-runtime",
+ "awaken-tool-pattern",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "awaken-ext-generative-ui"
 version = "0.1.0"
 dependencies = [

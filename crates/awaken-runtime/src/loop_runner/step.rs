@@ -23,15 +23,17 @@ use awaken_contract::contract::tool::ToolCallContext;
 use awaken_contract::model::Phase;
 
 use super::actions::{
-    apply_context_messages, apply_tool_filter_payloads, extract_actions, merge_override_payloads,
+    apply_context_messages, apply_tool_filter_payloads, merge_override_payloads,
     resolve_intercept_payloads, take_context_messages,
 };
 use super::checkpoint::{check_termination, complete_step};
 use super::inference::{compact_with_llm, execute_streaming};
 use super::{AgentLoopError, commit_update, now_ms, tool_result_to_content};
-use crate::agent::state::{ExcludeTool, IncludeOnlyTools, SetInferenceOverride};
-use crate::agent::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
-use awaken_contract::contract::tool_intercept::ToolInterceptAction;
+use crate::agent::state::{
+    InferenceOverrideState, InferenceOverrideStateAction, RunLifecycle, RunLifecycleUpdate,
+    ToolCallStates, ToolCallStatesUpdate, ToolFilterState, ToolFilterStateAction,
+    ToolInterceptState, ToolInterceptStateAction,
+};
 
 /// Outcome of a single step.
 pub(super) enum StepOutcome {
@@ -176,8 +178,8 @@ async fn recover_truncation(
     Ok(stream_result)
 }
 
-/// Run the BeforeInference phase via collect_commands, extract loop-consumed
-/// action payloads, submit remaining command, and run EXECUTE for AddContextMessage.
+/// Run the BeforeInference phase via collect_commands, submit all actions to
+/// the handler queue, and read accumulated state after EXECUTE.
 ///
 /// Returns `Some(StepOutcome)` if a lifecycle hook triggered termination.
 async fn run_before_inference(
@@ -201,22 +203,17 @@ async fn run_before_inference(
     );
 
     // GATHER only — returns merged StateCommand without committing
-    let mut cmd = ctx
+    let cmd = ctx
         .runtime
         .collect_commands(&ctx.agent.env, phase_ctx.clone())
         .await?;
 
-    // Extract known action payloads directly from the command
-    let override_payloads = extract_actions::<SetInferenceOverride>(&mut cmd.scheduled_actions);
-    let exclusion_payloads = extract_actions::<ExcludeTool>(&mut cmd.scheduled_actions);
-    let inclusion_payloads = extract_actions::<IncludeOnlyTools>(&mut cmd.scheduled_actions);
-
-    // Commit remaining state mutations + unrecognized actions (including AddContextMessage)
+    // Submit ALL actions to the handler queue (no pre-extraction)
     if !cmd.is_empty() {
         ctx.runtime.submit_command(&ctx.agent.env, cmd).await?;
     }
 
-    // Run EXECUTE loop for remaining actions (e.g. AddContextMessage handler)
+    // Run EXECUTE loop — all handlers run, writing to state
     let exec_ctx = make_ctx(
         Phase::BeforeInference,
         ctx.messages,
@@ -231,15 +228,27 @@ async fn run_before_inference(
     // Check termination after phase completes
     let termination = check_termination(store).map(StepOutcome::Terminated);
 
-    // Merge override payloads with run-level overrides
+    // Read accumulated state written by handlers
+    let tool_filter = store.read::<ToolFilterState>().unwrap_or_default();
+    let override_state = store.read::<InferenceOverrideState>().unwrap_or_default();
+
+    // Clear accumulators for next step
+    let mut clear_patch = crate::state::MutationBatch::new();
+    clear_patch.update::<ToolFilterState>(ToolFilterStateAction::Clear);
+    clear_patch.update::<InferenceOverrideState>(InferenceOverrideStateAction::Clear);
+    store.commit(clear_patch)?;
+
+    // Merge override state with run-level overrides
     let mut overrides = ctx.run_overrides.clone();
-    merge_override_payloads(&mut overrides, override_payloads);
+    if let Some(step_override) = override_state.overrides {
+        merge_override_payloads(&mut overrides, vec![step_override]);
+    }
 
     Ok((
         termination,
         overrides,
-        exclusion_payloads,
-        inclusion_payloads,
+        tool_filter.excluded,
+        tool_filter.include_only,
     ))
 }
 
@@ -345,14 +354,12 @@ async fn intercept_tool_call(
     )
     .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
 
-    // GATHER only — extract intercept actions directly
-    let mut cmd = ctx
+    // GATHER only — submit ALL actions to handler queue
+    let cmd = ctx
         .runtime
         .collect_commands(&ctx.agent.env, before_ctx.clone())
         .await?;
-    let intercept_payloads = extract_actions::<ToolInterceptAction>(&mut cmd.scheduled_actions);
 
-    // Commit remaining state mutations + other actions
     if !cmd.is_empty() {
         ctx.runtime.submit_command(&ctx.agent.env, cmd).await?;
         // Run EXECUTE for any remaining handler-based actions
@@ -369,8 +376,16 @@ async fn intercept_tool_call(
             .await?;
     }
 
-    // Resolve winning intercept from extracted payloads
-    Ok(resolve_intercept_payloads(intercept_payloads))
+    // Read accumulated intercepts from state
+    let intercept_state = store.read::<ToolInterceptState>().unwrap_or_default();
+
+    // Clear accumulator for next tool call
+    let mut clear_patch = crate::state::MutationBatch::new();
+    clear_patch.update::<ToolInterceptState>(ToolInterceptStateAction::Clear);
+    store.commit(clear_patch)?;
+
+    // Resolve winning intercept from accumulated payloads
+    Ok(resolve_intercept_payloads(intercept_state.payloads))
 }
 
 /// Build a StateCommand for a completed tool call.
