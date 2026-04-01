@@ -1957,7 +1957,13 @@ mod tests {
             let cloned_ctx = ctx.clone();
             token.cancel();
 
-            assert!(cloned_ctx.cancellation_token.as_ref().unwrap().is_cancelled());
+            assert!(
+                cloned_ctx
+                    .cancellation_token
+                    .as_ref()
+                    .unwrap()
+                    .is_cancelled()
+            );
         }
 
         /// A tool that checks the cancellation token before doing work.
