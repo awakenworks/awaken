@@ -1,0 +1,59 @@
+name: Feature request
+description: Propose a new capability or improvement to the framework or contributor experience.
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please describe the user problem first, then the proposed change.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What user or developer pain point does this address?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the desired behavior or API.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: List any approaches or workarounds you considered.
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Primary area
+      options:
+        - contract types
+        - runtime engine
+        - server/protocols
+        - storage backends
+        - tool patterns
+        - extensions/plugins
+        - examples/starters
+        - docs/onboarding
+        - CI/tooling
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Expected impact
+      description: Who benefits and how?
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I read CONTRIBUTING.md.
+          required: true
+        - label: I searched for related issues and discussions.
+          required: true

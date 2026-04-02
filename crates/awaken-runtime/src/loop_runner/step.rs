@@ -627,6 +627,7 @@ async fn execute_tools_with_interception(
         agent_spec: ctx.agent.spec.clone(),
         snapshot: store.snapshot(),
         activity_sink: Some(ctx.sink.clone()),
+        cancellation_token: ctx.cancellation_token.cloned(),
     };
 
     if ctx.agent.tool_executor.requires_incremental_state() {

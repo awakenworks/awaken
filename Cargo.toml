@@ -23,6 +23,11 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/AwakenWorks/awaken"
+homepage = "https://github.com/AwakenWorks/awaken"
+keywords = ["ai-agent", "llm", "agent-framework", "tool-use", "multi-agent"]
+categories = ["web-programming", "asynchronous"]
+rust-version = "1.85"
 
 [workspace.dependencies]
 awaken-contract = { version = "0.1.0", path = "crates/awaken-contract" }

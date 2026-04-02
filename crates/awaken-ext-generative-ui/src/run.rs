@@ -132,6 +132,7 @@ mod tests {
             agent_spec: Arc::new(AgentSpec::default()),
             snapshot: Snapshot::new(0, Arc::new(awaken_contract::state::StateMap::default())),
             activity_sink: sink,
+            cancellation_token: None,
         }
     }
 

@@ -2,6 +2,12 @@
 name = "awaken-runtime"
 version.workspace = true
 edition.workspace = true
+description = "Phase-based execution engine, plugin system, and agent loop for Awaken"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 awaken-contract = { workspace = true }

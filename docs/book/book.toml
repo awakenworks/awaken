@@ -1,0 +1,19 @@
+[book]
+title = "Awaken"
+description = "Production AI agent runtime for Rust"
+authors = ["Awaken Contributors"]
+language = "en"
+multilingual = false
+src = "src"
+
+[build]
+build-dir = "../../target/book"
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html]
+default-theme = "rust"
+git-repository-url = "https://github.com/AwakenWorks/awaken"
+edit-url-template = "https://github.com/AwakenWorks/awaken/edit/main/docs/book/{path}"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]

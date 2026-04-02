@@ -2,7 +2,7 @@
 
 pub mod agent;
 pub mod builder;
-mod cancellation;
+pub(crate) mod cancellation;
 pub mod context;
 pub mod engine;
 mod error;
@@ -20,7 +20,8 @@ pub mod state;
 
 // ── Core re-exports: types used directly by extension crates ──
 
-pub use cancellation::{CancellationHandle, CancellationToken};
+// CancellationToken now lives in awaken-contract; re-export for backward compat.
+pub use awaken_contract::{CancellationHandle, CancellationToken};
 pub use error::RuntimeError;
 pub use profile::ProfileAccess;
 

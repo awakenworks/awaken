@@ -136,6 +136,7 @@ pub(super) async fn detect_and_replay_resume(
         agent_spec: agent.spec.clone(),
         snapshot: store.snapshot(),
         activity_sink: None,
+        cancellation_token: None,
     };
 
     for (call_id, call_state) in resuming {

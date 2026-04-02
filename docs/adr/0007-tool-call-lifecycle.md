@@ -1,6 +1,6 @@
 # ADR-0007: Tool Call Lifecycle
 
-- **Status**: Not Implemented
+- **Status**: Implemented
 - **Date**: 2026-03-21
 - **Depends on**: ADR-0001, ADR-0008
 

@@ -2,6 +2,12 @@
 name = "awaken-ext-deferred-tools"
 version.workspace = true
 edition.workspace = true
+description = "Deferred tool loading with ToolSearch and probability-based deferral for Awaken"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 awaken-contract = { workspace = true }

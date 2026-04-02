@@ -8,7 +8,9 @@ Server-Sent Events (SSE).
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/health` | Returns `200 OK` |
+| `GET` | `/health` | Readiness probe. Checks store connectivity; returns `200` with `"status":"healthy"` or `503` with `"status":"unhealthy"` |
+| `GET` | `/health/live` | Liveness probe. Always returns `200 OK` |
+| `GET` | `/metrics` | Prometheus metrics scrape endpoint |
 
 ## Threads
 

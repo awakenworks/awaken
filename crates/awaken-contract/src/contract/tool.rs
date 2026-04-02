@@ -12,6 +12,7 @@ use super::event::AgentEvent;
 use super::event_sink::EventSink;
 use super::identity::RunIdentity;
 use super::progress::{ProgressStatus, TOOL_CALL_PROGRESS_ACTIVITY_TYPE, ToolCallProgressState};
+use crate::cancellation::CancellationToken;
 use crate::registry_spec::AgentSpec;
 use crate::state::{Snapshot, StateCommand, StateKey};
 
@@ -362,6 +363,12 @@ pub struct ToolCallContext {
     pub snapshot: Snapshot,
     /// Optional sink for reporting activity progress during execution.
     pub activity_sink: Option<Arc<dyn EventSink>>,
+    /// Optional cancellation token for cooperative cancellation.
+    ///
+    /// Long-running tools (e.g. MCP calls, sub-agent execution) should check
+    /// this token periodically via `is_cancelled()` or use `cancelled()` with
+    /// `tokio::select!` to abort early when the run is cancelled.
+    pub cancellation_token: Option<CancellationToken>,
 }
 
 impl ToolCallContext {
@@ -477,6 +484,7 @@ impl ToolCallContext {
             agent_spec: Arc::new(AgentSpec::default()),
             snapshot: Snapshot::new(0, Arc::new(crate::state::StateMap::default())),
             activity_sink: None,
+            cancellation_token: None,
         }
     }
 }

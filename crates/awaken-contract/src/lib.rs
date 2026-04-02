@@ -1,5 +1,6 @@
 #![allow(missing_docs)]
 
+pub mod cancellation;
 pub mod config_loader;
 pub mod contract;
 mod error;
@@ -53,6 +54,9 @@ pub use contract::tool_schema::{generate_tool_schema, sanitize_for_llm, validate
 
 // ── thread ──
 pub use thread::{Thread, ThreadMetadata};
+
+// ── cancellation ──
+pub use cancellation::{CancellationHandle, CancellationToken};
 
 // ── periodic refresh ──
 pub use periodic_refresh::PeriodicRefresher;

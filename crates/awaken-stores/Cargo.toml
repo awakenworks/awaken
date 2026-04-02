@@ -2,6 +2,12 @@
 name = "awaken-stores"
 version.workspace = true
 edition.workspace = true
+description = "Storage backends (memory, file, PostgreSQL) for Awaken agent state"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 awaken-contract = { workspace = true }

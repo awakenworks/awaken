@@ -58,7 +58,10 @@ Errors from `AgentRuntimeBuilder::build()`.
 pub enum BuildError {
     State(StateError),
     AgentRegistryConflict(String),
-    StopPolicyConflict(String),
+    ToolRegistryConflict(String),
+    ModelRegistryConflict(String),
+    ProviderRegistryConflict(String),
+    PluginRegistryConflict(String),
     ValidationFailed(String),
     DiscoveryFailed(DiscoveryError),     // requires feature "a2a"
 }

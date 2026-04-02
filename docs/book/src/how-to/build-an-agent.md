@@ -51,10 +51,10 @@ let builder = builder.with_thread_run_store(store);
 5. Build and validate.
 
 ```rust,ignore
-let runtime = builder.build_validated()?;
+let runtime = builder.build()?;
 ```
 
-`build_validated` resolves every registered agent and catches missing models, providers, or plugins at startup rather than at request time.
+`build` resolves every registered agent and catches missing models, providers, or plugins at startup rather than at request time.
 
 6. Execute a run.
 
@@ -78,7 +78,7 @@ Call the `/health` endpoint (if using the server feature) or inspect the `RunHan
 
 | Error | Cause | Fix |
 |---|---|---|
-| `BuildError::ValidationFailed` | Agent spec references a model or provider not registered in the builder | Register the missing model/provider before calling `build_validated` |
+| `BuildError::ValidationFailed` | Agent spec references a model or provider not registered in the builder | Register the missing model/provider before calling `build` |
 | `BuildError::State` | Duplicate state key registration across plugins | Ensure each `StateKey` is registered by exactly one plugin |
 | `RuntimeError` at run time | Provider returns an inference error | Check provider credentials and model ID |
 

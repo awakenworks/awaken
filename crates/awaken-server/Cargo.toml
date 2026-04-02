@@ -2,6 +2,12 @@
 name = "awaken-server"
 version.workspace = true
 edition.workspace = true
+description = "Multi-protocol HTTP server with SSE, mailbox, and protocol adapters for Awaken"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 awaken-contract = { workspace = true }

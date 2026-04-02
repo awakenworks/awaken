@@ -140,6 +140,127 @@ pub struct RemoteEndpoint {
 }
 ```
 
+## ServerConfig
+
+HTTP server configuration. Used when the `server` feature is enabled.
+
+```rust,ignore
+pub struct ServerConfig {
+    pub address: String,                   // default: "0.0.0.0:3000"
+    pub sse_buffer_size: usize,            // default: 64
+    pub replay_buffer_capacity: usize,     // default: 1024
+    pub shutdown: ShutdownConfig,
+    pub max_concurrent_requests: usize,    // default: 100
+}
+
+pub struct ShutdownConfig {
+    pub timeout_secs: u64,                 // default: 30
+}
+```
+
+**Crate path:** `awaken_server::app::ServerConfig`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `address` | `String` | `"0.0.0.0:3000"` | Socket address the server binds to |
+| `sse_buffer_size` | `usize` | `64` | Maximum SSE channel buffer size per connection |
+| `replay_buffer_capacity` | `usize` | `1024` | Maximum SSE frames buffered per run for reconnection replay |
+| `max_concurrent_requests` | `usize` | `100` | Maximum in-flight requests; excess requests receive 503 |
+| `shutdown.timeout_secs` | `u64` | `30` | Seconds to wait for in-flight requests to drain before force-exiting |
+
+## MailboxConfig
+
+Configuration for the persistent run queue (mailbox). Controls lease timing,
+sweep/GC intervals, and retry behavior for failed jobs.
+
+```rust,ignore
+pub struct MailboxConfig {
+    pub lease_ms: u64,                          // default: 30_000
+    pub suspended_lease_ms: u64,                // default: 600_000
+    pub lease_renewal_interval: Duration,       // default: 10s
+    pub sweep_interval: Duration,               // default: 30s
+    pub gc_interval: Duration,                  // default: 60s
+    pub gc_ttl: Duration,                       // default: 24h
+    pub default_max_attempts: u32,              // default: 5
+    pub default_retry_delay_ms: u64,            // default: 250
+    pub max_retry_delay_ms: u64,                // default: 30_000
+}
+```
+
+**Crate path:** `awaken_server::mailbox::MailboxConfig`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `lease_ms` | `u64` | `30_000` | Lease duration in milliseconds for active runs |
+| `suspended_lease_ms` | `u64` | `600_000` | Lease duration in milliseconds for suspended runs awaiting human input |
+| `lease_renewal_interval` | `Duration` | `10s` | How often the worker renews its lease on a running job |
+| `sweep_interval` | `Duration` | `30s` | How often to scan for expired leases and reclaim orphaned jobs |
+| `gc_interval` | `Duration` | `60s` | How often to run garbage collection for terminal (completed/failed) jobs |
+| `gc_ttl` | `Duration` | `24h` | How long terminal jobs are retained before purging |
+| `default_max_attempts` | `u32` | `5` | Maximum delivery attempts before a job is dead-lettered |
+| `default_retry_delay_ms` | `u64` | `250` | Base retry delay in milliseconds between attempts |
+| `max_retry_delay_ms` | `u64` | `30_000` | Maximum retry delay in milliseconds for exponential backoff |
+
+## LlmRetryPolicy
+
+Policy for retrying failed LLM inference calls with exponential backoff and
+optional model fallback. Can be set per-agent via the `"retry"` section in
+`AgentSpec`.
+
+```rust,ignore
+pub struct LlmRetryPolicy {
+    pub max_retries: u32,              // default: 2
+    pub fallback_models: Vec<String>,  // default: []
+    pub backoff_base_ms: u64,          // default: 500
+}
+```
+
+**Crate path:** `awaken_runtime::engine::retry::LlmRetryPolicy`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `max_retries` | `u32` | `2` | Maximum retry attempts after the initial call (0 = no retry) |
+| `fallback_models` | `Vec<String>` | `[]` | Model names to try in order after the primary model exhausts retries |
+| `backoff_base_ms` | `u64` | `500` | Base delay in milliseconds for exponential backoff; actual delay = min(base * 2^attempt, 8000ms). Set to 0 to disable backoff |
+
+### AgentSpec integration
+
+Register via the `RetryConfigKey` plugin config key (`"retry"` section):
+
+```rust,ignore
+use awaken_runtime::engine::retry::RetryConfigKey;
+
+let spec = AgentSpec::new("my-agent")
+    .with_config::<RetryConfigKey>(LlmRetryPolicy {
+        max_retries: 3,
+        fallback_models: vec!["claude-sonnet-4-20250514".into()],
+        backoff_base_ms: 1000,
+    })?;
+```
+
+## CircuitBreakerConfig
+
+Per-model circuit breaker configuration. Prevents cascading failures by
+short-circuiting requests to models that have experienced repeated consecutive
+failures. After a cooldown the circuit transitions to half-open, allowing
+limited probe requests before fully closing on success.
+
+```rust,ignore
+pub struct CircuitBreakerConfig {
+    pub failure_threshold: u32,    // default: 5
+    pub cooldown: Duration,        // default: 30s
+    pub half_open_max: u32,        // default: 1
+}
+```
+
+**Crate path:** `awaken_runtime::engine::circuit_breaker::CircuitBreakerConfig`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `failure_threshold` | `u32` | `5` | Consecutive failures before the circuit opens and rejects requests |
+| `cooldown` | `Duration` | `30s` | How long the circuit stays open before transitioning to half-open |
+| `half_open_max` | `u32` | `1` | Maximum probe requests allowed in the half-open state before the circuit reopens on failure or closes on success |
+
 ## Feature flags and their effects
 
 | Flag | Runtime behavior |

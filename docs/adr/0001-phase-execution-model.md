@@ -151,7 +151,7 @@ Tool calls involve external resources (files, network, git worktrees) whose conf
 - State-driven termination via RunLifecycle: implemented
 - Loop actions (overrides, tool filters, intercept) consumed directly by orchestrator via collect_commands + extract_actions — no accumulator state keys
 - RuntimeEffect enum: deleted (all variants replaced by State/Action)
-- CancellationToken: not implemented
+- CancellationToken: implemented
 - EXECUTE parallel actions: not implemented (currently serial)
 
 ## Consequences

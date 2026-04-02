@@ -2,6 +2,12 @@
 name = "awaken-ext-generative-ui"
 version.workspace = true
 edition.workspace = true
+description = "Server-driven UI component plugin (A2UI) for Awaken"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [features]
 default = []

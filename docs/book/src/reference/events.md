@@ -46,6 +46,12 @@ pub enum AgentEvent {
         outcome: ToolCallOutcome,
     },
 
+    ToolCallStreamDelta {
+        id: String,
+        name: String,
+        delta: String,
+    },
+
     ToolCallResumed { target_id: String, result: Value },
 
     MessagesSnapshot { messages: Vec<Value> },

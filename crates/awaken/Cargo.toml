@@ -2,6 +2,12 @@
 name = "awaken"
 version.workspace = true
 edition.workspace = true
+description = "Production AI agent runtime for Rust — type-safe state, phase execution, multi-protocol serving"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 awaken-contract = { workspace = true }
@@ -17,7 +23,7 @@ awaken-server = { workspace = true, optional = true }
 serde_json = { workspace = true }
 
 [features]
-default = ["permission", "observability", "skills", "mcp", "reminder", "generative-ui"]
+default = ["full"]
 permission = ["dep:awaken-ext-permission"]
 observability = ["dep:awaken-ext-observability"]
 mcp = ["dep:awaken-ext-mcp"]

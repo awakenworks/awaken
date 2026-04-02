@@ -2,6 +2,12 @@
 name = "awaken-ext-mcp"
 version.workspace = true
 edition.workspace = true
+description = "Model Context Protocol (MCP) client plugin for Awaken"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 awaken-contract = { workspace = true }

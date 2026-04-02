@@ -160,6 +160,7 @@ crates/
   awaken-ext-skills/        # Skills plugin
   awaken-ext-reminder/      # Reminder plugin
   awaken-ext-generative-ui/ # Generative UI plugin
+  awaken-ext-deferred-tools/ # Deferred tools plugin
 examples/                   # Full-stack server examples
 docs/
   adr/                      # Architecture Decision Records

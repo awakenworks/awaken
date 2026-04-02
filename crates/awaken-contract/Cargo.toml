@@ -2,6 +2,12 @@
 name = "awaken-contract"
 version.workspace = true
 edition.workspace = true
+description = "Core types, traits, and state model for the Awaken AI agent runtime"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 serde = { workspace = true }

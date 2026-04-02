@@ -25,7 +25,7 @@ Key types:
 Each overlay specifies which parts of the base agent configuration to override. Fields left as `None` inherit the base agent's values.
 
 ```rust,ignore
-use awaken::AgentOverlay;
+use awaken::extensions::handoff::AgentOverlay;
 
 let researcher = AgentOverlay {
     system_prompt: Some("You are a research specialist. Find and cite sources.".into()),
@@ -47,7 +47,7 @@ let writer = AgentOverlay {
 ```rust,ignore
 use std::collections::HashMap;
 use std::sync::Arc;
-use awaken::HandoffPlugin;
+use awaken::extensions::handoff::HandoffPlugin;
 
 let mut overlays = HashMap::new();
 overlays.insert("researcher".to_string(), researcher);
@@ -75,9 +75,8 @@ The plugin ID must be `"agent_handoff"` (exported as `HANDOFF_PLUGIN_ID`). The p
 Use the action helpers to create `HandoffAction` mutations and dispatch them through a `StateCommand`:
 
 ```rust,ignore
-use awaken::{request_handoff, activate_handoff, clear_handoff};
+use awaken::extensions::handoff::{request_handoff, activate_handoff, clear_handoff, ActiveAgentKey};
 use awaken::state::StateCommand;
-use awaken::extensions::handoff::ActiveAgentKey;
 
 // Request a switch to the "researcher" variant (pending until next phase boundary)
 let mut cmd = StateCommand::new();
