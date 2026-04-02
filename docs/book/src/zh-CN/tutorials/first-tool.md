@@ -2,14 +2,14 @@
 
 ## 目标
 
-实现一个在执行时从 `ToolCallContext` 读取类型化状态的 tool。
+实现一个在执行时从 `ToolCallContext` 读取类型化状态的工具。
 
-> **状态不是必需的。** 很多工具（API 调用、搜索、shell 命令）根本不需要状态；只要实现 `execute` 并返回 `ToolResult` 即可。
+> **状态是可选的。** 许多工具（API 调用、搜索、Shell 命令）不需要状态——只需实现 `execute` 并返回 `ToolResult` 即可。
 
 ## 前置条件
 
-- 先完成[第一个 Agent](./first-agent.md)
-- 复用那一页里的运行时依赖
+- 先完成 [第一个 Agent](./first-agent.md)。
+- 复用 [第一个 Agent](./first-agent.md) 中的运行时依赖。
 
 ```toml
 [dependencies]
@@ -20,14 +20,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ```
 
-## 1. 定义一个 `StateKey`
+## 1. 定义 `StateKey`
 
-`StateKey` 描述状态映射中的一个具名槽位，它声明值类型、更新方式和生命周期作用域。
+`StateKey` 描述状态映射中的一个命名槽位，声明值类型、更新策略和生命周期范围。
 
-```rust,ignore
-use awaken::{StateKey, KeyScope, MergeStrategy};
-
-/// 追踪问候工具被调用的次数。
+```rust,no_run
+# use awaken::{StateKey, KeyScope, MergeStrategy};
+#
+/// 记录问候工具被调用的次数。
 struct GreetCount;
 
 impl StateKey for GreetCount {
@@ -42,19 +42,31 @@ impl StateKey for GreetCount {
         *value += update;
     }
 }
+# fn main() {}
 ```
 
-关键点：
+关键选项说明：
 
-- `KeyScope::Run`：每次 run 开始时重置；如果想跨 run 保留，就改成 `KeyScope::Thread`
-- `MergeStrategy::Commutative`：适合并发安全累加
-- `apply`：定义 `Update` 如何作用到当前值
+- `KeyScope::Run` — 状态在每次运行开始时重置。使用 `KeyScope::Thread` 可跨运行持久化。
+- `MergeStrategy::Commutative` — 并发更新安全。当只有一个写入方时使用 `Exclusive`。
+- `apply` 定义 `Update` 如何修改当前 `Value`，此处为递增。
 
 ## 2. 实现 Tool
 
-tool 通过 `ctx.state::<GreetCount>()` 读取当前计数，然后返回一个个性化问候。
+该工具通过 `ctx.state::<GreetCount>()` 读取当前计数并返回个性化问候。
 
-```rust,ignore
+```rust,no_run
+# use awaken::{StateKey, KeyScope, MergeStrategy};
+# struct GreetCount;
+# impl StateKey for GreetCount {
+#     const KEY: &'static str = "greet_count";
+#     const MERGE: MergeStrategy = MergeStrategy::Commutative;
+#     const SCOPE: KeyScope = KeyScope::Run;
+#     type Value = u32;
+#     type Update = u32;
+#     fn apply(value: &mut Self::Value, update: Self::Update) { *value += update; }
+# }
+use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
@@ -89,7 +101,7 @@ impl Tool for GreetTool {
     ) -> Result<ToolOutput, ToolError> {
         let name = args["name"].as_str().unwrap_or("world");
 
-        // 读取状态 -- 若该 key 尚未写入则返回 None。
+        // 读取状态——如果该键尚未设置则返回 None。
         let count = ctx.state::<GreetCount>().copied().unwrap_or(0);
 
         Ok(ToolResult::success("greet", json!({
@@ -98,43 +110,92 @@ impl Tool for GreetTool {
         })).into())
     }
 }
+# fn main() {}
 ```
 
 ## 3. 注册 Tool
 
-```rust,ignore
-use std::sync::Arc;
-use awaken::engine::GenaiExecutor;
-use awaken::registry_spec::{AgentSpec, ModelSpec};
+```rust,no_run
+# use std::sync::Arc;
+# use async_trait::async_trait;
+# use serde_json::{json, Value};
+# use awaken::{StateKey, KeyScope, MergeStrategy};
+# use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
+# struct GreetCount;
+# impl StateKey for GreetCount {
+#     const KEY: &'static str = "greet_count";
+#     const MERGE: MergeStrategy = MergeStrategy::Commutative;
+#     const SCOPE: KeyScope = KeyScope::Run;
+#     type Value = u32;
+#     type Update = u32;
+#     fn apply(value: &mut Self::Value, update: Self::Update) { *value += update; }
+# }
+# struct GreetTool;
+# #[async_trait]
+# impl Tool for GreetTool {
+#     fn descriptor(&self) -> ToolDescriptor {
+#         ToolDescriptor::new("greet", "Greet", "Greet a user by name")
+#     }
+#     async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+#         Ok(ToolResult::success("greet", json!({})).into())
+#     }
+# }
+use awaken::registry_spec::AgentSpec;
 use awaken::AgentRuntimeBuilder;
 
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 let agent_spec = AgentSpec::new("assistant")
     .with_model("gpt-4o-mini")
     .with_system_prompt("You are a helpful assistant. Use the greet tool when asked.")
     .with_max_rounds(5);
 
 let runtime = AgentRuntimeBuilder::new()
-    .with_provider("openai", Arc::new(GenaiExecutor::new()))
-    .with_model(
-        "gpt-4o-mini",
-        ModelSpec {
-            id: "gpt-4o-mini".into(),
-            provider: "openai".into(),
-            model: "gpt-4o-mini".into(),
-        },
-    )
     .with_agent_spec(agent_spec)
     .with_tool("greet", Arc::new(GreetTool))
     .build()?;
+# Ok(())
+# }
 ```
 
 ## 4. 运行
 
-```rust,ignore
+```rust,no_run
+# use std::sync::Arc;
+# use async_trait::async_trait;
+# use serde_json::{json, Value};
+# use awaken::{StateKey, KeyScope, MergeStrategy};
+# use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
+# use awaken::registry_spec::AgentSpec;
+# use awaken::AgentRuntimeBuilder;
+# struct GreetCount;
+# impl StateKey for GreetCount {
+#     const KEY: &'static str = "greet_count";
+#     const MERGE: MergeStrategy = MergeStrategy::Commutative;
+#     const SCOPE: KeyScope = KeyScope::Run;
+#     type Value = u32;
+#     type Update = u32;
+#     fn apply(value: &mut Self::Value, update: Self::Update) { *value += update; }
+# }
+# struct GreetTool;
+# #[async_trait]
+# impl Tool for GreetTool {
+#     fn descriptor(&self) -> ToolDescriptor {
+#         ToolDescriptor::new("greet", "Greet", "Greet a user by name")
+#     }
+#     async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+#         Ok(ToolResult::success("greet", json!({})).into())
+#     }
+# }
 use awaken::contract::message::Message;
 use awaken::contract::event_sink::VecEventSink;
 use awaken::RunRequest;
 
+# #[tokio::main]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let runtime = AgentRuntimeBuilder::new()
+#     .with_agent_spec(AgentSpec::new("assistant").with_model("gpt-4o-mini"))
+#     .with_tool("greet", Arc::new(GreetTool))
+#     .build()?;
 let request = RunRequest::new(
     "thread-1",
     vec![Message::user("Greet Alice")],
@@ -143,11 +204,13 @@ let request = RunRequest::new(
 
 let sink = Arc::new(VecEventSink::new());
 runtime.run(request, sink.clone()).await?;
+# Ok(())
+# }
 ```
 
 ## 5. 验证
 
-检查事件流里是否出现了 `ToolCallDone`：
+检查收集到的事件中是否包含 `name == "greet"` 的 `ToolCallDone` 事件：
 
 ```rust,ignore
 use awaken::contract::event::AgentEvent;
@@ -160,30 +223,31 @@ let tool_done = events.iter().any(|e| matches!(
 println!("tool_call_done_seen: {}", tool_done);
 ```
 
-预期：
+预期结果：
 
 - `tool_call_done_seen: true`
-- `ToolCallDone.result` 中包含 `greeting` 和 `times_greeted`
+- `ToolCallDone` 中的 `result` 包含 `greeting` 和 `times_greeted` 字段。
 
-## 你刚刚创建了什么
+## 你创建了什么
 
-你完成了一个 tool，它：
+一个工具，它：
 
-1. 通过 `descriptor()` 声明 JSON Schema
-2. 通过 `validate_args()` 做参数校验
-3. 通过 `ctx.state::<K>()` 读取类型化状态
-4. 通过 `ToolResult::success()` 返回结构化 JSON
+1. 通过 `descriptor()` 声明参数的 JSON Schema。
+2. 通过 `validate_args()` 在执行前验证参数。
+3. 通过 `ctx.state::<K>()` 从快照读取类型化状态。
+4. 通过 `ToolResult::success()` 返回结构化 JSON。
 
-## 下一步读什么
+`StateKey` trait 提供了类型安全的、有范围的状态管理，无需手动操作原始 JSON。
 
-- 完整理解 tool 生命周期：[Tool Trait](../reference/tool-trait.md)
-- 学习如何在 phase 边界扩展行为：[Add a Plugin](../how-to/add-a-plugin.md)
-- 学习状态作用域：[State Keys](../reference/state-keys.md)
+## 下一步阅读
+
+- 了解完整工具生命周期：[Tool Trait](../../reference/tool-trait.md)
+- 添加跨运行管理状态的插件：[添加插件](../how-to/add-a-plugin.md)
+- 学习状态范围规则：[State Keys](../../reference/state-keys.md)
 
 ## 常见错误
 
-- `ctx.state::<K>()` 返回 `None`：这个 key 在当前 run 里还没写入
-- `StateError::KeyEncode` / `KeyDecode`：`Value` 类型不能正确序列化 / 反序列化
-- `ToolError::InvalidArguments` 没有出现：通常是你跳过了 `validate_args()` 逻辑
-- 作用域不匹配：如果希望跨多次 run 保持状态，需要用 `KeyScope::Thread`
-
+- `ctx.state::<K>()` 返回 `None`：该状态键在本次运行中尚未写入。对数值类型使用 `.unwrap_or_default()` 或 `.copied().unwrap_or(0)`。
+- `StateError::KeyEncode` / `StateError::KeyDecode`：`Value` 类型无法通过 JSON 往返序列化。确保正确派生了 `Serialize` 和 `Deserialize`。
+- `ToolError::InvalidArguments` 未被触发：运行时在 `execute` 之前调用 `validate_args`。如果跳过验证，错误输入将到达 `execute` 并可能在 `.unwrap()` 处崩溃。
+- 范围不匹配：`KeyScope::Run` 状态在运行之间被清除。如果需要持久化，使用 `KeyScope::Thread`。

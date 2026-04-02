@@ -26,7 +26,7 @@ export DEEPSEEK_API_KEY=<your-key>
 
 ## 1. 创建 `src/main.rs`
 
-```rust,ignore
+```rust,no_run
 use std::sync::Arc;
 use serde_json::{json, Value};
 use async_trait::async_trait;
@@ -35,7 +35,8 @@ use awaken::contract::message::Message;
 use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::VecEventSink;
 use awaken::engine::GenaiExecutor;
-use awaken::registry_spec::{AgentSpec, ModelSpec};
+use awaken::registry_spec::AgentSpec;
+use awaken::registry::ModelEntry;
 use awaken::{AgentRuntimeBuilder, RunRequest};
 
 struct EchoTool;
@@ -72,10 +73,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_agent_spec(agent_spec)
         .with_tool("echo", Arc::new(EchoTool))
         .with_provider("openai", Arc::new(GenaiExecutor::new()))
-        .with_model("gpt-4o-mini", ModelSpec {
-            id: "gpt-4o-mini".into(),
+        .with_model("gpt-4o-mini", ModelEntry {
             provider: "openai".into(),
-            model: "gpt-4o-mini".into(),
+            model_name: "gpt-4o-mini".into(),
         })
         .build()?;
 
@@ -126,10 +126,9 @@ let runtime = AgentRuntimeBuilder::new()
     .with_agent_spec(agent_spec)
     .with_tool("echo", Arc::new(EchoTool))
     .with_provider("openai", Arc::new(GenaiExecutor::new()))
-    .with_model("gpt-4o-mini", ModelSpec {
-        id: "gpt-4o-mini".into(),
+    .with_model("gpt-4o-mini", ModelEntry {
         provider: "openai".into(),
-        model: "gpt-4o-mini".into(),
+        model_name: "gpt-4o-mini".into(),
     })
     .build()?;
 ```
@@ -152,9 +151,9 @@ let events = sink.take();
 
 根据你的需求选择下一页：
 
-- 添加类型化状态和有状态工具：[第一个 Tool](./first-tool.md)
-- 了解事件如何映射到智能体循环：[事件参考](../reference/events.md)
-- 通过 HTTP 暴露智能体：[暴露 HTTP SSE](../how-to/expose-http-sse.md)
+- 添加类型化状态和有状态工具：[第一个 Tool](../../tutorials/first-tool.md)
+- 了解事件如何映射到智能体循环：[事件参考](../../reference/events.md)
+- 通过 HTTP 暴露智能体：[暴露 HTTP SSE](../../how-to/expose-http-sse.md)
 
 ## 常见错误
 
@@ -163,3 +162,8 @@ let events = sink.take();
 - 工具未被选中：确保提示词明确要求使用 `echo`。
 - 没有 `RunFinish` 事件：检查 `with_max_rounds` 设置是否足够高，以便模型完成执行。
 
+## 下一步
+
+- [第一个 Tool](../../tutorials/first-tool.md)
+- [事件参考](../../reference/events.md)
+- [暴露 HTTP SSE](../../how-to/expose-http-sse.md)

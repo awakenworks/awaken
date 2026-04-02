@@ -24,9 +24,9 @@ serde_json = "1"
 
 A `StateKey` describes one named slot in the state map. It declares the value type, how updates are applied, and the lifetime scope.
 
-```rust,ignore
-use awaken::{StateKey, KeyScope, MergeStrategy};
-
+```rust,no_run
+# use awaken::{StateKey, KeyScope, MergeStrategy};
+#
 /// Tracks how many times the greeting tool has been called.
 struct GreetCount;
 
@@ -42,6 +42,7 @@ impl StateKey for GreetCount {
         *value += update;
     }
 }
+# fn main() {}
 ```
 
 Key choices:
@@ -54,7 +55,18 @@ Key choices:
 
 The tool reads the current count via `ctx.state::<GreetCount>()` and returns a personalized greeting.
 
-```rust,ignore
+```rust,no_run
+# use awaken::{StateKey, KeyScope, MergeStrategy};
+# struct GreetCount;
+# impl StateKey for GreetCount {
+#     const KEY: &'static str = "greet_count";
+#     const MERGE: MergeStrategy = MergeStrategy::Commutative;
+#     const SCOPE: KeyScope = KeyScope::Run;
+#     type Value = u32;
+#     type Update = u32;
+#     fn apply(value: &mut Self::Value, update: Self::Update) { *value += update; }
+# }
+use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
@@ -98,43 +110,92 @@ impl Tool for GreetTool {
         })).into())
     }
 }
+# fn main() {}
 ```
 
 ## 3. Register the Tool
 
-```rust,ignore
-use std::sync::Arc;
-use awaken::engine::GenaiExecutor;
-use awaken::registry_spec::{AgentSpec, ModelSpec};
+```rust,no_run
+# use std::sync::Arc;
+# use async_trait::async_trait;
+# use serde_json::{json, Value};
+# use awaken::{StateKey, KeyScope, MergeStrategy};
+# use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
+# struct GreetCount;
+# impl StateKey for GreetCount {
+#     const KEY: &'static str = "greet_count";
+#     const MERGE: MergeStrategy = MergeStrategy::Commutative;
+#     const SCOPE: KeyScope = KeyScope::Run;
+#     type Value = u32;
+#     type Update = u32;
+#     fn apply(value: &mut Self::Value, update: Self::Update) { *value += update; }
+# }
+# struct GreetTool;
+# #[async_trait]
+# impl Tool for GreetTool {
+#     fn descriptor(&self) -> ToolDescriptor {
+#         ToolDescriptor::new("greet", "Greet", "Greet a user by name")
+#     }
+#     async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+#         Ok(ToolResult::success("greet", json!({})).into())
+#     }
+# }
+use awaken::registry_spec::AgentSpec;
 use awaken::AgentRuntimeBuilder;
 
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 let agent_spec = AgentSpec::new("assistant")
     .with_model("gpt-4o-mini")
     .with_system_prompt("You are a helpful assistant. Use the greet tool when asked.")
     .with_max_rounds(5);
 
 let runtime = AgentRuntimeBuilder::new()
-    .with_provider("openai", Arc::new(GenaiExecutor::new()))
-    .with_model(
-        "gpt-4o-mini",
-        ModelSpec {
-            id: "gpt-4o-mini".into(),
-            provider: "openai".into(),
-            model: "gpt-4o-mini".into(),
-        },
-    )
     .with_agent_spec(agent_spec)
     .with_tool("greet", Arc::new(GreetTool))
     .build()?;
+# Ok(())
+# }
 ```
 
 ## 4. Run
 
-```rust,ignore
+```rust,no_run
+# use std::sync::Arc;
+# use async_trait::async_trait;
+# use serde_json::{json, Value};
+# use awaken::{StateKey, KeyScope, MergeStrategy};
+# use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
+# use awaken::registry_spec::AgentSpec;
+# use awaken::AgentRuntimeBuilder;
+# struct GreetCount;
+# impl StateKey for GreetCount {
+#     const KEY: &'static str = "greet_count";
+#     const MERGE: MergeStrategy = MergeStrategy::Commutative;
+#     const SCOPE: KeyScope = KeyScope::Run;
+#     type Value = u32;
+#     type Update = u32;
+#     fn apply(value: &mut Self::Value, update: Self::Update) { *value += update; }
+# }
+# struct GreetTool;
+# #[async_trait]
+# impl Tool for GreetTool {
+#     fn descriptor(&self) -> ToolDescriptor {
+#         ToolDescriptor::new("greet", "Greet", "Greet a user by name")
+#     }
+#     async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+#         Ok(ToolResult::success("greet", json!({})).into())
+#     }
+# }
 use awaken::contract::message::Message;
 use awaken::contract::event_sink::VecEventSink;
 use awaken::RunRequest;
 
+# #[tokio::main]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let runtime = AgentRuntimeBuilder::new()
+#     .with_agent_spec(AgentSpec::new("assistant").with_model("gpt-4o-mini"))
+#     .with_tool("greet", Arc::new(GreetTool))
+#     .build()?;
 let request = RunRequest::new(
     "thread-1",
     vec![Message::user("Greet Alice")],
@@ -143,6 +204,8 @@ let request = RunRequest::new(
 
 let sink = Arc::new(VecEventSink::new());
 runtime.run(request, sink.clone()).await?;
+# Ok(())
+# }
 ```
 
 ## 5. Verify
@@ -188,4 +251,3 @@ The `StateKey` trait gives you type-safe, scoped state without raw JSON manipula
 - `StateError::KeyEncode` / `StateError::KeyDecode`: the `Value` type does not round-trip through JSON. Ensure `Serialize` and `Deserialize` are derived correctly.
 - `ToolError::InvalidArguments` not surfaced: `validate_args` is called before `execute` by the runtime. If you skip validation, bad input reaches `execute` and may panic on `.unwrap()`.
 - Scope mismatch: `KeyScope::Run` state is cleared between runs. If you expect persistence, use `KeyScope::Thread`.
-

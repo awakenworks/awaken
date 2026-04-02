@@ -11,11 +11,15 @@ Use this when you need to expose a custom capability to the agent by implementin
 
 1. Implement the `Tool` trait.
 
-```rust,ignore
+```rust,no_run
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult, ToolOutput};
 
+# async fn fetch_weather(_city: &str) -> Result<String, ToolError> {
+#     Ok("Sunny, 22°C".to_string())
+# }
+#
 pub struct WeatherTool;
 
 #[async_trait]

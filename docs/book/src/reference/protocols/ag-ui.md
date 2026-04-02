@@ -4,7 +4,7 @@ The AG-UI adapter translates Awaken's `AgentEvent` stream into the [AG-UI (Copil
 
 ## Endpoint
 
-```
+```text
 POST /v1/ag-ui/run
 ```
 
@@ -34,9 +34,6 @@ SSE stream (`text/event-stream`). Each frame is a JSON-encoded AG-UI `Event`.
 
 | Route | Method | Description |
 |-------|--------|-------------|
-| `/v1/ag-ui/threads/:thread_id/runs` | POST | Start a run scoped to a specific thread. |
-| `/v1/ag-ui/agents/:agent_id/runs` | POST | Start a run scoped to a specific agent. |
-| `/v1/ag-ui/threads/:thread_id/interrupt` | POST | Interrupt a running thread. |
 | `/v1/ag-ui/threads/:id/messages` | GET | Retrieve thread message history. |
 
 ## Event Mapping

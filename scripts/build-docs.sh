@@ -19,6 +19,7 @@ cargo doc --workspace --no-deps --manifest-path "$WORKSPACE_ROOT/Cargo.toml"
 echo "==> Installing Mermaid support..."
 mdbook-mermaid install "$WORKSPACE_ROOT/docs/book"
 
+# Note: to test book code examples, use scripts/test-book.sh (build and test are separate)
 echo "==> Building mdBook..."
 mdbook build "$WORKSPACE_ROOT/docs/book"
 

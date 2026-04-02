@@ -1,0 +1,21 @@
+[package]
+name = "awaken-doctest"
+version.workspace = true
+edition.workspace = true
+description = "Compile-tests for book documentation code examples"
+license.workspace = true
+publish = false
+
+[dependencies]
+awaken = { version = "0.1.0", path = "../awaken", features = ["full"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+genai = { workspace = true }
+schemars = { workspace = true }
+doc-comment = "0.3"
+
+[lints]
+workspace = true

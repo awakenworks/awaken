@@ -11,11 +11,11 @@ Use this when you need to extend the agent lifecycle with state keys, phase hook
 
 1. Define a state key.
 
-```rust,ignore
-use awaken::{StateKey, KeyScope, MergeStrategy, StateError, JsonValue};
+```rust,no_run
+use awaken::{StateKey, MergeStrategy, StateError, JsonValue};
 use serde::{Serialize, Deserialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AuditLog {
     pub entries: Vec<String>,
 }
@@ -85,7 +85,7 @@ impl Plugin for AuditPlugin {
 
         registrar.register_phase_hook(
             "audit",
-            Phase::AfterInference,
+            Phase::PostInference,
             AuditHook,
         )?;
 
@@ -98,23 +98,17 @@ impl Plugin for AuditPlugin {
 
 ```rust,ignore
 use std::sync::Arc;
-use awaken::engine::GenaiExecutor;
-use awaken::{AgentSpec, AgentRuntimeBuilder, ModelSpec};
+use awaken::{AgentSpec, AgentRuntimeBuilder};
 
 let spec = AgentSpec::new("assistant")
-    .with_model("claude-sonnet")
+    .with_model("anthropic/claude-sonnet")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("audit");
 
 let runtime = AgentRuntimeBuilder::new()
     .with_plugin("audit", Arc::new(AuditPlugin))
     .with_agent_spec(spec)
-    .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
-    .with_model("claude-sonnet", ModelSpec {
-        id: "claude-sonnet".into(),
-        provider: "anthropic".into(),
-        model: "claude-sonnet-4-20250514".into(),
-    })
+    .with_provider("anthropic", Arc::new(provider))
     .build()?;
 ```
 

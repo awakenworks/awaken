@@ -26,7 +26,7 @@ export DEEPSEEK_API_KEY=<your-key>
 
 ## 1. Create `src/main.rs`
 
-```rust,ignore
+```rust,no_run
 use std::sync::Arc;
 use serde_json::{json, Value};
 use async_trait::async_trait;
@@ -35,7 +35,8 @@ use awaken::contract::message::Message;
 use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::VecEventSink;
 use awaken::engine::GenaiExecutor;
-use awaken::registry_spec::{AgentSpec, ModelSpec};
+use awaken::registry_spec::AgentSpec;
+use awaken::registry::ModelEntry;
 use awaken::{AgentRuntimeBuilder, RunRequest};
 
 struct EchoTool;
@@ -72,10 +73,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_agent_spec(agent_spec)
         .with_tool("echo", Arc::new(EchoTool))
         .with_provider("openai", Arc::new(GenaiExecutor::new()))
-        .with_model("gpt-4o-mini", ModelSpec {
-            id: "gpt-4o-mini".into(),
+        .with_model("gpt-4o-mini", ModelEntry {
             provider: "openai".into(),
-            model: "gpt-4o-mini".into(),
+            model_name: "gpt-4o-mini".into(),
         })
         .build()?;
 
@@ -126,10 +126,9 @@ let runtime = AgentRuntimeBuilder::new()
     .with_agent_spec(agent_spec)
     .with_tool("echo", Arc::new(EchoTool))
     .with_provider("openai", Arc::new(GenaiExecutor::new()))
-    .with_model("gpt-4o-mini", ModelSpec {
-        id: "gpt-4o-mini".into(),
+    .with_model("gpt-4o-mini", ModelEntry {
         provider: "openai".into(),
-        model: "gpt-4o-mini".into(),
+        model_name: "gpt-4o-mini".into(),
     })
     .build()?;
 ```
@@ -163,3 +162,8 @@ Use the next page based on what you want:
 - Tool not selected: ensure the prompt explicitly asks to use `echo`.
 - No `RunFinish` event: check that `with_max_rounds` is set high enough for the model to complete.
 
+## Next
+
+- [First Tool](./first-tool.md)
+- [Events](../reference/events.md)
+- [Expose HTTP SSE](../how-to/expose-http-sse.md)

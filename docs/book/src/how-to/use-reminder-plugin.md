@@ -20,10 +20,8 @@ serde_json = "1"
 
 ```rust,ignore
 use std::sync::Arc;
-use awaken::engine::GenaiExecutor;
-use awaken::ext_reminder::{ReminderPlugin, ReminderRulesConfig};
-use awaken::registry_spec::{AgentSpec, ModelSpec};
 use awaken::{AgentRuntimeBuilder, Plugin};
+use awaken::ext_reminder::{ReminderPlugin, ReminderRulesConfig};
 
 let json = r#"{
     "rules": [
@@ -41,21 +39,8 @@ let json = r#"{
 let config = ReminderRulesConfig::from_str(json, Some("json"))
     .expect("failed to parse reminder config");
 let rules = config.into_rules().expect("invalid rules");
-let agent_spec = AgentSpec::new("my-agent")
-    .with_model("claude-sonnet")
-    .with_system_prompt("You are a helpful assistant.")
-    .with_hook_filter("reminder");
 
 let runtime = AgentRuntimeBuilder::new()
-    .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
-    .with_model(
-        "claude-sonnet",
-        ModelSpec {
-            id: "claude-sonnet".into(),
-            provider: "anthropic".into(),
-            model: "claude-3-7-sonnet-latest".into(),
-        },
-    )
     .with_agent_spec(agent_spec)
     .with_plugin("reminder", Arc::new(ReminderPlugin::new(rules)) as Arc<dyn Plugin>)
     .build()
@@ -201,7 +186,7 @@ let rules = config.into_rules().expect("invalid rules");
 use awaken::registry_spec::AgentSpec;
 
 let agent_spec = AgentSpec::new("my-agent")
-    .with_model("claude-sonnet")
+    .with_model("anthropic/claude-sonnet")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("reminder");
 ```
@@ -213,7 +198,7 @@ The `with_hook_filter("reminder")` call activates the reminder plugin's phase ho
 1. Configure a rule matching a tool you can easily trigger (e.g. `"*"` with `"any"` output).
 2. Run the agent and invoke a tool.
 3. Inspect the prompt or enable `tracing` at debug level. You should see:
-   ```
+   ```text
    reminder rule matched, scheduling context message
    ```
 4. Confirm the context message appears in the agent's next inference prompt at the expected target location.

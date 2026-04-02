@@ -228,6 +228,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-doctest"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "awaken",
+ "doc-comment",
+ "futures",
+ "genai",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-examples"
 version = "0.1.0"
 dependencies = [
@@ -993,6 +1008,12 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "doc-comment"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "780955b8b195a21ab8e4ac6b60dd1dbdcec1dc6c51c0617964b08c81785e12c9"
 
 [[package]]
 name = "dotenvy"

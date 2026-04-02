@@ -7,7 +7,8 @@ All error types use `thiserror` derives and implement `std::error::Error` +
 
 Errors from state management operations. Defined in `awaken-contract`.
 
-```rust,ignore
+```rust,no_run
+# use awaken::Phase;
 pub enum StateError {
     RevisionConflict { expected: u64, actual: u64 },
     MutationBaseRevisionMismatch { left: u64, right: u64 },
@@ -38,7 +39,7 @@ Errors returned from `Tool::validate_args` or `Tool::execute`. A `ToolError`
 aborts the tool call entirely (as opposed to `ToolResult::error`, which sends
 the failure back to the LLM).
 
-```rust,ignore
+```rust,no_run
 pub enum ToolError {
     InvalidArguments(String),
     ExecutionFailed(String),
@@ -54,7 +55,9 @@ pub enum ToolError {
 
 Errors from `AgentRuntimeBuilder::build()`.
 
-```rust,ignore
+```rust,no_run
+# use awaken::StateError;
+# struct DiscoveryError;
 pub enum BuildError {
     State(StateError),
     AgentRegistryConflict(String),
@@ -75,7 +78,8 @@ pub enum BuildError {
 
 Errors from agent runtime operations (resolving agents, starting runs).
 
-```rust,ignore
+```rust,no_run
+# use awaken::StateError;
 pub enum RuntimeError {
     State(StateError),
     ThreadAlreadyRunning { thread_id: String },
@@ -93,7 +97,7 @@ pub enum RuntimeError {
 
 Errors from the LLM execution layer.
 
-```rust,ignore
+```rust,no_run
 pub enum InferenceExecutionError {
     Provider(String),
     RateLimited(String),
@@ -108,7 +112,7 @@ pub enum InferenceExecutionError {
 
 Errors returned by `ThreadStore`, `RunStore`, and `ThreadRunStore` operations.
 
-```rust,ignore
+```rust,no_run
 pub enum StorageError {
     NotFound(String),
     AlreadyExists(String),
@@ -125,7 +129,8 @@ pub enum StorageError {
 Errors from the agent resolution pipeline (resolving `AgentSpec` to a runnable
 `ResolvedAgent`).
 
-```rust,ignore
+```rust,no_run
+# use awaken::StateError;
 pub enum ResolveError {
     AgentNotFound(String),
     ModelNotFound(String),
@@ -144,7 +149,7 @@ pub enum ResolveError {
 
 Controls behavior when encountering an unknown state key during deserialization.
 
-```rust,ignore
+```rust,no_run
 pub enum UnknownKeyPolicy {
     Error,
     Skip,

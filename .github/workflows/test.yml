@@ -16,6 +16,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
 
+  book-doctests:
+    name: Book Doctests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - run: bash scripts/test-book.sh
+
   ai-sdk-starter-build:
     # Build the frontend example to catch TypeScript errors
     name: AI SDK Starter Build

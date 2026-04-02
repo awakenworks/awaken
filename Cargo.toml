@@ -14,6 +14,7 @@ members = [
     "crates/awaken-ext-deferred-tools",
     "crates/awaken-tool-pattern",
     "crates/awaken-server",
+    "crates/awaken-doctest",
     "examples",
     "examples/ai-sdk-starter/agent",
     "examples/copilotkit-starter/agent",

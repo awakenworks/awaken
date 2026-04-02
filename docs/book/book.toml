@@ -5,6 +5,9 @@ authors = ["Awaken Contributors"]
 language = "en"
 src = "src"
 
+[rust]
+edition = "2024"
+
 [build]
 build-dir = "../../target/book"
 

@@ -27,6 +27,8 @@ pub enum AgentEvent {
 
     ReasoningDelta { delta: String },
 
+    ReasoningEncryptedValue { encrypted_value: String },
+
     ToolCallStart { id: String, name: String },
 
     ToolCallDelta { id: String, args_delta: String },
@@ -50,7 +52,7 @@ pub enum AgentEvent {
         delta: String,
     },
 
-    ReasoningEncryptedValue { encrypted_value: String },
+    ToolCallResumed { target_id: String, result: Value },
 
     MessagesSnapshot { messages: Vec<Value> },
 
@@ -66,8 +68,6 @@ pub enum AgentEvent {
         activity_type: String,
         patch: Vec<Value>,
     },
-
-    ToolCallResumed { target_id: String, result: Value },
 
     StepStart { message_id: String },
 
@@ -101,43 +101,45 @@ impl AgentEvent {
 }
 ```
 
-## SSE Wire Format
+## StreamEvent
 
-Events are sent over HTTP as Server-Sent Events. Each frame uses the SSE `id`
-field as a monotonically increasing sequence number for resumability:
-
-```
-id: {seq}
-data: {json}
-
-```
-
-Where `{json}` is the JSON-serialized `AgentEvent`. The sequence counter starts
-at 0 and increments by 1 for each event emitted within a run.
-
-The server also sends periodic keep-alive comment lines (`: heartbeat`) when the
-stream is idle to prevent client/proxy timeouts during long inference pauses.
-These comment lines carry no event data and must be ignored by clients.
-
-Implemented via `format_sse_data_with_id` in `awaken-server::http_sse`.
-
-## Run Inputs
-
-To push messages into a run, POST to `/v1/runs/{run_id}/inputs`. The request
-body is deserialized as `PushRunInputsPayload`:
+Wire-format envelope that wraps an `AgentEvent` with sequencing metadata.
+Sent over SSE as JSON.
 
 ```rust,ignore
-struct PushRunInputsPayload {
-    messages: Vec<RunMessage>,
-}
-
-struct RunMessage {
-    role: String,
-    content: String,
+pub struct StreamEvent {
+    /// Monotonically increasing sequence number within a run.
+    pub seq: u64,
+    /// ISO 8601 timestamp.
+    pub timestamp: String,
+    /// The wrapped agent event (flattened via #[serde(flatten)]).
+    pub event: AgentEvent,
 }
 ```
 
-At least one message is required. The server returns `202 Accepted` on success.
+### Constructor
+
+```rust,ignore
+fn new(seq: u64, timestamp: impl Into<String>, event: AgentEvent) -> Self
+```
+
+## RunInput
+
+Input to start or resume a run.
+
+```rust,ignore
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RunInput {
+    /// A new user message to process.
+    UserMessage { text: String },
+    /// Resume a suspended run with a decision.
+    ResumeDecision {
+        tool_call_id: String,
+        action: ResumeDecisionAction,
+        payload: Value,       // omitted when null
+    },
+}
+```
 
 ## RunOutput
 
@@ -149,14 +151,10 @@ pub type RunOutput = futures::stream::BoxStream<'static, AgentEvent>;
 
 ## TerminationReason
 
-Why a run terminated. Serialized with `#[serde(tag = "type", content = "value",
-rename_all = "snake_case")]`.
+Why a run terminated. Serialized as `{ "type": "...", "value": ... }`.
 
-- Unit variants (no payload) serialize as `{ "type": "natural_end" }` — no
-  `"value"` key is emitted.
-- Tuple variants serialize as `{ "type": "stopped", "value": { ... } }`.
-
-```rust,ignore
+```rust,no_run
+# pub struct StoppedReason { pub code: String, pub detail: Option<String> }
 pub enum TerminationReason {
     NaturalEnd,
     BehaviorRequested,
@@ -168,20 +166,9 @@ pub enum TerminationReason {
 }
 ```
 
-## StoppedReason
-
-Payload carried by `TerminationReason::Stopped`.
-
-```rust,ignore
-pub struct StoppedReason {
-    pub code: String,
-    pub detail: Option<String>,    // omitted when None
-}
-```
-
 ## ToolCallOutcome
 
-```rust,ignore
+```rust,no_run
 pub enum ToolCallOutcome {
     Succeeded,
     Failed,
@@ -189,25 +176,9 @@ pub enum ToolCallOutcome {
 }
 ```
 
-## ToolResult
-
-Result of a tool execution, carried in `ToolCallDone`. Defined in
-`awaken::contract::tool::ToolResult`.
-
-```rust,ignore
-pub struct ToolResult {
-    pub tool_name: String,
-    pub status: ToolStatus,        // "success" | "pending" | "error"
-    pub data: Value,
-    pub message: Option<String>,
-    pub suspension: Option<Box<SuspendTicket>>,   // omitted when None
-    pub metadata: HashMap<String, Value>,          // omitted when empty
-}
-```
-
 ## TokenUsage
 
-```rust,ignore
+```rust,no_run
 pub struct TokenUsage {
     pub prompt_tokens: Option<i32>,
     pub completion_tokens: Option<i32>,

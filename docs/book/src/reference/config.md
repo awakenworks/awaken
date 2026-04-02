@@ -13,7 +13,6 @@ pub struct AgentSpec {
     pub max_rounds: usize,                          // default: 16
     pub max_continuation_retries: usize,            // default: 2
     pub context_policy: Option<ContextWindowPolicy>,
-    pub reasoning_effort: Option<ReasoningEffort>,
     pub plugin_ids: Vec<String>,
     pub active_hook_filter: HashSet<String>,
     pub allowed_tools: Option<Vec<String>>,
@@ -34,7 +33,6 @@ AgentSpec::new(id) -> Self
     .with_model(model) -> Self
     .with_system_prompt(prompt) -> Self
     .with_max_rounds(n) -> Self
-    .with_reasoning_effort(effort) -> Self
     .with_hook_filter(plugin_id) -> Self
     .with_config::<K>(config) -> Result<Self, StateError>
     .with_delegate(agent_id) -> Self
@@ -56,7 +54,8 @@ fn set_config<K: PluginConfigKey>(&mut self, config: K::Config) -> Result<(), St
 
 Controls context window management and auto-compaction.
 
-```rust,ignore
+```rust,no_run
+# #[derive(Default)] pub enum ContextCompactionMode { #[default] KeepRecentRawSuffix, CompactToSafeFrontier }
 pub struct ContextWindowPolicy {
     pub max_context_tokens: usize,          // default: 200_000
     pub max_output_tokens: usize,           // default: 16_384
@@ -70,7 +69,7 @@ pub struct ContextWindowPolicy {
 
 ### ContextCompactionMode
 
-```rust,ignore
+```rust,no_run
 pub enum ContextCompactionMode {
     KeepRecentRawSuffix,       // Keep N recent messages raw, compact the rest
     CompactToSafeFrontier,     // Compact everything up to safe frontier
@@ -83,7 +82,8 @@ Per-inference parameter override. All fields are `Option`; `None` means "use
 agent-level default". Multiple plugins can emit overrides; fields merge with
 last-wins semantics.
 
-```rust,ignore
+```rust,no_run
+# pub enum ReasoningEffort { None, Low, Medium, High, Max, Budget(u32) }
 pub struct InferenceOverride {
     pub model: Option<String>,
     pub fallback_models: Option<Vec<String>>,
@@ -103,7 +103,7 @@ fn merge(&mut self, other: InferenceOverride)
 
 ### ReasoningEffort
 
-```rust,ignore
+```rust,no_run
 pub enum ReasoningEffort {
     None,
     Low,
@@ -137,7 +137,6 @@ Configuration for agents running on external A2A servers.
 pub struct RemoteEndpoint {
     pub base_url: String,
     pub bearer_token: Option<String>,
-    pub agent_id: Option<String>,
     pub poll_interval_ms: u64,    // default: 2000
     pub timeout_ms: u64,          // default: 300_000
 }
@@ -272,12 +271,8 @@ pub struct CircuitBreakerConfig {
 | `observability` | Registers the observability plugin; emits traces and metrics |
 | `mcp` | Enables MCP tool bridge; tools from MCP servers are auto-registered |
 | `skills` | Enables the skills subsystem for reusable agent capabilities |
-| `reminder` | Registers the reminder plugin; injects context messages after tool execution based on pattern rules |
 | `server` | Builds the HTTP server with SSE streaming and protocol adapters |
 | `generative-ui` | Enables generative UI component streaming to frontends |
-
-The workspace also contains extension crates that are not currently exposed as
-facade feature flags on `awaken`. Today that includes `awaken-ext-deferred-tools`.
 
 ## Custom plugin configuration
 
