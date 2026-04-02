@@ -53,6 +53,7 @@ struct PartialToolCall {
     id: String,
     name: String,
     arguments: String,
+    ready_emitted: bool,
 }
 
 /// Collector for streaming LLM responses.
@@ -103,27 +104,26 @@ impl StreamCollector {
     ///
     /// This is a pure-ish function - it updates internal state and returns
     /// an output event if something notable happened.
-    pub fn process(&mut self, event: ChatStreamEvent) -> Option<StreamOutput> {
+    pub fn process(&mut self, event: ChatStreamEvent) -> Vec<StreamOutput> {
         match event {
             ChatStreamEvent::Chunk(chunk) => {
-                // Text chunk - chunk.content is a String
                 if !chunk.content.is_empty() {
                     self.text.push_str(&chunk.content);
-                    return Some(StreamOutput::TextDelta(chunk.content));
+                    return vec![StreamOutput::TextDelta(chunk.content)];
                 }
-                None
+                Vec::new()
             }
             ChatStreamEvent::ReasoningChunk(chunk) => {
                 if !chunk.content.is_empty() {
-                    return Some(StreamOutput::ReasoningDelta(chunk.content));
+                    return vec![StreamOutput::ReasoningDelta(chunk.content)];
                 }
-                None
+                Vec::new()
             }
             ChatStreamEvent::ThoughtSignatureChunk(chunk) => {
                 if !chunk.content.is_empty() {
-                    return Some(StreamOutput::ReasoningEncryptedValue(chunk.content));
+                    return vec![StreamOutput::ReasoningEncryptedValue(chunk.content)];
                 }
-                None
+                Vec::new()
             }
             ChatStreamEvent::ToolCallChunk(tool_chunk) => {
                 let call_id = tool_chunk.tool_call.call_id.clone();
@@ -137,16 +137,17 @@ impl StreamCollector {
                             id: call_id.clone(),
                             name: String::new(),
                             arguments: String::new(),
+                            ready_emitted: false,
                         })
                     }
                 };
 
-                let mut output = None;
+                let mut outputs = Vec::new();
 
                 // Update name if provided (non-empty)
                 if !tool_chunk.tool_call.fn_name.is_empty() && partial.name.is_empty() {
                     partial.name = tool_chunk.tool_call.fn_name.clone();
-                    output = Some(StreamOutput::ToolCallStart {
+                    outputs.push(StreamOutput::ToolCallStart {
                         id: call_id.clone(),
                         name: partial.name.clone(),
                     });
@@ -173,16 +174,26 @@ impl StreamCollector {
                         args_str.clone()
                     };
                     partial.arguments = args_str;
-                    // Keep ToolCallStart when name+args arrive in one chunk.
-                    if !delta.is_empty() && output.is_none() {
-                        output = Some(StreamOutput::ToolCallDelta {
+                    if !delta.is_empty() {
+                        outputs.push(StreamOutput::ToolCallDelta {
                             id: call_id,
                             args_delta: delta,
                         });
                     }
                 }
 
-                output
+                if !partial.ready_emitted && !partial.name.is_empty() {
+                    if let Ok(arguments) = serde_json::from_str::<Value>(&partial.arguments) {
+                        partial.ready_emitted = true;
+                        outputs.push(StreamOutput::ToolCallReady {
+                            id: partial.id.clone(),
+                            name: partial.name.clone(),
+                            arguments,
+                        });
+                    }
+                }
+
+                outputs
             }
             ChatStreamEvent::End(end) => {
                 self.stop_reason = end.captured_stop_reason.clone();
@@ -215,6 +226,7 @@ impl StreamCollector {
                                     id: tc.call_id.clone(),
                                     name: tc.fn_name.clone(),
                                     arguments: end_args,
+                                    ready_emitted: false,
                                 });
                             }
                         }
@@ -222,9 +234,9 @@ impl StreamCollector {
                 }
                 // Capture token usage
                 self.usage = end.captured_usage;
-                None
+                Vec::new()
             }
-            _ => None,
+            _ => Vec::new(),
         }
     }
 
@@ -336,6 +348,12 @@ pub enum StreamOutput {
     ToolCallStart { id: String, name: String },
     /// Tool call arguments delta.
     ToolCallDelta { id: String, args_delta: String },
+    /// Tool call input is complete and parsed.
+    ToolCallReady {
+        id: String,
+        name: String,
+        arguments: Value,
+    },
 }
 
 #[cfg(test)]
@@ -769,8 +787,8 @@ mod tests {
         });
         let output = collector.process(chunk);
 
-        assert!(output.is_some());
-        if let Some(StreamOutput::TextDelta(delta)) = output {
+        assert!(!output.is_empty());
+        if let Some(StreamOutput::TextDelta(delta)) = output.into_iter().next() {
             assert_eq!(delta, "Hello ");
         } else {
             panic!("Expected TextDelta");
@@ -788,7 +806,7 @@ mod tests {
         });
         let output = collector.process(chunk);
 
-        if let Some(StreamOutput::ReasoningDelta(delta)) = output {
+        if let Some(StreamOutput::ReasoningDelta(delta)) = output.into_iter().next() {
             assert_eq!(delta, "chain");
         } else {
             panic!("Expected ReasoningDelta");
@@ -804,7 +822,7 @@ mod tests {
         });
         let output = collector.process(chunk);
 
-        if let Some(StreamOutput::ReasoningEncryptedValue(value)) = output {
+        if let Some(StreamOutput::ReasoningEncryptedValue(value)) = output.into_iter().next() {
             assert_eq!(value, "opaque-token");
         } else {
             panic!("Expected ReasoningEncryptedValue");
@@ -840,8 +858,7 @@ mod tests {
         });
         let output = collector.process(chunk);
 
-        // Empty chunks should return None
-        assert!(output.is_none());
+        assert!(output.is_empty());
         assert!(collector.text().is_empty());
     }
 
@@ -858,8 +875,8 @@ mod tests {
         let chunk = ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call });
         let output = collector.process(chunk);
 
-        assert!(output.is_some());
-        if let Some(StreamOutput::ToolCallStart { id, name }) = output {
+        assert!(!output.is_empty());
+        if let Some(StreamOutput::ToolCallStart { id, name }) = output.into_iter().next() {
             assert_eq!(id, "call_123");
             assert_eq!(name, "search");
         } else {
@@ -895,8 +912,11 @@ mod tests {
             tool_call: tool_call2,
         }));
 
-        assert!(output.is_some());
-        if let Some(StreamOutput::ToolCallDelta { id, args_delta }) = output {
+        assert!(!output.is_empty());
+        if let Some(StreamOutput::ToolCallDelta { id, args_delta }) = output
+            .into_iter()
+            .find(|event| matches!(event, StreamOutput::ToolCallDelta { .. }))
+        {
             assert_eq!(id, "call_abc");
             assert!(args_delta.contains("expr"));
         }
@@ -920,9 +940,14 @@ mod tests {
         let output = collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call }));
 
         assert!(
-            matches!(output, Some(StreamOutput::ToolCallStart { .. })),
+            output
+                .iter()
+                .any(|event| matches!(event, StreamOutput::ToolCallStart { .. })),
             "tool start should not be lost when name+args arrive in one chunk; got: {output:?}"
         );
+        assert!(output
+            .iter()
+            .any(|event| matches!(event, StreamOutput::ToolCallReady { .. })));
 
         let result = collector.finish(None);
         assert_eq!(result.tool_calls.len(), 1);
@@ -1013,7 +1038,7 @@ mod tests {
         let mut collector = StreamCollector::new();
 
         let output = collector.process(ChatStreamEvent::Start);
-        assert!(output.is_none());
+        assert!(output.is_empty());
         assert!(collector.text().is_empty());
     }
 
@@ -1030,7 +1055,7 @@ mod tests {
         let end = StreamEnd::default();
         let output = collector.process(ChatStreamEvent::End(end));
 
-        assert!(output.is_none());
+        assert!(output.is_empty());
 
         let result = collector.finish(None);
         assert_eq!(result.text, "Hello");
@@ -1133,8 +1158,8 @@ mod tests {
         let output2 =
             collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc2 }));
         assert!(matches!(
-            output2,
-            Some(StreamOutput::ToolCallDelta { ref args_delta, .. }) if args_delta == "{\"city\":"
+            output2.first(),
+            Some(StreamOutput::ToolCallDelta { args_delta, .. }) if args_delta == "{\"city\":"
         ));
 
         let tc3 = genai::chat::ToolCall {
@@ -1147,8 +1172,8 @@ mod tests {
             collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc3 }));
         // Delta should be only the new part
         assert!(matches!(
-            output3,
-            Some(StreamOutput::ToolCallDelta { ref args_delta, .. }) if args_delta == " \"San Francisco\"}"
+            output3.iter().find(|event| matches!(event, StreamOutput::ToolCallDelta { .. })),
+            Some(StreamOutput::ToolCallDelta { args_delta, .. }) if args_delta == " \"San Francisco\"}"
         ));
 
         let result = collector.finish(None);
@@ -1158,6 +1183,51 @@ mod tests {
             result.tool_calls[0].arguments,
             json!({"city": "San Francisco"})
         );
+    }
+
+    #[test]
+    fn test_stream_collector_emits_tool_call_ready_once_when_args_complete() {
+        let mut collector = StreamCollector::new();
+
+        let outputs = collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: genai::chat::ToolCall {
+                call_id: "call_ready".to_string(),
+                fn_name: "search".to_string(),
+                fn_arguments: Value::String("{\"q\":\"ru".to_string()),
+                thought_signatures: None,
+            },
+        }));
+        assert!(!outputs
+            .iter()
+            .any(|event| matches!(event, StreamOutput::ToolCallReady { .. })));
+
+        let outputs = collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: genai::chat::ToolCall {
+                call_id: "call_ready".to_string(),
+                fn_name: String::new(),
+                fn_arguments: Value::String("{\"q\":\"rust\"}".to_string()),
+                thought_signatures: None,
+            },
+        }));
+        assert_eq!(
+            outputs
+                .iter()
+                .filter(|event| matches!(event, StreamOutput::ToolCallReady { .. }))
+                .count(),
+            1
+        );
+
+        let outputs = collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: genai::chat::ToolCall {
+                call_id: "call_ready".to_string(),
+                fn_name: String::new(),
+                fn_arguments: Value::String("{\"q\":\"rust\"}".to_string()),
+                thought_signatures: None,
+            },
+        }));
+        assert!(!outputs
+            .iter()
+            .any(|event| matches!(event, StreamOutput::ToolCallReady { .. })));
     }
 
     #[test]
@@ -1420,7 +1490,10 @@ mod tests {
         };
         let output =
             collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc2 }));
-        match output {
+        match output
+            .into_iter()
+            .find(|event| matches!(event, StreamOutput::ToolCallDelta { .. }))
+        {
             Some(StreamOutput::ToolCallDelta { id, args_delta }) => {
                 assert_eq!(id, "call_1");
                 assert_eq!(args_delta, r#"{"a":1}"#);
@@ -1564,7 +1637,7 @@ mod tests {
         // But since name is set on the same chunk, output is ToolCallDelta (args wins over name)
         // Actually: name emit happens first, then args. But `output` only holds the LAST one.
         // Let's just check the final result.
-        assert!(output.is_some());
+        assert!(!output.is_empty());
 
         let result = collector.finish(None);
         assert_eq!(result.tool_calls.len(), 1);

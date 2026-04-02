@@ -229,6 +229,12 @@ pub trait Agent: Send + Sync {
     /// Tool execution strategy (parallel, sequential, or custom).
     fn tool_executor(&self) -> Arc<dyn ToolExecutor>;
 
+    /// Whether concurrency-safe tool calls may start before the full model
+    /// response stream finishes. Enabled by default.
+    fn streaming_tool_execution_enabled(&self) -> bool {
+        true
+    }
+
     /// Optional per-step tool provider.
     ///
     /// When `None`, the loop uses a static provider derived from the tool map.
@@ -289,6 +295,8 @@ pub struct BaseAgent {
     pub max_rounds: usize,
     /// Tool execution strategy (parallel, sequential, or custom).
     pub tool_executor: Arc<dyn ToolExecutor>,
+    /// Whether concurrency-safe tool calls may start during response streaming.
+    pub streaming_tool_execution_enabled: bool,
     /// Chat options for the LLM.
     pub chat_options: Option<ChatOptions>,
     /// Fallback model ids used when the primary model fails.
@@ -318,6 +326,7 @@ impl Default for BaseAgent {
             system_prompt: String::new(),
             max_rounds: 10,
             tool_executor: Arc::new(ParallelToolExecutor::streaming()),
+            streaming_tool_execution_enabled: true,
             chat_options: Some(
                 ChatOptions::default()
                     .with_capture_usage(true)
@@ -351,6 +360,10 @@ impl std::fmt::Debug for BaseAgent {
             )
             .field("max_rounds", &self.max_rounds)
             .field("tool_executor", &self.tool_executor.name())
+            .field(
+                "streaming_tool_execution_enabled",
+                &self.streaming_tool_execution_enabled,
+            )
             .field("chat_options", &self.chat_options)
             .field("fallback_models", &self.fallback_models)
             .field("llm_retry_policy", &self.llm_retry_policy)
@@ -404,6 +417,10 @@ impl Agent for BaseAgent {
         self.tool_executor.clone()
     }
 
+    fn streaming_tool_execution_enabled(&self) -> bool {
+        self.streaming_tool_execution_enabled
+    }
+
     fn step_tool_provider(&self) -> Option<Arc<dyn StepToolProvider>> {
         self.step_tool_provider.clone()
     }
@@ -430,6 +447,14 @@ impl BaseAgent {
     #[must_use]
     pub fn with_tool_executor(mut self, executor: Arc<dyn ToolExecutor>) -> Self {
         self.tool_executor = executor;
+        self
+    }
+
+    /// Enable or disable speculative execution of concurrency-safe tools while
+    /// the model response is still streaming.
+    #[must_use]
+    pub fn with_streaming_tool_execution(mut self, enabled: bool) -> Self {
+        self.streaming_tool_execution_enabled = enabled;
         self
     }
 

@@ -2115,7 +2115,7 @@ fn test_stream_collector_end_event_with_tool_calls() {
     // Testing the path where captured_tool_calls is None (default)
 
     let output = collector.process(ChatStreamEvent::End(end));
-    assert!(output.is_none()); // End event returns None
+    assert!(output.is_empty()); // End event returns no stream outputs
 
     let result = collector.finish(None);
     assert_eq!(result.text, "Processing your request...");
@@ -3057,7 +3057,7 @@ fn test_stream_collector_with_tool_call_via_chunk_then_end() {
     let output = collector.process(ChatStreamEvent::End(end));
 
     // End event returns None
-    assert!(output.is_none());
+    assert!(output.is_empty());
 
     // Finish and verify results
     let result = collector.finish(None);
@@ -3130,7 +3130,7 @@ fn test_stream_collector_unknown_event_handling() {
 
     // Start event (should be ignored)
     let output = collector.process(ChatStreamEvent::Start);
-    assert!(output.is_none());
+    assert!(output.is_empty());
 
     // ReasoningDelta event (if exists, should be ignored)
     // The _ match arm handles unknown events
@@ -4530,7 +4530,7 @@ fn test_stream_collector_end_event_with_captured_tool_calls() {
 
     // Process the end event - this should capture the tool calls
     let output = collector.process(ChatStreamEvent::End(end));
-    assert!(output.is_none()); // End event always returns None
+    assert!(output.is_empty()); // End event returns no stream outputs
 
     // Verify the captured tool calls are in the result
     let result = collector.finish(None);
@@ -4638,7 +4638,9 @@ fn test_stream_collector_tool_chunk_with_null_arguments() {
     };
     let output = collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc1 }));
     // Should emit ToolCallStart
-    assert!(matches!(output, Some(StreamOutput::ToolCallStart { .. })));
+    assert!(output
+        .iter()
+        .any(|event| matches!(event, StreamOutput::ToolCallStart { .. })));
 
     // Tool call chunk with null arguments again (tests the "null" check at line 80)
     let tc2 = genai::chat::ToolCall {
@@ -4648,8 +4650,8 @@ fn test_stream_collector_tool_chunk_with_null_arguments() {
         thought_signatures: None,
     };
     let output = collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc2 }));
-    // Should return None because args_str == "null"
-    assert!(output.is_none());
+    // Should emit no output because args_str == "null"
+    assert!(output.is_empty());
 
     let result = collector.finish(None);
     assert_eq!(result.tool_calls.len(), 1);
@@ -4680,7 +4682,7 @@ fn test_stream_collector_tool_chunk_with_empty_string_arguments() {
     };
     let output = collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc2 }));
     // Value::String("") is treated as empty and filtered out
-    assert!(output.is_none());
+    assert!(output.is_empty());
 }
 
 // ============================================================================
