@@ -7,7 +7,7 @@ use genai::chat::{ChatMessage, ChatRequest, MessageContent, ToolResponse};
 /// Convert a ToolDescriptor to a genai Tool.
 pub fn to_genai_tool(desc: &ToolDescriptor) -> genai::chat::Tool {
     let mut schema = desc.parameters.clone();
-    genai::schema_sanitize::sanitize_tool_schema(&mut schema);
+    tirea_contract::schema_sanitize::sanitize_tool_schema(&mut schema);
     genai::chat::Tool::new(&desc.id)
         .with_description(&desc.description)
         .with_schema(schema)

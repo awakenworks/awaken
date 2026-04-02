@@ -255,7 +255,7 @@ impl McpTool {
 
 fn normalize_mcp_input_schema(schema: &Value) -> (Value, bool) {
     let mut normalized = schema.clone();
-    genai::schema_sanitize::sanitize_tool_schema(&mut normalized);
+    tirea_contract::schema_sanitize::sanitize_tool_schema(&mut normalized);
 
     let changed = normalized != *schema;
     let is_object_root = normalized.as_object().is_some()

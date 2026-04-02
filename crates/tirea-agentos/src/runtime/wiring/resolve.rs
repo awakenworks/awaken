@@ -612,7 +612,7 @@ fn agent_overlay_from_definition(
                             G::None => ReasoningEffort::None,
                             G::Low | G::Minimal => ReasoningEffort::Low,
                             G::Medium => ReasoningEffort::Medium,
-                            G::High => ReasoningEffort::High,
+                            G::High | G::XHigh => ReasoningEffort::High,
                             G::Max => ReasoningEffort::Max,
                             G::Budget(n) => ReasoningEffort::Budget(*n),
                         }
