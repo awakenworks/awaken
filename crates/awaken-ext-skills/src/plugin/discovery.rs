@@ -14,6 +14,7 @@ use crate::SKILLS_DISCOVERY_PLUGIN_ID;
 use crate::registry::SkillRegistry;
 use crate::skill::SkillMeta;
 use crate::state::SkillState;
+use crate::visibility::{SkillVisibility, SkillVisibilityStateKey, SkillVisibilityStateValue};
 
 /// Injects a skills catalog into the LLM context so the model can discover and activate skills.
 #[derive(Clone)]
@@ -53,11 +54,21 @@ impl SkillDiscoveryPlugin {
             .replace('>', "&gt;")
     }
 
-    pub(crate) fn render_catalog(&self, _active: &HashSet<String>) -> String {
+    pub(crate) fn render_catalog(
+        &self,
+        _active: &HashSet<String>,
+        visibility: Option<&SkillVisibilityStateValue>,
+    ) -> String {
         let mut metas: Vec<SkillMeta> = self
             .registry
             .snapshot()
             .values()
+            .filter(|s| {
+                // Filter by visibility policy state (ADR-0020).
+                visibility
+                    .map(|v| v.visibility_of(&s.meta().id) != SkillVisibility::Hidden)
+                    .unwrap_or(true)
+            })
             .map(|s| s.meta().clone())
             .collect();
 
@@ -80,6 +91,17 @@ impl SkillDiscoveryPlugin {
                     desc = m.name.clone();
                 } else {
                     desc = format!("{}: {}", m.name.trim(), desc.trim());
+                }
+            }
+            // Append when_to_use if available (ADR-0020).
+            if let Some(when) = &m.when_to_use {
+                let when = when.trim();
+                if !when.is_empty() {
+                    desc = if desc.trim().is_empty() {
+                        format!("When: {when}")
+                    } else {
+                        format!("{} — When: {when}", desc.trim())
+                    };
                 }
             }
             let desc = Self::escape_text(&desc);
@@ -132,7 +154,8 @@ impl PhaseHook for SkillDiscoveryHook {
             .map(|s| s.active.iter().cloned().collect())
             .unwrap_or_default();
 
-        let rendered = self.plugin.render_catalog(&active);
+        let visibility = ctx.state::<SkillVisibilityStateKey>();
+        let rendered = self.plugin.render_catalog(&active, visibility);
         if rendered.is_empty() {
             return Ok(StateCommand::new());
         }
@@ -156,6 +179,12 @@ impl Plugin for SkillDiscoveryPlugin {
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
         registrar.register_key::<SkillState>(StateKeyOptions {
             persistent: true,
+            retain_on_uninstall: false,
+            scope: awaken_contract::state::KeyScope::Run,
+        })?;
+
+        registrar.register_key::<SkillVisibilityStateKey>(StateKeyOptions {
+            persistent: false,
             retain_on_uninstall: false,
             scope: awaken_contract::state::KeyScope::Run,
         })?;
@@ -219,12 +248,7 @@ mod tests {
     }
 
     fn mock_meta(id: &str) -> SkillMeta {
-        SkillMeta {
-            id: id.into(),
-            name: id.into(),
-            description: format!("{id} desc"),
-            allowed_tools: vec![],
-        }
+        SkillMeta::new(id, id, format!("{id} desc"), vec![])
     }
 
     fn make_registry(skills: Vec<Arc<dyn Skill>>) -> Arc<dyn SkillRegistry> {
@@ -287,15 +311,10 @@ mod tests {
 
     #[test]
     fn render_catalog_no_description_tag_when_both_name_and_id_match_and_desc_empty() {
-        let skill: Arc<dyn Skill> = Arc::new(MockSkill(SkillMeta {
-            id: "s1".into(),
-            name: "s1".into(),
-            description: "  ".into(),
-            allowed_tools: vec![],
-        }));
+        let skill: Arc<dyn Skill> = Arc::new(MockSkill(SkillMeta::new("s1", "s1", "  ", vec![])));
         let plugin = SkillDiscoveryPlugin::new(make_registry(vec![skill]));
         let active = HashSet::new();
-        let s = plugin.render_catalog(&active);
+        let s = plugin.render_catalog(&active, None);
         assert!(s.contains("<name>s1</name>"));
         assert!(!s.contains("<description>"));
     }
@@ -308,7 +327,7 @@ mod tests {
         }
         let plugin = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(100, 256);
         let active = HashSet::new();
-        let s = plugin.render_catalog(&active);
+        let s = plugin.render_catalog(&active, None);
         assert!(s.len() <= 256);
     }
 
@@ -320,7 +339,7 @@ mod tests {
         }
         let plugin = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(2, 16 * 1024);
         let active = HashSet::new();
-        let s = plugin.render_catalog(&active);
+        let s = plugin.render_catalog(&active, None);
         assert!(s.contains("truncated"));
         assert_eq!(s.matches("<skill>").count(), 2);
     }

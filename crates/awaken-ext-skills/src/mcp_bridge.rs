@@ -214,12 +214,12 @@ impl McpPromptSkill {
         );
 
         Self {
-            meta: SkillMeta {
-                id: skill_id,
-                name: display_name,
+            meta: SkillMeta::new(
+                skill_id,
+                display_name,
                 description,
-                allowed_tools: vec![server_tool_pattern],
-            },
+                vec![server_tool_pattern],
+            ),
             server_name: entry.server_name,
             prompt_name: prompt.name,
             prompt_arguments: prompt.arguments,

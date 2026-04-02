@@ -6,10 +6,10 @@ use unicode_normalization::UnicodeNormalization;
 ///
 /// Follows the agentskills specification:
 /// - frontmatter is required
-/// - unknown keys are rejected (use `metadata` instead)
+/// - unknown keys are silently ignored for forward compatibility
 /// - `allowed-tools` is a space-delimited string (not a YAML list)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(rename_all = "kebab-case")]
 pub struct SkillFrontmatter {
     pub name: String,
     pub description: String,
@@ -26,6 +26,42 @@ pub struct SkillFrontmatter {
     /// Space-delimited list of allowed tools (spec).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<String>,
+
+    // --- Visibility & invocation control ---
+    /// Hint for LLM on when to invoke this skill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when_to_use: Option<String>,
+    /// Formal argument definitions for the skill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Vec<SkillArgumentDef>>,
+    /// Free-text hint shown next to the skill name in listings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument_hint: Option<String>,
+    /// Whether the user can invoke this skill via `/skill-name` (default: true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_invocable: Option<bool>,
+    /// If true, this skill is hidden from the LLM catalog (default: false).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disable_model_invocation: Option<bool>,
+    /// Override the model used when this skill is activated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Execution mode: "inline" (default) or "fork".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// Comma/newline-separated glob patterns for conditional activation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paths: Option<String>,
+}
+
+/// A formal argument definition for a skill.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillArgumentDef {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub required: bool,
 }
 
 /// Parsed SKILL.md document.
@@ -288,6 +324,35 @@ fn validate_frontmatter(fm: &SkillFrontmatter) -> Result<(), SkillParseError> {
         let _ = parse_allowed_tools(allowed)?;
     }
 
+    if let Some(ctx) = &fm.context {
+        let ctx = ctx.trim();
+        if ctx != "inline" && ctx != "fork" {
+            return Err(SkillParseError::InvalidFrontmatter(
+                "context must be \"inline\" or \"fork\"".to_string(),
+            ));
+        }
+    }
+
+    if fm
+        .when_to_use
+        .as_deref()
+        .is_some_and(|w| w.trim().is_empty())
+    {
+        return Err(SkillParseError::InvalidFrontmatter(
+            "when-to-use must be non-empty if provided".to_string(),
+        ));
+    }
+
+    if let Some(args) = &fm.arguments {
+        for arg in args {
+            if arg.name.trim().is_empty() {
+                return Err(SkillParseError::InvalidFrontmatter(
+                    "argument name must be non-empty".to_string(),
+                ));
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -402,7 +467,8 @@ Body
     }
 
     #[test]
-    fn parse_skill_md_rejects_unknown_frontmatter_keys() {
+    fn parse_skill_md_accepts_unknown_frontmatter_keys() {
+        // Unknown keys are silently ignored for forward compatibility (ADR-0020).
         let input = r#"---
 name: good-skill
 description: ok
@@ -410,8 +476,8 @@ extra: no
 ---
 Body
 "#;
-        let err = parse_skill_md(input).unwrap_err().to_string();
-        assert!(err.contains("unknown field") || err.contains("Invalid"));
+        let doc = parse_skill_md(input).unwrap();
+        assert_eq!(doc.frontmatter.name, "good-skill");
     }
 
     #[test]
@@ -638,5 +704,117 @@ Body
         let input = "---\nname: good-skill\ndescription: ok\nallowed-tools: read_file Bash(git-status\n---\nBody\n";
         let err = parse_skill_md(input).unwrap_err().to_string();
         assert!(err.contains("allowed-tools"));
+    }
+
+    // --- New visibility/invocation fields ---
+
+    #[test]
+    fn parse_skill_md_with_when_to_use() {
+        let input = "---\nname: good-skill\ndescription: ok\nwhen-to-use: when editing React components\n---\nBody\n";
+        let doc = parse_skill_md(input).unwrap();
+        assert_eq!(
+            doc.frontmatter.when_to_use.as_deref(),
+            Some("when editing React components")
+        );
+    }
+
+    #[test]
+    fn parse_skill_md_rejects_blank_when_to_use() {
+        let input = "---\nname: good-skill\ndescription: ok\nwhen-to-use: \"  \"\n---\nBody\n";
+        let err = parse_skill_md(input).unwrap_err().to_string();
+        assert!(err.contains("when-to-use must be non-empty"));
+    }
+
+    #[test]
+    fn parse_skill_md_with_arguments() {
+        let input = r#"---
+name: good-skill
+description: ok
+arguments:
+  - name: file
+    description: Target file
+    required: true
+  - name: mode
+---
+Body
+"#;
+        let doc = parse_skill_md(input).unwrap();
+        let args = doc.frontmatter.arguments.unwrap();
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0].name, "file");
+        assert_eq!(args[0].description.as_deref(), Some("Target file"));
+        assert!(args[0].required);
+        assert_eq!(args[1].name, "mode");
+        assert!(!args[1].required);
+    }
+
+    #[test]
+    fn parse_skill_md_rejects_empty_argument_name() {
+        let input =
+            "---\nname: good-skill\ndescription: ok\narguments:\n  - name: \"\"\n---\nBody\n";
+        let err = parse_skill_md(input).unwrap_err().to_string();
+        assert!(err.contains("argument name must be non-empty"));
+    }
+
+    #[test]
+    fn parse_skill_md_with_disable_model_invocation() {
+        let input =
+            "---\nname: good-skill\ndescription: ok\ndisable-model-invocation: true\n---\nBody\n";
+        let doc = parse_skill_md(input).unwrap();
+        assert_eq!(doc.frontmatter.disable_model_invocation, Some(true));
+    }
+
+    #[test]
+    fn parse_skill_md_with_user_invocable_false() {
+        let input = "---\nname: good-skill\ndescription: ok\nuser-invocable: false\n---\nBody\n";
+        let doc = parse_skill_md(input).unwrap();
+        assert_eq!(doc.frontmatter.user_invocable, Some(false));
+    }
+
+    #[test]
+    fn parse_skill_md_with_context_inline() {
+        let input = "---\nname: good-skill\ndescription: ok\ncontext: inline\n---\nBody\n";
+        let doc = parse_skill_md(input).unwrap();
+        assert_eq!(doc.frontmatter.context.as_deref(), Some("inline"));
+    }
+
+    #[test]
+    fn parse_skill_md_with_context_fork() {
+        let input = "---\nname: good-skill\ndescription: ok\ncontext: fork\n---\nBody\n";
+        let doc = parse_skill_md(input).unwrap();
+        assert_eq!(doc.frontmatter.context.as_deref(), Some("fork"));
+    }
+
+    #[test]
+    fn parse_skill_md_rejects_invalid_context() {
+        let input = "---\nname: good-skill\ndescription: ok\ncontext: parallel\n---\nBody\n";
+        let err = parse_skill_md(input).unwrap_err().to_string();
+        assert!(err.contains("context must be"));
+    }
+
+    #[test]
+    fn parse_skill_md_with_paths() {
+        let input =
+            "---\nname: good-skill\ndescription: ok\npaths: \"*.tsx, src/**/*.ts\"\n---\nBody\n";
+        let doc = parse_skill_md(input).unwrap();
+        assert_eq!(doc.frontmatter.paths.as_deref(), Some("*.tsx, src/**/*.ts"));
+    }
+
+    #[test]
+    fn parse_skill_md_with_model_override() {
+        let input = "---\nname: good-skill\ndescription: ok\nmodel: claude-sonnet-4-6\n---\nBody\n";
+        let doc = parse_skill_md(input).unwrap();
+        assert_eq!(doc.frontmatter.model.as_deref(), Some("claude-sonnet-4-6"));
+    }
+
+    #[test]
+    fn parse_skill_md_with_argument_hint() {
+        let input =
+            "---\nname: good-skill\ndescription: ok\nargument-hint: \"<file> [mode]\"\n---\nBody\n";
+        let doc = parse_skill_md(input).unwrap();
+        assert_eq!(
+            doc.frontmatter.argument_hint.as_deref(),
+            Some("<file> [mode]")
+        );
     }
 }

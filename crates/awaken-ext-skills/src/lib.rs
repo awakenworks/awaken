@@ -18,6 +18,7 @@ pub mod skill;
 pub mod skill_md;
 pub mod state;
 pub mod tools;
+pub mod visibility;
 
 /// Re-export the `AddContextMessage` scheduled action type from awaken-runtime.
 pub(crate) use awaken_runtime::agent::state::AddContextMessage;
@@ -40,12 +41,18 @@ pub use registry::{
     CompositeSkillRegistry, DiscoveryResult, FsSkill, FsSkillRegistryManager,
     InMemorySkillRegistry, SkillRegistry,
 };
+pub use skill::SkillContext;
 pub use skill::{
     LoadedAsset, LoadedReference, ScriptResult, Skill, SkillActivation, SkillMeta, SkillResource,
     SkillResourceKind, collect_skills, material_key,
 };
+pub use skill_md::SkillArgumentDef;
 pub use state::{SkillState, SkillStateUpdate, SkillStateValue};
 pub use tools::{LoadSkillResourceTool, SkillActivateTool, SkillScriptTool};
+pub use visibility::{
+    DefaultSkillVisibilityPolicy, SkillVisibility, SkillVisibilityAction, SkillVisibilityPolicy,
+    SkillVisibilityStateKey, SkillVisibilityStateValue,
+};
 
 #[cfg(feature = "mcp")]
 pub use mcp_bridge::McpPromptSkillRegistryManager;

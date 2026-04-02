@@ -1,7 +1,9 @@
 use crate::error::SkillMaterializeError;
 use crate::error::{SkillError, SkillRegistryError, SkillRegistryManagerError, SkillWarning};
 use crate::materialize::{load_asset_material, load_reference_material, run_script_material};
-use crate::skill::{ScriptResult, Skill, SkillMeta, SkillResource, SkillResourceKind};
+use crate::skill::{
+    ScriptResult, Skill, SkillContext, SkillMeta, SkillResource, SkillResourceKind,
+};
 use crate::skill_md::{SkillFrontmatter, parse_allowed_tools, parse_skill_md};
 use async_trait::async_trait;
 use awaken_contract::PeriodicRefresher;
@@ -583,20 +585,17 @@ fn build_fs_skill(dir_name: &str, skill_md: &Path) -> Result<FsSkill, String> {
         .ok_or_else(|| "invalid skill path".to_string())?
         .to_path_buf();
 
-    let SkillFrontmatter {
-        name,
-        description,
-        allowed_tools,
-        ..
-    } = read_frontmatter_from_skill_md_path(skill_md)?;
+    let fm = read_frontmatter_from_skill_md_path(skill_md)?;
 
-    if name != dir_name {
+    if fm.name != dir_name {
         return Err(format!(
-            "frontmatter name '{name}' does not match directory '{dir_name}'"
+            "frontmatter name '{}' does not match directory '{dir_name}'",
+            fm.name
         ));
     }
 
-    let allowed_tools = allowed_tools
+    let allowed_tools = fm
+        .allowed_tools
         .as_deref()
         .map(parse_allowed_tools)
         .transpose()
@@ -606,13 +605,36 @@ fn build_fs_skill(dir_name: &str, skill_md: &Path) -> Result<FsSkill, String> {
         .map(|t| t.raw)
         .collect::<Vec<_>>();
 
+    // Parse paths: comma or newline separated, trimmed, deduplicated.
+    let paths: Vec<String> = fm
+        .paths
+        .as_deref()
+        .map(|s| {
+            s.split([',', '\n'])
+                .map(str::trim)
+                .filter(|p| !p.is_empty() && *p != "**")
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let context = match fm.context.as_deref() {
+        Some("fork") => SkillContext::Fork,
+        _ => SkillContext::Inline,
+    };
+
+    let mut meta = SkillMeta::new(fm.name.clone(), fm.name, fm.description, allowed_tools);
+    meta.when_to_use = fm.when_to_use;
+    meta.arguments = fm.arguments.unwrap_or_default();
+    meta.argument_hint = fm.argument_hint;
+    meta.user_invocable = fm.user_invocable.unwrap_or(true);
+    meta.model_invocable = !fm.disable_model_invocation.unwrap_or(false);
+    meta.model_override = fm.model;
+    meta.context = context;
+    meta.paths = paths;
+
     Ok(FsSkill {
-        meta: SkillMeta {
-            id: name.clone(),
-            name,
-            description,
-            allowed_tools,
-        },
+        meta,
         root_dir,
         skill_md_path: skill_md.to_path_buf(),
     })
@@ -958,12 +980,7 @@ mod tests {
     impl MockSkill {
         fn new(id: &str) -> Self {
             Self {
-                meta: SkillMeta {
-                    id: id.to_string(),
-                    name: id.to_string(),
-                    description: format!("{id} desc"),
-                    allowed_tools: Vec::new(),
-                },
+                meta: SkillMeta::new(id, id, format!("{id} desc"), Vec::new()),
             }
         }
     }
@@ -1128,12 +1145,7 @@ mod tests {
     fn in_memory_registry_rejects_empty_id() {
         let mut registry = InMemorySkillRegistry::new();
         let skill = Arc::new(MockSkill {
-            meta: SkillMeta {
-                id: "  ".to_string(),
-                name: "empty".to_string(),
-                description: "empty".to_string(),
-                allowed_tools: Vec::new(),
-            },
+            meta: SkillMeta::new("  ", "empty", "empty", Vec::new()),
         });
         let err = registry.register(skill as Arc<dyn Skill>).unwrap_err();
         assert!(matches!(err, SkillRegistryError::EmptySkillId));

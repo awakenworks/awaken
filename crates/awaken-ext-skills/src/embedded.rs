@@ -51,12 +51,12 @@ impl EmbeddedSkill {
             .map(|t| t.raw)
             .collect::<Vec<_>>();
 
-        let meta = SkillMeta {
-            id: id.clone(),
-            name: id.clone(),
-            description: fm.description.clone(),
+        let meta = SkillMeta::new(
+            id.clone(),
+            id.clone(),
+            fm.description.clone(),
             allowed_tools,
-        };
+        );
 
         let mut references = HashMap::new();
         for &(path, content) in data.references {

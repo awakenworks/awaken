@@ -7,10 +7,11 @@ use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult, ToolStatus,
 };
 use awaken_contract::state::StateCommand;
+use awaken_ext_deferred_tools::state::{DeferralState, DeferralStateAction};
 use awaken_ext_permission::actions as permission_actions;
 use awaken_ext_permission::rules::ToolPermissionBehavior;
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Component, Path};
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -174,6 +175,15 @@ impl Tool for SkillActivateTool {
                 pattern,
                 ToolPermissionBehavior::Allow,
             );
+        }
+
+        // 3. Promote deferred tools so the LLM can see their schemas.
+        //    Skill declares allowed_tools because it intends to use them now;
+        //    if any are deferred, they must become eager before next inference.
+        if !applied_tool_ids.is_empty() {
+            cmd.update::<DeferralState>(DeferralStateAction::PromoteBatch(
+                applied_tool_ids.clone(),
+            ));
         }
 
         let result = ToolResult {
@@ -618,12 +628,7 @@ mod tests {
     #[tokio::test]
     async fn skill_activate_tool_forwards_named_activation_arguments() {
         let skill = Arc::new(RecordingSkill {
-            meta: SkillMeta {
-                id: "record".to_string(),
-                name: "record".to_string(),
-                description: "record".to_string(),
-                allowed_tools: Vec::new(),
-            },
+            meta: SkillMeta::new("record", "record", "record", Vec::new()),
             seen_args: Mutex::new(Vec::new()),
         });
         let registry = Arc::new(InMemorySkillRegistry::from_skills(vec![
@@ -821,12 +826,7 @@ mod tests {
     async fn load_resource_valid_skill_returns_skill_error() {
         // A valid skill that returns Unsupported for load_resource
         let skill = Arc::new(RecordingSkill {
-            meta: SkillMeta {
-                id: "record".to_string(),
-                name: "record".to_string(),
-                description: "record".to_string(),
-                allowed_tools: Vec::new(),
-            },
+            meta: SkillMeta::new("record", "record", "record", Vec::new()),
             seen_args: Mutex::new(Vec::new()),
         });
         let registry = Arc::new(InMemorySkillRegistry::from_skills(vec![
@@ -869,12 +869,7 @@ mod tests {
     #[tokio::test]
     async fn script_tool_valid_skill_unsupported_returns_error() {
         let skill = Arc::new(RecordingSkill {
-            meta: SkillMeta {
-                id: "record".to_string(),
-                name: "record".to_string(),
-                description: "record".to_string(),
-                allowed_tools: Vec::new(),
-            },
+            meta: SkillMeta::new("record", "record", "record", Vec::new()),
             seen_args: Mutex::new(Vec::new()),
         });
         let registry = Arc::new(InMemorySkillRegistry::from_skills(vec![
@@ -938,12 +933,12 @@ mod tests {
             }
         }
 
-        let skill = Arc::new(ScriptSkill(SkillMeta {
-            id: "script-skill".to_string(),
-            name: "script-skill".to_string(),
-            description: "runs scripts".to_string(),
-            allowed_tools: Vec::new(),
-        }));
+        let skill = Arc::new(ScriptSkill(SkillMeta::new(
+            "script-skill",
+            "script-skill",
+            "runs scripts",
+            Vec::new(),
+        )));
         let registry = Arc::new(InMemorySkillRegistry::from_skills(vec![
             skill as Arc<dyn Skill>,
         ]));

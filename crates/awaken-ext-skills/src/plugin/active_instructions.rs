@@ -189,12 +189,7 @@ mod tests {
     }
 
     fn mock_meta(id: &str) -> SkillMeta {
-        SkillMeta {
-            id: id.into(),
-            name: id.into(),
-            description: "ok".into(),
-            allowed_tools: vec![],
-        }
+        SkillMeta::new(id, id, "ok", vec![])
     }
 
     fn make_registry(skills: Vec<Arc<dyn Skill>>) -> Arc<dyn SkillRegistry> {

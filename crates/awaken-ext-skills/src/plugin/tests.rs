@@ -39,7 +39,7 @@ fn render_catalog_contains_available_skills_and_usage() {
     let (_td, skills) = make_skills();
     let p = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(10, 8 * 1024);
     let active = HashSet::new();
-    let s = p.render_catalog(&active);
+    let s = p.render_catalog(&active, None);
     assert!(s.contains("<available_skills>"));
     assert!(s.contains("<skills_usage>"));
     assert!(s.contains("&amp;"));
@@ -52,7 +52,7 @@ fn render_catalog_marks_skills() {
     let (_td, skills) = make_skills();
     let p = SkillDiscoveryPlugin::new(make_registry(skills));
     let active: HashSet<String> = ["a-skill".to_string()].into();
-    let s = p.render_catalog(&active);
+    let s = p.render_catalog(&active, None);
     assert!(s.contains("<name>a-skill</name>"));
 }
 
@@ -60,7 +60,7 @@ fn render_catalog_marks_skills() {
 fn render_catalog_returns_empty_for_no_skills() {
     let p = SkillDiscoveryPlugin::new(make_registry(vec![]));
     let active = HashSet::new();
-    let s = p.render_catalog(&active);
+    let s = p.render_catalog(&active, None);
     assert!(s.is_empty());
 }
 
@@ -81,7 +81,7 @@ fn render_catalog_empty_for_all_invalid_skills() {
     let skills = FsSkill::into_arc_skills(result.skills);
     let p = SkillDiscoveryPlugin::new(make_registry(skills));
     let active = HashSet::new();
-    let s = p.render_catalog(&active);
+    let s = p.render_catalog(&active, None);
     assert!(s.is_empty());
 }
 
@@ -106,7 +106,7 @@ fn render_catalog_only_valid_skills_and_never_warnings() {
     let skills = FsSkill::into_arc_skills(result.skills);
     let p = SkillDiscoveryPlugin::new(make_registry(skills));
     let active = HashSet::new();
-    let s = p.render_catalog(&active);
+    let s = p.render_catalog(&active, None);
     assert!(s.contains("<name>good-skill</name>"));
     assert!(!s.contains("BadSkill"));
 }
@@ -128,7 +128,7 @@ fn render_catalog_truncates_by_entry_limit() {
     let skills = FsSkill::into_arc_skills(result.skills);
     let p = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(2, 8 * 1024);
     let active = HashSet::new();
-    let s = p.render_catalog(&active);
+    let s = p.render_catalog(&active, None);
     assert!(s.contains("<available_skills>"));
     assert!(s.contains("truncated"));
     assert_eq!(s.matches("<skill>").count(), 2);
@@ -148,7 +148,7 @@ fn render_catalog_truncates_by_char_limit() {
     let skills = FsSkill::into_arc_skills(result.skills);
     let p = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(10, 256);
     let active = HashSet::new();
-    let s = p.render_catalog(&active);
+    let s = p.render_catalog(&active, None);
     assert!(s.len() <= 256);
 }
 
@@ -357,16 +357,16 @@ fn render_catalog_skill_name_differs_from_id_prepends_name_to_description() {
         }
     }
 
-    let skill: Arc<dyn crate::skill::Skill> = Arc::new(NamedSkill(SkillMeta {
-        id: "my-skill".into(),
-        name: "My Fancy Skill".into(),
-        description: "does stuff".into(),
-        allowed_tools: vec![],
-    }));
+    let skill: Arc<dyn crate::skill::Skill> = Arc::new(NamedSkill(SkillMeta::new(
+        "my-skill",
+        "My Fancy Skill",
+        "does stuff",
+        vec![],
+    )));
     let reg = make_registry(vec![skill]);
     let plugin = SkillDiscoveryPlugin::new(reg);
     let active = HashSet::new();
-    let s = plugin.render_catalog(&active);
+    let s = plugin.render_catalog(&active, None);
     assert!(s.contains("My Fancy Skill: does stuff"));
 }
 
@@ -399,16 +399,16 @@ fn render_catalog_skill_name_used_as_description_when_description_empty() {
         }
     }
 
-    let skill: Arc<dyn crate::skill::Skill> = Arc::new(NamedSkill(SkillMeta {
-        id: "my-skill".into(),
-        name: "My Skill".into(),
-        description: "  ".into(), // whitespace-only
-        allowed_tools: vec![],
-    }));
+    let skill: Arc<dyn crate::skill::Skill> = Arc::new(NamedSkill(SkillMeta::new(
+        "my-skill",
+        "My Skill",
+        "  ", // whitespace-only
+        vec![],
+    )));
     let reg = make_registry(vec![skill]);
     let plugin = SkillDiscoveryPlugin::new(reg);
     let active = HashSet::new();
-    let s = plugin.render_catalog(&active);
+    let s = plugin.render_catalog(&active, None);
     // Should use name as fallback description
     assert!(s.contains("<description>My Skill</description>"));
 }
@@ -419,7 +419,7 @@ fn render_catalog_with_limits_enforces_min_values() {
     // with_limits should clamp to minimum values: max_entries >= 1, max_chars >= 256
     let p = SkillDiscoveryPlugin::new(make_registry(skills)).with_limits(0, 0);
     let active = HashSet::new();
-    let s = p.render_catalog(&active);
+    let s = p.render_catalog(&active, None);
     // Should still show at least 1 entry (clamped to min 1)
     assert!(s.contains("<skill>"));
 }
@@ -460,4 +460,74 @@ async fn active_instructions_mixed_valid_and_unknown() {
     assert!(rendered.contains("<active_skill_instructions>"));
     assert!(rendered.contains("Real instructions."));
     assert!(!rendered.contains("nonexistent"));
+}
+
+// --- Visibility integration tests (ADR-0020) ---
+
+#[test]
+fn render_catalog_filters_hidden_skills_by_visibility_state() {
+    use crate::visibility::{
+        SkillVisibilityAction, SkillVisibilityStateKey, SkillVisibilityStateValue,
+    };
+    use awaken_contract::state::StateKey;
+
+    let (_td, skills) = make_skills();
+    let p = SkillDiscoveryPlugin::new(make_registry(skills));
+    let active = HashSet::new();
+
+    // Without visibility state — all skills shown.
+    let s = p.render_catalog(&active, None);
+    assert!(s.contains("<skill>"));
+
+    // Hide "a-skill" via visibility state.
+    let mut vis = SkillVisibilityStateValue::default();
+    SkillVisibilityStateKey::apply(
+        &mut vis,
+        SkillVisibilityAction::Hide {
+            skill_id: "a-skill".into(),
+        },
+    );
+    let s = p.render_catalog(&active, Some(&vis));
+    assert!(!s.contains("<name>a-skill</name>"));
+    // "b-skill" should still be visible.
+    assert!(s.contains("<name>b-skill</name>"));
+}
+
+#[test]
+fn render_catalog_includes_when_to_use_in_description() {
+    use crate::error::SkillError;
+    use crate::skill::{ScriptResult, Skill, SkillMeta, SkillResource, SkillResourceKind};
+    use async_trait::async_trait;
+
+    #[derive(Debug)]
+    struct S(SkillMeta);
+
+    #[async_trait]
+    impl Skill for S {
+        fn meta(&self) -> &SkillMeta {
+            &self.0
+        }
+        async fn read_instructions(&self) -> Result<String, SkillError> {
+            Ok(String::new())
+        }
+        async fn load_resource(
+            &self,
+            _: SkillResourceKind,
+            _: &str,
+        ) -> Result<SkillResource, SkillError> {
+            Err(SkillError::Unsupported("mock".into()))
+        }
+        async fn run_script(&self, _: &str, _: &[String]) -> Result<ScriptResult, SkillError> {
+            Err(SkillError::Unsupported("mock".into()))
+        }
+    }
+
+    let mut meta = SkillMeta::new("react", "react", "React patterns", vec![]);
+    meta.when_to_use = Some("when editing .tsx files".into());
+
+    let skill: Arc<dyn Skill> = Arc::new(S(meta));
+    let p = SkillDiscoveryPlugin::new(make_registry(vec![skill]));
+    let active = HashSet::new();
+    let s = p.render_catalog(&active, None);
+    assert!(s.contains("when editing .tsx files"));
 }
