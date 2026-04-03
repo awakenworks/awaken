@@ -1,6 +1,7 @@
 [package]
 name = "awaken-server"
 version.workspace = true
+readme = "../../README.md"
 edition.workspace = true
 description = "Multi-protocol HTTP server with SSE, mailbox, and protocol adapters for Awaken"
 license.workspace = true

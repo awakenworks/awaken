@@ -1,6 +1,8 @@
 [package]
 name = "awaken"
 version.workspace = true
+readme = "../../README.md"
+documentation = "https://docs.rs/awaken"
 edition.workspace = true
 description = "Production AI agent runtime for Rust — type-safe state, phase execution, multi-protocol serving"
 license.workspace = true

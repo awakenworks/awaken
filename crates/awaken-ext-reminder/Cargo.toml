@@ -1,6 +1,7 @@
 [package]
 name = "awaken-ext-reminder"
 version.workspace = true
+readme = "../../README.md"
 edition.workspace = true
 description = "Rule-based context message injection plugin for Awaken"
 license.workspace = true

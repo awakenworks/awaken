@@ -7,7 +7,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions use [Se
 
 Development work lands here. Before releasing, move these items to a versioned section.
 
-## [0.1.0] - 2026-04-02
+## [0.1.0] - 2026-04-03
 
 ### Core Runtime
 

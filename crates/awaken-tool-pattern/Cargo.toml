@@ -1,6 +1,7 @@
 [package]
 name = "awaken-tool-pattern"
 version.workspace = true
+readme = "../../README.md"
 edition.workspace = true
 description = "Glob and regex pattern matching for tool IDs in Awaken"
 license.workspace = true

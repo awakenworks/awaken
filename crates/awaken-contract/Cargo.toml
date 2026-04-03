@@ -1,6 +1,7 @@
 [package]
 name = "awaken-contract"
 version.workspace = true
+readme = "../../README.md"
 edition.workspace = true
 description = "Core types, traits, and state model for the Awaken AI agent runtime"
 license.workspace = true

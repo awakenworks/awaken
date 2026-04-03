@@ -1,6 +1,7 @@
 [package]
 name = "awaken-runtime"
 version.workspace = true
+readme = "../../README.md"
 edition.workspace = true
 description = "Phase-based execution engine, plugin system, and agent loop for Awaken"
 license.workspace = true

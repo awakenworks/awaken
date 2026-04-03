@@ -1,6 +1,7 @@
 [package]
 name = "awaken-ext-skills"
 version.workspace = true
+readme = "../../README.md"
 edition.workspace = true
 description = "Skill package discovery and activation plugin for Awaken"
 license.workspace = true

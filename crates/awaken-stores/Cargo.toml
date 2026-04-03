@@ -1,6 +1,7 @@
 [package]
 name = "awaken-stores"
 version.workspace = true
+readme = "../../README.md"
 edition.workspace = true
 description = "Storage backends (memory, file, PostgreSQL) for Awaken agent state"
 license.workspace = true

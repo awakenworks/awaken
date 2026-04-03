@@ -1,6 +1,7 @@
 [package]
 name = "awaken-ext-deferred-tools"
 version.workspace = true
+readme = "../../README.md"
 edition.workspace = true
 description = "Deferred tool loading with ToolSearch and probability-based deferral for Awaken"
 license.workspace = true
