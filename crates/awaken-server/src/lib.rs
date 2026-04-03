@@ -1,3 +1,10 @@
+//! HTTP server layer for the awaken agent framework.
+//!
+//! Provides an Axum-based server that exposes agents over HTTP with Server-Sent
+//! Events (SSE) streaming. Includes routing, protocol adapters (AI SDK, AG-UI),
+//! mailbox polling, metrics, and request/response conversion utilities. Enabled
+//! via the `server` feature flag on the `awaken` facade crate.
+
 #![allow(missing_docs)]
 
 pub mod app;

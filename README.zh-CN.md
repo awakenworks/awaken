@@ -1,10 +1,14 @@
 # Awaken
 
-[English](../../README.md) | [中文](../../README.zh-CN.md)
+[English](./README.md) | [中文](./README.zh-CN.md)
 
 ![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.85-orange)
 
 生产级 Rust AI Agent 运行时 — 类型安全状态、多协议服务、插件化扩展。
+
+<p align="center">
+  <img src="./docs/assets/demo.svg" alt="Awaken 演示 — 工具调用 + LLM 流式输出" width="800">
+</p>
 
 ## 30 秒速览
 
@@ -231,11 +235,11 @@ awaken                   门面 crate，管理 feature flags
 
 | 示例 | 展示内容 |
 |---|---|
-| [`live_test`](../../crates/awaken/examples/live_test.rs) | 基础 LLM 集成 |
-| [`multi_turn`](../../crates/awaken/examples/multi_turn.rs) | 多轮对话与持久化线程 |
-| [`tool_call_live`](../../crates/awaken/examples/tool_call_live.rs) | 工具调用（计算器） |
-| [`ai-sdk-starter`](../../examples/ai-sdk-starter/) | React + AI SDK v6 全栈 |
-| [`copilotkit-starter`](../../examples/copilotkit-starter/) | Next.js + CopilotKit 全栈 |
+| [`live_test`](./crates/awaken/examples/live_test.rs) | 基础 LLM 集成 |
+| [`multi_turn`](./crates/awaken/examples/multi_turn.rs) | 多轮对话与持久化线程 |
+| [`tool_call_live`](./crates/awaken/examples/tool_call_live.rs) | 工具调用（计算器） |
+| [`ai-sdk-starter`](./examples/ai-sdk-starter/) | React + AI SDK v6 全栈 |
+| [`copilotkit-starter`](./examples/copilotkit-starter/) | Next.js + CopilotKit 全栈 |
 
 ```bash
 export OPENAI_API_KEY=<your-key>
@@ -247,14 +251,14 @@ cd examples/ai-sdk-starter && npm install && npm run dev
 
 | 目标 | 从这里开始 | 然后 |
 |---|---|---|
-| 构建第一个 Agent | [First Agent 教程](./src/tutorials/first-agent.md) | [构建 Agent 指南](./src/how-to/build-an-agent.md) |
-| 查看全栈应用 | [AI SDK starter](../../examples/ai-sdk-starter/) | [CopilotKit starter](../../examples/copilotkit-starter/) |
-| 探索 API | [参考文档](./src/reference/overview.md) | `cargo doc --workspace --no-deps --open` |
-| 从 tirea 迁移 | [迁移指南](./src/appendix/migration-from-tirea.md) | |
+| 构建第一个 Agent | [First Agent 教程](./docs/book/src/tutorials/first-agent.md) | [构建 Agent 指南](./docs/book/src/how-to/build-an-agent.md) |
+| 查看全栈应用 | [AI SDK starter](./examples/ai-sdk-starter/) | [CopilotKit starter](./examples/copilotkit-starter/) |
+| 探索 API | [参考文档](./docs/book/src/reference/overview.md) | `cargo doc --workspace --no-deps --open` |
+| 从 tirea 迁移 | [迁移指南](./docs/book/src/appendix/migration-from-tirea.md) | |
 
 ## 参与贡献
 
-欢迎贡献！请参阅 [CONTRIBUTING.md](../../CONTRIBUTING.md) 了解流程。
+欢迎贡献！请参阅 [CONTRIBUTING.md](./CONTRIBUTING.md) 了解流程。
 
 [适合新贡献者的 Issue](https://github.com/AwakenWorks/awaken/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) 是入门的好起点。特别欢迎：
 
@@ -267,6 +271,6 @@ cd examples/ai-sdk-starter && npm install && npm run dev
 
 ## 许可证
 
-双重许可：[MIT](../../LICENSE-MIT) 或 [Apache-2.0](../../LICENSE-APACHE)。
+双重许可：[MIT](./LICENSE-MIT) 或 [Apache-2.0](./LICENSE-APACHE)。
 
 > Awaken 是 [tirea](../../tree/tirea-0.5) 的全新重写版本，专为简洁性和生产可靠性而设计。tirea 0.5 代码已归档在 [`tirea-0.5`](../../tree/tirea-0.5) 分支，Awaken 与 tirea **不兼容**。

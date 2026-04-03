@@ -239,7 +239,8 @@ async fn main() {
     store.install_plugin(LoopStatePlugin).unwrap();
     store.install_plugin(PermissionPlugin).unwrap();
 
-    // Seed permission: deny "dangerous_delete" unconditionally
+    // Seed the deny policy before the run so BeforeInference strips the tool
+    // from the schema sent to the LLM — the model never learns it exists.
     {
         let mut patch = awaken::state::MutationBatch::new();
         patch.update::<PermissionPolicyKey>(PermissionAction::DenyTool {
@@ -294,7 +295,8 @@ async fn main() {
         }
     }
 
-    // Verify
+    // Check both the event-level trace and the atomic counter to confirm the
+    // filter worked at two independent layers: schema exclusion and call prevention.
     let tools_called = sink.tools_seen_by_model.lock().unwrap();
     let dangerous_calls = dangerous.call_count.load(Ordering::SeqCst);
 

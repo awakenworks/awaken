@@ -6,7 +6,7 @@ pre-commit:
   commands:
     check-root-md-files:
       run: |
-        ALLOWED_ROOT_MD="README.md|CHANGELOG.md|CONTRIBUTING.md|LICENSE.md|CLAUDE.md|AGENTS.md|DEVELOPMENT.md"
+        ALLOWED_ROOT_MD="README.md|README\.zh-CN\.md|CHANGELOG.md|CONTRIBUTING.md|LICENSE.md|CLAUDE.md|AGENTS.md|DEVELOPMENT.md"
         root_md_files=$(git diff --cached --name-only --diff-filter=A | grep -E '^[^/]+\.md$' | grep -vE "^($ALLOWED_ROOT_MD)$" || true)
         if [ -n "$root_md_files" ]; then
           echo "ERROR: Attempting to add .md files in root directory:"

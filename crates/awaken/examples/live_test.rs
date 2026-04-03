@@ -96,6 +96,7 @@ async fn main() {
         .unwrap_or_else(|_| "gpt-4o-mini".into());
     println!("Model: {model}\n");
 
+    // Wrap in Arc so the executor can be shared across async tasks.
     let llm = Arc::new(build_llm_executor());
     let agent = ResolvedAgent::new(
         "live-test",
@@ -103,14 +104,17 @@ async fn main() {
         "You are a helpful assistant. Be concise.",
         llm,
     );
+    // SimpleResolver always returns the same agent, regardless of agent_id.
     let resolver = SimpleResolver {
         agent: agent.clone(),
     };
 
+    // StateStore holds per-run plugin state; LoopStatePlugin tracks loop progress.
     let store = StateStore::new();
     let runtime = PhaseRuntime::new(store.clone()).unwrap();
     store.install_plugin(LoopStatePlugin).unwrap();
 
+    // RunIdentity ties thread, run, and agent IDs together for event correlation.
     let identity = RunIdentity::new(
         "thread-live".into(),
         None,

@@ -13,7 +13,7 @@ Thanks for contributing to Awaken.
 ### Setup
 
 ```bash
-git clone <repo-url> && cd awaken
+git clone https://github.com/AwakenWorks/awaken.git && cd awaken
 lefthook install
 cargo build --workspace
 cargo test --workspace
@@ -95,6 +95,29 @@ cargo run --package awaken --example live_test
 ```
 
 These are run manually and are not part of the standard test suite.
+
+## Versioning
+
+This project follows the `-dev` suffix convention (similar to Tokio and Axum):
+
+| Phase | `workspace.package.version` | Example |
+|-------|----------------------------|---------|
+| After a release | Next patch with `-dev` | `0.1.1-dev` |
+| During development | Stays at `-dev` | `0.1.1-dev` |
+| Preparing a release | Remove `-dev` | `0.1.1` |
+| Tag and publish | `git tag v0.1.1` | triggers `release.yml` |
+| Immediately after | Bump to next `-dev` | `0.1.2-dev` |
+
+The `-dev` suffix signals "this is unreleased work". It prevents accidental publishes because `release.yml` rejects any version containing `-dev`.
+
+### How to release
+
+1. Update `CHANGELOG.md` — move items from `[Unreleased]` to a new `[x.y.z]` section
+2. Set `version = "x.y.z"` in `Cargo.toml` (remove `-dev`)
+3. Commit: `🔖 release(awaken): x.y.z`
+4. Tag: `git tag vx.y.z && git push origin vx.y.z`
+5. CI publishes to crates.io and creates a GitHub Release
+6. Bump to `x.y.(z+1)-dev` and commit: `🔧 chore(version): bump to x.y.(z+1)-dev`
 
 ## Pull Request Guidelines
 

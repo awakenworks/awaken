@@ -1,3 +1,15 @@
+//! Core contract types and traits for the awaken agent framework.
+//!
+//! This crate defines the shared vocabulary used across all `awaken-*` crates:
+//! data-model primitives (phases, effects, state), protocol traits (tools,
+//! inference, events, lifecycle, storage), and utility types (cancellation,
+//! threads, time). Runtime crates implement these traits; user code and
+//! extension crates consume them.
+//!
+//! Most items are re-exported from the [`awaken`] facade crate. Import
+//! `awaken::prelude::*` for the common subset, or use the sub-modules below
+//! for precise imports.
+
 #![allow(missing_docs)]
 
 pub mod cancellation;
