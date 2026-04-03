@@ -173,6 +173,7 @@ async fn main() {
         .unwrap_or_else(|_| "gpt-4o-mini".into());
     let llm = Arc::new(build_llm_executor());
 
+    // Attach the tool so the loop runner advertises it to the LLM and dispatches calls.
     let agent = ResolvedAgent::new(
         "calc-agent",
         &model,
@@ -185,6 +186,7 @@ async fn main() {
         agent: agent.clone(),
     };
 
+    // StateStore holds per-run plugin state; LoopStatePlugin tracks loop progress.
     let store = StateStore::new();
     let runtime = PhaseRuntime::new(store.clone()).unwrap();
     store.install_plugin(LoopStatePlugin).unwrap();

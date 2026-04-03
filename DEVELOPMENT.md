@@ -9,7 +9,7 @@
 ## Setup
 
 ```bash
-git clone <repo-url> && cd awaken
+git clone https://github.com/AwakenWorks/awaken.git && cd awaken
 lefthook install
 cargo build --workspace
 ```

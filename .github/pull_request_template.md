@@ -1,3 +1,7 @@
+## Linked issue
+
+Closes #
+
 ## Summary
 
 Describe the change and the affected crates, examples, or workflows.

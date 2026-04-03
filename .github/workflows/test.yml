@@ -57,3 +57,11 @@ jobs:
           cache-dependency-path: examples/copilotkit-starter/package-lock.json
       - run: npm ci
       - run: npm run build
+
+  msrv:
+    name: MSRV Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85
+      - run: cargo check --workspace --locked
