@@ -627,6 +627,14 @@ impl<T: TypedTool> Tool for T {
     }
 
     async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        // Normalize null/missing args to empty object so that unit-like structs
+        // (e.g. `struct GetStatusArgs {}`) deserialize correctly. Some providers
+        // (e.g. Gemini) pass `null` when a tool has no required parameters.
+        let args = if args.is_null() {
+            Value::Object(Default::default())
+        } else {
+            args
+        };
         let typed: T::Args =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
         self.validate(&typed)
@@ -1789,6 +1797,67 @@ mod tests {
             let desc = tool.descriptor();
             let args = json!({"message": 123});
             assert!(validate_against_schema(&desc.parameters, &args).is_err());
+        }
+
+        // ── Null / empty args normalization (Gemini compat) ──
+
+        #[derive(Deserialize, JsonSchema)]
+        struct EmptyArgs {}
+
+        struct NoArgsTool;
+
+        #[async_trait]
+        impl TypedTool for NoArgsTool {
+            type Args = EmptyArgs;
+            fn tool_id(&self) -> &str {
+                "no_args"
+            }
+            fn name(&self) -> &str {
+                "no_args"
+            }
+            fn description(&self) -> &str {
+                "A tool with no required args"
+            }
+            async fn execute(
+                &self,
+                _args: EmptyArgs,
+                _ctx: &ToolCallContext,
+            ) -> Result<ToolOutput, ToolError> {
+                Ok(ToolResult::success("no_args", json!({"status": "ok"})).into())
+            }
+        }
+
+        #[tokio::test]
+        async fn typed_tool_null_args_deserialized_as_empty_object() {
+            let tool = NoArgsTool;
+            let ctx = ToolCallContext::test_default();
+            let result = Tool::execute(&tool, Value::Null, &ctx).await;
+            assert!(
+                result.is_ok(),
+                "null args should deserialize to EmptyArgs {{}}"
+            );
+        }
+
+        #[tokio::test]
+        async fn typed_tool_empty_object_args_works() {
+            let tool = NoArgsTool;
+            let ctx = ToolCallContext::test_default();
+            let result = Tool::execute(&tool, json!({}), &ctx).await;
+            assert!(
+                result.is_ok(),
+                "empty object args should deserialize to EmptyArgs {{}}"
+            );
+        }
+
+        #[tokio::test]
+        async fn typed_tool_null_args_does_not_break_required_fields() {
+            let tool = TypedEchoTool;
+            let ctx = ToolCallContext::test_default();
+            let result = Tool::execute(&tool, Value::Null, &ctx).await;
+            assert!(
+                result.is_err(),
+                "null args should fail for tools with required fields"
+            );
         }
     }
 
