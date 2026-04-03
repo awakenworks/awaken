@@ -1,12 +1,12 @@
 # Use Generative UI (A2UI)
 
-Use this when you want the agent to send declarative UI messages to the frontend instead of describing the UI in prose.
+Use this when you want the agent to send declarative UI components to a frontend -- for example, rendering a form, a data table, or an interactive card without the frontend knowing the layout in advance.
 
 ## Prerequisites
 
 - A working awaken agent runtime (see [Build an Agent](./build-an-agent.md))
-- A frontend that can render A2UI messages from the event stream
-- A frontend-side component catalog that matches the names the model is allowed to use
+- A frontend that consumes A2UI messages from the event stream (e.g. a CopilotKit or AI SDK integration)
+- A component catalog registered on the frontend that defines available UI components
 
 ```toml
 [dependencies]
@@ -21,195 +21,245 @@ serde_json = "1"
 
 ```rust,ignore
 use std::sync::Arc;
-
+use awaken::engine::GenaiExecutor;
+use awaken::ext_generative_ui::A2uiPlugin;
+use awaken::registry_spec::{AgentSpec, ModelSpec};
 use awaken::{AgentRuntimeBuilder, Plugin};
-use awaken::ext_generative_ui::{A2uiPlugin, DEFAULT_A2UI_CATALOG_ID};
 
-let plugin = A2uiPlugin::default();
-assert_eq!(
-    plugin.instructions().contains(DEFAULT_A2UI_CATALOG_ID),
-    true
-);
+let plugin = A2uiPlugin::with_catalog_id("my-catalog");
+let agent_spec = AgentSpec::new("ui-agent")
+    .with_model("gpt-4o-mini")
+    .with_system_prompt("Render structured UI when visual output helps.")
+    .with_hook_filter("generative-ui");
 
 let runtime = AgentRuntimeBuilder::new()
+    .with_provider("openai", Arc::new(GenaiExecutor::new()))
+    .with_model(
+        "gpt-4o-mini",
+        ModelSpec {
+            id: "gpt-4o-mini".into(),
+            provider: "openai".into(),
+            model: "gpt-4o-mini".into(),
+        },
+    )
     .with_agent_spec(agent_spec)
     .with_plugin("generative-ui", Arc::new(plugin) as Arc<dyn Plugin>)
     .build()
     .expect("failed to build runtime");
 ```
 
-The plugin does two things:
+The plugin registers a tool called `render_a2ui` that the LLM can invoke. When the LLM calls this tool with an array of A2UI messages, the tool validates the message structure and returns the validated payload, which flows through the event stream to the frontend.
 
-- registers the `render_a2ui` tool
-- injects A2UI protocol guidance into the inference request before each model call
+2. Understand the A2UI protocol.
 
-The tool validates the payload. Frontends normally render from the tool **input** (the A2UI message the model sent), while the tool **output** is only an acknowledgement such as `{"rendered": true, "count": 3}`.
+   A2UI v0.8 defines four message types. Each message is a JSON object with `"version": "v0.8"` and exactly one of the following keys:
 
-2. Understand the current A2UI message contract.
+| Message Type | Purpose |
+|-------------|---------|
+| `createSurface` | Initialize a new rendering surface |
+| `updateComponents` | Define or update the component tree |
+| `updateDataModel` | Populate or change data values |
+| `deleteSurface` | Remove a surface |
 
-Each tool call must provide either:
+Messages must be sent in order: create the surface first, then define components, then populate data.
 
-- one top-level A2UI message key: `surfaceUpdate`, `dataModelUpdate`, `beginRendering`, or `deleteSurface`
-- or a legacy `messages` array containing those single-message objects
+3. Create a surface.
 
-The recommended flow is:
-
-1. `surfaceUpdate`
-2. `dataModelUpdate`
-3. `beginRendering`
-
-3. Send `surfaceUpdate` with a flat component list.
+   Every UI starts by creating a surface with a unique ID and a reference to the frontend's component catalog:
 
 ```rust,ignore
-let args = serde_json::json!({
-    "surfaceUpdate": {
-        "surfaceId": "ops_request",
-        "components": [
-            {"id": "root", "component": {"Card": {"child": "content"}}},
-            {"id": "content", "component": {"Column": {"children": {"explicitList": ["title", "requester", "submit_label", "submit_button"]}}}},
-            {"id": "title", "component": {"Text": {"usageHint": "h2", "text": {"literalString": "Operations request"}}}},
-            {"id": "requester", "component": {"TextField": {"label": {"literalString": "Requester"}, "text": {"path": "/request/requester"}, "textFieldType": "shortText"}}},
-            {"id": "submit_label", "component": {"Text": {"text": {"literalString": "Submit"}}}},
-            {"id": "submit_button", "component": {"Button": {"child": "submit_label", "primary": true, "action": {"name": "ops_request.submit", "context": [{"key": "requester", "value": {"path": "/request/requester"}}]}}}}
-        ]
-    }
+// The LLM sends this via the render_a2ui tool:
+let messages = serde_json::json!({
+    "messages": [
+        {
+            "version": "v0.8",
+            "createSurface": {
+                "surfaceId": "order-form-1",
+                "catalogId": "my-catalog"
+            }
+        }
+    ]
 });
 ```
 
-Rules:
+The `catalogId` tells the frontend which set of component definitions to use for rendering.
 
-- components are a flat list
-- every component must include `id` and `component`
-- `component` must be an object such as `{"Text": {...}}`
-- parent/child relationships are expressed by component IDs inside nested props
+4. Define the component tree.
 
-4. Send `dataModelUpdate` for the bound values.
+   Components are specified as a flat list with adjacency references. Each component has a unique `id` and a `component` type name from the catalog. Parent-child relationships are expressed via `child` (single child) or `children` (multiple children):
 
 ```rust,ignore
-let args = serde_json::json!({
-    "dataModelUpdate": {
-        "surfaceId": "ops_request",
-        "path": "/request",
-        "contents": [
-            {"key": "requester", "valueString": ""},
-            {"key": "status", "valueString": "draft"}
-        ]
-    }
+let messages = serde_json::json!({
+    "messages": [
+        {
+            "version": "v0.8",
+            "updateComponents": {
+                "surfaceId": "order-form-1",
+                "components": [
+                    {
+                        "id": "root",
+                        "component": "Card",
+                        "child": "layout"
+                    },
+                    {
+                        "id": "layout",
+                        "component": "Column",
+                        "children": ["title", "name-field", "submit-btn"]
+                    },
+                    {
+                        "id": "title",
+                        "component": "Text",
+                        "text": "New Order"
+                    },
+                    {
+                        "id": "name-field",
+                        "component": "TextField",
+                        "label": "Customer Name",
+                        "value": { "path": "/customer/name" }
+                    },
+                    {
+                        "id": "submit-btn",
+                        "component": "Button",
+                        "label": "Submit",
+                        "action": {
+                            "event": {
+                                "name": "submit-order",
+                                "context": { "formId": "order-form-1" }
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+    ]
 });
 ```
 
-5. Activate the surface with `beginRendering`.
+Rules for the component list:
+- One component must have `"id": "root"` -- this is the tree's entry point.
+- Every component requires `"id"` and `"component"` fields.
+- Use `"child"` for a single child reference or `"children"` for multiple.
+- Additional properties (`text`, `label`, `action`, and any extra fields) are passed through to the frontend renderer.
+
+5. Bind data with JSON paths.
+
+   Use `{"path": "/json/pointer"}` in component properties to bind values to the surface's data model. The frontend resolves these paths against the data model at render time:
 
 ```rust,ignore
-let args = serde_json::json!({
-    "beginRendering": {
-        "surfaceId": "ops_request",
-        "root": "root"
-    }
+let messages = serde_json::json!({
+    "messages": [
+        {
+            "version": "v0.8",
+            "updateDataModel": {
+                "surfaceId": "order-form-1",
+                "path": "/",
+                "value": {
+                    "customer": {
+                        "name": "",
+                        "email": ""
+                    },
+                    "items": []
+                }
+            }
+        }
+    ]
 });
 ```
 
-6. Remove the surface when the workflow is complete.
+The `path` field specifies which part of the data model to update. Use `"/"` to set the entire model, or a nested path like `"/customer/name"` to update a specific value.
+
+6. Delete a surface.
 
 ```rust,ignore
-let args = serde_json::json!({
-    "deleteSurface": {
-        "surfaceId": "ops_request"
-    }
+let messages = serde_json::json!({
+    "messages": [
+        {
+            "version": "v0.8",
+            "deleteSurface": {
+                "surfaceId": "order-form-1"
+            }
+        }
+    ]
 });
 ```
 
-7. Override the catalog hint or injected instructions through config.
+7. Send multiple messages in one tool call.
 
-You can set plugin defaults when constructing the plugin:
+   The `render_a2ui` tool accepts an array of messages, so you can create a surface, define components, and populate data in a single call:
 
 ```rust,ignore
-use awaken::ext_generative_ui::A2uiPlugin;
+let messages = serde_json::json!({
+    "messages": [
+        {
+            "version": "v0.8",
+            "createSurface": { "surfaceId": "s1", "catalogId": "my-catalog" }
+        },
+        {
+            "version": "v0.8",
+            "updateComponents": {
+                "surfaceId": "s1",
+                "components": [
+                    { "id": "root", "component": "Text", "text": "Hello" }
+                ]
+            }
+        },
+        {
+            "version": "v0.8",
+            "updateDataModel": { "surfaceId": "s1", "path": "/", "value": {} }
+        }
+    ]
+});
+```
 
+8. Customize plugin instructions.
+
+   The plugin injects prompt instructions that teach the LLM how to use the `render_a2ui` tool. You can customize these in several ways:
+
+```rust,ignore
+// With catalog ID and custom examples appended to the default instructions
 let plugin = A2uiPlugin::with_catalog_and_examples(
-    "catalog://ops-ui",
-    "Example: build a request intake card with a submit button."
+    "my-catalog",
+    "Example: create a card with a title and a button..."
+);
+
+// With fully custom instructions (replaces the default instructions entirely)
+let plugin = A2uiPlugin::with_custom_instructions(
+    "You can render UI by calling render_a2ui...".to_string()
 );
 ```
 
-Or override them per agent with typed config:
-
-```rust,ignore
-use awaken::registry_spec::AgentSpec;
-use awaken::ext_generative_ui::{A2uiPromptConfig, A2uiPromptConfigKey};
-
-let agent = AgentSpec::new("a2ui")
-    .with_model("default")
-    .with_system_prompt("You create operational UIs with render_a2ui.")
-    .with_config::<A2uiPromptConfigKey>(A2uiPromptConfig {
-        catalog_id: Some("catalog://ops-ui".into()),
-        examples: Some("Example: render an approval form.".into()),
-        instructions: None,
-    })?;
-```
-
-If `instructions` is set, it fully replaces the default injected guidance for that agent.
-
-8. Optional: override agent prompts and renderer catalogs from a config file.
-
-The starter backend example accepts `AGENT_CONFIG=/path/to/agents.json`. Every agent — including generative UI renderers — is configured under `agents.<id>`:
-
-```json
-{
-  "agents": {
-    "default": {
-      "system_prompt": "You are a concise assistant for the starter backend."
-    },
-    "a2ui": {
-      "system_prompt": "You build procurement UIs with render_a2ui.",
-      "catalog": "Catalog component hints:\n- TextField: Single-line text input for requester, ticket ID, or budget code\n- MultipleChoice: Selection input for priority, approval state, or department\n\nCatalog examples:\n- Use TextField for requester and budget code.\n- Use a nearby Text component as the visible label for MultipleChoice."
-    },
-    "json-render": {
-      "system_prompt": "Use render_json_ui when the user asks for dashboards, forms, or review workspaces."
-    },
-    "json-render-ui": {
-      "catalog": "{\n  \"Card\": \"Container for approval summaries\",\n  \"Table\": \"Tabular records such as request line items\",\n  \"Badge\": \"Short status label such as Pending or Approved\"\n}"
-    },
-    "openui": {
-      "system_prompt": "Use render_openui_ui for operational review panels and forms."
-    },
-    "openui-ui": {
-      "catalog": "Available components:\n- Card(children, variant?) — Groups a logical section\n- Tag(text, variant?) — Status pill\n- Buttons(buttons, direction?) — Action bar for workflow steps"
-    }
-  }
-}
-```
-
-- `system_prompt` — fully replaces the agent's default system prompt.
-- `catalog` — free-form text injected into the renderer's prompt template. The format depends on the renderer (JSON object for json-render, DSL signatures for openui, component hints for a2ui). When `system_prompt` is also set, it takes priority.
-
 ## Verify
 
-1. Run an agent with the `generative-ui` plugin enabled.
-2. Ask it to create a form, workflow screen, or review panel.
-3. Confirm the model calls `render_a2ui` with valid `surfaceUpdate` / `dataModelUpdate` / `beginRendering` payloads.
-4. Confirm the frontend renders the surface from the tool input.
+1. Register the A2UI plugin and run the agent with a prompt that asks it to display information visually.
+2. The agent should call the `render_a2ui` tool with valid A2UI messages.
+3. Check the tool result in the event stream -- a successful call returns `{"a2ui": [...], "rendered": true}`.
+4. On the frontend, confirm the surface appears with the expected components.
 
 ## Common Errors
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `expected at least one A2UI message key` | The tool call had no supported top-level A2UI key | Send one of `surfaceUpdate`, `dataModelUpdate`, `beginRendering`, or `deleteSurface` |
-| `A2UI validation failed: message[0]: multiple message types...` | A single object included more than one message key | Send exactly one A2UI message per object |
-| `components[0].id is required` | A component is missing `id` | Add an `id` to every component |
-| `components[0].component is required` | A component is missing its payload object | Add a payload such as `{"Text": {...}}` |
-| `beginRendering.root is required` | `beginRendering` did not reference a root component | Provide the root component ID |
-| The model does not call the tool | The plugin is not active for the agent, or prompt guidance was overridden incorrectly | Verify the agent activates the `generative-ui` plugin and check `A2uiPromptConfigKey` overrides |
+| `missing required field "messages"` | Tool called without a `messages` array | Ensure the LLM sends `{"messages": [...]}` |
+| `messages array must not be empty` | Empty messages array | Include at least one A2UI message |
+| `unsupported version` | Version field is not `"v0.8"` | Set `"version": "v0.8"` on every message |
+| `multiple message types in one object` | A single message contains more than one type key | Each message object must have exactly one of `createSurface`, `updateComponents`, `updateDataModel`, or `deleteSurface` |
+| `components[N].id is required` | A component in `updateComponents` is missing `id` | Add `"id"` to every component object |
+| `components[N].component is required` | A component is missing the type name | Add `"component"` with a valid catalog type |
+| LLM does not call the tool | Plugin registered but instructions not reaching the LLM | Verify the plugin is activated on the agent spec |
+
+## Related Example
+
+- `crates/awaken-ext-generative-ui/src/a2ui/tests.rs` -- validation and tool execution test cases
 
 ## Key Files
 
 | Path | Purpose |
 |------|---------|
-| `crates/awaken-ext-generative-ui/src/a2ui/plugin.rs` | `A2uiPlugin`, injected prompt guidance, and typed config override support |
-| `crates/awaken-ext-generative-ui/src/a2ui/tool.rs` | `render_a2ui` schema, normalization, validation, and execution |
-| `crates/awaken-ext-generative-ui/src/a2ui/types.rs` | A2UI payload structs |
-| `crates/awaken-ext-generative-ui/src/a2ui/validation.rs` | Structural validation for A2UI messages |
-| `examples/src/starter_backend/generative_ui_config.rs` | Starter backend agent config loader (system prompt and catalog overrides) |
+| `crates/awaken-ext-generative-ui/src/a2ui/mod.rs` | A2UI module root, constants, re-exports |
+| `crates/awaken-ext-generative-ui/src/a2ui/plugin.rs` | `A2uiPlugin` registration and prompt instructions |
+| `crates/awaken-ext-generative-ui/src/a2ui/tool.rs` | `A2uiRenderTool` -- validation and execution |
+| `crates/awaken-ext-generative-ui/src/a2ui/types.rs` | `A2uiMessage`, `A2uiComponent`, and related structs |
+| `crates/awaken-ext-generative-ui/src/a2ui/validation.rs` | `validate_a2ui_messages` structural checks |
 
 ## Related
 
