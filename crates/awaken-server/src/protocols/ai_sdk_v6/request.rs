@@ -257,6 +257,18 @@ fn extract_tool_call_decisions(msgs: &[UIMessage]) -> Vec<(String, ToolCallResum
                 return None;
             }
 
+            // Skip tool results already executed by the provider (server-side).
+            // AI SDK v6 marks completed tool calls with providerExecuted: true
+            // in the message history. Without this check, historical tool results
+            // are misidentified as new resume decisions, breaking multi-turn chat.
+            let provider_executed = part
+                .get("providerExecuted")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if provider_executed {
+                return None;
+            }
+
             let state = part.get("state").and_then(Value::as_str)?;
             let tool_call_id = part
                 .get("toolCallId")
@@ -1009,5 +1021,134 @@ mod tests {
         }];
         let decisions = extract_tool_call_decisions(&msgs);
         assert!(decisions.is_empty());
+    }
+
+    #[test]
+    fn extract_decisions_skips_provider_executed_tools() {
+        // AI SDK v6 marks completed tool calls with providerExecuted: true in
+        // message history. These must NOT be treated as new resume decisions.
+        let msgs = vec![UIMessage {
+            id: None,
+            role: "assistant".into(),
+            parts: vec![raw_part(json!({
+                "type": "tool-invocation",
+                "toolCallId": "hist_call",
+                "state": "output-available",
+                "output": {"result": "done"},
+                "providerExecuted": true,
+            }))],
+        }];
+        let decisions = extract_tool_call_decisions(&msgs);
+        assert!(
+            decisions.is_empty(),
+            "providerExecuted tool results should be skipped, got {decisions:?}"
+        );
+
+        // Same part without providerExecuted should still be picked up.
+        let msgs2 = vec![UIMessage {
+            id: None,
+            role: "assistant".into(),
+            parts: vec![raw_part(json!({
+                "type": "tool-invocation",
+                "toolCallId": "new_call",
+                "state": "output-available",
+                "output": {"result": "pending"},
+            }))],
+        }];
+        let decisions2 = extract_tool_call_decisions(&msgs2);
+        assert_eq!(decisions2.len(), 1);
+        assert_eq!(decisions2[0].0, "new_call");
+    }
+
+    /// Regression: multi-turn conversation with completed tool calls in history.
+    ///
+    /// Simulates the exact sequence that caused the bug:
+    /// Turn 1: user → assistant (with tool call) → tool result (providerExecuted)
+    /// Turn 2: user sends follow-up
+    ///
+    /// Without the fix, the historical tool result creates a spurious decision,
+    /// `is_resume_only()` returns true, and the response is empty.
+    #[test]
+    fn multi_turn_with_provider_executed_history_produces_no_decisions() {
+        let msgs = vec![
+            // Turn 1: user message
+            UIMessage {
+                id: Some("msg-1".into()),
+                role: "user".into(),
+                parts: vec![raw_part(json!({
+                    "type": "text",
+                    "text": "Show me the fleet status",
+                }))],
+            },
+            // Turn 1: assistant response with tool call (completed)
+            UIMessage {
+                id: Some("msg-2".into()),
+                role: "assistant".into(),
+                parts: vec![
+                    raw_part(json!({
+                        "type": "text",
+                        "text": "Let me check the fleet status.",
+                    })),
+                    raw_part(json!({
+                        "type": "tool-invocation",
+                        "toolCallId": "call_fleet_1",
+                        "toolName": "get_fleet_status",
+                        "args": {},
+                        "state": "output-available",
+                        "output": [{"id": "ship-1", "status": "active"}],
+                        "providerExecuted": true,
+                    })),
+                ],
+            },
+            // Turn 2: user follow-up
+            UIMessage {
+                id: Some("msg-3".into()),
+                role: "user".into(),
+                parts: vec![raw_part(json!({
+                    "type": "text",
+                    "text": "Show me the anomalies",
+                }))],
+            },
+        ];
+
+        let decisions = extract_tool_call_decisions(&msgs);
+        assert!(
+            decisions.is_empty(),
+            "historical providerExecuted tool calls must not produce decisions, \
+             but got {decisions:?} — this would cause is_resume_only() to return \
+             true and the response to be empty"
+        );
+    }
+
+    /// Verify that is_resume_only is false when there are messages but no decisions.
+    #[test]
+    fn processed_request_with_messages_is_not_resume_only() {
+        let req = ProcessedRequest {
+            thread_id: "t1".into(),
+            messages: vec![Message::user("hello")],
+            decisions: vec![],
+            state: None,
+            agent_id: None,
+        };
+        assert!(
+            !req.is_resume_only(),
+            "request with messages should not be resume-only"
+        );
+    }
+
+    /// Verify that is_resume_only requires both empty messages AND non-empty decisions.
+    #[test]
+    fn processed_request_empty_messages_empty_decisions_is_not_resume_only() {
+        let req = ProcessedRequest {
+            thread_id: "t1".into(),
+            messages: vec![],
+            decisions: vec![],
+            state: None,
+            agent_id: None,
+        };
+        assert!(
+            !req.is_resume_only(),
+            "request with no messages and no decisions should not be resume-only"
+        );
     }
 }
