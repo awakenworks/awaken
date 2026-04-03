@@ -1,6 +1,6 @@
 //! Streaming response collector: accumulates genai ChatStreamEvents into a StreamResult.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use genai::chat::{ChatStreamEvent, StreamEnd};
 use serde_json::Value;
@@ -31,6 +31,7 @@ pub struct StreamCollector {
     tool_call_order: Vec<String>,
     usage: Option<TokenUsage>,
     stop_reason: Option<awaken_contract::contract::inference::StopReason>,
+    pending_outputs: VecDeque<StreamOutput>,
     /// Set to true after `ChatStreamEvent::End` is processed.
     end_seen: bool,
 }
@@ -39,6 +40,7 @@ struct PartialToolCall {
     id: String,
     name: String,
     arguments: String,
+    start_emitted: bool,
 }
 
 impl Default for StreamCollector {
@@ -56,7 +58,13 @@ impl StreamCollector {
             tool_call_order: Vec::new(),
             usage: None,
             stop_reason: None,
+            pending_outputs: VecDeque::new(),
         }
+    }
+
+    /// Take the next deferred output produced by the previous provider event, if any.
+    pub fn take_pending_output(&mut self) -> Option<StreamOutput> {
+        self.pending_outputs.pop_front()
     }
 
     /// Process a genai stream event. Returns what to emit to the event sink.
@@ -79,7 +87,6 @@ impl StreamCollector {
 
                 let existing = self.tool_calls.get(&id);
                 let prev_args_len = existing.map(|e| e.arguments.len()).unwrap_or(0);
-                let is_new = existing.is_none();
 
                 let entry = self.tool_calls.entry(id.clone()).or_insert_with(|| {
                     self.tool_call_order.push(id.clone());
@@ -87,6 +94,7 @@ impl StreamCollector {
                         id: id.clone(),
                         name: String::new(),
                         arguments: String::new(),
+                        start_emitted: false,
                     }
                 });
 
@@ -108,12 +116,20 @@ impl StreamCollector {
                 };
                 entry.arguments = args_str;
 
-                if is_new && !entry.name.is_empty() {
+                let should_emit_start = !entry.start_emitted && !entry.name.is_empty();
+                if should_emit_start {
+                    entry.start_emitted = true;
+                    if tool_args_have_content(&call.fn_arguments) {
+                        self.pending_outputs.push_back(StreamOutput::ToolCallDelta {
+                            id: id.clone(),
+                            args_delta: entry.arguments.clone(),
+                        });
+                    }
                     StreamOutput::ToolCallStart {
                         id,
                         name: entry.name.clone(),
                     }
-                } else if !delta.is_empty() {
+                } else if entry.start_emitted && !delta.is_empty() {
                     StreamOutput::ToolCallDelta {
                         id,
                         args_delta: delta,
@@ -165,6 +181,7 @@ impl StreamCollector {
                         id,
                         name: call.fn_name.clone(),
                         arguments: serde_json::to_string(&call.fn_arguments).unwrap_or_default(),
+                        start_emitted: true,
                     },
                 );
             }
@@ -214,6 +231,16 @@ impl StreamCollector {
             stop_reason: self.stop_reason,
             has_incomplete_tool_calls,
         }
+    }
+}
+
+fn tool_args_have_content(arguments: &Value) -> bool {
+    match arguments {
+        Value::Null => false,
+        Value::String(s) => !s.is_empty(),
+        Value::Array(items) => !items.is_empty(),
+        Value::Object(fields) => !fields.is_empty(),
+        _ => true,
     }
 }
 
@@ -275,6 +302,7 @@ mod tests {
                 id: "c1".into(),
                 name: "search".into(),
                 arguments: r#"{"query": "rust"#.into(), // truncated JSON
+                start_emitted: true,
             },
         );
 
@@ -442,6 +470,7 @@ mod tests {
                 id: "valid".into(),
                 name: "search".into(),
                 arguments: r#"{"q":"hello"}"#.into(),
+                start_emitted: true,
             },
         );
 
@@ -452,6 +481,7 @@ mod tests {
                 id: "bad".into(),
                 name: "calc".into(),
                 arguments: r#"{"expr": "2+"#.into(), // truncated
+                start_emitted: true,
             },
         );
 
@@ -496,6 +526,7 @@ mod tests {
                 id: "c1".into(),
                 name: String::new(), // no name
                 arguments: r#"{"x":1}"#.into(),
+                start_emitted: false,
             },
         );
 
@@ -605,5 +636,90 @@ mod tests {
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].name, "calculator");
         assert_eq!(result.tool_calls[0].arguments["expression"], "137*42");
+    }
+
+    #[test]
+    fn collector_emits_initial_object_args_after_tool_call_start() {
+        use genai::chat::ToolCall as GToolCall;
+
+        let mut c = StreamCollector::new();
+
+        let start = c.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: GToolCall {
+                call_id: "tc1".into(),
+                fn_name: "render_openui_ui".into(),
+                fn_arguments: serde_json::json!({"prompt": "build a dashboard"}),
+                thought_signatures: None,
+            },
+        }));
+
+        assert!(matches!(
+            start,
+            StreamOutput::ToolCallStart { ref id, ref name }
+                if id == "tc1" && name == "render_openui_ui"
+        ));
+
+        let delta = c
+            .take_pending_output()
+            .expect("initial tool arguments should be preserved");
+        assert!(matches!(
+            delta,
+            StreamOutput::ToolCallDelta {
+                ref id,
+                ref args_delta
+            } if id == "tc1" && args_delta == r#"{"prompt":"build a dashboard"}"#
+        ));
+        assert!(c.take_pending_output().is_none());
+
+        let result = c.finish();
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].name, "render_openui_ui");
+        assert_eq!(
+            result.tool_calls[0].arguments["prompt"],
+            "build a dashboard"
+        );
+    }
+
+    #[test]
+    fn collector_replays_buffered_args_when_tool_name_arrives_late() {
+        use genai::chat::ToolCall as GToolCall;
+
+        let mut c = StreamCollector::new();
+
+        let first = c.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: GToolCall {
+                call_id: "tc1".into(),
+                fn_name: String::new(),
+                fn_arguments: Value::String(r#"{"prompt":"late"}"#.into()),
+                thought_signatures: None,
+            },
+        }));
+        assert!(matches!(first, StreamOutput::None));
+        assert!(c.take_pending_output().is_none());
+
+        let second = c.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: GToolCall {
+                call_id: "tc1".into(),
+                fn_name: "render_openui_ui".into(),
+                fn_arguments: Value::String(r#"{"prompt":"late"}"#.into()),
+                thought_signatures: None,
+            },
+        }));
+        assert!(matches!(
+            second,
+            StreamOutput::ToolCallStart { ref id, ref name }
+                if id == "tc1" && name == "render_openui_ui"
+        ));
+
+        let delta = c
+            .take_pending_output()
+            .expect("buffered arguments should be replayed after ToolCallStart");
+        assert!(matches!(
+            delta,
+            StreamOutput::ToolCallDelta {
+                ref id,
+                ref args_delta
+            } if id == "tc1" && args_delta == r#"{"prompt":"late"}"#
+        ));
     }
 }

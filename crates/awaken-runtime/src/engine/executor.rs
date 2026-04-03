@@ -35,6 +35,20 @@ fn map_reasoning_effort(effort: &ContractReasoningEffort) -> GenaiReasoningEffor
     }
 }
 
+fn stream_output_to_llm_event(output: StreamOutput) -> Option<LlmStreamEvent> {
+    match output {
+        StreamOutput::TextDelta(delta) => Some(LlmStreamEvent::TextDelta(delta)),
+        StreamOutput::ReasoningDelta(delta) => Some(LlmStreamEvent::ReasoningDelta(delta)),
+        StreamOutput::ToolCallStart { id, name } => {
+            Some(LlmStreamEvent::ToolCallStart { id, name })
+        }
+        StreamOutput::ToolCallDelta { id, args_delta } => {
+            Some(LlmStreamEvent::ToolCallDelta { id, args_delta })
+        }
+        StreamOutput::None => None,
+    }
+}
+
 /// LLM executor backed by the `genai` crate.
 ///
 /// Supports all providers that genai supports: OpenAI, Anthropic, Gemini, Ollama, etc.
@@ -267,6 +281,12 @@ impl LlmExecutor for GenaiExecutor {
             let event_stream = futures::stream::unfold(
                 (stream_response.stream, StreamCollector::new()),
                 |(mut stream, mut collector)| async move {
+                    if let Some(output) = collector.take_pending_output() {
+                        let event = stream_output_to_llm_event(output)
+                            .expect("pending outputs are never empty");
+                        return Some((Ok(event), (stream, collector)));
+                    }
+
                     // If we already saw End (emitted Usage on previous poll),
                     // emit the final Stop event now.
                     if collector.end_seen() {
@@ -282,53 +302,27 @@ impl LlmExecutor for GenaiExecutor {
                             Some(Ok(event)) => {
                                 let is_end = matches!(event, ChatStreamEvent::End(_));
                                 let output = collector.process(event);
-                                match output {
-                                    StreamOutput::TextDelta(delta) => {
-                                        return Some((
-                                            Ok(LlmStreamEvent::TextDelta(delta)),
-                                            (stream, collector),
-                                        ));
-                                    }
-                                    StreamOutput::ReasoningDelta(delta) => {
-                                        return Some((
-                                            Ok(LlmStreamEvent::ReasoningDelta(delta)),
-                                            (stream, collector),
-                                        ));
-                                    }
-                                    StreamOutput::ToolCallStart { id, name } => {
-                                        return Some((
-                                            Ok(LlmStreamEvent::ToolCallStart { id, name }),
-                                            (stream, collector),
-                                        ));
-                                    }
-                                    StreamOutput::ToolCallDelta { id, args_delta } => {
-                                        return Some((
-                                            Ok(LlmStreamEvent::ToolCallDelta { id, args_delta }),
-                                            (stream, collector),
-                                        ));
-                                    }
-                                    StreamOutput::None => {
-                                        if is_end {
-                                            // Emit usage event if available, then
-                                            // mark end_pending so the next poll
-                                            // emits Stop.
-                                            if let Some(usage) = collector.take_usage() {
-                                                return Some((
-                                                    Ok(LlmStreamEvent::Usage(usage)),
-                                                    (stream, collector),
-                                                ));
-                                            }
-                                            let result = collector.finish();
-                                            let stop =
-                                                result.stop_reason.unwrap_or(StopReason::EndTurn);
-                                            return Some((
-                                                Ok(LlmStreamEvent::Stop(stop)),
-                                                (stream, StreamCollector::new()),
-                                            ));
-                                        }
-                                        continue;
-                                    }
+                                if let Some(event) = stream_output_to_llm_event(output) {
+                                    return Some((Ok(event), (stream, collector)));
                                 }
+                                if is_end {
+                                    // Emit usage event if available, then
+                                    // mark end_pending so the next poll
+                                    // emits Stop.
+                                    if let Some(usage) = collector.take_usage() {
+                                        return Some((
+                                            Ok(LlmStreamEvent::Usage(usage)),
+                                            (stream, collector),
+                                        ));
+                                    }
+                                    let result = collector.finish();
+                                    let stop = result.stop_reason.unwrap_or(StopReason::EndTurn);
+                                    return Some((
+                                        Ok(LlmStreamEvent::Stop(stop)),
+                                        (stream, StreamCollector::new()),
+                                    ));
+                                }
+                                continue;
                             }
                             Some(Err(e)) => {
                                 return Some((
