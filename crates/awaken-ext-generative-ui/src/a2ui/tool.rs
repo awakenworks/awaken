@@ -89,10 +89,10 @@ fn extract_messages(args: &Value) -> Vec<Value> {
         return arr.clone();
     }
 
-    if let Some(obj) = args.as_object() {
-        if MESSAGE_KEYS.iter().any(|key| obj.contains_key(*key)) {
-            return vec![args.clone()];
-        }
+    if let Some(obj) = args.as_object()
+        && MESSAGE_KEYS.iter().any(|key| obj.contains_key(*key))
+    {
+        return vec![args.clone()];
     }
 
     vec![]

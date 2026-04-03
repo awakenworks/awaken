@@ -1,42 +1,192 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use awaken_contract::PluginConfigKey;
 use awaken_contract::StateError;
+use awaken_contract::contract::context_message::ContextMessage;
+use awaken_contract::model::Phase;
 use awaken_contract::registry_spec::AgentSpec;
 
+use awaken_runtime::agent::state::AddContextMessage;
 use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::state::MutationBatch;
+use awaken_runtime::{PhaseContext, PhaseHook, StateCommand};
 
 use super::tool::A2uiRenderTool;
 use super::{A2UI_PLUGIN_ID, A2UI_TOOL_ID};
 
+pub const DEFAULT_A2UI_CATALOG_ID: &str =
+    "https://a2ui.org/specification/v0_8/standard_catalog_definition.json";
+
+const A2UI_INSTRUCTION_CONTEXT_KEY: &str = "generative_ui.instructions";
+
+/// Prompt customization for the A2UI plugin.
+///
+/// Stored in `AgentSpec.sections["generative-ui"]` and resolved on each
+/// inference step, so a caller can override the catalog hint, append
+/// examples, or replace the injected instructions entirely.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct A2uiPromptConfig {
+    /// Override the catalog identifier mentioned in the default instructions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_id: Option<String>,
+    /// Extra examples appended after the built-in instructions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub examples: Option<String>,
+    /// Full instruction override. When set, `catalog_id` and `examples`
+    /// are ignored for prompt construction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+}
+
+impl A2uiPromptConfig {
+    #[must_use]
+    pub fn with_catalog_id(mut self, catalog_id: impl Into<String>) -> Self {
+        self.catalog_id = Some(catalog_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_examples(mut self, examples: impl Into<String>) -> Self {
+        self.examples = Some(examples.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
+        self.instructions = Some(instructions.into());
+        self
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.catalog_id.is_none() && self.examples.is_none() && self.instructions.is_none()
+    }
+
+    fn overlay(&self, overrides: Self) -> Self {
+        Self {
+            catalog_id: overrides.catalog_id.or_else(|| self.catalog_id.clone()),
+            examples: overrides.examples.or_else(|| self.examples.clone()),
+            instructions: overrides.instructions.or_else(|| self.instructions.clone()),
+        }
+    }
+
+    fn instructions_text(&self) -> String {
+        if let Some(instructions) = &self.instructions {
+            return instructions.clone();
+        }
+
+        build_instructions(
+            self.catalog_id
+                .as_deref()
+                .unwrap_or(DEFAULT_A2UI_CATALOG_ID),
+            self.examples.as_deref(),
+        )
+    }
+}
+
+/// [`PluginConfigKey`] binding for A2UI prompt overrides in agent specs.
+pub struct A2uiPromptConfigKey;
+
+impl PluginConfigKey for A2uiPromptConfigKey {
+    const KEY: &'static str = A2UI_PLUGIN_ID;
+    type Config = A2uiPromptConfig;
+}
+
+#[derive(Clone)]
+pub(crate) struct A2uiInstructionHook {
+    defaults: A2uiPromptConfig,
+}
+
+impl A2uiInstructionHook {
+    pub(crate) fn new(defaults: A2uiPromptConfig) -> Self {
+        Self { defaults }
+    }
+
+    pub(crate) fn instructions_for(&self, agent_spec: &AgentSpec) -> Result<String, StateError> {
+        let overrides = agent_spec.config::<A2uiPromptConfigKey>()?;
+        Ok(self.defaults.overlay(overrides).instructions_text())
+    }
+}
+
+#[async_trait]
+impl PhaseHook for A2uiInstructionHook {
+    async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        let instructions = self.instructions_for(ctx.agent_spec.as_ref())?;
+        if instructions.trim().is_empty() {
+            return Ok(StateCommand::new());
+        }
+
+        let mut cmd = StateCommand::new();
+        cmd.schedule_action::<AddContextMessage>(ContextMessage::system(
+            A2UI_INSTRUCTION_CONTEXT_KEY,
+            instructions,
+        ))?;
+        Ok(cmd)
+    }
+}
+
 /// A2UI plugin that provides the render tool and prompt instructions.
 pub struct A2uiPlugin {
+    default_prompt_config: A2uiPromptConfig,
     instructions: String,
 }
 
 impl A2uiPlugin {
+    /// Create with the default standard v0.8 catalog guidance.
+    pub fn new() -> Self {
+        Self::with_prompt_config(A2uiPromptConfig::default())
+    }
+
+    /// Create with a default prompt configuration that can still be overridden
+    /// by the active agent's `A2uiPromptConfigKey` section.
+    pub fn with_prompt_config(prompt_config: A2uiPromptConfig) -> Self {
+        let instructions = prompt_config.instructions_text();
+        Self {
+            default_prompt_config: prompt_config,
+            instructions,
+        }
+    }
+
     /// Create with a specific catalog URI description for prompt guidance.
     pub fn with_catalog_id(catalog_id: &str) -> Self {
-        Self {
-            instructions: build_instructions(catalog_id, None),
-        }
+        Self::with_prompt_config(A2uiPromptConfig::default().with_catalog_id(catalog_id))
     }
 
     /// Create with a catalog ID and custom examples.
     pub fn with_catalog_and_examples(catalog_id: &str, examples: &str) -> Self {
-        Self {
-            instructions: build_instructions(catalog_id, Some(examples)),
-        }
+        Self::with_prompt_config(
+            A2uiPromptConfig::default()
+                .with_catalog_id(catalog_id)
+                .with_examples(examples),
+        )
     }
 
     /// Create with fully custom instructions.
     pub fn with_custom_instructions(instructions: String) -> Self {
-        Self { instructions }
+        Self::with_prompt_config(A2uiPromptConfig::default().with_instructions(instructions))
     }
 
-    /// Returns the instructions that will be injected.
+    /// Returns the default prompt config resolved by the plugin when the
+    /// active agent does not provide overrides.
+    pub fn prompt_config(&self) -> &A2uiPromptConfig {
+        &self.default_prompt_config
+    }
+
+    /// Returns the default instructions that will be injected when there is no
+    /// per-agent override.
     pub fn instructions(&self) -> &str {
         &self.instructions
+    }
+}
+
+impl Default for A2uiPlugin {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -48,6 +198,11 @@ impl Plugin for A2uiPlugin {
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_phase_hook(
+            A2UI_PLUGIN_ID,
+            Phase::BeforeInference,
+            A2uiInstructionHook::new(self.default_prompt_config.clone()),
+        )?;
         registrar.register_tool(A2UI_TOOL_ID, Arc::new(A2uiRenderTool::new()))?;
         Ok(())
     }

@@ -1,6 +1,13 @@
+use std::sync::Arc;
+
+use awaken_contract::contract::context_message::ContextMessage;
 use awaken_contract::contract::tool::{Tool, ToolCallContext};
+use awaken_contract::model::{Phase, ScheduledActionSpec};
 use awaken_contract::registry_spec::AgentSpec;
+use awaken_runtime::agent::state::AddContextMessage;
 use awaken_runtime::state::MutationBatch;
+use awaken_runtime::state::{Snapshot, StateMap};
+use awaken_runtime::{PhaseContext, PhaseHook};
 use serde_json::json;
 
 use awaken_runtime::plugins::Plugin;
@@ -8,6 +15,14 @@ use awaken_runtime::plugins::Plugin;
 use super::*;
 
 const TEST_CATALOG: &str = "https://a2ui.org/specification/v0_8/standard_catalog_definition.json";
+
+fn empty_before_inference_ctx(spec: AgentSpec) -> PhaseContext {
+    PhaseContext::new(
+        Phase::BeforeInference,
+        Snapshot::new(0, Arc::new(StateMap::default())),
+    )
+    .with_agent_spec(Arc::new(spec))
+}
 
 #[test]
 fn valid_begin_rendering() {
@@ -489,6 +504,12 @@ fn plugin_custom_instructions() {
 }
 
 #[test]
+fn plugin_default_uses_standard_catalog() {
+    let plugin = A2uiPlugin::default();
+    assert!(plugin.instructions().contains(DEFAULT_A2UI_CATALOG_ID));
+}
+
+#[test]
 fn plugin_instructions_mention_all_message_types() {
     let plugin = A2uiPlugin::with_catalog_id(TEST_CATALOG);
     let text = plugin.instructions();
@@ -497,6 +518,60 @@ fn plugin_instructions_mention_all_message_types() {
     assert!(text.contains("dataModelUpdate"));
     assert!(text.contains("beginRendering"));
     assert!(text.contains("deleteSurface"));
+}
+
+#[test]
+fn instruction_hook_uses_agent_catalog_override() {
+    let hook = super::plugin::A2uiInstructionHook::new(
+        A2uiPromptConfig::default().with_catalog_id(TEST_CATALOG),
+    );
+    let spec = AgentSpec::new("a2ui")
+        .with_config::<A2uiPromptConfigKey>(
+            A2uiPromptConfig::default().with_catalog_id("catalog://custom"),
+        )
+        .unwrap();
+
+    let instructions = hook.instructions_for(&spec).unwrap();
+    assert!(instructions.contains("catalog://custom"));
+    assert!(!instructions.contains(TEST_CATALOG));
+}
+
+#[test]
+fn instruction_hook_uses_agent_custom_instruction_override() {
+    let hook = super::plugin::A2uiInstructionHook::new(
+        A2uiPromptConfig::default().with_catalog_id(TEST_CATALOG),
+    );
+    let spec = AgentSpec::new("a2ui")
+        .with_config::<A2uiPromptConfigKey>(
+            A2uiPromptConfig::default().with_instructions("Custom prompt override."),
+        )
+        .unwrap();
+
+    assert_eq!(
+        hook.instructions_for(&spec).unwrap(),
+        "Custom prompt override."
+    );
+}
+
+#[tokio::test]
+async fn instruction_hook_schedules_context_message() {
+    let hook = super::plugin::A2uiInstructionHook::new(
+        A2uiPromptConfig::default().with_instructions("Use A2UI."),
+    );
+    let ctx = empty_before_inference_ctx(AgentSpec::new("a2ui"));
+
+    let cmd = hook.run(&ctx).await.unwrap();
+    assert_eq!(cmd.scheduled_actions().len(), 1);
+
+    let action = &cmd.scheduled_actions()[0];
+    assert_eq!(action.phase, AddContextMessage::PHASE);
+    assert_eq!(action.key, AddContextMessage::KEY);
+
+    let payload = AddContextMessage::decode_payload(action.payload.clone()).unwrap();
+    assert_eq!(
+        payload,
+        ContextMessage::system("generative_ui.instructions", "Use A2UI.")
+    );
 }
 
 // -- execute() edge-case tests -----------------------------------------------

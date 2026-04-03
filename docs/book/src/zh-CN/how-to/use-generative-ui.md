@@ -1,12 +1,12 @@
 # 使用 Generative UI（A2UI）
 
-当你希望 agent 把声明式 UI 组件发送给前端，而不是只返回文本时，使用本页。
+当你希望 agent 把声明式 UI 消息发给前端，而不是只返回说明文本时，使用本页。
 
 ## 前置条件
 
-- 已有可运行的 runtime
-- 前端能够消费 A2UI 消息（例如 CopilotKit 或 AI SDK 集成）
-- 前端已经注册了组件目录（catalog）
+- 已有可运行的 awaken runtime
+- 前端能够从事件流中渲染 A2UI 消息
+- 前端已经注册了和模型可用组件名一致的组件目录
 
 ```toml
 [dependencies]
@@ -17,138 +17,208 @@ serde_json = "1"
 
 ## 步骤
 
-1. 注册 A2UI 插件：
+1. 注册 A2UI 插件。
 
 ```rust,ignore
 use std::sync::Arc;
-use awaken::engine::GenaiExecutor;
-use awaken::ext_generative_ui::A2uiPlugin;
-use awaken::registry_spec::{AgentSpec, ModelSpec};
-use awaken::{AgentRuntimeBuilder, Plugin};
 
-let plugin = A2uiPlugin::with_catalog_id("my-catalog");
-let agent_spec = AgentSpec::new("ui-agent")
-    .with_model("gpt-4o-mini")
-    .with_system_prompt("Render structured UI when visual output helps.")
-    .with_hook_filter("generative-ui");
+use awaken::{AgentRuntimeBuilder, Plugin};
+use awaken::ext_generative_ui::{A2uiPlugin, DEFAULT_A2UI_CATALOG_ID};
+
+let plugin = A2uiPlugin::default();
+assert_eq!(
+    plugin.instructions().contains(DEFAULT_A2UI_CATALOG_ID),
+    true
+);
 
 let runtime = AgentRuntimeBuilder::new()
-    .with_provider("openai", Arc::new(GenaiExecutor::new()))
-    .with_model(
-        "gpt-4o-mini",
-        ModelSpec {
-            id: "gpt-4o-mini".into(),
-            provider: "openai".into(),
-            model: "gpt-4o-mini".into(),
-        },
-    )
     .with_agent_spec(agent_spec)
     .with_plugin("generative-ui", Arc::new(plugin) as Arc<dyn Plugin>)
     .build()
     .expect("failed to build runtime");
 ```
 
-插件会注册一个 `render_a2ui` 工具，LLM 通过它把 A2UI 消息数组发给前端。
+插件会：
 
-2. 理解 A2UI v0.8 消息类型：
+- 注册 `render_a2ui` 工具
+- 在每次推理前把 A2UI 协议指引注入到模型上下文
 
-| 消息类型 | 作用 |
-|-------------|------|
-| `createSurface` | 创建渲染 surface |
-| `updateComponents` | 定义或更新组件树 |
-| `updateDataModel` | 写入或更新数据模型 |
-| `deleteSurface` | 删除 surface |
+通常前端会读取工具**输入**中的 A2UI 消息来渲染；工具**输出**只是确认信息，例如 `{"rendered": true, "count": 3}`。
 
-消息顺序通常是：先创建 surface，再定义组件，最后填充数据。
+2. 理解当前 A2UI 消息格式。
 
-3. 创建 surface：
+每次 tool call 可以传：
+
+- 单个顶层消息键：`surfaceUpdate`、`dataModelUpdate`、`beginRendering`、`deleteSurface`
+- 或兼容旧格式的 `messages` 数组
+
+推荐顺序：
+
+1. `surfaceUpdate`
+2. `dataModelUpdate`
+3. `beginRendering`
+
+3. 用 `surfaceUpdate` 发送扁平组件列表。
 
 ```rust,ignore
-let messages = serde_json::json!({
-    "messages": [
-        {
-            "version": "v0.8",
-            "createSurface": {
-                "surfaceId": "order-form-1",
-                "catalogId": "my-catalog"
-            }
-        }
-    ]
+let args = serde_json::json!({
+    "surfaceUpdate": {
+        "surfaceId": "ops_request",
+        "components": [
+            {"id": "root", "component": {"Card": {"child": "content"}}},
+            {"id": "content", "component": {"Column": {"children": {"explicitList": ["title", "requester", "submit_label", "submit_button"]}}}},
+            {"id": "title", "component": {"Text": {"usageHint": "h2", "text": {"literalString": "Operations request"}}}},
+            {"id": "requester", "component": {"TextField": {"label": {"literalString": "Requester"}, "text": {"path": "/request/requester"}, "textFieldType": "shortText"}}},
+            {"id": "submit_label", "component": {"Text": {"text": {"literalString": "Submit"}}}},
+            {"id": "submit_button", "component": {"Button": {"child": "submit_label", "primary": true, "action": {"name": "ops_request.submit", "context": [{"key": "requester", "value": {"path": "/request/requester"}}]}}}}
+        ]
+    }
 });
 ```
 
-4. 定义组件树：
+规则：
 
-组件列表是扁平的，通过 `child` / `children` 表示父子关系。必须有一个 `"id": "root"` 作为入口。
+- `components` 是扁平列表
+- 每个组件都必须包含 `id` 和 `component`
+- `component` 必须是类似 `{"Text": {...}}` 的对象
+- 父子关系通过嵌套 props 中的组件 ID 表达
 
-5. 用 JSON path 绑定数据：
-
-组件属性里可以写 `{"path": "/json/pointer"}`，前端会在渲染时从 data model 里解析。
-
-6. 删除 surface：
+4. 用 `dataModelUpdate` 写入绑定值。
 
 ```rust,ignore
-let messages = serde_json::json!({
-    "messages": [
-        {
-            "version": "v0.8",
-            "deleteSurface": {
-                "surfaceId": "order-form-1"
-            }
-        }
-    ]
+let args = serde_json::json!({
+    "dataModelUpdate": {
+        "surfaceId": "ops_request",
+        "path": "/request",
+        "contents": [
+            {"key": "requester", "valueString": ""},
+            {"key": "status", "valueString": "draft"}
+        ]
+    }
 });
 ```
 
-7. 一次 tool call 可以携带多条消息：
-
-`render_a2ui` 接收的是一个消息数组，所以可以在一次调用中同时创建 surface、更新组件树和写入数据。
-
-8. 自定义插件指令：
+5. 用 `beginRendering` 激活 surface。
 
 ```rust,ignore
+let args = serde_json::json!({
+    "beginRendering": {
+        "surfaceId": "ops_request",
+        "root": "root"
+    }
+});
+```
+
+6. 流程结束后用 `deleteSurface` 清理。
+
+```rust,ignore
+let args = serde_json::json!({
+    "deleteSurface": {
+        "surfaceId": "ops_request"
+    }
+});
+```
+
+7. 通过配置覆盖 catalog hint 或注入指令。
+
+可以在创建插件时设默认值：
+
+```rust,ignore
+use awaken::ext_generative_ui::A2uiPlugin;
+
 let plugin = A2uiPlugin::with_catalog_and_examples(
-    "my-catalog",
-    "Example: create a card with a title and a button..."
-);
-
-let plugin = A2uiPlugin::with_custom_instructions(
-    "You can render UI by calling render_a2ui...".to_string()
+    "catalog://ops-ui",
+    "Example: build a request intake card with a submit button."
 );
 ```
+
+也可以按 agent 覆盖：
+
+```rust,ignore
+use awaken::registry_spec::AgentSpec;
+use awaken::ext_generative_ui::{A2uiPromptConfig, A2uiPromptConfigKey};
+
+let agent = AgentSpec::new("a2ui")
+    .with_model("default")
+    .with_system_prompt("You create operational UIs with render_a2ui.")
+    .with_config::<A2uiPromptConfigKey>(A2uiPromptConfig {
+        catalog_id: Some("catalog://ops-ui".into()),
+        examples: Some("Example: render an approval form.".into()),
+        instructions: None,
+    })?;
+```
+
+如果设置了 `instructions`，就会整段替换默认注入指令。
+
+8. starter backend 也支持通过配置文件统一覆盖 agent 提示词和渲染器 catalog。
+
+使用环境变量：
+
+```bash
+AGENT_CONFIG=/path/to/agents.json
+```
+
+所有 agent（包括 generative UI 渲染器）都在 `agents.<id>` 下统一配置：
+
+```json
+{
+  "agents": {
+    "default": {
+      "system_prompt": "You are a concise assistant for the starter backend."
+    },
+    "a2ui": {
+      "system_prompt": "You build procurement UIs with render_a2ui.",
+      "catalog": "Catalog component hints:\n- TextField: 用于 requester、ticket ID 或 budget code 的单行输入框\n- MultipleChoice: 用于优先级、审批状态或部门选择的选项输入\n\nCatalog examples:\n- Use TextField for requester and budget code.\n- Use a nearby Text component as the visible label for MultipleChoice."
+    },
+    "json-render": {
+      "system_prompt": "Use render_json_ui when the user asks for dashboards, forms, or review workspaces."
+    },
+    "json-render-ui": {
+      "catalog": "{\n  \"Card\": \"用于审批摘要、表单分组或 KPI 区块的容器\",\n  \"Table\": \"用于请求明细、审计历史或任务队列的表格\",\n  \"Badge\": \"简短状态标签，例如 Pending / Approved / Blocked\"\n}"
+    },
+    "openui": {
+      "system_prompt": "Use render_openui_ui for operational review panels and forms."
+    },
+    "openui-ui": {
+      "catalog": "Available components:\n- Card(children, variant?) — 分组展示请求摘要、审批说明或编辑表单\n- Tag(text, variant?) — 状态标签\n- Buttons(buttons, direction?) — 工作流操作按钮栏"
+    }
+  }
+}
+```
+
+- `system_prompt` — 完全替换 agent 的默认系统提示词。
+- `catalog` — 自由格式文本，注入渲染器的提示词模板。格式取决于渲染器（json-render 用 JSON 对象，openui 用 DSL 签名，a2ui 用组件提示）。同时设置 `system_prompt` 时，`system_prompt` 优先。
 
 ## 验证
 
-1. 注册插件后，给 agent 一个“请以可视化方式展示内容”的提示
-2. 确认 agent 调用了 `render_a2ui`
-3. 事件流里应出现成功结果：`{"a2ui": [...], "rendered": true}`
-4. 前端上应看到对应 surface 和组件
+1. 启用 `generative-ui` 插件
+2. 让 agent 生成表单、工作流面板或审阅界面
+3. 确认模型调用了 `render_a2ui`
+4. 确认前端能根据工具输入正确渲染
 
 ## 常见错误
 
 | 错误 | 原因 | 修复 |
 |---|---|---|
-| 缺少 `messages` 字段 | tool 调用格式不对 | 传 `{"messages": [...]}` |
-| `messages array must not be empty` | 消息数组为空 | 至少传一条 A2UI 消息 |
-| `unsupported version` | 版本不是 `v0.8` | 每条消息都设为 `"version": "v0.8"` |
-| 单条消息里混入多个类型键 | 一条消息同时含 `createSurface` 和 `updateComponents` 等 | 一条消息只允许一个类型键 |
-| 组件缺少 `id` 或 `component` | 组件结构不完整 | 补齐必需字段 |
-| LLM 不调用工具 | 插件已注册但未激活或 prompt 指令不足 | 检查 hook filter 和插件指令 |
-
-## 相关示例
-
-- `crates/awaken-ext-generative-ui/src/a2ui/tests.rs`
+| `expected at least one A2UI message key` | tool 调用里没有支持的顶层 A2UI 键 | 传入 `surfaceUpdate`、`dataModelUpdate`、`beginRendering`、`deleteSurface` 之一 |
+| `A2UI validation failed: message[0]: multiple message types...` | 一条消息里混入了多个消息类型 | 一条对象只保留一个 A2UI 消息键 |
+| `components[0].id is required` | 组件缺少 `id` | 给每个组件补上 `id` |
+| `components[0].component is required` | 组件缺少 payload | 补上类似 `{"Text": {...}}` 的 payload |
+| `beginRendering.root is required` | `beginRendering` 没有引用根组件 | 传正确的根组件 ID |
+| 模型不调用工具 | 插件没启用，或覆盖后的指令不正确 | 检查 agent 是否启用了 `generative-ui` 以及 `A2uiPromptConfigKey` 配置 |
 
 ## 关键文件
 
-- `crates/awaken-ext-generative-ui/src/a2ui/mod.rs`
-- `crates/awaken-ext-generative-ui/src/a2ui/plugin.rs`
-- `crates/awaken-ext-generative-ui/src/a2ui/tool.rs`
-- `crates/awaken-ext-generative-ui/src/a2ui/types.rs`
-- `crates/awaken-ext-generative-ui/src/a2ui/validation.rs`
+| 路径 | 作用 |
+|---|---|
+| `crates/awaken-ext-generative-ui/src/a2ui/plugin.rs` | `A2uiPlugin`、提示词注入与 typed config 覆盖 |
+| `crates/awaken-ext-generative-ui/src/a2ui/tool.rs` | `render_a2ui` 的 schema、归一化、校验与执行 |
+| `crates/awaken-ext-generative-ui/src/a2ui/types.rs` | A2UI payload 类型 |
+| `crates/awaken-ext-generative-ui/src/a2ui/validation.rs` | A2UI 消息结构校验 |
+| `examples/src/starter_backend/generative_ui_config.rs` | starter backend 的 agent 配置加载（system prompt 和 catalog 覆盖） |
 
 ## 相关
 
-- [集成 CopilotKit (AG-UI)](./integrate-copilotkit-ag-ui.md)
+- [集成 CopilotKit / AG-UI](./integrate-copilotkit-ag-ui.md)
 - [集成 AI SDK 前端](./integrate-ai-sdk-frontend.md)
 - [添加 Plugin](./add-a-plugin.md)

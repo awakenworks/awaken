@@ -1,4 +1,5 @@
 pub mod frontend_tools;
+mod generative_ui_config;
 pub mod generative_ui_tools;
 pub mod phase_logger;
 pub mod research;
@@ -21,7 +22,9 @@ use awaken_contract::contract::inference::ContextWindowPolicy;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::AgentSpec;
-use awaken_ext_generative_ui::{A2uiPlugin, json_render, openui};
+use awaken_ext_generative_ui::{
+    A2uiPlugin, A2uiPromptConfig, A2uiPromptConfigKey, json_render, openui,
+};
 use awaken_ext_mcp::{McpPlugin, McpServerConnectionConfig, McpToolRegistryManager};
 use awaken_ext_observability::{InMemorySink, ObservabilityPlugin};
 use awaken_ext_permission::{
@@ -46,6 +49,7 @@ use awaken_server::routes::build_router;
 use awaken_stores::FileStore;
 
 use crate::starter_backend::frontend_tools::FrontendToolPlugin;
+use crate::starter_backend::generative_ui_config::StarterPromptOverrides;
 use crate::starter_backend::generative_ui_tools::{SharedAgentResolver, StreamingGenerativeUiTool};
 use crate::starter_backend::phase_logger::PhaseLoggerPlugin;
 use crate::starter_backend::research::{
@@ -82,6 +86,9 @@ pub struct StarterBackendArgs {
         default_value = "You are the awaken starter assistant. Use tools proactively when users ask for weather, stock quotes, or note updates."
     )]
     pub system_prompt: String,
+
+    #[arg(long, env = "AGENT_CONFIG")]
+    pub agent_config: Option<PathBuf>,
 
     #[arg(long, env = "MCP_SERVER_CMD")]
     pub mcp_server_cmd: Option<String>,
@@ -229,6 +236,16 @@ pub fn tool_map_from_vec(tools: Vec<(&str, Arc<dyn Tool>)>) -> HashMap<String, A
         .collect()
 }
 
+fn apply_agent_prompt_override(
+    mut spec: AgentSpec,
+    overrides: &StarterPromptOverrides,
+) -> AgentSpec {
+    if let Some(system_prompt) = overrides.agent_system_prompt(&spec.id) {
+        spec.system_prompt = system_prompt.to_string();
+    }
+    spec
+}
+
 pub async fn serve_starter_backend(args: StarterBackendArgs, config: StarterBackendConfig) {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -237,6 +254,22 @@ pub async fn serve_starter_backend(args: StarterBackendArgs, config: StarterBack
         )
         .with_target(true)
         .init();
+
+    let prompt_overrides = args
+        .agent_config
+        .as_ref()
+        .map(StarterPromptOverrides::from_file)
+        .transpose()
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to load agent config from {}: {error}",
+                args.agent_config
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<unknown>".into())
+            )
+        })
+        .unwrap_or_default();
 
     let base_prompt = format!(
         "{}\n\
@@ -279,17 +312,44 @@ Deterministic compatibility directives:\n\
         args.agent_id.trim().to_string()
     };
 
+    // Build A2UI prompt config from agent catalog override (if any).
+    let a2ui_prompt_config =
+        prompt_overrides
+            .agent_catalog("a2ui")
+            .map(|catalog| A2uiPromptConfig {
+                catalog_id: None,
+                examples: Some(catalog.to_string()),
+                instructions: None,
+            });
+
+    // Build renderer sub-agent system prompts: catalog override → default.
+    let json_render_ui_prompt = {
+        let catalog = prompt_overrides
+            .agent_catalog("json-render-ui")
+            .unwrap_or(JSON_RENDER_COMPONENT_CATALOG);
+        json_render::system_prompt(catalog)
+    };
+    let openui_ui_prompt = {
+        let catalog = prompt_overrides
+            .agent_catalog("openui-ui")
+            .unwrap_or(OPENUI_COMPONENT_CATALOG);
+        openui::system_prompt(catalog)
+    };
+
     // -- Agent specs --
 
-    let default_agent = AgentSpec {
-        id: default_id.clone(),
-        model: "default".into(),
-        system_prompt: base_prompt.clone(),
-        max_rounds: 3,
-        reasoning_effort: reasoning_effort.clone(),
-        plugin_ids: vec!["frontend_tools".into(), "observability".into()],
-        ..Default::default()
-    };
+    let default_agent = apply_agent_prompt_override(
+        AgentSpec {
+            id: default_id.clone(),
+            model: "default".into(),
+            system_prompt: base_prompt.clone(),
+            max_rounds: 3,
+            reasoning_effort: reasoning_effort.clone(),
+            plugin_ids: vec!["frontend_tools".into(), "observability".into()],
+            ..Default::default()
+        },
+        &prompt_overrides,
+    );
     let permission_agent = AgentSpec {
         id: "permission".into(),
         model: "default".into(),
@@ -329,84 +389,106 @@ Deterministic compatibility directives:\n\
             ],
         })
         .expect("invalid permission config for permission agent");
-    let travel_agent = AgentSpec {
-        id: "travel".into(),
-        model: "default".into(),
-        system_prompt: concat!(
-            "You are a travel planning assistant. Help users plan trips by adding, ",
-            "updating, and searching for places of interest. Use the provided tools ",
-            "to manage trips and find destinations.\n\n",
-            "When the user asks to plan a trip, create it with add_trips, then ",
-            "search_for_places to find interesting locations. Always select the ",
-            "active trip with select_trip after creating it."
-        )
-        .into(),
-        max_rounds: 3,
-        plugin_ids: vec!["permission".into()],
-        ..Default::default()
-    };
-    let research_agent = AgentSpec {
-        id: "research".into(),
-        model: "default".into(),
-        system_prompt: concat!(
-            "You are a research assistant. Help users research topics by searching ",
-            "the web, extracting resources, and writing comprehensive reports.\n\n",
-            "Workflow:\n",
-            "1. Set the research question with set_research_question\n",
-            "2. Search for information with search\n",
-            "3. Extract useful resources with extract_resources\n",
-            "4. Write a report with write_report\n\n",
-            "Always keep the user informed of your progress."
-        )
-        .into(),
-        max_rounds: 3,
-        plugin_ids: vec!["permission".into()],
-        ..Default::default()
-    };
-    let has_skills_dir = std::path::Path::new("./skills").is_dir();
-    let skills_agent = AgentSpec {
-        id: "skills".into(),
-        model: "default".into(),
-        system_prompt: base_prompt.clone(),
-        max_rounds: args.max_rounds,
-        plugin_ids: vec!["skills-discovery".into(), "frontend_tools".into()],
-        ..Default::default()
-    };
-    let limited_agent = AgentSpec {
-        id: "limited".into(),
-        model: "default".into(),
-        system_prompt: "You are a test assistant. Respond briefly to every message.".into(),
-        max_rounds: 1,
-        plugin_ids: vec!["permission".into()],
-        ..Default::default()
-    };
-    // Minimal agent: no tools, no plugins, short prompt — for reasoning/thinking verification.
-    let thinking_agent = AgentSpec {
-        id: "thinking".into(),
-        model: "default".into(),
-        system_prompt: "You are a helpful assistant. Be concise.".into(),
-        max_rounds: 1,
-        reasoning_effort: reasoning_effort.clone(),
-        ..Default::default()
-    };
-    let a2a_agent = AgentSpec {
-        id: "a2a".into(),
-        model: "default".into(),
-        system_prompt: base_prompt.clone(),
-        max_rounds: args.max_rounds,
-        plugin_ids: vec!["frontend_tools".into()],
-        ..Default::default()
-    };
-    let phases_agent = AgentSpec {
-        id: "phases".into(),
-        model: "default".into(),
-        system_prompt: "You are a test assistant demonstrating phase hooks. Respond briefly."
+    let permission_agent = apply_agent_prompt_override(permission_agent, &prompt_overrides);
+    let travel_agent = apply_agent_prompt_override(
+        AgentSpec {
+            id: "travel".into(),
+            model: "default".into(),
+            system_prompt: concat!(
+                "You are a travel planning assistant. Help users plan trips by adding, ",
+                "updating, and searching for places of interest. Use the provided tools ",
+                "to manage trips and find destinations.\n\n",
+                "When the user asks to plan a trip, create it with add_trips, then ",
+                "search_for_places to find interesting locations. Always select the ",
+                "active trip with select_trip after creating it."
+            )
             .into(),
-        max_rounds: 2,
-        plugin_ids: vec!["permission".into(), "phase_logger".into()],
-        ..Default::default()
-    };
-    let genui_agent = AgentSpec {
+            max_rounds: 3,
+            plugin_ids: vec!["permission".into()],
+            ..Default::default()
+        },
+        &prompt_overrides,
+    );
+    let research_agent = apply_agent_prompt_override(
+        AgentSpec {
+            id: "research".into(),
+            model: "default".into(),
+            system_prompt: concat!(
+                "You are a research assistant. Help users research topics by searching ",
+                "the web, extracting resources, and writing comprehensive reports.\n\n",
+                "Workflow:\n",
+                "1. Set the research question with set_research_question\n",
+                "2. Search for information with search\n",
+                "3. Extract useful resources with extract_resources\n",
+                "4. Write a report with write_report\n\n",
+                "Always keep the user informed of your progress."
+            )
+            .into(),
+            max_rounds: 3,
+            plugin_ids: vec!["permission".into()],
+            ..Default::default()
+        },
+        &prompt_overrides,
+    );
+    let has_skills_dir = std::path::Path::new("./skills").is_dir();
+    let skills_agent = apply_agent_prompt_override(
+        AgentSpec {
+            id: "skills".into(),
+            model: "default".into(),
+            system_prompt: base_prompt.clone(),
+            max_rounds: args.max_rounds,
+            plugin_ids: vec!["skills-discovery".into(), "frontend_tools".into()],
+            ..Default::default()
+        },
+        &prompt_overrides,
+    );
+    let limited_agent = apply_agent_prompt_override(
+        AgentSpec {
+            id: "limited".into(),
+            model: "default".into(),
+            system_prompt: "You are a test assistant. Respond briefly to every message.".into(),
+            max_rounds: 1,
+            plugin_ids: vec!["permission".into()],
+            ..Default::default()
+        },
+        &prompt_overrides,
+    );
+    // Minimal agent: no tools, no plugins, short prompt — for reasoning/thinking verification.
+    let thinking_agent = apply_agent_prompt_override(
+        AgentSpec {
+            id: "thinking".into(),
+            model: "default".into(),
+            system_prompt: "You are a helpful assistant. Be concise.".into(),
+            max_rounds: 1,
+            reasoning_effort: reasoning_effort.clone(),
+            ..Default::default()
+        },
+        &prompt_overrides,
+    );
+    let a2a_agent = apply_agent_prompt_override(
+        AgentSpec {
+            id: "a2a".into(),
+            model: "default".into(),
+            system_prompt: base_prompt.clone(),
+            max_rounds: args.max_rounds,
+            plugin_ids: vec!["frontend_tools".into()],
+            ..Default::default()
+        },
+        &prompt_overrides,
+    );
+    let phases_agent = apply_agent_prompt_override(
+        AgentSpec {
+            id: "phases".into(),
+            model: "default".into(),
+            system_prompt: "You are a test assistant demonstrating phase hooks. Respond briefly."
+                .into(),
+            max_rounds: 2,
+            plugin_ids: vec!["permission".into(), "phase_logger".into()],
+            ..Default::default()
+        },
+        &prompt_overrides,
+    );
+    let genui_agent = apply_agent_prompt_override(AgentSpec {
         id: "genui".into(),
         model: "default".into(),
         system_prompt: concat!(
@@ -432,7 +514,7 @@ Deterministic compatibility directives:\n\
         max_rounds: 2,
         plugin_ids: vec!["permission".into()],
         ..Default::default()
-    };
+    }, &prompt_overrides);
 
     let a2ui_agent = AgentSpec {
         id: "a2ui".into(),
@@ -443,111 +525,142 @@ Deterministic compatibility directives:\n\
         allowed_tools: Some(vec!["render_a2ui".into()]),
         ..Default::default()
     };
-    let json_render_agent = AgentSpec {
-        id: "json-render".into(),
-        model: "default".into(),
-        system_prompt: JSON_RENDER_AGENT_PROMPT.into(),
-        max_rounds: 4,
-        allowed_tools: Some(vec!["render_json_ui".into()]),
-        ..Default::default()
+    let a2ui_agent = match a2ui_prompt_config.clone() {
+        Some(prompt_config) => a2ui_agent
+            .with_config::<A2uiPromptConfigKey>(prompt_config)
+            .expect("invalid A2UI prompt config"),
+        None => a2ui_agent,
     };
-    let openui_agent = AgentSpec {
-        id: "openui".into(),
-        model: "default".into(),
-        system_prompt: OPENUI_AGENT_PROMPT.into(),
-        max_rounds: 4,
-        allowed_tools: Some(vec!["render_openui_ui".into()]),
-        ..Default::default()
-    };
-    let json_render_ui_agent = AgentSpec {
-        id: "json-render-ui".into(),
-        model: "default".into(),
-        system_prompt: json_render::system_prompt(JSON_RENDER_COMPONENT_CATALOG),
-        max_rounds: 1,
-        // Sub-agents generate pure text (UI markup); no tools needed.
-        // Without this, they inherit parent tools and may recursively
-        // call render_* tools, causing a stack overflow.
-        allowed_tools: Some(vec![]),
-        ..Default::default()
-    };
-    let openui_ui_agent = AgentSpec {
-        id: "openui-ui".into(),
-        model: "default".into(),
-        system_prompt: openui::system_prompt(OPENUI_COMPONENT_CATALOG),
-        max_rounds: 1,
-        allowed_tools: Some(vec![]),
-        ..Default::default()
-    };
+    let a2ui_agent = apply_agent_prompt_override(a2ui_agent, &prompt_overrides);
+    let json_render_agent = apply_agent_prompt_override(
+        AgentSpec {
+            id: "json-render".into(),
+            model: "default".into(),
+            system_prompt: JSON_RENDER_AGENT_PROMPT.into(),
+            max_rounds: 4,
+            allowed_tools: Some(vec!["render_json_ui".into()]),
+            ..Default::default()
+        },
+        &prompt_overrides,
+    );
+    let openui_agent = apply_agent_prompt_override(
+        AgentSpec {
+            id: "openui".into(),
+            model: "default".into(),
+            system_prompt: OPENUI_AGENT_PROMPT.into(),
+            max_rounds: 4,
+            allowed_tools: Some(vec!["render_openui_ui".into()]),
+            ..Default::default()
+        },
+        &prompt_overrides,
+    );
+    let json_render_ui_agent = apply_agent_prompt_override(
+        AgentSpec {
+            id: "json-render-ui".into(),
+            model: "default".into(),
+            system_prompt: json_render_ui_prompt,
+            max_rounds: 1,
+            // Sub-agents generate pure text (UI markup); no tools needed.
+            // Without this, they inherit parent tools and may recursively
+            // call render_* tools, causing a stack overflow.
+            allowed_tools: Some(vec![]),
+            ..Default::default()
+        },
+        &prompt_overrides,
+    );
+    let openui_ui_agent = apply_agent_prompt_override(
+        AgentSpec {
+            id: "openui-ui".into(),
+            model: "default".into(),
+            system_prompt: openui_ui_prompt,
+            max_rounds: 1,
+            allowed_tools: Some(vec![]),
+            ..Default::default()
+        },
+        &prompt_overrides,
+    );
 
     // Profile agent: demonstrates cross-run key-value persistence via ProfileStore.
     // The InMemoryStore wired via `with_profile_store` below backs `ProfileAccess`
     // so plugins/tools can read and write scoped profile entries.
-    let profile_agent = AgentSpec {
-        id: "profile".into(),
-        model: "default".into(),
-        system_prompt: "You are a stateful assistant that remembers user preferences \
+    let profile_agent = apply_agent_prompt_override(
+        AgentSpec {
+            id: "profile".into(),
+            model: "default".into(),
+            system_prompt: "You are a stateful assistant that remembers user preferences \
             across runs using profile storage. When the user sets a preference, \
             acknowledge it. When asked to recall, retrieve it from the profile store."
-            .into(),
-        max_rounds: 3,
-        plugin_ids: vec!["permission".into()],
-        ..Default::default()
-    };
+                .into(),
+            max_rounds: 3,
+            plugin_ids: vec!["permission".into()],
+            ..Default::default()
+        },
+        &prompt_overrides,
+    );
 
     // Creative agent: demonstrates per-agent context window policy.
     // InferenceOverride (temperature, reasoning_effort, etc.) is a per-run
     // concern set via `RunRequest::with_overrides` — it is not an AgentSpec field.
     // This agent instead shows ContextWindowPolicy configuration.
-    let creative_agent = AgentSpec {
-        id: "creative".into(),
-        model: "default".into(),
-        system_prompt: "You are a creative writing assistant. Produce vivid, \
+    let creative_agent = apply_agent_prompt_override(
+        AgentSpec {
+            id: "creative".into(),
+            model: "default".into(),
+            system_prompt: "You are a creative writing assistant. Produce vivid, \
             imaginative prose. Use metaphors and varied sentence structures."
-            .into(),
-        max_rounds: 3,
-        context_policy: Some(ContextWindowPolicy {
-            max_context_tokens: 128_000,
-            max_output_tokens: 4_096,
-            min_recent_messages: 6,
-            enable_prompt_cache: false,
+                .into(),
+            max_rounds: 3,
+            context_policy: Some(ContextWindowPolicy {
+                max_context_tokens: 128_000,
+                max_output_tokens: 4_096,
+                min_recent_messages: 6,
+                enable_prompt_cache: false,
+                ..Default::default()
+            }),
+            plugin_ids: vec!["permission".into()],
             ..Default::default()
-        }),
-        plugin_ids: vec!["permission".into()],
-        ..Default::default()
-    };
+        },
+        &prompt_overrides,
+    );
 
     // Compact agent: demonstrates ContextWindowPolicy with auto-compaction enabled.
-    let compact_agent = AgentSpec {
-        id: "compact".into(),
-        model: "default".into(),
-        system_prompt: "You are a context-aware assistant. Your context window is managed \
+    let compact_agent = apply_agent_prompt_override(
+        AgentSpec {
+            id: "compact".into(),
+            model: "default".into(),
+            system_prompt: "You are a context-aware assistant. Your context window is managed \
             with auto-compaction so long conversations stay within token limits."
-            .into(),
-        max_rounds: 3,
-        context_policy: Some(ContextWindowPolicy {
-            max_context_tokens: 4096,
-            max_output_tokens: 1024,
-            min_recent_messages: 4,
-            enable_prompt_cache: false,
-            autocompact_threshold: Some(3072),
+                .into(),
+            max_rounds: 3,
+            context_policy: Some(ContextWindowPolicy {
+                max_context_tokens: 4096,
+                max_output_tokens: 1024,
+                min_recent_messages: 4,
+                enable_prompt_cache: false,
+                autocompact_threshold: Some(3072),
+                ..Default::default()
+            }),
+            plugin_ids: vec!["permission".into()],
             ..Default::default()
-        }),
-        plugin_ids: vec!["permission".into()],
-        ..Default::default()
-    };
+        },
+        &prompt_overrides,
+    );
 
     // Budget agent: demonstrates stop policies (token budget, timeout, consecutive errors).
     // Uses the "budget-stop" StopConditionPlugin registered below.
-    let budget_agent = AgentSpec {
-        id: "budget".into(),
-        model: "default".into(),
-        system_prompt: "You are a budget-constrained assistant with token limits and timeout. \
+    let budget_agent = apply_agent_prompt_override(
+        AgentSpec {
+            id: "budget".into(),
+            model: "default".into(),
+            system_prompt: "You are a budget-constrained assistant with token limits and timeout. \
             The run will stop if you exceed 50k tokens, 60 seconds, or 3 consecutive errors."
-            .into(),
-        max_rounds: 3,
-        plugin_ids: vec!["permission".into(), "budget-stop".into()],
-        ..Default::default()
-    };
+                .into(),
+            max_rounds: 3,
+            plugin_ids: vec!["permission".into(), "budget-stop".into()],
+            ..Default::default()
+        },
+        &prompt_overrides,
+    );
 
     // -- Tools --
 
@@ -737,9 +850,7 @@ Deterministic compatibility directives:\n\
     builder = builder.with_plugin("permission", Arc::new(PermissionPlugin) as Arc<dyn Plugin>);
     builder = builder.with_plugin(
         "generative-ui",
-        Arc::new(A2uiPlugin::with_catalog_id(
-            "https://a2ui.org/specification/v0_8/standard_catalog_definition.json",
-        )) as Arc<dyn Plugin>,
+        Arc::new(A2uiPlugin::default()) as Arc<dyn Plugin>,
     );
     builder = builder.with_plugin(
         "frontend_tools",
@@ -953,71 +1064,16 @@ Always greet the user warmly and ask how you can help today.
 // A2UI agent system prompt
 // ---------------------------------------------------------------------------
 
-const A2UI_AGENT_PROMPT: &str = r#"You are a helpful assistant that creates interactive UIs using the render_a2ui tool.
+const A2UI_AGENT_PROMPT: &str = r#"You are a product UI assistant that creates interactive interfaces with the render_a2ui tool.
 
-## Mandatory structure — copy this skeleton exactly
+When the user asks for a form, workflow screen, review panel, or other structured operational UI, call render_a2ui.
 
-MINIMAL valid surfaceUpdate (fewest fields that pass validation):
-{"surfaceUpdate":{"surfaceId":"myform","components":[
-  {"id":"root","component":{"Card":{"child":"col"}}},
-  {"id":"col","component":{"Column":{"children":{"explicitList":["title"]}}}},
-  {"id":"title","component":{"Text":{"text":{"literalString":"Hello"}}}}
-]}}
-
-CRITICAL rules for surfaceUpdate:
-- Top-level key MUST be "surfaceUpdate" (not "surfaceId" or "components" at top level).
-- "surfaceUpdate" value MUST be an object with exactly two required keys: "surfaceId" (string) and "components" (array).
-- Each component MUST have "id" (string) and "component" (object with one key like {"Text":{...}}).
-- No additional properties are allowed at any level.
-
-## Workflow
-
-Call render_a2ui three times in order. Each call passes exactly ONE top-level key:
-1. surfaceUpdate — define all components
-2. dataModelUpdate — set default field values
-3. beginRendering — activate the surface
-
-Valid dataModelUpdate:
-{"dataModelUpdate":{"surfaceId":"myform","path":"/request","contents":[
-  {"key":"name","valueString":""}
-]}}
-
-Valid beginRendering:
-{"beginRendering":{"surfaceId":"myform","root":"root"}}
-
-## Component reference
-
-- Card: {"Card":{"child":"<child-id>"}} — root container
-- Column: {"Column":{"children":{"explicitList":["id1","id2"]}}} — vertical layout
-- Row: {"Row":{"children":{"explicitList":["id1","id2"]}}} — horizontal layout
-- Text: {"Text":{"text":{"literalString":"..."}}} — always use literalString, never flatten
-- TextField: {"TextField":{"label":{"literalString":"..."},"text":{"path":"/request/field"},"textFieldType":"shortText"}}
-- MultipleChoice: {"MultipleChoice":{"selections":{"path":"/request/sel"},"options":[{"label":{"literalString":"A"},"value":"a"}],"maxAllowedSelections":1}}
-- Button: {"Button":{"child":"label-id","primary":true,"action":{"name":"surface.submit","context":[{"key":"field","value":{"path":"/request/field"}}]}}}
-- DateTimeInput: use local datetime strings like "2026-04-10T09:00" (no trailing Z)
-- Slider: for numeric ranges
-
-## Full example — form with text field, priority selector, and submit button
-
-{"surfaceUpdate":{"surfaceId":"request","components":[
-  {"id":"root","component":{"Card":{"child":"content"}}},
-  {"id":"content","component":{"Column":{"children":{"explicitList":["title","field","priority_label","priority","submit_label","submit_button"]}}}},
-  {"id":"title","component":{"Text":{"usageHint":"h2","text":{"literalString":"Request Form"}}}},
-  {"id":"field","component":{"TextField":{"label":{"literalString":"Description"},"text":{"path":"/request/field"},"textFieldType":"shortText"}}},
-  {"id":"priority_label","component":{"Text":{"usageHint":"caption","text":{"literalString":"Priority"}}}},
-  {"id":"priority","component":{"MultipleChoice":{"selections":{"path":"/request/priority"},"options":[{"label":{"literalString":"Standard"},"value":"standard"},{"label":{"literalString":"Urgent"},"value":"urgent"}],"maxAllowedSelections":1}}},
-  {"id":"submit_label","component":{"Text":{"text":{"literalString":"Submit"}}}},
-  {"id":"submit_button","component":{"Button":{"child":"submit_label","primary":true,"action":{"name":"surface.submit","context":[{"key":"field","value":{"path":"/request/field"}},{"key":"priority","value":{"path":"/request/priority"}}]}}}}
-]}}
-
-## Style guidelines
-
-- Keep surfaceId short and descriptive (e.g. "booking", "contact").
-- Use production-style labels and realistic default values.
-- MultipleChoice has no "label" field; place a Text component above it instead.
-- MultipleChoice defaults use valueMap: {"key":"priority","valueMap":[{"key":"0","valueString":"standard"}]}.
-- If validation fails, fix only the invalid field and keep the rest unchanged.
-- If the user sends `A2UI action:` JSON, treat it as an interaction event and update the surface.
+Tool usage rules:
+- Preserve the user's business context, requested fields, and realistic product copy.
+- Use production-style labels, helper text, and default values.
+- Prefer incremental updates to an existing surface when the conversation already contains A2UI state.
+- If the user sends `A2UI action:` JSON, treat it as the latest interaction payload and update the current surface accordingly.
+- Do not explain the raw protocol unless the user explicitly asks; use the tool instead.
 "#;
 
 const JSON_RENDER_AGENT_PROMPT: &str = r#"You are a product UI assistant that creates business-ready interfaces with the render_json_ui tool.

@@ -241,10 +241,10 @@ fn remove_by_path(target: &mut Value, path: &str) {
 
     match current {
         Value::Array(items) => {
-            if let Ok(index) = last.parse::<usize>() {
-                if index < items.len() {
-                    items.remove(index);
-                }
+            if let Ok(index) = last.parse::<usize>()
+                && index < items.len()
+            {
+                items.remove(index);
             }
         }
         Value::Object(map) => {

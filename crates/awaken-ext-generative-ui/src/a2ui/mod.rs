@@ -18,7 +18,7 @@ mod tool;
 mod types;
 mod validation;
 
-pub use plugin::A2uiPlugin;
+pub use plugin::{A2uiPlugin, A2uiPromptConfig, A2uiPromptConfigKey, DEFAULT_A2UI_CATALOG_ID};
 pub use tool::A2uiRenderTool;
 pub use types::{
     A2uiBeginRendering, A2uiComponent, A2uiDataModelEntry, A2uiDataModelUpdate, A2uiDeleteSurface,

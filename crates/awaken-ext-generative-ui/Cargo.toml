@@ -17,6 +17,7 @@ json-render = []
 [dependencies]
 awaken-contract = { workspace = true }
 awaken-runtime = { workspace = true }
+schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

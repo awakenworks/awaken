@@ -89,7 +89,9 @@ pub use awaken_ext_reminder::{
 };
 
 #[cfg(feature = "generative-ui")]
-pub use awaken_ext_generative_ui::A2uiPlugin;
+pub use awaken_ext_generative_ui::{
+    A2uiPlugin, A2uiPromptConfig, A2uiPromptConfigKey, DEFAULT_A2UI_CATALOG_ID,
+};
 
 #[cfg(feature = "server")]
 pub use awaken_server::app::{AppState, ServerConfig, ShutdownConfig, serve, serve_with_shutdown};

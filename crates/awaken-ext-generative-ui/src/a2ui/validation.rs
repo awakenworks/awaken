@@ -29,16 +29,15 @@ pub fn validate_a2ui_messages(messages: &[Value]) -> Vec<A2uiValidationError> {
         .collect()
 }
 
-fn single_component_entry<'a>(
+type ComponentEntry<'a> = (&'a str, &'a serde_json::Map<String, Value>);
+
+fn single_component_entry(
     index: usize,
-    comp_obj: &'a serde_json::Map<String, Value>,
-) -> Option<Result<(&'a str, &'a serde_json::Map<String, Value>), A2uiValidationError>> {
+    comp_obj: &serde_json::Map<String, Value>,
+) -> Option<Result<ComponentEntry<'_>, A2uiValidationError>> {
     let err = |message: String| Err(A2uiValidationError { index, message });
 
-    let component = match comp_obj.get("component").and_then(Value::as_object) {
-        Some(component) => component,
-        None => return None,
-    };
+    let component = comp_obj.get("component").and_then(Value::as_object)?;
 
     if component.len() != 1 {
         return Some(err(
@@ -73,9 +72,7 @@ fn validate_component_payload(
 ) -> Option<A2uiValidationError> {
     let err = |message: String| Some(A2uiValidationError { index, message });
 
-    let Some(component_entry) = single_component_entry(index, comp_obj) else {
-        return None;
-    };
+    let component_entry = single_component_entry(index, comp_obj)?;
     let (name, payload) = match component_entry {
         Ok(entry) => entry,
         Err(error) => return Some(error),

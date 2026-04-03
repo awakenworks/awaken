@@ -125,10 +125,9 @@ pub fn resolve_path<'a>(value: &'a Value, path: &[PathSegment]) -> Vec<&'a Value
 fn infer_primary_value(args: &Value) -> String {
     if let Some(obj) = args.as_object()
         && obj.len() == 1
+        && let Some(v) = obj.values().next()
     {
-        if let Some(v) = obj.values().next() {
-            return value_to_string(v);
-        }
+        return value_to_string(v);
     }
     value_to_string(args)
 }
