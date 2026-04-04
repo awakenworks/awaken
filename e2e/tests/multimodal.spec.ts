@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { aiSdkFilePart, aiSdkMessage, aiSdkTextPart } from './ai-sdk-test-utils';
 
 test.describe('AG-UI multimodal input', () => {
   test('text string backward compatible', async ({ request }) => {
@@ -123,13 +124,12 @@ test.describe('AI SDK multimodal', () => {
     const res = await request.post('/v1/ai-sdk/chat', {
       data: {
         agentId: 'default',
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'text', text: 'What do you see?' },
-            { type: 'image', image: 'https://example.com/photo.png' },
-          ],
-        }],
+        messages: [
+          aiSdkMessage('user', [
+            aiSdkTextPart('What do you see?'),
+            aiSdkFilePart('https://example.com/photo.png', 'image/png'),
+          ]),
+        ],
       },
     });
     expect(res.status()).toBeLessThan(500);

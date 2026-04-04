@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { aiSdkTextMessages } from './ai-sdk-test-utils';
 
 const BASE_URL = 'http://127.0.0.1:38080';
 
@@ -115,7 +116,7 @@ test.describe('advanced agent variants', () => {
       const res = await request.post('/v1/ai-sdk/chat', {
         data: {
           agentId,
-          messages: [{ role: 'user', content: `Test ${agentId}` }],
+          messages: aiSdkTextMessages([{ role: 'user', text: `Test ${agentId}` }]),
         },
       });
       expect(res.ok()).toBeTruthy();
@@ -125,7 +126,7 @@ test.describe('advanced agent variants', () => {
     test(`${agentId} agent via AI SDK protocol`, async () => {
       const { status } = await postAndCheckHeaders('/v1/ai-sdk/chat', {
         agentId,
-        messages: [{ role: 'user', content: `Test ${agentId}` }],
+        messages: aiSdkTextMessages([{ role: 'user', text: `Test ${agentId}` }]),
       });
       expect(status).toBe(200);
     });

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { aiSdkTextMessages } from './ai-sdk-test-utils';
 
 const BASE_URL = 'http://127.0.0.1:38080';
 
@@ -45,7 +46,7 @@ test.describe('phase hooks', () => {
   test('phases agent via AI SDK protocol', async () => {
     const { status } = await postAndCheckHeaders('/v1/ai-sdk/chat', {
       agentId: 'phases',
-      messages: [{ role: 'user', content: 'Phase hooks AI SDK' }],
+      messages: aiSdkTextMessages([{ role: 'user', text: 'Phase hooks AI SDK' }]),
     });
     expect(status).toBe(200);
   });

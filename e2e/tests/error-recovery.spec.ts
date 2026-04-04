@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { aiSdkTextMessages } from './ai-sdk-test-utils';
 
 test.describe('error recovery and edge cases', () => {
   test('nonexistent agent returns error without crashing server', async ({ request }) => {
@@ -108,10 +109,11 @@ test.describe('error recovery and edge cases', () => {
 
   test('multiple protocols concurrently without error', async ({ request }) => {
     const msg = [{ role: 'user', content: 'Quick' }];
+    const aiSdkMessages = aiSdkTextMessages([{ role: 'user', text: 'Quick' }]);
     const [r1, r2, r3] = await Promise.all([
       request.post('/v1/runs', { data: { agentId: 'limited', messages: msg } }),
       request.post('/v1/ag-ui/run', { data: { agentId: 'limited', messages: msg } }),
-      request.post('/v1/ai-sdk/chat', { data: { agentId: 'limited', messages: msg } }),
+      request.post('/v1/ai-sdk/chat', { data: { agentId: 'limited', messages: aiSdkMessages } }),
     ]);
     expect(r1.status()).toBeLessThan(500);
     expect(r2.status()).toBeLessThan(500);

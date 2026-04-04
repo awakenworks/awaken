@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { aiSdkTextMessages } from './ai-sdk-test-utils';
 
 test.describe('stop policies', () => {
   test('limited agent (max_rounds=1) terminates quickly', async ({ request }) => {
@@ -32,7 +33,7 @@ test.describe('stop policies', () => {
     const res = await request.post('/v1/ai-sdk/chat', {
       data: {
         agentId: 'limited',
-        messages: [{ role: 'user', content: 'Quick AI SDK response' }],
+        messages: aiSdkTextMessages([{ role: 'user', text: 'Quick AI SDK response' }]),
       },
     });
     expect(res.ok()).toBeTruthy();

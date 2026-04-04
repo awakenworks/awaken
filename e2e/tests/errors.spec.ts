@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { aiSdkTextMessages } from './ai-sdk-test-utils';
 
 test.describe('input validation', () => {
   test('POST /v1/runs with empty body returns 400', async ({ request }) => {
@@ -51,7 +52,7 @@ test.describe('input validation', () => {
   test('AI SDK with missing agentId returns error', async ({ request }) => {
     const res = await request.post('/v1/ai-sdk/chat', {
       data: {
-        messages: [{ role: 'user', content: 'Hello' }],
+        messages: aiSdkTextMessages([{ role: 'user', text: 'Hello' }]),
       },
     });
     expect(res.status()).toBeLessThan(500);

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { aiSdkTextMessages } from './ai-sdk-test-utils';
 
 const BASE_URL = 'http://127.0.0.1:38080';
 
@@ -98,7 +99,7 @@ test.describe('SSE event structure', () => {
     const res = await request.post('/v1/ai-sdk/chat', {
       data: {
         agentId: 'default',
-        messages: [{ role: 'user', content: 'Hello AI SDK' }],
+        messages: aiSdkTextMessages([{ role: 'user', text: 'Hello AI SDK' }]),
       },
     });
     expect(res.ok()).toBeTruthy();

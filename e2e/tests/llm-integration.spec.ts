@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { aiSdkTextMessages } from './ai-sdk-test-utils';
 
 // These tests require a real LLM backend (not ScriptedLlmExecutor).
 // They verify that the LLM produces meaningful responses and follows instructions.
@@ -116,7 +117,7 @@ test.describe('LLM integration', () => {
     const res = await request.post('/v1/ai-sdk/chat', {
       data: {
         agentId: 'default',
-        messages: [{ role: 'user', content: 'Say hello' }],
+        messages: aiSdkTextMessages([{ role: 'user', text: 'Say hello' }]),
       },
     });
     expect(res.ok()).toBeTruthy();
