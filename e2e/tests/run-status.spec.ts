@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { aiSdkTextMessages } from './ai-sdk-test-utils';
 
 test.describe('run status and listing', () => {
   test('list all runs returns paginated response', async ({ request }) => {
@@ -136,7 +137,7 @@ test.describe('run status and listing', () => {
     const aiSdkRes = await request.post('/v1/ai-sdk/chat', {
       data: {
         agentId: 'default',
-        messages: [{ role: 'user', content: 'AI SDK tracked' }],
+        messages: aiSdkTextMessages([{ role: 'user', text: 'AI SDK tracked' }]),
       },
     });
     expect(aiSdkRes.ok()).toBeTruthy();

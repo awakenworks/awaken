@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { aiSdkTextMessages } from './ai-sdk-test-utils';
 
 /**
  * Parse SSE text into an array of {event, data} objects.
@@ -105,7 +106,7 @@ test.describe('tool execution and SSE streaming', () => {
     const res = await request.post('/v1/ai-sdk/chat', {
       data: {
         agentId: 'limited',
-        messages: [{ role: 'user', content: 'Say hello' }],
+        messages: aiSdkTextMessages([{ role: 'user', text: 'Say hello' }]),
       },
     });
     expect(res.ok()).toBeTruthy();

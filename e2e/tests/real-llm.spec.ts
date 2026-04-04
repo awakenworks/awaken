@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { aiSdkTextMessages } from './ai-sdk-test-utils';
 
 function parseSSE(raw: string): Array<{ data: string }> {
   return raw.split('\n')
@@ -118,7 +119,7 @@ test.describe('real LLM integration', () => {
     const res = await request.post('/v1/ai-sdk/chat', {
       data: {
         agentId: 'default',
-        messages: [{ role: 'user', content: 'Say one word' }],
+        messages: aiSdkTextMessages([{ role: 'user', text: 'Say one word' }]),
       },
     });
     expect(res.ok()).toBeTruthy();

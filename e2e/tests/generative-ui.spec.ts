@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { aiSdkTextMessages } from './ai-sdk-test-utils';
 
 /**
  * Parse SSE text into an array of {event, data} objects.
@@ -76,7 +77,7 @@ test.describe('generative UI (A2UI)', () => {
     const res = await request.post('/v1/ai-sdk/chat', {
       data: {
         agentId: 'a2ui',
-        messages: [{ role: 'user', content: 'Render a card' }],
+        messages: aiSdkTextMessages([{ role: 'user', text: 'Render a card' }]),
       },
     });
     expect(res.ok()).toBeTruthy();

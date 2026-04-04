@@ -242,3 +242,50 @@ async fn plain_multi_turn_without_tools_returns_non_empty_response() {
         body.len(),
     );
 }
+
+/// AI SDK v6 must receive canonical `UIMessage.parts`.
+/// Legacy `content` payloads bypass the official transport normalization and
+/// are rejected at the HTTP boundary.
+#[tokio::test]
+async fn legacy_content_messages_are_rejected() {
+    let app = make_app();
+
+    let payload = json!({
+        "threadId": "thread-legacy-content",
+        "agentId": "default",
+        "messages": [
+            {
+                "id": "msg-system",
+                "role": "system",
+                "content": "You are concise."
+            },
+            {
+                "id": "msg-user",
+                "role": "user",
+                "content": "Say hello"
+            }
+        ]
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ai-sdk/chat")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let body_str = String::from_utf8_lossy(&body);
+    assert!(
+        body_str.contains("no new messages or interaction responses"),
+        "legacy content payload should be rejected, got: {:?}",
+        &body_str[..body_str.len().min(500)],
+    );
+}

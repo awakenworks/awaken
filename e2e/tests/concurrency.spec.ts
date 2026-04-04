@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { aiSdkTextMessages } from './ai-sdk-test-utils';
 
 test.describe('concurrent operations', () => {
   test('multiple runs on same thread execute without server error', async ({ request }) => {
@@ -88,7 +89,7 @@ test.describe('concurrent operations', () => {
       request.post('/v1/ai-sdk/chat', {
         data: {
           agentId: 'limited',
-          messages: [{ role: 'user', content: 'AI SDK concurrent' }],
+          messages: aiSdkTextMessages([{ role: 'user', text: 'AI SDK concurrent' }]),
         },
       }),
       request.post('/v1/runs', {

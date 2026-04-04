@@ -1,11 +1,12 @@
 import { test, expect } from '@playwright/test';
+import { aiSdkTextMessages } from './ai-sdk-test-utils';
 
 test.describe('AI SDK v6 protocol specifics', () => {
   test('AI SDK chat returns streaming text format', async ({ request }) => {
     const res = await request.post('/v1/ai-sdk/chat', {
       data: {
         agentId: 'default',
-        messages: [{ role: 'user', content: 'Tell me something' }],
+        messages: aiSdkTextMessages([{ role: 'user', text: 'Tell me something' }]),
       },
     });
     expect(res.ok()).toBeTruthy();
@@ -20,10 +21,10 @@ test.describe('AI SDK v6 protocol specifics', () => {
     const res = await request.post('/v1/ai-sdk/chat', {
       data: {
         agentId: 'default',
-        messages: [
-          { role: 'system', content: 'You are helpful' },
-          { role: 'user', content: 'Hello' },
-        ],
+        messages: aiSdkTextMessages([
+          { role: 'system', text: 'You are helpful' },
+          { role: 'user', text: 'Hello' },
+        ]),
       },
     });
     expect(res.ok()).toBeTruthy();
@@ -40,7 +41,7 @@ test.describe('AI SDK v6 protocol specifics', () => {
       data: {
         agentId: 'default',
         threadId: thread.id,
-        messages: [{ role: 'user', content: 'With thread' }],
+        messages: aiSdkTextMessages([{ role: 'user', text: 'With thread' }]),
       },
     });
     expect(res.ok()).toBeTruthy();
@@ -127,6 +128,7 @@ test.describe('A2A protocol specifics', () => {
 test.describe('cross-protocol consistency', () => {
   test('same message produces responses from all protocols', async ({ request }) => {
     const msg = [{ role: 'user', content: 'Cross-protocol test' }];
+    const aiSdkMessages = aiSdkTextMessages([{ role: 'user', text: 'Cross-protocol test' }]);
 
     const [runs, agUi, aiSdk] = await Promise.all([
       request.post('/v1/runs', {
@@ -136,7 +138,7 @@ test.describe('cross-protocol consistency', () => {
         data: { agentId: 'default', messages: msg },
       }),
       request.post('/v1/ai-sdk/chat', {
-        data: { agentId: 'default', messages: msg },
+        data: { agentId: 'default', messages: aiSdkMessages },
       }),
     ]);
 

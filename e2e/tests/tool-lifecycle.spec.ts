@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { aiSdkTextMessages } from './ai-sdk-test-utils';
 
 function parseSSE(raw: string): Array<{ data: string }> {
   return raw.split('\n')
@@ -96,7 +97,9 @@ test.describe('tool call lifecycle', () => {
     const res = await request.post('/v1/ai-sdk/chat', {
       data: {
         agentId: 'default',
-        messages: [{ role: 'user', content: 'RUN_WEATHER_TOOL - get weather for Tokyo' }],
+        messages: aiSdkTextMessages([
+          { role: 'user', text: 'RUN_WEATHER_TOOL - get weather for Tokyo' },
+        ]),
       },
     });
     expect(res.ok()).toBeTruthy();
