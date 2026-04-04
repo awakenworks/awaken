@@ -1,8 +1,8 @@
 [package]
-name = "awaken"
+name = "awaken-agent"
 version.workspace = true
 readme = "../../README.md"
-documentation = "https://docs.rs/awaken"
+documentation = "https://docs.rs/awaken-agent"
 edition.workspace = true
 description = "Production AI agent runtime for Rust — type-safe state, phase execution, multi-protocol serving"
 license.workspace = true
@@ -10,6 +10,9 @@ repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
+
+[lib]
+name = "awaken"
 
 [dependencies]
 awaken-contract = { workspace = true }

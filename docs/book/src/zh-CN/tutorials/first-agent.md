@@ -8,7 +8,7 @@
 
 ```toml
 [dependencies]
-awaken = "0.1"
+awaken = { package = "awaken-agent", version = "0.1" }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde_json = "1"

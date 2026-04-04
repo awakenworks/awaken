@@ -10,7 +10,7 @@ Use this when you want to connect to external Model Context Protocol (MCP) serve
 
 ```toml
 [dependencies]
-awaken = { version = "0.1", features = ["mcp"] }
+awaken = { package = "awaken-agent", version = "0.1", features = ["mcp"] }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```

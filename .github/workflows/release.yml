@@ -54,8 +54,8 @@ jobs:
           publish awaken-ext-skills
           publish awaken-server
           # Final crate — no sleep needed
-          echo "=== Publishing awaken ==="
-          cargo publish --no-verify -p awaken
+          echo "=== Publishing awaken-agent ==="
+          cargo publish --no-verify -p awaken-agent
       - name: Create GitHub Release
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"

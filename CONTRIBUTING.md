@@ -91,7 +91,7 @@ Examples that call LLM providers require API keys in the environment:
 
 ```bash
 export OPENAI_API_KEY=<your-key>
-cargo run --package awaken --example live_test
+cargo run --package awaken-agent --example live_test
 ```
 
 These are run manually and are not part of the standard test suite.

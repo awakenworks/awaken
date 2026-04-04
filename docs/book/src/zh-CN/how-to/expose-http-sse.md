@@ -14,7 +14,7 @@
 
 ```toml
 [dependencies]
-awaken = { version = "...", features = ["server"] }
+awaken = { package = "awaken-agent", version = "...", features = ["server"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 ```
 
