@@ -21,7 +21,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2-dev"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/AwakenWorks/awaken"
@@ -31,18 +31,18 @@ categories = ["web-programming", "asynchronous"]
 rust-version = "1.85"
 
 [workspace.dependencies]
-awaken-contract = { version = "0.1.1", path = "crates/awaken-contract" }
-awaken-stores = { version = "0.1.1", path = "crates/awaken-stores" }
-awaken-runtime = { version = "0.1.1", path = "crates/awaken-runtime" }
-awaken-ext-permission = { version = "0.1.1", path = "crates/awaken-ext-permission" }
-awaken-ext-observability = { version = "0.1.1", path = "crates/awaken-ext-observability" }
-awaken-ext-mcp = { version = "0.1.1", path = "crates/awaken-ext-mcp" }
-awaken-ext-skills = { version = "0.1.1", path = "crates/awaken-ext-skills" }
-awaken-ext-reminder = { version = "0.1.1", path = "crates/awaken-ext-reminder" }
-awaken-ext-generative-ui = { version = "0.1.1", path = "crates/awaken-ext-generative-ui" }
-awaken-ext-deferred-tools = { version = "0.1.1", path = "crates/awaken-ext-deferred-tools" }
-awaken-tool-pattern = { version = "0.1.1", path = "crates/awaken-tool-pattern" }
-awaken-server = { version = "0.1.1", path = "crates/awaken-server" }
+awaken-contract = { version = "0.1.2-dev", path = "crates/awaken-contract" }
+awaken-stores = { version = "0.1.2-dev", path = "crates/awaken-stores" }
+awaken-runtime = { version = "0.1.2-dev", path = "crates/awaken-runtime" }
+awaken-ext-permission = { version = "0.1.2-dev", path = "crates/awaken-ext-permission" }
+awaken-ext-observability = { version = "0.1.2-dev", path = "crates/awaken-ext-observability" }
+awaken-ext-mcp = { version = "0.1.2-dev", path = "crates/awaken-ext-mcp" }
+awaken-ext-skills = { version = "0.1.2-dev", path = "crates/awaken-ext-skills" }
+awaken-ext-reminder = { version = "0.1.2-dev", path = "crates/awaken-ext-reminder" }
+awaken-ext-generative-ui = { version = "0.1.2-dev", path = "crates/awaken-ext-generative-ui" }
+awaken-ext-deferred-tools = { version = "0.1.2-dev", path = "crates/awaken-ext-deferred-tools" }
+awaken-tool-pattern = { version = "0.1.2-dev", path = "crates/awaken-tool-pattern" }
+awaken-server = { version = "0.1.2-dev", path = "crates/awaken-server" }
 glob-match = "0.2"
 regex = "1"
 serde = { version = "1", features = ["derive", "rc"] }

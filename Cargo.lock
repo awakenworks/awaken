@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "ai-sdk-starter-agent"
-version = "0.1.1"
+version = "0.1.2-dev"
 dependencies = [
  "awaken-examples",
  "clap",
@@ -188,7 +188,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "awaken-agent"
-version = "0.1.1"
+version = "0.1.2-dev"
 dependencies = [
  "async-trait",
  "awaken-contract",
@@ -210,7 +210,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-contract"
-version = "0.1.1"
+version = "0.1.2-dev"
 dependencies = [
  "async-trait",
  "futures",
@@ -229,7 +229,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-doctest"
-version = "0.1.1"
+version = "0.1.2-dev"
 dependencies = [
  "async-trait",
  "awaken-agent",
@@ -244,7 +244,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-examples"
-version = "0.1.1"
+version = "0.1.2-dev"
 dependencies = [
  "async-trait",
  "awaken-contract",
@@ -271,7 +271,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-ext-deferred-tools"
-version = "0.1.1"
+version = "0.1.2-dev"
 dependencies = [
  "async-trait",
  "awaken-contract",
@@ -287,7 +287,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-ext-generative-ui"
-version = "0.1.1"
+version = "0.1.2-dev"
 dependencies = [
  "async-trait",
  "awaken-contract",
@@ -302,7 +302,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-ext-mcp"
-version = "0.1.1"
+version = "0.1.2-dev"
 dependencies = [
  "async-trait",
  "awaken-contract",
@@ -318,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-ext-observability"
-version = "0.1.1"
+version = "0.1.2-dev"
 dependencies = [
  "async-trait",
  "awaken-contract",
@@ -339,7 +339,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-ext-permission"
-version = "0.1.1"
+version = "0.1.2-dev"
 dependencies = [
  "async-trait",
  "awaken-contract",
@@ -356,7 +356,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-ext-reminder"
-version = "0.1.1"
+version = "0.1.2-dev"
 dependencies = [
  "async-trait",
  "awaken-contract",
@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-ext-skills"
-version = "0.1.1"
+version = "0.1.2-dev"
 dependencies = [
  "async-trait",
  "awaken-contract",
@@ -395,7 +395,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-runtime"
-version = "0.1.1"
+version = "0.1.2-dev"
 dependencies = [
  "async-trait",
  "awaken-contract",
@@ -419,7 +419,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-server"
-version = "0.1.1"
+version = "0.1.2-dev"
 dependencies = [
  "arc-swap",
  "async-stream",
@@ -452,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-stores"
-version = "0.1.1"
+version = "0.1.2-dev"
 dependencies = [
  "async-trait",
  "awaken-contract",
@@ -470,7 +470,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-tool-pattern"
-version = "0.1.1"
+version = "0.1.2-dev"
 dependencies = [
  "glob-match",
  "regex",
@@ -790,7 +790,7 @@ dependencies = [
 
 [[package]]
 name = "copilotkit-starter-agent"
-version = "0.1.1"
+version = "0.1.2-dev"
 dependencies = [
  "awaken-examples",
  "clap",
