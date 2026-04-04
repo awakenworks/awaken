@@ -277,9 +277,9 @@ mod tests {
         patch_dangling_tool_calls(&mut messages);
         // Should have 3 synthetic results
         assert_eq!(messages.len(), 5);
-        for i in 2..5 {
-            assert_eq!(messages[i].role, Role::Tool);
-            assert!(messages[i].text().contains("interrupted"));
+        for message in messages.iter().take(5).skip(2) {
+            assert_eq!(message.role, Role::Tool);
+            assert!(message.text().contains("interrupted"));
         }
     }
 

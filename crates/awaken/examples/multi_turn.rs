@@ -21,9 +21,8 @@ struct ConsoleSink;
 #[async_trait]
 impl EventSink for ConsoleSink {
     async fn emit(&self, event: AgentEvent) {
-        match &event {
-            AgentEvent::TextDelta { delta } => print!("{delta}"),
-            _ => {}
+        if let AgentEvent::TextDelta { delta } = &event {
+            print!("{delta}");
         }
     }
 }
@@ -92,7 +91,7 @@ async fn main() {
 
     let thread_id = "conversation-1";
 
-    let turns = vec![
+    let turns = [
         "My name is Alice. Remember it.",
         "What is the capital of France?",
         "What is my name?",

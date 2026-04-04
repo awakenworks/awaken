@@ -1,3 +1,5 @@
+#![allow(clippy::module_inception)]
+
 mod hooks;
 mod plugin;
 mod shared;

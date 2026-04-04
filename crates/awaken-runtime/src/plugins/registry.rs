@@ -294,12 +294,6 @@ mod tests {
         type Value = String;
     }
 
-    struct TestTheme;
-    impl ProfileKey for TestTheme {
-        const KEY: &'static str = "theme";
-        type Value = String;
-    }
-
     #[test]
     fn register_profile_key_succeeds() {
         let mut registrar = PluginRegistrar::new_for_test();

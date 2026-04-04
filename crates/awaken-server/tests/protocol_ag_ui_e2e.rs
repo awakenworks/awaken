@@ -1295,10 +1295,10 @@ async fn tool_call_result_has_role_tool() {
 
     let events = extract_sse_events(&body);
     let result_event = find_event(&events, "TOOL_CALL_RESULT");
-    if let Some(result) = result_event {
-        if let Some(role) = result.get("role").and_then(Value::as_str) {
-            assert_eq!(role, "tool", "TOOL_CALL_RESULT role should be 'tool'");
-        }
+    if let Some(result) = result_event
+        && let Some(role) = result.get("role").and_then(Value::as_str)
+    {
+        assert_eq!(role, "tool", "TOOL_CALL_RESULT role should be 'tool'");
     }
 }
 

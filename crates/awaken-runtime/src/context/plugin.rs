@@ -693,7 +693,7 @@ mod tests {
         );
 
         // Very long message
-        let long_msg = Message::user(&"x".repeat(4000));
+        let long_msg = Message::user("x".repeat(4000));
         let long_tokens = estimate_message_tokens(&long_msg);
         assert!(
             long_tokens >= 1000,

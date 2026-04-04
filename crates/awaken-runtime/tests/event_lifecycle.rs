@@ -730,9 +730,7 @@ async fn state_snapshot_emitted_after_step() {
     // Verify that within complete_step, state_snapshot is emitted before step_end.
     // Find the first step_end and look for a state_snapshot before it.
     let first_step_end_idx = types.iter().position(|t| *t == "step_end").unwrap();
-    let has_snapshot_before_step_end = types[..first_step_end_idx]
-        .iter()
-        .any(|t| *t == "state_snapshot");
+    let has_snapshot_before_step_end = types[..first_step_end_idx].contains(&"state_snapshot");
     assert!(
         has_snapshot_before_step_end,
         "state_snapshot should appear before step_end: {types:?}"

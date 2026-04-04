@@ -212,8 +212,6 @@ async fn on_after_inference_records_genai_span() {
     assert_eq!(metrics.inferences[0].provider, "openai");
     assert_eq!(metrics.inferences[0].input_tokens, Some(100));
     assert_eq!(metrics.inferences[0].output_tokens, Some(50));
-    assert!(metrics.inferences[0].duration_ms > 0 || true); // may be 0 if fast
-
     // Also recorded in sink
     let sink_m = sink.metrics();
     assert_eq!(sink_m.inference_count(), 1);

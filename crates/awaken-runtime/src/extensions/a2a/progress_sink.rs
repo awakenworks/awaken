@@ -46,15 +46,13 @@ impl EventSink for ProgressForwardingSink {
                 ..
             } if activity_type == TOOL_CALL_PROGRESS_ACTIVITY_TYPE => {
                 if let Ok(state) = serde_json::from_value::<ToolCallProgressState>(content.clone())
-                {
-                    if self
+                    && self
                         .seen_child_calls
                         .lock()
                         .unwrap()
                         .contains(&state.call_id)
-                    {
-                        self.parent_sink.emit(event).await;
-                    }
+                {
+                    self.parent_sink.emit(event).await;
                 }
             }
             // All other events are silently dropped

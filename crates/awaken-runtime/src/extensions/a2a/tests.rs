@@ -76,7 +76,7 @@ impl AgentResolver for MockResolver {
             &spec.system_prompt,
             Arc::new(MockExecutor),
         );
-        agent.env = build_agent_env(&[], &agent).unwrap_or_else(|_| agent.env);
+        agent.env = build_agent_env(&[], &agent).unwrap_or(agent.env);
         Ok(agent)
     }
 }
@@ -704,7 +704,7 @@ fn agent_tool_validate_args_array_input() {
 fn agent_tool_validate_args_prompt_is_number() {
     let resolver = Arc::new(MockResolver::with_agent("worker"));
     let tool = AgentTool::local("worker", "desc", resolver);
-    assert!(tool.validate_args(&json!({"prompt": 3.14})).is_err());
+    assert!(tool.validate_args(&json!({"prompt": 2.5})).is_err());
 }
 
 #[test]
@@ -874,5 +874,5 @@ async fn agent_tool_omits_child_run_id_when_none() {
         .unwrap();
 
     assert!(output.result.is_success());
-    assert!(output.result.metadata.get("child_run_id").is_none());
+    assert!(!output.result.metadata.contains_key("child_run_id"));
 }

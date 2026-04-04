@@ -1,3 +1,5 @@
+#![allow(clippy::module_inception)]
+
 //! Reminder plugin implementation.
 
 mod hook;

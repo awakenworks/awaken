@@ -514,8 +514,10 @@ mod tests {
         let thread = Thread::new();
         store.save_thread(&thread).await.unwrap();
 
-        let mut meta = awaken_contract::thread::ThreadMetadata::default();
-        meta.title = Some("Updated".to_string());
+        let meta = awaken_contract::thread::ThreadMetadata {
+            title: Some("Updated".to_string()),
+            ..Default::default()
+        };
         store
             .update_thread_metadata(&thread.id, meta)
             .await

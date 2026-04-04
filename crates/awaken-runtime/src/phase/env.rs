@@ -187,7 +187,10 @@ impl ExecutionEnv {
     pub(crate) fn transform_arcs(&self) -> Vec<RequestTransformArc> {
         self.request_transforms
             .iter()
-            .map(|t| Arc::clone(&t.transform))
+            .map(|t| {
+                tracing::trace!(plugin_id = %t.plugin_id, "collecting_request_transform");
+                Arc::clone(&t.transform)
+            })
             .collect()
     }
 

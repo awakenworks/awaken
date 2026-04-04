@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn sink_error_with_source() {
-        let source = std::io::Error::new(std::io::ErrorKind::Other, "io error");
+        let source = std::io::Error::other("io error");
         let err = SinkError::with_source("wrapper", source);
         assert_eq!(err.to_string(), "wrapper");
         assert!(err.source().is_some());

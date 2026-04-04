@@ -6,7 +6,7 @@ use awaken_contract::model::Phase;
 
 use crate::phase::{ExecutionEnv, PhaseRuntime};
 use crate::plugins::Plugin;
-use crate::state::{KeyScope, MutationBatch, StateStore};
+use crate::state::{KeyScope, StateStore};
 
 use super::*;
 

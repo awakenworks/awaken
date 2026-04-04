@@ -800,7 +800,7 @@ mod tests {
         let denied = ruleset.unconditionally_denied_tools();
         assert!(denied.contains(&"rm"));
         assert!(denied.contains(&"Bash"));
-        assert!(!denied.iter().any(|t| *t == "Edit"));
+        assert!(!denied.contains(&"Edit"));
     }
 
     #[test]

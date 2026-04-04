@@ -129,20 +129,6 @@ impl Tool for SuspendingTool {
     }
 }
 
-/// Tool that returns the arguments as result (useful for PassDecisionToTool test).
-struct PassthroughTool;
-
-#[async_trait]
-impl Tool for PassthroughTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new("passthrough", "passthrough", "Returns args as result")
-    }
-
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
-        Ok(ToolResult::success("passthrough", args).into())
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -584,7 +570,7 @@ async fn events_have_correct_sequence_for_single_step() {
     let resolver = FixedResolver::new(agent);
 
     let sink = Arc::new(VecEventSink::new());
-    let result = run_agent_loop(AgentLoopParams {
+    let _result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
@@ -658,7 +644,7 @@ async fn events_have_correct_sequence_with_tool_call() {
     let resolver = FixedResolver::new(agent);
 
     let sink = Arc::new(VecEventSink::new());
-    let result = run_agent_loop(AgentLoopParams {
+    let _result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
@@ -966,8 +952,8 @@ async fn resume_with_use_decision_as_tool_result() {
 
     // Tool call should be terminal
     let tc_states = runtime.store().read::<ToolCallStates>().unwrap_or_default();
-    // After resume, tool call states were cleared by the new step
-    // The run completed normally
+    assert!(tc_states.calls.is_empty());
+    // After resume, tool call states were cleared by the new step.
     let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.status, RunStatus::Done);
 }
@@ -1747,7 +1733,7 @@ impl Clone for FrontendToolInterceptPlugin {
 /// 4. External decision arrives with result payload
 /// 5. prepare_resume with UseDecisionAsToolResult mode replaces arguments
 /// 6. detect_and_replay_resume re-executes tool with decision args
-/// 7. PassthroughTool returns decision args as tool result
+/// 7. AskUserTool returns decision args as tool result
 /// 8. LLM sees the frontend result and responds
 #[tokio::test]
 async fn frontend_tool_intercept_suspend_and_resume() {
@@ -2663,7 +2649,7 @@ async fn intercept_set_result_emits_tool_call_done_event() {
                 outcome,
                 result,
                 ..
-            } => Some((id.clone(), outcome.clone(), result.clone())),
+            } => Some((id.clone(), *outcome, result.clone())),
             _ => None,
         })
         .collect();
@@ -3118,7 +3104,7 @@ async fn parallel_tools_one_fails_other_succeeds() {
     let tool_done_events: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
-            AgentEvent::ToolCallDone { id, outcome, .. } => Some((id.clone(), outcome.clone())),
+            AgentEvent::ToolCallDone { id, outcome, .. } => Some((id.clone(), *outcome)),
             _ => None,
         })
         .collect();
@@ -6848,7 +6834,7 @@ async fn lifecycle_transitions_running_to_waiting() {
 async fn lifecycle_transitions_running_to_done_on_cancel() {
     use awaken::CancellationToken;
 
-    let llm = Arc::new(SlowStreamingLlm::new(vec!["tok "; 10].to_vec(), 50));
+    let llm = Arc::new(SlowStreamingLlm::new(["tok "; 10].to_vec(), 50));
     let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
@@ -7327,7 +7313,7 @@ async fn state_snapshot_contains_extensions_with_lifecycle() {
             AgentEvent::StateSnapshot { snapshot } => Some(snapshot),
             _ => None,
         })
-        .last()
+        .next_back()
         .expect("should have at least one snapshot");
 
     let extensions = last_snapshot
@@ -7440,7 +7426,7 @@ async fn state_snapshot_at_suspension_includes_waiting_status() {
             AgentEvent::StateSnapshot { snapshot } => Some(snapshot),
             _ => None,
         })
-        .last()
+        .next_back()
         .expect("should have at least one snapshot");
 
     // The snapshot should contain the lifecycle with Waiting status

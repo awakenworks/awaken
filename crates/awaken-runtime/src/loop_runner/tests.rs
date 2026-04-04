@@ -17,9 +17,9 @@ use super::actions::{
     merge_override_payloads, resolve_intercept_payloads, take_context_messages,
 };
 use crate::agent::state::{
-    AddContextMessage, ExcludeTool, IncludeOnlyTools, InferenceOverrideState,
-    InferenceOverrideStateAction, InferenceOverrideStateValue, RunLifecycle, RunLifecycleUpdate,
-    SetInferenceOverride, ToolFilterState, ToolFilterStateAction, ToolFilterStateValue,
+    AddContextMessage, InferenceOverrideState, InferenceOverrideStateAction,
+    InferenceOverrideStateValue, RunLifecycle, RunLifecycleUpdate, ToolFilterState,
+    ToolFilterStateAction, ToolFilterStateValue,
 };
 use crate::phase::PhaseRuntime;
 use crate::state::StateKey;
@@ -208,7 +208,7 @@ async fn throttle_skips_within_cooldown() {
         runtime
             .run_phase_with_context(&env, ctx)
             .await
-            .expect(&format!("step {step}"));
+            .unwrap_or_else(|_| panic!("step {step}"));
         let accepted = take_context_messages(store).unwrap_or_else(|e| panic!("step {step}: {e}"));
         assert_eq!(
             accepted.len(),

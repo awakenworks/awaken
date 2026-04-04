@@ -6,7 +6,7 @@ use awaken_server::protocols::{
 
 #[test]
 fn protocol_matrix_basic_flow() {
-    let seq = vec![
+    let seq = [
         AgentEvent::RunStart {
             thread_id: "t".into(),
             run_id: "r".into(),

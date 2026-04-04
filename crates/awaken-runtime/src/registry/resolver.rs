@@ -192,7 +192,7 @@ mod tests {
     use awaken_contract::contract::tool::{
         ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
     };
-    use serde_json::{Value, json};
+    use serde_json::Value;
 
     struct MockLlm;
 
@@ -501,7 +501,7 @@ mod tests {
 
     #[test]
     fn tool_descriptors_many_tools_sorted() {
-        let ids = vec!["zeta", "beta", "alpha", "gamma", "delta"];
+        let ids = ["zeta", "beta", "alpha", "gamma", "delta"];
         let tools: Vec<Arc<dyn Tool>> = ids
             .iter()
             .map(|id| Arc::new(TestTool { id: (*id).into() }) as Arc<dyn Tool>)

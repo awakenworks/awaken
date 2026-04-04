@@ -65,15 +65,16 @@ impl ActiveRunRegistry {
             .map(|(k, _)| k.clone());
         by_thread.retain(|_, v| v != run_id);
 
-        if let Some(tid) = thread_id {
-            if let Some(notify) = self.completion_notify.write().remove(&tid) {
-                notify.notify_waiters();
-            }
+        if let Some(tid) = thread_id
+            && let Some(notify) = self.completion_notify.write().remove(&tid)
+        {
+            notify.notify_waiters();
         }
     }
 
     /// Check whether a thread has an active run.
-    pub(crate) fn has_active_thread(&self, thread_id: &str) -> bool {
+    #[cfg(test)]
+    fn has_active_thread(&self, thread_id: &str) -> bool {
         self.by_thread_id.read().contains_key(thread_id)
     }
 

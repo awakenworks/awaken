@@ -156,7 +156,7 @@ impl AgentRuntime {
         };
 
         // Execute the loop
-        let result = run_agent_loop(AgentLoopParams {
+        run_agent_loop(AgentLoopParams {
             resolver: self.resolver.as_ref(),
             agent_id: &agent_id,
             runtime: &phase_runtime,
@@ -169,11 +169,7 @@ impl AgentRuntime {
             overrides,
             frontend_tools,
         })
-        .await;
-
-        // Guard drops here, calling unregister_run automatically
-
-        result
+        .await
     }
 
     async fn resolve_agent_id(

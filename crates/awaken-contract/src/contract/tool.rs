@@ -2049,10 +2049,10 @@ mod tests {
                 _args: Value,
                 ctx: &ToolCallContext,
             ) -> Result<ToolOutput, ToolError> {
-                if let Some(token) = &ctx.cancellation_token {
-                    if token.is_cancelled() {
-                        return Ok(ToolResult::error("cancellable", "cancelled").into());
-                    }
+                if let Some(token) = &ctx.cancellation_token
+                    && token.is_cancelled()
+                {
+                    return Ok(ToolResult::error("cancellable", "cancelled").into());
                 }
                 Ok(ToolResult::success("cancellable", json!("done")).into())
             }

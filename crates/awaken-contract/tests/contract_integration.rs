@@ -50,7 +50,7 @@ fn message_embeds_in_run_finish_result_and_survives_roundtrip() {
 
 #[test]
 fn messages_snapshot_event_preserves_full_message_structure() {
-    let messages = vec![
+    let messages = [
         Message::system("You are helpful"),
         Message::user("hello"),
         Message::assistant("hi"),
@@ -442,7 +442,7 @@ fn context_window_policy_serde_roundtrip_with_all_fields() {
 
 #[test]
 fn internal_messages_excluded_from_snapshot_by_visibility() {
-    let messages = vec![
+    let messages = [
         Message::system("You are helpful"),
         Message::internal_system("hidden reminder"),
         Message::user("hello"),

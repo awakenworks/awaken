@@ -1,7 +1,7 @@
 //! Integration tests for the reminder extension.
 
 use awaken_contract::contract::context_message::ContextMessage;
-use awaken_contract::contract::tool::{ToolResult, ToolStatus};
+use awaken_contract::contract::tool::ToolResult;
 use awaken_ext_reminder::ReminderRulesConfig;
 use awaken_ext_reminder::output_matcher::{
     ContentMatcher, OutputMatcher, ToolStatusMatcher, output_matches,
@@ -299,7 +299,7 @@ fn config_json_fields_content() {
 
 #[test]
 fn all_matching_rules_produce_messages() {
-    let rules = vec![
+    let rules = [
         ReminderRule {
             name: "rule-1".into(),
             pattern: ToolCallPattern::tool_glob("*"),

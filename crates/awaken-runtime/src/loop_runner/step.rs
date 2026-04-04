@@ -26,7 +26,7 @@ use super::actions::{
     apply_context_messages, apply_tool_filter_payloads, merge_override_payloads,
     resolve_intercept_payloads, take_context_messages,
 };
-use super::checkpoint::{check_termination, complete_step};
+use super::checkpoint::{StepCompletion, check_termination, complete_step};
 use super::inference::{compact_with_llm, execute_streaming};
 use super::{AgentLoopError, commit_update, now_ms, tool_result_to_content};
 use crate::agent::state::{
@@ -554,7 +554,7 @@ async fn emit_suspend_completion(
     let _ = ticket; // all modes emit the event now
     let suspend_result = awaken_contract::contract::tool::ToolResult::suspended(
         &call.name,
-        &format!("Tool '{}' suspended: awaiting approval", call.name),
+        format!("Tool '{}' suspended: awaiting approval", call.name),
     );
     ctx.sink
         .emit(AgentEvent::ToolCallDone {
@@ -790,18 +790,18 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
     if !stream_result.needs_tools() {
         ctx.messages
             .push(Arc::new(Message::assistant(stream_result.text())));
-        complete_step(
+        complete_step(StepCompletion {
             store,
-            ctx.runtime,
-            &ctx.agent.env,
-            ctx.sink.as_ref(),
-            ctx.checkpoint_store,
-            ctx.messages,
-            ctx.run_identity,
-            ctx.run_created_at,
-            *ctx.total_input_tokens,
-            *ctx.total_output_tokens,
-        )
+            runtime: ctx.runtime,
+            env: &ctx.agent.env,
+            sink: ctx.sink.as_ref(),
+            checkpoint_store: ctx.checkpoint_store,
+            messages: ctx.messages,
+            run_identity: ctx.run_identity,
+            run_created_at: ctx.run_created_at,
+            total_input_tokens: *ctx.total_input_tokens,
+            total_output_tokens: *ctx.total_output_tokens,
+        })
         .await?;
         return Ok(StepOutcome::NaturalEnd);
     }

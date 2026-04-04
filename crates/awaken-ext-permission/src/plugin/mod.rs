@@ -1,3 +1,5 @@
+#![allow(clippy::module_inception)]
+
 //! Permission plugin: registers state keys and a tool permission checker.
 
 mod checker;

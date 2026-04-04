@@ -541,7 +541,7 @@ mod tests {
         assert_eq!(value_to_string(&json!(true)), "true");
         assert_eq!(value_to_string(&json!(false)), "false");
         assert_eq!(value_to_string(&json!(42)), "42");
-        assert_eq!(value_to_string(&json!(3.14)), "3.14");
+        assert_eq!(value_to_string(&json!(2.5)), "2.5");
         // Array / object fall through to serde stringify
         assert_eq!(value_to_string(&json!([1, 2])), "[1,2]");
         assert_eq!(value_to_string(&json!({"a": 1})), "{\"a\":1}");

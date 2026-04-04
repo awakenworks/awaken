@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn default_trait_works() {
-        let executor = ScriptedLlmExecutor::default();
+        let executor = ScriptedLlmExecutor;
         assert_eq!(executor.name(), "scripted");
     }
 }

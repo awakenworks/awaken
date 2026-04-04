@@ -190,44 +190,6 @@ fn infer_openai_compatible_adapter(model_name: &str) -> genai::adapter::AdapterK
     }
 }
 
-#[cfg(test)]
-mod build_genai_client_tests {
-    use super::{infer_openai_compatible_adapter, resolve_openai_compatible_adapter};
-    use genai::adapter::AdapterKind;
-
-    #[test]
-    fn infers_openai_responses_for_gpt_five_models() {
-        assert_eq!(
-            infer_openai_compatible_adapter("gpt-5.4"),
-            AdapterKind::OpenAIResp
-        );
-    }
-
-    #[test]
-    fn infers_openai_chat_completions_for_gpt_four_models() {
-        assert_eq!(
-            infer_openai_compatible_adapter("gpt-4o-mini"),
-            AdapterKind::OpenAI
-        );
-    }
-
-    #[test]
-    fn supports_explicit_openai_responses_override() {
-        assert_eq!(
-            resolve_openai_compatible_adapter("gpt-4o-mini", Some("openai_resp")),
-            AdapterKind::OpenAIResp
-        );
-    }
-
-    #[test]
-    fn falls_back_to_inferred_adapter_for_unknown_override() {
-        assert_eq!(
-            resolve_openai_compatible_adapter("gpt-5.4", Some("unknown")),
-            AdapterKind::OpenAIResp
-        );
-    }
-}
-
 /// Convert a vec of (id, tool) pairs into a HashMap.
 pub fn tool_map_from_vec(tools: Vec<(&str, Arc<dyn Tool>)>) -> HashMap<String, Arc<dyn Tool>> {
     tools
@@ -1166,3 +1128,41 @@ status = Tag("Pending finance review", "warning")
 summary = Callout("info", "Ready for review", "Finance can verify the request before approval.")
 actions = Buttons([primary], "row")
 primary = Button("Submit request", { type: "continue_conversation" }, "primary")"#;
+
+#[cfg(test)]
+mod build_genai_client_tests {
+    use super::{infer_openai_compatible_adapter, resolve_openai_compatible_adapter};
+    use genai::adapter::AdapterKind;
+
+    #[test]
+    fn infers_openai_responses_for_gpt_five_models() {
+        assert_eq!(
+            infer_openai_compatible_adapter("gpt-5.4"),
+            AdapterKind::OpenAIResp
+        );
+    }
+
+    #[test]
+    fn infers_openai_chat_completions_for_gpt_four_models() {
+        assert_eq!(
+            infer_openai_compatible_adapter("gpt-4o-mini"),
+            AdapterKind::OpenAI
+        );
+    }
+
+    #[test]
+    fn supports_explicit_openai_responses_override() {
+        assert_eq!(
+            resolve_openai_compatible_adapter("gpt-4o-mini", Some("openai_resp")),
+            AdapterKind::OpenAIResp
+        );
+    }
+
+    #[test]
+    fn falls_back_to_inferred_adapter_for_unknown_override() {
+        assert_eq!(
+            resolve_openai_compatible_adapter("gpt-5.4", Some("unknown")),
+            AdapterKind::OpenAIResp
+        );
+    }
+}

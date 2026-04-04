@@ -59,7 +59,7 @@ impl Tool for CalculatorTool {
         Ok(ToolResult::success_with_message(
             "calculator",
             json!({ "expression": expr, "result": "5754" }),
-            format!("Result: 5754"),
+            "Result: 5754".to_string(),
         )
         .into())
     }

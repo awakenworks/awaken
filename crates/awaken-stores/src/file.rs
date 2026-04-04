@@ -648,9 +648,7 @@ mod tests {
     use super::*;
     use awaken_contract::contract::lifecycle::RunStatus;
     use awaken_contract::contract::message::Message;
-    use awaken_contract::contract::storage::{
-        RunQuery, RunRecord, RunStore, ThreadRunStore, ThreadStore,
-    };
+    use awaken_contract::contract::storage::{RunRecord, RunStore, ThreadRunStore, ThreadStore};
     use awaken_contract::thread::Thread;
     use tempfile::TempDir;
 

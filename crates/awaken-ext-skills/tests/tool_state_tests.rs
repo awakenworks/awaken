@@ -813,12 +813,10 @@ async fn activate_tool_command_no_permission_overrides_when_no_allowed_tools() {
 /// Verify that command applies correctly to a real StateStore.
 #[tokio::test]
 async fn activate_tool_command_applies_to_state_store() {
-    use awaken_contract::state::{KeyScope, Snapshot, StateMap};
+    use awaken_contract::state::{Snapshot, StateMap};
+    use awaken_ext_permission::evaluate_tool_permission;
     use awaken_ext_permission::rules::ToolPermissionBehavior;
-    use awaken_ext_permission::state::{
-        PermissionOverrides, PermissionOverridesKey, permission_rules_from_state,
-    };
-    use awaken_ext_permission::{PermissionRuleSource, evaluate_tool_permission};
+    use awaken_ext_permission::state::{PermissionOverridesKey, permission_rules_from_state};
     use std::sync::Arc;
 
     let registry = make_registry_with_skills(&[EmbeddedSkillData {
@@ -896,7 +894,7 @@ async fn activate_tool_permission_overrides_use_skill_source() {
 
     let overrides = snapshot.get::<PermissionOverridesKey>().unwrap();
     // All rules should have Skill source
-    for (_, rule) in &overrides.rules {
+    for rule in overrides.rules.values() {
         assert_eq!(rule.source, PermissionRuleSource::Skill);
     }
 }
@@ -960,7 +958,7 @@ async fn activate_tool_command_no_promote_without_deferred_tools_plugin() {
 /// skill activation should promote allowed_tools.
 #[tokio::test]
 async fn activate_tool_command_promotes_deferred_tools_when_plugin_active() {
-    use awaken_contract::state::{Snapshot, StateKey, StateMap};
+    use awaken_contract::state::{Snapshot, StateMap};
     use awaken_ext_deferred_tools::config::ToolLoadMode;
     use awaken_ext_deferred_tools::state::{DeferralState, DeferralStateValue};
     use std::sync::Arc;

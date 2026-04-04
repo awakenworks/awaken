@@ -183,9 +183,8 @@ mod tests {
 
         let boundary = find_compaction_boundary(&messages, 0, messages.len());
         // Must not place boundary at or after the open tool call (idx 3)
-        match boundary {
-            Some(b) => assert!(b < 3, "boundary {b} must be before open tool call at idx 3"),
-            None => {} // also acceptable if no safe boundary exists
+        if let Some(b) = boundary {
+            assert!(b < 3, "boundary {b} must be before open tool call at idx 3");
         }
     }
 
@@ -347,9 +346,8 @@ mod tests {
 
         let boundary = find_compaction_boundary(&messages, 0, messages.len());
         // Should not place boundary after the incomplete tool round
-        match boundary {
-            Some(b) => assert!(b < 1, "boundary should not include incomplete tool round"),
-            None => {} // also valid
+        if let Some(b) = boundary {
+            assert!(b < 1, "boundary should not include incomplete tool round");
         }
     }
 }

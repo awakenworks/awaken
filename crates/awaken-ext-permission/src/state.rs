@@ -432,8 +432,10 @@ mod tests {
 
     #[test]
     fn merge_policy_and_overrides() {
-        let mut policy = PermissionPolicy::default();
-        policy.default_behavior = ToolPermissionBehavior::Ask;
+        let mut policy = PermissionPolicy {
+            default_behavior: ToolPermissionBehavior::Ask,
+            ..Default::default()
+        };
         PermissionPolicyKey::apply(
             &mut policy,
             PermissionAction::SetTool {
@@ -460,8 +462,10 @@ mod tests {
 
     #[test]
     fn merge_empty_overrides() {
-        let mut policy = PermissionPolicy::default();
-        policy.default_behavior = ToolPermissionBehavior::Deny;
+        let mut policy = PermissionPolicy {
+            default_behavior: ToolPermissionBehavior::Deny,
+            ..Default::default()
+        };
         PermissionPolicyKey::apply(
             &mut policy,
             PermissionAction::AllowTool {
@@ -491,8 +495,10 @@ mod tests {
 
     #[test]
     fn policy_serde_roundtrip() {
-        let mut policy = PermissionPolicy::default();
-        policy.default_behavior = ToolPermissionBehavior::Deny;
+        let mut policy = PermissionPolicy {
+            default_behavior: ToolPermissionBehavior::Deny,
+            ..Default::default()
+        };
         PermissionPolicyKey::apply(
             &mut policy,
             PermissionAction::SetTool {

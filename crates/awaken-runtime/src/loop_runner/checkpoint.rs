@@ -15,18 +15,33 @@ use awaken_contract::model::Phase;
 use super::{AgentLoopError, commit_update, now_ms};
 use crate::agent::state::{RunLifecycle, RunLifecycleUpdate};
 
-pub(super) async fn complete_step(
-    store: &crate::state::StateStore,
-    runtime: &PhaseRuntime,
-    env: &ExecutionEnv,
-    sink: &dyn EventSink,
-    checkpoint_store: Option<&dyn ThreadRunStore>,
-    messages: &[Arc<Message>],
-    run_identity: &RunIdentity,
-    run_created_at: u64,
-    total_input_tokens: u64,
-    total_output_tokens: u64,
-) -> Result<(), AgentLoopError> {
+pub(super) struct StepCompletion<'a> {
+    pub(super) store: &'a crate::state::StateStore,
+    pub(super) runtime: &'a PhaseRuntime,
+    pub(super) env: &'a ExecutionEnv,
+    pub(super) sink: &'a dyn EventSink,
+    pub(super) checkpoint_store: Option<&'a dyn ThreadRunStore>,
+    pub(super) messages: &'a [Arc<Message>],
+    pub(super) run_identity: &'a RunIdentity,
+    pub(super) run_created_at: u64,
+    pub(super) total_input_tokens: u64,
+    pub(super) total_output_tokens: u64,
+}
+
+pub(super) async fn complete_step(params: StepCompletion<'_>) -> Result<(), AgentLoopError> {
+    let StepCompletion {
+        store,
+        runtime,
+        env,
+        sink,
+        checkpoint_store,
+        messages,
+        run_identity,
+        run_created_at,
+        total_input_tokens,
+        total_output_tokens,
+    } = params;
+
     commit_update::<RunLifecycle>(
         store,
         RunLifecycleUpdate::StepCompleted {

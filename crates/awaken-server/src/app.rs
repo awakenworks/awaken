@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use crate::mailbox::Mailbox;
 use crate::transport::replay_buffer::EventReplayBuffer;
 
+pub type ReplayBufferEntry = (Arc<EventReplayBuffer>, Instant);
+pub type ReplayBufferMap = Arc<Mutex<HashMap<String, ReplayBufferEntry>>>;
+
 /// Graceful shutdown configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShutdownConfig {
@@ -92,7 +95,7 @@ pub struct AppState {
     pub config: ServerConfig,
     /// Per-run replay buffers for SSE stream resumption.
     /// Stores `(buffer, created_at)` so stale entries can be purged.
-    pub replay_buffers: Arc<Mutex<HashMap<String, (Arc<EventReplayBuffer>, Instant)>>>,
+    pub replay_buffers: ReplayBufferMap,
 }
 
 impl AppState {
@@ -304,7 +307,7 @@ mod tests {
 
     /// Helper: create a standalone replay buffer map (same type as `AppState::replay_buffers`)
     /// to test purge logic without needing a full `AppState`.
-    fn make_replay_map() -> Arc<Mutex<HashMap<String, (Arc<EventReplayBuffer>, Instant)>>> {
+    fn make_replay_map() -> ReplayBufferMap {
         Arc::new(Mutex::new(HashMap::new()))
     }
 

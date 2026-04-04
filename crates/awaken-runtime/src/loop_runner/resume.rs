@@ -166,11 +166,11 @@ pub(super) async fn detect_and_replay_resume(
         });
         if !output.command.is_empty() {
             cmd.extend(output.command)
-                .map_err(|e| AgentLoopError::PhaseError(e))?;
+                .map_err(AgentLoopError::PhaseError)?;
         }
         store
             .commit(cmd.patch)
-            .map_err(|e| AgentLoopError::PhaseError(e))?;
+            .map_err(AgentLoopError::PhaseError)?;
 
         messages.push(Arc::new(Message::tool(
             call_id,
@@ -253,11 +253,8 @@ pub(super) async fn wait_for_resume_or_cancel(
         };
 
         let mut decisions = first_batch;
-        loop {
-            match rx.try_recv() {
-                Ok(batch) => decisions.extend(batch),
-                Err(_) => break,
-            }
+        while let Ok(batch) = rx.try_recv() {
+            decisions.extend(batch);
         }
 
         if decisions.is_empty() {

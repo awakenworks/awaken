@@ -151,13 +151,15 @@ impl McpToolTransport for FakeStructuredTransport {
     }
 }
 
+type PromptRequestLog = Arc<Mutex<Vec<(String, Option<HashMap<String, String>>)>>>;
+
 #[derive(Debug, Clone)]
 struct FakeCatalogTransport {
     prompts: Vec<McpPromptDefinition>,
     resources: Vec<McpResourceDefinition>,
     prompt_result: McpPromptResult,
     read_resource_result: Value,
-    prompt_requests: Arc<Mutex<Vec<(String, Option<HashMap<String, String>>)>>>,
+    prompt_requests: PromptRequestLog,
     resource_requests: Arc<Mutex<Vec<String>>>,
     prompt_list_calls: Arc<AtomicUsize>,
     resource_list_calls: Arc<AtomicUsize>,
@@ -1184,7 +1186,7 @@ async fn mcp_tool_execute_ui_fetch_failure_non_fatal() {
 
     assert!(result.result.is_success());
     // UI content should not be present when fetch fails
-    assert!(result.result.metadata.get("mcp.ui.content").is_none());
+    assert!(!result.result.metadata.contains_key("mcp.ui.content"));
 }
 
 #[tokio::test]
@@ -1205,7 +1207,7 @@ async fn mcp_tool_without_ui_meta_has_no_ui_uri_in_result() {
 
     let ctx = ToolCallContext::test_default();
     let result = tool.execute(json!({}), &ctx).await.unwrap();
-    assert!(result.result.metadata.get("mcp.ui.resourceUri").is_none());
+    assert!(!result.result.metadata.contains_key("mcp.ui.resourceUri"));
 }
 
 // ── Sampling handler tests ──

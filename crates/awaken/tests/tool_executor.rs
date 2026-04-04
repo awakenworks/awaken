@@ -24,7 +24,6 @@ use awaken::loop_runner::{AgentLoopParams, build_agent_env, run_agent_loop};
 use awaken::registry::AgentSpec;
 use awaken::*;
 use awaken::{AgentResolver, ExecutionEnv, ResolvedAgent, RuntimeError};
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -232,7 +231,7 @@ async fn sequential_partial_failure_both_produce_results() {
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink = Arc::new(VecEventSink::new());
-    let result = run_agent_loop(AgentLoopParams {
+    let _result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
@@ -366,7 +365,7 @@ async fn parallel_partial_failure() {
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
     let sink = Arc::new(VecEventSink::new());
-    let result = run_agent_loop(AgentLoopParams {
+    let _result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &rt,
@@ -892,8 +891,6 @@ async fn profile_sections_available_in_loop_hooks() {
         }
     }
 
-    let llm = Arc::new(ScriptedLlm::new(vec![text_step("ok")]));
-    let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let rt = make_runtime();
 
     let cfg_plugin = Arc::new(CfgPlugin(observed.clone()));
@@ -1554,7 +1551,7 @@ async fn override_consumed_each_step_not_leaked() {
 #[tokio::test]
 async fn context_message_injected_into_request() {
     use awaken::agent::state::AddContextMessage;
-    use awaken::contract::context_message::{ContextMessage, ContextMessageTarget};
+    use awaken::contract::context_message::ContextMessage;
 
     // LLM that captures the messages it receives
     struct CapturingLlm {

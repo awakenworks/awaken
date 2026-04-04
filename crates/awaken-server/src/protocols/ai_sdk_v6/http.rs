@@ -260,22 +260,6 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
     Ok(ai_sdk_sse_response(sse_body_stream(final_rx)))
 }
 
-// ── SSE stream helpers ──────────────────────────────────────────────
-
-fn stream_existing_thread_from_now(st: &AppState, thread_id: &str) -> Result<Response, ApiError> {
-    let Some(buffer) = st.get_replay_buffer(thread_id) else {
-        return Err(ApiError::BadRequest(
-            "no active run available for interaction responses".to_string(),
-        ));
-    };
-
-    let (_replayed, live_rx) = buffer.subscribe_after(u64::MAX);
-    let live_stream =
-        tokio_stream::wrappers::UnboundedReceiverStream::new(live_rx).map(Ok::<Bytes, Infallible>);
-
-    Ok(ai_sdk_sse_response(live_stream))
-}
-
 /// Reconnect to an active thread's event stream.
 ///
 /// Called by AI SDK's `HttpChatTransport.reconnectToStream()` which issues
@@ -431,7 +415,7 @@ fn encode_history_messages(messages: Vec<Message>) -> Vec<Value> {
                 let output_text = parse_tool_message_output(&message);
                 let is_suspended = output_text
                     .as_str()
-                    .map_or(false, |s| s.contains("suspended"));
+                    .is_some_and(|s| s.contains("suspended"));
 
                 if is_suspended {
                     // Keep state as input-available (set during tool part creation)

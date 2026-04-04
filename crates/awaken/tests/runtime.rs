@@ -348,22 +348,6 @@ impl TypedScheduledActionHandler<LogOnlyAction> for LogOnlyHandler {
     }
 }
 
-/// Plugin for LogOnlyAction handler.
-struct LogOnlyPlugin;
-
-impl Plugin for LogOnlyPlugin {
-    fn descriptor(&self) -> PluginDescriptor {
-        PluginDescriptor {
-            name: "log-only-plugin",
-        }
-    }
-
-    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        registrar.register_scheduled_action::<LogOnlyAction, _>(LogOnlyHandler)?;
-        Ok(())
-    }
-}
-
 struct BadlyEncodedAction;
 
 impl ScheduledActionSpec for BadlyEncodedAction {

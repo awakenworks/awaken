@@ -126,10 +126,10 @@ impl PhaseRuntime {
         max_rounds: usize,
     ) -> Result<PhaseRunReport, StateError> {
         // Check cancellation at phase entry
-        if let Some(token) = base_ctx.cancellation_token.as_ref() {
-            if token.is_cancelled() {
-                return Err(StateError::Cancelled);
-            }
+        if let Some(token) = base_ctx.cancellation_token.as_ref()
+            && token.is_cancelled()
+        {
+            return Err(StateError::Cancelled);
         }
 
         let _guard = self.execution_lock.lock().await;
@@ -138,10 +138,10 @@ impl PhaseRuntime {
             self.gather_and_commit_hooks(env, &base_ctx).await?;
 
         // Check cancellation after hooks, before scheduled action execution
-        if let Some(token) = base_ctx.cancellation_token.as_ref() {
-            if token.is_cancelled() {
-                return Err(StateError::Cancelled);
-            }
+        if let Some(token) = base_ctx.cancellation_token.as_ref()
+            && token.is_cancelled()
+        {
+            return Err(StateError::Cancelled);
         }
 
         let mut report = self

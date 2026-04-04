@@ -59,12 +59,12 @@ impl Tool for CalculatorTool {
 
 fn eval_simple(expr: &str) -> f64 {
     let expr = expr.trim();
-    if let Some(pos) = expr.rfind('+') {
-        if pos > 0 {
-            let a: f64 = expr[..pos].trim().parse().unwrap_or(0.0);
-            let b: f64 = expr[pos + 1..].trim().parse().unwrap_or(0.0);
-            return a + b;
-        }
+    if let Some(pos) = expr.rfind('+')
+        && pos > 0
+    {
+        let a: f64 = expr[..pos].trim().parse().unwrap_or(0.0);
+        let b: f64 = expr[pos + 1..].trim().parse().unwrap_or(0.0);
+        return a + b;
     }
     if let Some(pos) = expr.rfind('*') {
         let a: f64 = expr[..pos].trim().parse().unwrap_or(0.0);
@@ -76,12 +76,12 @@ fn eval_simple(expr: &str) -> f64 {
         let b: f64 = expr[pos + 1..].trim().parse().unwrap_or(1.0);
         return a / b;
     }
-    if let Some(pos) = expr.rfind('-') {
-        if pos > 0 {
-            let a: f64 = expr[..pos].trim().parse().unwrap_or(0.0);
-            let b: f64 = expr[pos + 1..].trim().parse().unwrap_or(0.0);
-            return a - b;
-        }
+    if let Some(pos) = expr.rfind('-')
+        && pos > 0
+    {
+        let a: f64 = expr[..pos].trim().parse().unwrap_or(0.0);
+        let b: f64 = expr[pos + 1..].trim().parse().unwrap_or(0.0);
+        return a - b;
     }
     expr.parse().unwrap_or(0.0)
 }

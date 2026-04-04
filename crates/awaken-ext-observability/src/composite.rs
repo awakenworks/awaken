@@ -36,7 +36,7 @@ pub struct CompositeSinkBuilder {
 }
 
 impl CompositeSinkBuilder {
-    pub fn add(mut self, sink: Arc<dyn MetricsSink>) -> Self {
+    pub fn with_sink(mut self, sink: Arc<dyn MetricsSink>) -> Self {
         self.sinks.push(sink);
         self
     }

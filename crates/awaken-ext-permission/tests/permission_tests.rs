@@ -129,8 +129,10 @@ fn ruleset_glob_tool_deny() {
 
 #[test]
 fn state_policy_and_overrides_merge_correctly() {
-    let mut policy = PermissionPolicy::default();
-    policy.default_behavior = ToolPermissionBehavior::Ask;
+    let mut policy = PermissionPolicy {
+        default_behavior: ToolPermissionBehavior::Ask,
+        ..Default::default()
+    };
 
     // Policy: allow Bash
     PermissionPolicyKey::apply(
@@ -171,8 +173,10 @@ fn state_policy_and_overrides_merge_correctly() {
 
 #[test]
 fn state_overrides_dont_leak_default_behavior() {
-    let mut policy = PermissionPolicy::default();
-    policy.default_behavior = ToolPermissionBehavior::Deny;
+    let policy = PermissionPolicy {
+        default_behavior: ToolPermissionBehavior::Deny,
+        ..Default::default()
+    };
 
     let mut overrides = PermissionOverrides::default();
     // SetDefault is ignored in overrides

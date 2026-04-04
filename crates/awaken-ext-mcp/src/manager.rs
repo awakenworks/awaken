@@ -160,12 +160,12 @@ impl Tool for McpTool {
             Value::String(self.tool_name.clone()),
         );
 
-        if !res.content.is_empty() {
-            if let Ok(content) = serde_json::to_value(&res.content) {
-                result
-                    .metadata
-                    .insert(MCP_META_RESULT_CONTENT.to_string(), content);
-            }
+        if !res.content.is_empty()
+            && let Ok(content) = serde_json::to_value(&res.content)
+        {
+            result
+                .metadata
+                .insert(MCP_META_RESULT_CONTENT.to_string(), content);
         }
         if let Some(structured) = res.structured_content.clone() {
             result

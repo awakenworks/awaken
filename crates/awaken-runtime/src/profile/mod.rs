@@ -102,12 +102,6 @@ mod tests {
         type Value = String;
     }
 
-    struct Theme;
-    impl ProfileKey for Theme {
-        const KEY: &'static str = "theme";
-        type Value = String;
-    }
-
     struct Unregistered;
     impl ProfileKey for Unregistered {
         const KEY: &'static str = "unregistered";

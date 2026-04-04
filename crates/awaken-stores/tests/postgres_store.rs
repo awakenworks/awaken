@@ -9,9 +9,7 @@
 #![cfg(feature = "postgres")]
 
 use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{
-    RunQuery, RunStore, StorageError, ThreadRunStore, ThreadStore,
-};
+use awaken_contract::contract::storage::{RunQuery, RunStore, ThreadRunStore, ThreadStore};
 use awaken_contract::thread::Thread;
 use awaken_stores::PostgresStore;
 

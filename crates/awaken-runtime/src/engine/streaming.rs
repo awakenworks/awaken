@@ -323,8 +323,10 @@ mod tests {
         }));
 
         // End event with captured text that overrides
-        let mut end = StreamEnd::default();
-        end.captured_content = Some(genai::chat::MessageContent::from_text("final text"));
+        let end = StreamEnd {
+            captured_content: Some(genai::chat::MessageContent::from_text("final text")),
+            ..Default::default()
+        };
         c.process(ChatStreamEvent::End(end));
 
         let result = c.finish();
@@ -337,13 +339,15 @@ mod tests {
 
         let mut c = StreamCollector::new();
 
-        let mut end = StreamEnd::default();
-        end.captured_usage = Some(Usage {
-            prompt_tokens: Some(100),
-            completion_tokens: Some(50),
-            total_tokens: Some(150),
+        let end = StreamEnd {
+            captured_usage: Some(Usage {
+                prompt_tokens: Some(100),
+                completion_tokens: Some(50),
+                total_tokens: Some(150),
+                ..Default::default()
+            }),
             ..Default::default()
-        });
+        };
         c.process(ChatStreamEvent::End(end));
 
         let result = c.finish();
@@ -422,14 +426,16 @@ mod tests {
 
         let mut c = StreamCollector::new();
 
-        let mut end = StreamEnd::default();
-        end.captured_usage = Some(Usage {
-            prompt_tokens: Some(200),
-            completion_tokens: Some(80),
-            total_tokens: Some(280),
-            prompt_tokens_details: None,
-            completion_tokens_details: None,
-        });
+        let end = StreamEnd {
+            captured_usage: Some(Usage {
+                prompt_tokens: Some(200),
+                completion_tokens: Some(80),
+                total_tokens: Some(280),
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
+            }),
+            ..Default::default()
+        };
         c.process(ChatStreamEvent::End(end));
 
         let result = c.finish();
@@ -447,8 +453,10 @@ mod tests {
 
         let mut c = StreamCollector::new();
 
-        let mut end = StreamEnd::default();
-        end.captured_stop_reason = Some(genai::chat::StopReason::Completed("stop".into()));
+        let end = StreamEnd {
+            captured_stop_reason: Some(genai::chat::StopReason::Completed("stop".into())),
+            ..Default::default()
+        };
         c.process(ChatStreamEvent::End(end));
 
         let result = c.finish();
@@ -581,8 +589,10 @@ mod tests {
             fn_arguments: serde_json::json!({"a": 1}),
             thought_signatures: None,
         };
-        let mut end = StreamEnd::default();
-        end.captured_content = Some(MessageContent::from_tool_calls(vec![captured_call]));
+        let end = StreamEnd {
+            captured_content: Some(MessageContent::from_tool_calls(vec![captured_call])),
+            ..Default::default()
+        };
         c.process(ChatStreamEvent::End(end));
 
         let result = c.finish();

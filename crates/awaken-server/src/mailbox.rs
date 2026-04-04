@@ -290,14 +290,14 @@ impl Mailbox {
         match self.store.interrupt(&thread_id, now).await {
             Ok(interrupt) => {
                 // Step 2: Cancel active runtime run if the interrupt found one.
-                if interrupt.active_job.is_some() {
-                    if self.runtime.cancel_and_wait_by_thread(&thread_id).await {
-                        tracing::info!(
-                            thread_id = %thread_id,
-                            superseded = interrupt.superseded_count,
-                            "interrupted thread for new submission"
-                        );
-                    }
+                if interrupt.active_job.is_some()
+                    && self.runtime.cancel_and_wait_by_thread(&thread_id).await
+                {
+                    tracing::info!(
+                        thread_id = %thread_id,
+                        superseded = interrupt.superseded_count,
+                        "interrupted thread for new submission"
+                    );
                 }
             }
             Err(e) => {
@@ -718,11 +718,11 @@ impl Mailbox {
 
             // Generation check: if this job was superseded between claim and
             // execution start, abort without entering the runtime.
-            if let Ok(Some(current_job)) = this.store.load_job(&job_id).await {
-                if current_job.status != MailboxJobStatus::Claimed {
-                    tracing::info!(job_id, status = ?current_job.status, "job no longer claimed, skipping execution");
-                    return;
-                }
+            if let Ok(Some(current_job)) = this.store.load_job(&job_id).await
+                && current_job.status != MailboxJobStatus::Claimed
+            {
+                tracing::info!(job_id, status = ?current_job.status, "job no longer claimed, skipping execution");
+                return;
             }
 
             let mut request =
@@ -768,14 +768,17 @@ impl Mailbox {
                     tracing::warn!(job_id, error = %msg, "run failed (transient), nacking");
                     // Emit error event so the SSE stream terminates with a
                     // proper RUN_ERROR instead of silently closing.
-                    let _ = event_tx.send(AgentEvent::RunFinish {
-                        thread_id: job.mailbox_id.clone(),
-                        run_id: job_id.clone(),
-                        result: None,
-                        termination: awaken_contract::contract::lifecycle::TerminationReason::Error(
-                            msg.clone(),
-                        ),
-                    });
+                    let _ = event_tx
+                        .send(AgentEvent::RunFinish {
+                            thread_id: job.mailbox_id.clone(),
+                            run_id: job_id.clone(),
+                            result: None,
+                            termination:
+                                awaken_contract::contract::lifecycle::TerminationReason::Error(
+                                    msg.clone(),
+                                ),
+                        })
+                        .await;
                     let backoff_factor = 2u64.pow(job.attempt_count.saturating_sub(1).min(6));
                     let retry_at = now
                         + (this.config.default_retry_delay_ms * backoff_factor)
@@ -793,14 +796,17 @@ impl Mailbox {
                     // Emit error event so the SSE stream terminates with a
                     // proper RUN_ERROR. The runtime did not reach the loop,
                     // so no RunFinish was emitted — we must do it here.
-                    let _ = event_tx.send(AgentEvent::RunFinish {
-                        thread_id: job.mailbox_id.clone(),
-                        run_id: job_id.clone(),
-                        result: None,
-                        termination: awaken_contract::contract::lifecycle::TerminationReason::Error(
-                            msg.clone(),
-                        ),
-                    });
+                    let _ = event_tx
+                        .send(AgentEvent::RunFinish {
+                            thread_id: job.mailbox_id.clone(),
+                            run_id: job_id.clone(),
+                            result: None,
+                            termination:
+                                awaken_contract::contract::lifecycle::TerminationReason::Error(
+                                    msg.clone(),
+                                ),
+                        })
+                        .await;
                     if let Err(e) = this
                         .store
                         .dead_letter(&job_id, &claim_token, &msg, now)
@@ -1987,8 +1993,6 @@ mod tests {
     #[test]
     fn inline_claim_guard_is_reasonable() {
         assert_eq!(INLINE_CLAIM_GUARD_MS, 60_000);
-        // Must be a sane value — the old broken value was u64::MAX.
-        assert!(INLINE_CLAIM_GUARD_MS < u64::MAX / 2);
     }
 
     // ── Nack exponential backoff ────────────────────────────────────

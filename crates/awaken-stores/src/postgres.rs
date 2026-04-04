@@ -688,6 +688,16 @@ impl ThreadRunStore for PostgresStore {
     }
 }
 
+fn parse_run_status(s: &str) -> awaken_contract::contract::lifecycle::RunStatus {
+    use awaken_contract::contract::lifecycle::RunStatus;
+    match s {
+        "running" => RunStatus::Running,
+        "waiting" => RunStatus::Waiting,
+        "done" => RunStatus::Done,
+        _ => RunStatus::Running,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -826,15 +836,5 @@ mod tests {
         assert_eq!(loaded_msgs.len(), 1);
         let loaded_run = store.load_run(&run.run_id).await.unwrap().unwrap();
         assert_eq!(loaded_run.thread_id, thread_id);
-    }
-}
-
-fn parse_run_status(s: &str) -> awaken_contract::contract::lifecycle::RunStatus {
-    use awaken_contract::contract::lifecycle::RunStatus;
-    match s {
-        "running" => RunStatus::Running,
-        "waiting" => RunStatus::Waiting,
-        "done" => RunStatus::Done,
-        _ => RunStatus::Running,
     }
 }

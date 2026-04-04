@@ -198,7 +198,7 @@ mod tests {
                 &spec.system_prompt,
                 Arc::new(MockExecutor),
             );
-            agent.env = build_agent_env(&[], &agent).unwrap_or_else(|_| agent.env);
+            agent.env = build_agent_env(&[], &agent).unwrap_or(agent.env);
             Ok(agent)
         }
     }

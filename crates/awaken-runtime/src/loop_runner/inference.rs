@@ -190,7 +190,7 @@ pub(super) async fn compact_with_llm(
     // Check minimum gain threshold
     let compactable_tokens: usize = messages[..=boundary]
         .iter()
-        .map(|m| awaken_contract::contract::transform::estimate_message_tokens(m))
+        .map(|message| awaken_contract::contract::transform::estimate_message_tokens(message))
         .sum();
     if compactable_tokens < MIN_COMPACTION_GAIN_TOKENS {
         return Ok(());

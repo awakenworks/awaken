@@ -7,7 +7,7 @@ use awaken_contract::contract::message::{Role, gen_message_id};
 use awaken_contract::model::Phase;
 
 use super::checkpoint::{
-    check_termination, complete_step, emit_state_snapshot, persist_checkpoint,
+    StepCompletion, check_termination, complete_step, emit_state_snapshot, persist_checkpoint,
 };
 use super::resume::{WaitOutcome, wait_for_resume_or_cancel};
 use super::setup::{PreparedRun, prepare_run};
@@ -200,18 +200,18 @@ pub(super) async fn run_agent_loop_impl(
         match step_result {
             StepOutcome::Cancelled => {
                 // Close the current step before breaking.
-                complete_step(
+                complete_step(StepCompletion {
                     store,
                     runtime,
-                    &agent.env,
-                    sink.as_ref(),
+                    env: &agent.env,
+                    sink: sink.as_ref(),
                     checkpoint_store,
-                    &messages,
-                    &run_identity,
+                    messages: &messages,
+                    run_identity: &run_identity,
                     run_created_at,
                     total_input_tokens,
                     total_output_tokens,
-                )
+                })
                 .await?;
                 break TerminationReason::Cancelled;
             }
@@ -220,18 +220,18 @@ pub(super) async fn run_agent_loop_impl(
             }
             StepOutcome::Blocked(reason) => {
                 // Close the current step before breaking.
-                complete_step(
+                complete_step(StepCompletion {
                     store,
                     runtime,
-                    &agent.env,
-                    sink.as_ref(),
+                    env: &agent.env,
+                    sink: sink.as_ref(),
                     checkpoint_store,
-                    &messages,
-                    &run_identity,
+                    messages: &messages,
+                    run_identity: &run_identity,
                     run_created_at,
                     total_input_tokens,
                     total_output_tokens,
-                )
+                })
                 .await?;
                 break TerminationReason::Blocked(reason);
             }
@@ -239,18 +239,18 @@ pub(super) async fn run_agent_loop_impl(
                 // Close the current step before terminating.
                 // check_termination() fires inside run_step() before complete_step(),
                 // so the step is still open when we reach here.
-                complete_step(
+                complete_step(StepCompletion {
                     store,
                     runtime,
-                    &agent.env,
-                    sink.as_ref(),
+                    env: &agent.env,
+                    sink: sink.as_ref(),
                     checkpoint_store,
-                    &messages,
-                    &run_identity,
+                    messages: &messages,
+                    run_identity: &run_identity,
                     run_created_at,
                     total_input_tokens,
                     total_output_tokens,
-                )
+                })
                 .await?;
                 break reason;
             }
@@ -262,18 +262,18 @@ pub(super) async fn run_agent_loop_impl(
                         updated_at: now_ms(),
                     },
                 )?;
-                complete_step(
+                complete_step(StepCompletion {
                     store,
                     runtime,
-                    &agent.env,
-                    sink.as_ref(),
+                    env: &agent.env,
+                    sink: sink.as_ref(),
                     checkpoint_store,
-                    &messages,
-                    &run_identity,
+                    messages: &messages,
+                    run_identity: &run_identity,
                     run_created_at,
                     total_input_tokens,
                     total_output_tokens,
-                )
+                })
                 .await?;
 
                 // Emit RunFinish(Suspended) so protocol encoders can send
@@ -322,18 +322,18 @@ pub(super) async fn run_agent_loop_impl(
                 }
             }
             StepOutcome::Continue => {
-                complete_step(
+                complete_step(StepCompletion {
                     store,
                     runtime,
-                    &agent.env,
-                    sink.as_ref(),
+                    env: &agent.env,
+                    sink: sink.as_ref(),
                     checkpoint_store,
-                    &messages,
-                    &run_identity,
+                    messages: &messages,
+                    run_identity: &run_identity,
                     run_created_at,
                     total_input_tokens,
                     total_output_tokens,
-                )
+                })
                 .await?;
                 if let Some(reason) = check_termination(store) {
                     break reason;

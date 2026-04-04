@@ -154,17 +154,17 @@ mod tests {
         let output = transform.transform(messages, &[]);
         // Should not have orphaned tool calls
         for (i, msg) in output.messages.iter().enumerate() {
-            if msg.role == Role::Assistant {
-                if let Some(ref calls) = msg.tool_calls {
-                    for call in calls {
-                        assert!(
-                            output.messages[i + 1..]
-                                .iter()
-                                .any(|m| m.tool_call_id.as_deref() == Some(&call.id)),
-                            "tool call {} should have a matching result",
-                            call.id
-                        );
-                    }
+            if msg.role == Role::Assistant
+                && let Some(ref calls) = msg.tool_calls
+            {
+                for call in calls {
+                    assert!(
+                        output.messages[i + 1..]
+                            .iter()
+                            .any(|m| m.tool_call_id.as_deref() == Some(&call.id)),
+                        "tool call {} should have a matching result",
+                        call.id
+                    );
                 }
             }
         }
@@ -189,18 +189,18 @@ mod tests {
         let output = transform.transform(messages, &[]);
         // If the assistant with tool_calls is kept, its tool result must also be kept
         for (i, msg) in output.messages.iter().enumerate() {
-            if msg.role == Role::Assistant {
-                if let Some(ref calls) = msg.tool_calls {
-                    for call in calls {
-                        let has_result = output.messages[i + 1..]
-                            .iter()
-                            .any(|m| m.tool_call_id.as_deref() == Some(&call.id));
-                        assert!(
-                            has_result,
-                            "tool call {} should have matching result",
-                            call.id
-                        );
-                    }
+            if msg.role == Role::Assistant
+                && let Some(ref calls) = msg.tool_calls
+            {
+                for call in calls {
+                    let has_result = output.messages[i + 1..]
+                        .iter()
+                        .any(|m| m.tool_call_id.as_deref() == Some(&call.id));
+                    assert!(
+                        has_result,
+                        "tool call {} should have matching result",
+                        call.id
+                    );
                 }
             }
         }

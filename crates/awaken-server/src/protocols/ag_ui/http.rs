@@ -75,20 +75,20 @@ struct AgUiToolDefinition {
     parameters: Option<serde_json::Value>,
 }
 
+type AgUiRunRequestParts = (
+    Option<String>,
+    Option<String>,
+    Vec<AgUiMessage>,
+    Option<Value>,
+    Option<AgUiResumePayload>,
+    Vec<AgUiToolDefinition>,
+);
+
 impl AgUiRunRequest {
     /// Return the effective frontend context by merging `state` and `context`.
     /// CopilotKit sends both fields; the old `alias = "context"` on `state`
     /// caused serde to reject the request as a duplicate field.
-    fn into_parts(
-        self,
-    ) -> (
-        Option<String>,
-        Option<String>,
-        Vec<AgUiMessage>,
-        Option<Value>,
-        Option<AgUiResumePayload>,
-        Vec<AgUiToolDefinition>,
-    ) {
+    fn into_parts(self) -> AgUiRunRequestParts {
         let state = match (self.state, self.context) {
             (Some(s), None) | (Some(s), Some(Value::Null)) => Some(s),
             (None, Some(c)) | (Some(Value::Null), Some(c)) => Some(c),

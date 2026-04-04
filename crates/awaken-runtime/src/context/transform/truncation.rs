@@ -227,7 +227,7 @@ mod tests {
     fn token_estimation_accuracy_relative_to_content_size() {
         // Longer messages should estimate more tokens
         let short = Message::user("hi");
-        let long = Message::user(&"x".repeat(400));
+        let long = Message::user("x".repeat(400));
         let short_tokens = estimate_message_tokens(&short);
         let long_tokens = estimate_message_tokens(&long);
         assert!(
@@ -293,16 +293,13 @@ mod tests {
         let history: Vec<Message> = (0..50)
             .map(|i| Message::user(format!("message number {i} with some padding text")))
             .collect();
-        let total_tokens: usize = history.iter().map(|m| estimate_message_tokens(m)).sum();
+        let total_tokens: usize = history.iter().map(estimate_message_tokens).sum();
         // Set budget to half the total
         let budget = total_tokens / 2;
         let split = find_split_point(&history, budget, 2);
         assert!(split > 0, "should truncate when over budget");
         // Verify kept messages fit in budget (approximately)
-        let kept_tokens: usize = history[split..]
-            .iter()
-            .map(|m| estimate_message_tokens(m))
-            .sum();
+        let kept_tokens: usize = history[split..].iter().map(estimate_message_tokens).sum();
         assert!(
             kept_tokens <= budget || (history.len() - split) <= 2,
             "kept tokens {kept_tokens} should be <= budget {budget} (unless forced by min_recent)"

@@ -8,6 +8,7 @@
 //! - `/v1/a2a/tasks/{task_id}` conflicts with literal `/v1/a2a/tasks/send`
 //! - `/v1/a2a/agents/{agent_id}/agent-card` conflicts with
 //!   `/v1/a2a/agents/{agent_id}/tasks/{task_action}`
+//!
 //! Tests for affected routes are omitted; see `a2a_routes()` for the issue.
 
 use async_trait::async_trait;
