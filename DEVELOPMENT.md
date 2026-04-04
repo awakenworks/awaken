@@ -24,7 +24,7 @@ cargo build --workspace
 cargo build --package awaken-runtime
 
 # With all features
-cargo build --package awaken --features full
+cargo build --package awaken-agent --features full
 ```
 
 ## Running tests
@@ -44,7 +44,7 @@ Integration tests that require a live LLM provider are in `crates/awaken/example
 
 ```bash
 export OPENAI_API_KEY=<your-key>
-cargo run --package awaken --example live_test
+cargo run --package awaken-agent --example live_test
 ```
 
 ## Running examples
@@ -59,7 +59,7 @@ cargo run --package awaken-examples --example travel
 Core runtime examples are in `crates/awaken/examples/`:
 
 ```bash
-cargo run --package awaken --example multi_turn
+cargo run --package awaken-agent --example multi_turn
 ```
 
 All live examples require an LLM provider key in the environment.

@@ -10,7 +10,7 @@
 ```toml
 [dependencies]
 awaken-ext-deferred-tools = { version = "0.1" }
-awaken = { version = "0.1" }
+awaken = { package = "awaken-agent", version = "0.1" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```

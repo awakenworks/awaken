@@ -19,7 +19,7 @@ Or, if using the `awaken` facade crate (which re-exports `awaken-stores`), add `
 
 ```toml
 [dependencies]
-awaken = "..."
+awaken = { package = "awaken-agent", version = "..." }
 awaken-stores = { version = "...", features = ["file"] }
 ```
 

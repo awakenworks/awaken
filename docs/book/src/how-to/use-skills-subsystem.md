@@ -9,7 +9,7 @@ Use this when you want agents to discover and activate skill packages at runtime
 
 ```toml
 [dependencies]
-awaken = { version = "0.1", features = ["skills"] }
+awaken = { package = "awaken-agent", version = "0.1", features = ["skills"] }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```

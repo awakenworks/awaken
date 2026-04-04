@@ -10,7 +10,7 @@ Use this when you want the agent to send declarative UI components to a frontend
 
 ```toml
 [dependencies]
-awaken = { version = "0.1" }
+awaken = { package = "awaken-agent", version = "0.1" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```

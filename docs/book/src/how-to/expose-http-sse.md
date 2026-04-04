@@ -14,7 +14,7 @@ Use this when you need to serve agents over HTTP with Server-Sent Events streami
 
 ```toml
 [dependencies]
-awaken = { version = "...", features = ["server"] }
+awaken = { package = "awaken-agent", version = "...", features = ["server"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 ```
 

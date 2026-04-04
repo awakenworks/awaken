@@ -2,9 +2,11 @@
 
 [English](./README.md) | [中文](./README.zh-CN.md)
 
-![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.85-orange)
+[![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io](https://img.shields.io/crates/v/awaken-agent.svg?label=crates.io)](https://crates.io/crates/awaken-agent) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.85-orange)
 
 Production AI agent runtime for Rust — type-safe state, multi-protocol serving, plugin extensibility.
+
+Published on crates.io as `awaken-agent`; keep importing it in Rust as `awaken`.
 
 <p align="center">
   <img src="./docs/assets/demo.svg" alt="Awaken demo — tool call + LLM streaming" width="800">
@@ -25,7 +27,7 @@ Prerequisites:
 
 ```toml
 [dependencies]
-awaken = "0.1"
+awaken = { package = "awaken-agent", version = "0.1" }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde_json = "1"
@@ -228,7 +230,7 @@ awaken                   Facade crate with feature flags
 
 ```bash
 export OPENAI_API_KEY=<your-key>
-cargo run --package awaken --example multi_turn
+cargo run --package awaken-agent --example multi_turn
 
 cd examples/ai-sdk-starter && npm install && npm run dev
 ```
