@@ -14,7 +14,7 @@ use awaken_server::app::{AppState, ServerConfig};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
-use axum::http::{Request, StatusCode};
+use axum::http::{Request, Response, StatusCode};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -97,26 +97,112 @@ fn make_mcp_app() -> axum::Router {
     build_router().with_state(state)
 }
 
-async fn mcp_post(app: axum::Router, payload: Value) -> (StatusCode, Value) {
-    let resp = app
+async fn mcp_post(
+    app: &axum::Router,
+    payload: Value,
+    session_id: Option<&str>,
+) -> Response<axum::body::Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/v1/mcp")
+        .header("content-type", "application/json");
+    if let Some(session_id) = session_id {
+        builder = builder
+            .header("MCP-Session-Id", session_id)
+            .header("MCP-Protocol-Version", mcp::MCP_PROTOCOL_VERSION);
+    }
+
+    app.clone()
         .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/mcp")
-                .header("content-type", "application/json")
+            builder
                 .body(axum::body::Body::from(
                     serde_json::to_vec(&payload).unwrap(),
                 ))
                 .expect("request build"),
         )
         .await
-        .expect("app should handle request");
+        .expect("app should handle request")
+}
+
+async fn response_json(resp: Response<axum::body::Body>) -> (StatusCode, Value) {
     let status = resp.status();
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let body = to_bytes(resp.into_body(), 1024 * 1024)
         .await
         .expect("body readable");
-    let json: Value = serde_json::from_slice(&body).unwrap_or(json!(null));
+    let json = if content_type.starts_with("text/event-stream") {
+        let text = String::from_utf8(body.to_vec()).expect("valid utf-8 sse body");
+        let parsed = text
+            .split("\n\n")
+            .filter_map(|event| {
+                let payload = event
+                    .lines()
+                    .filter_map(|line| {
+                        line.strip_prefix("data: ")
+                            .or_else(|| line.strip_prefix("data:"))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if payload.trim().is_empty() {
+                    None
+                } else {
+                    serde_json::from_str::<Value>(&payload).ok()
+                }
+            })
+            .find(|value| value.get("id").is_some())
+            .unwrap_or(json!(null));
+        parsed
+    } else {
+        serde_json::from_slice(&body).unwrap_or(json!(null))
+    };
     (status, json)
+}
+
+async fn initialize_session(app: axum::Router) -> (axum::Router, String) {
+    let init_response = mcp_post(
+        &app,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": mcp::MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "test-client", "version": "1.0.0"}
+            },
+            "id": 1
+        }),
+        None,
+    )
+    .await;
+    let session_id = init_response
+        .headers()
+        .get("MCP-Session-Id")
+        .and_then(|value| value.to_str().ok())
+        .expect("session id header")
+        .to_string();
+    let (_, init_json) = response_json(init_response).await;
+    assert_eq!(
+        init_json["result"]["protocolVersion"],
+        mcp::MCP_PROTOCOL_VERSION
+    );
+
+    let initialized_response = mcp_post(
+        &app,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }),
+        Some(&session_id),
+    )
+    .await;
+    assert_eq!(initialized_response.status(), StatusCode::ACCEPTED);
+
+    (app, session_id)
 }
 
 // ============================================================================
@@ -126,13 +212,22 @@ async fn mcp_post(app: axum::Router, payload: Value) -> (StatusCode, Value) {
 #[tokio::test]
 async fn mcp_initialize_returns_server_info() {
     let app = make_mcp_app();
-    let (status, json) = mcp_post(
-        app,
-        json!({
-            "jsonrpc": "2.0",
-            "method": "initialize",
-            "id": 1
-        }),
+    let (status, json) = response_json(
+        mcp_post(
+            &app,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": mcp::MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "test-client", "version": "1.0.0"}
+                },
+                "id": 1
+            }),
+            None,
+        )
+        .await,
     )
     .await;
 
@@ -143,14 +238,18 @@ async fn mcp_initialize_returns_server_info() {
 
 #[tokio::test]
 async fn mcp_tools_list_discovers_agents() {
-    let app = make_mcp_app();
-    let (status, json) = mcp_post(
-        app,
-        json!({
-            "jsonrpc": "2.0",
-            "method": "tools/list",
-            "id": 2
-        }),
+    let (app, session_id) = initialize_session(make_mcp_app()).await;
+    let (status, json) = response_json(
+        mcp_post(
+            &app,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "tools/list",
+                "id": 2
+            }),
+            Some(&session_id),
+        )
+        .await,
     )
     .await;
 
@@ -175,20 +274,24 @@ async fn mcp_tools_list_discovers_agents() {
 
 #[tokio::test]
 async fn mcp_tools_call_runs_agent_and_returns_text() {
-    let app = make_mcp_app();
-    let (status, json) = mcp_post(
-        app,
-        json!({
-            "jsonrpc": "2.0",
-            "method": "tools/call",
-            "params": {
-                "name": "echo",
-                "arguments": {
-                    "message": "hello world"
-                }
-            },
-            "id": 3
-        }),
+    let (app, session_id) = initialize_session(make_mcp_app()).await;
+    let (status, json) = response_json(
+        mcp_post(
+            &app,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "params": {
+                    "name": "echo",
+                    "arguments": {
+                        "message": "hello world"
+                    }
+                },
+                "id": 3
+            }),
+            Some(&session_id),
+        )
+        .await,
     )
     .await;
 
@@ -212,20 +315,24 @@ async fn mcp_tools_call_runs_agent_and_returns_text() {
 
 #[tokio::test]
 async fn mcp_tools_call_unknown_tool_returns_error() {
-    let app = make_mcp_app();
-    let (status, json) = mcp_post(
-        app,
-        json!({
-            "jsonrpc": "2.0",
-            "method": "tools/call",
-            "params": {
-                "name": "nonexistent",
-                "arguments": {
-                    "message": "hello"
-                }
-            },
-            "id": 4
-        }),
+    let (app, session_id) = initialize_session(make_mcp_app()).await;
+    let (status, json) = response_json(
+        mcp_post(
+            &app,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "params": {
+                    "name": "nonexistent",
+                    "arguments": {
+                        "message": "hello"
+                    }
+                },
+                "id": 4
+            }),
+            Some(&session_id),
+        )
+        .await,
     )
     .await;
 
@@ -236,18 +343,22 @@ async fn mcp_tools_call_unknown_tool_returns_error() {
 
 #[tokio::test]
 async fn mcp_tools_call_missing_message_returns_tool_error() {
-    let app = make_mcp_app();
-    let (status, json) = mcp_post(
-        app,
-        json!({
-            "jsonrpc": "2.0",
-            "method": "tools/call",
-            "params": {
-                "name": "echo",
-                "arguments": {}
-            },
-            "id": 5
-        }),
+    let (app, session_id) = initialize_session(make_mcp_app()).await;
+    let (status, json) = response_json(
+        mcp_post(
+            &app,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "params": {
+                    "name": "echo",
+                    "arguments": {}
+                },
+                "id": 5
+            }),
+            Some(&session_id),
+        )
+        .await,
     )
     .await;
 
@@ -262,14 +373,18 @@ async fn mcp_tools_call_missing_message_returns_tool_error() {
 
 #[tokio::test]
 async fn mcp_ping_responds() {
-    let app = make_mcp_app();
-    let (status, json) = mcp_post(
-        app,
-        json!({
-            "jsonrpc": "2.0",
-            "method": "ping",
-            "id": 6
-        }),
+    let (app, session_id) = initialize_session(make_mcp_app()).await;
+    let (status, json) = response_json(
+        mcp_post(
+            &app,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "ping",
+                "id": 6
+            }),
+            Some(&session_id),
+        )
+        .await,
     )
     .await;
 
@@ -279,14 +394,18 @@ async fn mcp_ping_responds() {
 
 #[tokio::test]
 async fn mcp_unknown_method_returns_error() {
-    let app = make_mcp_app();
-    let (status, json) = mcp_post(
-        app,
-        json!({
-            "jsonrpc": "2.0",
-            "method": "unknown/method",
-            "id": 7
-        }),
+    let (app, session_id) = initialize_session(make_mcp_app()).await;
+    let (status, json) = response_json(
+        mcp_post(
+            &app,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "unknown/method",
+                "id": 7
+            }),
+            Some(&session_id),
+        )
+        .await,
     )
     .await;
 
@@ -338,7 +457,7 @@ async fn stdio_e2e_full_flow() {
         .collect();
 
     // Should have responses for initialize(1), tools/list(2), tools/call(3).
-    // Plus possibly progress/log notifications.
+    // Plus possibly logging notifications.
     let responses: Vec<&Value> = lines.iter().filter(|v| v.get("id").is_some()).collect();
     assert!(
         responses.len() >= 3,
@@ -365,17 +484,17 @@ async fn stdio_e2e_full_flow() {
         "expected echo response, got: {text}"
     );
 
-    // Check for progress/log notifications.
+    // Check for logging notifications.
     let notifications: Vec<&Value> = lines
         .iter()
         .filter(|v| v.get("method").is_some() && v.get("id").is_none())
         .collect();
-    // Should have at least one progress notification from the tool call.
-    let has_progress = notifications
+    // Should have at least one log notification from the tool call.
+    let has_logging = notifications
         .iter()
-        .any(|n| n["method"] == "notifications/progress");
+        .any(|n| n["method"] == "notifications/message");
     assert!(
-        has_progress,
-        "expected progress notifications, got: {notifications:?}"
+        has_logging,
+        "expected logging notifications, got: {notifications:?}"
     );
 }

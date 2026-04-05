@@ -3,8 +3,8 @@
 //! Each registered agent becomes one `McpTool` whose `call()` runs the agent
 //! loop, collects the final assistant text, and returns it as `ToolContent`.
 //!
-//! Progress notifications are forwarded via the MCP server's outbound channel
-//! so that clients receive real-time updates during long-running agent runs.
+//! Logging notifications are forwarded via the MCP server's outbound channel
+//! so that clients can observe long-running agent runs.
 
 use std::sync::Arc;
 
@@ -24,8 +24,8 @@ use crate::transport::channel_sink::ChannelEventSink;
 /// Calling this tool sends a user message to the agent, runs the full agent
 /// loop, and returns the final assistant text as `ToolContent::text`.
 ///
-/// If `outbound_tx` is set, progress notifications (tool calls, text streaming)
-/// are sent as MCP `notifications/progress` messages during execution.
+/// If `outbound_tx` is set, structured logging notifications are sent during
+/// execution.
 pub struct AgentMcpTool {
     agent_id: String,
     description: String,
@@ -43,28 +43,10 @@ impl AgentMcpTool {
         }
     }
 
-    /// Attach the MCP server's outbound channel for sending progress notifications.
+    /// Attach the MCP server's outbound channel for sending logging notifications.
     pub fn with_outbound(mut self, tx: mpsc::Sender<ServerOutbound>) -> Self {
         self.outbound_tx = Some(tx);
         self
-    }
-
-    /// Send a progress notification via the MCP server's outbound channel.
-    async fn send_progress(&self, progress: f64, total: f64, message: &str) {
-        if let Some(tx) = &self.outbound_tx {
-            let params = serde_json::json!({
-                "progressToken": self.agent_id,
-                "progress": progress,
-                "total": total,
-                "message": message,
-            });
-            let notification = JsonRpcNotification {
-                jsonrpc: "2.0".to_string(),
-                method: "notifications/progress".to_string(),
-                params: Some(params),
-            };
-            let _ = tx.send(ServerOutbound::Notification(notification)).await;
-        }
     }
 
     /// Send a log notification via the MCP server's outbound channel.
@@ -73,7 +55,7 @@ impl AgentMcpTool {
             let params = serde_json::json!({
                 "level": level,
                 "logger": format!("agent/{}", self.agent_id),
-                "message": message,
+                "data": message,
             });
             let notification = JsonRpcNotification {
                 jsonrpc: "2.0".to_string(),
@@ -120,12 +102,12 @@ impl McpTool for AgentMcpTool {
             let (event_tx, mut event_rx) = mpsc::unbounded_channel();
             let sink = Arc::new(ChannelEventSink::new(event_tx));
 
-            self.send_progress(0.0, 1.0, "starting agent run").await;
+            self.send_log("info", "starting agent run").await;
 
             let runtime = Arc::clone(&self.runtime);
             let run_handle = tokio::spawn(async move { runtime.run(request, sink).await });
 
-            // Collect text deltas and emit progress from agent events.
+            // Collect text deltas and emit logs from agent events.
             let mut assistant_text = String::new();
             let mut step_count: u32 = 0;
             while let Some(event) = event_rx.recv().await {
@@ -135,12 +117,7 @@ impl McpTool for AgentMcpTool {
                     }
                     AgentEvent::StepStart { .. } => {
                         step_count += 1;
-                        self.send_progress(
-                            step_count as f64,
-                            0.0, // total unknown
-                            &format!("step {step_count}"),
-                        )
-                        .await;
+                        self.send_log("info", &format!("step {step_count}")).await;
                     }
                     AgentEvent::ToolCallStart { name, .. } => {
                         self.send_log("info", &format!("calling tool: {name}"))
@@ -174,7 +151,7 @@ impl McpTool for AgentMcpTool {
             // Await the run to propagate panics.
             match run_handle.await {
                 Ok(Ok(_)) => {
-                    self.send_progress(1.0, 1.0, "completed").await;
+                    self.send_log("notice", "completed").await;
                 }
                 Ok(Err(e)) => {
                     self.send_log("error", &format!("agent run failed: {e}"))
@@ -263,12 +240,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn progress_notifications_are_sent() {
+    async fn logging_notifications_are_sent() {
         let (tx, mut rx) = mpsc::channel(64);
         let tool = AgentMcpTool::new("test-agent".to_string(), "test".to_string(), test_runtime())
             .with_outbound(tx);
 
-        // Call will fail (stub resolver), but progress should be sent first.
+        // Call will fail (stub resolver), but logs should be sent first.
         let _ = tool.call(json!({"message": "hello"})).await;
 
         // Collect all notifications.
@@ -279,12 +256,12 @@ mod tests {
             }
         }
 
-        // Should have at least the "starting" progress notification.
+        // Should have at least one structured logging notification.
         assert!(
             notifications
                 .iter()
-                .any(|n| n.method == "notifications/progress"),
-            "expected at least one progress notification, got: {notifications:?}"
+                .any(|n| n.method == "notifications/message"),
+            "expected at least one logging notification, got: {notifications:?}"
         );
     }
 }
