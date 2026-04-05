@@ -1,4 +1,10 @@
 //! ACP encoder: maps AgentEvent to AcpEvent (JSON-RPC 2.0).
+//!
+//! Aligned with the ACP specification:
+//! - Tool call updates use spec-compliant status (pending/in_progress/completed/failed)
+//! - Permission requests use structured PermissionOption with optionId/name/kind
+//! - StopReason uses spec values (end_turn, max_tokens, max_turn_requests, refusal, cancelled)
+//! - Tool calls include kind, title, and locations where available
 
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::lifecycle::TerminationReason;
@@ -7,7 +13,10 @@ use awaken_contract::contract::transport::Transcoder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::types::{PermissionOption, StopReason, ToolCallStatus};
+use super::types::{
+    FileDiff, FileLocation, PermissionOption, PermissionOptionKind, StopReason, ToolCallKind,
+    ToolCallStatus,
+};
 use crate::protocols::shared::{self, TerminalGuard};
 
 /// ACP protocol events.
@@ -17,7 +26,7 @@ pub enum AcpEvent {
     #[serde(rename = "session/update")]
     SessionUpdate(Box<SessionUpdateParams>),
     #[serde(rename = "session/request_permission")]
-    RequestPermission(RequestPermissionParams),
+    RequestPermission(Box<RequestPermissionParams>),
 }
 
 /// Payload for `session/update` notifications.
@@ -28,8 +37,6 @@ pub struct SessionUpdateParams {
     pub agent_message_chunk: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_thought_chunk: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_call: Option<AcpToolCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_update: Option<AcpToolCallUpdate>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -49,7 +56,6 @@ impl SessionUpdateParams {
         Self {
             agent_message_chunk: None,
             agent_thought_chunk: None,
-            tool_call: None,
             tool_call_update: None,
             finished: None,
             error: None,
@@ -60,23 +66,46 @@ impl SessionUpdateParams {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AcpToolCall {
-    pub id: String,
-    pub name: String,
-    pub arguments: Value,
-}
-
+/// ACP tool call update — spec-compliant with toolCallId, title, kind, status,
+/// content, locations, rawInput, rawOutput, diffs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpToolCallUpdate {
-    pub id: String,
+    pub tool_call_id: String,
     pub status: ToolCallStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<Value>,
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ToolCallKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locations: Option<Vec<FileLocation>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_input: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_output: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diffs: Option<Vec<FileDiff>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+impl AcpToolCallUpdate {
+    fn new(tool_call_id: impl Into<String>, status: ToolCallStatus) -> Self {
+        Self {
+            tool_call_id: tool_call_id.into(),
+            status,
+            title: None,
+            kind: None,
+            content: None,
+            locations: None,
+            raw_input: None,
+            raw_output: None,
+            diffs: None,
+            error: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -105,16 +134,17 @@ pub struct AcpActivity {
     pub patch: Option<Vec<Value>>,
 }
 
+/// Parameters for `session/request_permission` RPC (Agent → Client).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestPermissionParams {
-    pub tool_call_id: String,
-    pub tool_name: String,
-    pub tool_args: Value,
+    pub session_id: String,
+    pub tool_call: AcpToolCallUpdate,
     pub options: Vec<PermissionOption>,
 }
 
-// Factory methods
+// ── Factory methods ─────────────────────────────────────────────────
+
 impl AcpEvent {
     pub fn agent_message(chunk: impl Into<String>) -> Self {
         Self::SessionUpdate(Box::new(SessionUpdateParams {
@@ -130,49 +160,37 @@ impl AcpEvent {
         }))
     }
 
-    pub fn tool_call(id: impl Into<String>, name: impl Into<String>, arguments: Value) -> Self {
+    pub fn tool_call_pending(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: Value,
+    ) -> Self {
+        let name_str: String = name.into();
+        let kind = infer_tool_kind(&name_str);
+        let mut update = AcpToolCallUpdate::new(id, ToolCallStatus::Pending);
+        update.title = Some(name_str);
+        update.kind = Some(kind);
+        update.raw_input = Some(arguments);
         Self::SessionUpdate(Box::new(SessionUpdateParams {
-            tool_call: Some(AcpToolCall {
-                id: id.into(),
-                name: name.into(),
-                arguments,
-            }),
+            tool_call_update: Some(update),
             ..SessionUpdateParams::empty()
         }))
     }
 
     pub fn tool_call_completed(id: impl Into<String>, result: Value) -> Self {
+        let mut update = AcpToolCallUpdate::new(id, ToolCallStatus::Completed);
+        update.raw_output = Some(result);
         Self::SessionUpdate(Box::new(SessionUpdateParams {
-            tool_call_update: Some(AcpToolCallUpdate {
-                id: id.into(),
-                status: ToolCallStatus::Completed,
-                result: Some(result),
-                error: None,
-            }),
+            tool_call_update: Some(update),
             ..SessionUpdateParams::empty()
         }))
     }
 
-    pub fn tool_call_denied(id: impl Into<String>) -> Self {
+    pub fn tool_call_failed(id: impl Into<String>, error: impl Into<String>) -> Self {
+        let mut update = AcpToolCallUpdate::new(id, ToolCallStatus::Failed);
+        update.error = Some(error.into());
         Self::SessionUpdate(Box::new(SessionUpdateParams {
-            tool_call_update: Some(AcpToolCallUpdate {
-                id: id.into(),
-                status: ToolCallStatus::Denied,
-                result: None,
-                error: None,
-            }),
-            ..SessionUpdateParams::empty()
-        }))
-    }
-
-    pub fn tool_call_errored(id: impl Into<String>, error: impl Into<String>) -> Self {
-        Self::SessionUpdate(Box::new(SessionUpdateParams {
-            tool_call_update: Some(AcpToolCallUpdate {
-                id: id.into(),
-                status: ToolCallStatus::Errored,
-                result: None,
-                error: Some(error.into()),
-            }),
+            tool_call_update: Some(update),
             ..SessionUpdateParams::empty()
         }))
     }
@@ -244,35 +262,100 @@ impl AcpEvent {
     }
 
     pub fn request_permission(
+        session_id: impl Into<String>,
         tool_call_id: impl Into<String>,
         tool_name: impl Into<String>,
         tool_args: Value,
     ) -> Self {
-        Self::RequestPermission(RequestPermissionParams {
-            tool_call_id: tool_call_id.into(),
-            tool_name: tool_name.into(),
-            tool_args,
-            options: vec![
-                PermissionOption::AllowOnce,
-                PermissionOption::AllowAlways,
-                PermissionOption::RejectOnce,
-                PermissionOption::RejectAlways,
-            ],
-        })
+        let name_str: String = tool_name.into();
+        let mut tc = AcpToolCallUpdate::new(tool_call_id, ToolCallStatus::Pending);
+        tc.title = Some(name_str.clone());
+        tc.kind = Some(infer_tool_kind(&name_str));
+        tc.raw_input = Some(tool_args);
+
+        Self::RequestPermission(Box::new(RequestPermissionParams {
+            session_id: session_id.into(),
+            tool_call: tc,
+            options: default_permission_options(),
+        }))
     }
 }
+
+/// Build the default set of permission options with stable IDs.
+fn default_permission_options() -> Vec<PermissionOption> {
+    vec![
+        PermissionOption {
+            option_id: "opt_allow_once".into(),
+            name: "Allow once".into(),
+            kind: PermissionOptionKind::AllowOnce,
+        },
+        PermissionOption {
+            option_id: "opt_allow_always".into(),
+            name: "Allow always".into(),
+            kind: PermissionOptionKind::AllowAlways,
+        },
+        PermissionOption {
+            option_id: "opt_reject_once".into(),
+            name: "Reject once".into(),
+            kind: PermissionOptionKind::RejectOnce,
+        },
+        PermissionOption {
+            option_id: "opt_reject_always".into(),
+            name: "Reject always".into(),
+            kind: PermissionOptionKind::RejectAlways,
+        },
+    ]
+}
+
+/// Infer a tool call kind from the tool name using common heuristics.
+fn infer_tool_kind(name: &str) -> ToolCallKind {
+    let lower = name.to_ascii_lowercase();
+    if lower.contains("read") || lower.contains("cat") || lower.contains("view") {
+        ToolCallKind::Read
+    } else if lower.contains("edit") || lower.contains("write") || lower.contains("patch") {
+        ToolCallKind::Edit
+    } else if lower.contains("delete") || lower.contains("remove") || lower.contains("rm") {
+        ToolCallKind::Delete
+    } else if lower.contains("move") || lower.contains("rename") || lower.contains("mv") {
+        ToolCallKind::Move
+    } else if lower.contains("search") || lower.contains("grep") || lower.contains("find") {
+        ToolCallKind::Search
+    } else if lower.contains("bash")
+        || lower.contains("exec")
+        || lower.contains("run")
+        || lower.contains("shell")
+    {
+        ToolCallKind::Execute
+    } else if lower.contains("think") || lower.contains("reason") || lower.contains("plan") {
+        ToolCallKind::Think
+    } else if lower.contains("fetch") || lower.contains("http") || lower.contains("curl") {
+        ToolCallKind::Fetch
+    } else {
+        ToolCallKind::Other
+    }
+}
+
+// ── Stateful encoder ────────────────────────────────────────────────
 
 /// Stateful ACP encoder.
 #[derive(Debug)]
 pub struct AcpEncoder {
     guard: TerminalGuard,
+    /// Session ID to attach to permission requests.
+    session_id: String,
 }
 
 impl AcpEncoder {
     pub fn new() -> Self {
         Self {
             guard: TerminalGuard::new(),
+            session_id: String::new(),
         }
+    }
+
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = session_id.into();
+        self
     }
 
     pub fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<AcpEvent> {
@@ -284,7 +367,7 @@ impl AcpEncoder {
             AgentEvent::TextDelta { delta } => vec![AcpEvent::agent_message(delta)],
             AgentEvent::ReasoningDelta { delta } => vec![AcpEvent::agent_thought(delta)],
 
-            // ACP bundles tool lifecycle into a single ToolCallReady -> ToolCallDone flow;
+            // ACP bundles tool lifecycle into a single pending → completed flow;
             // streaming start/delta events have no ACP-protocol equivalent.
             AgentEvent::ToolCallStart { .. } | AgentEvent::ToolCallDelta { .. } => Vec::new(),
 
@@ -293,14 +376,19 @@ impl AcpEncoder {
                 name,
                 arguments,
             } => {
-                let mut events = vec![AcpEvent::tool_call(id, name, arguments.clone())];
+                let mut events = vec![AcpEvent::tool_call_pending(id, name, arguments.clone())];
                 if name.eq_ignore_ascii_case("PermissionConfirm") {
                     let tool_name = arguments
                         .get("tool_name")
                         .and_then(Value::as_str)
                         .unwrap_or("unknown");
                     let tool_args = arguments.get("tool_args").cloned().unwrap_or(Value::Null);
-                    events.push(AcpEvent::request_permission(id, tool_name, tool_args));
+                    events.push(AcpEvent::request_permission(
+                        &self.session_id,
+                        id,
+                        tool_name,
+                        tool_args,
+                    ));
                 }
                 events
             }
@@ -314,17 +402,19 @@ impl AcpEncoder {
                         .message
                         .clone()
                         .unwrap_or_else(|| "tool execution error".to_string());
-                    vec![AcpEvent::tool_call_errored(id, error_text)]
+                    vec![AcpEvent::tool_call_failed(id, error_text)]
                 }
             },
 
             AgentEvent::ToolCallResumed { target_id, result } => {
                 match shared::classify_resumed_result(result) {
                     shared::ResumedOutcome::Error { message } => {
-                        vec![AcpEvent::tool_call_errored(target_id, message)]
+                        vec![AcpEvent::tool_call_failed(target_id, message)]
                     }
                     shared::ResumedOutcome::Denied => {
-                        vec![AcpEvent::tool_call_denied(target_id)]
+                        // Denied is reported as failed with a denial message per spec
+                        // (spec has no "denied" status — only pending/in_progress/completed/failed)
+                        vec![AcpEvent::tool_call_failed(target_id, "permission denied")]
                     }
                     shared::ResumedOutcome::Success => {
                         vec![AcpEvent::tool_call_completed(target_id, result.clone())]
@@ -413,10 +503,13 @@ impl Transcoder for AcpEncoder {
 fn map_termination(reason: &TerminationReason) -> StopReason {
     match reason {
         TerminationReason::NaturalEnd | TerminationReason::BehaviorRequested => StopReason::EndTurn,
-        TerminationReason::Suspended => StopReason::Suspended,
+        // Suspended is not in ACP spec; map to cancelled as the closest equivalent
+        TerminationReason::Suspended => StopReason::Cancelled,
         TerminationReason::Cancelled => StopReason::Cancelled,
-        TerminationReason::Error(_) => StopReason::Error,
-        TerminationReason::Blocked(_) => StopReason::Error,
+        // Error terminations map to end_turn with a preceding error event
+        TerminationReason::Error(_) => StopReason::EndTurn,
+        // Blocked maps to refusal
+        TerminationReason::Blocked(_) => StopReason::Refusal,
         TerminationReason::Stopped(stopped) => match stopped.code.as_str() {
             "max_rounds_reached" | "timeout_reached" | "token_budget_exceeded" => {
                 StopReason::MaxTokens
@@ -466,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_ready_emits_tool_call() {
+    fn tool_call_ready_emits_pending_update() {
         let mut enc = AcpEncoder::new();
         let events = enc.on_agent_event(&AgentEvent::ToolCallReady {
             id: "c1".into(),
@@ -474,10 +567,17 @@ mod tests {
             arguments: json!({"q": "rust"}),
         });
         assert_eq!(events.len(), 1);
-        assert_eq!(
-            events[0],
-            AcpEvent::tool_call("c1", "search", json!({"q": "rust"}))
-        );
+        match &events[0] {
+            AcpEvent::SessionUpdate(params) => {
+                let update = params.tool_call_update.as_ref().unwrap();
+                assert_eq!(update.tool_call_id, "c1");
+                assert_eq!(update.status, ToolCallStatus::Pending);
+                assert_eq!(update.title.as_deref(), Some("search"));
+                assert_eq!(update.kind, Some(ToolCallKind::Search));
+                assert_eq!(update.raw_input, Some(json!({"q": "rust"})));
+            }
+            other => panic!("expected SessionUpdate, got: {other:?}"),
+        }
     }
 
     #[test]
@@ -493,7 +593,7 @@ mod tests {
         match &events[0] {
             AcpEvent::SessionUpdate(params) => {
                 let update = params.tool_call_update.as_ref().unwrap();
-                assert_eq!(update.id, "c1");
+                assert_eq!(update.tool_call_id, "c1");
                 assert_eq!(update.status, ToolCallStatus::Completed);
             }
             other => panic!("expected SessionUpdate, got: {other:?}"),
@@ -501,7 +601,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_done_error_maps_to_errored() {
+    fn tool_call_done_error_maps_to_failed() {
         let mut enc = AcpEncoder::new();
         let events = enc.on_agent_event(&AgentEvent::ToolCallDone {
             id: "c1".into(),
@@ -513,7 +613,7 @@ mod tests {
         match &events[0] {
             AcpEvent::SessionUpdate(params) => {
                 let update = params.tool_call_update.as_ref().unwrap();
-                assert_eq!(update.status, ToolCallStatus::Errored);
+                assert_eq!(update.status, ToolCallStatus::Failed);
                 assert_eq!(update.error.as_deref(), Some("backend failure"));
             }
             other => panic!("expected SessionUpdate, got: {other:?}"),
@@ -546,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn suspended_maps_to_suspended() {
+    fn suspended_maps_to_cancelled() {
         let mut enc = AcpEncoder::new();
         let events = enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
@@ -554,7 +654,7 @@ mod tests {
             result: None,
             termination: TerminationReason::Suspended,
         });
-        assert_eq!(events[0], AcpEvent::finished(StopReason::Suspended));
+        assert_eq!(events[0], AcpEvent::finished(StopReason::Cancelled));
     }
 
     #[test]
@@ -568,7 +668,19 @@ mod tests {
         });
         assert_eq!(events.len(), 2);
         assert_eq!(events[0], AcpEvent::error("boom", None));
-        assert_eq!(events[1], AcpEvent::finished(StopReason::Error));
+        assert_eq!(events[1], AcpEvent::finished(StopReason::EndTurn));
+    }
+
+    #[test]
+    fn blocked_maps_to_refusal() {
+        let mut enc = AcpEncoder::new();
+        let events = enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::Blocked("unsafe tool".into()),
+        });
+        assert_eq!(events[0], AcpEvent::finished(StopReason::Refusal));
     }
 
     #[test]
@@ -641,7 +753,8 @@ mod tests {
 
     #[test]
     fn request_permission_roundtrip() {
-        let event = AcpEvent::request_permission("fc_1", "bash", json!({"command": "rm"}));
+        let event =
+            AcpEvent::request_permission("sess_1", "fc_1", "bash", json!({"command": "rm"}));
         let json = serde_json::to_string(&event).unwrap();
         let restored: AcpEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(event, restored);
@@ -663,14 +776,23 @@ mod tests {
 
     #[test]
     fn permission_confirm_tool_emits_request_permission() {
-        let mut enc = AcpEncoder::new();
+        let mut enc = AcpEncoder::new().with_session_id("sess_test");
         let events = enc.on_agent_event(&AgentEvent::ToolCallReady {
             id: "c1".into(),
             name: "PermissionConfirm".into(),
             arguments: json!({"tool_name": "bash", "tool_args": {"cmd": "ls"}}),
         });
         assert_eq!(events.len(), 2);
-        assert!(matches!(&events[1], AcpEvent::RequestPermission(_)));
+        match &events[1] {
+            AcpEvent::RequestPermission(params) => {
+                assert_eq!(params.session_id, "sess_test");
+                assert_eq!(params.tool_call.tool_call_id, "c1");
+                assert_eq!(params.options.len(), 4);
+                assert_eq!(params.options[0].option_id, "opt_allow_once");
+                assert_eq!(params.options[0].kind, PermissionOptionKind::AllowOnce);
+            }
+            other => panic!("expected RequestPermission, got: {other:?}"),
+        }
     }
 
     #[test]
@@ -699,10 +821,9 @@ mod tests {
         });
         match &events[0] {
             AcpEvent::SessionUpdate(params) => {
-                assert_eq!(
-                    params.tool_call_update.as_ref().unwrap().status,
-                    ToolCallStatus::Denied
-                );
+                let update = params.tool_call_update.as_ref().unwrap();
+                assert_eq!(update.status, ToolCallStatus::Failed);
+                assert_eq!(update.error.as_deref(), Some("permission denied"));
             }
             other => panic!("expected SessionUpdate, got: {other:?}"),
         }
@@ -757,5 +878,17 @@ mod tests {
                 Some(true)
             )
         );
+    }
+
+    #[test]
+    fn infer_tool_kind_heuristics() {
+        assert_eq!(infer_tool_kind("read_file"), ToolCallKind::Read);
+        assert_eq!(infer_tool_kind("edit_file"), ToolCallKind::Edit);
+        assert_eq!(infer_tool_kind("bash"), ToolCallKind::Execute);
+        assert_eq!(infer_tool_kind("search"), ToolCallKind::Search);
+        assert_eq!(infer_tool_kind("grep"), ToolCallKind::Search);
+        assert_eq!(infer_tool_kind("http_fetch"), ToolCallKind::Fetch);
+        assert_eq!(infer_tool_kind("think"), ToolCallKind::Think);
+        assert_eq!(infer_tool_kind("unknown_tool"), ToolCallKind::Other);
     }
 }
