@@ -10,12 +10,13 @@ The Agent-to-Agent (A2A) adapter implements the [A2A protocol](https://a2a-proto
 |-------|--------|-------------|
 | `/.well-known/agent-card.json` | GET | Discovery endpoint for the public/default agent card. |
 | `/v1/a2a/message:send` | POST | Send a message to the public/default A2A agent. Returns a task wrapper. |
-| `/v1/a2a/message:stream` | POST | Streaming send. Returns `501` unless `capabilities.streaming=true`. |
+| `/v1/a2a/message:stream` | POST | Streaming send over SSE. |
 | `/v1/a2a/tasks` | GET | List A2A tasks. |
 | `/v1/a2a/tasks/:task_id` | GET | Poll task status by ID. |
 | `/v1/a2a/tasks/:task_id:cancel` | POST | Cancel a running task. |
-| `/v1/a2a/tasks/:task_id:subscribe` | POST | Subscribe to task updates. Returns `501` unless streaming is enabled. |
-| `/v1/a2a/tasks/:task_id/pushNotificationConfigs` | POST | Create a push notification config. Returns unsupported unless push notifications are enabled. |
+| `/v1/a2a/tasks/:task_id:subscribe` | POST | Subscribe to task updates over SSE. |
+| `/v1/a2a/tasks/:task_id/pushNotificationConfigs` | POST | Create a push notification config. |
+| `/v1/a2a/tasks/:task_id/pushNotificationConfigs` | GET | List push notification configs. |
 | `/v1/a2a/tasks/:task_id/pushNotificationConfigs/:config_id` | GET / DELETE | Read or delete a push notification config. |
 | `/v1/a2a/extendedAgentCard` | GET | Extended agent card. Returns `501` unless `capabilities.extendedAgentCard=true`. |
 
@@ -38,8 +39,8 @@ The discovery endpoint returns an `AgentCard` describing the exposed interface a
   ],
   "version": "1.0.0",
   "capabilities": {
-    "streaming": false,
-    "pushNotifications": false,
+    "streaming": true,
+    "pushNotifications": true,
     "stateTransitionHistory": false,
     "extendedAgentCard": false
   },
@@ -115,15 +116,14 @@ If `returnImmediately` is omitted or `false`, the adapter waits for a terminal/i
 
 Task states follow the v1 enum names such as `TASK_STATE_SUBMITTED`, `TASK_STATE_WORKING`, `TASK_STATE_COMPLETED`, `TASK_STATE_FAILED`, and `TASK_STATE_CANCELED`.
 
-## Unsupported optional capabilities
+## Optional capability defaults
 
-Awaken currently advertises the following A2A capabilities as disabled by default:
+Awaken currently enables these A2A capabilities by default:
 
-- `streaming = false`
-- `pushNotifications = false`
-- `extendedAgentCard = false`
+- `streaming = true`
+- `pushNotifications = true`
 
-The corresponding endpoints are wired and return spec-shaped unsupported/precondition errors instead of silently falling back.
+`extendedAgentCard` remains opt-in and is enabled only when `ServerConfig.a2a_extended_card_bearer_token` is configured. When disabled, the extended card endpoints return spec-shaped unsupported errors.
 
 ## Remote Agent Delegation
 

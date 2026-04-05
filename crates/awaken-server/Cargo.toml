@@ -29,6 +29,7 @@ tokio-stream = "0.1"
 bytes = "1"
 parking_lot = { workspace = true }
 arc-swap = "1"
+reqwest = { workspace = true }
 
 # MCP server
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["server", "client"] }
@@ -48,7 +49,6 @@ awaken-stores = { workspace = true }
 awaken-runtime = { workspace = true }
 awaken-ext-observability = { workspace = true, features = ["otel"] }
 async-trait = { workspace = true }
-reqwest = { workspace = true }
 genai = { workspace = true }
 uuid = { workspace = true }
 

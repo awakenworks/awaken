@@ -153,6 +153,7 @@ pub struct ServerConfig {
     pub replay_buffer_capacity: usize,     // default: 1024
     pub shutdown: ShutdownConfig,
     pub max_concurrent_requests: usize,    // default: 100
+    pub a2a_extended_card_bearer_token: Option<String>,
 }
 
 pub struct ShutdownConfig {
@@ -168,6 +169,7 @@ pub struct ShutdownConfig {
 | `sse_buffer_size` | `usize` | `64` | Maximum SSE channel buffer size per connection |
 | `replay_buffer_capacity` | `usize` | `1024` | Maximum SSE frames buffered per run for reconnection replay |
 | `max_concurrent_requests` | `usize` | `100` | Maximum in-flight requests; excess requests receive 503 |
+| `a2a_extended_card_bearer_token` | `Option<String>` | `None` | Enables authenticated `GET /v1/a2a/extendedAgentCard` when set |
 | `shutdown.timeout_secs` | `u64` | `30` | Seconds to wait for in-flight requests to drain before force-exiting |
 
 ## MailboxConfig

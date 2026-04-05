@@ -54,6 +54,9 @@ pub struct ServerConfig {
     /// Additional requests receive 503 Service Unavailable.
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent_requests: usize,
+    /// Optional bearer token required for authenticated extended A2A agent cards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub a2a_extended_card_bearer_token: Option<String>,
 }
 
 fn default_sse_buffer() -> usize {
@@ -76,6 +79,7 @@ impl Default for ServerConfig {
             replay_buffer_capacity: default_replay_buffer_capacity(),
             shutdown: ShutdownConfig::default(),
             max_concurrent_requests: default_max_concurrent(),
+            a2a_extended_card_bearer_token: None,
         }
     }
 }
@@ -273,6 +277,7 @@ mod tests {
             replay_buffer_capacity: 512,
             shutdown: ShutdownConfig { timeout_secs: 10 },
             max_concurrent_requests: 50,
+            a2a_extended_card_bearer_token: None,
         };
         let json = serde_json::to_string(&config).unwrap();
         let parsed: ServerConfig = serde_json::from_str(&json).unwrap();

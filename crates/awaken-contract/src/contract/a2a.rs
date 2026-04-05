@@ -322,7 +322,7 @@ pub struct SendMessageConfiguration {
         skip_serializing_if = "Option::is_none",
         alias = "pushNotificationConfig"
     )]
-    pub task_push_notification_config: Option<Value>,
+    pub task_push_notification_config: Option<PushNotificationConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_length: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -361,6 +361,41 @@ pub struct StreamResponse {
     pub status_update: Option<TaskStatusUpdateEvent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_update: Option<TaskArtifactUpdateEvent>,
+}
+
+/// Push notification transport authentication details.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthenticationInfo {
+    pub scheme: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<String>,
+}
+
+/// Push notification configuration associated with a task.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PushNotificationConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<AuthenticationInfo>,
+}
+
+/// Push notification configuration list payload.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPushNotificationConfigsResponse {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configs: Vec<PushNotificationConfig>,
+    pub next_page_token: String,
 }
 
 /// Task status update event.
@@ -486,6 +521,25 @@ mod tests {
         assert!(cfg.task_push_notification_config.is_some());
         assert_eq!(cfg.history_length, Some(3));
         assert_eq!(cfg.return_immediately, Some(true));
+    }
+
+    #[test]
+    fn push_notification_config_roundtrip() {
+        let config = PushNotificationConfig {
+            tenant: Some("tenant-a".into()),
+            id: Some("cfg-1".into()),
+            task_id: Some("task-1".into()),
+            url: "https://example.com/webhook".into(),
+            token: Some("tok-1".into()),
+            authentication: Some(AuthenticationInfo {
+                scheme: "Bearer".into(),
+                credentials: Some("secret".into()),
+            }),
+        };
+
+        let value = serde_json::to_value(&config).unwrap();
+        let parsed: PushNotificationConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, config);
     }
 
     #[test]

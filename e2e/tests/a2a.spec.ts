@@ -13,8 +13,8 @@ test.describe('A2A protocol', () => {
     expect(card.supportedInterfaces?.[0]?.protocolVersion).toBe('1.0');
     expect(card.provider?.organization).toBe('Awaken');
     expect(card.provider?.url).toMatch(/^http:\/\/127\.0\.0\.1:38080$/);
-    expect(card.capabilities?.streaming).toBe(false);
-    expect(card.capabilities?.pushNotifications).toBe(false);
+    expect(card.capabilities?.streaming).toBe(true);
+    expect(card.capabilities?.pushNotifications).toBe(true);
     expect(card.capabilities?.extendedAgentCard).toBe(false);
     expect(card.url).toBeUndefined();
   });
@@ -52,13 +52,51 @@ test.describe('A2A protocol', () => {
     expect(task.contextId).toBe(taskId);
   });
 
-  test('message:stream is unimplemented when streaming is not advertised', async ({ request }) => {
+  test('message:stream returns SSE updates', async ({ request }) => {
     const { data } = a2aSendMessagePayload('Hello stream');
-    const res = await request.post('/v1/a2a/message:stream', { data });
-    expect(res.status()).toBe(501);
+    const res = await request.post('/v1/a2a/message:stream', {
+      headers: { 'content-type': 'application/a2a+json' },
+      data,
+    });
+    expect(res.ok()).toBeTruthy();
+    expect(res.headers()['content-type']).toContain('text/event-stream');
 
-    const body = await res.json();
-    expect(body.error?.details?.[0]?.reason).toBe('UNSUPPORTED_OPERATION');
+    const body = await res.text();
+    expect(body).toContain('"task"');
+    expect(body).toContain('TASK_STATE_');
+  });
+
+  test('push notification config CRUD works', async ({ request }) => {
+    const { taskId, data } = a2aSendMessagePayload('Hello push configs');
+    const sendRes = await request.post('/v1/a2a/message:send', { data });
+    expect(sendRes.ok()).toBeTruthy();
+
+    const createRes = await request.post(`/v1/a2a/tasks/${taskId}/pushNotificationConfigs`, {
+      data: {
+        url: 'https://example.com/webhook',
+        token: 'push-token',
+      },
+    });
+    expect(createRes.ok()).toBeTruthy();
+    const created = await createRes.json();
+    expect(created.taskId).toBe(taskId);
+    expect(created.id).toBeTruthy();
+
+    const listRes = await request.get(`/v1/a2a/tasks/${taskId}/pushNotificationConfigs`);
+    expect(listRes.ok()).toBeTruthy();
+    const listed = await listRes.json();
+    expect(Array.isArray(listed.configs)).toBe(true);
+    expect(listed.configs[0]?.id).toBe(created.id);
+
+    const getRes = await request.get(
+      `/v1/a2a/tasks/${taskId}/pushNotificationConfigs/${created.id}`,
+    );
+    expect(getRes.ok()).toBeTruthy();
+
+    const deleteRes = await request.delete(
+      `/v1/a2a/tasks/${taskId}/pushNotificationConfigs/${created.id}`,
+    );
+    expect(deleteRes.status()).toBe(204);
   });
 
   test('unsupported version is rejected', async ({ request }) => {

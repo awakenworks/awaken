@@ -2,7 +2,7 @@
 
 use awaken_server::protocols::a2a::http::{
     A2aMessage, AgentCapabilities, AgentCard, AgentInterface, AgentSkill, MessageRole, Part,
-    SendMessageConfiguration, SendMessageRequest, TaskState,
+    PushNotificationConfig, SendMessageConfiguration, SendMessageRequest, TaskState,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -95,7 +95,14 @@ fn send_message_request_uses_role_and_wrapper_parts() {
         },
         configuration: Some(SendMessageConfiguration {
             accepted_output_modes: vec!["text/plain".into()],
-            task_push_notification_config: Some(json!({"url": "https://example.com"})),
+            task_push_notification_config: Some(PushNotificationConfig {
+                tenant: Some("alpha".into()),
+                id: None,
+                task_id: Some("task-1".into()),
+                url: "https://example.com".into(),
+                token: None,
+                authentication: None,
+            }),
             history_length: Some(2),
             return_immediately: Some(true),
         }),

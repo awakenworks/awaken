@@ -1,7 +1,7 @@
 //! A2A HTTP integration tests for the current A2A v1.0 surface.
 
 use async_trait::async_trait;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
+use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::builder::AgentRuntimeBuilder;
@@ -13,6 +13,7 @@ use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use std::sync::Arc;
+use std::time::Duration;
 use tower::ServiceExt;
 
 struct ImmediateExecutor;
@@ -37,7 +38,33 @@ impl awaken_contract::contract::executor::LlmExecutor for ImmediateExecutor {
     }
 }
 
-fn make_test_app(agent_ids: &[&str]) -> axum::Router {
+struct DelayedExecutor;
+
+#[async_trait]
+impl LlmExecutor for DelayedExecutor {
+    async fn execute(
+        &self,
+        _request: InferenceRequest,
+    ) -> Result<StreamResult, InferenceExecutionError> {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        Ok(StreamResult {
+            content: vec![],
+            tool_calls: vec![],
+            usage: Some(TokenUsage::default()),
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        })
+    }
+
+    fn name(&self) -> &str {
+        "delayed"
+    }
+}
+
+fn build_test_app<E>(agent_ids: &[&str], executor: Arc<E>, config: ServerConfig) -> axum::Router
+where
+    E: LlmExecutor + 'static,
+{
     let mut builder = AgentRuntimeBuilder::new()
         .with_model(
             "test-model",
@@ -46,7 +73,7 @@ fn make_test_app(agent_ids: &[&str]) -> axum::Router {
                 model_name: "mock-model".into(),
             },
         )
-        .with_provider("mock", Arc::new(ImmediateExecutor));
+        .with_provider("mock", executor);
 
     for agent_id in agent_ids {
         builder = builder.with_agent_spec(AgentSpec {
@@ -73,9 +100,17 @@ fn make_test_app(agent_ids: &[&str]) -> axum::Router {
         mailbox,
         store.clone(),
         runtime.resolver_arc(),
-        ServerConfig::default(),
+        config,
     );
     build_router().with_state(state)
+}
+
+fn make_test_app(agent_ids: &[&str]) -> axum::Router {
+    build_test_app(
+        agent_ids,
+        Arc::new(ImmediateExecutor),
+        ServerConfig::default(),
+    )
 }
 
 async fn request_json(
@@ -116,6 +151,47 @@ async fn request_json(
     (status, json)
 }
 
+async fn request_text(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    headers: &[(&str, &str)],
+    body: Option<Value>,
+) -> (StatusCode, String, String) {
+    let mut req = Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        req = req.header(*name, *value);
+    }
+
+    let req = req
+        .body(match body {
+            Some(body) => axum::body::Body::from(body.to_string()),
+            None => axum::body::Body::empty(),
+        })
+        .expect("request build");
+
+    let resp = app
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("app should handle request");
+    let status = resp.status();
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let body = to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .expect("body readable");
+    (
+        status,
+        content_type,
+        String::from_utf8(body.to_vec()).expect("utf-8"),
+    )
+}
+
 fn send_message_payload(task_id: &str, message_id: &str, text: &str) -> Value {
     json!({
         "message": {
@@ -149,10 +225,10 @@ async fn well_known_agent_card_returns_latest_shape() {
     );
     assert_eq!(body["provider"]["organization"].as_str(), Some("Awaken"));
     assert_eq!(body["provider"]["url"].as_str(), Some("http://localhost"));
-    assert_eq!(body["capabilities"]["streaming"].as_bool(), Some(false));
+    assert_eq!(body["capabilities"]["streaming"].as_bool(), Some(true));
     assert_eq!(
         body["capabilities"]["pushNotifications"].as_bool(),
-        Some(false)
+        Some(true)
     );
     assert_eq!(
         body["capabilities"]["extendedAgentCard"].as_bool(),
@@ -236,22 +312,218 @@ async fn tenant_message_send_is_visible_in_tenant_task_list() {
 }
 
 #[tokio::test]
-async fn message_stream_is_unimplemented_when_streaming_not_advertised() {
+async fn message_stream_returns_sse_updates() {
     let app = make_test_app(&["alpha"]);
-    let (status, body) = request_json(
+    let (status, content_type, body) = request_text(
         &app,
         "POST",
         "/v1/a2a/message:stream",
-        &[("content-type", "application/json")],
+        &[("content-type", "application/a2a+json")],
         Some(send_message_payload("task-stream", "msg-stream", "hello")),
     )
     .await;
 
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-    assert_eq!(
-        body["error"]["details"][0]["reason"].as_str(),
-        Some("UNSUPPORTED_OPERATION")
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        content_type.contains("text/event-stream"),
+        "unexpected content type: {content_type}"
     );
+    assert!(body.contains("\"task\""), "missing task payload: {body}");
+    assert!(
+        body.contains("TASK_STATE_COMPLETED") || body.contains("TASK_STATE_WORKING"),
+        "missing task state in stream: {body}"
+    );
+}
+
+#[tokio::test]
+async fn subscribe_stream_returns_updates_for_existing_task() {
+    let app = build_test_app(
+        &["alpha"],
+        Arc::new(DelayedExecutor),
+        ServerConfig::default(),
+    );
+    let task_id = "task-subscribe";
+
+    let (status, body) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        &[("content-type", "application/json")],
+        Some(json!({
+            "message": {
+                "taskId": task_id,
+                "contextId": task_id,
+                "messageId": "msg-subscribe",
+                "role": "ROLE_USER",
+                "parts": [{"text": "hello"}]
+            },
+            "configuration": {
+                "returnImmediately": true
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+
+    let (status, content_type, body) = request_text(
+        &app,
+        "POST",
+        &format!("/v1/a2a/tasks/{task_id}:subscribe"),
+        &[("content-type", "application/json")],
+        None,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.contains("text/event-stream"));
+    assert!(
+        body.contains("\"task\""),
+        "missing initial task event: {body}"
+    );
+    assert!(
+        body.contains("\"statusUpdate\""),
+        "missing status update event: {body}"
+    );
+    assert!(body.contains("TASK_STATE_COMPLETED"));
+}
+
+#[tokio::test]
+async fn push_notification_configs_roundtrip_and_inline_delivery_work() {
+    use axum::{Json, Router, routing::post};
+    use tokio::sync::oneshot;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind webhook listener");
+    let webhook_addr = listener.local_addr().expect("local addr");
+    let webhook_url = format!("http://{webhook_addr}/notify");
+    let (tx, rx) = oneshot::channel::<Value>();
+    let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
+    let webhook = Router::new().route(
+        "/notify",
+        post({
+            let tx = Arc::clone(&tx);
+            move |Json(payload): Json<Value>| {
+                let tx = Arc::clone(&tx);
+                async move {
+                    if let Some(sender) = tx.lock().expect("tx mutex").take() {
+                        let _ = sender.send(payload.clone());
+                    }
+                    Json(json!({"ok": true}))
+                }
+            }
+        }),
+    );
+    tokio::spawn(async move {
+        axum::serve(listener, webhook).await.expect("serve webhook");
+    });
+
+    let app = make_test_app(&["alpha"]);
+    let task_id = "task-push";
+
+    let (status, body) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        &[("content-type", "application/json")],
+        Some(json!({
+            "message": {
+                "taskId": task_id,
+                "contextId": task_id,
+                "messageId": "msg-push",
+                "role": "ROLE_USER",
+                "parts": [{"text": "hello"}]
+            },
+            "configuration": {
+                "pushNotificationConfig": {
+                    "url": webhook_url,
+                    "token": "push-token"
+                }
+            }
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+
+    let delivered = tokio::time::timeout(Duration::from_secs(2), rx)
+        .await
+        .expect("webhook delivery timed out")
+        .expect("webhook payload should be delivered");
+    assert!(
+        delivered.get("statusUpdate").is_some() || delivered.get("artifactUpdate").is_some(),
+        "unexpected webhook payload: {delivered}"
+    );
+
+    let (status, list) = request_json(
+        &app,
+        "GET",
+        &format!("/v1/a2a/tasks/{task_id}/pushNotificationConfigs"),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let config_id = list["configs"][0]["id"]
+        .as_str()
+        .expect("config id")
+        .to_string();
+
+    let (status, cfg) = request_json(
+        &app,
+        "GET",
+        &format!("/v1/a2a/tasks/{task_id}/pushNotificationConfigs/{config_id}"),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cfg["taskId"].as_str(), Some(task_id));
+
+    let (status, _content_type, deleted) = request_text(
+        &app,
+        "DELETE",
+        &format!("/v1/a2a/tasks/{task_id}/pushNotificationConfigs/{config_id}"),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(deleted.is_empty());
+}
+
+#[tokio::test]
+async fn extended_agent_card_requires_bearer_auth_when_configured() {
+    let app = build_test_app(
+        &["alpha"],
+        Arc::new(ImmediateExecutor),
+        ServerConfig {
+            a2a_extended_card_bearer_token: Some("secret-token".into()),
+            ..Default::default()
+        },
+    );
+
+    let (status, body) = request_json(&app, "GET", "/.well-known/agent-card.json", &[], None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["capabilities"]["extendedAgentCard"].as_bool(),
+        Some(true)
+    );
+
+    let (status, body) = request_json(&app, "GET", "/v1/a2a/extendedAgentCard", &[], None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"]["status"].as_str(), Some("UNAUTHENTICATED"));
+
+    let (status, body) = request_json(
+        &app,
+        "GET",
+        "/v1/a2a/extendedAgentCard",
+        &[("authorization", "Bearer secret-token")],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["name"].as_str(), Some("alpha"));
 }
 
 #[tokio::test]
