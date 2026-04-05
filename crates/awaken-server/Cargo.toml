@@ -31,6 +31,7 @@ arc-swap = "1"
 agent-client-protocol-schema = { workspace = true }
 agent-client-protocol = { workspace = true }
 tokio-util = { workspace = true }
+awaken-ext-mcp = { workspace = true }
 
 # MCP server
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["server", "client"] }

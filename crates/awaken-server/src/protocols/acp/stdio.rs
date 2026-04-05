@@ -11,17 +11,23 @@ use tokio::io::{AsyncBufRead, AsyncWrite, BufReader};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use awaken_contract::contract::content::ContentBlock as RuntimeContentBlock;
+use awaken_contract::contract::content::{ContentBlock as RuntimeContentBlock, ImageSource};
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
-use awaken_runtime::AgentRuntime;
+use awaken_contract::contract::tool::Tool;
+use awaken_ext_mcp::{McpServerConnectionConfig, McpToolRegistryManager};
+use awaken_runtime::{AgentResolver, AgentRuntime, ResolvedAgent, RuntimeError};
 
 use super::encoder::{AcpEncoder, AcpOutput};
 use super::types::{
-    AgentCapabilities, ContentBlock, EmbeddedResource, EmbeddedResourceResource, Implementation,
-    InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse, PromptRequest,
-    PromptResponse, RequestPermissionResponse, ResourceLink,
+    AgentCapabilities, AudioContent, ContentBlock, EmbeddedResource, EmbeddedResourceResource,
+    ImageContent, Implementation, InitializeRequest, InitializeResponse, McpCapabilities,
+    McpServer, NewSessionRequest, NewSessionResponse, PromptCapabilities, PromptRequest,
+    PromptResponse, RequestPermissionResponse, ResourceLink, SessionConfigOption,
+    SessionConfigSelectOption, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse,
 };
+
+const AGENT_CONFIG_ID: &str = "agent";
 
 /// JSON-RPC 2.0 request envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,11 +138,36 @@ pub fn serialize_notification(notification: &JsonRpcNotification) -> String {
 struct SessionState {
     #[allow(dead_code)]
     cwd: String,
+    runtime: Arc<AgentRuntime>,
     agent_id: Option<String>,
+    available_agent_ids: Vec<String>,
     thread_id: String,
 }
 
 type Sessions = Arc<Mutex<HashMap<String, SessionState>>>;
+
+#[derive(Clone)]
+struct ToolAugmentingResolver {
+    inner: Arc<dyn AgentResolver>,
+    extra_tools: Vec<Arc<dyn Tool>>,
+}
+
+impl ToolAugmentingResolver {
+    fn new(inner: Arc<dyn AgentResolver>, extra_tools: Vec<Arc<dyn Tool>>) -> Self {
+        Self { inner, extra_tools }
+    }
+}
+
+impl AgentResolver for ToolAugmentingResolver {
+    fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, RuntimeError> {
+        let agent = self.inner.resolve(agent_id)?;
+        Ok(agent.with_tools(self.extra_tools.clone()))
+    }
+
+    fn agent_ids(&self) -> Vec<String> {
+        self.inner.agent_ids()
+    }
+}
 
 #[derive(Debug)]
 enum ClientCommand {
@@ -216,27 +247,64 @@ impl acp::Agent for AcpAgent {
         if !args.cwd.is_absolute() {
             return Err(acp::Error::new(-32602, "cwd must be an absolute path"));
         }
-        if !args.mcp_servers.is_empty() {
-            return Err(acp::Error::new(
-                -32602,
-                "mcpServers are not supported by this ACP stdio server",
-            ));
-        }
 
         let session_id = generate_session_id();
         let thread_id = uuid::Uuid::now_v7().to_string();
-        let agent_id = select_session_agent_id(self.runtime.resolver())?;
+        let runtime = build_session_runtime(&self.runtime, &args.mcp_servers).await?;
+        let (agent_id, available_agent_ids) = select_session_agent_id(runtime.resolver());
+        let config_options =
+            build_session_config_options(&available_agent_ids, agent_id.as_deref());
 
         self.sessions.lock().await.insert(
             session_id.clone(),
             SessionState {
                 cwd: args.cwd.to_string_lossy().into_owned(),
+                runtime,
                 agent_id,
+                available_agent_ids,
                 thread_id,
             },
         );
 
-        Ok(NewSessionResponse::new(session_id))
+        Ok(NewSessionResponse::new(session_id).config_options(config_options))
+    }
+
+    async fn set_session_config_option(
+        &self,
+        args: SetSessionConfigOptionRequest,
+    ) -> acp::Result<SetSessionConfigOptionResponse> {
+        let mut sessions = self.sessions.lock().await;
+        let Some(session) = sessions.get_mut(args.session_id.0.as_ref()) else {
+            return Err(acp::Error::new(
+                -32002,
+                format!("session not found: {}", args.session_id.0),
+            ));
+        };
+
+        if args.config_id.0.as_ref() != AGENT_CONFIG_ID {
+            return Err(acp::Error::new(
+                -32602,
+                format!("unknown session config option: {}", args.config_id.0),
+            ));
+        }
+
+        let selected_agent_id = args.value.0.as_ref();
+        if !session
+            .available_agent_ids
+            .iter()
+            .any(|agent_id| agent_id == selected_agent_id)
+        {
+            return Err(acp::Error::new(
+                -32602,
+                format!("unknown agent: {selected_agent_id}"),
+            ));
+        }
+
+        session.agent_id = Some(selected_agent_id.to_string());
+        Ok(SetSessionConfigOptionResponse::new(
+            build_session_config_options(&session.available_agent_ids, session.agent_id.as_deref())
+                .unwrap_or_default(),
+        ))
     }
 
     async fn prompt(&self, args: PromptRequest) -> acp::Result<PromptResponse> {
@@ -250,10 +318,14 @@ impl acp::Agent for AcpAgent {
             ));
         }
 
-        let (agent_id, thread_id) = {
+        let (runtime, agent_id, thread_id) = {
             let guard = self.sessions.lock().await;
             match guard.get(&session_id) {
-                Some(state) => (state.agent_id.clone(), state.thread_id.clone()),
+                Some(state) => (
+                    Arc::clone(&state.runtime),
+                    state.agent_id.clone(),
+                    state.thread_id.clone(),
+                ),
                 None => {
                     return Err(acp::Error::new(
                         -32002,
@@ -270,9 +342,9 @@ impl acp::Agent for AcpAgent {
         if let Some(agent_id) = agent_id {
             run_request = run_request.with_agent_id(agent_id);
         }
-        let runtime = Arc::clone(&self.runtime);
+        let run_runtime = Arc::clone(&runtime);
         let run_handle =
-            tokio::spawn(async move { runtime.run(run_request, Arc::new(sink)).await });
+            tokio::spawn(async move { run_runtime.run(run_request, Arc::new(sink)).await });
 
         let mut encoder = AcpEncoder::new().with_session_id(&session_id);
         let mut final_stop_reason = acp::StopReason::EndTurn;
@@ -290,10 +362,7 @@ impl acp::Agent for AcpAgent {
                         let tool_call_id = request.tool_call.tool_call_id.0.to_string();
                         let response = self.request_permission(request).await?;
                         let resume = permission_response_to_resume(response);
-                        if !self
-                            .runtime
-                            .send_decisions(&thread_id, vec![(tool_call_id, resume)])
-                        {
+                        if !runtime.send_decisions(&thread_id, vec![(tool_call_id, resume)]) {
                             return Err(acp::Error::new(
                                 -32603,
                                 "no active run for permission response",
@@ -328,21 +397,28 @@ impl acp::Agent for AcpAgent {
     }
 
     async fn cancel(&self, args: acp::CancelNotification) -> acp::Result<()> {
-        let thread_id = {
+        let session_runtime = {
             let guard = self.sessions.lock().await;
             guard
                 .get(args.session_id.0.as_ref())
-                .map(|state| state.thread_id.clone())
+                .map(|state| (Arc::clone(&state.runtime), state.thread_id.clone()))
         };
-        if let Some(thread_id) = thread_id {
-            self.runtime.cancel(&thread_id);
+        if let Some((runtime, thread_id)) = session_runtime {
+            runtime.cancel(&thread_id);
         }
         Ok(())
     }
 }
 
 fn build_initialize_response(request: InitializeRequest) -> InitializeResponse {
-    let capabilities = AgentCapabilities::new();
+    let capabilities = AgentCapabilities::new()
+        .prompt_capabilities(
+            PromptCapabilities::new()
+                .image(true)
+                .audio(true)
+                .embedded_context(true),
+        )
+        .mcp_capabilities(McpCapabilities::new().http(true));
     InitializeResponse::new(request.protocol_version)
         .agent_capabilities(capabilities)
         .agent_info(Implementation::new("awaken-acp", env!("CARGO_PKG_VERSION")))
@@ -376,21 +452,107 @@ fn generate_session_id() -> String {
 
 fn select_session_agent_id(
     resolver: &dyn awaken_runtime::AgentResolver,
-) -> acp::Result<Option<String>> {
+) -> (Option<String>, Vec<String>) {
     let mut agent_ids = resolver.agent_ids();
     agent_ids.sort();
     agent_ids.dedup();
 
-    if agent_ids.iter().any(|agent_id| agent_id == "default") {
-        return Ok(Some("default".to_string()));
+    let selected = if agent_ids.iter().any(|agent_id| agent_id == "default") {
+        Some("default".to_string())
+    } else {
+        agent_ids.first().cloned()
+    };
+
+    (selected, agent_ids)
+}
+
+fn build_session_config_options(
+    available_agent_ids: &[String],
+    current_agent_id: Option<&str>,
+) -> Option<Vec<SessionConfigOption>> {
+    if available_agent_ids.len() <= 1 {
+        return None;
     }
 
-    match agent_ids.as_slice() {
-        [] => Ok(None),
-        [agent_id] => Ok(Some(agent_id.clone())),
+    let current_agent_id = current_agent_id?;
+    let options = available_agent_ids
+        .iter()
+        .map(|agent_id| SessionConfigSelectOption::new(agent_id.clone(), agent_id.clone()))
+        .collect::<Vec<_>>();
+    let current_agent_id = current_agent_id.to_string();
+
+    Some(vec![
+        SessionConfigOption::select(AGENT_CONFIG_ID, "Agent", current_agent_id, options)
+            .description("Target agent for this session"),
+    ])
+}
+
+async fn build_session_runtime(
+    base_runtime: &Arc<AgentRuntime>,
+    mcp_servers: &[McpServer],
+) -> acp::Result<Arc<AgentRuntime>> {
+    if mcp_servers.is_empty() {
+        return Ok(Arc::clone(base_runtime));
+    }
+
+    let configs = mcp_servers
+        .iter()
+        .map(acp_mcp_server_to_connection_config)
+        .collect::<acp::Result<Vec<_>>>()?;
+    let manager = McpToolRegistryManager::connect(configs)
+        .await
+        .map_err(|err| acp::Error::new(-32603, format!("failed to connect MCP servers: {err}")))?;
+    let extra_tools = manager
+        .registry()
+        .snapshot()
+        .into_values()
+        .collect::<Vec<_>>();
+    let resolver = Arc::new(ToolAugmentingResolver::new(
+        base_runtime.resolver_arc(),
+        extra_tools,
+    ));
+
+    Ok(Arc::new(base_runtime.clone_with_resolver(resolver)))
+}
+
+fn acp_mcp_server_to_connection_config(
+    server: &McpServer,
+) -> acp::Result<McpServerConnectionConfig> {
+    match server {
+        McpServer::Stdio(config) => {
+            let command = config.command.to_string_lossy().into_owned();
+            let mut cfg =
+                McpServerConnectionConfig::stdio(config.name.clone(), command, config.args.clone());
+            for env in &config.env {
+                cfg = cfg.with_env(env.name.clone(), env.value.clone());
+            }
+            Ok(cfg)
+        }
+        McpServer::Http(config) => {
+            if !config.headers.is_empty() {
+                return Err(acp::Error::new(
+                    -32602,
+                    format!(
+                        "HTTP MCP server '{}' uses headers, which are not supported by the current MCP transport",
+                        config.name
+                    ),
+                ));
+            }
+            Ok(McpServerConnectionConfig::http(
+                config.name.clone(),
+                config.url.clone(),
+            ))
+        }
+        McpServer::Sse(config) => Err(acp::Error::new(
+            -32602,
+            format!(
+                "SSE MCP server '{}' is not supported by the current MCP transport",
+                config.name
+            ),
+        )),
         _ => Err(acp::Error::new(
-            -32603,
-            "ACP stdio requires a `default` agent or exactly one registered agent",
+            -32602,
+            "unsupported MCP server configuration",
         )),
     }
 }
@@ -478,11 +640,11 @@ fn prompt_blocks_to_message_content(
             ContentBlock::Resource(resource) => {
                 content.push(embedded_resource_to_runtime_content(resource)?);
             }
-            ContentBlock::Image(_) => {
-                return Err("image prompt content is not supported by this ACP server".to_string());
+            ContentBlock::Image(image) => {
+                content.push(image_content_to_runtime_content(image));
             }
-            ContentBlock::Audio(_) => {
-                return Err("audio prompt content is not supported by this ACP server".to_string());
+            ContentBlock::Audio(audio) => {
+                content.push(audio_content_to_runtime_content(audio));
             }
             _ => return Err("unsupported ACP prompt content block".to_string()),
         }
@@ -517,6 +679,22 @@ fn embedded_resource_to_runtime_content(
     }
 }
 
+fn image_content_to_runtime_content(image: &ImageContent) -> RuntimeContentBlock {
+    if image.data.is_empty()
+        && let Some(uri) = &image.uri
+    {
+        return RuntimeContentBlock::Image {
+            source: ImageSource::Url { url: uri.clone() },
+        };
+    }
+
+    RuntimeContentBlock::image_base64(image.mime_type.clone(), image.data.clone())
+}
+
+fn audio_content_to_runtime_content(audio: &AudioContent) -> RuntimeContentBlock {
+    RuntimeContentBlock::audio_base64(audio.mime_type.clone(), audio.data.clone())
+}
+
 fn infer_media_type_from_uri(uri: &str) -> String {
     match Path::new(uri).extension().and_then(|ext| ext.to_str()) {
         Some("png") => "image/png".to_string(),
@@ -538,6 +716,7 @@ fn path_title(uri: &str) -> Option<String> {
 mod tests {
     use super::super::types::ProtocolVersion;
     use super::*;
+    use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, split};
     use tokio::time::{Duration, timeout};
 
@@ -630,6 +809,18 @@ mod tests {
         assert!(json.get("protocolVersion").is_some());
         assert!(json.get("agentCapabilities").is_some());
         assert!(json.get("agentInfo").is_some());
+        assert_eq!(
+            json["agentCapabilities"]["promptCapabilities"]["image"],
+            true
+        );
+        assert_eq!(
+            json["agentCapabilities"]["promptCapabilities"]["audio"],
+            true
+        );
+        assert_eq!(
+            json["agentCapabilities"]["promptCapabilities"]["embeddedContext"],
+            true
+        );
     }
 
     #[test]
@@ -657,14 +848,26 @@ mod tests {
             }
         }
 
-        let selected = select_session_agent_id(&SingleAgentResolver).unwrap();
+        let (selected, available) = select_session_agent_id(&SingleAgentResolver);
         assert_eq!(selected.as_deref(), Some("echo"));
+        assert_eq!(available, vec!["echo"]);
     }
 
     #[test]
-    fn select_session_agent_id_rejects_ambiguous_registry() {
-        let err = select_session_agent_id(&MultiAgentResolver).unwrap_err();
-        assert_eq!(err.code, agent_client_protocol::ErrorCode::InternalError);
+    fn select_session_agent_id_prefers_default_then_sorted_first() {
+        let (selected, available) = select_session_agent_id(&MultiAgentResolver);
+        assert_eq!(selected.as_deref(), Some("alpha"));
+        assert_eq!(available, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn build_session_config_options_emits_agent_selector_for_multi_agent() {
+        let options = build_session_config_options(&["alpha".into(), "beta".into()], Some("beta"))
+            .expect("config options should exist");
+        let json = serde_json::to_value(&options).unwrap();
+        assert_eq!(json[0]["id"], AGENT_CONFIG_ID);
+        assert_eq!(json[0]["type"], "select");
+        assert_eq!(json[0]["currentValue"], "beta");
     }
 
     #[test]
@@ -677,6 +880,69 @@ mod tests {
         assert_eq!(content.len(), 2);
         assert!(matches!(content[0], RuntimeContentBlock::Text { .. }));
         assert!(matches!(content[1], RuntimeContentBlock::Document { .. }));
+    }
+
+    #[test]
+    fn prompt_blocks_to_message_content_supports_image_and_audio() {
+        let blocks = vec![
+            ContentBlock::Image(ImageContent::new("aGVsbG8=", "image/png")),
+            ContentBlock::Audio(AudioContent::new("d29ybGQ=", "audio/mpeg")),
+        ];
+        let content = prompt_blocks_to_message_content(&blocks).unwrap();
+        assert!(matches!(content[0], RuntimeContentBlock::Image { .. }));
+        assert!(matches!(content[1], RuntimeContentBlock::Audio { .. }));
+    }
+
+    #[test]
+    fn acp_mcp_server_to_connection_config_supports_stdio_and_http() {
+        let stdio_server: McpServer = serde_json::from_value(json!({
+            "name": "local",
+            "command": "node",
+            "args": ["server.js"],
+            "env": [{"name": "FOO", "value": "bar"}]
+        }))
+        .unwrap();
+        let stdio = acp_mcp_server_to_connection_config(&stdio_server).unwrap();
+        assert_eq!(stdio.name, "local");
+        assert_eq!(stdio.transport.to_string(), "stdio");
+        assert_eq!(stdio.command.as_deref(), Some("node"));
+        assert_eq!(stdio.args, vec!["server.js"]);
+        assert_eq!(stdio.env.get("FOO").map(String::as_str), Some("bar"));
+
+        let http_server: McpServer = serde_json::from_value(json!({
+            "type": "http",
+            "name": "remote",
+            "url": "https://example.com/mcp",
+            "headers": []
+        }))
+        .unwrap();
+        let http = acp_mcp_server_to_connection_config(&http_server).unwrap();
+        assert_eq!(http.name, "remote");
+        assert_eq!(http.transport.to_string(), "http");
+        assert_eq!(http.url.as_deref(), Some("https://example.com/mcp"));
+    }
+
+    #[test]
+    fn acp_mcp_server_to_connection_config_rejects_unsupported_variants() {
+        let http_with_headers: McpServer = serde_json::from_value(json!({
+            "type": "http",
+            "name": "remote",
+            "url": "https://example.com/mcp",
+            "headers": [{"name": "Authorization", "value": "Bearer token"}]
+        }))
+        .unwrap();
+        let err = acp_mcp_server_to_connection_config(&http_with_headers).unwrap_err();
+        assert!(err.message.contains("headers"));
+
+        let sse_server: McpServer = serde_json::from_value(json!({
+            "type": "sse",
+            "name": "events",
+            "url": "https://example.com/sse",
+            "headers": []
+        }))
+        .unwrap();
+        let err = acp_mcp_server_to_connection_config(&sse_server).unwrap_err();
+        assert!(err.message.contains("SSE"));
     }
 
     #[tokio::test]

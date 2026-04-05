@@ -108,6 +108,90 @@ impl awaken_contract::contract::executor::LlmExecutor for EchoExecutor {
     }
 }
 
+struct PrefixExecutor {
+    prefix: &'static str,
+}
+
+#[async_trait]
+impl awaken_contract::contract::executor::LlmExecutor for PrefixExecutor {
+    async fn execute(
+        &self,
+        request: InferenceRequest,
+    ) -> Result<StreamResult, InferenceExecutionError> {
+        let user_text = request
+            .messages
+            .iter()
+            .rev()
+            .find_map(|message| {
+                if message.role == awaken_contract::contract::message::Role::User {
+                    Some(message.text())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+
+        Ok(StreamResult {
+            content: vec![RuntimeContentBlock::text(format!(
+                "{}: {user_text}",
+                self.prefix
+            ))],
+            tool_calls: vec![],
+            usage: Some(TokenUsage::default()),
+            stop_reason: Some(RuntimeStopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        })
+    }
+
+    fn name(&self) -> &str {
+        self.prefix
+    }
+}
+
+struct MultimodalEchoExecutor;
+
+#[async_trait]
+impl awaken_contract::contract::executor::LlmExecutor for MultimodalEchoExecutor {
+    async fn execute(
+        &self,
+        request: InferenceRequest,
+    ) -> Result<StreamResult, InferenceExecutionError> {
+        let user_message = request
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == awaken_contract::contract::message::Role::User)
+            .expect("user message should exist");
+
+        let mut text_blocks = 0;
+        let mut image_blocks = 0;
+        let mut audio_blocks = 0;
+
+        for block in &user_message.content {
+            match block {
+                RuntimeContentBlock::Text { .. } => text_blocks += 1,
+                RuntimeContentBlock::Image { .. } => image_blocks += 1,
+                RuntimeContentBlock::Audio { .. } => audio_blocks += 1,
+                _ => {}
+            }
+        }
+
+        Ok(StreamResult {
+            content: vec![RuntimeContentBlock::text(format!(
+                "text={text_blocks} image={image_blocks} audio={audio_blocks}"
+            ))],
+            tool_calls: vec![],
+            usage: Some(TokenUsage::default()),
+            stop_reason: Some(RuntimeStopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        })
+    }
+
+    fn name(&self) -> &str {
+        "multimodal-echo"
+    }
+}
+
 struct ToolCallMockExecutor {
     call_count: AtomicUsize,
 }
@@ -211,6 +295,66 @@ fn permission_runtime() -> Arc<awaken_runtime::AgentRuntime> {
             max_rounds: 2,
             plugin_ids: vec!["permission".into()],
             sections,
+            ..Default::default()
+        });
+
+    Arc::new(builder.build().expect("build runtime"))
+}
+
+fn multi_agent_runtime() -> Arc<awaken_runtime::AgentRuntime> {
+    let builder = AgentRuntimeBuilder::new()
+        .with_model(
+            "alpha-model",
+            ModelEntry {
+                provider: "alpha-provider".into(),
+                model_name: "mock-alpha".into(),
+            },
+        )
+        .with_model(
+            "beta-model",
+            ModelEntry {
+                provider: "beta-provider".into(),
+                model_name: "mock-beta".into(),
+            },
+        )
+        .with_provider(
+            "alpha-provider",
+            Arc::new(PrefixExecutor { prefix: "alpha" }),
+        )
+        .with_provider("beta-provider", Arc::new(PrefixExecutor { prefix: "beta" }))
+        .with_agent_spec(AgentSpec {
+            id: "alpha".into(),
+            model: "alpha-model".into(),
+            system_prompt: "You are alpha".into(),
+            max_rounds: 2,
+            ..Default::default()
+        })
+        .with_agent_spec(AgentSpec {
+            id: "beta".into(),
+            model: "beta-model".into(),
+            system_prompt: "You are beta".into(),
+            max_rounds: 2,
+            ..Default::default()
+        });
+
+    Arc::new(builder.build().expect("build runtime"))
+}
+
+fn multimodal_runtime() -> Arc<awaken_runtime::AgentRuntime> {
+    let builder = AgentRuntimeBuilder::new()
+        .with_model(
+            "test-model",
+            ModelEntry {
+                provider: "mock".into(),
+                model_name: "mock-model".into(),
+            },
+        )
+        .with_provider("mock", Arc::new(MultimodalEchoExecutor))
+        .with_agent_spec(AgentSpec {
+            id: "multimodal".into(),
+            model: "test-model".into(),
+            system_prompt: "You inspect multimodal input".into(),
+            max_rounds: 2,
             ..Default::default()
         });
 
@@ -337,6 +481,121 @@ async fn sdk_client_can_approve_permission_request() {
                 )
             }),
             "expected completed tool update, got: {notifications:?}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn sdk_client_can_select_agent_via_session_config_option() {
+    with_sdk_client(multi_agent_runtime(), |conn, client| async move {
+        conn.initialize(acp::InitializeRequest::new(acp::ProtocolVersion::V1))
+            .await
+            .expect("initialize should succeed");
+
+        let session = conn
+            .new_session(acp::NewSessionRequest::new("/tmp"))
+            .await
+            .expect("new_session should succeed");
+        let config_options = session
+            .config_options
+            .clone()
+            .expect("multi-agent session should expose config options");
+
+        assert_eq!(config_options.len(), 1);
+        assert_eq!(config_options[0].id.0.as_ref(), "agent");
+        match &config_options[0].kind {
+            acp::SessionConfigKind::Select(select) => {
+                assert_eq!(select.current_value.0.as_ref(), "alpha");
+                match &select.options {
+                    acp::SessionConfigSelectOptions::Ungrouped(options) => {
+                        assert_eq!(options.len(), 2);
+                    }
+                    other => panic!("expected ungrouped options, got: {other:?}"),
+                }
+            }
+            other => panic!("expected select config option, got: {other:?}"),
+        }
+
+        let response = conn
+            .set_session_config_option(acp::SetSessionConfigOptionRequest::new(
+                session.session_id.clone(),
+                "agent",
+                "beta",
+            ))
+            .await
+            .expect("set_session_config_option should succeed");
+
+        match &response.config_options[0].kind {
+            acp::SessionConfigKind::Select(select) => {
+                assert_eq!(select.current_value.0.as_ref(), "beta");
+            }
+            other => panic!("expected select config option, got: {other:?}"),
+        }
+
+        let prompt = conn
+            .prompt(acp::PromptRequest::new(
+                session.session_id.clone(),
+                vec!["hello from config".into()],
+            ))
+            .await
+            .expect("prompt should succeed");
+        assert_eq!(prompt.stop_reason, acp::StopReason::EndTurn);
+
+        let notifications = client.notifications.lock().unwrap();
+        assert!(
+            notifications.iter().any(|notification| {
+                matches!(
+                    &notification.update,
+                    acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk {
+                        content: acp::ContentBlock::Text(text),
+                        ..
+                    }) if text.text.contains("beta: hello from config")
+                )
+            }),
+            "expected beta agent response, got: {notifications:?}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn sdk_client_can_send_multimodal_prompt_blocks() {
+    with_sdk_client(multimodal_runtime(), |conn, client| async move {
+        conn.initialize(acp::InitializeRequest::new(acp::ProtocolVersion::V1))
+            .await
+            .expect("initialize should succeed");
+
+        let session = conn
+            .new_session(acp::NewSessionRequest::new("/tmp"))
+            .await
+            .expect("new_session should succeed");
+
+        let prompt = conn
+            .prompt(acp::PromptRequest::new(
+                session.session_id.clone(),
+                vec![
+                    "describe the attachments".into(),
+                    acp::ContentBlock::Image(acp::ImageContent::new("aGVsbG8=", "image/png")),
+                    acp::ContentBlock::Audio(acp::AudioContent::new("d29ybGQ=", "audio/mpeg")),
+                ],
+            ))
+            .await
+            .expect("prompt should succeed");
+        assert_eq!(prompt.stop_reason, acp::StopReason::EndTurn);
+
+        let notifications = client.notifications.lock().unwrap();
+        assert!(
+            notifications.iter().any(|notification| {
+                matches!(
+                    &notification.update,
+                    acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk {
+                        content: acp::ContentBlock::Text(text),
+                        ..
+                    }) if text.text.contains("text=1 image=1 audio=1")
+                )
+            }),
+            "expected multimodal summary, got: {notifications:?}"
         );
     })
     .await;

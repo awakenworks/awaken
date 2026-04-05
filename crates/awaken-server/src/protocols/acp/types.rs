@@ -28,6 +28,8 @@ pub use agent_client_protocol_schema::NewSessionResponse;
 pub use agent_client_protocol_schema::PromptRequest;
 pub use agent_client_protocol_schema::PromptResponse;
 pub use agent_client_protocol_schema::SessionNotification;
+pub use agent_client_protocol_schema::SetSessionConfigOptionRequest;
+pub use agent_client_protocol_schema::SetSessionConfigOptionResponse;
 
 // Tool calls
 pub use agent_client_protocol_schema::ToolCall;
@@ -48,7 +50,12 @@ pub use agent_client_protocol_schema::ContentChunk;
 pub use agent_client_protocol_schema::EmbeddedResource;
 pub use agent_client_protocol_schema::EmbeddedResourceResource;
 pub use agent_client_protocol_schema::ImageContent;
+pub use agent_client_protocol_schema::McpCapabilities;
+pub use agent_client_protocol_schema::McpServer;
+pub use agent_client_protocol_schema::PromptCapabilities;
 pub use agent_client_protocol_schema::ResourceLink;
+pub use agent_client_protocol_schema::SessionConfigOption;
+pub use agent_client_protocol_schema::SessionConfigSelectOption;
 pub use agent_client_protocol_schema::TextContent;
 pub use agent_client_protocol_schema::TextResourceContents;
 

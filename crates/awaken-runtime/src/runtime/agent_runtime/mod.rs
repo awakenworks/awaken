@@ -93,6 +93,21 @@ impl AgentRuntime {
         }
     }
 
+    /// Create a new runtime that preserves the current stores but swaps the resolver.
+    ///
+    /// Active runs are not shared with the original runtime.
+    #[must_use]
+    pub fn clone_with_resolver(&self, resolver: Arc<dyn AgentResolver>) -> Self {
+        Self {
+            resolver,
+            storage: self.storage.clone(),
+            profile_store: self.profile_store.clone(),
+            active_runs: ActiveRunRegistry::new(),
+            #[cfg(feature = "a2a")]
+            composite_registry: self.composite_registry.clone(),
+        }
+    }
+
     #[must_use]
     pub fn with_thread_run_store(mut self, store: Arc<dyn ThreadRunStore>) -> Self {
         self.storage = Some(store);

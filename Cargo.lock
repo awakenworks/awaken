@@ -469,6 +469,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "awaken-contract",
+ "awaken-ext-mcp",
  "awaken-ext-observability",
  "awaken-ext-permission",
  "awaken-runtime",
