@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -231,6 +232,73 @@ impl awaken_contract::contract::executor::LlmExecutor for ToolCallMockExecutor {
     }
 }
 
+struct SessionMcpToolExecutor {
+    call_count: AtomicUsize,
+}
+
+#[async_trait]
+impl awaken_contract::contract::executor::LlmExecutor for SessionMcpToolExecutor {
+    async fn execute(
+        &self,
+        request: InferenceRequest,
+    ) -> Result<StreamResult, InferenceExecutionError> {
+        let count = self.call_count.fetch_add(1, Ordering::Relaxed);
+        if count == 0 {
+            let user_text = request
+                .messages
+                .iter()
+                .rev()
+                .find_map(|message| {
+                    if message.role == awaken_contract::contract::message::Role::User {
+                        Some(message.text())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default();
+
+            Ok(StreamResult {
+                content: vec![],
+                tool_calls: vec![RuntimeToolCall::new(
+                    "call_1",
+                    "mcp__test_stdio__echo",
+                    json!({"message": user_text}),
+                )],
+                usage: Some(TokenUsage::default()),
+                stop_reason: Some(RuntimeStopReason::ToolUse),
+                has_incomplete_tool_calls: false,
+            })
+        } else {
+            let tool_text = request
+                .messages
+                .iter()
+                .rev()
+                .find_map(|message| {
+                    if message.role == awaken_contract::contract::message::Role::Tool {
+                        Some(message.text())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default();
+
+            Ok(StreamResult {
+                content: vec![RuntimeContentBlock::text(format!(
+                    "mcp tool -> {tool_text}"
+                ))],
+                tool_calls: vec![],
+                usage: Some(TokenUsage::default()),
+                stop_reason: Some(RuntimeStopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+    }
+
+    fn name(&self) -> &str {
+        "session-mcp-tool"
+    }
+}
+
 struct GetWeatherTool;
 
 #[async_trait]
@@ -354,6 +422,32 @@ fn multimodal_runtime() -> Arc<awaken_runtime::AgentRuntime> {
             id: "multimodal".into(),
             model: "test-model".into(),
             system_prompt: "You inspect multimodal input".into(),
+            max_rounds: 2,
+            ..Default::default()
+        });
+
+    Arc::new(builder.build().expect("build runtime"))
+}
+
+fn session_mcp_runtime() -> Arc<awaken_runtime::AgentRuntime> {
+    let builder = AgentRuntimeBuilder::new()
+        .with_model(
+            "test-model",
+            ModelEntry {
+                provider: "mock".into(),
+                model_name: "mock-model".into(),
+            },
+        )
+        .with_provider(
+            "mock",
+            Arc::new(SessionMcpToolExecutor {
+                call_count: AtomicUsize::new(0),
+            }),
+        )
+        .with_agent_spec(AgentSpec {
+            id: "mcp-agent".into(),
+            model: "test-model".into(),
+            system_prompt: "You use MCP tools".into(),
             max_rounds: 2,
             ..Default::default()
         });
@@ -596,6 +690,85 @@ async fn sdk_client_can_send_multimodal_prompt_blocks() {
                 )
             }),
             "expected multimodal summary, got: {notifications:?}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn sdk_client_can_use_session_stdio_mcp_server() {
+    with_sdk_client(session_mcp_runtime(), |conn, client| async move {
+        conn.initialize(acp::InitializeRequest::new(acp::ProtocolVersion::V1))
+            .await
+            .expect("initialize should succeed");
+
+        let helper_path = PathBuf::from(env!("CARGO_BIN_EXE_acp_mcp_stdio_test_server"));
+        let session = conn
+            .new_session(acp::NewSessionRequest::new("/tmp").mcp_servers(vec![
+                acp::McpServer::Stdio(acp::McpServerStdio::new("test_stdio", helper_path)),
+            ]))
+            .await
+            .expect("new_session with mcp server should succeed");
+
+        let prompt = conn
+            .prompt(acp::PromptRequest::new(
+                session.session_id.clone(),
+                vec!["hello through stdio mcp".into()],
+            ))
+            .await
+            .expect("prompt should succeed");
+        assert_eq!(prompt.stop_reason, acp::StopReason::EndTurn);
+
+        let notifications = client.notifications.lock().unwrap();
+        assert!(
+            notifications.iter().any(|notification| {
+                matches!(
+                    &notification.update,
+                    acp::SessionUpdate::ToolCall(tool_call)
+                        if tool_call.title == "mcp__test_stdio__echo"
+                            && tool_call.tool_call_id.0.as_ref() == "call_1"
+                )
+            }),
+            "expected MCP tool call notification, got: {notifications:?}"
+        );
+        assert!(
+            notifications.iter().any(|notification| {
+                match &notification.update {
+                    acp::SessionUpdate::ToolCallUpdate(update) => {
+                        update.fields.status == Some(acp::ToolCallStatus::Completed)
+                            && update
+                                .fields
+                                .raw_output
+                                .as_ref()
+                                .and_then(|value| value.get("metadata"))
+                                .and_then(|value| value.get("mcp.server"))
+                                .and_then(Value::as_str)
+                                == Some("test_stdio")
+                            && update
+                                .fields
+                                .raw_output
+                                .as_ref()
+                                .and_then(|value| value.get("metadata"))
+                                .and_then(|value| value.get("mcp.tool"))
+                                .and_then(Value::as_str)
+                                == Some("echo")
+                    }
+                    _ => false,
+                }
+            }),
+            "expected completed MCP tool update, got: {notifications:?}"
+        );
+        assert!(
+            notifications.iter().any(|notification| {
+                matches!(
+                    &notification.update,
+                    acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk {
+                        content: acp::ContentBlock::Text(text),
+                        ..
+                    }) if text.text.contains("hello through stdio mcp")
+                )
+            }),
+            "expected MCP-backed agent response, got: {notifications:?}"
         );
     })
     .await;
