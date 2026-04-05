@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use futures::StreamExt;
 use mcp::transport::{
     ClientInfo, InitializeCapabilities, InitializeResult, McpServerConnectionConfig,
     McpTransportError, SamplingCapabilities, ServerCapabilities, TransportTypeId,
@@ -546,10 +547,21 @@ pub(crate) struct ProgressAwareHttpTransport {
     next_id: AtomicI64,
     next_progress_token: AtomicI64,
     capabilities: tokio::sync::Mutex<Option<ServerCapabilities>>,
+    session: tokio::sync::RwLock<HttpSessionState>,
+    sampling_handler: Option<Arc<dyn SamplingHandler>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct HttpSessionState {
+    session_id: Option<String>,
+    protocol_version: Option<String>,
 }
 
 impl ProgressAwareHttpTransport {
-    pub(crate) fn connect(config: &McpServerConnectionConfig) -> Result<Self, McpTransportError> {
+    pub(crate) fn connect(
+        config: &McpServerConnectionConfig,
+        sampling_handler: Option<Arc<dyn SamplingHandler>>,
+    ) -> Result<Self, McpTransportError> {
         let endpoint = config.url.as_ref().ok_or_else(|| {
             McpTransportError::TransportError("HTTP transport requires URL".to_string())
         })?;
@@ -567,6 +579,8 @@ impl ProgressAwareHttpTransport {
             next_id: AtomicI64::new(1),
             next_progress_token: AtomicI64::new(1),
             capabilities: tokio::sync::Mutex::new(None),
+            session: tokio::sync::RwLock::new(HttpSessionState::default()),
+            sampling_handler,
         })
     }
 
@@ -581,14 +595,39 @@ impl ProgressAwareHttpTransport {
     }
 
     async fn initialize(&self) -> Result<ServerCapabilities, McpTransportError> {
-        let result: InitializeResult = serde_json::from_value(
-            self.send_request(
-                "initialize",
-                Some(initialize_params(json!({}), Value::Null)),
-                None,
+        let request_id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let response = self
+            .post_message(
+                JsonRpcMessage::Request(JsonRpcRequest::new(
+                    JsonRpcId::Number(request_id),
+                    "initialize".to_string(),
+                    Some(initialize_params(json!({}), Value::Null)),
+                )),
+                false,
             )
-            .await?,
-        )?;
+            .await?;
+
+        let session_id = response
+            .headers()
+            .get("MCP-Session-Id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+
+        let body = self
+            .decode_http_body(response, request_id, None)
+            .await
+            .map_err(|e| McpTransportError::ProtocolError(format!("initialize failed: {e}")))?;
+        let result: InitializeResult = serde_json::from_value(body)?;
+
+        {
+            let mut session = self.session.write().await;
+            session.session_id = session_id;
+            session.protocol_version = Some(result.protocol_version.clone());
+        }
+
+        self.send_notification("notifications/initialized", Some(json!({})))
+            .await?;
+
         Ok(result.capabilities)
     }
 
@@ -600,30 +639,11 @@ impl ProgressAwareHttpTransport {
     ) -> Result<Value, McpTransportError> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let request = JsonRpcRequest::new(JsonRpcId::Number(id), method.to_string(), params);
-
         let response = self
-            .client
-            .post(&self.endpoint)
-            .json(&request)
-            .send()
+            .post_message(JsonRpcMessage::Request(request), true)
+            .await?;
+        self.decode_http_body(response, id, progress_registration)
             .await
-            .map_err(|e| {
-                McpTransportError::TransportError(format!("HTTP request failed: {}", e))
-            })?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(McpTransportError::TransportError(format!(
-                "HTTP error: {} - {}",
-                status, body
-            )));
-        }
-
-        let body: Value = response.json().await.map_err(|e| {
-            McpTransportError::TransportError(format!("Failed to parse JSON response: {}", e))
-        })?;
-        decode_http_response_payload(body, id, progress_registration)
     }
 
     async fn send_initialized_request(
@@ -633,8 +653,274 @@ impl ProgressAwareHttpTransport {
         progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
     ) -> Result<Value, McpTransportError> {
         self.initialize_if_needed().await?;
-        self.send_request(method, params, progress_registration)
+        match self
+            .send_request(method, params.clone(), progress_registration.clone())
             .await
+        {
+            Ok(value) => Ok(value),
+            Err(McpTransportError::ProtocolError(message)) if message == "MCP session expired" => {
+                self.reset_session().await;
+                self.initialize_if_needed().await?;
+                self.send_request(method, params, progress_registration)
+                    .await
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn post_message(
+        &self,
+        message: JsonRpcMessage,
+        expect_response: bool,
+    ) -> Result<reqwest::Response, McpTransportError> {
+        let mut request = self.client.post(&self.endpoint).header(
+            reqwest::header::ACCEPT,
+            "application/json, text/event-stream",
+        );
+
+        let session = self.session.read().await.clone();
+        if let Some(protocol_version) = session.protocol_version {
+            request = request.header("MCP-Protocol-Version", protocol_version);
+        }
+        if let Some(session_id) = session.session_id {
+            request = request.header("MCP-Session-Id", session_id);
+        }
+
+        request = match message {
+            JsonRpcMessage::Request(request_body) => request.json(&request_body),
+            JsonRpcMessage::Notification(notification) => request.json(&notification),
+            JsonRpcMessage::Response(response) => request.json(&response),
+        };
+
+        let response = request.send().await.map_err(|e| {
+            McpTransportError::TransportError(format!("HTTP request failed: {}", e))
+        })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            if status == reqwest::StatusCode::NOT_FOUND
+                && self.session.read().await.session_id.is_some()
+            {
+                return Err(McpTransportError::ProtocolError(
+                    "MCP session expired".to_string(),
+                ));
+            }
+
+            let body = response.text().await.unwrap_or_default();
+            return Err(McpTransportError::TransportError(format!(
+                "HTTP error: {} - {}",
+                status, body
+            )));
+        }
+
+        if !expect_response
+            && status != reqwest::StatusCode::ACCEPTED
+            && status != reqwest::StatusCode::NO_CONTENT
+            && status != reqwest::StatusCode::OK
+        {
+            return Err(McpTransportError::ProtocolError(format!(
+                "Expected 202 Accepted for HTTP notification/response, got {}",
+                status
+            )));
+        }
+
+        Ok(response)
+    }
+
+    async fn send_notification(
+        &self,
+        method: &str,
+        params: Option<Value>,
+    ) -> Result<(), McpTransportError> {
+        let notification = JsonRpcNotification::new(method, params);
+        self.post_message(JsonRpcMessage::Notification(notification), false)
+            .await?;
+        Ok(())
+    }
+
+    async fn send_response_message(
+        &self,
+        response: JsonRpcResponse,
+    ) -> Result<(), McpTransportError> {
+        self.post_message(JsonRpcMessage::Response(response), false)
+            .await?;
+        Ok(())
+    }
+
+    async fn decode_http_body(
+        &self,
+        response: reqwest::Response,
+        request_id: i64,
+        progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
+    ) -> Result<Value, McpTransportError> {
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+
+        if content_type.starts_with("application/json") {
+            let body: Value = response.json().await.map_err(|e| {
+                McpTransportError::TransportError(format!("Failed to parse JSON response: {}", e))
+            })?;
+            return decode_http_response_payload(body, request_id, progress_registration);
+        }
+
+        if content_type.starts_with("text/event-stream") {
+            return self
+                .decode_sse_response(response, request_id, progress_registration)
+                .await;
+        }
+
+        Err(McpTransportError::ProtocolError(format!(
+            "Unsupported HTTP content type: {}",
+            content_type
+        )))
+    }
+
+    async fn decode_sse_response(
+        &self,
+        response: reqwest::Response,
+        request_id: i64,
+        progress_registration: Option<(ProgressTokenKey, mpsc::UnboundedSender<McpProgressUpdate>)>,
+    ) -> Result<Value, McpTransportError> {
+        let progress_key = progress_registration.as_ref().map(|(key, _)| key.clone());
+        let progress_tx = progress_registration.as_ref().map(|(_, tx)| tx.clone());
+        let mut matched_response: Option<Result<Value, McpTransportError>> = None;
+        let mut event_lines: Vec<String> = Vec::new();
+        let mut line_buf: Vec<u8> = Vec::new();
+        let mut stream = response.bytes_stream();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| {
+                McpTransportError::TransportError(format!(
+                    "Failed to read SSE response body: {}",
+                    e
+                ))
+            })?;
+
+            for byte in chunk {
+                if byte == b'\n' {
+                    let mut line =
+                        String::from_utf8(std::mem::take(&mut line_buf)).map_err(|e| {
+                            McpTransportError::ProtocolError(format!(
+                                "Invalid UTF-8 in SSE response: {}",
+                                e
+                            ))
+                        })?;
+                    if line.ends_with('\r') {
+                        line.pop();
+                    }
+
+                    if line.is_empty() {
+                        if let Some(result) = self
+                            .process_sse_event(
+                                &event_lines,
+                                request_id,
+                                progress_key.as_ref(),
+                                progress_tx.as_ref(),
+                            )
+                            .await?
+                        {
+                            matched_response = Some(result);
+                            break;
+                        }
+                        event_lines.clear();
+                    } else {
+                        event_lines.push(line);
+                    }
+                } else {
+                    line_buf.push(byte);
+                }
+            }
+
+            if matched_response.is_some() {
+                break;
+            }
+        }
+
+        if matched_response.is_none() && !event_lines.is_empty() {
+            matched_response = self
+                .process_sse_event(
+                    &event_lines,
+                    request_id,
+                    progress_key.as_ref(),
+                    progress_tx.as_ref(),
+                )
+                .await?;
+        }
+
+        matched_response.unwrap_or_else(|| {
+            Err(McpTransportError::ProtocolError(format!(
+                "Missing response for request id {}",
+                request_id
+            )))
+        })
+    }
+
+    async fn process_sse_event(
+        &self,
+        lines: &[String],
+        request_id: i64,
+        progress_key: Option<&ProgressTokenKey>,
+        progress_tx: Option<&mpsc::UnboundedSender<McpProgressUpdate>>,
+    ) -> Result<Option<Result<Value, McpTransportError>>, McpTransportError> {
+        let mut data_parts = Vec::new();
+        for line in lines {
+            if line.starts_with(':') {
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("data:") {
+                data_parts.push(rest.trim_start().to_string());
+            }
+        }
+
+        if data_parts.is_empty() {
+            return Ok(None);
+        }
+
+        let payload = data_parts.join("\n");
+        if payload.is_empty() {
+            return Ok(None);
+        }
+
+        let message =
+            parse_json_rpc_message(serde_json::from_str::<Value>(&payload).map_err(|e| {
+                McpTransportError::ProtocolError(format!(
+                    "Invalid JSON payload in HTTP SSE response: {}",
+                    e
+                ))
+            })?)?;
+
+        match message {
+            JsonRpcMessage::Response(response) => {
+                if matches!(response.id, JsonRpcId::Number(id) if id == request_id) {
+                    return Ok(Some(map_response_payload(response.payload)));
+                }
+                Ok(None)
+            }
+            JsonRpcMessage::Notification(notification) => {
+                if let (Some(expected_key), Some(sender)) = (progress_key, progress_tx)
+                    && let Some((key, update)) = decode_progress_notification(notification)
+                    && key == *expected_key
+                {
+                    let _ = sender.send(update);
+                }
+                Ok(None)
+            }
+            JsonRpcMessage::Request(request) => {
+                let response =
+                    handle_server_request(self.sampling_handler.as_deref(), &request).await;
+                self.send_response_message(response).await?;
+                Ok(None)
+            }
+        }
+    }
+
+    async fn reset_session(&self) {
+        *self.capabilities.lock().await = None;
+        *self.session.write().await = HttpSessionState::default();
     }
 }
 
@@ -754,7 +1040,7 @@ pub(crate) async fn connect_transport(
             Ok(Arc::new(transport))
         }
         TransportTypeId::Http => {
-            let transport = ProgressAwareHttpTransport::connect(config)?;
+            let transport = ProgressAwareHttpTransport::connect(config, sampling_handler)?;
             Ok(Arc::new(transport))
         }
     }

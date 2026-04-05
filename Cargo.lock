@@ -307,6 +307,7 @@ dependencies = [
  "async-trait",
  "awaken-contract",
  "awaken-runtime",
+ "futures",
  "model-context-protocol",
  "reqwest 0.13.2",
  "serde",
