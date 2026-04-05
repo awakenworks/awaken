@@ -1,4 +1,3 @@
-pub mod a2a;
 pub mod active_agent;
 pub mod bundle;
 pub mod content;

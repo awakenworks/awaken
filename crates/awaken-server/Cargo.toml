@@ -12,6 +12,7 @@ categories.workspace = true
 
 [dependencies]
 awaken-contract = { workspace = true }
+awaken-protocol-a2a = { workspace = true }
 awaken-runtime = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
