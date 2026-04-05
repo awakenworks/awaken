@@ -37,6 +37,8 @@ const MCP_META_UI_CONTENT: &str = "mcp.ui.content";
 const MCP_META_UI_MIME_TYPE: &str = "mcp.ui.mimeType";
 const MCP_META_RESULT_CONTENT: &str = "mcp.result.content";
 const MCP_META_RESULT_STRUCTURED_CONTENT: &str = "mcp.result.structuredContent";
+const FAILURE_THRESHOLD: u64 = 3;
+const MAX_RECONNECT_ATTEMPTS: u32 = 5;
 
 // ── Helper types ──
 
@@ -46,6 +48,8 @@ pub struct McpRefreshHealth {
     pub last_success_at: Option<SystemTime>,
     pub last_error: Option<String>,
     pub consecutive_failures: u64,
+    pub reconnecting: bool,
+    pub permanently_failed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -241,14 +245,52 @@ fn map_mcp_error(e: McpTransportError) -> ToolError {
     }
 }
 
+fn transport_type_from_config(config: &McpServerConnectionConfig) -> Option<TransportTypeId> {
+    if config.url.is_some() {
+        Some(TransportTypeId::Http)
+    } else if config.command.is_some() {
+        Some(TransportTypeId::Stdio)
+    } else {
+        None
+    }
+}
+
+fn server_runtime(slot: &McpServerSlot) -> Result<&McpServerRuntime, McpError> {
+    if !slot.meta.enabled {
+        return Err(McpError::ServerDisabled(slot.meta.name.clone()));
+    }
+
+    if slot.permanently_failed {
+        return Err(McpError::ServerPermanentlyFailed(slot.meta.name.clone()));
+    }
+
+    slot.runtime
+        .as_ref()
+        .ok_or_else(|| McpError::Transport("connection closed".to_string()))
+}
+
 // ── Server runtime ──
 
 #[derive(Clone)]
 struct McpServerRuntime {
-    name: String,
     transport_type: TransportTypeId,
     transport: Arc<dyn McpToolTransport>,
     capabilities: Option<ServerCapabilities>,
+}
+
+struct McpServerMetadata {
+    name: String,
+    config: McpServerConnectionConfig,
+    enabled: bool,
+}
+
+struct McpServerSlot {
+    meta: McpServerMetadata,
+    runtime: Option<McpServerRuntime>,
+    health: McpRefreshHealth,
+    reconnect_attempts: u32,
+    permanently_failed: bool,
+    tools_cache: Vec<McpToolDefinition>,
 }
 
 // ── Registry snapshot ──
@@ -260,10 +302,10 @@ struct McpRegistrySnapshot {
 }
 
 struct McpRegistryState {
-    servers: Vec<McpServerRuntime>,
+    servers: RwLock<Vec<McpServerSlot>>,
     snapshot: RwLock<McpRegistrySnapshot>,
-    refresh_health: RwLock<McpRefreshHealth>,
     periodic_refresh: PeriodicRefresher,
+    sampling_handler: Option<Arc<dyn SamplingHandler>>,
 }
 
 fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
@@ -299,17 +341,20 @@ fn server_supports_resources(capabilities: Option<&ServerCapabilities>) -> bool 
     capabilities.is_none_or(|capabilities| capabilities.resources.is_some())
 }
 
-async fn discover_tools(
-    servers: &[McpServerRuntime],
-) -> Result<HashMap<String, Arc<dyn Tool>>, McpError> {
+fn discover_tools(servers: &[McpServerSlot]) -> Result<HashMap<String, Arc<dyn Tool>>, McpError> {
     let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    for server in servers {
-        let mut defs = server.transport.list_tools().await?;
-        defs.sort_by(|a, b| a.name.cmp(&b.name));
+    for slot in servers {
+        if !server_is_active(slot) {
+            continue;
+        }
 
-        for def in defs {
-            let tool_id = to_tool_id(&server.name, &def.name)?;
+        let runtime = slot.runtime.as_ref().ok_or_else(|| {
+            McpError::Transport(format!("server '{}' is not connected", slot.meta.name))
+        })?;
+
+        for def in &slot.tools_cache {
+            let tool_id = to_tool_id(&slot.meta.name, &def.name)?;
             if tools.contains_key(&tool_id) {
                 return Err(McpError::ToolIdConflict(tool_id));
             }
@@ -317,10 +362,10 @@ async fn discover_tools(
                 tool_id.clone(),
                 Arc::new(McpTool::new(
                     tool_id,
-                    server.name.clone(),
-                    def,
-                    server.transport.clone(),
-                    server.transport_type,
+                    slot.meta.name.clone(),
+                    def.clone(),
+                    runtime.transport.clone(),
+                    runtime.transport_type,
                 )) as Arc<dyn Tool>,
             );
         }
@@ -329,27 +374,236 @@ async fn discover_tools(
     Ok(tools)
 }
 
-async fn refresh_state(state: &McpRegistryState) -> Result<u64, McpError> {
+async fn connect_server(
+    slot: &mut McpServerSlot,
+    sampling_handler: Option<Arc<dyn SamplingHandler>>,
+) -> Result<(), McpError> {
     let attempted_at = SystemTime::now();
-    match discover_tools(&state.servers).await {
-        Ok(tools) => {
-            let mut snapshot = write_lock(&state.snapshot);
-            let version = snapshot.version.saturating_add(1);
-            *snapshot = McpRegistrySnapshot { version, tools };
 
-            let mut health = write_lock(&state.refresh_health);
-            health.last_attempt_at = Some(attempted_at);
-            health.last_success_at = Some(attempted_at);
-            health.last_error = None;
-            health.consecutive_failures = 0;
+    let transport = match connect_transport(&slot.meta.config, sampling_handler).await {
+        Ok(transport) => transport,
+        Err(err) => {
+            let err: McpError = err.into();
+            slot.runtime = None;
+            mark_server_failure(slot, attempted_at, &err);
+            return Err(err);
+        }
+    };
 
-            Ok(version)
+    let transport_type = transport.transport_type();
+    let capabilities = match transport.server_capabilities().await {
+        Ok(capabilities) => capabilities,
+        Err(err) => {
+            let err: McpError = err.into();
+            slot.runtime = None;
+            mark_server_failure(slot, attempted_at, &err);
+            return Err(err);
+        }
+    };
+
+    slot.runtime = Some(McpServerRuntime {
+        transport_type,
+        transport,
+        capabilities,
+    });
+
+    reset_server_health_on_success(slot, attempted_at);
+    Ok(())
+}
+
+async fn disconnect_server(slot: &mut McpServerSlot) -> Result<(), McpError> {
+    let runtime = slot.runtime.take();
+    slot.tools_cache.clear();
+
+    if let Some(runtime) = runtime {
+        runtime.transport.close().await?;
+    }
+
+    Ok(())
+}
+
+async fn refresh_server(slot: &mut McpServerSlot) -> Result<(), McpError> {
+    let attempted_at = SystemTime::now();
+    slot.health.last_attempt_at = Some(attempted_at);
+
+    if !slot.meta.enabled {
+        slot.tools_cache.clear();
+        return Ok(());
+    }
+
+    if slot.permanently_failed {
+        slot.tools_cache.clear();
+        slot.health.permanently_failed = true;
+        return Ok(());
+    }
+
+    let server_name = slot.meta.name.clone();
+
+    let (transport, transport_type) = match slot.runtime.as_ref() {
+        Some(runtime) => (runtime.transport.clone(), runtime.transport_type),
+        None => {
+            let err = McpError::Transport(format!("server '{}' is not connected", server_name));
+            mark_server_failure(slot, attempted_at, &err);
+            return Err(err);
+        }
+    };
+
+    let mut defs = match transport.list_tools().await {
+        Ok(defs) => defs,
+        Err(err) => {
+            let err: McpError = err.into();
+            mark_server_failure(slot, attempted_at, &err);
+            return Err(err);
+        }
+    };
+
+    defs.sort_by(|a, b| a.name.cmp(&b.name));
+    slot.tools_cache = defs.clone();
+    reset_server_health_on_success(slot, attempted_at);
+
+    let mut tools = Vec::with_capacity(defs.len());
+    for def in defs {
+        let tool_id = to_tool_id(&server_name, &def.name)?;
+        let tool = Arc::new(McpTool::new(
+            tool_id.clone(),
+            server_name.clone(),
+            def,
+            transport.clone(),
+            transport_type,
+        )) as Arc<dyn Tool>;
+        tools.push((tool_id, tool));
+    }
+
+    Ok(())
+}
+
+async fn rebuild_snapshot(state: &McpRegistryState) -> Result<u64, McpError> {
+    let tools = {
+        let servers = read_lock(&state.servers);
+        discover_tools(&servers)?
+    };
+
+    let mut snapshot = write_lock(&state.snapshot);
+    let version = snapshot.version.saturating_add(1);
+    *snapshot = McpRegistrySnapshot { version, tools };
+    Ok(version)
+}
+
+fn find_server_index(servers: &[McpServerSlot], name: &str) -> Result<usize, McpError> {
+    servers
+        .iter()
+        .position(|slot| slot.meta.name == name)
+        .ok_or_else(|| McpError::UnknownServer(name.to_string()))
+}
+
+fn server_is_active(slot: &McpServerSlot) -> bool {
+    slot.meta.enabled && !slot.permanently_failed && slot.runtime.is_some()
+}
+
+fn reconnect_backoff(attempt: u32) -> Duration {
+    const BASE_SECS: u64 = 1;
+    const MAX_SHIFT: u32 = 4;
+    let shift = attempt.min(MAX_SHIFT);
+    Duration::from_secs(BASE_SECS << shift)
+}
+
+fn reset_server_health_on_success(slot: &mut McpServerSlot, attempted_at: SystemTime) {
+    slot.health.last_attempt_at = Some(attempted_at);
+    slot.health.last_success_at = Some(attempted_at);
+    slot.health.last_error = None;
+    slot.health.consecutive_failures = 0;
+    slot.health.reconnecting = false;
+    slot.health.permanently_failed = false;
+
+    slot.reconnect_attempts = 0;
+    slot.permanently_failed = false;
+}
+
+fn mark_server_failure(slot: &mut McpServerSlot, attempted_at: SystemTime, err: &McpError) {
+    slot.health.last_attempt_at = Some(attempted_at);
+    slot.health.last_error = Some(err.to_string());
+    slot.health.consecutive_failures = slot.health.consecutive_failures.saturating_add(1);
+    slot.health.reconnecting = false;
+    slot.health.permanently_failed = slot.permanently_failed;
+}
+
+async fn refresh_state(state: &McpRegistryState) -> Result<u64, McpError> {
+    let sampling_handler = state.sampling_handler.clone();
+
+    let mut servers = {
+        let mut guard = write_lock(&state.servers);
+        std::mem::take(&mut *guard)
+    };
+
+    for slot in &mut servers {
+        if !server_is_active(slot) {
+            continue;
+        }
+
+        if let Err(err) = refresh_server(slot).await {
+            tracing::warn!(error = %err, server = %slot.meta.name, "MCP server refresh failed");
+
+            if slot.health.consecutive_failures >= FAILURE_THRESHOLD {
+                if let Err(reconnect_err) = attempt_reconnect(slot, sampling_handler.clone()).await
+                {
+                    tracing::warn!(
+                        error = %reconnect_err,
+                        server = %slot.meta.name,
+                        attempts = slot.reconnect_attempts,
+                        "MCP server reconnect failed"
+                    );
+                }
+            }
+        }
+    }
+
+    {
+        let mut guard = write_lock(&state.servers);
+        *guard = servers;
+    }
+
+    rebuild_snapshot(state).await
+}
+
+async fn attempt_reconnect(
+    slot: &mut McpServerSlot,
+    sampling_handler: Option<Arc<dyn SamplingHandler>>,
+) -> Result<(), McpError> {
+    if slot.reconnect_attempts >= MAX_RECONNECT_ATTEMPTS {
+        slot.permanently_failed = true;
+        slot.health.permanently_failed = true;
+        slot.health.reconnecting = false;
+        return Err(McpError::Transport(format!(
+            "server '{}' exceeded max reconnect attempts",
+            slot.meta.name
+        )));
+    }
+
+    slot.health.reconnecting = true;
+
+    disconnect_server(slot).await?;
+
+    let backoff = reconnect_backoff(slot.reconnect_attempts);
+    tokio::time::sleep(backoff).await;
+
+    match connect_server(slot, sampling_handler).await {
+        Ok(()) => {
+            slot.reconnect_attempts = 0;
+            slot.permanently_failed = false;
+            slot.health.reconnecting = false;
+            slot.health.permanently_failed = false;
+            refresh_server(slot).await?;
+            Ok(())
         }
         Err(err) => {
-            let mut health = write_lock(&state.refresh_health);
-            health.last_attempt_at = Some(attempted_at);
-            health.last_error = Some(err.to_string());
-            health.consecutive_failures = health.consecutive_failures.saturating_add(1);
+            slot.reconnect_attempts = slot.reconnect_attempts.saturating_add(1);
+
+            if slot.reconnect_attempts >= MAX_RECONNECT_ATTEMPTS {
+                slot.permanently_failed = true;
+                slot.health.permanently_failed = true;
+            }
+
+            slot.health.reconnecting = false;
             Err(err)
         }
     }
@@ -370,7 +624,7 @@ impl std::fmt::Debug for McpToolRegistryManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let snapshot = read_lock(&self.state.snapshot);
         f.debug_struct("McpToolRegistryManager")
-            .field("servers", &self.state.servers.len())
+            .field("servers", &read_lock(&self.state.servers).len())
             .field("tools", &snapshot.tools.len())
             .field("version", &snapshot.version)
             .field(
@@ -398,42 +652,51 @@ impl McpToolRegistryManager {
             let transport = connect_transport(&cfg, sampling_handler.clone()).await?;
             entries.push((cfg, transport));
         }
-        Self::from_tool_transports(entries).await
+        Self::from_tool_transports(entries, sampling_handler).await
     }
 
     pub async fn from_transports(
         entries: impl IntoIterator<Item = (McpServerConnectionConfig, Arc<dyn McpToolTransport>)>,
     ) -> Result<Self, McpError> {
-        Self::from_tool_transports(entries).await
+        Self::from_tool_transports(entries, None).await
     }
 
     async fn from_tool_transports(
         entries: impl IntoIterator<Item = (McpServerConnectionConfig, Arc<dyn McpToolTransport>)>,
+        sampling_handler: Option<Arc<dyn SamplingHandler>>,
     ) -> Result<Self, McpError> {
-        let servers = Self::build_servers(entries).await?;
-        let tools = discover_tools(&servers).await?;
+        let mut servers = Self::build_servers(entries).await?;
 
+        for slot in &mut servers {
+            let runtime = slot
+                .runtime
+                .as_ref()
+                .ok_or_else(|| McpError::Transport("missing runtime after connect".to_string()))?;
+
+            let mut defs = runtime.transport.list_tools().await?;
+            defs.sort_by(|a, b| a.name.cmp(&b.name));
+            slot.tools_cache = defs;
+        }
+
+        let tools = discover_tools(&servers)?;
         let snapshot = McpRegistrySnapshot { version: 1, tools };
+
         Ok(Self {
             state: Arc::new(McpRegistryState {
-                servers,
+                servers: RwLock::new(servers),
                 snapshot: RwLock::new(snapshot),
-                refresh_health: RwLock::new(McpRefreshHealth {
-                    last_attempt_at: Some(SystemTime::now()),
-                    last_success_at: Some(SystemTime::now()),
-                    last_error: None,
-                    consecutive_failures: 0,
-                }),
                 periodic_refresh: PeriodicRefresher::new(),
+                sampling_handler,
             }),
         })
     }
 
     async fn build_servers(
         entries: impl IntoIterator<Item = (McpServerConnectionConfig, Arc<dyn McpToolTransport>)>,
-    ) -> Result<Vec<McpServerRuntime>, McpError> {
-        let mut servers: Vec<McpServerRuntime> = Vec::new();
+    ) -> Result<Vec<McpServerSlot>, McpError> {
+        let mut servers = Vec::new();
         let mut names: HashSet<String> = HashSet::new();
+        let connected_at = SystemTime::now();
 
         for (cfg, transport) in entries {
             validate_server_name(&cfg.name)?;
@@ -442,15 +705,32 @@ impl McpToolRegistryManager {
             }
             let capabilities = transport.server_capabilities().await?;
 
-            servers.push(McpServerRuntime {
-                name: cfg.name,
-                transport_type: transport.transport_type(),
-                transport,
-                capabilities,
+            servers.push(McpServerSlot {
+                meta: McpServerMetadata {
+                    name: cfg.name.clone(),
+                    config: cfg,
+                    enabled: true,
+                },
+                runtime: Some(McpServerRuntime {
+                    transport_type: transport.transport_type(),
+                    transport,
+                    capabilities,
+                }),
+                health: McpRefreshHealth {
+                    last_attempt_at: Some(connected_at),
+                    last_success_at: Some(connected_at),
+                    last_error: None,
+                    consecutive_failures: 0,
+                    reconnecting: false,
+                    permanently_failed: false,
+                },
+                reconnect_attempts: 0,
+                permanently_failed: false,
+                tools_cache: Vec::new(),
             });
         }
 
-        servers.sort_by(|a, b| a.name.cmp(&b.name));
+        servers.sort_by(|a, b| a.meta.name.cmp(&b.meta.name));
         Ok(servers)
     }
 
@@ -497,27 +777,62 @@ impl McpToolRegistryManager {
     pub fn version(&self) -> u64 {
         read_lock(&self.state.snapshot).version
     }
-
-    pub fn servers(&self) -> Vec<(String, TransportTypeId)> {
-        self.state
-            .servers
-            .iter()
-            .map(|server| (server.name.clone(), server.transport_type))
-            .collect()
+    pub fn server_health(&self, server_name: &str) -> Result<McpRefreshHealth, McpError> {
+        let servers = read_lock(&self.state.servers);
+        let index = find_server_index(&servers, server_name)?;
+        Ok(servers[index].health.clone())
     }
 
-    pub fn refresh_health(&self) -> McpRefreshHealth {
-        read_lock(&self.state.refresh_health).clone()
+    pub fn servers(&self) -> Vec<(String, TransportTypeId)> {
+        let servers = read_lock(&self.state.servers);
+
+        servers
+            .iter()
+            .map(|slot| {
+                let transport_type = slot
+                    .runtime
+                    .as_ref()
+                    .map(|runtime| runtime.transport_type)
+                    .or_else(|| transport_type_from_config(&slot.meta.config))
+                    .unwrap_or(TransportTypeId::Stdio);
+
+                (slot.meta.name.clone(), transport_type)
+            })
+            .collect()
     }
 
     pub async fn list_prompts(&self) -> Result<Vec<McpPromptEntry>, McpError> {
         let mut prompts = Vec::new();
 
-        for server in &self.state.servers {
-            if !server_supports_prompts(server.capabilities.as_ref()) {
+        let servers: Vec<(
+            String,
+            TransportTypeId,
+            Arc<dyn McpToolTransport>,
+            Option<ServerCapabilities>,
+        )> = {
+            let guard = read_lock(&self.state.servers);
+
+            guard
+                .iter()
+                .filter(|slot| server_is_active(slot))
+                .filter_map(|slot| {
+                    let runtime = slot.runtime.as_ref()?;
+                    Some((
+                        slot.meta.name.clone(),
+                        runtime.transport_type,
+                        runtime.transport.clone(),
+                        runtime.capabilities.clone(),
+                    ))
+                })
+                .collect()
+        };
+
+        for (server_name, transport_type, transport, capabilities) in servers {
+            if !server_supports_prompts(capabilities.as_ref()) {
                 continue;
             }
-            let mut defs = match server.transport.list_prompts().await {
+
+            let mut defs = match transport.list_prompts().await {
                 Ok(defs) => defs,
                 Err(McpTransportError::TransportError(message))
                     if is_unsupported_transport_message(&message, "list_prompts") =>
@@ -526,10 +841,11 @@ impl McpToolRegistryManager {
                 }
                 Err(err) => return Err(err.into()),
             };
+
             defs.sort_by(|a, b| a.name.cmp(&b.name));
             prompts.extend(defs.into_iter().map(|prompt| McpPromptEntry {
-                server_name: server.name.clone(),
-                transport_type: server.transport_type,
+                server_name: server_name.clone(),
+                transport_type,
                 prompt,
             }));
         }
@@ -539,6 +855,7 @@ impl McpToolRegistryManager {
                 .cmp(&b.server_name)
                 .then_with(|| a.prompt.name.cmp(&b.prompt.name))
         });
+
         Ok(prompts)
     }
 
@@ -548,21 +865,27 @@ impl McpToolRegistryManager {
         prompt_name: &str,
         arguments: Option<HashMap<String, String>>,
     ) -> Result<McpPromptResult, McpError> {
-        let server = self
-            .state
-            .servers
-            .iter()
-            .find(|server| server.name == server_name)
-            .ok_or_else(|| McpError::UnknownServer(server_name.to_string()))?;
-        if !server_supports_prompts(server.capabilities.as_ref()) {
+        let (transport, capabilities, resolved_server_name) = {
+            let servers = read_lock(&self.state.servers);
+            let index = find_server_index(&servers, server_name)?;
+            let slot = &servers[index];
+            let runtime = server_runtime(slot)?;
+
+            (
+                runtime.transport.clone(),
+                runtime.capabilities.clone(),
+                slot.meta.name.clone(),
+            )
+        };
+
+        if !server_supports_prompts(capabilities.as_ref()) {
             return Err(McpError::UnsupportedCapability {
-                server_name: server.name.clone(),
+                server_name: resolved_server_name,
                 capability: "prompts",
             });
         }
 
-        server
-            .transport
+        transport
             .get_prompt(prompt_name, arguments)
             .await
             .map_err(Into::into)
@@ -571,11 +894,35 @@ impl McpToolRegistryManager {
     pub async fn list_resources(&self) -> Result<Vec<McpResourceEntry>, McpError> {
         let mut resources = Vec::new();
 
-        for server in &self.state.servers {
-            if !server_supports_resources(server.capabilities.as_ref()) {
+        let servers: Vec<(
+            String,
+            TransportTypeId,
+            Arc<dyn McpToolTransport>,
+            Option<ServerCapabilities>,
+        )> = {
+            let guard = read_lock(&self.state.servers);
+
+            guard
+                .iter()
+                .filter(|slot| server_is_active(slot))
+                .filter_map(|slot| {
+                    let runtime = slot.runtime.as_ref()?;
+                    Some((
+                        slot.meta.name.clone(),
+                        runtime.transport_type,
+                        runtime.transport.clone(),
+                        runtime.capabilities.clone(),
+                    ))
+                })
+                .collect()
+        };
+
+        for (server_name, transport_type, transport, capabilities) in servers {
+            if !server_supports_resources(capabilities.as_ref()) {
                 continue;
             }
-            let mut defs = match server.transport.list_resources().await {
+
+            let mut defs = match transport.list_resources().await {
                 Ok(defs) => defs,
                 Err(McpTransportError::TransportError(message))
                     if is_unsupported_transport_message(&message, "list_resources") =>
@@ -584,10 +931,11 @@ impl McpToolRegistryManager {
                 }
                 Err(err) => return Err(err.into()),
             };
+
             defs.sort_by(|a, b| a.uri.cmp(&b.uri));
             resources.extend(defs.into_iter().map(|resource| McpResourceEntry {
-                server_name: server.name.clone(),
-                transport_type: server.transport_type,
+                server_name: server_name.clone(),
+                transport_type,
                 resource,
             }));
         }
@@ -597,28 +945,119 @@ impl McpToolRegistryManager {
                 .cmp(&b.server_name)
                 .then_with(|| a.resource.uri.cmp(&b.resource.uri))
         });
+
         Ok(resources)
     }
 
     pub async fn read_resource(&self, server_name: &str, uri: &str) -> Result<Value, McpError> {
-        let server = self
-            .state
-            .servers
-            .iter()
-            .find(|server| server.name == server_name)
-            .ok_or_else(|| McpError::UnknownServer(server_name.to_string()))?;
-        if !server_supports_resources(server.capabilities.as_ref()) {
+        let (transport, capabilities, resolved_server_name) = {
+            let servers = read_lock(&self.state.servers);
+            let index = find_server_index(&servers, server_name)?;
+            let slot = &servers[index];
+            let runtime = server_runtime(slot)?;
+
+            (
+                runtime.transport.clone(),
+                runtime.capabilities.clone(),
+                slot.meta.name.clone(),
+            )
+        };
+
+        if !server_supports_resources(capabilities.as_ref()) {
             return Err(McpError::UnsupportedCapability {
-                server_name: server.name.clone(),
+                server_name: resolved_server_name,
                 capability: "resources",
             });
         }
 
-        server
-            .transport
-            .read_resource(uri)
-            .await
-            .map_err(Into::into)
+        transport.read_resource(uri).await.map_err(Into::into)
+    }
+    pub async fn reconnect(&self, server_name: &str) -> Result<(), McpError> {
+        let sampling_handler = self.state.sampling_handler.clone();
+
+        let (index, mut slot) = {
+            let mut servers = write_lock(&self.state.servers);
+            let index = find_server_index(&servers, server_name)?;
+            let slot = servers.remove(index);
+            (index, slot)
+        };
+
+        if !slot.meta.enabled {
+            let mut servers = write_lock(&self.state.servers);
+            servers.insert(index, slot);
+            return Err(McpError::ServerDisabled(server_name.to_string()));
+        }
+
+        slot.health.reconnecting = true;
+
+        let reconnect_result = async {
+            disconnect_server(&mut slot).await?;
+            connect_server(&mut slot, sampling_handler).await?;
+            slot.reconnect_attempts = 0;
+            slot.permanently_failed = false;
+            slot.health.consecutive_failures = 0;
+            slot.health.permanently_failed = false;
+            slot.health.reconnecting = false;
+            refresh_server(&mut slot).await?;
+            Ok::<(), McpError>(())
+        }
+        .await;
+
+        if reconnect_result.is_err() {
+            slot.health.reconnecting = false;
+        }
+
+        {
+            let mut servers = write_lock(&self.state.servers);
+            servers.insert(index, slot);
+        }
+
+        reconnect_result?;
+        rebuild_snapshot(self.state.as_ref()).await?;
+        Ok(())
+    }
+
+    pub async fn toggle(&self, server_name: &str, enabled: bool) -> Result<(), McpError> {
+        let sampling_handler = self.state.sampling_handler.clone();
+
+        let (index, mut slot) = {
+            let mut servers = write_lock(&self.state.servers);
+            let index = find_server_index(&servers, server_name)?;
+            let slot = servers.remove(index);
+            (index, slot)
+        };
+
+        let toggle_result = async {
+            if !enabled {
+                slot.meta.enabled = false;
+                slot.health.reconnecting = false;
+                disconnect_server(&mut slot).await?;
+                slot.tools_cache.clear();
+                return Ok::<(), McpError>(());
+            }
+
+            slot.meta.enabled = true;
+            slot.permanently_failed = false;
+            slot.reconnect_attempts = 0;
+            slot.health.consecutive_failures = 0;
+            slot.health.last_error = None;
+            slot.health.reconnecting = false;
+            slot.health.permanently_failed = false;
+
+            connect_server(&mut slot, sampling_handler).await?;
+            refresh_server(&mut slot).await?;
+            Ok(())
+        }
+        .await;
+
+        {
+            let mut servers = write_lock(&self.state.servers);
+            servers.insert(index, slot);
+        }
+
+        toggle_result?;
+        rebuild_snapshot(self.state.as_ref()).await?;
+        Ok(())
     }
 }
 
@@ -634,7 +1073,7 @@ impl std::fmt::Debug for McpToolRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let snapshot = read_lock(&self.state.snapshot);
         f.debug_struct("McpToolRegistry")
-            .field("servers", &self.state.servers.len())
+            .field("servers", &read_lock(&self.state.servers).len())
             .field("tools", &snapshot.tools.len())
             .field("version", &snapshot.version)
             .field(
@@ -649,12 +1088,27 @@ impl McpToolRegistry {
     pub fn version(&self) -> u64 {
         read_lock(&self.state.snapshot).version
     }
+    pub fn server_health(&self, server_name: &str) -> Result<McpRefreshHealth, McpError> {
+        let servers = read_lock(&self.state.servers);
+        let index = find_server_index(&servers, server_name)?;
+        Ok(servers[index].health.clone())
+    }
 
     pub fn servers(&self) -> Vec<(String, TransportTypeId)> {
-        self.state
-            .servers
+        let servers = read_lock(&self.state.servers);
+
+        servers
             .iter()
-            .map(|server| (server.name.clone(), server.transport_type))
+            .map(|slot| {
+                let transport_type = slot
+                    .runtime
+                    .as_ref()
+                    .map(|runtime| runtime.transport_type)
+                    .or_else(|| transport_type_from_config(&slot.meta.config))
+                    .unwrap_or(TransportTypeId::Stdio);
+
+                (slot.meta.name.clone(), transport_type)
+            })
             .collect()
     }
 
@@ -679,10 +1133,6 @@ impl McpToolRegistry {
 
     pub fn snapshot(&self) -> HashMap<String, Arc<dyn Tool>> {
         read_lock(&self.state.snapshot).tools.clone()
-    }
-
-    pub fn refresh_health(&self) -> McpRefreshHealth {
-        read_lock(&self.state.refresh_health).clone()
     }
 }
 
@@ -947,12 +1397,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn manager_refresh_health_tracks_success() {
+    async fn manager_server_health_returns_per_server_state() {
         let mgr = make_manager_with(vec![("srv", Vec::new())]).await;
-        let health = mgr.refresh_health();
+        let health = mgr.server_health("srv").unwrap();
         assert!(health.last_success_at.is_some());
         assert_eq!(health.consecutive_failures, 0);
         assert!(health.last_error.is_none());
+    }
+    #[tokio::test]
+    async fn manager_server_health_rejects_unknown_server() {
+        let mgr = make_manager_with(vec![("srv", Vec::new())]).await;
+        let err = mgr.server_health("missing").unwrap_err();
+        assert!(matches!(err, McpError::UnknownServer(_)));
     }
 
     #[tokio::test]
@@ -962,6 +1418,58 @@ mod tests {
         let names: Vec<&str> = servers.iter().map(|(n, _)| n.as_str()).collect();
         assert!(names.contains(&"alpha"));
         assert!(names.contains(&"beta"));
+    }
+
+    // ── Runtime server management ──
+
+    #[tokio::test]
+    async fn manager_toggle_disable_removes_server_tools_from_snapshot() {
+        let mgr = make_manager_with(vec![("srv", vec![MockTransport::tool_def("echo")])]).await;
+        let registry = mgr.registry();
+        assert!(registry.get("mcp__srv__echo").is_some());
+
+        mgr.toggle("srv", false).await.unwrap();
+
+        let registry = mgr.registry();
+        assert!(registry.get("mcp__srv__echo").is_none());
+        assert!(registry.ids().is_empty());
+
+        let health = mgr.server_health("srv").unwrap();
+        assert!(!health.reconnecting);
+
+        let servers = read_lock(&mgr.state.servers);
+        let index = find_server_index(&servers, "srv").unwrap();
+        let slot = &servers[index];
+        assert!(!slot.meta.enabled);
+        assert!(slot.runtime.is_none());
+        assert!(slot.tools_cache.is_empty());
+    }
+
+    #[tokio::test]
+    async fn manager_reconnect_rejects_disabled_server() {
+        let mgr = make_manager_with(vec![("srv", vec![MockTransport::tool_def("echo")])]).await;
+        mgr.toggle("srv", false).await.unwrap();
+
+        let err = mgr.reconnect("srv").await.unwrap_err();
+        assert!(matches!(err, McpError::ServerDisabled(name) if name == "srv"));
+    }
+
+    #[tokio::test]
+    async fn manager_toggle_disable_is_idempotent() {
+        let mgr = make_manager_with(vec![("srv", vec![MockTransport::tool_def("echo")])]).await;
+
+        mgr.toggle("srv", false).await.unwrap();
+        mgr.toggle("srv", false).await.unwrap();
+
+        let registry = mgr.registry();
+        assert!(registry.ids().is_empty());
+
+        let servers = read_lock(&mgr.state.servers);
+        let index = find_server_index(&servers, "srv").unwrap();
+        let slot = &servers[index];
+        assert!(!slot.meta.enabled);
+        assert!(slot.runtime.is_none());
+        assert!(slot.tools_cache.is_empty());
     }
 
     // ── Periodic refresh ──

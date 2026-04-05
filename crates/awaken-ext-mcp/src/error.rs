@@ -36,6 +36,12 @@ pub enum McpError {
 
     #[error("tokio runtime is required to start periodic refresh")]
     RuntimeUnavailable,
+
+    #[error("server '{0}' is disabled")]
+    ServerDisabled(String),
+
+    #[error("server '{0}' is permanently failed")]
+    ServerPermanentlyFailed(String),
 }
 
 impl From<McpTransportError> for McpError {
@@ -139,5 +145,17 @@ mod tests {
         let transport_err = McpTransportError::Timeout("30s".to_string());
         let mcp_err: McpError = transport_err.into();
         assert!(matches!(mcp_err, McpError::Transport(msg) if msg.contains("30s")));
+    }
+
+    #[test]
+    fn server_disabled_display() {
+        let err = McpError::ServerDisabled("srv".to_string());
+        assert_eq!(err.to_string(), "server 'srv' is disabled");
+    }
+
+    #[test]
+    fn server_permanently_failed_display() {
+        let err = McpError::ServerPermanentlyFailed("srv".to_string());
+        assert_eq!(err.to_string(), "server 'srv' is permanently failed");
     }
 }
