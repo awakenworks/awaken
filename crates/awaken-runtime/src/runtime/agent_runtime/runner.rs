@@ -688,11 +688,11 @@ mod tests {
             events.iter().any(|event| {
                 matches!(
                     event,
-                    AgentEvent::ToolCallDone { id, result, .. }
-                        if id == "c1" && result.status == awaken_contract::contract::tool::ToolStatus::Success
+                    AgentEvent::ToolCallResumed { target_id, result }
+                        if target_id == "c1" && result == &json!({"x": 1})
                 )
             }),
-            "resumed replay should emit successful ToolCallDone: {events:?}"
+            "resumed replay should emit ToolCallResumed with the final tool result: {events:?}"
         );
     }
 

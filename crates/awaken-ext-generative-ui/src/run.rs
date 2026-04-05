@@ -133,6 +133,9 @@ mod tests {
             snapshot: Snapshot::new(0, Arc::new(awaken_contract::state::StateMap::default())),
             activity_sink: sink,
             cancellation_token: None,
+            resume_input: None,
+            suspension_id: None,
+            suspension_reason: None,
         }
     }
 

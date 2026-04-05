@@ -183,6 +183,7 @@ impl AcpEncoder {
                         vec![self.notif(SessionUpdate::ToolCallUpdate(update))]
                     }
                     shared::ResumedOutcome::Success => {
+                        self.pending_tool_calls.remove(target_id);
                         let fields = ToolCallUpdateFields::new()
                             .status(ToolCallStatus::Completed)
                             .raw_output(result.clone());
@@ -373,6 +374,31 @@ mod tests {
         match &notif.update {
             SessionUpdate::ToolCallUpdate(u) => {
                 assert_eq!(u.fields.status, Some(ToolCallStatus::Failed));
+            }
+            other => panic!("expected ToolCallUpdate, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_call_resumed_success_clears_pending_state() {
+        let mut enc = enc();
+        enc.on_agent_event(&AgentEvent::ToolCallReady {
+            id: "c1".into(),
+            name: "search".into(),
+            arguments: json!({"q": "rust"}),
+        });
+
+        let events = enc.on_agent_event(&AgentEvent::ToolCallResumed {
+            target_id: "c1".into(),
+            result: json!({"approved": true}),
+        });
+
+        assert_eq!(events.len(), 1);
+        assert!(!enc.pending_tool_calls.contains_key("c1"));
+        let notif = assert_notification(&events[0]);
+        match &notif.update {
+            SessionUpdate::ToolCallUpdate(u) => {
+                assert_eq!(u.fields.status, Some(ToolCallStatus::Completed));
             }
             other => panic!("expected ToolCallUpdate, got: {other:?}"),
         }

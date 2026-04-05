@@ -249,9 +249,9 @@ async fn interrupt_thread(
     Err(ApiError::ThreadNotFound(thread_id))
 }
 
-/// Convert an AG-UI resume payload into a `(tool_call_id, ToolCallResume)` pair.
+/// Convert an AG-UI resume payload into a `(resume_target_id, ToolCallResume)` pair.
 fn convert_resume_to_decision(resume: AgUiResumePayload) -> Option<(String, ToolCallResume)> {
-    let tool_call_id = resume.interrupt_id?;
+    let resume_target_id = resume.interrupt_id?;
     let payload = resume.payload.unwrap_or(Value::Null);
 
     let action = if payload.get("approved").and_then(Value::as_bool) == Some(false) {
@@ -261,7 +261,7 @@ fn convert_resume_to_decision(resume: AgUiResumePayload) -> Option<(String, Tool
     };
 
     Some((
-        tool_call_id,
+        resume_target_id,
         ToolCallResume {
             decision_id: uuid::Uuid::now_v7().to_string(),
             action,
