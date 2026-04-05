@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::phase::PhaseRuntime;
 use crate::registry::{AgentResolver, ResolvedAgent};
 use crate::state::MutationBatch;
+use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::message::Message;
 
@@ -23,6 +24,7 @@ pub(super) async fn prepare_run(
     runtime: &PhaseRuntime,
     initial_agent_id: &str,
     initial_messages: Vec<Message>,
+    sink: &dyn EventSink,
     run_identity: &RunIdentity,
 ) -> Result<PreparedRun, AgentLoopError> {
     let store = runtime.store();
@@ -61,7 +63,7 @@ pub(super) async fn prepare_run(
     }
 
     // State-driven resume detection: replay any Resuming tool calls.
-    detect_and_replay_resume(&agent, store, run_identity, &mut messages).await?;
+    detect_and_replay_resume(&agent, store, sink, run_identity, &mut messages).await?;
 
     Ok(PreparedRun { agent, messages })
 }
