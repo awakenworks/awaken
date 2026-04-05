@@ -2,14 +2,22 @@
 //!
 //! Validates event mapping, termination reason mapping, permission flow,
 //! state snapshot/delta visibility, tool call lifecycle, and terminal guard.
+//!
+//! Updated for ACP spec compliance:
+//! - ToolCallStatus: pending/in_progress/completed/failed (no denied/errored)
+//! - StopReason: end_turn/max_tokens/max_turn_requests/refusal/cancelled (no error/suspended)
+//! - PermissionOption: struct with optionId/name/kind
+//! - Tool calls use tool_call_update with toolCallId/title/kind/rawInput/rawOutput
 
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::lifecycle::{StoppedReason, TerminationReason};
 use awaken_contract::contract::suspension::ToolCallOutcome;
 use awaken_contract::contract::tool::ToolResult;
 use awaken_contract::contract::transport::Transcoder;
-use awaken_server::protocols::acp::encoder::{AcpEncoder, AcpEvent, RequestPermissionParams};
-use awaken_server::protocols::acp::types::{PermissionOption, StopReason, ToolCallStatus};
+use awaken_server::protocols::acp::encoder::{AcpEncoder, AcpEvent};
+use awaken_server::protocols::acp::types::{
+    PermissionOptionKind, StopReason, ToolCallKind, ToolCallStatus,
+};
 use serde_json::json;
 
 // ============================================================================
@@ -75,10 +83,17 @@ fn full_lifecycle_text_tool_text_finish() {
         arguments: json!({"q": "rust"}),
     });
     assert_eq!(ev.len(), 1);
-    assert_eq!(
-        ev[0],
-        AcpEvent::tool_call("call_1", "search", json!({"q": "rust"}))
-    );
+    match &ev[0] {
+        AcpEvent::SessionUpdate(params) => {
+            let update = params.tool_call_update.as_ref().unwrap();
+            assert_eq!(update.tool_call_id, "call_1");
+            assert_eq!(update.status, ToolCallStatus::Pending);
+            assert_eq!(update.title.as_deref(), Some("search"));
+            assert_eq!(update.kind, Some(ToolCallKind::Search));
+            assert_eq!(update.raw_input, Some(json!({"q": "rust"})));
+        }
+        other => panic!("expected pending tool_call_update, got: {other:?}"),
+    }
 
     let ev = enc.transcode(&AgentEvent::ToolCallDone {
         id: "call_1".into(),
@@ -90,7 +105,7 @@ fn full_lifecycle_text_tool_text_finish() {
     match &ev[0] {
         AcpEvent::SessionUpdate(params) => {
             let update = params.tool_call_update.as_ref().unwrap();
-            assert_eq!(update.id, "call_1");
+            assert_eq!(update.tool_call_id, "call_1");
             assert_eq!(update.status, ToolCallStatus::Completed);
         }
         other => panic!("expected tool_call_update, got: {other:?}"),
@@ -195,7 +210,7 @@ fn cancelled_maps_to_cancelled() {
 }
 
 #[test]
-fn suspended_maps_to_suspended() {
+fn suspended_maps_to_cancelled() {
     let mut enc = AcpEncoder::new();
     let ev = enc.transcode(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
@@ -203,7 +218,8 @@ fn suspended_maps_to_suspended() {
         result: None,
         termination: TerminationReason::Suspended,
     });
-    assert_eq!(ev, vec![AcpEvent::finished(StopReason::Suspended)]);
+    // Suspended has no spec equivalent; mapped to cancelled
+    assert_eq!(ev, vec![AcpEvent::finished(StopReason::Cancelled)]);
 }
 
 #[test]
@@ -217,7 +233,8 @@ fn error_termination_emits_error_then_finished() {
     });
     assert_eq!(ev.len(), 2);
     assert_eq!(ev[0], AcpEvent::error("boom", None));
-    assert_eq!(ev[1], AcpEvent::finished(StopReason::Error));
+    // Error maps to end_turn (error details in the preceding error event)
+    assert_eq!(ev[1], AcpEvent::finished(StopReason::EndTurn));
 }
 
 #[test]
@@ -269,7 +286,7 @@ fn unknown_stopped_code_maps_to_end_turn() {
 }
 
 #[test]
-fn blocked_maps_to_error() {
+fn blocked_maps_to_refusal() {
     let mut enc = AcpEncoder::new();
     let ev = enc.transcode(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
@@ -277,7 +294,7 @@ fn blocked_maps_to_error() {
         result: None,
         termination: TerminationReason::Blocked("unsafe tool".into()),
     });
-    assert_eq!(ev, vec![AcpEvent::finished(StopReason::Error)]);
+    assert_eq!(ev, vec![AcpEvent::finished(StopReason::Refusal)]);
 }
 
 // ============================================================================
@@ -354,7 +371,7 @@ fn reasoning_delta_maps_to_agent_thought() {
 // ============================================================================
 
 #[test]
-fn tool_call_done_error_maps_to_errored() {
+fn tool_call_done_error_maps_to_failed() {
     let mut enc = AcpEncoder::new();
     let ev = enc.transcode(&AgentEvent::ToolCallDone {
         id: "c1".into(),
@@ -366,10 +383,10 @@ fn tool_call_done_error_maps_to_errored() {
     match &ev[0] {
         AcpEvent::SessionUpdate(params) => {
             let update = params.tool_call_update.as_ref().unwrap();
-            assert_eq!(update.status, ToolCallStatus::Errored);
+            assert_eq!(update.status, ToolCallStatus::Failed);
             assert_eq!(update.error.as_deref(), Some("backend failure"));
         }
-        other => panic!("expected errored update, got: {other:?}"),
+        other => panic!("expected failed update, got: {other:?}"),
     }
 }
 
@@ -379,7 +396,7 @@ fn tool_call_done_error_maps_to_errored() {
 
 #[test]
 fn permission_confirm_tool_emits_request_permission() {
-    let mut enc = AcpEncoder::new();
+    let mut enc = AcpEncoder::new().with_session_id("sess_test");
     let events = enc.on_agent_event(&AgentEvent::ToolCallReady {
         id: "fc_perm_1".into(),
         name: "PermissionConfirm".into(),
@@ -392,35 +409,33 @@ fn permission_confirm_tool_emits_request_permission() {
     assert_eq!(
         events.len(),
         2,
-        "should emit tool_call + request_permission"
+        "should emit tool_call_update (pending) + request_permission"
     );
 
-    assert_eq!(
-        events[0],
-        AcpEvent::tool_call(
-            "fc_perm_1",
-            "PermissionConfirm",
-            json!({
-                "tool_name": "bash",
-                "tool_args": {"command": "rm -rf /tmp/test"}
-            })
-        )
-    );
+    // First event: pending tool call update
+    match &events[0] {
+        AcpEvent::SessionUpdate(params) => {
+            let update = params.tool_call_update.as_ref().unwrap();
+            assert_eq!(update.tool_call_id, "fc_perm_1");
+            assert_eq!(update.status, ToolCallStatus::Pending);
+        }
+        other => panic!("expected pending tool_call_update, got: {other:?}"),
+    }
 
+    // Second event: request_permission RPC
     match &events[1] {
         AcpEvent::RequestPermission(params) => {
-            assert_eq!(params.tool_call_id, "fc_perm_1");
-            assert_eq!(params.tool_name, "bash");
-            assert_eq!(params.tool_args, json!({"command": "rm -rf /tmp/test"}));
-            assert_eq!(
-                params.options,
-                vec![
-                    PermissionOption::AllowOnce,
-                    PermissionOption::AllowAlways,
-                    PermissionOption::RejectOnce,
-                    PermissionOption::RejectAlways,
-                ]
-            );
+            assert_eq!(params.session_id, "sess_test");
+            assert_eq!(params.tool_call.tool_call_id, "fc_perm_1");
+            assert_eq!(params.options.len(), 4);
+            assert_eq!(params.options[0].option_id, "opt_allow_once");
+            assert_eq!(params.options[0].kind, PermissionOptionKind::AllowOnce);
+            assert_eq!(params.options[1].option_id, "opt_allow_always");
+            assert_eq!(params.options[1].kind, PermissionOptionKind::AllowAlways);
+            assert_eq!(params.options[2].option_id, "opt_reject_once");
+            assert_eq!(params.options[2].kind, PermissionOptionKind::RejectOnce);
+            assert_eq!(params.options[3].option_id, "opt_reject_always");
+            assert_eq!(params.options[3].kind, PermissionOptionKind::RejectAlways);
         }
         other => panic!("expected RequestPermission, got: {other:?}"),
     }
@@ -428,7 +443,7 @@ fn permission_confirm_tool_emits_request_permission() {
 
 #[test]
 fn permission_confirm_case_insensitive() {
-    let mut enc = AcpEncoder::new();
+    let mut enc = AcpEncoder::new().with_session_id("sess_test");
     let events = enc.on_agent_event(&AgentEvent::ToolCallReady {
         id: "fc_2".into(),
         name: "permissionconfirm".into(),
@@ -452,7 +467,7 @@ fn non_permission_tool_does_not_emit_request_permission() {
 
 #[test]
 fn permission_confirm_missing_tool_args_uses_null() {
-    let mut enc = AcpEncoder::new();
+    let mut enc = AcpEncoder::new().with_session_id("sess_test");
     let events = enc.on_agent_event(&AgentEvent::ToolCallReady {
         id: "fc_3".into(),
         name: "PermissionConfirm".into(),
@@ -460,8 +475,11 @@ fn permission_confirm_missing_tool_args_uses_null() {
     });
     assert_eq!(events.len(), 2);
     match &events[1] {
-        AcpEvent::RequestPermission(RequestPermissionParams { tool_args, .. }) => {
-            assert!(tool_args.is_null(), "missing tool_args should be null");
+        AcpEvent::RequestPermission(params) => {
+            assert!(
+                params.tool_call.raw_input.as_ref().unwrap().is_null(),
+                "missing tool_args should be null"
+            );
         }
         other => panic!("expected RequestPermission, got: {other:?}"),
     }
@@ -469,7 +487,7 @@ fn permission_confirm_missing_tool_args_uses_null() {
 
 #[test]
 fn permission_confirm_missing_tool_name_uses_unknown() {
-    let mut enc = AcpEncoder::new();
+    let mut enc = AcpEncoder::new().with_session_id("sess_test");
     let events = enc.on_agent_event(&AgentEvent::ToolCallReady {
         id: "fc_4".into(),
         name: "PermissionConfirm".into(),
@@ -477,8 +495,8 @@ fn permission_confirm_missing_tool_name_uses_unknown() {
     });
     assert_eq!(events.len(), 2);
     match &events[1] {
-        AcpEvent::RequestPermission(RequestPermissionParams { tool_name, .. }) => {
-            assert_eq!(tool_name, "unknown");
+        AcpEvent::RequestPermission(params) => {
+            assert_eq!(params.tool_call.title.as_deref(), Some("unknown"));
         }
         other => panic!("expected RequestPermission, got: {other:?}"),
     }
@@ -499,16 +517,16 @@ fn approved_resolution_maps_to_completed() {
     match &events[0] {
         AcpEvent::SessionUpdate(params) => {
             let update = params.tool_call_update.as_ref().unwrap();
-            assert_eq!(update.id, "fc_perm_1");
+            assert_eq!(update.tool_call_id, "fc_perm_1");
             assert_eq!(update.status, ToolCallStatus::Completed);
-            assert!(update.result.is_some());
+            assert!(update.raw_output.is_some());
         }
         other => panic!("expected completed update, got: {other:?}"),
     }
 }
 
 #[test]
-fn denied_resolution_maps_to_denied_status() {
+fn denied_resolution_maps_to_failed_status() {
     let mut enc = AcpEncoder::new();
     let events = enc.on_agent_event(&AgentEvent::ToolCallResumed {
         target_id: "fc_perm_1".into(),
@@ -518,17 +536,17 @@ fn denied_resolution_maps_to_denied_status() {
     match &events[0] {
         AcpEvent::SessionUpdate(params) => {
             let update = params.tool_call_update.as_ref().unwrap();
-            assert_eq!(update.id, "fc_perm_1");
-            assert_eq!(update.status, ToolCallStatus::Denied);
-            assert!(update.result.is_none());
-            assert!(update.error.is_none());
+            assert_eq!(update.tool_call_id, "fc_perm_1");
+            // Spec has no "denied" status — mapped to failed
+            assert_eq!(update.status, ToolCallStatus::Failed);
+            assert_eq!(update.error.as_deref(), Some("permission denied"));
         }
-        other => panic!("expected denied update, got: {other:?}"),
+        other => panic!("expected failed update, got: {other:?}"),
     }
 }
 
 #[test]
-fn error_resolution_maps_to_errored_status() {
+fn error_resolution_maps_to_failed_status() {
     let mut enc = AcpEncoder::new();
     let events = enc.on_agent_event(&AgentEvent::ToolCallResumed {
         target_id: "fc_perm_1".into(),
@@ -538,11 +556,11 @@ fn error_resolution_maps_to_errored_status() {
     match &events[0] {
         AcpEvent::SessionUpdate(params) => {
             let update = params.tool_call_update.as_ref().unwrap();
-            assert_eq!(update.id, "fc_perm_1");
-            assert_eq!(update.status, ToolCallStatus::Errored);
+            assert_eq!(update.tool_call_id, "fc_perm_1");
+            assert_eq!(update.status, ToolCallStatus::Failed);
             assert_eq!(update.error.as_deref(), Some("frontend validation failed"));
         }
-        other => panic!("expected errored update, got: {other:?}"),
+        other => panic!("expected failed update, got: {other:?}"),
     }
 }
 
@@ -753,7 +771,7 @@ fn session_update_roundtrip() {
 
 #[test]
 fn request_permission_roundtrip() {
-    let event = AcpEvent::request_permission("fc_1", "bash", json!({"command": "rm"}));
+    let event = AcpEvent::request_permission("sess_1", "fc_1", "bash", json!({"command": "rm"}));
     let json = serde_json::to_string(&event).unwrap();
     let restored: AcpEvent = serde_json::from_str(&json).unwrap();
     assert_eq!(event, restored);
@@ -769,10 +787,10 @@ fn finished_serializes_stop_reason() {
 #[test]
 fn tool_call_status_serde_roundtrip() {
     for status in [
+        ToolCallStatus::Pending,
         ToolCallStatus::InProgress,
         ToolCallStatus::Completed,
-        ToolCallStatus::Denied,
-        ToolCallStatus::Errored,
+        ToolCallStatus::Failed,
     ] {
         let json = serde_json::to_string(&status).unwrap();
         let parsed: ToolCallStatus = serde_json::from_str(&json).unwrap();
@@ -785,9 +803,9 @@ fn stop_reason_serde_roundtrip() {
     for reason in [
         StopReason::EndTurn,
         StopReason::MaxTokens,
+        StopReason::MaxTurnRequests,
+        StopReason::Refusal,
         StopReason::Cancelled,
-        StopReason::Error,
-        StopReason::Suspended,
     ] {
         let json = serde_json::to_string(&reason).unwrap();
         let parsed: StopReason = serde_json::from_str(&json).unwrap();
@@ -797,16 +815,15 @@ fn stop_reason_serde_roundtrip() {
 
 #[test]
 fn permission_option_serde_roundtrip() {
-    for opt in [
-        PermissionOption::AllowOnce,
-        PermissionOption::AllowAlways,
-        PermissionOption::RejectOnce,
-        PermissionOption::RejectAlways,
-    ] {
-        let json = serde_json::to_string(&opt).unwrap();
-        let parsed: PermissionOption = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, opt);
-    }
+    use awaken_server::protocols::acp::types::PermissionOption;
+    let opt = PermissionOption {
+        option_id: "opt_allow_once".into(),
+        name: "Allow once".into(),
+        kind: PermissionOptionKind::AllowOnce,
+    };
+    let json = serde_json::to_string(&opt).unwrap();
+    let parsed: PermissionOption = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed, opt);
 }
 
 // ============================================================================
@@ -833,7 +850,7 @@ fn error_event_sets_terminal_guard() {
 }
 
 // ============================================================================
-// Tool Execution (8 tests)
+// Tool Execution
 // ============================================================================
 
 #[test]
@@ -850,9 +867,9 @@ fn tool_call_result_has_correct_payload() {
     match &ev[0] {
         AcpEvent::SessionUpdate(params) => {
             let update = params.tool_call_update.as_ref().unwrap();
-            assert_eq!(update.id, "call_42");
+            assert_eq!(update.tool_call_id, "call_42");
             assert_eq!(update.status, ToolCallStatus::Completed);
-            let result_val = update.result.as_ref().unwrap();
+            let result_val = update.raw_output.as_ref().unwrap();
             assert!(result_val.get("data").is_some() || result_val.get("files").is_some());
         }
         other => panic!("expected tool_call_update, got: {other:?}"),
@@ -898,8 +915,8 @@ fn multiple_tool_calls_produce_results() {
     // Verify both results reference correct call IDs
     match (&ev2[0], &ev4[0]) {
         (AcpEvent::SessionUpdate(p1), AcpEvent::SessionUpdate(p2)) => {
-            assert_eq!(p1.tool_call_update.as_ref().unwrap().id, "c1");
-            assert_eq!(p2.tool_call_update.as_ref().unwrap().id, "c2");
+            assert_eq!(p1.tool_call_update.as_ref().unwrap().tool_call_id, "c1");
+            assert_eq!(p2.tool_call_update.as_ref().unwrap().tool_call_id, "c2");
         }
         other => panic!("expected two SessionUpdates, got: {other:?}"),
     }
@@ -918,12 +935,12 @@ fn failed_tool_produces_error_content() {
     match &ev[0] {
         AcpEvent::SessionUpdate(params) => {
             let update = params.tool_call_update.as_ref().unwrap();
-            assert_eq!(update.id, "c_fail");
-            assert_eq!(update.status, ToolCallStatus::Errored);
+            assert_eq!(update.tool_call_id, "c_fail");
+            assert_eq!(update.status, ToolCallStatus::Failed);
             assert_eq!(update.error.as_deref(), Some("connection refused"));
-            assert!(update.result.is_none());
+            assert!(update.raw_output.is_none());
         }
-        other => panic!("expected errored update, got: {other:?}"),
+        other => panic!("expected failed update, got: {other:?}"),
     }
 }
 
@@ -947,12 +964,13 @@ fn tool_with_complex_arguments() {
     assert_eq!(ev.len(), 1);
     match &ev[0] {
         AcpEvent::SessionUpdate(params) => {
-            let tc = params.tool_call.as_ref().unwrap();
-            assert_eq!(tc.name, "sql_query");
-            assert_eq!(tc.arguments, complex_args);
-            assert_eq!(tc.arguments["options"]["nested"]["deep"]["value"][2], 3);
+            let update = params.tool_call_update.as_ref().unwrap();
+            assert_eq!(update.title.as_deref(), Some("sql_query"));
+            let raw_input = update.raw_input.as_ref().unwrap();
+            assert_eq!(raw_input, &complex_args);
+            assert_eq!(raw_input["options"]["nested"]["deep"]["value"][2], 3);
         }
-        other => panic!("expected tool_call, got: {other:?}"),
+        other => panic!("expected tool_call_update, got: {other:?}"),
     }
 }
 
@@ -968,14 +986,14 @@ fn tool_suspension_handling() {
     });
     assert_eq!(ev.len(), 1);
 
-    // Run finishes with Suspended termination
+    // Run finishes with Suspended termination → maps to Cancelled
     let ev = enc.transcode(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: None,
         termination: TerminationReason::Suspended,
     });
-    assert_eq!(ev, vec![AcpEvent::finished(StopReason::Suspended)]);
+    assert_eq!(ev, vec![AcpEvent::finished(StopReason::Cancelled)]);
 }
 
 #[test]
@@ -990,7 +1008,7 @@ fn tool_result_contains_call_id() {
     match &ev[0] {
         AcpEvent::SessionUpdate(params) => {
             assert_eq!(
-                params.tool_call_update.as_ref().unwrap().id,
+                params.tool_call_update.as_ref().unwrap().tool_call_id,
                 "unique_call_id_abc123"
             );
         }
@@ -1056,7 +1074,7 @@ fn tool_result_is_final_only() {
     });
     assert!(ev_delta.is_empty());
 
-    // ToolCallReady produces the tool_call event (final invocation)
+    // ToolCallReady produces the pending tool_call_update event
     let ev_ready = enc.transcode(&AgentEvent::ToolCallReady {
         id: "c1".into(),
         name: "search".into(),
@@ -1064,7 +1082,7 @@ fn tool_result_is_final_only() {
     });
     assert_eq!(ev_ready.len(), 1);
 
-    // ToolCallDone produces the tool_call_update (final result)
+    // ToolCallDone produces the completed tool_call_update
     let ev_done = enc.transcode(&AgentEvent::ToolCallDone {
         id: "c1".into(),
         message_id: "m1".into(),
@@ -1075,14 +1093,17 @@ fn tool_result_is_final_only() {
     match &ev_done[0] {
         AcpEvent::SessionUpdate(params) => {
             assert!(params.tool_call_update.is_some());
-            assert!(params.tool_call.is_none());
+            assert_eq!(
+                params.tool_call_update.as_ref().unwrap().status,
+                ToolCallStatus::Completed
+            );
         }
         other => panic!("expected SessionUpdate with tool_call_update, got: {other:?}"),
     }
 }
 
 // ============================================================================
-// Text & Message (6 tests)
+// Text & Message
 // ============================================================================
 
 #[test]
@@ -1108,7 +1129,6 @@ fn multiple_text_blocks_accumulated() {
         delta: "third.".into(),
     });
 
-    // Each delta produces an independent agent_message event
     assert_eq!(ev1, vec![AcpEvent::agent_message("First ")]);
     assert_eq!(ev2, vec![AcpEvent::agent_message("second ")]);
     assert_eq!(ev3, vec![AcpEvent::agent_message("third.")]);
@@ -1172,7 +1192,7 @@ fn empty_response_handling() {
 }
 
 // ============================================================================
-// State & Activity (6 tests)
+// State & Activity
 // ============================================================================
 
 #[test]
@@ -1265,7 +1285,6 @@ fn messages_snapshot_forwarded_silently() {
             json!({"role": "assistant", "content": "Hi there"}),
         ],
     });
-    // ACP silently consumes MessagesSnapshot (unlike AG-UI which forwards it)
     assert!(ev.is_empty());
 }
 
@@ -1280,14 +1299,13 @@ fn state_snapshot_empty_new() {
 }
 
 // ============================================================================
-// Event Sequence (6 tests)
+// Event Sequence
 // ============================================================================
 
 #[test]
 fn events_start_with_lifecycle() {
     let mut enc = AcpEncoder::new();
 
-    // RunStart is silently consumed in ACP
     let ev = enc.transcode(&AgentEvent::RunStart {
         thread_id: "t1".into(),
         run_id: "r1".into(),
@@ -1295,7 +1313,6 @@ fn events_start_with_lifecycle() {
     });
     assert!(ev.is_empty(), "ACP silently consumes RunStart");
 
-    // First real event is text
     let ev = enc.transcode(&AgentEvent::TextDelta {
         delta: "Hello".into(),
     });
@@ -1342,7 +1359,6 @@ fn terminal_guard_suppresses_after_finish() {
         termination: TerminationReason::NaturalEnd,
     });
 
-    // All subsequent events suppressed
     assert!(
         enc.transcode(&AgentEvent::TextDelta { delta: "a".into() })
             .is_empty()
@@ -1378,7 +1394,6 @@ fn terminal_guard_suppresses_after_error() {
         code: None,
     });
 
-    // All subsequent events suppressed
     assert!(
         enc.transcode(&AgentEvent::TextDelta { delta: "a".into() })
             .is_empty()
@@ -1407,23 +1422,20 @@ fn terminal_guard_suppresses_after_error() {
 fn step_events_present() {
     let mut enc = AcpEncoder::new();
 
-    // StepStart silently consumed
-    let ev = enc.transcode(&AgentEvent::StepStart {
-        message_id: "step_1".into(),
-    });
-    assert!(ev.is_empty());
-
-    // StepEnd silently consumed
-    let ev = enc.transcode(&AgentEvent::StepEnd);
-    assert!(ev.is_empty());
-
-    // Multiple steps also silently consumed
-    let ev = enc.transcode(&AgentEvent::StepStart {
-        message_id: "step_2".into(),
-    });
-    assert!(ev.is_empty());
-    let ev = enc.transcode(&AgentEvent::StepEnd);
-    assert!(ev.is_empty());
+    assert!(
+        enc.transcode(&AgentEvent::StepStart {
+            message_id: "step_1".into()
+        })
+        .is_empty()
+    );
+    assert!(enc.transcode(&AgentEvent::StepEnd).is_empty());
+    assert!(
+        enc.transcode(&AgentEvent::StepStart {
+            message_id: "step_2".into()
+        })
+        .is_empty()
+    );
+    assert!(enc.transcode(&AgentEvent::StepEnd).is_empty());
 }
 
 #[test]
@@ -1450,14 +1462,13 @@ fn reasoning_delta_forwarded() {
 }
 
 // ============================================================================
-// Edge Cases (4 tests)
+// Edge Cases
 // ============================================================================
 
 #[test]
 fn unicode_preserved() {
     let mut enc = AcpEncoder::new();
 
-    // Text with unicode
     let ev = enc.transcode(&AgentEvent::TextDelta {
         delta: "Hello 世界! 🌍 Ñoño café résumé".into(),
     });
@@ -1474,15 +1485,18 @@ fn unicode_preserved() {
     });
     match &ev[0] {
         AcpEvent::SessionUpdate(params) => {
-            assert_eq!(
-                params.tool_call.as_ref().unwrap().arguments["text"],
-                "日本語テスト"
-            );
+            let raw_input = params
+                .tool_call_update
+                .as_ref()
+                .unwrap()
+                .raw_input
+                .as_ref()
+                .unwrap();
+            assert_eq!(raw_input["text"], "日本語テスト");
         }
-        other => panic!("expected tool_call, got: {other:?}"),
+        other => panic!("expected tool_call_update, got: {other:?}"),
     }
 
-    // Reasoning with unicode
     let ev = enc.transcode(&AgentEvent::ReasoningDelta {
         delta: "思考中…".into(),
     });
@@ -1493,7 +1507,6 @@ fn unicode_preserved() {
 fn large_payload_handled() {
     let mut enc = AcpEncoder::new();
 
-    // Large text delta
     let large_text = "x".repeat(100_000);
     let ev = enc.transcode(&AgentEvent::TextDelta {
         delta: large_text.clone(),
@@ -1506,7 +1519,6 @@ fn large_payload_handled() {
         other => panic!("expected agent_message, got: {other:?}"),
     }
 
-    // Large tool result
     let large_array: Vec<serde_json::Value> = (0..10_000).map(|i| json!({"id": i})).collect();
     let ev = enc.transcode(&AgentEvent::ToolCallDone {
         id: "c_large".into(),
@@ -1519,7 +1531,7 @@ fn large_payload_handled() {
         AcpEvent::SessionUpdate(params) => {
             let update = params.tool_call_update.as_ref().unwrap();
             assert_eq!(update.status, ToolCallStatus::Completed);
-            assert!(update.result.is_some());
+            assert!(update.raw_output.is_some());
         }
         other => panic!("expected tool_call_update, got: {other:?}"),
     }
@@ -1547,7 +1559,6 @@ fn special_characters_in_tool_result() {
         AcpEvent::SessionUpdate(params) => {
             let update = params.tool_call_update.as_ref().unwrap();
             assert_eq!(update.status, ToolCallStatus::Completed);
-            // Verify the result can be round-tripped through JSON
             let json_str = serde_json::to_string(&ev[0]).unwrap();
             let _restored: AcpEvent = serde_json::from_str(&json_str).unwrap();
         }
@@ -1559,7 +1570,6 @@ fn special_characters_in_tool_result() {
 fn provider_error_produces_error() {
     let mut enc = AcpEncoder::new();
 
-    // Error with code
     let ev = enc.transcode(&AgentEvent::Error {
         message: "rate limit exceeded".into(),
         code: Some("429".into()),
@@ -1570,7 +1580,6 @@ fn provider_error_produces_error() {
         AcpEvent::error("rate limit exceeded", Some("429".into()))
     );
 
-    // Terminal guard is now active — further events suppressed
     assert!(
         enc.transcode(&AgentEvent::Error {
             message: "another error".into(),
@@ -1578,4 +1587,47 @@ fn provider_error_produces_error() {
         })
         .is_empty()
     );
+}
+
+// ============================================================================
+// Tool call kind inference
+// ============================================================================
+
+#[test]
+fn tool_call_kind_inferred_from_name() {
+    let mut enc = AcpEncoder::new();
+
+    let check = |enc: &mut AcpEncoder, name: &str, expected_kind: ToolCallKind| {
+        let ev = enc.on_agent_event(&AgentEvent::ToolCallReady {
+            id: format!("c_{name}"),
+            name: name.into(),
+            arguments: json!({}),
+        });
+        match &ev[0] {
+            AcpEvent::SessionUpdate(params) => {
+                let update = params.tool_call_update.as_ref().unwrap();
+                assert_eq!(
+                    update.kind,
+                    Some(expected_kind),
+                    "tool '{name}' should have correct kind"
+                );
+            }
+            other => panic!("expected SessionUpdate for '{name}', got: {other:?}"),
+        }
+    };
+
+    check(&mut enc, "read_file", ToolCallKind::Read);
+    // Reset encoder to avoid terminal guard issues
+    let mut enc = AcpEncoder::new();
+    check(&mut enc, "edit_file", ToolCallKind::Edit);
+    let mut enc = AcpEncoder::new();
+    check(&mut enc, "bash", ToolCallKind::Execute);
+    let mut enc = AcpEncoder::new();
+    check(&mut enc, "search", ToolCallKind::Search);
+    let mut enc = AcpEncoder::new();
+    check(&mut enc, "http_fetch", ToolCallKind::Fetch);
+    let mut enc = AcpEncoder::new();
+    check(&mut enc, "think", ToolCallKind::Think);
+    let mut enc = AcpEncoder::new();
+    check(&mut enc, "custom_tool", ToolCallKind::Other);
 }
