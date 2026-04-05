@@ -320,10 +320,17 @@ impl McpToolTransport for FakeUiTransport {
 // ── HTTP test helpers ──
 
 #[derive(Clone)]
+struct HttpRequestSpec {
+    headers: std::collections::HashMap<String, String>,
+    body: Value,
+}
+
+#[derive(Clone)]
 struct HttpResponseSpec {
     status: u16,
     content_type: &'static str,
     body: String,
+    headers: Vec<(String, String)>,
 }
 
 impl HttpResponseSpec {
@@ -332,6 +339,22 @@ impl HttpResponseSpec {
             status: 200,
             content_type: "application/json",
             body: body.to_string(),
+            headers: Vec::new(),
+        }
+    }
+
+    fn json_with_headers(
+        body: Value,
+        headers: Vec<(impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        Self {
+            status: 200,
+            content_type: "application/json",
+            body: body.to_string(),
+            headers: headers
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
         }
     }
 
@@ -340,6 +363,25 @@ impl HttpResponseSpec {
             status,
             content_type: "text/plain",
             body: body.into(),
+            headers: Vec::new(),
+        }
+    }
+
+    fn accepted() -> Self {
+        Self {
+            status: 202,
+            content_type: "text/plain",
+            body: String::new(),
+            headers: Vec::new(),
+        }
+    }
+
+    fn sse(body: impl Into<String>) -> Self {
+        Self {
+            status: 200,
+            content_type: "text/event-stream",
+            body: body.into(),
+            headers: Vec::new(),
         }
     }
 }
@@ -347,6 +389,7 @@ impl HttpResponseSpec {
 fn status_text(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        202 => "Accepted",
         400 => "Bad Request",
         500 => "Internal Server Error",
         _ => "OK",
@@ -371,7 +414,17 @@ fn content_length(headers: &str) -> usize {
         .unwrap_or(0)
 }
 
-async fn read_json_body(stream: &mut TcpStream) -> Option<Value> {
+fn parse_headers(raw: &str) -> std::collections::HashMap<String, String> {
+    raw.lines()
+        .skip(1)
+        .filter_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            Some((key.trim().to_ascii_lowercase(), value.trim().to_string()))
+        })
+        .collect()
+}
+
+async fn read_http_request(stream: &mut TcpStream) -> Option<HttpRequestSpec> {
     let mut buf = Vec::new();
     let mut chunk = [0_u8; 1024];
     let (header_end_pos, body_len) = loop {
@@ -396,11 +449,16 @@ async fn read_json_body(stream: &mut TcpStream) -> Option<Value> {
         buf.extend_from_slice(&chunk[..n]);
     }
 
-    serde_json::from_slice(&buf[header_end_pos..header_end_pos + body_len]).ok()
+    let headers = std::str::from_utf8(&buf[..header_end_pos]).ok()?;
+    let body = serde_json::from_slice(&buf[header_end_pos..header_end_pos + body_len]).ok()?;
+    Some(HttpRequestSpec {
+        headers: parse_headers(headers),
+        body,
+    })
 }
 
 async fn spawn_http_server(
-    handler: Arc<dyn Fn(Value) -> HttpResponseSpec + Send + Sync>,
+    handler: Arc<dyn Fn(HttpRequestSpec) -> HttpResponseSpec + Send + Sync>,
 ) -> (String, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -413,18 +471,28 @@ async fn spawn_http_server(
             };
             let handler = Arc::clone(&handler);
             tokio::spawn(async move {
-                let Some(request_body) = read_json_body(&mut stream).await else {
+                let Some(request) = read_http_request(&mut stream).await else {
                     return;
                 };
-                let response = handler(request_body);
+                let response = if request.body["method"].is_null()
+                    && (request.body.get("result").is_some() || request.body.get("error").is_some())
+                {
+                    HttpResponseSpec::accepted()
+                } else {
+                    handler(request)
+                };
                 let payload = response.body;
-                let head = format!(
-                    "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                let mut head = format!(
+                    "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n",
                     response.status,
                     status_text(response.status),
                     response.content_type,
                     payload.len()
                 );
+                for (key, value) in response.headers {
+                    head.push_str(&format!("{key}: {value}\r\n"));
+                }
+                head.push_str("\r\n");
                 let _ = stream.write_all(head.as_bytes()).await;
                 let _ = stream.write_all(payload.as_bytes()).await;
                 let _ = stream.shutdown().await;
@@ -434,19 +502,22 @@ async fn spawn_http_server(
     (format!("http://{}", addr), handle)
 }
 
-fn initialize_response(request: &Value, capabilities: Value) -> HttpResponseSpec {
-    HttpResponseSpec::json(json!({
-        "jsonrpc": "2.0",
-        "id": request["id"].clone(),
-        "result": {
-            "protocolVersion": mcp::MCP_PROTOCOL_VERSION,
-            "capabilities": capabilities,
-            "serverInfo": {
-                "name": "test-server",
-                "version": "1.0.0"
+fn initialize_response(request: &HttpRequestSpec, capabilities: Value) -> HttpResponseSpec {
+    HttpResponseSpec::json_with_headers(
+        json!({
+            "jsonrpc": "2.0",
+            "id": request.body["id"].clone(),
+            "result": {
+                "protocolVersion": mcp::MCP_PROTOCOL_VERSION,
+                "capabilities": capabilities,
+                "serverInfo": {
+                    "name": "test-server",
+                    "version": "1.0.0"
+                }
             }
-        }
-    }))
+        }),
+        vec![("MCP-Session-Id", "test-session")],
+    )
 }
 
 async fn wait_until(
@@ -1457,21 +1528,31 @@ async fn mcp_tool_command_is_empty() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn connect_http_registry_discovers_tools_and_executes() {
-    let (endpoint, server) = spawn_http_server(Arc::new(|request| {
-        let method = request["method"].as_str().unwrap_or_default();
+    let seen_requests = Arc::new(std::sync::Mutex::new(Vec::<HttpRequestSpec>::new()));
+    let seen_requests_for_handler = Arc::clone(&seen_requests);
+    let (endpoint, server) = spawn_http_server(Arc::new(move |request| {
+        seen_requests_for_handler
+            .lock()
+            .unwrap()
+            .push(request.clone());
+        let method = request.body["method"].as_str().unwrap_or_default();
         match method {
-            "initialize" => HttpResponseSpec::json(json!({
-                "jsonrpc": "2.0",
-                "id": request["id"].clone(),
-                "result": {
-                    "protocolVersion": mcp::MCP_PROTOCOL_VERSION,
-                    "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "http-test", "version": "1.0.0"}
-                }
-            })),
+            "notifications/initialized" => HttpResponseSpec::accepted(),
+            "initialize" => HttpResponseSpec::json_with_headers(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": request.body["id"].clone(),
+                    "result": {
+                        "protocolVersion": mcp::MCP_PROTOCOL_VERSION,
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "http-test", "version": "1.0.0"}
+                    }
+                }),
+                vec![("MCP-Session-Id", "test-session")],
+            ),
             "tools/list" => HttpResponseSpec::json(json!({
                 "jsonrpc": "2.0",
-                "id": request["id"].clone(),
+                "id": request.body["id"].clone(),
                 "result": {
                     "tools": [{
                         "name": "echo_http",
@@ -1486,12 +1567,14 @@ async fn connect_http_registry_discovers_tools_and_executes() {
                 }
             })),
             "tools/call" => {
-                let token = request["params"]["_meta"]["progressToken"].clone();
-                let text = request["params"]["arguments"]["message"]
+                let token = request.body["params"]["_meta"]["progressToken"].clone();
+                let text = request.body["params"]["arguments"]["message"]
                     .as_str()
                     .unwrap_or("ok");
-                HttpResponseSpec::json(json!([
-                    {
+                HttpResponseSpec::sse(format!(
+                    "data: {}\n\n\
+                     data: {}\n\n",
+                    json!({
                         "jsonrpc": "2.0",
                         "method": "notifications/progress",
                         "params": {
@@ -1500,19 +1583,19 @@ async fn connect_http_registry_discovers_tools_and_executes() {
                             "total": 4.0,
                             "message": "working"
                         }
-                    },
-                    {
+                    }),
+                    json!({
                         "jsonrpc": "2.0",
-                        "id": request["id"].clone(),
+                        "id": request.body["id"].clone(),
                         "result": {
                             "content": [{"type":"text", "text": text}]
                         }
-                    }
-                ]))
+                    })
+                ))
             }
             _ => HttpResponseSpec::json(json!({
                 "jsonrpc": "2.0",
-                "id": request["id"].clone(),
+                "id": request.body["id"].clone(),
                 "result": {}
             })),
         }
@@ -1545,12 +1628,52 @@ async fn connect_http_registry_discovers_tools_and_executes() {
         .unwrap();
     server.abort();
     assert!(result.result.is_success());
+
+    let seen_requests = seen_requests.lock().unwrap();
+    let initialize_request = seen_requests
+        .iter()
+        .find(|request| request.body["method"] == "initialize")
+        .expect("initialize request");
+    assert_eq!(
+        initialize_request.headers.get("accept").map(String::as_str),
+        Some("application/json, text/event-stream")
+    );
+
+    let initialized_notification = seen_requests
+        .iter()
+        .find(|request| request.body["method"] == "notifications/initialized")
+        .expect("initialized notification");
+    assert_eq!(
+        initialized_notification
+            .headers
+            .get("mcp-session-id")
+            .map(String::as_str),
+        Some("test-session")
+    );
+
+    let tools_list_request = seen_requests
+        .iter()
+        .find(|request| request.body["method"] == "tools/list")
+        .expect("tools/list request");
+    assert_eq!(
+        tools_list_request
+            .headers
+            .get("mcp-protocol-version")
+            .map(String::as_str),
+        Some(mcp::MCP_PROTOCOL_VERSION)
+    );
 }
 
 #[tokio::test]
 async fn http_non_success_status_is_reported() {
-    let (endpoint, server) =
-        spawn_http_server(Arc::new(|_| HttpResponseSpec::text(500, "upstream error"))).await;
+    let (endpoint, server) = spawn_http_server(Arc::new(|request| {
+        if request.body["method"] == "notifications/initialized" {
+            HttpResponseSpec::accepted()
+        } else {
+            HttpResponseSpec::text(500, "upstream error")
+        }
+    }))
+    .await;
     let cfg = McpServerConnectionConfig::http("http_error_status", endpoint);
     let err = McpToolRegistryManager::connect([cfg])
         .await
@@ -1562,18 +1685,19 @@ async fn http_non_success_status_is_reported() {
 #[tokio::test]
 async fn http_call_tool_with_is_error_result_returns_server_error() {
     let (endpoint, server) = spawn_http_server(Arc::new(|request| {
-        match request["method"].as_str().unwrap_or_default() {
+        match request.body["method"].as_str().unwrap_or_default() {
+            "notifications/initialized" => HttpResponseSpec::accepted(),
             "initialize" => initialize_response(&request, json!({})),
             "tools/list" => HttpResponseSpec::json(json!({
                 "jsonrpc": "2.0",
-                "id": request["id"].clone(),
+                "id": request.body["id"].clone(),
                 "result": {
                     "tools": [{"name": "echo", "inputSchema": {"type": "object", "properties": {}}}]
                 }
             })),
             "tools/call" => HttpResponseSpec::json(json!({
                 "jsonrpc": "2.0",
-                "id": request["id"].clone(),
+                "id": request.body["id"].clone(),
                 "result": {
                     "content": [{"type": "text", "text": "tool failed"}],
                     "isError": true
@@ -1605,18 +1729,19 @@ async fn http_call_tool_with_is_error_result_returns_server_error() {
 #[tokio::test]
 async fn http_call_tool_preserves_structured_content() {
     let (endpoint, server) = spawn_http_server(Arc::new(|request| {
-        match request["method"].as_str().unwrap_or_default() {
+        match request.body["method"].as_str().unwrap_or_default() {
+            "notifications/initialized" => HttpResponseSpec::accepted(),
             "initialize" => initialize_response(&request, json!({})),
             "tools/list" => HttpResponseSpec::json(json!({
                 "jsonrpc": "2.0",
-                "id": request["id"].clone(),
+                "id": request.body["id"].clone(),
                 "result": {
                     "tools": [{"name": "sum", "inputSchema": {"type": "object", "properties": {}}}]
                 }
             })),
             "tools/call" => HttpResponseSpec::json(json!({
                 "jsonrpc": "2.0",
-                "id": request["id"].clone(),
+                "id": request.body["id"].clone(),
                 "result": {
                     "content": [{"type": "text", "text": "sum complete"}],
                     "structuredContent": {"sum": 3, "values": [1, 2]}
@@ -1648,16 +1773,17 @@ async fn http_call_tool_preserves_structured_content() {
 #[tokio::test]
 async fn http_list_prompts_parses_prompt_definitions() {
     let (endpoint, server) = spawn_http_server(Arc::new(|request| {
-        match request["method"].as_str().unwrap_or_default() {
+        match request.body["method"].as_str().unwrap_or_default() {
+            "notifications/initialized" => HttpResponseSpec::accepted(),
             "initialize" => initialize_response(&request, json!({"prompts": {}})),
             "tools/list" => HttpResponseSpec::json(json!({
                 "jsonrpc": "2.0",
-                "id": request["id"].clone(),
+                "id": request.body["id"].clone(),
                 "result": {"tools": []}
             })),
             "prompts/list" => HttpResponseSpec::json(json!({
                 "jsonrpc": "2.0",
-                "id": request["id"].clone(),
+                "id": request.body["id"].clone(),
                 "result": {
                     "prompts": [{
                         "name": "review",
@@ -1689,16 +1815,17 @@ async fn http_list_prompts_parses_prompt_definitions() {
 #[tokio::test]
 async fn http_list_resources_parses_resource_definitions() {
     let (endpoint, server) = spawn_http_server(Arc::new(|request| {
-        match request["method"].as_str().unwrap_or_default() {
+        match request.body["method"].as_str().unwrap_or_default() {
+            "notifications/initialized" => HttpResponseSpec::accepted(),
             "initialize" => initialize_response(&request, json!({"resources": {}})),
             "tools/list" => HttpResponseSpec::json(json!({
                 "jsonrpc": "2.0",
-                "id": request["id"].clone(),
+                "id": request.body["id"].clone(),
                 "result": {"tools": []}
             })),
             "resources/list" => HttpResponseSpec::json(json!({
                 "jsonrpc": "2.0",
-                "id": request["id"].clone(),
+                "id": request.body["id"].clone(),
                 "result": {
                     "resources": [{
                         "uri": "file://guide.md",

@@ -93,6 +93,8 @@ pub struct AppState {
     /// Per-run replay buffers for SSE stream resumption.
     /// Stores `(buffer, created_at)` so stale entries can be purged.
     pub replay_buffers: Arc<Mutex<HashMap<String, (Arc<EventReplayBuffer>, Instant)>>>,
+    /// MCP Streamable HTTP session state.
+    pub mcp_http: Arc<crate::protocols::mcp::http::McpHttpState>,
 }
 
 impl AppState {
@@ -111,6 +113,7 @@ impl AppState {
             resolver,
             config,
             replay_buffers: Arc::new(Mutex::new(HashMap::new())),
+            mcp_http: Arc::new(crate::protocols::mcp::http::McpHttpState::new()),
         }
     }
 
