@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { aiSdkTextMessages } from './ai-sdk-test-utils';
+import { a2aSendMessagePayload } from './a2a-test-utils';
 
 /**
  * Parse SSE text into an array of {event, data} objects.
@@ -83,15 +84,13 @@ test.describe('generative UI (A2UI)', () => {
     expect(res.ok()).toBeTruthy();
   });
 
-  test('a2ui agent appears in A2A agent list', async ({ request }) => {
-    const res = await request.get('/v1/a2a/agents');
-    if (res.ok()) {
-      const agents = await res.json();
-      if (Array.isArray(agents)) {
-        const ids = agents.map((a: any) => a.agentId || a.id);
-        expect(ids).toContain('a2ui');
-      }
-    }
+  test('a2ui agent accepts A2A tenant route', async ({ request }) => {
+    const { taskId, data } = a2aSendMessagePayload('Render some UI via A2A');
+    const res = await request.post('/v1/a2a/a2ui/message:send', { data });
+    expect(res.ok()).toBeTruthy();
+
+    const body = await res.json();
+    expect(body.task?.id).toBe(taskId);
   });
 });
 
@@ -126,14 +125,12 @@ test.describe('generative UI (genui)', () => {
     expect(res.ok).toBeTruthy();
   });
 
-  test('genui agent appears in A2A agent list', async ({ request }) => {
-    const res = await request.get('/v1/a2a/agents');
-    if (res.ok()) {
-      const agents = await res.json();
-      if (Array.isArray(agents)) {
-        const ids = agents.map((a: any) => a.agentId || a.id);
-        expect(ids).toContain('genui');
-      }
-    }
+  test('genui agent accepts A2A tenant route', async ({ request }) => {
+    const { taskId, data } = a2aSendMessagePayload('Generate a chart via A2A');
+    const res = await request.post('/v1/a2a/genui/message:send', { data });
+    expect(res.ok()).toBeTruthy();
+
+    const body = await res.json();
+    expect(body.task?.id).toBe(taskId);
   });
 });

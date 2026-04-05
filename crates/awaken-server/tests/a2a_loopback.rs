@@ -250,26 +250,30 @@ async fn a2a_loopback_orchestrator_delegates_to_worker() {
 
     let submit_resp = post_json(
         &http,
-        &format!("{base_url}/v1/a2a/tasks/send"),
+        &format!("{base_url}/v1/a2a/orchestrator/message:send"),
         serde_json::json!({
-            "taskId": task_id,
-            "agentId": "orchestrator",
             "message": {
-                "role": "user",
-                "parts": [{"type": "text", "text": "Say ping to the worker"}]
+                "taskId": task_id,
+                "contextId": task_id,
+                "messageId": format!("msg-{task_id}"),
+                "role": "ROLE_USER",
+                "parts": [{"text": "Say ping to the worker"}]
+            },
+            "configuration": {
+                "returnImmediately": true
             }
         }),
     )
     .await;
 
     assert_eq!(
-        submit_resp["taskId"].as_str(),
+        submit_resp["task"]["id"].as_str(),
         Some(task_id.as_str()),
         "task ID preserved"
     );
     assert_eq!(
-        submit_resp["status"]["state"].as_str(),
-        Some("submitted"),
+        submit_resp["task"]["status"]["state"].as_str(),
+        Some("TASK_STATE_SUBMITTED"),
         "initial state is submitted"
     );
 

@@ -1,10 +1,12 @@
-import { defineConfig, devices } from '@playwright/test';
+import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests',
-  timeout: 120_000,
+  testMatch: /a2a-official-sdk\.interop\.ts/,
+  timeout: 600_000,
   expect: { timeout: 30_000 },
   retries: 0,
+  workers: 1,
   use: {
     baseURL: 'http://127.0.0.1:38080',
   },

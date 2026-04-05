@@ -55,6 +55,7 @@ uuid = { workspace = true }
 [features]
 default = ["permission"]
 permission = ["dep:awaken-ext-permission"]
+nats = []
 otel = []
 
 [lints]

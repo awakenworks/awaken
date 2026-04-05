@@ -1,103 +1,94 @@
 import { test, expect } from '@playwright/test';
+import { a2aSendMessagePayload } from './a2a-test-utils';
 
 test.describe('A2A protocol', () => {
-  test('well-known agent card returns valid JSON', async ({ request }) => {
-    const res = await request.get('/v1/a2a/.well-known/agent');
+  test('well-known agent card returns latest JSON shape', async ({ request }) => {
+    const res = await request.get('/.well-known/agent-card.json');
     expect(res.ok()).toBeTruthy();
 
     const card = await res.json();
-    expect(card).toHaveProperty('name');
-    expect(card).toHaveProperty('version');
-    expect(card).toHaveProperty('capabilities');
-    expect(card.capabilities).toHaveProperty('streaming');
+    expect(card.name).toBeTruthy();
+    expect(card.supportedInterfaces?.[0]?.url).toContain('/v1/a2a');
+    expect(card.supportedInterfaces?.[0]?.protocolBinding).toBe('HTTP+JSON');
+    expect(card.supportedInterfaces?.[0]?.protocolVersion).toBe('1.0');
+    expect(card.provider?.organization).toBe('Awaken');
+    expect(card.provider?.url).toMatch(/^http:\/\/127\.0\.0\.1:38080$/);
+    expect(card.capabilities?.streaming).toBe(false);
+    expect(card.capabilities?.pushNotifications).toBe(false);
+    expect(card.capabilities?.extendedAgentCard).toBe(false);
+    expect(card.url).toBeUndefined();
   });
 
-  test('agent list returns array', async ({ request }) => {
-    const res = await request.get('/v1/a2a/agents');
-    expect(res.ok()).toBeTruthy();
-
-    const agents = await res.json();
-    expect(Array.isArray(agents)).toBeTruthy();
-    expect(agents.length).toBeGreaterThan(0);
-    expect(agents[0]).toHaveProperty('agentId');
-    expect(agents[0]).toHaveProperty('name');
-  });
-
-  test('task send accepts request and returns taskId', async ({ request }) => {
-    const res = await request.post('/v1/a2a/tasks/send', {
-      data: {
-        message: {
-          role: 'user',
-          parts: [{ type: 'text', text: 'Hello via A2A' }],
-        },
-      },
-    });
-    expect(res.ok()).toBeTruthy();
-
-    const body = await res.json();
-    expect(body).toHaveProperty('taskId');
-    expect(body.status.state).toBe('submitted');
-  });
-
-  test('task send with explicit taskId preserves it', async ({ request }) => {
-    const taskId = `e2e-a2a-${Date.now()}`;
-    const res = await request.post('/v1/a2a/tasks/send', {
-      data: {
-        taskId,
-        message: {
-          role: 'user',
-          parts: [{ type: 'text', text: 'Hello with explicit ID' }],
-        },
-      },
-    });
-    expect(res.ok()).toBeTruthy();
-
-    const body = await res.json();
-    expect(body.taskId).toBe(taskId);
-  });
-
-  test('task send rejects empty message', async ({ request }) => {
-    const res = await request.post('/v1/a2a/tasks/send', {
-      data: {
-        message: {
-          role: 'user',
-          parts: [{ type: 'text', text: '' }],
-        },
-      },
-    });
-    expect(res.ok()).toBeFalsy();
-    expect(res.status()).toBe(400);
-  });
-
-  test('task send rejects missing message', async ({ request }) => {
-    const res = await request.post('/v1/a2a/tasks/send', {
-      data: {},
-    });
-    expect(res.ok()).toBeFalsy();
-    expect(res.status()).toBe(400);
-  });
-
-  test('task status returns after send', async ({ request }) => {
-    const taskId = `e2e-status-${Date.now()}`;
-
-    // Send a task first
-    const sendRes = await request.post('/v1/a2a/tasks/send', {
-      data: {
-        taskId,
-        message: {
-          role: 'user',
-          parts: [{ type: 'text', text: 'Test status query' }],
-        },
-      },
-    });
+  test('message:send returns task wrapper and task is retrievable', async ({ request }) => {
+    const { taskId, data } = a2aSendMessagePayload('Hello via A2A');
+    const sendRes = await request.post('/v1/a2a/message:send', { data });
     expect(sendRes.ok()).toBeTruthy();
 
-    // Allow brief processing time
-    await new Promise((r) => setTimeout(r, 500));
+    const body = await sendRes.json();
+    expect(body.task?.id).toBe(taskId);
+    expect(body.task?.contextId).toBe(taskId);
+    expect(body.task?.status?.state).toMatch(/^TASK_STATE_/);
 
-    // Query task status via GET
-    const getRes = await request.get(`/v1/a2a/tasks/${taskId}`);
-    // May succeed or 404 depending on route conflict noted in codebase
-    expect(getRes.status()).toBeLessThan(500);
+    const taskRes = await request.get(`/v1/a2a/tasks/${taskId}?historyLength=10`);
+    expect(taskRes.ok()).toBeTruthy();
+    const task = await taskRes.json();
+    expect(task.id).toBe(taskId);
+    expect(task.contextId).toBe(taskId);
+    expect(task.status?.state).toMatch(/^TASK_STATE_/);
+  });
+
+  test('tenant-scoped message:send works', async ({ request }) => {
+    const { taskId, data } = a2aSendMessagePayload('Hello limited agent');
+    const sendRes = await request.post('/v1/a2a/limited/message:send', { data });
+    expect(sendRes.ok()).toBeTruthy();
+
+    const body = await sendRes.json();
+    expect(body.task?.id).toBe(taskId);
+
+    const taskRes = await request.get(`/v1/a2a/limited/tasks/${taskId}`);
+    expect(taskRes.ok()).toBeTruthy();
+    const task = await taskRes.json();
+    expect(task.id).toBe(taskId);
+    expect(task.contextId).toBe(taskId);
+  });
+
+  test('message:stream is unimplemented when streaming is not advertised', async ({ request }) => {
+    const { data } = a2aSendMessagePayload('Hello stream');
+    const res = await request.post('/v1/a2a/message:stream', { data });
+    expect(res.status()).toBe(501);
+
+    const body = await res.json();
+    expect(body.error?.details?.[0]?.reason).toBe('UNSUPPORTED_OPERATION');
+  });
+
+  test('unsupported version is rejected', async ({ request }) => {
+    const res = await request.get('/.well-known/agent-card.json', {
+      headers: {
+        'a2a-version': '0.9',
+      },
+    });
+    expect(res.status()).toBe(400);
+
+    const body = await res.json();
+    expect(body.error?.details?.[0]?.reason).toBe('VERSION_NOT_SUPPORTED');
+  });
+
+  test('invalid inbound role is rejected', async ({ request }) => {
+    const res = await request.post('/v1/a2a/message:send', {
+      data: {
+        message: {
+          taskId: 'invalid-role-task',
+          contextId: 'invalid-role-task',
+          messageId: 'msg-invalid-role',
+          role: 'ROLE_AGENT',
+          parts: [{ text: 'hello' }],
+        },
+      },
+    });
+    expect(res.status()).toBe(400);
+
+    const body = await res.json();
+    expect(body.error?.status).toBe('INVALID_ARGUMENT');
+    expect(body.error?.details?.[0]?.fieldViolations?.[0]?.field).toBe('message.role');
   });
 });

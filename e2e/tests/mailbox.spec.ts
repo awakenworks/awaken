@@ -86,12 +86,12 @@ test.describe('interrupt and cancellation', () => {
   });
 
   test('cancel nonexistent thread returns 404', async ({ request }) => {
-    const res = await request.post('/v1/threads/nonexistent-thread-id/cancel');
+    const res = await request.post('/v1/threads/never-created-thread-id/cancel');
     expect(res.status()).toBe(404);
   });
 
   test('submit decision to nonexistent thread returns 404', async ({ request }) => {
-    const res = await request.post('/v1/threads/nonexistent-thread-id/decision', {
+    const res = await request.post('/v1/threads/never-created-thread-id/decision', {
       data: {
         toolCallId: 'fake-id',
         action: 'resume',

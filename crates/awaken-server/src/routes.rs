@@ -13,7 +13,7 @@ use awaken_contract::contract::message::Message;
 use crate::app::AppState;
 use crate::http_run::wire_sse_relay;
 use crate::http_sse::{sse_body_stream, sse_response};
-use crate::mailbox::MailboxDispatchStatus;
+use crate::mailbox::{MailboxDispatchStatus, MailboxError};
 use crate::protocols::a2a::http::a2a_routes;
 use crate::protocols::ag_ui::http::ag_ui_routes;
 use crate::protocols::ai_sdk_v6::http::ai_sdk_routes;
@@ -43,6 +43,14 @@ impl IntoResponse for ApiError {
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
         (status, Json(json!({"error": message}))).into_response()
+    }
+}
+
+fn map_mailbox_error(err: MailboxError) -> ApiError {
+    match err {
+        MailboxError::Validation(msg) => ApiError::BadRequest(msg),
+        MailboxError::Store(err) => ApiError::Internal(err.to_string()),
+        MailboxError::Internal(msg) => ApiError::Internal(msg),
     }
 }
 
@@ -423,7 +431,7 @@ async fn post_thread_messages(
         .mailbox
         .submit_background(request)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+        .map_err(map_mailbox_error)?;
 
     let body = match result.status {
         MailboxDispatchStatus::Running => json!({
@@ -472,7 +480,7 @@ async fn push_mailbox(
         .mailbox
         .submit_background(RunRequest::new(id, messages))
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+        .map_err(map_mailbox_error)?;
 
     Ok((
         StatusCode::CREATED,
@@ -542,7 +550,7 @@ async fn start_run(
         .mailbox
         .submit(request)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+        .map_err(map_mailbox_error)?;
     let encoder = awaken_contract::contract::transport::Identity::default();
     let sse_rx = wire_sse_relay(event_rx, encoder, st.config.sse_buffer_size, None);
 
@@ -630,7 +638,7 @@ async fn push_run_inputs(
         .mailbox
         .submit_background(request)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+        .map_err(map_mailbox_error)?;
 
     Ok((
         StatusCode::ACCEPTED,

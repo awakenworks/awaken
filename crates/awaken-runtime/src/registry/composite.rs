@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use awaken_contract::contract::agent_card::AgentCard;
+use awaken_contract::contract::a2a::{AgentCard, AgentInterface};
 use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
 
 use super::traits::AgentSpecRegistry;
@@ -28,6 +28,10 @@ pub enum DiscoveryError {
     HttpError { url: String, message: String },
     #[error("failed to decode agent card from {url}: {message}")]
     DecodeError { url: String, message: String },
+    #[error(
+        "remote agent card from {url} does not expose a supported HTTP+JSON v1.0 interface: {message}"
+    )]
+    UnsupportedInterface { url: String, message: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -93,17 +97,19 @@ impl CompositeAgentSpecRegistry {
 
     /// Discover agents from all remote endpoints.
     ///
-    /// Fetches agent cards from `{base_url}/.well-known/agent.json`
+    /// Fetches agent cards from `/.well-known/agent-card.json` on the source's origin
     /// and converts them to `AgentSpec` with the endpoint filled in.
     /// Results are cached for subsequent lookups.
     pub async fn discover(&self) -> Result<(), DiscoveryError> {
         let mut new_cache: HashMap<String, (String, AgentSpec)> = HashMap::new();
 
         for source in &self.remote_endpoints {
-            let url = format!(
-                "{}/.well-known/agent.json",
-                source.base_url.trim_end_matches('/')
-            );
+            let url = discovery_url_for_source(&source.base_url).map_err(|message| {
+                DiscoveryError::HttpError {
+                    url: source.base_url.clone(),
+                    message,
+                }
+            })?;
 
             let mut request = self.client.get(&url);
             if let Some(ref token) = source.bearer_token {
@@ -134,7 +140,7 @@ impl CompositeAgentSpecRegistry {
                         message: e.to_string(),
                     })?;
 
-            let spec = agent_card_to_spec(&card, source);
+            let spec = agent_card_to_spec(&card, source, &url)?;
             tracing::info!(
                 agent_id = %spec.id,
                 source = %source.name,
@@ -204,20 +210,82 @@ impl AgentSpecRegistry for CompositeAgentSpecRegistry {
 // ---------------------------------------------------------------------------
 
 /// Convert an A2A agent card into an `AgentSpec` with the remote endpoint configured.
-fn agent_card_to_spec(card: &AgentCard, source: &RemoteAgentSource) -> AgentSpec {
-    AgentSpec {
-        id: card.id.clone(),
+fn agent_card_to_spec(
+    card: &AgentCard,
+    source: &RemoteAgentSource,
+    discovery_url: &str,
+) -> Result<AgentSpec, DiscoveryError> {
+    let interface =
+        select_supported_interface(card).ok_or_else(|| DiscoveryError::UnsupportedInterface {
+            url: discovery_url.to_string(),
+            message: format!(
+                "supported interfaces were {:?}",
+                card.supported_interfaces
+                    .iter()
+                    .map(|iface| format!("{} {}", iface.protocol_binding, iface.protocol_version))
+                    .collect::<Vec<_>>()
+            ),
+        })?;
+
+    Ok(AgentSpec {
+        id: interface
+            .tenant
+            .clone()
+            .unwrap_or_else(|| slugify_agent_name(&card.name)),
         // Remote agents don't need a local model — they run on the remote server.
         model: String::new(),
         system_prompt: card.description.clone(),
         endpoint: Some(RemoteEndpoint {
-            base_url: card.url.clone(),
+            base_url: interface.url.clone(),
             bearer_token: source.bearer_token.clone(),
+            agent_id: interface.tenant.clone(),
             ..Default::default()
         }),
         registry: Some(source.name.clone()),
         ..Default::default()
+    })
+}
+
+fn select_supported_interface(card: &AgentCard) -> Option<&AgentInterface> {
+    card.supported_interfaces
+        .iter()
+        .find(|iface| {
+            iface.protocol_binding.eq_ignore_ascii_case("HTTP+JSON")
+                && iface.protocol_version.trim() == "1.0"
+        })
+        .or_else(|| {
+            card.supported_interfaces
+                .iter()
+                .find(|iface| iface.protocol_binding.eq_ignore_ascii_case("HTTP+JSON"))
+        })
+}
+
+fn slugify_agent_name(name: &str) -> String {
+    let mut slug = String::new();
+    let mut prev_dash = false;
+    for ch in name.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch);
+            prev_dash = false;
+        } else if !prev_dash {
+            slug.push('-');
+            prev_dash = true;
+        }
     }
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "agent".to_string()
+    } else {
+        slug.to_string()
+    }
+}
+
+fn discovery_url_for_source(base_url: &str) -> Result<String, String> {
+    let mut url = reqwest::Url::parse(base_url).map_err(|e| e.to_string())?;
+    url.set_path("/.well-known/agent-card.json");
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -352,12 +420,25 @@ mod tests {
     #[test]
     fn agent_card_to_spec_conversion() {
         let card = AgentCard {
-            id: "test-agent".into(),
             name: "Test Agent".into(),
             description: "Handles tests.".into(),
-            capabilities: vec!["testing".into()],
-            url: "https://test.example.com".into(),
-            auth: None,
+            supported_interfaces: vec![AgentInterface {
+                url: "https://test.example.com/v1/a2a".into(),
+                protocol_binding: "HTTP+JSON".into(),
+                protocol_version: "1.0".into(),
+                tenant: Some("test-agent".into()),
+            }],
+            provider: None,
+            version: "1.0.0".into(),
+            documentation_url: None,
+            capabilities: awaken_contract::contract::a2a::AgentCapabilities::default(),
+            security_schemes: std::collections::BTreeMap::new(),
+            security: Vec::new(),
+            default_input_modes: vec!["text/plain".into()],
+            default_output_modes: vec!["text/plain".into()],
+            skills: Vec::new(),
+            signatures: Vec::new(),
+            icon_url: None,
         };
         let source = RemoteAgentSource {
             name: "cloud".into(),
@@ -365,13 +446,19 @@ mod tests {
             bearer_token: Some("tok-123".into()),
         };
 
-        let spec = agent_card_to_spec(&card, &source);
+        let spec = agent_card_to_spec(
+            &card,
+            &source,
+            "https://test.example.com/.well-known/agent-card.json",
+        )
+        .unwrap();
         assert_eq!(spec.id, "test-agent");
         assert_eq!(spec.system_prompt, "Handles tests.");
         assert_eq!(spec.registry.as_deref(), Some("cloud"));
         let endpoint = spec.endpoint.unwrap();
-        assert_eq!(endpoint.base_url, "https://test.example.com");
+        assert_eq!(endpoint.base_url, "https://test.example.com/v1/a2a");
         assert_eq!(endpoint.bearer_token.as_deref(), Some("tok-123"));
+        assert_eq!(endpoint.agent_id.as_deref(), Some("test-agent"));
     }
 
     #[test]
@@ -403,6 +490,24 @@ mod tests {
             message: "invalid JSON".into(),
         };
         assert!(err.to_string().contains("invalid JSON"));
+
+        let err = DiscoveryError::UnsupportedInterface {
+            url: "https://example.com".into(),
+            message: "missing HTTP+JSON v1.0".into(),
+        };
+        assert!(err.to_string().contains("HTTP+JSON"));
+    }
+
+    #[test]
+    fn discovery_url_uses_origin_root() {
+        let url = discovery_url_for_source("https://api.example.com/v1/a2a").unwrap();
+        assert_eq!(url, "https://api.example.com/.well-known/agent-card.json");
+    }
+
+    #[test]
+    fn slugify_agent_name_produces_stable_id() {
+        assert_eq!(slugify_agent_name("Remote Coder v2"), "remote-coder-v2");
+        assert_eq!(slugify_agent_name("!!!"), "agent");
     }
 
     // -- Namespaced lookup tests --

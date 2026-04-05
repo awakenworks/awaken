@@ -505,6 +505,11 @@ impl Mailbox {
             .await?)
     }
 
+    /// List mailbox IDs that currently have queued jobs.
+    pub async fn queued_mailbox_ids(&self) -> Result<Vec<String>, MailboxError> {
+        Ok(self.store.queued_mailbox_ids().await?)
+    }
+
     // ── Lifecycle ────────────────────────────────────────────────────
 
     /// Recover on startup: reload Queued jobs, buffer, dispatch idle threads.

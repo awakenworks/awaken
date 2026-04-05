@@ -30,12 +30,12 @@ agent 可以通过 `delegates` 声明它允许委托的子 agent：
     "base_url": "https://analyst.example.com",
     "bearer_token": "token-abc",
     "poll_interval_ms": 1000,
-    "timeout_secs": 300
+    "timeout_ms": 300000
   }
 }
 ```
 
-`A2aBackend` 会发送 `tasks/send`，轮询任务状态，再把最终结果包装成 `ToolResult` 返回给父 agent。
+`A2aBackend` 会发送 `message:send`，读取返回的 `task.id` 并轮询任务状态，再把最终结果包装成 `ToolResult` 返回给父 agent。
 
 ## Sub-Agent 模式
 
