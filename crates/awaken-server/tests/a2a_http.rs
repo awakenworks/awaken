@@ -1,15 +1,4 @@
-//! A2A HTTP integration tests — validates discovery and task creation endpoints.
-//!
-//! Mirrors high-value A2A tests from uncarve's tirea-agentos-server/tests/a2a_http.rs,
-//! adapted to awaken's AppState + Mailbox architecture.
-//!
-//! NOTE: Several A2A routes are currently unreachable due to axum 0.7 path
-//! parameter conflicts:
-//! - `/v1/a2a/tasks/{task_id}` conflicts with literal `/v1/a2a/tasks/send`
-//! - `/v1/a2a/agents/{agent_id}/agent-card` conflicts with
-//!   `/v1/a2a/agents/{agent_id}/tasks/{task_action}`
-//!
-//! Tests for affected routes are omitted; see `a2a_routes()` for the issue.
+//! A2A HTTP integration tests for the current A2A v1.0 surface.
 
 use async_trait::async_trait;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
@@ -18,7 +7,6 @@ use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::registry::traits::ModelEntry;
 use awaken_server::app::{AppState, ServerConfig};
-use awaken_server::protocols::a2a::http::{AgentCapabilities, AgentCard};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
@@ -26,8 +14,6 @@ use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tower::ServiceExt;
-
-// ── Mock executor ──
 
 struct ImmediateExecutor;
 
@@ -50,8 +36,6 @@ impl awaken_contract::contract::executor::LlmExecutor for ImmediateExecutor {
         "immediate"
     }
 }
-
-// ── Shared test app ──
 
 fn make_test_app(agent_ids: &[&str]) -> axum::Router {
     let mut builder = AgentRuntimeBuilder::new()
@@ -77,8 +61,8 @@ fn make_test_app(agent_ids: &[&str]) -> axum::Router {
     let store = Arc::new(InMemoryStore::new());
     builder = builder.with_thread_run_store(store.clone());
     let runtime = Arc::new(builder.build().expect("build runtime"));
-    let mailbox_store = std::sync::Arc::new(awaken_stores::InMemoryMailboxStore::new());
-    let mailbox = std::sync::Arc::new(awaken_server::mailbox::Mailbox::new(
+    let mailbox_store = Arc::new(awaken_stores::InMemoryMailboxStore::new());
+    let mailbox = Arc::new(awaken_server::mailbox::Mailbox::new(
         runtime.clone(),
         mailbox_store,
         "test".to_string(),
@@ -94,265 +78,229 @@ fn make_test_app(agent_ids: &[&str]) -> axum::Router {
     build_router().with_state(state)
 }
 
-async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, String) {
+async fn request_json(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    headers: &[(&str, &str)],
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let mut req = Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        req = req.header(*name, *value);
+    }
+
+    let req = req
+        .body(match body {
+            Some(body) => axum::body::Body::from(body.to_string()),
+            None => axum::body::Body::empty(),
+        })
+        .expect("request build");
+
     let resp = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(uri)
-                .body(axum::body::Body::empty())
-                .expect("request build"),
-        )
+        .clone()
+        .oneshot(req)
         .await
         .expect("app should handle request");
     let status = resp.status();
     let body = to_bytes(resp.into_body(), 1024 * 1024)
         .await
         .expect("body readable");
-    (status, String::from_utf8(body.to_vec()).expect("utf-8"))
-}
-
-async fn post_json(app: axum::Router, uri: &str, payload: Value) -> (StatusCode, String) {
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .body(axum::body::Body::from(payload.to_string()))
-                .expect("request build"),
-        )
-        .await
-        .expect("app should handle request");
-    let status = resp.status();
-    let body = to_bytes(resp.into_body(), 1024 * 1024)
-        .await
-        .expect("body readable");
-    (status, String::from_utf8(body.to_vec()).expect("utf-8"))
-}
-
-// ============================================================================
-// Agent card shape (struct-level)
-// ============================================================================
-
-#[test]
-fn well_known_card_shape() {
-    let card = AgentCard {
-        id: "agent".into(),
-        name: "agent".into(),
-        description: Some("d".into()),
-        url: "/v1/a2a/agents/agent/message:send".into(),
-        version: "0.1.0".into(),
-        capabilities: Some(AgentCapabilities {
-            streaming: true,
-            push_notifications: false,
-            state_transition_history: false,
-        }),
-        skills: vec![],
+    let body = String::from_utf8(body.to_vec()).expect("utf-8");
+    let json = if body.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_str(&body).expect("valid json")
     };
-    let v = serde_json::to_value(card).unwrap();
-    assert_eq!(v["name"], "agent");
-    assert_eq!(v["capabilities"]["streaming"], true);
+
+    (status, json)
 }
 
-#[test]
-fn agent_card_empty_skills_omitted() {
-    let card = AgentCard {
-        id: String::new(),
-        name: "minimal".into(),
-        description: None,
-        url: String::new(),
-        version: "0.1.0".into(),
-        capabilities: None,
-        skills: Vec::new(),
-    };
-    let json = serde_json::to_string(&card).unwrap();
-    assert!(!json.contains("skills"));
-    assert!(!json.contains("description"));
-    assert!(!json.contains("capabilities"));
-}
-
-// ============================================================================
-// Discovery endpoints
-// ============================================================================
-
-#[tokio::test]
-async fn a2a_well_known_agent_card_returns_ok() {
-    let app = make_test_app(&["alpha", "beta"]);
-    let (status, body) = get_json(app, "/v1/a2a/.well-known/agent").await;
-    assert_eq!(status, StatusCode::OK);
-    let payload: Value = serde_json::from_str(&body).expect("valid json");
-    assert_eq!(payload["name"].as_str(), Some("awaken-agent"));
-    assert!(
-        payload["capabilities"]["streaming"]
-            .as_bool()
-            .unwrap_or(false)
-    );
-    assert_eq!(payload["version"].as_str(), Some("0.1.0"));
+fn send_message_payload(task_id: &str, message_id: &str, text: &str) -> Value {
+    json!({
+        "message": {
+            "taskId": task_id,
+            "contextId": task_id,
+            "messageId": message_id,
+            "role": "ROLE_USER",
+            "parts": [{"text": text}]
+        }
+    })
 }
 
 #[tokio::test]
-async fn a2a_agent_list_returns_registered_agents() {
-    let app = make_test_app(&["alpha", "beta"]);
-    let (status, body) = get_json(app, "/v1/a2a/agents").await;
+async fn well_known_agent_card_returns_latest_shape() {
+    let app = make_test_app(&["alpha"]);
+    let (status, body) = request_json(&app, "GET", "/.well-known/agent-card.json", &[], None).await;
+
     assert_eq!(status, StatusCode::OK);
-    let payload: Value = serde_json::from_str(&body).expect("valid json");
-    let items = payload.as_array().expect("agent list should be array");
-    assert!(
-        items
-            .iter()
-            .any(|item| item["agentId"].as_str() == Some("alpha")),
-        "missing alpha: {payload}"
+    assert_eq!(body["name"].as_str(), Some("alpha"));
+    assert_eq!(
+        body["supportedInterfaces"][0]["url"].as_str(),
+        Some("http://localhost/v1/a2a")
+    );
+    assert_eq!(
+        body["supportedInterfaces"][0]["protocolBinding"].as_str(),
+        Some("HTTP+JSON")
+    );
+    assert_eq!(
+        body["supportedInterfaces"][0]["protocolVersion"].as_str(),
+        Some("1.0")
+    );
+    assert_eq!(body["provider"]["organization"].as_str(), Some("Awaken"));
+    assert_eq!(body["provider"]["url"].as_str(), Some("http://localhost"));
+    assert_eq!(body["capabilities"]["streaming"].as_bool(), Some(false));
+    assert_eq!(
+        body["capabilities"]["pushNotifications"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        body["capabilities"]["extendedAgentCard"].as_bool(),
+        Some(false)
     );
     assert!(
-        items
-            .iter()
-            .any(|item| item["agentId"].as_str() == Some("beta")),
-        "missing beta: {payload}"
+        body.get("url").is_none(),
+        "legacy top-level url must not be present"
     );
 }
 
 #[tokio::test]
-async fn a2a_agent_list_single_agent() {
-    let app = make_test_app(&["solo"]);
-    let (status, body) = get_json(app, "/v1/a2a/agents").await;
+async fn message_send_returns_task_wrapper_and_task_is_retrievable() {
+    let app = make_test_app(&["alpha"]);
+    let task_id = "task-latest-a2a";
+
+    let (status, body) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        &[("content-type", "application/json")],
+        Some(send_message_payload(task_id, "msg-1", "hello")),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+    assert_eq!(body["task"]["id"].as_str(), Some(task_id));
+    assert_eq!(body["task"]["contextId"].as_str(), Some(task_id));
+    assert_eq!(
+        body["task"]["status"]["state"].as_str(),
+        Some("TASK_STATE_COMPLETED")
+    );
+
+    let (status, task) = request_json(
+        &app,
+        "GET",
+        &format!("/v1/a2a/tasks/{task_id}?historyLength=10"),
+        &[],
+        None,
+    )
+    .await;
+
     assert_eq!(status, StatusCode::OK);
-    let items: Value = serde_json::from_str(&body).expect("valid json");
-    assert_eq!(items.as_array().map(Vec::len), Some(1));
-    assert_eq!(items[0]["agentId"].as_str(), Some("solo"));
+    assert_eq!(task["id"].as_str(), Some(task_id));
+    let history = task["history"].as_array().expect("history array");
+    assert!(
+        history.iter().any(|message| {
+            message["messageId"].as_str() == Some("msg-1")
+                && message["role"].as_str() == Some("ROLE_USER")
+        }),
+        "user message missing from history: {task}"
+    );
 }
 
 #[tokio::test]
-async fn a2a_agent_list_sorted_and_deduped() {
-    let app = make_test_app(&["beta", "alpha"]);
-    let (status, body) = get_json(app, "/v1/a2a/agents").await;
+async fn tenant_message_send_is_visible_in_tenant_task_list() {
+    let app = make_test_app(&["alpha"]);
+    let task_id = "tenant-task-1";
+
+    let (status, body) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/alpha/message:send",
+        &[("content-type", "application/json")],
+        Some(send_message_payload(
+            task_id,
+            "msg-tenant-1",
+            "hello tenant",
+        )),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+    assert_eq!(body["task"]["id"].as_str(), Some(task_id));
+
+    let (status, body) = request_json(&app, "GET", "/v1/a2a/alpha/tasks", &[], None).await;
     assert_eq!(status, StatusCode::OK);
-    let items: Vec<Value> = serde_json::from_str(&body).expect("valid json");
-    let ids: Vec<&str> = items.iter().filter_map(|i| i["agentId"].as_str()).collect();
-    let mut sorted = ids.clone();
-    sorted.sort();
-    assert_eq!(ids, sorted, "agent list should be sorted");
-}
-
-// ============================================================================
-// Task creation (POST /v1/a2a/tasks/send)
-// ============================================================================
-
-#[tokio::test]
-async fn a2a_task_send_creates_task_and_returns_id() {
-    let app = make_test_app(&["alpha"]);
-    let (status, body) = post_json(
-        app,
-        "/v1/a2a/tasks/send",
-        json!({
-            "agentId": "alpha",
-            "message": {
-                "role": "user",
-                "parts": [{"type": "text", "text": "hello"}]
-            }
-        }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "unexpected response: {body}");
-    let payload: Value = serde_json::from_str(&body).expect("valid json");
-    assert!(payload["taskId"].as_str().is_some(), "taskId missing");
-    assert_eq!(payload["status"]["state"].as_str(), Some("submitted"));
+    assert_eq!(body["tasks"].as_array().map(Vec::len), Some(1));
+    assert_eq!(body["tasks"][0]["id"].as_str(), Some(task_id));
+    assert_eq!(body["tasks"][0]["contextId"].as_str(), Some(task_id));
 }
 
 #[tokio::test]
-async fn a2a_task_send_with_explicit_task_id() {
+async fn message_stream_is_unimplemented_when_streaming_not_advertised() {
     let app = make_test_app(&["alpha"]);
-    let (status, body) = post_json(
-        app,
-        "/v1/a2a/tasks/send",
-        json!({
-            "taskId": "my-custom-task-id",
-            "agentId": "alpha",
-            "message": {
-                "role": "user",
-                "parts": [{"type": "text", "text": "hello"}]
-            }
-        }),
+    let (status, body) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/message:stream",
+        &[("content-type", "application/json")],
+        Some(send_message_payload("task-stream", "msg-stream", "hello")),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "unexpected response: {body}");
-    let payload: Value = serde_json::from_str(&body).expect("valid json");
-    assert_eq!(payload["taskId"].as_str(), Some("my-custom-task-id"));
+
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(
+        body["error"]["details"][0]["reason"].as_str(),
+        Some("UNSUPPORTED_OPERATION")
+    );
 }
 
 #[tokio::test]
-async fn a2a_task_send_requires_message() {
+async fn unsupported_version_returns_failed_precondition_error() {
     let app = make_test_app(&["alpha"]);
-    let (status, _body) = post_json(
-        app,
-        "/v1/a2a/tasks/send",
-        json!({
-            "agentId": "alpha"
-        }),
+    let (status, body) = request_json(
+        &app,
+        "GET",
+        "/.well-known/agent-card.json",
+        &[("a2a-version", "0.9")],
+        None,
     )
     .await;
+
     assert_eq!(status, StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn a2a_task_send_requires_non_empty_text() {
-    let app = make_test_app(&["alpha"]);
-    let (status, _body) = post_json(
-        app,
-        "/v1/a2a/tasks/send",
-        json!({
-            "agentId": "alpha",
-            "message": {
-                "role": "user",
-                "parts": [{"type": "text", "text": ""}]
-            }
-        }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn a2a_task_send_auto_generates_task_id_when_omitted() {
-    let app = make_test_app(&["alpha"]);
-    let (status, body) = post_json(
-        app,
-        "/v1/a2a/tasks/send",
-        json!({
-            "agentId": "alpha",
-            "message": {
-                "role": "user",
-                "parts": [{"type": "text", "text": "hello"}]
-            }
-        }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    let payload: Value = serde_json::from_str(&body).expect("valid json");
-    let task_id = payload["taskId"].as_str().expect("taskId should exist");
-    assert!(
-        !task_id.is_empty(),
-        "auto-generated taskId should be non-empty"
+    assert_eq!(
+        body["error"]["details"][0]["reason"].as_str(),
+        Some("VERSION_NOT_SUPPORTED")
+    );
+    assert_eq!(
+        body["error"]["details"][0]["metadata"]["requestedVersion"].as_str(),
+        Some("0.9")
     );
 }
 
 #[tokio::test]
-async fn a2a_task_send_multiple_text_parts_concatenated() {
+async fn invalid_inbound_message_role_is_rejected() {
     let app = make_test_app(&["alpha"]);
-    let (status, body) = post_json(
-        app,
-        "/v1/a2a/tasks/send",
-        json!({
-            "agentId": "alpha",
+    let (status, body) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        &[("content-type", "application/json")],
+        Some(json!({
             "message": {
-                "role": "user",
-                "parts": [
-                    {"type": "text", "text": "Hello "},
-                    {"type": "text", "text": "World"}
-                ]
+                "taskId": "task-invalid-role",
+                "contextId": "task-invalid-role",
+                "messageId": "msg-invalid-role",
+                "role": "ROLE_AGENT",
+                "parts": [{"text": "hello"}]
             }
-        }),
+        })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "multi-part send failed: {body}");
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["status"].as_str(), Some("INVALID_ARGUMENT"));
+    assert_eq!(
+        body["error"]["details"][0]["fieldViolations"][0]["field"].as_str(),
+        Some("message.role")
+    );
 }

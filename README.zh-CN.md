@@ -154,7 +154,7 @@ serve(state).await?;
 |---|---|---|
 | AI SDK v6 | `POST /v1/ai-sdk/chat` | React `useChat()` |
 | AG-UI | `POST /v1/ag-ui/run` | CopilotKit `<CopilotKit>` |
-| A2A | `POST /v1/a2a/tasks/send` | 其他 Agent |
+| A2A | `POST /v1/a2a/message:send` | 其他 Agent |
 | MCP | `POST /v1/mcp` | JSON-RPC 2.0 |
 
 **React + AI SDK v6：**

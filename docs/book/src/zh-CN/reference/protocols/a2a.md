@@ -1,83 +1,135 @@
 # A2A 协议
 
-A2A 适配层实现了 Google 的 Agent-to-Agent 协议，用于远程 agent 发现、任务委托和 agent 间通信。
+A2A 适配器实现了官方 [A2A 协议](https://a2a-protocol.org/latest/specification/)，用于远程 agent 发现、任务委托与 agent 间通信。
 
 **Feature gate**：`server`
 
-## 入口
+## 端点
 
-| 路由 | 方法 | 说明 |
-|-------|--------|------|
-| `/v1/a2a/tasks/send` | `POST` | 提交任务，返回 task ID 与初始状态 |
-| `/v1/a2a/tasks/:task_id` | `GET` | 查询任务状态 |
-| `/v1/a2a/tasks/:task_id/cancel` | `POST` | 取消任务 |
-| `/v1/a2a/.well-known/agent` | `GET` | 返回默认 agent card |
-| `/v1/a2a/agents` | `GET` | 列出所有可发现 agent |
-| `/v1/a2a/agents/:agent_id/agent-card` | `GET` | 获取指定 agent 的 card |
-| `/v1/a2a/agents/:agent_id/message:send` | `POST` | 向指定 agent 发送消息 |
-| `/v1/a2a/agents/:agent_id/tasks/:action` | `GET/POST` | agent 作用域下的任务操作 |
+| 路径 | 方法 | 说明 |
+|-------|--------|-------------|
+| `/.well-known/agent-card.json` | `GET` | 公共/默认 agent card 发现端点。 |
+| `/v1/a2a/message:send` | `POST` | 向公共/默认 A2A agent 发送消息，返回 task 包装结果。 |
+| `/v1/a2a/message:stream` | `POST` | 流式发送；只有 `capabilities.streaming=true` 时才受支持。 |
+| `/v1/a2a/tasks` | `GET` | 列出 A2A 任务。 |
+| `/v1/a2a/tasks/:task_id` | `GET` | 按 task ID 查询状态。 |
+| `/v1/a2a/tasks/:task_id:cancel` | `POST` | 取消运行中的任务。 |
+| `/v1/a2a/tasks/:task_id:subscribe` | `POST` | 订阅任务更新；未启用 streaming 时返回 `501`。 |
+| `/v1/a2a/tasks/:task_id/pushNotificationConfigs` | `POST` | 创建推送通知配置；未启用 push notifications 时返回不支持。 |
+| `/v1/a2a/tasks/:task_id/pushNotificationConfigs/:config_id` | `GET` / `DELETE` | 读取或删除推送通知配置。 |
+| `/v1/a2a/extendedAgentCard` | `GET` | 扩展 agent card；只有 `capabilities.extendedAgentCard=true` 时才受支持。 |
+
+租户/agent 作用域的等价路由位于 `/v1/a2a/:tenant/...`，例如 `/v1/a2a/research/message:send` 和 `/v1/a2a/research/tasks/:task_id`。
 
 ## Agent Card
 
-发现接口会返回 `AgentCard`，描述 agent 的能力、地址和 skills：
+发现端点返回描述接口与能力的 `AgentCard`：
 
 ```json
 {
-  "id": "assistant",
   "name": "My Agent",
   "description": "A helpful assistant",
-  "url": "https://example.com/v1/a2a",
+  "supportedInterfaces": [
+    {
+      "url": "https://example.com/v1/a2a",
+      "protocolBinding": "HTTP+JSON",
+      "protocolVersion": "1.0"
+    }
+  ],
   "version": "1.0.0",
   "capabilities": {
     "streaming": false,
-    "push_notifications": false,
-    "state_transition_history": false
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "extendedAgentCard": false
   },
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
   "skills": [
     {
       "id": "general",
       "name": "General Q&A",
       "description": "Answer general questions",
-      "tags": ["qa"]
+      "tags": ["qa"],
+      "inputModes": ["text/plain"],
+      "outputModes": ["text/plain"]
     }
   ]
 }
 ```
 
-Agent card 来自已注册的 `AgentSpec`。
+Agent card 由已注册的 `AgentSpec` 生成。旧版顶层 `url` / `id` 字段不会再输出。
 
-## Task Send
+## Message Send
 
 ```json
 {
-  "taskId": "optional-client-provided-id",
-  "agentId": "optional-agent-id",
   "message": {
-    "role": "user",
-    "parts": [{ "type": "text", "text": "Summarize this document" }]
+    "taskId": "optional-client-provided-id",
+    "contextId": "optional-client-provided-id",
+    "messageId": "msg-123",
+    "role": "ROLE_USER",
+    "parts": [{ "text": "Summarize this document" }]
+  },
+  "configuration": {
+    "returnImmediately": true
   }
 }
 ```
 
-任务会作为后台 `MailboxJob` 提交，接口立即返回 `taskId` 和 `submitted` 状态。客户端之后轮询 `/v1/a2a/tasks/:task_id`。
-
-## Task Status
+服务端会把 A2A task 映射到 Awaken 的 thread / mailbox 执行链路。响应使用 v1 的 task 包装结构：
 
 ```json
 {
-  "taskId": "abc-123",
-  "status": {
-    "state": "completed",
-    "message": { "role": "agent", "parts": [{ "type": "text", "text": "..." }] }
+  "task": {
+    "id": "optional-client-provided-id",
+    "contextId": "optional-client-provided-id",
+    "status": {
+      "state": "TASK_STATE_SUBMITTED"
+    }
   }
 }
 ```
 
-状态遵循 A2A 生命周期：`submitted`、`working`、`completed`、`failed`、`cancelled`。
+如果未设置 `returnImmediately` 或传入 `false`，适配器会等待任务进入终态或中断态后再返回。
 
-## 远程 agent 委托
+## Task 状态
 
-Awaken 可以通过 `AgentSpec.endpoint` 把某个 agent 配置为远端 A2A agent。对 LLM 来说，这仍然表现为普通 tool call；A2A 传输层由 `A2aBackend` 隐式处理。
+`GET /v1/a2a/tasks/:task_id` 返回 `Task` 资源：
+
+```json
+{
+  "id": "abc-123",
+  "contextId": "abc-123",
+  "status": {
+    "state": "TASK_STATE_COMPLETED",
+    "message": {
+      "messageId": "msg-response",
+      "role": "ROLE_AGENT",
+      "parts": [{ "text": "..." }]
+    }
+  },
+  "history": []
+}
+```
+
+任务状态使用 v1 枚举名，例如 `TASK_STATE_SUBMITTED`、`TASK_STATE_WORKING`、`TASK_STATE_COMPLETED`、`TASK_STATE_FAILED`、`TASK_STATE_CANCELED`。
+
+## 当前默认不支持的可选能力
+
+Awaken 当前默认声明以下 A2A 能力为关闭：
+
+- `streaming = false`
+- `pushNotifications = false`
+- `extendedAgentCard = false`
+
+对应端点已经接线，但会返回符合规范的 unsupported / precondition 错误，而不是静默 fallback。
+
+## 远程 Agent 委托
+
+Awaken agent 可以通过 `AgentTool::remote()` 委托到远程 A2A agent。`A2aBackend` 会向远端发送 `message:send` 请求，读取返回的 `task.id`，再轮询 `/tasks/:task_id` 直到完成。从 LLM 视角看，这仍然只是一次普通工具调用。
+
+远程 agent 配置写在 `AgentSpec` 中：
 
 ```json
 {
@@ -91,9 +143,9 @@ Awaken 可以通过 `AgentSpec.endpoint` 把某个 agent 配置为远端 A2A age
 }
 ```
 
-带 `endpoint` 的 agent 会被解析为远程 agent；没有 `endpoint` 的 agent 在本地执行。
+带 `endpoint` 的 agent 会按远程 A2A agent 解析；没有 `endpoint` 的 agent 仍在本地运行。
 
-## 相关
+## 另见
 
-- [多智能体模式](../../explanation/multi-agent-patterns.md)
-- [A2A Agent Card 规范](https://google.github.io/A2A/#/documentation?id=agent-card)
+- [多智能体模式](../../explanation/multi-agent-patterns.md) —— 委托与 handoff 设计
+- [A2A 规范](https://a2a-protocol.org/latest/specification/) —— 官方协议参考

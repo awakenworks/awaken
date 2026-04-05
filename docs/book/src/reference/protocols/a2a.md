@@ -1,6 +1,6 @@
 # A2A Protocol
 
-The Agent-to-Agent (A2A) adapter implements Google's [A2A protocol](https://google.github.io/A2A/) for remote agent discovery, task delegation, and inter-agent communication.
+The Agent-to-Agent (A2A) adapter implements the [A2A protocol](https://a2a-protocol.org/latest/specification/) for remote agent discovery, task delegation, and inter-agent communication.
 
 **Feature gate**: `server`
 
@@ -8,76 +8,126 @@ The Agent-to-Agent (A2A) adapter implements Google's [A2A protocol](https://goog
 
 | Route | Method | Description |
 |-------|--------|-------------|
-| `/v1/a2a/tasks/send` | POST | Submit a task to an agent. Returns a task ID and initial status. |
+| `/.well-known/agent-card.json` | GET | Discovery endpoint for the public/default agent card. |
+| `/v1/a2a/message:send` | POST | Send a message to the public/default A2A agent. Returns a task wrapper. |
+| `/v1/a2a/message:stream` | POST | Streaming send. Returns `501` unless `capabilities.streaming=true`. |
+| `/v1/a2a/tasks` | GET | List A2A tasks. |
 | `/v1/a2a/tasks/:task_id` | GET | Poll task status by ID. |
-| `/v1/a2a/tasks/:task_id/cancel` | POST | Cancel a running task. |
-| `/v1/a2a/.well-known/agent` | GET | Discovery endpoint. Returns the default agent card. |
-| `/v1/a2a/agents` | GET | List all registered agents. |
-| `/v1/a2a/agents/:agent_id/agent-card` | GET | Agent card for a specific agent. |
-| `/v1/a2a/agents/:agent_id/message:send` | POST | Send a message to a specific agent. |
-| `/v1/a2a/agents/:agent_id/tasks/:action` | GET/POST | Agent-scoped task operations. |
+| `/v1/a2a/tasks/:task_id:cancel` | POST | Cancel a running task. |
+| `/v1/a2a/tasks/:task_id:subscribe` | POST | Subscribe to task updates. Returns `501` unless streaming is enabled. |
+| `/v1/a2a/tasks/:task_id/pushNotificationConfigs` | POST | Create a push notification config. Returns unsupported unless push notifications are enabled. |
+| `/v1/a2a/tasks/:task_id/pushNotificationConfigs/:config_id` | GET / DELETE | Read or delete a push notification config. |
+| `/v1/a2a/extendedAgentCard` | GET | Extended agent card. Returns `501` unless `capabilities.extendedAgentCard=true`. |
+
+Tenant-scoped variants mirror the same interface under `/v1/a2a/:tenant/...`, for example `/v1/a2a/research/message:send` and `/v1/a2a/research/tasks/:task_id`.
 
 ## Agent Card
 
-The discovery endpoint returns an `AgentCard` describing the agent's capabilities:
+The discovery endpoint returns an `AgentCard` describing the exposed interface and capabilities:
 
 ```json
 {
-  "id": "assistant",
   "name": "My Agent",
   "description": "A helpful assistant",
-  "url": "https://example.com/v1/a2a",
+  "supportedInterfaces": [
+    {
+      "url": "https://example.com/v1/a2a",
+      "protocolBinding": "HTTP+JSON",
+      "protocolVersion": "1.0"
+    }
+  ],
   "version": "1.0.0",
   "capabilities": {
     "streaming": false,
-    "push_notifications": false,
-    "state_transition_history": false
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "extendedAgentCard": false
   },
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
   "skills": [
     {
       "id": "general",
       "name": "General Q&A",
       "description": "Answer general questions",
-      "tags": ["qa"]
+      "tags": ["qa"],
+      "inputModes": ["text/plain"],
+      "outputModes": ["text/plain"]
     }
   ]
 }
 ```
 
-Agent cards are derived from registered `AgentSpec` entries. Each agent with an `id` in the spec registry produces a discoverable card.
+Agent cards are derived from registered `AgentSpec` entries. The top-level legacy `url`/`id` fields are not emitted.
 
-## Task Send
+## Message Send
 
 ```json
 {
-  "taskId": "optional-client-provided-id",
-  "agentId": "optional-agent-id",
   "message": {
-    "role": "user",
-    "parts": [{ "type": "text", "text": "Summarize this document" }]
+    "taskId": "optional-client-provided-id",
+    "contextId": "optional-client-provided-id",
+    "messageId": "msg-123",
+    "role": "ROLE_USER",
+    "parts": [{ "text": "Summarize this document" }]
+  },
+  "configuration": {
+    "returnImmediately": true
   }
 }
 ```
 
-The task is submitted as a background `MailboxJob`. The response returns immediately with a `taskId` and `"submitted"` status. Clients poll `/v1/a2a/tasks/:task_id` for completion.
+The server maps A2A tasks to Awaken thread/mailbox execution. The response uses the v1 task wrapper shape:
+
+```json
+{
+  "task": {
+    "id": "optional-client-provided-id",
+    "contextId": "optional-client-provided-id",
+    "status": {
+      "state": "TASK_STATE_SUBMITTED"
+    }
+  }
+}
+```
+
+If `returnImmediately` is omitted or `false`, the adapter waits for a terminal/interrupted task state before responding.
 
 ## Task Status
 
+`GET /v1/a2a/tasks/:task_id` returns a `Task` resource:
+
 ```json
 {
-  "taskId": "abc-123",
+  "id": "abc-123",
+  "contextId": "abc-123",
   "status": {
-    "state": "completed",
-    "message": { "role": "agent", "parts": [{ "type": "text", "text": "..." }] }
-  }
+    "state": "TASK_STATE_COMPLETED",
+    "message": {
+      "messageId": "msg-response",
+      "role": "ROLE_AGENT",
+      "parts": [{ "text": "..." }]
+    }
+  },
+  "history": []
 }
 ```
 
-Task states follow the A2A lifecycle: `submitted`, `working`, `completed`, `failed`, `cancelled`.
+Task states follow the v1 enum names such as `TASK_STATE_SUBMITTED`, `TASK_STATE_WORKING`, `TASK_STATE_COMPLETED`, `TASK_STATE_FAILED`, and `TASK_STATE_CANCELED`.
+
+## Unsupported optional capabilities
+
+Awaken currently advertises the following A2A capabilities as disabled by default:
+
+- `streaming = false`
+- `pushNotifications = false`
+- `extendedAgentCard = false`
+
+The corresponding endpoints are wired and return spec-shaped unsupported/precondition errors instead of silently falling back.
 
 ## Remote Agent Delegation
 
-Awaken agents can delegate to remote A2A agents via `AgentTool::remote()`. The `A2aBackend` sends a `tasks/send` request to the remote endpoint and polls for completion. From the LLM's perspective, this is a regular tool call -- the A2A transport is transparent.
+Awaken agents can delegate to remote A2A agents via `AgentTool::remote()`. The `A2aBackend` sends a `message:send` request to the remote endpoint, reads the returned `task.id`, then polls `/tasks/:task_id` for completion. From the LLM's perspective, this is a regular tool call — the A2A transport is transparent.
 
 Configuration for remote agents is declared in `AgentSpec`:
 
@@ -97,5 +147,5 @@ Agents with an `endpoint` field are resolved as remote A2A agents. Agents withou
 
 ## Related
 
-- [Multi-Agent Patterns](../../explanation/multi-agent-patterns.md) -- delegation and handoff design
-- [Agent Card contract](https://google.github.io/A2A/#/documentation?id=agent-card) -- A2A specification
+- [Multi-Agent Patterns](../../explanation/multi-agent-patterns.md) — delegation and handoff design
+- [A2A Specification](https://a2a-protocol.org/latest/specification/) — official protocol reference

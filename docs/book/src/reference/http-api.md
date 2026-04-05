@@ -98,14 +98,24 @@ Current built-in namespaces:
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/v1/a2a/tasks/send` | Send a task |
+| `GET` | `/.well-known/agent-card.json` | Get the public/default agent card |
+| `POST` | `/v1/a2a/message:send` | Send a message to the public/default A2A agent |
+| `POST` | `/v1/a2a/message:stream` | Streaming send; returns `501` unless streaming is enabled |
+| `GET` | `/v1/a2a/tasks` | List A2A tasks |
 | `GET` | `/v1/a2a/tasks/:task_id` | Get task status |
-| `POST` | `/v1/a2a/tasks/:task_id/cancel` | Cancel a task |
-| `GET` | `/v1/a2a/.well-known/agent` | Get the default agent card |
-| `GET` | `/v1/a2a/agents` | List available agents |
-| `GET` | `/v1/a2a/agents/:agent_id/agent-card` | Get a specific agent card |
-| `POST` | `/v1/a2a/agents/:agent_id/message:send` | Send a message to a specific agent |
-| `GET`/`POST` | `/v1/a2a/agents/:agent_id/tasks/:task_action` | Task actions scoped to an agent |
+| `POST` | `/v1/a2a/tasks/:task_id:cancel` | Cancel a task |
+| `POST` | `/v1/a2a/tasks/:task_id:subscribe` | Subscribe to task updates; returns `501` unless streaming is enabled |
+| `POST` | `/v1/a2a/tasks/:task_id/pushNotificationConfigs` | Create a push notification config; returns unsupported unless push notifications are enabled |
+| `GET` | `/v1/a2a/tasks/:task_id/pushNotificationConfigs/:config_id` | Get a push notification config |
+| `DELETE` | `/v1/a2a/tasks/:task_id/pushNotificationConfigs/:config_id` | Delete a push notification config |
+| `GET` | `/v1/a2a/extendedAgentCard` | Get the extended agent card; returns `501` unless enabled |
+| `POST` | `/v1/a2a/:tenant/message:send` | Send a message to a tenant-scoped agent |
+| `POST` | `/v1/a2a/:tenant/message:stream` | Tenant-scoped streaming send |
+| `GET` | `/v1/a2a/:tenant/tasks` | List tasks for a tenant-scoped agent |
+| `GET` | `/v1/a2a/:tenant/tasks/:task_id` | Get tenant-scoped task status |
+| `POST` | `/v1/a2a/:tenant/tasks/:task_id:cancel` | Cancel a tenant-scoped task |
+| `POST` | `/v1/a2a/:tenant/tasks/:task_id:subscribe` | Subscribe to tenant-scoped task updates |
+| `GET` | `/v1/a2a/:tenant/extendedAgentCard` | Get the tenant-scoped extended agent card |
 
 ## MCP HTTP routes
 

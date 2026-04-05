@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { aiSdkTextMessages } from './ai-sdk-test-utils';
+import { a2aSendMessagePayload } from './a2a-test-utils';
 
 const BASE_URL = 'http://127.0.0.1:38080';
 
@@ -51,13 +52,12 @@ test.describe('phase hooks', () => {
     expect(status).toBe(200);
   });
 
-  test('phases agent in A2A agent list', async ({ request }) => {
-    const res = await request.get('/v1/a2a/agents');
+  test('phases agent accepts A2A tenant route', async ({ request }) => {
+    const { taskId, data } = a2aSendMessagePayload('Phase hooks via A2A');
+    const res = await request.post('/v1/a2a/phases/message:send', { data });
     expect(res.ok()).toBeTruthy();
 
-    const agents = await res.json();
-    expect(Array.isArray(agents)).toBeTruthy();
-    const ids = agents.map((a: any) => a.agentId);
-    expect(ids).toContain('phases');
+    const body = await res.json();
+    expect(body.task?.id).toBe(taskId);
   });
 });
