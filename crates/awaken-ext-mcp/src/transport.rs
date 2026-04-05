@@ -29,6 +29,11 @@ use tokio::sync::{mpsc, oneshot};
 use crate::progress::McpProgressUpdate;
 use crate::sampling::SamplingHandler;
 
+#[cfg(unix)]
+use nix::sys::signal::{Signal, kill};
+#[cfg(unix)]
+use nix::unistd::Pid;
+
 type PendingRequestSender = oneshot::Sender<Result<Value, McpTransportError>>;
 type PendingRequests = Arc<tokio::sync::Mutex<HashMap<i64, PendingRequestSender>>>;
 
@@ -144,6 +149,10 @@ pub trait McpToolTransport: Send + Sync {
             "read_resource not supported".to_string(),
         ))
     }
+
+    async fn close(&self) -> Result<(), McpTransportError> {
+        Ok(())
+    }
 }
 
 // ── Progress token key ──
@@ -180,7 +189,7 @@ pub(crate) struct ProgressAwareStdioTransport {
     next_id: AtomicI64,
     next_progress_token: AtomicI64,
     alive: Arc<AtomicBool>,
-    _child: Arc<tokio::sync::Mutex<Child>>,
+    child: Arc<tokio::sync::Mutex<Option<Child>>>,
     timeout: Duration,
     capabilities: Option<ServerCapabilities>,
 }
@@ -198,8 +207,7 @@ impl ProgressAwareStdioTransport {
         cmd.args(&config.args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
+            .stderr(std::process::Stdio::piped());
         for (key, value) in &config.env {
             cmd.env(key, value);
         }
@@ -308,7 +316,12 @@ impl ProgressAwareStdioTransport {
                 }
             }
 
-            pending_reader.lock().await.clear();
+            {
+                let mut pending = pending_reader.lock().await;
+                for (_, tx) in pending.drain() {
+                    let _ = tx.send(Err(McpTransportError::ConnectionClosed));
+                }
+            }
             progress_reader.lock().await.clear();
         });
 
@@ -335,7 +348,7 @@ impl ProgressAwareStdioTransport {
             next_id: AtomicI64::new(1),
             next_progress_token: AtomicI64::new(1),
             alive,
-            _child: Arc::new(tokio::sync::Mutex::new(child)),
+            child: Arc::new(tokio::sync::Mutex::new(Some(child))),
             timeout: Duration::from_secs(config.timeout_secs),
             capabilities: None,
         };
@@ -534,8 +547,35 @@ impl McpToolTransport for ProgressAwareStdioTransport {
     }
 
     async fn read_resource(&self, uri: &str) -> Result<Value, McpTransportError> {
-        self.send_request("resources/read", Some(json!({"uri": uri})), None)
+        self.send_request("resources/read", Some(json!({ "uri": uri })), None)
             .await
+    }
+
+    async fn close(&self) -> Result<(), McpTransportError> {
+        self.alive.store(false, Ordering::SeqCst);
+
+        {
+            let mut pending = self.pending.lock().await;
+            for (_, tx) in pending.drain() {
+                let _ = tx.send(Err(McpTransportError::ConnectionClosed));
+            }
+        }
+
+        {
+            let mut progress = self.progress_subscribers.lock().await;
+            progress.clear();
+        }
+
+        let child = {
+            let mut child_guard = self.child.lock().await;
+            child_guard.take()
+        };
+
+        if let Some(mut child) = child {
+            terminate_child(&mut child).await?;
+        }
+
+        Ok(())
     }
 }
 
@@ -924,6 +964,53 @@ impl ProgressAwareHttpTransport {
     }
 }
 
+#[cfg(unix)]
+async fn terminate_child(child: &mut Child) -> Result<(), McpTransportError> {
+    let Some(pid) = child.id() else {
+        let _ = child.wait().await;
+        return Ok(());
+    };
+
+    send_signal(pid, Signal::SIGINT)?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    if child.try_wait()?.is_some() {
+        let _ = child.wait().await;
+        return Ok(());
+    }
+
+    send_signal(pid, Signal::SIGTERM)?;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    if child.try_wait()?.is_some() {
+        let _ = child.wait().await;
+        return Ok(());
+    }
+
+    child.start_kill()?;
+    let _ = child.wait().await;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn send_signal(pid: u32, signal: Signal) -> Result<(), McpTransportError> {
+    match kill(Pid::from_raw(pid as i32), signal) {
+        Ok(()) => Ok(()),
+        Err(nix::errno::Errno::ESRCH) => Ok(()),
+        Err(err) => Err(McpTransportError::TransportError(format!(
+            "failed to send signal {:?} to pid {}: {}",
+            signal, pid, err
+        ))),
+    }
+}
+
+#[cfg(not(unix))]
+async fn terminate_child(child: &mut Child) -> Result<(), McpTransportError> {
+    child.start_kill()?;
+    let _ = child.wait().await;
+    Ok(())
+}
+
 #[async_trait]
 impl McpToolTransport for ProgressAwareHttpTransport {
     async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
@@ -1023,8 +1110,23 @@ impl McpToolTransport for ProgressAwareHttpTransport {
     }
 
     async fn read_resource(&self, uri: &str) -> Result<Value, McpTransportError> {
-        self.send_initialized_request("resources/read", Some(json!({"uri": uri})), None)
+        self.send_initialized_request("resources/read", Some(json!({ "uri": uri })), None)
             .await
+    }
+
+    async fn close(&self) -> Result<(), McpTransportError> {
+        {
+            let mut session = self.session.write().await;
+            session.session_id = None;
+            session.protocol_version = None;
+        }
+
+        {
+            let mut capabilities = self.capabilities.lock().await;
+            *capabilities = None;
+        }
+
+        Ok(())
     }
 }
 

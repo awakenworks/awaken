@@ -609,14 +609,15 @@ async fn failed_refresh_keeps_last_good_snapshot() {
         .unwrap();
     let reg = manager.registry();
     let initial_ids = reg.ids();
+    let initial_version = manager.version();
 
     fake.fail_next_list("temporary outage");
 
-    let err = manager.refresh().await.err().unwrap();
-    assert!(matches!(err, McpError::Transport(_)));
-    assert_eq!(manager.version(), 1);
+    let version = manager.refresh().await.unwrap();
+    assert_eq!(version, initial_version.saturating_add(1));
+    assert_eq!(manager.version(), version);
     assert_eq!(reg.ids(), initial_ids);
-    let health = manager.refresh_health();
+    let health = manager.server_health("s1").unwrap();
     assert_eq!(
         health.last_error.as_deref(),
         Some("mcp transport error: Transport error: temporary outage")
@@ -636,14 +637,17 @@ async fn refresh_health_clears_error_after_recovery() {
         .unwrap();
 
     fake.fail_next_list("temporary outage");
-    let _ = manager.refresh().await.expect_err("refresh should fail");
+    let _ = manager
+        .refresh()
+        .await
+        .expect("refresh should keep last good snapshot");
 
-    let failed_health = manager.refresh_health();
+    let failed_health = manager.server_health("s1").unwrap();
     assert_eq!(failed_health.consecutive_failures, 1);
     assert!(failed_health.last_error.is_some());
 
     let _ = manager.refresh().await.expect("refresh should recover");
-    let recovered_health = manager.refresh_health();
+    let recovered_health = manager.server_health("s1").unwrap();
     assert_eq!(recovered_health.consecutive_failures, 0);
     assert!(recovered_health.last_error.is_none());
     assert!(recovered_health.last_success_at.is_some());
