@@ -50,6 +50,7 @@ pub(super) async fn run_agent_loop_impl(
         runtime,
         initial_agent_id,
         initial_messages,
+        sink.as_ref(),
         &run_identity,
     )
     .await?;

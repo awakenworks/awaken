@@ -9,7 +9,7 @@ use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::message::{Message, ToolCall};
 use awaken_contract::contract::suspension::{
-    ResumeDecisionAction, ToolCallResume, ToolCallResumeMode, ToolCallStatus,
+    ResumeDecisionAction, ToolCallOutcome, ToolCallResume, ToolCallResumeMode, ToolCallStatus,
 };
 use awaken_contract::contract::tool::ToolCallContext;
 use futures::StreamExt;
@@ -114,6 +114,7 @@ fn normalize_decision_result(
 pub(super) async fn detect_and_replay_resume(
     agent: &ResolvedAgent,
     store: &crate::state::StateStore,
+    sink: &dyn EventSink,
     run_identity: &RunIdentity,
     messages: &mut Vec<Arc<Message>>,
 ) -> Result<(), AgentLoopError> {
@@ -171,6 +172,14 @@ pub(super) async fn detect_and_replay_resume(
         store
             .commit(cmd.patch)
             .map_err(AgentLoopError::PhaseError)?;
+
+        sink.emit(AgentEvent::ToolCallDone {
+            id: call_id.clone(),
+            message_id: String::new(),
+            result: output.result.clone(),
+            outcome: ToolCallOutcome::from_tool_result(&output.result),
+        })
+        .await;
 
         messages.push(Arc::new(Message::tool(
             call_id,
@@ -265,7 +274,7 @@ pub(super) async fn wait_for_resume_or_cancel(
         // Defaults to ReplayToolCall if no ticket was stored (legacy path).
         emit_decision_events_and_messages(store, sink, messages, &decisions).await?;
         prepare_resume(store, decisions, None)?;
-        detect_and_replay_resume(agent, store, run_identity, messages).await?;
+        detect_and_replay_resume(agent, store, sink, run_identity, messages).await?;
         if !has_suspended_calls(store) {
             return Ok(WaitOutcome::Resumed);
         }
