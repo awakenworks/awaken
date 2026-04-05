@@ -129,21 +129,25 @@ Awaken currently enables these A2A capabilities by default:
 
 Awaken agents can delegate to remote A2A agents via `AgentTool::remote()`. The `A2aBackend` sends a `message:send` request to the remote endpoint, reads the returned `task.id`, then polls `/tasks/:task_id` for completion. From the LLM's perspective, this is a regular tool call — the A2A transport is transparent.
 
-Configuration for remote agents is declared in `AgentSpec`:
+Configuration for remote agents is declared in `AgentSpec`. `RemoteEndpoint` is generic, and A2A uses `backend: "a2a"`:
 
 ```json
 {
   "id": "remote-researcher",
   "endpoint": {
-    "base_url": "https://remote-agent.example.com",
-    "bearer_token": "...",
-    "poll_interval_ms": 1000,
-    "timeout_ms": 300000
+    "backend": "a2a",
+    "base_url": "https://remote-agent.example.com/v1/a2a",
+    "auth": { "type": "bearer", "token": "..." },
+    "target": "researcher",
+    "timeout_ms": 300000,
+    "options": {
+      "poll_interval_ms": 1000
+    }
   }
 }
 ```
 
-Agents with an `endpoint` field are resolved as remote A2A agents. Agents without it run locally.
+Agents with an `endpoint` field are resolved as remote backend agents. Today the built-in delegate backend is A2A. Agents without `endpoint` run locally.
 
 ## Related
 

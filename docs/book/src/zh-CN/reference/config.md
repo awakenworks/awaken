@@ -122,15 +122,21 @@ pub trait PluginConfigKey: 'static + Send + Sync {
 
 ## RemoteEndpoint
 
-远程 A2A agent 的配置：
+远程 backend agent 的配置。当前内置的是 `"a2a"` backend，backend 专有参数放在 `options` 中：
 
 ```rust,ignore
 pub struct RemoteEndpoint {
+    pub backend: String,
     pub base_url: String,
-    pub bearer_token: Option<String>,
-    pub agent_id: Option<String>,
-    pub poll_interval_ms: u64,
+    pub auth: Option<RemoteAuth>,
+    pub target: Option<String>,
     pub timeout_ms: u64,
+    pub options: BTreeMap<String, Value>,
+}
+
+pub struct RemoteAuth {
+    pub r#type: String,
+    // backend 专有认证字段，例如 bearer 用 { "token": "..." }
 }
 ```
 

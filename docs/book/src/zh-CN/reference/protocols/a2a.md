@@ -129,21 +129,25 @@ Awaken 当前默认启用以下 A2A 能力：
 
 Awaken agent 可以通过 `AgentTool::remote()` 委托到远程 A2A agent。`A2aBackend` 会向远端发送 `message:send` 请求，读取返回的 `task.id`，再轮询 `/tasks/:task_id` 直到完成。从 LLM 视角看，这仍然只是一次普通工具调用。
 
-远程 agent 配置写在 `AgentSpec` 中：
+远程 agent 配置写在 `AgentSpec` 中。`RemoteEndpoint` 是通用结构，A2A 通过 `backend: "a2a"` 指定：
 
 ```json
 {
   "id": "remote-researcher",
   "endpoint": {
-    "base_url": "https://remote-agent.example.com",
-    "bearer_token": "...",
-    "poll_interval_ms": 1000,
-    "timeout_ms": 300000
+    "backend": "a2a",
+    "base_url": "https://remote-agent.example.com/v1/a2a",
+    "auth": { "type": "bearer", "token": "..." },
+    "target": "researcher",
+    "timeout_ms": 300000,
+    "options": {
+      "poll_interval_ms": 1000
+    }
   }
 }
 ```
 
-带 `endpoint` 的 agent 会按远程 A2A agent 解析；没有 `endpoint` 的 agent 仍在本地运行。
+带 `endpoint` 的 agent 会按远程 backend agent 解析。目前内置的委托 backend 是 A2A；没有 `endpoint` 的 agent 仍在本地运行。
 
 ## 另见
 

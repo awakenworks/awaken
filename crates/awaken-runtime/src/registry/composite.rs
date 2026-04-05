@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
+use awaken_contract::registry_spec::{AgentSpec, RemoteAuth, RemoteEndpoint};
 use awaken_protocol_a2a::{AgentCard, AgentInterface};
 
 use super::traits::AgentSpecRegistry;
@@ -236,9 +236,10 @@ fn agent_card_to_spec(
         model: String::new(),
         system_prompt: card.description.clone(),
         endpoint: Some(RemoteEndpoint {
+            backend: "a2a".into(),
             base_url: interface.url.clone(),
-            bearer_token: source.bearer_token.clone(),
-            agent_id: interface.tenant.clone(),
+            auth: source.bearer_token.clone().map(RemoteAuth::bearer),
+            target: interface.tenant.clone(),
             ..Default::default()
         }),
         registry: Some(source.name.clone()),
@@ -456,9 +457,16 @@ mod tests {
         assert_eq!(spec.system_prompt, "Handles tests.");
         assert_eq!(spec.registry.as_deref(), Some("cloud"));
         let endpoint = spec.endpoint.unwrap();
+        assert_eq!(endpoint.backend, "a2a");
         assert_eq!(endpoint.base_url, "https://test.example.com/v1/a2a");
-        assert_eq!(endpoint.bearer_token.as_deref(), Some("tok-123"));
-        assert_eq!(endpoint.agent_id.as_deref(), Some("test-agent"));
+        assert_eq!(
+            endpoint
+                .auth
+                .as_ref()
+                .and_then(|auth| auth.param_str("token")),
+            Some("tok-123")
+        );
+        assert_eq!(endpoint.target.as_deref(), Some("test-agent"));
     }
 
     #[test]

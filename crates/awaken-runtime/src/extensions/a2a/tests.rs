@@ -9,7 +9,7 @@ use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequ
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::tool::{Tool, ToolCallContext};
-use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
+use awaken_contract::registry_spec::{AgentSpec, RemoteAuth, RemoteEndpoint};
 
 use crate::loop_runner::build_agent_env;
 use crate::registry::{AgentResolver, ResolvedAgent};
@@ -344,18 +344,28 @@ fn a2a_config_default_poll_interval() {
 
 #[test]
 fn remote_endpoint_serde_roundtrip() {
+    let mut options = std::collections::BTreeMap::new();
+    options.insert("poll_interval_ms".into(), json!(3000));
     let endpoint = RemoteEndpoint {
+        backend: "a2a".into(),
         base_url: "https://api.example.com".into(),
-        bearer_token: Some("tok_123".into()),
-        agent_id: None,
-        poll_interval_ms: 3000,
+        auth: Some(RemoteAuth::bearer("tok_123")),
+        target: None,
         timeout_ms: 60000,
+        options,
     };
     let json = serde_json::to_string(&endpoint).unwrap();
     let parsed: RemoteEndpoint = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.backend, "a2a");
     assert_eq!(parsed.base_url, "https://api.example.com");
-    assert_eq!(parsed.bearer_token.as_deref(), Some("tok_123"));
-    assert_eq!(parsed.poll_interval_ms, 3000);
+    assert_eq!(
+        parsed
+            .auth
+            .as_ref()
+            .and_then(|auth| auth.param_str("token")),
+        Some("tok_123")
+    );
+    assert_eq!(parsed.options.get("poll_interval_ms"), Some(&json!(3000)));
     assert_eq!(parsed.timeout_ms, 60000);
 }
 
@@ -363,9 +373,10 @@ fn remote_endpoint_serde_roundtrip() {
 fn remote_endpoint_defaults() {
     let json = r#"{"base_url": "https://x.com"}"#;
     let endpoint: RemoteEndpoint = serde_json::from_str(json).unwrap();
+    assert_eq!(endpoint.backend, "a2a");
     assert_eq!(endpoint.base_url, "https://x.com");
-    assert!(endpoint.bearer_token.is_none());
-    assert_eq!(endpoint.poll_interval_ms, 2000);
+    assert!(endpoint.auth.is_none());
+    assert!(endpoint.options.is_empty());
     assert_eq!(endpoint.timeout_ms, 300_000);
 }
 
@@ -380,14 +391,19 @@ fn agent_spec_with_delegate_builder() {
 #[test]
 fn agent_spec_with_endpoint_builder() {
     let spec = AgentSpec::new("remote-agent").with_endpoint(RemoteEndpoint {
+        backend: "a2a".into(),
         base_url: "https://remote.example.com".into(),
-        bearer_token: Some("tok_remote_123".into()),
+        auth: Some(RemoteAuth::bearer("tok_remote_123")),
         ..Default::default()
     });
     let ep = spec.endpoint.unwrap();
+    assert_eq!(ep.backend, "a2a");
     assert_eq!(ep.base_url, "https://remote.example.com");
-    assert_eq!(ep.bearer_token.as_deref(), Some("tok_remote_123"));
-    assert_eq!(ep.poll_interval_ms, 2000);
+    assert_eq!(
+        ep.auth.as_ref().and_then(|auth| auth.param_str("token")),
+        Some("tok_remote_123")
+    );
+    assert!(ep.options.is_empty());
     assert_eq!(ep.timeout_ms, 300_000);
 }
 

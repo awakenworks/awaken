@@ -4,10 +4,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::builder::BuildError;
+#[cfg(feature = "a2a")]
+use crate::extensions::a2a::{A2aBackendFactory, AgentBackendFactory};
 use crate::plugins::Plugin;
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::tool::Tool;
 
+#[cfg(feature = "a2a")]
+use super::traits::BackendRegistry;
 use super::traits::{
     AgentSpecRegistry, ModelEntry, ModelRegistry, PluginSource, ProviderRegistry, ToolRegistry,
 };
@@ -74,6 +78,8 @@ pub type MapModelRegistry = MapRegistry<ModelEntry>;
 pub type MapProviderRegistry = MapRegistry<Arc<dyn LlmExecutor>>;
 pub type MapAgentSpecRegistry = MapRegistry<AgentSpec>;
 pub type MapPluginSource = MapRegistry<Arc<dyn Plugin>>;
+#[cfg(feature = "a2a")]
+pub type MapBackendRegistry = MapRegistry<Arc<dyn AgentBackendFactory>>;
 
 // ---------------------------------------------------------------------------
 // Convenience register methods (preserve original call-site signatures)
@@ -137,6 +143,27 @@ impl MapPluginSource {
     }
 }
 
+#[cfg(feature = "a2a")]
+impl MapBackendRegistry {
+    pub fn register_backend_factory(
+        &mut self,
+        factory: Arc<dyn AgentBackendFactory>,
+    ) -> Result<(), BuildError> {
+        let backend = factory.backend().to_string();
+        self.register(backend, factory, |msg| {
+            BuildError::BackendRegistryConflict(format!("backend {msg}"))
+        })
+    }
+
+    pub fn with_default_remote_backends() -> Self {
+        let mut registry = Self::new();
+        registry
+            .register_backend_factory(Arc::new(A2aBackendFactory))
+            .expect("fresh backend registry should accept built-in A2A backend");
+        registry
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Trait implementations
 // ---------------------------------------------------------------------------
@@ -176,6 +203,17 @@ impl AgentSpecRegistry for MapAgentSpecRegistry {
 impl PluginSource for MapPluginSource {
     fn get_plugin(&self, id: &str) -> Option<Arc<dyn Plugin>> {
         self.get_cloned(id)
+    }
+}
+
+#[cfg(feature = "a2a")]
+impl BackendRegistry for MapBackendRegistry {
+    fn get_backend_factory(&self, backend: &str) -> Option<Arc<dyn AgentBackendFactory>> {
+        self.get_cloned(backend)
+    }
+
+    fn backend_ids(&self) -> Vec<String> {
+        self.ids()
     }
 }
 

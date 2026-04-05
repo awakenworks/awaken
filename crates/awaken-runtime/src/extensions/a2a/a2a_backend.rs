@@ -7,15 +7,21 @@ use async_trait::async_trait;
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::message::{Message, Role};
+use awaken_contract::registry_spec::RemoteEndpoint;
 use awaken_protocol_a2a::{
     Message as A2aMessage, MessageRole, Part, SendMessageConfiguration, SendMessageRequest,
     SendMessageResponse, Task, TaskState,
 };
 use serde_json::Value;
 
-use super::backend::{AgentBackend, AgentBackendError, DelegateRunResult, DelegateRunStatus};
+use super::backend::{
+    AgentBackend, AgentBackendError, AgentBackendFactory, AgentBackendFactoryError,
+    DelegateRunResult, DelegateRunStatus,
+};
 
 const A2A_VERSION: &str = "1.0";
+const A2A_BACKEND: &str = "a2a";
+const POLL_INTERVAL_OPTION_KEY: &str = "poll_interval_ms";
 
 /// Configuration for a remote A2A agent endpoint.
 #[derive(Debug, Clone)]
@@ -70,10 +76,91 @@ impl A2aConfig {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum A2aEndpointConfigError {
+    #[error("remote endpoint backend must be `a2a`, got `{0}`")]
+    UnsupportedBackend(String),
+    #[error("remote endpoint base_url must not be empty")]
+    EmptyBaseUrl,
+    #[error("A2A backend only supports bearer auth, got `{0}`")]
+    UnsupportedAuthType(String),
+    #[error("A2A bearer auth requires a string `token` field")]
+    MissingBearerToken,
+    #[error("A2A option `{key}` must be an unsigned integer")]
+    InvalidU64Option { key: &'static str },
+}
+
+impl A2aConfig {
+    pub(crate) fn try_from_remote_endpoint(
+        endpoint: &RemoteEndpoint,
+    ) -> Result<Self, A2aEndpointConfigError> {
+        if endpoint.backend != A2A_BACKEND {
+            return Err(A2aEndpointConfigError::UnsupportedBackend(
+                endpoint.backend.clone(),
+            ));
+        }
+
+        if endpoint.base_url.trim().is_empty() {
+            return Err(A2aEndpointConfigError::EmptyBaseUrl);
+        }
+
+        let mut config =
+            Self::new(&endpoint.base_url).with_timeout(Duration::from_millis(endpoint.timeout_ms));
+
+        if let Some(auth) = &endpoint.auth {
+            if auth.auth_type != "bearer" {
+                return Err(A2aEndpointConfigError::UnsupportedAuthType(
+                    auth.auth_type.clone(),
+                ));
+            }
+
+            let token = auth
+                .param_str("token")
+                .filter(|token| !token.is_empty())
+                .ok_or(A2aEndpointConfigError::MissingBearerToken)?;
+            config = config.with_bearer_token(token);
+        }
+
+        if let Some(target) = endpoint.target.as_deref() {
+            config = config.with_target_agent_id(target);
+        }
+
+        if let Some(value) = endpoint.options.get(POLL_INTERVAL_OPTION_KEY) {
+            let poll_interval_ms =
+                value
+                    .as_u64()
+                    .ok_or(A2aEndpointConfigError::InvalidU64Option {
+                        key: POLL_INTERVAL_OPTION_KEY,
+                    })?;
+            config = config.with_poll_interval(Duration::from_millis(poll_interval_ms));
+        }
+
+        Ok(config)
+    }
+}
+
 /// Backend that delegates to a remote agent via A2A HTTP protocol.
 pub struct A2aBackend {
     config: A2aConfig,
     client: reqwest::Client,
+}
+
+/// Factory for the built-in A2A remote backend.
+pub struct A2aBackendFactory;
+
+impl AgentBackendFactory for A2aBackendFactory {
+    fn backend(&self) -> &str {
+        A2A_BACKEND
+    }
+
+    fn build(
+        &self,
+        endpoint: &RemoteEndpoint,
+    ) -> Result<Arc<dyn AgentBackend>, AgentBackendFactoryError> {
+        let config = A2aConfig::try_from_remote_endpoint(endpoint)
+            .map_err(|error| AgentBackendFactoryError::InvalidConfig(error.to_string()))?;
+        Ok(Arc::new(A2aBackend::new(config)))
+    }
 }
 
 impl A2aBackend {
@@ -402,6 +489,8 @@ fn task_state_name(state: TaskState) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
     use serde_json::json;
 
     fn make_task(state: TaskState) -> Task {
@@ -513,6 +602,58 @@ mod tests {
         assert_eq!(config.target_agent_id.as_deref(), Some("worker"));
         assert_eq!(config.poll_interval, Duration::from_millis(5000));
         assert_eq!(config.timeout, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn a2a_config_try_from_remote_endpoint_reads_canonical_fields() {
+        let mut options = BTreeMap::new();
+        options.insert(POLL_INTERVAL_OPTION_KEY.into(), json!(1500));
+        let endpoint = RemoteEndpoint {
+            backend: "a2a".into(),
+            base_url: "https://api.example.com/v1/a2a".into(),
+            auth: Some(awaken_contract::registry_spec::RemoteAuth::bearer(
+                "tok_123",
+            )),
+            target: Some("worker".into()),
+            timeout_ms: 60_000,
+            options,
+        };
+
+        let config = A2aConfig::try_from_remote_endpoint(&endpoint).unwrap();
+        assert_eq!(config.base_url, "https://api.example.com/v1/a2a");
+        assert_eq!(config.bearer_token.as_deref(), Some("tok_123"));
+        assert_eq!(config.target_agent_id.as_deref(), Some("worker"));
+        assert_eq!(config.poll_interval, Duration::from_millis(1500));
+        assert_eq!(config.timeout, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn a2a_config_try_from_remote_endpoint_rejects_non_bearer_auth() {
+        let endpoint = RemoteEndpoint {
+            backend: "a2a".into(),
+            base_url: "https://api.example.com/v1/a2a".into(),
+            auth: Some(awaken_contract::registry_spec::RemoteAuth {
+                auth_type: "basic".into(),
+                params: BTreeMap::new(),
+            }),
+            ..Default::default()
+        };
+
+        let err = A2aConfig::try_from_remote_endpoint(&endpoint).unwrap_err();
+        assert!(err.to_string().contains("only supports bearer auth"));
+    }
+
+    #[test]
+    fn a2a_backend_factory_builds_backend_for_a2a_endpoint() {
+        let backend = A2aBackendFactory
+            .build(&RemoteEndpoint {
+                backend: "a2a".into(),
+                base_url: "https://api.example.com/v1/a2a".into(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let _backend: Arc<dyn AgentBackend> = backend;
     }
 
     #[test]

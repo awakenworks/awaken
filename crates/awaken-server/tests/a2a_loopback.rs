@@ -173,11 +173,15 @@ async fn a2a_loopback_orchestrator_delegates_to_worker() {
         system_prompt: "Reply with PONG".into(),
         max_rounds: 1,
         endpoint: Some(RemoteEndpoint {
+            backend: "a2a".into(),
             base_url: base_url.clone(),
-            bearer_token: None,
-            agent_id: Some("worker".into()),
-            poll_interval_ms: 500,
+            auth: None,
+            target: Some("worker".into()),
             timeout_ms: 60_000,
+            options: std::collections::BTreeMap::from([(
+                "poll_interval_ms".into(),
+                serde_json::json!(500),
+            )]),
         }),
         ..Default::default()
     };
