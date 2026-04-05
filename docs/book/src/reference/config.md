@@ -131,14 +131,22 @@ their configuration via `agent_spec.config::<MyConfigKey>()`.
 
 ## RemoteEndpoint
 
-Configuration for agents running on external A2A servers.
+Configuration for agents running on external backends. Today Awaken ships the
+`"a2a"` backend; backend-specific settings live under `options`.
 
 ```rust,ignore
 pub struct RemoteEndpoint {
+    pub backend: String,
     pub base_url: String,
-    pub bearer_token: Option<String>,
-    pub poll_interval_ms: u64,    // default: 2000
-    pub timeout_ms: u64,          // default: 300_000
+    pub auth: Option<RemoteAuth>,
+    pub target: Option<String>,
+    pub timeout_ms: u64,               // default: 300_000
+    pub options: BTreeMap<String, Value>,
+}
+
+pub struct RemoteAuth {
+    pub r#type: String,
+    // backend-specific auth fields, e.g. { "token": "..." } for bearer
 }
 ```
 

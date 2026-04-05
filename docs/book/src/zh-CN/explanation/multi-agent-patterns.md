@@ -27,10 +27,14 @@ agent 可以通过 `delegates` 声明它允许委托的子 agent：
   "model": "unused-for-remote",
   "system_prompt": "",
   "endpoint": {
-    "base_url": "https://analyst.example.com",
-    "bearer_token": "token-abc",
-    "poll_interval_ms": 1000,
-    "timeout_ms": 300000
+    "backend": "a2a",
+    "base_url": "https://analyst.example.com/v1/a2a",
+    "auth": { "type": "bearer", "token": "token-abc" },
+    "target": "analyst",
+    "timeout_ms": 300000,
+    "options": {
+      "poll_interval_ms": 1000
+    }
   }
 }
 ```

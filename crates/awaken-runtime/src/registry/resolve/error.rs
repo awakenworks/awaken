@@ -17,6 +17,16 @@ pub enum ResolveError {
         key: String,
         message: String,
     },
+    #[error("unsupported remote backend `{backend}` for delegate `{agent_id}`")]
+    UnsupportedRemoteBackend { agent_id: String, backend: String },
+    #[error(
+        "invalid remote endpoint config for delegate `{agent_id}` backend `{backend}` — {message}"
+    )]
+    InvalidRemoteEndpointConfig {
+        agent_id: String,
+        backend: String,
+        message: String,
+    },
     #[error("remote agent `{0}` cannot be resolved locally — use it as a delegate instead")]
     RemoteAgentNotDirectlyRunnable(String),
     #[error("tool ID conflict: \"{tool_id}\" registered by both {source_a} and {source_b}")]

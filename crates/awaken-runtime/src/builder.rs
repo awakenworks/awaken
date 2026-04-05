@@ -10,7 +10,11 @@ use awaken_contract::registry_spec::AgentSpec;
 
 use crate::plugins::Plugin;
 #[cfg(feature = "a2a")]
+use crate::registry::BackendRegistry;
+#[cfg(feature = "a2a")]
 use crate::registry::composite::{CompositeAgentSpecRegistry, RemoteAgentSource};
+#[cfg(feature = "a2a")]
+use crate::registry::memory::MapBackendRegistry;
 use crate::registry::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,
 };
@@ -32,6 +36,9 @@ pub enum BuildError {
     ProviderRegistryConflict(String),
     #[error("plugin registry conflict: {0}")]
     PluginRegistryConflict(String),
+    #[cfg(feature = "a2a")]
+    #[error("backend registry conflict: {0}")]
+    BackendRegistryConflict(String),
     #[error("agent validation failed: {0}")]
     ValidationFailed(String),
     #[cfg(feature = "a2a")]
@@ -49,6 +56,8 @@ pub struct AgentRuntimeBuilder {
     models: MapModelRegistry,
     providers: MapProviderRegistry,
     plugins: MapPluginSource,
+    #[cfg(feature = "a2a")]
+    backends: MapBackendRegistry,
     thread_run_store: Option<Arc<dyn ThreadRunStore>>,
     profile_store: Option<Arc<dyn awaken_contract::contract::profile_store::ProfileStore>>,
     errors: Vec<BuildError>,
@@ -64,6 +73,8 @@ impl AgentRuntimeBuilder {
             models: MapModelRegistry::new(),
             providers: MapProviderRegistry::new(),
             plugins: MapPluginSource::new(),
+            #[cfg(feature = "a2a")]
+            backends: MapBackendRegistry::with_default_remote_backends(),
             thread_run_store: None,
             profile_store: None,
             errors: Vec::new(),
@@ -158,6 +169,18 @@ impl AgentRuntimeBuilder {
         self
     }
 
+    /// Register a remote delegate backend factory by its backend kind.
+    #[cfg(feature = "a2a")]
+    pub fn with_agent_backend_factory(
+        mut self,
+        factory: Arc<dyn crate::extensions::a2a::AgentBackendFactory>,
+    ) -> Self {
+        if let Err(e) = self.backends.register_backend_factory(factory) {
+            self.errors.push(e);
+        }
+        self
+    }
+
     /// Build the `AgentRuntime` and validate all registered agents can
     /// resolve successfully.
     ///
@@ -210,6 +233,8 @@ impl AgentRuntimeBuilder {
             models: Arc::new(self.models),
             providers: Arc::new(self.providers),
             plugins: Arc::new(self.plugins),
+            #[cfg(feature = "a2a")]
+            backends: Arc::new(self.backends) as Arc<dyn BackendRegistry>,
         };
 
         let resolver: Arc<dyn crate::registry::AgentResolver> = Arc::new(
@@ -711,6 +736,25 @@ mod tests {
                 );
             }
             Ok(_) => panic!("expected build to fail for duplicate provider"),
+        }
+    }
+
+    #[cfg(feature = "a2a")]
+    #[test]
+    fn duplicate_backend_factory_errors_at_build() {
+        let result = AgentRuntimeBuilder::new()
+            .with_agent_backend_factory(Arc::new(crate::extensions::a2a::A2aBackendFactory))
+            .build();
+
+        match result {
+            Err(BuildError::BackendRegistryConflict(err)) => {
+                assert!(
+                    err.contains("a2a"),
+                    "error should mention the duplicate backend kind: {err}"
+                );
+            }
+            Err(other) => panic!("expected backend registry conflict, got {other}"),
+            Ok(_) => panic!("expected build to fail for duplicate backend factory"),
         }
     }
 }

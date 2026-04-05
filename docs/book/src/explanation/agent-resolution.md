@@ -42,7 +42,7 @@ Any failure at any stage produces a `ResolveError` and aborts. The pipeline neve
 
 The first stage fetches the raw data from registries:
 
-1. **AgentSpec** -- looked up from `AgentSpecRegistry` by `agent_id`. If the spec has an `endpoint` field (remote A2A agent), resolution fails with `RemoteAgentNotDirectlyRunnable` -- remote agents can only be used as delegates, not run directly.
+1. **AgentSpec** -- looked up from `AgentSpecRegistry` by `agent_id`. If the spec has an `endpoint` field (remote backend agent), resolution fails with `RemoteAgentNotDirectlyRunnable` -- remote agents can only be used as delegates, not run directly.
 
 2. **ModelSpec** -- the spec's `model` field (a string ID like `"gpt-4"`) is resolved through `ModelRegistry` into a `ModelSpec`, which maps it to a provider ID and an actual API model name (for example, provider `"openai"`, model `"gpt-4o"`).
 
@@ -105,7 +105,7 @@ Tools are merged in this order:
 
 1. **Global tools** -- all tools registered in `ToolRegistry` via the builder (e.g., `builder.with_tool("search", search_tool)`).
 
-2. **Delegate agent tools** -- for each agent ID in `AgentSpec.delegates`, the pipeline creates an `AgentTool`. If the delegate has an `endpoint` (remote), it creates a remote A2A tool. If local, it creates a local tool backed by a resolver. Delegate tools require the `a2a` feature flag; without it, delegates are silently ignored with a warning.
+2. **Delegate agent tools** -- for each agent ID in `AgentSpec.delegates`, the pipeline creates an `AgentTool`. If the delegate has an `endpoint` (remote), the pipeline selects the configured remote backend. Today the built-in remote delegate backend is A2A; local delegates still use a resolver-backed local tool. Delegate tools require the `a2a` feature flag; without it, delegates are silently ignored with a warning.
 
 3. **Plugin-registered tools** -- tools declared by plugins during `register()`, stored in `ExecutionEnv.tools`.
 

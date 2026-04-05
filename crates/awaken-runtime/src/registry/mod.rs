@@ -14,12 +14,16 @@ pub use awaken_contract::registry_spec::AgentSpec;
 #[cfg(feature = "a2a")]
 pub use composite::{CompositeAgentSpecRegistry, DiscoveryError, RemoteAgentSource};
 pub use config::{AgentSystemConfig, ModelConfig};
+#[cfg(feature = "a2a")]
+pub use memory::MapBackendRegistry;
 pub use memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapRegistry,
     MapToolRegistry,
 };
 pub use resolve::ResolveError;
 pub use resolver::{AgentResolver, ResolvedAgent};
+#[cfg(feature = "a2a")]
+pub use traits::BackendRegistry;
 pub use traits::{
     AgentSpecRegistry, ModelEntry, ModelRegistry, PluginSource, ProviderRegistry, RegistrySet,
     ToolRegistry,
