@@ -145,6 +145,7 @@ pub struct ServerConfig {
     pub replay_buffer_capacity: usize,     // default: 1024
     pub shutdown: ShutdownConfig,
     pub max_concurrent_requests: usize,    // default: 100
+    pub a2a_extended_card_bearer_token: Option<String>,
 }
 
 pub struct ShutdownConfig {
@@ -160,6 +161,7 @@ pub struct ShutdownConfig {
 | `sse_buffer_size` | `usize` | `64` | 单连接 SSE 通道最大缓冲帧数 |
 | `replay_buffer_capacity` | `usize` | `1024` | 每次 run 用于断线续接的最大 replay buffer 帧数 |
 | `max_concurrent_requests` | `usize` | `100` | 最大并发请求数；超出时返回 503 |
+| `a2a_extended_card_bearer_token` | `Option<String>` | `None` | 设置后启用带认证的 `GET /v1/a2a/extendedAgentCard` |
 | `shutdown.timeout_secs` | `u64` | `30` | 强制退出前等待飞行中请求排空的秒数 |
 
 ## MailboxConfig

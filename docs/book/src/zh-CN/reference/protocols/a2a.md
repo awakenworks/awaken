@@ -10,12 +10,13 @@ A2A 适配器实现了官方 [A2A 协议](https://a2a-protocol.org/latest/specif
 |-------|--------|-------------|
 | `/.well-known/agent-card.json` | `GET` | 公共/默认 agent card 发现端点。 |
 | `/v1/a2a/message:send` | `POST` | 向公共/默认 A2A agent 发送消息，返回 task 包装结果。 |
-| `/v1/a2a/message:stream` | `POST` | 流式发送；只有 `capabilities.streaming=true` 时才受支持。 |
+| `/v1/a2a/message:stream` | `POST` | 通过 SSE 进行流式发送。 |
 | `/v1/a2a/tasks` | `GET` | 列出 A2A 任务。 |
 | `/v1/a2a/tasks/:task_id` | `GET` | 按 task ID 查询状态。 |
 | `/v1/a2a/tasks/:task_id:cancel` | `POST` | 取消运行中的任务。 |
-| `/v1/a2a/tasks/:task_id:subscribe` | `POST` | 订阅任务更新；未启用 streaming 时返回 `501`。 |
-| `/v1/a2a/tasks/:task_id/pushNotificationConfigs` | `POST` | 创建推送通知配置；未启用 push notifications 时返回不支持。 |
+| `/v1/a2a/tasks/:task_id:subscribe` | `POST` | 通过 SSE 订阅任务更新。 |
+| `/v1/a2a/tasks/:task_id/pushNotificationConfigs` | `POST` | 创建推送通知配置。 |
+| `/v1/a2a/tasks/:task_id/pushNotificationConfigs` | `GET` | 列出推送通知配置。 |
 | `/v1/a2a/tasks/:task_id/pushNotificationConfigs/:config_id` | `GET` / `DELETE` | 读取或删除推送通知配置。 |
 | `/v1/a2a/extendedAgentCard` | `GET` | 扩展 agent card；只有 `capabilities.extendedAgentCard=true` 时才受支持。 |
 
@@ -38,8 +39,8 @@ A2A 适配器实现了官方 [A2A 协议](https://a2a-protocol.org/latest/specif
   ],
   "version": "1.0.0",
   "capabilities": {
-    "streaming": false,
-    "pushNotifications": false,
+    "streaming": true,
+    "pushNotifications": true,
     "stateTransitionHistory": false,
     "extendedAgentCard": false
   },
@@ -115,15 +116,14 @@ Agent card 由已注册的 `AgentSpec` 生成。旧版顶层 `url` / `id` 字段
 
 任务状态使用 v1 枚举名，例如 `TASK_STATE_SUBMITTED`、`TASK_STATE_WORKING`、`TASK_STATE_COMPLETED`、`TASK_STATE_FAILED`、`TASK_STATE_CANCELED`。
 
-## 当前默认不支持的可选能力
+## 可选能力默认值
 
-Awaken 当前默认声明以下 A2A 能力为关闭：
+Awaken 当前默认启用以下 A2A 能力：
 
-- `streaming = false`
-- `pushNotifications = false`
-- `extendedAgentCard = false`
+- `streaming = true`
+- `pushNotifications = true`
 
-对应端点已经接线，但会返回符合规范的 unsupported / precondition 错误，而不是静默 fallback。
+`extendedAgentCard` 仍然是可选能力，只有在配置 `ServerConfig.a2a_extended_card_bearer_token` 后才会启用。未启用时，对应端点会返回符合规范的 unsupported 错误。
 
 ## 远程 Agent 委托
 
