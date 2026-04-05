@@ -15,13 +15,6 @@ use serde_json::json;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-pub use awaken_contract::contract::a2a::{
-    AgentCapabilities, AgentCard, AgentInterface, AgentProvider, AgentSkill, Artifact,
-    AuthenticationInfo, ListPushNotificationConfigsResponse, ListTasksResponse,
-    Message as A2aMessage, MessageRole, Part, PushNotificationConfig, SendMessageConfiguration,
-    SendMessageRequest, SendMessageResponse, StreamResponse, Task, TaskArtifactUpdateEvent,
-    TaskState, TaskStatus, TaskStatusUpdateEvent,
-};
 use awaken_contract::contract::content::{
     AudioSource, ContentBlock, DocumentSource, ImageSource, VideoSource,
 };
@@ -31,6 +24,13 @@ use awaken_contract::contract::message::{
     Message as AwakenMessage, Role as AwakenRole, Visibility,
 };
 use awaken_contract::thread::Thread;
+pub use awaken_protocol_a2a::{
+    AgentCapabilities, AgentCard, AgentInterface, AgentProvider, AgentSkill, Artifact,
+    AuthenticationInfo, ListPushNotificationConfigsResponse, ListTasksResponse,
+    Message as A2aMessage, MessageRole, Part, PushNotificationConfig, SendMessageConfiguration,
+    SendMessageRequest, SendMessageResponse, StreamResponse, Task, TaskArtifactUpdateEvent,
+    TaskState, TaskStatus, TaskStatusUpdateEvent,
+};
 
 use crate::app::AppState;
 use crate::http_sse::{format_sse_data, sse_body_stream, sse_response};

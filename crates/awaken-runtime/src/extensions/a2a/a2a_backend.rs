@@ -4,13 +4,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_contract::contract::a2a::{
-    Message as A2aMessage, MessageRole, Part, SendMessageConfiguration, SendMessageRequest,
-    SendMessageResponse, Task, TaskState,
-};
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::message::{Message, Role};
+use awaken_protocol_a2a::{
+    Message as A2aMessage, MessageRole, Part, SendMessageConfiguration, SendMessageRequest,
+    SendMessageResponse, Task, TaskState,
+};
 use serde_json::Value;
 
 use super::backend::{AgentBackend, AgentBackendError, DelegateRunResult, DelegateRunStatus};
@@ -408,7 +408,7 @@ mod tests {
         Task {
             id: "task-1".into(),
             context_id: "ctx-1".into(),
-            status: awaken_contract::contract::a2a::TaskStatus {
+            status: awaken_protocol_a2a::TaskStatus {
                 state,
                 message: None,
                 timestamp: None,
@@ -422,7 +422,7 @@ mod tests {
     #[test]
     fn extract_output_prefers_artifacts() {
         let task = Task {
-            artifacts: vec![awaken_contract::contract::a2a::Artifact {
+            artifacts: vec![awaken_protocol_a2a::Artifact {
                 artifact_id: "response".into(),
                 name: None,
                 description: None,
@@ -448,7 +448,7 @@ mod tests {
             metadata: None,
         };
         let task = Task {
-            status: awaken_contract::contract::a2a::TaskStatus {
+            status: awaken_protocol_a2a::TaskStatus {
                 state: TaskState::Completed,
                 message: Some(status_message.clone()),
                 timestamp: None,
@@ -469,7 +469,7 @@ mod tests {
     #[test]
     fn task_snapshot_maps_failure_states() {
         let task = Task {
-            status: awaken_contract::contract::a2a::TaskStatus {
+            status: awaken_protocol_a2a::TaskStatus {
                 state: TaskState::Rejected,
                 message: Some(A2aMessage {
                     task_id: Some("task-1".into()),

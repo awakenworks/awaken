@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use awaken_contract::contract::a2a::{AgentCard, AgentInterface};
 use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
+use awaken_protocol_a2a::{AgentCard, AgentInterface};
 
 use super::traits::AgentSpecRegistry;
 
@@ -431,7 +431,7 @@ mod tests {
             provider: None,
             version: "1.0.0".into(),
             documentation_url: None,
-            capabilities: awaken_contract::contract::a2a::AgentCapabilities::default(),
+            capabilities: awaken_protocol_a2a::AgentCapabilities::default(),
             security_schemes: std::collections::BTreeMap::new(),
             security: Vec::new(),
             default_input_modes: vec!["text/plain".into()],
