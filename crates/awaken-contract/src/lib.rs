@@ -59,8 +59,7 @@ pub use contract::mailbox::{
 
 // ── profile store ──
 pub use contract::config_store::{
-    ConfigChangeEvent, ConfigChangeKind, ConfigChangeNotifier, ConfigChangeSubscriber,
-    ConfigNamespace, ConfigRegistry, ConfigStore,
+    ConfigChangeEvent, ConfigChangeKind, ConfigChangeNotifier, ConfigChangeSubscriber, ConfigStore,
 };
 pub use contract::profile_store::{ProfileEntry, ProfileKey, ProfileOwner, ProfileStore};
 
