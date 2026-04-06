@@ -46,15 +46,13 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
 
   const [items, setItems] = useState<TRecord[]>([]);
   const [draft, setDraft] = useState<TRecord | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [auxiliaryData, setAuxiliaryData] = useState<unknown[]>([]);
 
-  const isEditingExisting = useMemo(
-    () => (draft ? items.some((item) => item.id === draft.id) : false),
-    [draft, items],
-  );
+  const isEditingExisting = editingId !== null;
 
   useEffect(() => {
     let cancelled = false;
@@ -101,14 +99,17 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
 
   const startEdit = useCallback((item: TRecord) => {
     setDraft({ ...item });
+    setEditingId(item.id);
   }, []);
 
   const startNew = useCallback((defaults: TRecord) => {
     setDraft({ ...defaults });
+    setEditingId(null);
   }, []);
 
   const cancelEdit = useCallback(() => {
     setDraft(null);
+    setEditingId(null);
   }, []);
 
   const handleSave = useCallback(async () => {
@@ -116,7 +117,7 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
       return;
     }
 
-    const editing = items.some((item) => item.id === draft.id);
+    const editing = editingId !== null;
     const payload = prepareSave
       ? prepareSave(draft, editing)
       : (draft as unknown as TSpec);
@@ -126,11 +127,11 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
       if (editing) {
         const updated = await configApi.update<TSpec, TRecord>(
           namespace,
-          draft.id,
+          editingId,
           payload,
         );
         setItems((current) =>
-          current.map((item) => (item.id === updated.id ? updated : item)),
+          current.map((item) => (item.id === editingId ? updated : item)),
         );
       } else {
         const created = await configApi.create<TSpec, TRecord>(namespace, payload);
@@ -141,15 +142,15 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
         );
       }
       setDraft(null);
+      setEditingId(null);
       setError(null);
     } catch (saveError) {
       setError(toErrorMessage(saveError));
     } finally {
       setSaving(false);
     }
-    // `draft` and `items` change each render; the callback reads the latest via closure.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, items, namespace, prepareSave]);
+  }, [draft, editingId, namespace, prepareSave]);
 
   const handleDelete = useCallback(
     async (id: string) => {
