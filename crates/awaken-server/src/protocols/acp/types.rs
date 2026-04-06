@@ -42,8 +42,15 @@ pub use agent_client_protocol_schema::RequestPermissionResponse;
 pub use agent_client_protocol_schema::SelectedPermissionOutcome;
 
 // Content
+pub use agent_client_protocol_schema::AudioContent;
+pub use agent_client_protocol_schema::BlobResourceContents;
 pub use agent_client_protocol_schema::ContentChunk;
+pub use agent_client_protocol_schema::EmbeddedResource;
+pub use agent_client_protocol_schema::EmbeddedResourceResource;
+pub use agent_client_protocol_schema::ImageContent;
+pub use agent_client_protocol_schema::ResourceLink;
 pub use agent_client_protocol_schema::TextContent;
+pub use agent_client_protocol_schema::TextResourceContents;
 
 /// Infer a tool call kind from the tool name using common heuristics.
 pub fn infer_tool_kind(name: &str) -> ToolKind {
