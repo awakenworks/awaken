@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_runtime::{AgentResolver, AgentRuntime};
 use parking_lot::Mutex;
@@ -14,6 +15,47 @@ use crate::transport::replay_buffer::EventReplayBuffer;
 
 pub type ReplayBufferEntry = (Arc<EventReplayBuffer>, Instant);
 pub type ReplayBufferMap = Arc<Mutex<HashMap<String, ReplayBufferEntry>>>;
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillCatalogContext {
+    Inline,
+    Fork,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SkillCatalogArgument {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SkillCatalogEntry {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when_to_use: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arguments: Vec<SkillCatalogArgument>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument_hint: Option<String>,
+    pub user_invocable: bool,
+    pub model_invocable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_override: Option<String>,
+    pub context: SkillCatalogContext,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+}
+
+pub trait SkillCatalogProvider: Send + Sync {
+    fn list_skills(&self) -> Vec<SkillCatalogEntry>;
+}
 
 /// Graceful shutdown configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +139,12 @@ pub struct AppState {
     pub resolver: Arc<dyn AgentResolver>,
     /// Server configuration.
     pub config: ServerConfig,
+    /// Optional persistent config store used by config management APIs.
+    pub config_store: Option<Arc<dyn ConfigStore>>,
+    /// Optional runtime publisher used to apply config changes.
+    pub config_runtime_manager: Option<Arc<crate::services::config_runtime::ConfigRuntimeManager>>,
+    /// Optional read-only skill catalog used by admin capabilities.
+    pub skill_catalog_provider: Option<Arc<dyn SkillCatalogProvider>>,
     /// Per-run replay buffers for SSE stream resumption.
     /// Stores `(buffer, created_at)` so stale entries can be purged.
     pub replay_buffers: ReplayBufferMap,
@@ -119,9 +167,33 @@ impl AppState {
             store,
             resolver,
             config,
+            config_store: None,
+            config_runtime_manager: None,
+            skill_catalog_provider: None,
             replay_buffers: Arc::new(Mutex::new(HashMap::new())),
             mcp_http: Arc::new(crate::protocols::mcp::http::McpHttpState::new()),
         }
+    }
+
+    /// Attach the config store used by config management routes.
+    pub fn with_config_store(mut self, store: Arc<dyn ConfigStore>) -> Self {
+        self.config_store = Some(store);
+        self
+    }
+
+    /// Attach the runtime manager used to compile and publish config snapshots.
+    pub fn with_config_runtime_manager(
+        mut self,
+        manager: Arc<crate::services::config_runtime::ConfigRuntimeManager>,
+    ) -> Self {
+        self.config_runtime_manager = Some(manager);
+        self
+    }
+
+    /// Attach a read-only skill catalog provider used by admin capabilities.
+    pub fn with_skill_catalog_provider(mut self, provider: Arc<dyn SkillCatalogProvider>) -> Self {
+        self.skill_catalog_provider = Some(provider);
+        self
     }
 
     /// Insert a replay buffer for the given key, tracking creation time.

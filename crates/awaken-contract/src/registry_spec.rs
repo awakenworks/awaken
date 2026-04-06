@@ -56,7 +56,7 @@ pub trait PluginConfigKey: 'static + Send + Sync {
 ///
 /// Also serves as the runtime behavior configuration passed to hooks via
 /// `PhaseContext.agent_spec`. Plugins read their typed config via `spec.config::<K>()`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentSpec {
     /// Unique agent identifier.
     pub id: String,
@@ -113,7 +113,7 @@ pub struct AgentSpec {
 }
 
 /// Remote backend authentication configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 pub struct RemoteAuth {
     #[serde(rename = "type")]
     pub auth_type: String,
@@ -139,7 +139,7 @@ impl RemoteAuth {
 }
 
 /// Remote endpoint configuration for agents running on external backends.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, schemars::JsonSchema)]
 pub struct RemoteEndpoint {
     #[serde(default = "default_remote_backend")]
     pub backend: String,
@@ -246,6 +246,167 @@ impl<'de> Deserialize<'de> for RemoteEndpoint {
             timeout_ms: raw.timeout_ms.unwrap_or_else(default_timeout),
             options: raw.options,
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ModelSpec
+// ---------------------------------------------------------------------------
+
+/// Serializable model definition mapping a stable ID to a provider and model name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ModelSpec {
+    /// Unique identifier (for example `"gpt-4o-mini"` or `"research-default"`).
+    pub id: String,
+    /// Provider spec ID referenced by this model.
+    pub provider: String,
+    /// Actual model name sent to the upstream provider.
+    pub model: String,
+}
+
+// ---------------------------------------------------------------------------
+// ProviderSpec
+// ---------------------------------------------------------------------------
+
+/// Serializable provider configuration used to construct an LLM executor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ProviderSpec {
+    /// Unique identifier (for example `"openai"` or `"anthropic-prod"`).
+    pub id: String,
+    /// GenAI adapter kind (for example `"openai"`, `"anthropic"`, `"ollama"`).
+    pub adapter: String,
+    /// Explicit API key. If absent, the adapter's environment variable is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// Base URL override for proxy or self-hosted deployments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// Request timeout in seconds.
+    #[serde(default = "default_provider_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+fn default_provider_timeout_secs() -> u64 {
+    300
+}
+
+// ---------------------------------------------------------------------------
+// McpServerSpec
+// ---------------------------------------------------------------------------
+
+/// Transport type for an MCP server connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum McpTransportKind {
+    /// Launch an MCP server as a child process over stdio.
+    Stdio,
+    /// Connect to an MCP server over HTTP.
+    Http,
+}
+
+/// Restart policy for MCP server connections.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct McpRestartPolicy {
+    /// Whether to automatically restart on failure.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Maximum number of restart attempts. `None` means unlimited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attempts: Option<u32>,
+    /// Delay between restart attempts in milliseconds.
+    #[serde(default = "default_mcp_restart_delay_ms")]
+    pub delay_ms: u64,
+    /// Exponential backoff multiplier.
+    #[serde(default = "default_mcp_restart_backoff_multiplier")]
+    pub backoff_multiplier: f64,
+    /// Maximum delay between restarts in milliseconds.
+    #[serde(default = "default_mcp_restart_max_delay_ms")]
+    pub max_delay_ms: u64,
+}
+
+impl Default for McpRestartPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_attempts: None,
+            delay_ms: default_mcp_restart_delay_ms(),
+            backoff_multiplier: default_mcp_restart_backoff_multiplier(),
+            max_delay_ms: default_mcp_restart_max_delay_ms(),
+        }
+    }
+}
+
+const fn default_mcp_restart_delay_ms() -> u64 {
+    1000
+}
+
+const fn default_mcp_restart_backoff_multiplier() -> f64 {
+    2.0
+}
+
+const fn default_mcp_restart_max_delay_ms() -> u64 {
+    30_000
+}
+
+/// Serializable MCP server configuration used to construct a live MCP tool registry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct McpServerSpec {
+    /// Unique identifier and MCP server name.
+    pub id: String,
+    /// Connection transport kind.
+    pub transport: McpTransportKind,
+    /// Command to execute when using stdio transport.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Command arguments for stdio transport.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    /// URL for HTTP transport.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Server-specific configuration payload forwarded during initialization.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub config: serde_json::Map<String, Value>,
+    /// Connection timeout in seconds.
+    #[serde(default = "default_mcp_timeout_secs")]
+    pub timeout_secs: u64,
+    /// Environment variables for stdio transport.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// Restart policy for reconnecting failed servers.
+    #[serde(default)]
+    pub restart_policy: McpRestartPolicy,
+}
+
+fn default_mcp_timeout_secs() -> u64 {
+    30
+}
+
+impl Default for McpServerSpec {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            transport: McpTransportKind::Stdio,
+            command: None,
+            args: Vec::new(),
+            url: None,
+            config: serde_json::Map::new(),
+            timeout_secs: default_mcp_timeout_secs(),
+            env: BTreeMap::new(),
+            restart_policy: McpRestartPolicy::default(),
+        }
+    }
+}
+
+impl Default for ProviderSpec {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            adapter: String::new(),
+            api_key: None,
+            base_url: None,
+            timeout_secs: default_provider_timeout_secs(),
+        }
     }
 }
 

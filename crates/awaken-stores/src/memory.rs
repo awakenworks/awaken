@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::profile_store::{ProfileEntry, ProfileOwner, ProfileStore};
 use awaken_contract::contract::storage::{
@@ -24,6 +25,8 @@ pub struct InMemoryStore {
     messages: RwLock<HashMap<String, Vec<Message>>>,
     /// Profile entries keyed by (owner, key).
     profiles: RwLock<HashMap<ProfileOwner, HashMap<String, ProfileEntry>>>,
+    /// Config entries keyed by namespace then ID.
+    configs: RwLock<HashMap<String, HashMap<String, Value>>>,
 }
 
 impl InMemoryStore {
@@ -243,6 +246,54 @@ impl ProfileStore for InMemoryStore {
     async fn clear_owner(&self, owner: &ProfileOwner) -> Result<(), StorageError> {
         let mut guard = self.profiles.write().await;
         guard.remove(owner);
+        Ok(())
+    }
+}
+
+// ── ConfigStore ─────────────────────────────────────────────────────
+
+#[async_trait]
+impl ConfigStore for InMemoryStore {
+    async fn get(&self, namespace: &str, id: &str) -> Result<Option<Value>, StorageError> {
+        let guard = self.configs.read().await;
+        Ok(guard
+            .get(namespace)
+            .and_then(|entries| entries.get(id))
+            .cloned())
+    }
+
+    async fn list(
+        &self,
+        namespace: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<(String, Value)>, StorageError> {
+        let guard = self.configs.read().await;
+        let Some(entries) = guard.get(namespace) else {
+            return Ok(Vec::new());
+        };
+        let mut items: Vec<_> = entries
+            .iter()
+            .map(|(id, value)| (id.clone(), value.clone()))
+            .collect();
+        items.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(items.into_iter().skip(offset).take(limit).collect())
+    }
+
+    async fn put(&self, namespace: &str, id: &str, value: &Value) -> Result<(), StorageError> {
+        let mut guard = self.configs.write().await;
+        guard
+            .entry(namespace.to_string())
+            .or_default()
+            .insert(id.to_string(), value.clone());
+        Ok(())
+    }
+
+    async fn delete(&self, namespace: &str, id: &str) -> Result<(), StorageError> {
+        let mut guard = self.configs.write().await;
+        if let Some(entries) = guard.get_mut(namespace) {
+            entries.remove(id);
+        }
         Ok(())
     }
 }
@@ -537,7 +588,10 @@ mod tests {
             .set(&owner, "lang", serde_json::json!("en"))
             .await
             .unwrap();
-        let entry = store.get(&owner, "lang").await.unwrap().unwrap();
+        let entry = ProfileStore::get(&store, &owner, "lang")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(entry.key, "lang");
         assert_eq!(entry.value, serde_json::json!("en"));
         assert!(entry.updated_at > 0);
@@ -546,8 +600,7 @@ mod tests {
     #[tokio::test]
     async fn profile_get_missing() {
         let store = InMemoryStore::new();
-        let result = store
-            .get(&ProfileOwner::System, "nonexistent")
+        let result = ProfileStore::get(&store, &ProfileOwner::System, "nonexistent")
             .await
             .unwrap();
         assert!(result.is_none());
@@ -559,7 +612,10 @@ mod tests {
         let owner = ProfileOwner::System;
         store.set(&owner, "k", serde_json::json!(1)).await.unwrap();
         store.set(&owner, "k", serde_json::json!(2)).await.unwrap();
-        let entry = store.get(&owner, "k").await.unwrap().unwrap();
+        let entry = ProfileStore::get(&store, &owner, "k")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(entry.value, serde_json::json!(2));
     }
 
@@ -568,13 +624,20 @@ mod tests {
         let store = InMemoryStore::new();
         let owner = ProfileOwner::Agent("bob".into());
         // Delete non-existent key is fine
-        store.delete(&owner, "missing").await.unwrap();
+        ProfileStore::delete(&store, &owner, "missing")
+            .await
+            .unwrap();
         // Set then delete
         store.set(&owner, "k", serde_json::json!(1)).await.unwrap();
-        store.delete(&owner, "k").await.unwrap();
-        assert!(store.get(&owner, "k").await.unwrap().is_none());
+        ProfileStore::delete(&store, &owner, "k").await.unwrap();
+        assert!(
+            ProfileStore::get(&store, &owner, "k")
+                .await
+                .unwrap()
+                .is_none()
+        );
         // Delete again is fine
-        store.delete(&owner, "k").await.unwrap();
+        ProfileStore::delete(&store, &owner, "k").await.unwrap();
     }
 
     #[tokio::test]
@@ -595,13 +658,13 @@ mod tests {
             .await
             .unwrap();
 
-        let entries = store.list(&alice).await.unwrap();
+        let entries = ProfileStore::list(&store, &alice).await.unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].key, "a");
         assert_eq!(entries[1].key, "b");
 
         // Bob's entries are isolated
-        let bob_entries = store.list(&bob).await.unwrap();
+        let bob_entries = ProfileStore::list(&store, &bob).await.unwrap();
         assert_eq!(bob_entries.len(), 1);
         assert_eq!(bob_entries[0].key, "x");
     }
@@ -616,8 +679,8 @@ mod tests {
         store.set(&bob, "c", serde_json::json!(3)).await.unwrap();
 
         store.clear_owner(&alice).await.unwrap();
-        assert!(store.list(&alice).await.unwrap().is_empty());
-        assert_eq!(store.list(&bob).await.unwrap().len(), 1);
+        assert!(ProfileStore::list(&store, &alice).await.unwrap().is_empty());
+        assert_eq!(ProfileStore::list(&store, &bob).await.unwrap().len(), 1);
 
         // Clear again is idempotent
         store.clear_owner(&alice).await.unwrap();

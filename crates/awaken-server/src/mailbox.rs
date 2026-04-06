@@ -32,6 +32,10 @@ use crate::transport::channel_sink::ReconnectableEventSink;
 /// enqueue and cancel, the sweep will reclaim the job after this period.
 const INLINE_CLAIM_GUARD_MS: u64 = 60_000;
 
+/// Validation message returned when an inline submit loses the active-run race.
+pub(crate) const ACTIVE_RUN_CONFLICT_MESSAGE: &str =
+    "thread has an active run; cannot claim inline";
+
 // ── RunRequest ↔ MailboxJob conversion ───────────────────────────────
 
 /// Typed envelope for RunRequest fields that Mailbox stores opaquely.
@@ -476,9 +480,7 @@ impl Mailbox {
             if let Err(e) = self.store.cancel(&job_id, now_fix).await {
                 tracing::warn!(job_id, error = %e, "failed to cancel unclaimed inline job");
             }
-            Err(MailboxError::Validation(
-                "thread has an active run; cannot claim inline".into(),
-            ))
+            Err(MailboxError::Validation(ACTIVE_RUN_CONFLICT_MESSAGE.into()))
         }
     }
 
@@ -1041,7 +1043,7 @@ impl Mailbox {
     ) -> Result<MailboxJob, MailboxError> {
         let extras = RunRequestExtras::from_request(request);
         let request_extras = extras.to_value().map_err(|e| {
-            MailboxError::Validation(format!("failed to serialize request extras: {e}"))
+            MailboxError::Internal(format!("failed to serialize request extras: {e}"))
         })?;
 
         let now = now_ms();

@@ -61,7 +61,7 @@ test.describe('mailbox operations', () => {
   test('mailbox on nonexistent thread still accepts push', async ({ request }) => {
     // The mailbox endpoint auto-creates the thread context (lazy creation),
     // so pushing to a nonexistent thread ID succeeds with 201.
-    const pushRes = await request.post('/v1/threads/nonexistent-thread-id/mailbox', {
+    const pushRes = await request.post('/v1/threads/lazy-created-thread-id/mailbox', {
       data: { payload: { text: 'Should still work' } },
     });
     expect(pushRes.status()).toBe(201);

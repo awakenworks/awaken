@@ -46,7 +46,10 @@
 
 ## Config 与 Capabilities
 
-这些接口由 `config_routes()` 提供。只有 `AppState` 挂接了 config store 时才可用。
+这些接口由 `config_routes()` 提供。读取与 schema 接口要求 `AppState`
+挂接 config store；写接口还要求挂接 config runtime manager，才能在写入后
+校验并发布新的 registry snapshot。缺少这些配置时会返回 `400`，错误为
+`config management API not enabled`。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|

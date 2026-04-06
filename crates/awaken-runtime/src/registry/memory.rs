@@ -179,14 +179,22 @@ impl ToolRegistry for MapToolRegistry {
 }
 
 impl ModelRegistry for MapModelRegistry {
-    fn get_model(&self, id: &str) -> Option<&ModelEntry> {
-        self.get(id)
+    fn get_model(&self, id: &str) -> Option<ModelEntry> {
+        self.get_cloned(id)
+    }
+
+    fn model_ids(&self) -> Vec<String> {
+        self.ids()
     }
 }
 
 impl ProviderRegistry for MapProviderRegistry {
     fn get_provider(&self, id: &str) -> Option<Arc<dyn LlmExecutor>> {
         self.get_cloned(id)
+    }
+
+    fn provider_ids(&self) -> Vec<String> {
+        self.ids()
     }
 }
 
@@ -203,6 +211,10 @@ impl AgentSpecRegistry for MapAgentSpecRegistry {
 impl PluginSource for MapPluginSource {
     fn get_plugin(&self, id: &str) -> Option<Arc<dyn Plugin>> {
         self.get_cloned(id)
+    }
+
+    fn plugin_ids(&self) -> Vec<String> {
+        self.ids()
     }
 }
 

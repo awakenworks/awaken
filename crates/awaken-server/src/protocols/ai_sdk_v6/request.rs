@@ -13,11 +13,12 @@ use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
+use awaken_contract::registry_spec::AgentSpec;
 
 // ── AI SDK v6 wire types ────────────────────────────────────────────
 //
 // Maps directly to the TypeScript `UIMessage` / `UIMessagePart` types
-// from the `ai` npm package (v6). No legacy `content` field.
+// from the `ai` npm package (v6).
 //
 // Reference: https://ai-sdk.dev/docs/ai-sdk-ui/chatbot
 
@@ -32,6 +33,18 @@ pub(crate) struct AiSdkChatRequest {
     pub agent_id: Option<String>,
     #[serde(default)]
     pub state: Option<Value>,
+}
+
+/// Stateless AI SDK request carrying a draft agent definition.
+#[derive(Debug, Deserialize)]
+pub(crate) struct PreviewAgentChatRequest {
+    #[serde(default)]
+    pub messages: Vec<UIMessage>,
+    #[serde(rename = "threadId", alias = "thread_id", default)]
+    pub thread_id: Option<String>,
+    #[serde(default)]
+    pub state: Option<Value>,
+    pub agent: AgentSpec,
 }
 
 /// A single part of a `UIMessage`.
@@ -159,6 +172,36 @@ pub(crate) async fn process_chat_request(
     })
 }
 
+/// Process a stateless preview request.
+///
+/// Preview runs do not persist chat history, so the client sends the full
+/// visible transcript on each turn and assistant text history must remain in
+/// the converted message list.
+pub(crate) fn process_preview_chat_request(
+    messages: Vec<UIMessage>,
+    thread_id: Option<String>,
+    state: Option<Value>,
+) -> Result<ProcessedRequest, String> {
+    let decisions = extract_tool_call_decisions(&messages);
+    let thread_id = thread_id
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+    let messages = convert_messages_with_assistant_history(messages);
+
+    if messages.is_empty() && decisions.is_empty() {
+        return Err("no preview messages or interaction responses".to_string());
+    }
+
+    Ok(ProcessedRequest {
+        thread_id,
+        messages,
+        decisions,
+        state,
+        agent_id: None,
+    })
+}
+
 // ── Internal helpers ────────────────────────────────────────────────
 
 /// Parse a data-URI of the form `data:<media_type>;base64,<data>`.
@@ -209,6 +252,14 @@ fn part_to_content_block(part: &Value) -> Option<ContentBlock> {
 /// synthesized assistant history from being written back into the thread on
 /// later turns.
 fn convert_messages(msgs: Vec<UIMessage>) -> Vec<Message> {
+    convert_messages_internal(msgs, false)
+}
+
+fn convert_messages_with_assistant_history(msgs: Vec<UIMessage>) -> Vec<Message> {
+    convert_messages_internal(msgs, true)
+}
+
+fn convert_messages_internal(msgs: Vec<UIMessage>, include_assistant: bool) -> Vec<Message> {
     msgs.into_iter()
         .filter_map(|m| {
             let blocks: Vec<ContentBlock> =
@@ -220,6 +271,9 @@ fn convert_messages(msgs: Vec<UIMessage>) -> Vec<Message> {
                 "user" => Message::user_with_content(blocks),
                 "system" => {
                     Message::system(awaken_contract::contract::content::extract_text(&blocks))
+                }
+                "assistant" if include_assistant => {
+                    Message::assistant(awaken_contract::contract::content::extract_text(&blocks))
                 }
                 _ => return None,
             };
@@ -248,13 +302,15 @@ fn dedup_messages(msgs: Vec<UIMessage>, known_ids: &HashSet<String>) -> Vec<UIMe
 
 /// Extract tool-call decisions from assistant message parts.
 fn extract_tool_call_decisions(msgs: &[UIMessage]) -> Vec<(String, ToolCallResume)> {
-    msgs.iter()
-        .filter(|m| m.role == "assistant")
-        .flat_map(|m| m.parts.iter())
-        .filter_map(|part| {
-            let part_type = part_kind(part)?;
+    let mut decisions = Vec::new();
+
+    for message in msgs.iter().filter(|m| m.role == "assistant") {
+        for part in message.parts.iter() {
+            let Some(part_type) = part_kind(part) else {
+                continue;
+            };
             if !part_type.starts_with("tool-") {
-                return None;
+                continue;
             }
 
             // Skip tool results already executed by the provider (server-side).
@@ -266,14 +322,19 @@ fn extract_tool_call_decisions(msgs: &[UIMessage]) -> Vec<(String, ToolCallResum
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             if provider_executed {
-                return None;
+                continue;
             }
 
-            let state = part.get("state").and_then(Value::as_str)?;
-            let tool_call_id = part
+            let Some(state) = part.get("state").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(tool_call_id) = part
                 .get("toolCallId")
                 .and_then(Value::as_str)
-                .map(str::to_owned);
+                .map(str::to_owned)
+            else {
+                continue;
+            };
             let approval_id = part
                 .get("approvalId")
                 .and_then(Value::as_str)
@@ -281,12 +342,12 @@ fn extract_tool_call_decisions(msgs: &[UIMessage]) -> Vec<(String, ToolCallResum
 
             let (target_id, action, result) = match state {
                 "output-available" => (
-                    tool_call_id.clone()?,
+                    tool_call_id.clone(),
                     ResumeDecisionAction::Resume,
                     part.get("output").cloned().unwrap_or(Value::Null),
                 ),
                 "output-error" => (
-                    tool_call_id.clone()?,
+                    tool_call_id.clone(),
                     ResumeDecisionAction::Resume,
                     json!({
                         "error": part
@@ -296,25 +357,29 @@ fn extract_tool_call_decisions(msgs: &[UIMessage]) -> Vec<(String, ToolCallResum
                     }),
                 ),
                 "output-denied" => (
-                    tool_call_id.clone()?,
+                    tool_call_id.clone(),
                     ResumeDecisionAction::Cancel,
                     json!({ "approved": false }),
                 ),
                 "approval-responded" => {
-                    let target_id = approval_id.or(tool_call_id.clone())?;
-                    let approval = part.get("approval")?;
+                    let Some(approval) = part.get("approval") else {
+                        continue;
+                    };
                     let approved = approval.get("approved").and_then(Value::as_bool);
                     let action = if approved == Some(false) {
                         ResumeDecisionAction::Cancel
                     } else {
                         ResumeDecisionAction::Resume
                     };
+                    let target_id = approval_id
+                        .clone()
+                        .unwrap_or_else(|| tool_call_id.clone());
                     (target_id, action, approval.clone())
                 }
-                _ => return None,
+                _ => continue,
             };
 
-            Some((
+            decisions.push((
                 target_id,
                 ToolCallResume {
                     decision_id: uuid::Uuid::now_v7().to_string(),
@@ -323,9 +388,11 @@ fn extract_tool_call_decisions(msgs: &[UIMessage]) -> Vec<(String, ToolCallResum
                     reason: None,
                     updated_at: awaken_contract::now_ms(),
                 },
-            ))
-        })
-        .collect()
+            ));
+        }
+    }
+
+    decisions
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -425,6 +492,31 @@ mod tests {
             awaken_contract::contract::message::Role::User
         );
         assert_eq!(converted[0].id.as_deref(), Some("u1"));
+    }
+
+    #[test]
+    fn convert_preview_keeps_assistant_messages() {
+        let msgs = vec![
+            UIMessage {
+                id: Some("u1".into()),
+                role: "user".into(),
+                parts: vec![raw_part(json!({"type": "text", "text": "hello"}))],
+            },
+            UIMessage {
+                id: Some("a1".into()),
+                role: "assistant".into(),
+                parts: vec![raw_part(json!({"type": "text", "text": "existing"}))],
+            },
+        ];
+
+        let converted = convert_messages_with_assistant_history(msgs);
+        assert_eq!(converted.len(), 2);
+        assert_eq!(converted[1].text(), "existing");
+        assert_eq!(
+            converted[1].role,
+            awaken_contract::contract::message::Role::Assistant
+        );
+        assert_eq!(converted[1].id.as_deref(), Some("a1"));
     }
 
     #[test]
@@ -530,6 +622,31 @@ mod tests {
     fn convert_empty_messages() {
         let converted = convert_messages(vec![]);
         assert!(converted.is_empty());
+    }
+
+    #[test]
+    fn process_preview_chat_request_generates_thread_id_and_keeps_assistant_context() {
+        let processed = process_preview_chat_request(
+            vec![
+                UIMessage {
+                    id: Some("u1".into()),
+                    role: "user".into(),
+                    parts: vec![raw_part(json!({"type": "text", "text": "hello"}))],
+                },
+                UIMessage {
+                    id: Some("a1".into()),
+                    role: "assistant".into(),
+                    parts: vec![raw_part(json!({"type": "text", "text": "reply"}))],
+                },
+            ],
+            None,
+            None,
+        )
+        .expect("preview request should parse");
+
+        assert!(!processed.thread_id.is_empty());
+        assert_eq!(processed.messages.len(), 2);
+        assert_eq!(processed.messages[1].text(), "reply");
     }
 
     // ── extract_tool_call_decisions ──

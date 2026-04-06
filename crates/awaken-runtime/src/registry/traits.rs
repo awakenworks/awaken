@@ -38,7 +38,9 @@ pub struct ModelEntry {
 /// Lookup interface for model definitions.
 pub trait ModelRegistry: Send + Sync {
     /// Get a model entry by its ID.
-    fn get_model(&self, id: &str) -> Option<&ModelEntry>;
+    fn get_model(&self, id: &str) -> Option<ModelEntry>;
+    /// List all registered model IDs.
+    fn model_ids(&self) -> Vec<String>;
 }
 
 // ---------------------------------------------------------------------------
@@ -49,6 +51,8 @@ pub trait ModelRegistry: Send + Sync {
 pub trait ProviderRegistry: Send + Sync {
     /// Get a provider (LLM executor) by its ID.
     fn get_provider(&self, id: &str) -> Option<Arc<dyn LlmExecutor>>;
+    /// List all registered provider IDs.
+    fn provider_ids(&self) -> Vec<String>;
 }
 
 // ---------------------------------------------------------------------------
@@ -74,6 +78,8 @@ pub trait AgentSpecRegistry: Send + Sync {
 pub trait PluginSource: Send + Sync {
     /// Get a plugin by its ID.
     fn get_plugin(&self, id: &str) -> Option<Arc<dyn Plugin>>;
+    /// List all registered plugin IDs.
+    fn plugin_ids(&self) -> Vec<String>;
 }
 
 // ---------------------------------------------------------------------------

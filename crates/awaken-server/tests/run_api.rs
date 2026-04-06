@@ -8,6 +8,7 @@
 //! read-only (list, get).
 
 use async_trait::async_trait;
+use awaken_contract::contract::content::extract_text;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::contract::lifecycle::RunStatus;
@@ -48,6 +49,70 @@ impl awaken_contract::contract::executor::LlmExecutor for ImmediateExecutor {
     }
 }
 
+struct SlowExecutor;
+
+#[async_trait]
+impl awaken_contract::contract::executor::LlmExecutor for SlowExecutor {
+    async fn execute(
+        &self,
+        _request: InferenceRequest,
+    ) -> Result<StreamResult, InferenceExecutionError> {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        Ok(StreamResult {
+            content: vec![],
+            tool_calls: vec![],
+            usage: Some(TokenUsage::default()),
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        })
+    }
+
+    fn name(&self) -> &str {
+        "slow"
+    }
+}
+
+struct PreviewInspectorExecutor;
+
+#[async_trait]
+impl awaken_contract::contract::executor::LlmExecutor for PreviewInspectorExecutor {
+    async fn execute(
+        &self,
+        request: InferenceRequest,
+    ) -> Result<StreamResult, InferenceExecutionError> {
+        let system = if request.system.is_empty() {
+            request
+                .messages
+                .iter()
+                .find(|message| message.role == awaken_contract::contract::message::Role::System)
+                .map(|message| message.text())
+                .unwrap_or_default()
+        } else {
+            extract_text(&request.system)
+        };
+        let roles = request
+            .messages
+            .iter()
+            .map(|message| format!("{:?}", message.role).to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join(",");
+
+        Ok(StreamResult {
+            content: vec![awaken_contract::contract::content::ContentBlock::text(
+                format!("system={system};roles={roles}"),
+            )],
+            tool_calls: vec![],
+            usage: Some(TokenUsage::default()),
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        })
+    }
+
+    fn name(&self) -> &str {
+        "preview-inspector"
+    }
+}
+
 // ── Shared helpers ──
 
 struct TestApp {
@@ -56,6 +121,12 @@ struct TestApp {
 }
 
 fn make_test_app() -> TestApp {
+    make_test_app_with_executor(Arc::new(ImmediateExecutor))
+}
+
+fn make_test_app_with_executor(
+    executor: Arc<dyn awaken_contract::contract::executor::LlmExecutor>,
+) -> TestApp {
     let store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
@@ -66,7 +137,7 @@ fn make_test_app() -> TestApp {
                     model_name: "mock-model".into(),
                 },
             )
-            .with_provider("mock", Arc::new(ImmediateExecutor))
+            .with_provider("mock", executor)
             .with_agent_spec(AgentSpec {
                 id: "test-agent".into(),
                 model: "test-model".into(),
@@ -262,6 +333,43 @@ async fn start_run_rejects_empty_messages() {
 }
 
 #[tokio::test]
+async fn concurrent_same_thread_run_returns_conflict_instead_of_server_error() {
+    let test = make_test_app_with_executor(Arc::new(SlowExecutor));
+    let thread_id = "thread-conflict";
+
+    let first = post_json(
+        test.router.clone(),
+        "/v1/runs",
+        json!({
+            "agentId": "test-agent",
+            "threadId": thread_id,
+            "messages": [{"role": "user", "content": "first"}]
+        }),
+    );
+    let second = post_json(
+        test.router,
+        "/v1/runs",
+        json!({
+            "agentId": "test-agent",
+            "threadId": thread_id,
+            "messages": [{"role": "user", "content": "second"}]
+        }),
+    );
+
+    let ((status1, body1), (status2, body2)) = tokio::join!(first, second);
+
+    let statuses = [status1, status2];
+    assert!(
+        statuses.contains(&StatusCode::OK),
+        "one request should still execute successfully: {status1} {body1:?}, {status2} {body2:?}"
+    );
+    assert!(
+        statuses.contains(&StatusCode::CONFLICT),
+        "the losing request should surface a conflict, not a 5xx: {status1} {body1:?}, {status2} {body2:?}"
+    );
+}
+
+#[tokio::test]
 async fn start_run_includes_step_events() {
     let test = make_test_app();
     let (_, body) = post_json(
@@ -335,6 +443,51 @@ async fn ai_sdk_agent_run_creates_thread_record() {
         .expect("messages lookup should succeed")
         .expect("messages should be persisted");
     assert!(!messages.is_empty());
+}
+
+#[tokio::test]
+async fn ai_sdk_agent_preview_runs_with_draft_system_prompt_and_history() {
+    let test = make_test_app_with_executor(Arc::new(PreviewInspectorExecutor));
+    let (status, body) = post_json(
+        test.router,
+        "/v1/ai-sdk/agent-previews/runs",
+        json!({
+            "agent": {
+                "id": "",
+                "model": "test-model",
+                "system_prompt": "draft system prompt",
+                "max_rounds": 0
+            },
+            "messages": [
+                {
+                    "id": "u1",
+                    "role": "user",
+                    "parts": [{ "type": "text", "text": "hello" }]
+                },
+                {
+                    "id": "a1",
+                    "role": "assistant",
+                    "parts": [{ "type": "text", "text": "previous reply" }]
+                },
+                {
+                    "id": "u2",
+                    "role": "user",
+                    "parts": [{ "type": "text", "text": "follow up" }]
+                }
+            ]
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+    assert!(
+        body.contains("draft system prompt"),
+        "preview should use draft spec: {body}"
+    );
+    assert!(
+        body.contains("roles=system,user,assistant,user"),
+        "preview should preserve assistant history: {body}"
+    );
 }
 
 // ============================================================================

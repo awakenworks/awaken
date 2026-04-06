@@ -11,6 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::profile_store::{ProfileEntry, ProfileOwner, ProfileStore};
 use awaken_contract::contract::storage::{
@@ -61,6 +62,10 @@ impl FileStore {
 
     fn profiles_dir(&self) -> PathBuf {
         self.base_path.join("profiles")
+    }
+
+    fn config_dir(&self, namespace: &str) -> PathBuf {
+        self.base_path.join("config").join(namespace)
     }
 }
 
@@ -582,6 +587,85 @@ impl ProfileStore for FileStore {
     }
 }
 
+// ── ConfigStore ─────────────────────────────────────────────────────
+
+#[async_trait]
+impl ConfigStore for FileStore {
+    async fn get(
+        &self,
+        namespace: &str,
+        id: &str,
+    ) -> Result<Option<serde_json::Value>, StorageError> {
+        validate_id(namespace, "config namespace")?;
+        validate_id(id, "config id")?;
+        let path = self.config_dir(namespace).join(format!("{id}.json"));
+        read_json(&path).await
+    }
+
+    async fn list(
+        &self,
+        namespace: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
+        validate_id(namespace, "config namespace")?;
+        let dir = self.config_dir(namespace);
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut read_dir = tokio::fs::read_dir(&dir)
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?;
+        let mut items = Vec::new();
+        while let Some(entry) = read_dir
+            .next_entry()
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?
+        {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "json") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            let Some(value) = read_json(&path).await? else {
+                continue;
+            };
+            items.push((stem.to_string(), value));
+        }
+
+        items.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(items.into_iter().skip(offset).take(limit).collect())
+    }
+
+    async fn put(
+        &self,
+        namespace: &str,
+        id: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), StorageError> {
+        validate_id(namespace, "config namespace")?;
+        validate_id(id, "config id")?;
+        let payload = serde_json::to_string_pretty(value)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        atomic_write(&self.config_dir(namespace), &format!("{id}.json"), &payload).await
+    }
+
+    async fn delete(&self, namespace: &str, id: &str) -> Result<(), StorageError> {
+        validate_id(namespace, "config namespace")?;
+        validate_id(id, "config id")?;
+        let path = self.config_dir(namespace).join(format!("{id}.json"));
+        if path.exists() {
+            tokio::fs::remove_file(&path)
+                .await
+                .map_err(|error| StorageError::Io(error.to_string()))?;
+        }
+        Ok(())
+    }
+}
+
 // ── ThreadRunStore ──────────────────────────────────────────────────
 
 #[async_trait]
@@ -928,7 +1012,10 @@ mod tests {
             .set(&owner, "lang", serde_json::json!("en"))
             .await
             .unwrap();
-        let entry = store.get(&owner, "lang").await.unwrap().unwrap();
+        let entry = ProfileStore::get(&store, &owner, "lang")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(entry.key, "lang");
         assert_eq!(entry.value, serde_json::json!("en"));
         assert!(entry.updated_at > 0);
@@ -938,8 +1025,7 @@ mod tests {
     async fn profile_file_get_missing() {
         let td = TempDir::new().unwrap();
         let store = FileStore::new(td.path());
-        let result = store
-            .get(&ProfileOwner::System, "nonexistent")
+        let result = ProfileStore::get(&store, &ProfileOwner::System, "nonexistent")
             .await
             .unwrap();
         assert!(result.is_none());
@@ -952,18 +1038,25 @@ mod tests {
         let owner = ProfileOwner::Agent("bob".into());
 
         // Delete non-existent is fine
-        store.delete(&owner, "missing").await.unwrap();
+        ProfileStore::delete(&store, &owner, "missing")
+            .await
+            .unwrap();
 
         // Set, delete, verify gone
         store.set(&owner, "k", serde_json::json!(1)).await.unwrap();
-        store.delete(&owner, "k").await.unwrap();
-        assert!(store.get(&owner, "k").await.unwrap().is_none());
+        ProfileStore::delete(&store, &owner, "k").await.unwrap();
+        assert!(
+            ProfileStore::get(&store, &owner, "k")
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         // Clear owner
         store.set(&owner, "a", serde_json::json!(1)).await.unwrap();
         store.set(&owner, "b", serde_json::json!(2)).await.unwrap();
         store.clear_owner(&owner).await.unwrap();
-        assert!(store.list(&owner).await.unwrap().is_empty());
+        assert!(ProfileStore::list(&store, &owner).await.unwrap().is_empty());
 
         // Clear again is idempotent
         store.clear_owner(&owner).await.unwrap();
@@ -988,12 +1081,12 @@ mod tests {
             .await
             .unwrap();
 
-        let entries = store.list(&alice).await.unwrap();
+        let entries = ProfileStore::list(&store, &alice).await.unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].key, "a");
         assert_eq!(entries[1].key, "z");
 
         // Bob's entries are isolated
-        assert_eq!(store.list(&bob).await.unwrap().len(), 1);
+        assert_eq!(ProfileStore::list(&store, &bob).await.unwrap().len(), 1);
     }
 }

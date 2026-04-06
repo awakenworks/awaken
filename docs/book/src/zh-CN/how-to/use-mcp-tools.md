@@ -28,7 +28,7 @@ let stdio_config = McpServerConnectionConfig::stdio(
     vec!["server.js".into()],
 );
 
-let http_config = McpServerConnectionConfig::sse(
+let http_config = McpServerConnectionConfig::http(
     "remote-server",
     "http://localhost:8080/sse",
 );
