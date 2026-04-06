@@ -19,6 +19,8 @@ pub struct AgUiEncoder {
     step_counter: u32,
     reasoning_open: bool,
     guard: TerminalGuard,
+    pending_interrupts: HashMap<String, (String, Option<String>)>,
+    last_interrupt: Option<(String, Option<String>)>,
 }
 
 impl AgUiEncoder {
@@ -29,6 +31,8 @@ impl AgUiEncoder {
             step_counter: 0,
             reasoning_open: false,
             guard: TerminalGuard::new(),
+            pending_interrupts: HashMap::new(),
+            last_interrupt: None,
         }
     }
 
@@ -140,6 +144,8 @@ impl AgUiEncoder {
                 ..
             } => match result.status {
                 ToolStatus::Success => {
+                    self.pending_interrupts.remove(id);
+                    self.last_interrupt = self.pending_interrupts.values().next().cloned();
                     let content = if result.metadata.is_empty() {
                         serde_json::to_string(&result.data).unwrap_or_default()
                     } else {
@@ -152,10 +158,27 @@ impl AgUiEncoder {
                     vec![Event::tool_call_result(message_id, id, content)]
                 }
                 ToolStatus::Error => {
+                    self.pending_interrupts.remove(id);
+                    self.last_interrupt = self.pending_interrupts.values().next().cloned();
                     let content = result.message.as_deref().unwrap_or("tool error");
                     vec![Event::tool_call_result(message_id, id, content)]
                 }
-                ToolStatus::Pending => Vec::new(),
+                ToolStatus::Pending => {
+                    if let Some(ticket) = result.suspension.as_ref() {
+                        let interrupt = (
+                            ticket.suspension.id.clone(),
+                            if ticket.suspension.action.trim().is_empty() {
+                                None
+                            } else {
+                                Some(ticket.suspension.action.clone())
+                            },
+                        );
+                        self.pending_interrupts
+                            .insert(id.clone(), interrupt.clone());
+                        self.last_interrupt = Some(interrupt);
+                    }
+                    Vec::new()
+                }
             },
 
             AgentEvent::StepStart { message_id } => {
@@ -197,12 +220,17 @@ impl AgUiEncoder {
                         events.push(Event::run_error(msg, None));
                     }
                     TerminationReason::Suspended => {
+                        let (interrupt_id, interrupt_reason) = self
+                            .last_interrupt
+                            .clone()
+                            .map(|(id, reason)| (Some(id), reason))
+                            .unwrap_or((None, Some("tool_approval".into())));
                         events.push(Event::run_interrupted(
                             thread_id,
                             run_id,
                             super::types::InterruptPayload {
-                                id: None,
-                                reason: Some("tool_approval".into()),
+                                id: interrupt_id,
+                                reason: interrupt_reason,
                                 payload: None,
                             },
                         ));
@@ -271,6 +299,8 @@ impl AgUiEncoder {
             }
 
             AgentEvent::ToolCallResumed { target_id, result } => {
+                self.pending_interrupts.remove(target_id);
+                self.last_interrupt = self.pending_interrupts.values().next().cloned();
                 let content = serde_json::to_string(result).unwrap_or_default();
                 vec![Event::tool_call_result(
                     &self.message_id,
