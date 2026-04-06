@@ -9,7 +9,9 @@ use awaken_contract::model::Phase;
 use super::checkpoint::{
     StepCompletion, check_termination, complete_step, emit_state_snapshot, persist_checkpoint,
 };
-use super::resume::{WaitOutcome, wait_for_resume_or_cancel};
+use super::resume::{
+    WaitOutcome, detect_and_replay_resume, has_suspended_calls, wait_for_resume_or_cancel,
+};
 use super::setup::{PreparedRun, prepare_run};
 use super::step::{self, StepContext, StepOutcome, execute_step};
 use super::{AgentLoopError, AgentLoopParams, AgentRunResult, commit_update, now_ms};
@@ -83,6 +85,7 @@ pub(super) async fn run_agent_loop_impl(
         parent_run_id: run_identity.parent_run_id.clone(),
     })
     .await;
+    detect_and_replay_resume(&agent, runtime, &run_identity, &mut messages, sink.clone()).await?;
 
     match runtime
         .run_phase_with_context(
@@ -109,7 +112,7 @@ pub(super) async fn run_agent_loop_impl(
     }
 
     // --- Main loop ---
-    let termination = loop {
+    let termination = 'run_loop: loop {
         steps += 1;
         tracing::info!(step = steps, "step_start");
 
@@ -289,36 +292,57 @@ pub(super) async fn run_agent_loop_impl(
                 })
                 .await;
 
-                match wait_for_resume_or_cancel(
-                    decision_rx.as_mut(),
-                    cancellation_token.as_ref(),
-                    store,
-                    &agent,
-                    sink.as_ref(),
-                    &run_identity,
-                    &mut messages,
-                )
-                .await?
-                {
-                    WaitOutcome::Resumed => {
-                        commit_update::<RunLifecycle>(
-                            store,
-                            RunLifecycleUpdate::SetRunning {
-                                updated_at: now_ms(),
-                            },
-                        )?;
-                        // Emit RunStart to signal the protocol layer that
-                        // the run is continuing after the interrupt.
-                        sink.emit(AgentEvent::RunStart {
-                            thread_id: run_identity.thread_id.clone(),
-                            run_id: run_identity.run_id.clone(),
-                            parent_run_id: run_identity.parent_run_id.clone(),
-                        })
-                        .await;
-                        continue;
+                loop {
+                    match wait_for_resume_or_cancel(
+                        decision_rx.as_mut(),
+                        cancellation_token.as_ref(),
+                        runtime,
+                    )
+                    .await?
+                    {
+                        WaitOutcome::Resumed => {
+                            sink.emit(AgentEvent::RunStart {
+                                thread_id: run_identity.thread_id.clone(),
+                                run_id: run_identity.run_id.clone(),
+                                parent_run_id: run_identity.parent_run_id.clone(),
+                            })
+                            .await;
+                            detect_and_replay_resume(
+                                &agent,
+                                runtime,
+                                &run_identity,
+                                &mut messages,
+                                sink.clone(),
+                            )
+                            .await?;
+
+                            if has_suspended_calls(store) {
+                                emit_state_snapshot(store, sink.as_ref()).await;
+                                sink.emit(AgentEvent::RunFinish {
+                                    thread_id: run_identity.thread_id.clone(),
+                                    run_id: run_identity.run_id.clone(),
+                                    result: None,
+                                    termination: TerminationReason::Suspended,
+                                })
+                                .await;
+                                continue;
+                            }
+
+                            commit_update::<RunLifecycle>(
+                                store,
+                                RunLifecycleUpdate::SetRunning {
+                                    updated_at: now_ms(),
+                                },
+                            )?;
+                            continue 'run_loop;
+                        }
+                        WaitOutcome::Cancelled => {
+                            break 'run_loop TerminationReason::Cancelled;
+                        }
+                        WaitOutcome::NoDecisionChannel => {
+                            break 'run_loop TerminationReason::Suspended;
+                        }
                     }
-                    WaitOutcome::Cancelled => break TerminationReason::Cancelled,
-                    WaitOutcome::NoDecisionChannel => break TerminationReason::Suspended,
                 }
             }
             StepOutcome::Continue => {

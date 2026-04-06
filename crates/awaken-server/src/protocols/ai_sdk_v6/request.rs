@@ -273,14 +273,20 @@ fn extract_tool_call_decisions(msgs: &[UIMessage]) -> Vec<(String, ToolCallResum
             let tool_call_id = part
                 .get("toolCallId")
                 .and_then(Value::as_str)
-                .map(str::to_owned)?;
+                .map(str::to_owned);
+            let approval_id = part
+                .get("approvalId")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
 
-            let (action, result) = match state {
+            let (target_id, action, result) = match state {
                 "output-available" => (
+                    tool_call_id.clone()?,
                     ResumeDecisionAction::Resume,
                     part.get("output").cloned().unwrap_or(Value::Null),
                 ),
                 "output-error" => (
+                    tool_call_id.clone()?,
                     ResumeDecisionAction::Resume,
                     json!({
                         "error": part
@@ -289,8 +295,13 @@ fn extract_tool_call_decisions(msgs: &[UIMessage]) -> Vec<(String, ToolCallResum
                             .unwrap_or("tool execution error")
                     }),
                 ),
-                "output-denied" => (ResumeDecisionAction::Cancel, json!({ "approved": false })),
+                "output-denied" => (
+                    tool_call_id.clone()?,
+                    ResumeDecisionAction::Cancel,
+                    json!({ "approved": false }),
+                ),
                 "approval-responded" => {
+                    let target_id = approval_id.or(tool_call_id.clone())?;
                     let approval = part.get("approval")?;
                     let approved = approval.get("approved").and_then(Value::as_bool);
                     let action = if approved == Some(false) {
@@ -298,13 +309,13 @@ fn extract_tool_call_decisions(msgs: &[UIMessage]) -> Vec<(String, ToolCallResum
                     } else {
                         ResumeDecisionAction::Resume
                     };
-                    (action, approval.clone())
+                    (target_id, action, approval.clone())
                 }
                 _ => return None,
             };
 
             Some((
-                tool_call_id,
+                target_id,
                 ToolCallResume {
                     decision_id: uuid::Uuid::now_v7().to_string(),
                     action,
@@ -1006,6 +1017,25 @@ mod tests {
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].1.action, ResumeDecisionAction::Cancel);
         assert_eq!(decisions[0].1.result, json!({"approved": false}));
+    }
+
+    #[test]
+    fn extract_decisions_approval_responded_prefers_approval_id() {
+        let msgs = vec![UIMessage {
+            id: Some("a1".into()),
+            role: "assistant".into(),
+            parts: vec![raw_part(json!({
+                "type": "tool-approval",
+                "toolCallId": "tc6",
+                "approvalId": "perm_tc6",
+                "state": "approval-responded",
+                "approval": {"approved": true}
+            }))],
+        }];
+        let decisions = extract_tool_call_decisions(&msgs);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].0, "perm_tc6");
+        assert_eq!(decisions[0].1.action, ResumeDecisionAction::Resume);
     }
 
     #[test]
