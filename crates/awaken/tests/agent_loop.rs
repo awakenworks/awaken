@@ -132,20 +132,6 @@ impl Tool for SuspendingTool {
     }
 }
 
-/// Tool that returns the arguments as result (useful for PassDecisionToTool test).
-struct PassthroughTool;
-
-#[async_trait]
-impl Tool for PassthroughTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new("passthrough", "passthrough", "Returns args as result")
-    }
-
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
-        Ok(ToolResult::success("passthrough", args).into())
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -968,7 +954,7 @@ async fn resume_with_use_decision_as_tool_result() {
     assert_eq!(resume_result.termination, TerminationReason::NaturalEnd);
 
     // Tool call should be terminal
-    let tc_states = runtime.store().read::<ToolCallStates>().unwrap_or_default();
+    let _tc_states = runtime.store().read::<ToolCallStates>().unwrap_or_default();
     // After resume, tool call states were cleared by the new step
     // The run completed normally
     let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
@@ -1225,7 +1211,7 @@ async fn resume_with_pass_decision_to_tool() {
     .unwrap();
     assert_eq!(result.termination, TerminationReason::Suspended);
 
-    // Resume with PassDecisionToTool: decision payload becomes new arguments
+    // Resume with PassDecisionToTool: the tool reads the decision payload from resume_input
     struct DangerousPassthrough;
     #[async_trait]
     impl Tool for DangerousPassthrough {
@@ -1235,9 +1221,14 @@ async fn resume_with_pass_decision_to_tool() {
         async fn execute(
             &self,
             args: Value,
-            _ctx: &ToolCallContext,
+            ctx: &ToolCallContext,
         ) -> Result<ToolOutput, ToolError> {
-            Ok(ToolResult::success("dangerous", args).into())
+            let result = ctx
+                .resume_input
+                .as_ref()
+                .map(|resume| resume.result.clone())
+                .unwrap_or(args);
+            Ok(ToolResult::success("dangerous", result).into())
         }
     }
 
@@ -1747,7 +1738,7 @@ impl Clone for FrontendToolInterceptPlugin {
 /// 2. FrontendToolInterceptPlugin intercepts → Suspend(UseDecisionAsToolResult)
 /// 3. Run terminates with Suspended
 /// 4. External decision arrives with result payload
-/// 5. prepare_resume with UseDecisionAsToolResult mode replaces arguments
+/// 5. prepare_resume records the decision payload on the suspended call
 /// 6. detect_and_replay_resume completes the tool call from the decision payload
 /// 8. LLM sees the frontend result and responds
 #[tokio::test]
@@ -1768,9 +1759,14 @@ async fn frontend_tool_intercept_suspend_and_resume() {
         async fn execute(
             &self,
             args: Value,
-            _ctx: &ToolCallContext,
+            ctx: &ToolCallContext,
         ) -> Result<ToolOutput, ToolError> {
-            Ok(ToolResult::success("ask_user", args).into())
+            let result = ctx
+                .resume_input
+                .as_ref()
+                .map(|resume| resume.result.clone())
+                .unwrap_or(args);
+            Ok(ToolResult::success("ask_user", result).into())
         }
     }
 
@@ -1826,7 +1822,7 @@ async fn frontend_tool_intercept_suspend_and_resume() {
         Message::tool("fc1", "Tool 'ask_user' suspended: awaiting decision"),
     ];
 
-    // Resume with UseDecisionAsToolResult: decision.result becomes tool arguments
+    // Resume with UseDecisionAsToolResult: decision.result is carried via resume_input
     prepare_resume(
         runtime.store(),
         vec![(
@@ -1843,13 +1839,21 @@ async fn frontend_tool_intercept_suspend_and_resume() {
     )
     .unwrap();
 
-    // Verify tool call transitioned to Resuming with decision args
+    // Verify tool call transitioned to Resuming with preserved args + recorded decision
     let states = runtime.store().read::<ToolCallStates>().unwrap();
     assert_eq!(states.calls["fc1"].status, ToolCallStatus::Resuming);
     assert_eq!(
         states.calls["fc1"].arguments,
-        json!({"answer": "blue"}),
-        "arguments should be replaced with decision result"
+        json!({"question": "What color?"}),
+        "resume should preserve the original call arguments"
+    );
+    assert_eq!(
+        states.calls["fc1"]
+            .resume_input
+            .as_ref()
+            .map(|resume| &resume.result),
+        Some(&json!({"answer": "blue"})),
+        "decision payload should be stored on resume_input"
     );
 
     // Resume the run
@@ -2505,7 +2509,7 @@ async fn permission_hook_blocks_denied_tool() {
 // ---------------------------------------------------------------------------
 
 /// Verify that when a BeforeToolExecute hook suspends with UseDecisionAsToolResult mode,
-/// the subsequent prepare_resume + replay uses decision result as tool output (not re-executing).
+/// the subsequent prepare_resume + replay exposes decision result via resume_input.
 /// This is the core frontend tool pattern.
 #[tokio::test]
 async fn intercept_suspend_preserves_ticket_resume_mode() {
@@ -2525,9 +2529,14 @@ async fn intercept_suspend_preserves_ticket_resume_mode() {
         async fn execute(
             &self,
             args: Value,
-            _ctx: &ToolCallContext,
+            ctx: &ToolCallContext,
         ) -> Result<ToolOutput, ToolError> {
-            Ok(ToolResult::success("ask_user", args).into())
+            let result = ctx
+                .resume_input
+                .as_ref()
+                .map(|resume| resume.result.clone())
+                .unwrap_or(args);
+            Ok(ToolResult::success("ask_user", result).into())
         }
     }
 
@@ -2565,7 +2574,7 @@ async fn intercept_suspend_preserves_ticket_resume_mode() {
     let tc_states = runtime.store().read::<ToolCallStates>().unwrap();
     assert_eq!(tc_states.calls["fc1"].status, ToolCallStatus::Suspended);
 
-    // Resume with UseDecisionAsToolResult — decision.result replaces tool arguments
+    // Resume with UseDecisionAsToolResult — decision.result is recorded on resume_input
     prepare_resume(
         runtime.store(),
         vec![(
@@ -2582,13 +2591,21 @@ async fn intercept_suspend_preserves_ticket_resume_mode() {
     )
     .unwrap();
 
-    // After prepare_resume, arguments should be the decision result, not original
+    // After prepare_resume, original arguments stay intact and the decision is stored separately
     let tc_states = runtime.store().read::<ToolCallStates>().unwrap();
     assert_eq!(tc_states.calls["fc1"].status, ToolCallStatus::Resuming);
     assert_eq!(
         tc_states.calls["fc1"].arguments,
-        json!({"color": "red"}),
-        "UseDecisionAsToolResult should replace arguments with decision result"
+        json!({"question": "Pick a color"}),
+        "UseDecisionAsToolResult should preserve the original arguments"
+    );
+    assert_eq!(
+        tc_states.calls["fc1"]
+            .resume_input
+            .as_ref()
+            .map(|resume| &resume.result),
+        Some(&json!({"color": "red"})),
+        "UseDecisionAsToolResult should store the decision payload on resume_input"
     );
 
     // Resume the run
@@ -2779,13 +2796,11 @@ async fn intercept_set_result_emits_tool_call_done_event() {
     );
 }
 
-/// Test normalize_decision_result logic: when decision.result is `true` (boolean),
-/// fallback to original arguments. When it's an object, use the object.
-/// Mirrors uncarve's `normalize_decision_tool_result`.
+/// Resume decisions do not rewrite stored arguments; tools read `resume_input`.
 #[tokio::test]
-async fn resume_with_normalize_decision_result_boolean() {
+async fn prepare_resume_preserves_arguments_and_records_decision_payload() {
     // Set up: suspend a tool, then resume with boolean `true` as decision result.
-    // With UseDecisionAsToolResult, boolean should fall back to original args.
+    // Stored arguments should remain unchanged; the decision payload is kept on resume_input.
     let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
         "dangerous",
         "c1",
@@ -2814,7 +2829,7 @@ async fn resume_with_normalize_decision_result_boolean() {
     .unwrap();
     assert_eq!(result.termination, TerminationReason::Suspended);
 
-    // Resume with boolean true — normalize_decision_result should fallback to original args
+    // Resume with boolean true — arguments stay unchanged
     prepare_resume(
         runtime.store(),
         vec![(
@@ -2836,10 +2851,17 @@ async fn resume_with_normalize_decision_result_boolean() {
     assert_eq!(
         tc_states.calls["c1"].arguments,
         json!({"action": "deploy", "target": "prod"}),
-        "boolean decision result should fallback to original arguments"
+        "boolean decision result should not rewrite stored arguments"
+    );
+    assert_eq!(
+        tc_states.calls["c1"]
+            .resume_input
+            .as_ref()
+            .map(|resume| &resume.result),
+        Some(&json!(true))
     );
 
-    // Also test with an object decision result — should use the object directly
+    // Also test with an object decision result — arguments still remain unchanged
     let runtime2 = make_runtime();
     let llm2 = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
         "dangerous",
@@ -2885,8 +2907,15 @@ async fn resume_with_normalize_decision_result_boolean() {
     let tc_states2 = runtime2.store().read::<ToolCallStates>().unwrap();
     assert_eq!(
         tc_states2.calls["c2"].arguments,
-        json!({"overridden": "args"}),
-        "object decision result should be used directly as arguments"
+        json!({"action": "deploy"}),
+        "object decision result should not rewrite stored arguments"
+    );
+    assert_eq!(
+        tc_states2.calls["c2"]
+            .resume_input
+            .as_ref()
+            .map(|resume| &resume.result),
+        Some(&json!({"overridden": "args"}))
     );
 }
 
@@ -9353,9 +9382,9 @@ async fn replay_tool_call_executes_original_tool() {
     );
 }
 
-/// UseDecisionAsToolResult: decision result replaces tool arguments.
+/// UseDecisionAsToolResult stores the decision on resume_input without rewriting arguments.
 #[tokio::test]
-async fn use_decision_replaces_args_with_decision_result() {
+async fn use_decision_records_decision_payload_without_rewriting_arguments() {
     let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
         "dangerous",
         "c1",
@@ -9403,14 +9432,22 @@ async fn use_decision_replaces_args_with_decision_result() {
     assert_eq!(tc.calls["c1"].status, ToolCallStatus::Resuming);
     assert_eq!(
         tc.calls["c1"].arguments,
-        json!({"decision_data": "replaced"}),
-        "UseDecisionAsToolResult should replace arguments with decision result"
+        json!({"original": true}),
+        "UseDecisionAsToolResult should preserve the original arguments"
+    );
+    assert_eq!(
+        tc.calls["c1"]
+            .resume_input
+            .as_ref()
+            .map(|resume| &resume.result),
+        Some(&json!({"decision_data": "replaced"})),
+        "UseDecisionAsToolResult should store the decision payload on resume_input"
     );
 }
 
-/// PassDecisionToTool: decision result becomes new tool arguments.
+/// PassDecisionToTool stores the decision on resume_input without rewriting arguments.
 #[tokio::test]
-async fn pass_decision_updates_args_for_tool() {
+async fn pass_decision_records_decision_payload_without_rewriting_arguments() {
     let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
         "dangerous",
         "c1",
@@ -9458,8 +9495,16 @@ async fn pass_decision_updates_args_for_tool() {
     assert_eq!(tc.calls["c1"].status, ToolCallStatus::Resuming);
     assert_eq!(
         tc.calls["c1"].arguments,
-        json!({"new_arg": "from_decision"}),
-        "PassDecisionToTool should update arguments with decision result"
+        json!({"original_key": "original_value"}),
+        "PassDecisionToTool should preserve the original arguments"
+    );
+    assert_eq!(
+        tc.calls["c1"]
+            .resume_input
+            .as_ref()
+            .map(|resume| &resume.result),
+        Some(&json!({"new_arg": "from_decision"})),
+        "PassDecisionToTool should store the decision payload on resume_input"
     );
 }
 

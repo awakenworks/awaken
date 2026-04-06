@@ -5,42 +5,27 @@ use std::sync::Arc;
 use crate::cancellation::CancellationToken;
 use awaken_contract::StateError;
 use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::{EventSink, VecEventSink};
+use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::message::{Message, ToolCall};
 use awaken_contract::contract::suspension::{
     ResumeDecisionAction, ToolCallResume, ToolCallResumeMode, ToolCallStatus,
 };
-use awaken_contract::contract::tool::ToolResult;
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
 use serde_json::Value;
 
 use super::step::{StepContext, execute_tools_with_interception};
 use super::{AgentLoopError, commit_update, now_ms};
-use crate::agent::state::{OptionalField, ToolCallState, ToolCallStates, ToolCallStatesUpdate};
+use crate::agent::state::{ToolCallState, ToolCallStates, ToolCallStatesUpdate};
 use crate::context::TruncationState;
 use crate::phase::PhaseRuntime;
 use crate::registry::ResolvedAgent;
 
 pub(super) enum WaitOutcome {
-    Resumed {
-        effects: ResumeEffects,
-        still_suspended: bool,
-    },
+    Resumed,
     Cancelled,
     NoDecisionChannel,
-}
-
-#[derive(Debug, Default)]
-pub(super) struct ResumeEffects {
-    pub events: Vec<AgentEvent>,
-}
-
-impl ResumeEffects {
-    fn push(&mut self, event: AgentEvent) {
-        self.events.push(event);
-    }
 }
 
 fn resolve_call_target<'a>(
@@ -65,10 +50,8 @@ fn resolve_call_target<'a>(
 /// - `Resume` → status = Resuming
 ///
 /// The runtime stores the full `ToolCallResume` and re-enters the normal tool
-/// pipeline on replay. For resume modes that explicitly project decision
-/// payloads into tool execution (`PassDecisionToTool` /
-/// `UseDecisionAsToolResult`), the stored arguments are updated for backward
-/// compatibility while hooks/tools still receive the full `resume_input`.
+/// pipeline on replay. Hooks and tools read `resume_input` from the injected
+/// context instead of relying on stored argument rewrites.
 pub fn prepare_resume(
     store: &crate::state::StateStore,
     decisions: Vec<(String, ToolCallResume)>,
@@ -86,93 +69,37 @@ pub fn prepare_resume(
         // Use the override if provided, otherwise read from the stored state.
         // Stored default is ReplayToolCall (for tools that suspended without a ticket).
         let resume_mode = resume_mode_override.unwrap_or(call_state.resume_mode);
-        let arguments = match (&resume_mode, &decision.action) {
-            (
-                ToolCallResumeMode::PassDecisionToTool
-                | ToolCallResumeMode::UseDecisionAsToolResult,
-                ResumeDecisionAction::Resume,
-            ) => normalize_decision_result(&decision.result, &call_state.arguments),
-            _ => call_state.arguments.clone(),
-        };
 
         commit_update::<ToolCallStates>(
             store,
-            ToolCallStatesUpdate::Upsert {
-                call_id: call_id.clone(),
-                tool_name: call_state.tool_name.clone(),
-                arguments,
-                status: match decision.action {
-                    ResumeDecisionAction::Resume => ToolCallStatus::Resuming,
-                    ResumeDecisionAction::Cancel => ToolCallStatus::Cancelled,
-                },
-                updated_at: now_ms(),
-                resume_mode,
-                suspension_id: OptionalField::Preserve,
-                suspension_reason: OptionalField::Preserve,
-                resume_input: OptionalField::Set(decision),
-            },
+            ToolCallStatesUpdate::Put(
+                ToolCallState::new(
+                    call_id.clone(),
+                    call_state.tool_name.clone(),
+                    call_state.arguments.clone(),
+                    match decision.action {
+                        ResumeDecisionAction::Resume => ToolCallStatus::Resuming,
+                        ResumeDecisionAction::Cancel => ToolCallStatus::Cancelled,
+                    },
+                    now_ms(),
+                )
+                .with_resume_mode(resume_mode)
+                .with_suspension(
+                    call_state.suspension_id.clone(),
+                    call_state.suspension_reason.clone(),
+                )
+                .with_resume_input(Some(decision)),
+            ),
         )?;
     }
     Ok(())
 }
 
-fn normalize_decision_result(
-    response: &serde_json::Value,
-    fallback_arguments: &serde_json::Value,
-) -> serde_json::Value {
-    match response {
-        serde_json::Value::Bool(_) => fallback_arguments.clone(),
-        value => value.clone(),
-    }
-}
-
-fn tool_result_to_resume_payload(tool_result: &ToolResult) -> Value {
-    match tool_result.status {
-        awaken_contract::contract::tool::ToolStatus::Success => {
-            if tool_result.metadata.is_empty() {
-                tool_result.data.clone()
-            } else {
-                serde_json::json!({
-                    "data": tool_result.data,
-                    "metadata": tool_result.metadata,
-                })
-            }
-        }
-        awaken_contract::contract::tool::ToolStatus::Error => {
-            if let Some(message) = tool_result.message.as_ref() {
-                serde_json::json!({ "error": message })
-            } else {
-                tool_result.data.clone()
-            }
-        }
-        awaken_contract::contract::tool::ToolStatus::Pending => Value::Null,
-    }
-}
-
-fn drain_resume_effects(raw_events: Vec<AgentEvent>) -> Vec<AgentEvent> {
-    raw_events
-        .into_iter()
-        .map(|event| match event {
-            AgentEvent::ToolCallDone {
-                id,
-                result,
-                outcome,
-                ..
-            } if outcome != awaken_contract::contract::suspension::ToolCallOutcome::Suspended => {
-                AgentEvent::ToolCallResumed {
-                    target_id: id,
-                    result: tool_result_to_resume_payload(&result),
-                }
-            }
-            other => other,
-        })
-        .collect()
-}
-
-fn emit_cancelled_resumes(
+async fn emit_cancelled_resumes(
+    sink: Arc<dyn EventSink>,
     store: &crate::state::StateStore,
     messages: &mut Vec<Arc<Message>>,
-) -> Result<ResumeEffects, AgentLoopError> {
+) -> Result<(), AgentLoopError> {
     let tool_call_states = store.read::<ToolCallStates>().unwrap_or_default();
     let mut cancelled: Vec<_> = tool_call_states
         .calls
@@ -184,25 +111,24 @@ fn emit_cancelled_resumes(
         .collect();
     cancelled.sort_by(|left, right| left.0.cmp(&right.0));
 
-    let mut effects = ResumeEffects::default();
-
     for (call_id, call_state) in cancelled {
         let result = call_state
             .resume_input
             .as_ref()
             .map(|resume| resume.result.clone())
             .unwrap_or(Value::Null);
-        effects.push(AgentEvent::ToolCallResumed {
+        sink.emit(AgentEvent::ToolCallResumed {
             target_id: call_id.clone(),
             result: result.clone(),
-        });
+        })
+        .await;
         messages.push(Arc::new(Message::tool(
             &call_id,
             serde_json::to_string(&result).unwrap_or_else(|_| "null".into()),
         )));
     }
 
-    Ok(effects)
+    Ok(())
 }
 
 pub(super) async fn detect_and_replay_resume(
@@ -210,9 +136,10 @@ pub(super) async fn detect_and_replay_resume(
     runtime: &PhaseRuntime,
     run_identity: &RunIdentity,
     messages: &mut Vec<Arc<Message>>,
-) -> Result<ResumeEffects, AgentLoopError> {
+    sink: Arc<dyn EventSink>,
+) -> Result<(), AgentLoopError> {
     let store = runtime.store();
-    let mut effects = emit_cancelled_resumes(store, messages)?;
+    emit_cancelled_resumes(sink.clone(), store, messages).await?;
     let tool_call_states = store.read::<ToolCallStates>().unwrap_or_default();
 
     let mut resuming: Vec<_> = tool_call_states
@@ -224,7 +151,7 @@ pub(super) async fn detect_and_replay_resume(
     resuming.sort_by(|left, right| left.0.cmp(&right.0));
 
     if resuming.is_empty() {
-        return Ok(effects);
+        return Ok(());
     }
 
     let mut agent = agent.clone();
@@ -235,8 +162,6 @@ pub(super) async fn detect_and_replay_resume(
     let run_created_at = now_ms();
 
     for (call_id, call_state) in resuming {
-        let sink = Arc::new(VecEventSink::new());
-        let sink_dyn: Arc<dyn EventSink> = sink.clone();
         let call = ToolCall::new(
             &call_id,
             &call_state.tool_name,
@@ -246,7 +171,7 @@ pub(super) async fn detect_and_replay_resume(
             agent: &mut agent,
             messages,
             runtime,
-            sink: sink_dyn,
+            sink: sink.clone(),
             checkpoint_store: None,
             run_identity,
             cancellation_token: None,
@@ -258,19 +183,15 @@ pub(super) async fn detect_and_replay_resume(
         };
 
         let _ = execute_tools_with_interception(&mut step_ctx, std::slice::from_ref(&call)).await?;
-        effects.events.extend(drain_resume_effects(sink.take()));
     }
 
-    Ok(effects)
+    Ok(())
 }
 
 pub(super) async fn wait_for_resume_or_cancel(
     decision_rx: Option<&mut UnboundedReceiver<Vec<(String, ToolCallResume)>>>,
     cancellation_token: Option<&CancellationToken>,
     runtime: &PhaseRuntime,
-    agent: &ResolvedAgent,
-    run_identity: &RunIdentity,
-    messages: &mut Vec<Arc<Message>>,
 ) -> Result<WaitOutcome, AgentLoopError> {
     let store = runtime.store();
     let Some(rx) = decision_rx else {
@@ -307,11 +228,7 @@ pub(super) async fn wait_for_resume_or_cancel(
         }
 
         prepare_resume(store, decisions, None)?;
-        let effects = detect_and_replay_resume(agent, runtime, run_identity, messages).await?;
-        return Ok(WaitOutcome::Resumed {
-            still_suspended: has_suspended_calls(store),
-            effects,
-        });
+        return Ok(WaitOutcome::Resumed);
     }
 }
 
@@ -334,29 +251,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn normalize_decision_result_falls_back_for_boolean() {
-        let fallback = json!({"original": "args"});
-        assert_eq!(normalize_decision_result(&json!(true), &fallback), fallback);
-        assert_eq!(
-            normalize_decision_result(&json!(false), &fallback),
-            fallback
-        );
-    }
-
-    #[test]
-    fn normalize_decision_result_uses_non_boolean_payload() {
-        let fallback = json!({"original": true});
-        assert_eq!(
-            normalize_decision_result(&json!({"key": "value"}), &fallback),
-            json!({"key": "value"})
-        );
-        assert_eq!(
-            normalize_decision_result(&json!("custom"), &fallback),
-            json!("custom")
-        );
-    }
-
-    #[test]
     fn prepare_resume_accepts_suspension_id_targets() {
         let store = StateStore::new();
         store
@@ -364,17 +258,20 @@ mod tests {
             .expect("install loop state plugin");
 
         let mut patch = MutationBatch::new();
-        patch.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
-            call_id: "c1".into(),
-            tool_name: "dangerous".into(),
-            arguments: json!({"path": "/tmp/demo"}),
-            status: ToolCallStatus::Suspended,
-            updated_at: 1,
-            resume_mode: ToolCallResumeMode::ReplayToolCall,
-            suspension_id: OptionalField::Set("perm_c1".into()),
-            suspension_reason: OptionalField::Set("tool:PermissionConfirm".into()),
-            resume_input: OptionalField::Clear,
-        });
+        patch.update::<ToolCallStates>(ToolCallStatesUpdate::Put(
+            ToolCallState::new(
+                "c1",
+                "dangerous",
+                json!({"path": "/tmp/demo"}),
+                ToolCallStatus::Suspended,
+                1,
+            )
+            .with_resume_mode(ToolCallResumeMode::ReplayToolCall)
+            .with_suspension(
+                Some("perm_c1".into()),
+                Some("tool:PermissionConfirm".into()),
+            ),
+        ));
         store.commit(patch).expect("seed suspended tool call");
 
         prepare_resume(

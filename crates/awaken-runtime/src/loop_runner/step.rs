@@ -30,9 +30,9 @@ use super::checkpoint::{StepCompletion, check_termination, complete_step};
 use super::inference::{compact_with_llm, execute_streaming};
 use super::{AgentLoopError, commit_update, now_ms, tool_result_to_content};
 use crate::agent::state::{
-    InferenceOverrideState, InferenceOverrideStateAction, OptionalField, RunLifecycle,
-    RunLifecycleUpdate, ToolCallState, ToolCallStates, ToolCallStatesUpdate, ToolFilterState,
-    ToolFilterStateAction, ToolInterceptState, ToolInterceptStateAction,
+    InferenceOverrideState, InferenceOverrideStateAction, RunLifecycle, RunLifecycleUpdate,
+    ToolCallState, ToolCallStates, ToolCallStatesUpdate, ToolFilterState, ToolFilterStateAction,
+    ToolInterceptState, ToolInterceptStateAction,
 };
 
 /// Outcome of a single step.
@@ -123,17 +123,13 @@ fn apply_tool_resume_context(
 /// Build a `StateCommand` that upserts a `ToolCallStates` entry for a given call and status.
 fn tool_call_state_cmd(call: &ToolCall, status: ToolCallStatus) -> StateCommand {
     let mut cmd = StateCommand::new();
-    cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
-        call_id: call.id.clone(),
-        tool_name: call.name.clone(),
-        arguments: call.arguments.clone(),
+    cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Put(ToolCallState::new(
+        call.id.clone(),
+        call.name.clone(),
+        call.arguments.clone(),
         status,
-        updated_at: now_ms(),
-        resume_mode: ToolCallResumeMode::default(),
-        suspension_id: OptionalField::Preserve,
-        suspension_reason: OptionalField::Clear,
-        resume_input: OptionalField::Clear,
-    });
+        now_ms(),
+    )));
     cmd
 }
 
@@ -473,44 +469,32 @@ async fn build_tool_state_command(
         .suspension
         .as_ref()
         .map(|t| t.resume_mode)
+        .or_else(|| resume_state.as_ref().map(|state| state.resume_mode))
         .unwrap_or_default();
 
     let mut cmd = tool_call_state_cmd(call, ToolCallStatus::Running);
-    cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
-        call_id: call.id.clone(),
-        tool_name: call.name.clone(),
-        arguments: call.arguments.clone(),
-        status: terminal_status,
-        updated_at: now_ms(),
-        resume_mode,
-        suspension_id: tool_result
-            .suspension
-            .as_ref()
-            .map(|ticket| OptionalField::Set(ticket.suspension.id.clone()))
-            .unwrap_or_else(|| {
-                if terminal_status == ToolCallStatus::Suspended {
-                    OptionalField::Clear
-                } else {
-                    OptionalField::Preserve
-                }
-            }),
-        suspension_reason: tool_result
-            .suspension
-            .as_ref()
-            .map(|ticket| OptionalField::Set(ticket.suspension.action.clone()))
-            .unwrap_or_else(|| {
-                if terminal_status == ToolCallStatus::Suspended {
-                    OptionalField::Clear
-                } else {
-                    OptionalField::Preserve
-                }
-            }),
-        resume_input: if terminal_status == ToolCallStatus::Suspended {
-            OptionalField::Clear
-        } else {
-            OptionalField::Preserve
-        },
-    });
+    let mut next_state = ToolCallState::new(
+        call.id.clone(),
+        call.name.clone(),
+        call.arguments.clone(),
+        terminal_status,
+        now_ms(),
+    )
+    .with_resume_mode(resume_mode);
+    if let Some(ticket) = tool_result.suspension.as_ref() {
+        next_state = next_state.with_suspension(
+            Some(ticket.suspension.id.clone()),
+            Some(ticket.suspension.action.clone()),
+        );
+    } else if let Some(resume_state) = resume_state.as_ref() {
+        next_state = next_state
+            .with_suspension(
+                resume_state.suspension_id.clone(),
+                resume_state.suspension_reason.clone(),
+            )
+            .with_resume_input(resume_state.resume_input.clone());
+    }
+    cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Put(next_state));
 
     // Merge tool's own side-effects (same mechanism as plugin hooks)
     if !tool_command.is_empty() {
@@ -549,6 +533,7 @@ async fn emit_tool_completion(
     tool_result: &awaken_contract::contract::tool::ToolResult,
     outcome: ToolCallOutcome,
 ) {
+    let resume_state = active_resume_state(ctx.runtime.store(), &call.id);
     let resume_mode = tool_result
         .suspension
         .as_ref()
@@ -565,14 +550,20 @@ async fn emit_tool_completion(
     if !(outcome == ToolCallOutcome::Suspended
         && resume_mode == ToolCallResumeMode::UseDecisionAsToolResult)
     {
-        ctx.sink
-            .emit(AgentEvent::ToolCallDone {
+        let event = if resume_state.is_some() && outcome != ToolCallOutcome::Suspended {
+            AgentEvent::ToolCallResumed {
+                target_id: call.id.clone(),
+                result: super::tool_result_to_resume_payload(tool_result),
+            }
+        } else {
+            AgentEvent::ToolCallDone {
                 id: call.id.clone(),
                 message_id: String::new(),
                 result: tool_result.clone(),
                 outcome,
-            })
-            .await;
+            }
+        };
+        ctx.sink.emit(event).await;
     }
 
     let tool_content = tool_result_to_content(tool_result);
@@ -600,17 +591,20 @@ async fn complete_tool_call(
 /// Build a suspend-only StateCommand (no AfterToolExecute — runs on resume).
 fn build_suspend_state_command(call: &ToolCall, ticket: &SuspendTicket) -> StateCommand {
     let mut cmd = StateCommand::new();
-    cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
-        call_id: call.id.clone(),
-        tool_name: call.name.clone(),
-        arguments: call.arguments.clone(),
-        status: ToolCallStatus::Suspended,
-        updated_at: now_ms(),
-        resume_mode: ticket.resume_mode,
-        suspension_id: OptionalField::Set(ticket.suspension.id.clone()),
-        suspension_reason: OptionalField::Set(ticket.suspension.action.clone()),
-        resume_input: OptionalField::Clear,
-    });
+    cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Put(
+        ToolCallState::new(
+            call.id.clone(),
+            call.name.clone(),
+            call.arguments.clone(),
+            ToolCallStatus::Suspended,
+            now_ms(),
+        )
+        .with_resume_mode(ticket.resume_mode)
+        .with_suspension(
+            Some(ticket.suspension.id.clone()),
+            Some(ticket.suspension.action.clone()),
+        ),
+    ));
     cmd
 }
 

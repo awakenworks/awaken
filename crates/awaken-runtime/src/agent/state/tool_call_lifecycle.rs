@@ -27,43 +27,67 @@ pub struct ToolCallState {
     pub resume_input: Option<ToolCallResume>,
 }
 
+impl ToolCallState {
+    pub fn new(
+        call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        arguments: Value,
+        status: ToolCallStatus,
+        updated_at: u64,
+    ) -> Self {
+        Self {
+            call_id: call_id.into(),
+            tool_name: tool_name.into(),
+            arguments,
+            status,
+            updated_at,
+            resume_mode: ToolCallResumeMode::default(),
+            suspension_id: None,
+            suspension_reason: None,
+            resume_input: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_resume_mode(mut self, resume_mode: ToolCallResumeMode) -> Self {
+        self.resume_mode = resume_mode;
+        self
+    }
+
+    #[must_use]
+    pub fn with_suspension(
+        mut self,
+        suspension_id: Option<String>,
+        suspension_reason: Option<String>,
+    ) -> Self {
+        self.suspension_id = normalize_optional_string(suspension_id);
+        self.suspension_reason = normalize_optional_string(suspension_reason);
+        self
+    }
+
+    #[must_use]
+    pub fn with_resume_input(mut self, resume_input: Option<ToolCallResume>) -> Self {
+        self.resume_input = resume_input;
+        self
+    }
+}
+
 /// Keyed collection of tool call states for the current step.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallStateMap {
     pub calls: HashMap<String, ToolCallState>,
 }
 
-/// Update for the tool call states key.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OptionalField<T> {
-    Preserve,
-    Clear,
-    Set(T),
-}
-
-impl<T> Default for OptionalField<T> {
-    fn default() -> Self {
-        Self::Preserve
-    }
+fn normalize_optional_string(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
 }
 
 pub enum ToolCallStatesUpdate {
-    /// Upsert a tool call's lifecycle state (validates transition).
-    Upsert {
-        call_id: String,
-        tool_name: String,
-        arguments: Value,
-        status: ToolCallStatus,
-        updated_at: u64,
-        /// Resume mode from the `SuspendTicket` (meaningful when status is Suspended).
-        resume_mode: ToolCallResumeMode,
-        /// External-facing suspension id, when the tool is suspended.
-        suspension_id: OptionalField<String>,
-        /// Suspension reason/action, when the tool is suspended.
-        suspension_reason: OptionalField<String>,
-        /// External resume payload applied while resuming/cancelling.
-        resume_input: OptionalField<ToolCallResume>,
-    },
+    /// Replace a tool call's lifecycle state (validates transition).
+    Put(ToolCallState),
     /// Clear all tool call states (at step boundary).
     Clear,
 }
@@ -80,80 +104,26 @@ impl StateKey for ToolCallStates {
 
     fn apply(value: &mut Self::Value, update: Self::Update) {
         match update {
-            ToolCallStatesUpdate::Upsert {
-                call_id,
-                tool_name,
-                arguments,
-                status,
-                updated_at,
-                resume_mode,
-                suspension_id,
-                suspension_reason,
-                resume_input,
-            } => {
+            ToolCallStatesUpdate::Put(state) => {
+                let call_id = state.call_id.clone();
                 let existing = value.calls.get(&call_id);
                 let current_status = existing.map(|s| s.status).unwrap_or(ToolCallStatus::New);
+                let next_status = state.status;
 
-                if !current_status.can_transition_to(status) {
+                if !current_status.can_transition_to(next_status) {
                     tracing::error!(
                         from = ?current_status,
-                        to = ?status,
+                        to = ?next_status,
                         call_id = %call_id,
                         "invalid tool call transition — skipping update"
                     );
                     return;
                 }
 
-                // Preserve stored resume_mode unless this update explicitly sets Suspended
-                let effective_resume_mode = if status == ToolCallStatus::Suspended {
-                    resume_mode
-                } else {
-                    existing.map(|s| s.resume_mode).unwrap_or(resume_mode)
-                };
-                let effective_suspension_id = match suspension_id {
-                    OptionalField::Preserve => existing.and_then(|s| s.suspension_id.clone()),
-                    OptionalField::Clear => None,
-                    OptionalField::Set(id) => {
-                        let trimmed = id.trim();
-                        if trimmed.is_empty() {
-                            None
-                        } else {
-                            Some(trimmed.to_string())
-                        }
-                    }
-                };
-                let effective_suspension_reason = match suspension_reason {
-                    OptionalField::Preserve => existing.and_then(|s| s.suspension_reason.clone()),
-                    OptionalField::Clear => None,
-                    OptionalField::Set(reason) => {
-                        let trimmed = reason.trim();
-                        if trimmed.is_empty() {
-                            None
-                        } else {
-                            Some(trimmed.to_string())
-                        }
-                    }
-                };
-                let effective_resume_input = match resume_input {
-                    OptionalField::Preserve => existing.and_then(|s| s.resume_input.clone()),
-                    OptionalField::Clear => None,
-                    OptionalField::Set(value) => Some(value),
-                };
-
-                value.calls.insert(
-                    call_id.clone(),
-                    ToolCallState {
-                        call_id,
-                        tool_name,
-                        arguments,
-                        status,
-                        updated_at,
-                        resume_mode: effective_resume_mode,
-                        suspension_id: effective_suspension_id,
-                        suspension_reason: effective_suspension_reason,
-                        resume_input: effective_resume_input,
-                    },
-                );
+                let mut state = state;
+                state.suspension_id = normalize_optional_string(state.suspension_id);
+                state.suspension_reason = normalize_optional_string(state.suspension_reason);
+                value.calls.insert(call_id, state);
             }
             ToolCallStatesUpdate::Clear => {
                 value.calls.clear();
@@ -175,17 +145,13 @@ mod tests {
     ) {
         ToolCallStates::apply(
             states,
-            ToolCallStatesUpdate::Upsert {
-                call_id: call_id.into(),
-                tool_name: tool.into(),
-                arguments: serde_json::json!({}),
+            ToolCallStatesUpdate::Put(ToolCallState::new(
+                call_id,
+                tool,
+                serde_json::json!({}),
                 status,
-                updated_at: ts,
-                resume_mode: ToolCallResumeMode::default(),
-                suspension_id: OptionalField::Preserve,
-                suspension_reason: OptionalField::Clear,
-                resume_input: OptionalField::Clear,
-            },
+                ts,
+            )),
         );
     }
 
@@ -351,17 +317,13 @@ mod tests {
         let mut states = ToolCallStateMap::default();
         ToolCallStates::apply(
             &mut states,
-            ToolCallStatesUpdate::Upsert {
-                call_id: "c1".into(),
-                tool_name: "search".into(),
-                arguments: serde_json::json!({"query": "test"}),
-                status: ToolCallStatus::Running,
-                updated_at: 100,
-                resume_mode: ToolCallResumeMode::default(),
-                suspension_id: OptionalField::Preserve,
-                suspension_reason: OptionalField::Clear,
-                resume_input: OptionalField::Clear,
-            },
+            ToolCallStatesUpdate::Put(ToolCallState::new(
+                "c1",
+                "search",
+                serde_json::json!({"query": "test"}),
+                ToolCallStatus::Running,
+                100,
+            )),
         );
         let call = &states.calls["c1"];
         assert_eq!(call.tool_name, "search");
@@ -373,37 +335,44 @@ mod tests {
         let mut states = ToolCallStateMap::default();
         ToolCallStates::apply(
             &mut states,
-            ToolCallStatesUpdate::Upsert {
-                call_id: "c1".into(),
-                tool_name: "dangerous".into(),
-                arguments: serde_json::json!({"cmd": "rm"}),
-                status: ToolCallStatus::Suspended,
-                updated_at: 100,
-                resume_mode: ToolCallResumeMode::ReplayToolCall,
-                suspension_id: OptionalField::Set("perm_c1".into()),
-                suspension_reason: OptionalField::Set("tool:PermissionConfirm".into()),
-                resume_input: OptionalField::Clear,
-            },
+            ToolCallStatesUpdate::Put(
+                ToolCallState::new(
+                    "c1",
+                    "dangerous",
+                    serde_json::json!({"cmd": "rm"}),
+                    ToolCallStatus::Suspended,
+                    100,
+                )
+                .with_resume_mode(ToolCallResumeMode::ReplayToolCall)
+                .with_suspension(
+                    Some("perm_c1".into()),
+                    Some("tool:PermissionConfirm".into()),
+                ),
+            ),
         );
         ToolCallStates::apply(
             &mut states,
-            ToolCallStatesUpdate::Upsert {
-                call_id: "c1".into(),
-                tool_name: "dangerous".into(),
-                arguments: serde_json::json!({"cmd": "rm"}),
-                status: ToolCallStatus::Cancelled,
-                updated_at: 200,
-                resume_mode: ToolCallResumeMode::ReplayToolCall,
-                suspension_id: OptionalField::Preserve,
-                suspension_reason: OptionalField::Preserve,
-                resume_input: OptionalField::Set(ToolCallResume {
+            ToolCallStatesUpdate::Put(
+                ToolCallState::new(
+                    "c1",
+                    "dangerous",
+                    serde_json::json!({"cmd": "rm"}),
+                    ToolCallStatus::Cancelled,
+                    200,
+                )
+                .with_resume_mode(ToolCallResumeMode::ReplayToolCall)
+                .with_suspension(
+                    Some("perm_c1".into()),
+                    Some("tool:PermissionConfirm".into()),
+                )
+                .with_resume_input(Some(ToolCallResume {
                     decision_id: "d1".into(),
                     action: awaken_contract::contract::suspension::ResumeDecisionAction::Cancel,
                     result: serde_json::json!({"approved": false}),
                     reason: Some("user denied".into()),
                     updated_at: 200,
-                }),
-            },
+                })),
+            ),
         );
         let call = &states.calls["c1"];
         assert_eq!(call.suspension_id.as_deref(), Some("perm_c1"));
