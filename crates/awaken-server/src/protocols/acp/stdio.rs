@@ -470,6 +470,18 @@ fn path_title(uri: &str) -> Option<String> {
 mod tests {
     use super::super::types::ProtocolVersion;
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use crate::protocols::acp::types as wire_types;
+    use async_trait::async_trait;
+    use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
+    use awaken_contract::contract::inference::{
+        StopReason as RuntimeStopReason, StreamResult, TokenUsage,
+    };
+    use awaken_contract::contract::message::ToolCall as RuntimeToolCall;
+    use awaken_contract::contract::tool::{FrontEndTool, ToolDescriptor};
+    use awaken_runtime::builder::AgentRuntimeBuilder;
+    use awaken_runtime::registry::traits::ModelEntry;
     use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, split};
     use tokio::time::{Duration, timeout};
 
@@ -488,6 +500,74 @@ mod tests {
 
     fn test_runtime() -> Arc<AgentRuntime> {
         Arc::new(AgentRuntime::new(Arc::new(StubResolver)))
+    }
+
+    struct FrontendToolMockExecutor {
+        call_count: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl awaken_contract::contract::executor::LlmExecutor for FrontendToolMockExecutor {
+        async fn execute(
+            &self,
+            _request: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            let count = self.call_count.fetch_add(1, Ordering::Relaxed);
+            if count == 0 {
+                Ok(StreamResult {
+                    content: vec![],
+                    tool_calls: vec![RuntimeToolCall::new(
+                        "call_frontend_1",
+                        "ask_user",
+                        serde_json::json!({"question": "What color?"}),
+                    )],
+                    usage: Some(TokenUsage::default()),
+                    stop_reason: Some(RuntimeStopReason::ToolUse),
+                    has_incomplete_tool_calls: false,
+                })
+            } else {
+                Ok(StreamResult {
+                    content: vec![RuntimeContentBlock::text("unexpected follow-up turn")],
+                    tool_calls: vec![],
+                    usage: Some(TokenUsage::default()),
+                    stop_reason: Some(RuntimeStopReason::EndTurn),
+                    has_incomplete_tool_calls: false,
+                })
+            }
+        }
+
+        fn name(&self) -> &str {
+            "frontend-mock"
+        }
+    }
+
+    fn frontend_tool_runtime() -> Arc<AgentRuntime> {
+        let frontend_tool = ToolDescriptor::new("ask_user", "ask_user", "Ask the user a question");
+
+        let builder = AgentRuntimeBuilder::new()
+            .with_model(
+                "test-model",
+                ModelEntry {
+                    provider: "mock".into(),
+                    model_name: "mock-model".into(),
+                },
+            )
+            .with_provider(
+                "mock",
+                Arc::new(FrontendToolMockExecutor {
+                    call_count: AtomicUsize::new(0),
+                }),
+            )
+            .with_tool("ask_user", Arc::new(FrontEndTool::new(frontend_tool)))
+            .with_agent_spec(awaken_contract::registry_spec::AgentSpec {
+                id: "frontend".into(),
+                model: "test-model".into(),
+                system_prompt: "You delegate to a frontend tool".into(),
+                max_rounds: 2,
+                ..Default::default()
+            });
+
+        Arc::new(builder.build().expect("build runtime"))
     }
 
     async fn run_stdio_exchange(runtime: Arc<AgentRuntime>, input: &[u8]) -> String {
@@ -734,5 +814,54 @@ mod tests {
         let output_str = run_stdio_exchange(runtime, input.as_bytes()).await;
         let lines: Vec<&str> = output_str.trim().lines().collect();
         assert_eq!(lines.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn prompt_rejects_generic_frontend_tool_suspension() {
+        let runtime = frontend_tool_runtime();
+        let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
+        let (client_tx, mut client_rx) = mpsc::unbounded_channel();
+        let agent = AcpAgent::new(runtime, Arc::clone(&sessions), client_tx);
+
+        let client_task = tokio::spawn(async move {
+            while let Some(command) = client_rx.recv().await {
+                match command {
+                    ClientCommand::SessionNotification { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    ClientCommand::RequestPermission { response_tx, .. } => {
+                        let _ = response_tx.send(Err(acp::Error::new(
+                            -32603,
+                            "generic frontend suspension must not be converted into request_permission",
+                        )));
+                    }
+                }
+            }
+        });
+
+        let session = acp::Agent::new_session(&agent, wire_types::NewSessionRequest::new("/tmp"))
+            .await
+            .expect("new_session should succeed");
+
+        let err = acp::Agent::prompt(
+            &agent,
+            wire_types::PromptRequest::new(
+                session.session_id,
+                vec![wire_types::ContentBlock::from(
+                    "ask the frontend user a question",
+                )],
+            ),
+        )
+        .await
+        .expect_err("generic frontend tool suspension should be rejected");
+
+        assert!(
+            err.message
+                .contains("only supports suspended tool action 'tool:PermissionConfirm'"),
+            "unexpected ACP error: {err:?}"
+        );
+
+        client_task.abort();
+        let _ = client_task.await;
     }
 }
