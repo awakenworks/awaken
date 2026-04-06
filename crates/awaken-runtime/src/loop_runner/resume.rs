@@ -126,6 +126,20 @@ async fn emit_cancelled_resumes(
             &call_id,
             serde_json::to_string(&result).unwrap_or_else(|_| "null".into()),
         )));
+
+        commit_update::<ToolCallStates>(
+            store,
+            ToolCallStatesUpdate::Put(
+                ToolCallState::new(
+                    call_state.call_id,
+                    call_state.tool_name,
+                    call_state.arguments,
+                    ToolCallStatus::Cancelled,
+                    now_ms(),
+                )
+                .with_resume_mode(call_state.resume_mode),
+            ),
+        )?;
     }
 
     Ok(())

@@ -106,6 +106,49 @@ fn encoder_public_permission_request_smoke() {
 }
 
 #[test]
+fn encoder_rejects_unsupported_suspended_tool_actions() {
+    let mut encoder = enc();
+    let ready = encoder.on_agent_event(&AgentEvent::ToolCallReady {
+        id: "fc_1".into(),
+        name: "ask_user".into(),
+        arguments: json!({"question": "What color?"}),
+    });
+    assert_eq!(ready.len(), 1);
+
+    let suspended = encoder.on_agent_event(&AgentEvent::ToolCallDone {
+        id: "fc_1".into(),
+        message_id: "m1".into(),
+        result: ToolResult::suspended_with(
+            "ask_user",
+            "awaiting frontend handling",
+            SuspendTicket::new(
+                Suspension {
+                    action: "tool:ask_user".into(),
+                    ..Default::default()
+                },
+                PendingToolCall::new(
+                    "suspend_fc_1",
+                    "ask_user",
+                    json!({"question": "What color?"}),
+                ),
+                ToolCallResumeMode::UseDecisionAsToolResult,
+            ),
+        ),
+        outcome: ToolCallOutcome::Suspended,
+    });
+
+    assert_eq!(suspended.len(), 1);
+    match &suspended[0] {
+        AcpOutput::Error { message, .. } => {
+            assert!(
+                message.contains("only supports suspended tool action 'tool:PermissionConfirm'")
+            );
+        }
+        other => panic!("expected Error, got: {other:?}"),
+    }
+}
+
+#[test]
 fn encoder_terminal_guard_smoke() {
     let mut encoder = enc();
     let finish = encoder.on_agent_event(&AgentEvent::RunFinish {

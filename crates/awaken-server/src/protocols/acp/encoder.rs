@@ -139,7 +139,7 @@ impl AcpEncoder {
                     if ticket.suspension.action != "tool:PermissionConfirm" {
                         return vec![AcpOutput::Error {
                             message: format!(
-                                "ACP stdio does not support suspended tool action '{}'",
+                                "ACP stdio only supports suspended tool action 'tool:PermissionConfirm'; got '{}'",
                                 ticket.suspension.action
                             ),
                             code: None,

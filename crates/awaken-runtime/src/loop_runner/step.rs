@@ -486,13 +486,6 @@ async fn build_tool_state_command(
             Some(ticket.suspension.id.clone()),
             Some(ticket.suspension.action.clone()),
         );
-    } else if let Some(resume_state) = resume_state.as_ref() {
-        next_state = next_state
-            .with_suspension(
-                resume_state.suspension_id.clone(),
-                resume_state.suspension_reason.clone(),
-            )
-            .with_resume_input(resume_state.resume_input.clone());
     }
     cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Put(next_state));
 
@@ -725,7 +718,7 @@ pub(super) async fn execute_tools_with_interception(
         .iter()
         .any(|call| active_resume_state(store, &call.id).is_some());
 
-    if ctx.agent.tool_executor.requires_incremental_state() || requires_resume_context {
+    if ctx.agent.tool_executor.requires_incremental_state() {
         // Incremental: execute one-by-one, commit per call
         for call in &allowed_calls {
             let resume_state = active_resume_state(store, &call.id);
@@ -757,6 +750,87 @@ pub(super) async fn execute_tools_with_interception(
 
             if outcome == ToolCallOutcome::Suspended {
                 suspended = true;
+                break;
+            }
+        }
+    } else if requires_resume_context {
+        let mut index = 0;
+        while index < allowed_calls.len() {
+            let call = &allowed_calls[index];
+            let resume_state = active_resume_state(store, &call.id);
+
+            if let Some(resume_state) = resume_state.as_ref() {
+                let mut tool_ctx = base_tool_ctx.clone();
+                tool_ctx.call_id = call.id.clone();
+                tool_ctx.tool_name = call.name.clone();
+                tool_ctx.snapshot = store.snapshot();
+                tool_ctx = apply_tool_resume_context(tool_ctx, Some(resume_state));
+
+                let mut batch = ctx
+                    .agent
+                    .tool_executor
+                    .execute(&ctx.agent.tools, std::slice::from_ref(call), &tool_ctx)
+                    .await
+                    .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
+                let Some(exec_result) = batch.pop() else {
+                    index += 1;
+                    continue;
+                };
+
+                let outcome = exec_result.outcome;
+                complete_tool_call(
+                    ctx,
+                    &exec_result.call,
+                    &exec_result.result,
+                    exec_result.command,
+                    outcome,
+                )
+                .await?;
+
+                if outcome == ToolCallOutcome::Suspended {
+                    suspended = true;
+                    break;
+                }
+
+                index += 1;
+                continue;
+            }
+
+            let segment_start = index;
+            while index < allowed_calls.len()
+                && active_resume_state(store, &allowed_calls[index].id).is_none()
+            {
+                index += 1;
+            }
+            let segment = &allowed_calls[segment_start..index];
+            let mut segment_ctx = base_tool_ctx.clone();
+            segment_ctx.snapshot = store.snapshot();
+
+            let exec_results = ctx
+                .agent
+                .tool_executor
+                .execute(&ctx.agent.tools, segment, &segment_ctx)
+                .await
+                .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
+
+            let mut segment_suspended = false;
+            for exec_result in exec_results {
+                let outcome = exec_result.outcome;
+                complete_tool_call(
+                    ctx,
+                    &exec_result.call,
+                    &exec_result.result,
+                    exec_result.command,
+                    outcome,
+                )
+                .await?;
+                if outcome == ToolCallOutcome::Suspended {
+                    suspended = true;
+                    segment_suspended = true;
+                }
+            }
+
+            if segment_suspended {
                 break;
             }
         }
