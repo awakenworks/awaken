@@ -400,3 +400,18 @@ function asString(value: unknown): string {
 function asNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
+
+export function moveItem<T>(items: T[], fromIndex: number, toIndex: number): T[] {
+  const next = [...items];
+  const [item] = next.splice(fromIndex, 1);
+  next.splice(toIndex, 0, item);
+  return next;
+}
+
+export function createReminderField(): ReminderFieldConfig {
+  return {
+    path: "",
+    op: "glob",
+    value: "",
+  };
+}

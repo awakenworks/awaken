@@ -1,5 +1,7 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { type ModelSpec, type ProviderRecord, configApi } from "@/lib/config-api";
+import { useCrudPage } from "@/lib/use-crud-page";
+import { Field } from "@/components/form-components";
 
 const EMPTY_MODEL: ModelSpec = {
   id: "",
@@ -7,103 +9,26 @@ const EMPTY_MODEL: ModelSpec = {
   model: "",
 };
 
+const auxiliaryLoaders = () =>
+  configApi
+    .list<ProviderRecord>("providers")
+    .then((response) => response.items.map((provider) => provider.id));
+
 export function ModelsPage() {
-  const [models, setModels] = useState<ModelSpec[]>([]);
-  const [providerIds, setProviderIds] = useState<string[]>([]);
-  const [draft, setDraft] = useState<ModelSpec | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const crud = useCrudPage<ModelSpec>({
+    namespace: "models",
+    entityLabel: "model",
+    auxiliaryLoaders,
+  });
+
+  const providerIds = crud.auxiliaryData as string[];
   const providerOptions = useMemo(() => {
     const options = new Set(providerIds);
-    if (draft?.provider) {
-      options.add(draft.provider);
+    if (crud.draft?.provider) {
+      options.add(crud.draft.provider);
     }
     return Array.from(options).sort((left, right) => left.localeCompare(right));
-  }, [draft?.provider, providerIds]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      setLoading(true);
-      try {
-        const [modelResponse, providerResponse] = await Promise.all([
-          configApi.list<ModelSpec>("models"),
-          configApi.list<ProviderRecord>("providers"),
-        ]);
-        if (!cancelled) {
-          setModels(modelResponse.items);
-          setProviderIds(providerResponse.items.map((provider) => provider.id));
-          setError(null);
-        }
-      } catch (loadError) {
-        if (!cancelled) {
-          setError(
-            loadError instanceof Error ? loadError.message : String(loadError),
-          );
-          setModels([]);
-          setProviderIds([]);
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    }
-
-    void load();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  async function handleSave() {
-    if (!draft) {
-      return;
-    }
-
-    setSaving(true);
-    try {
-      const exists = models.some((model) => model.id === draft.id);
-      if (exists) {
-        const updated = await configApi.update<ModelSpec>("models", draft.id, draft);
-        setModels((current) =>
-          current.map((model) => (model.id === updated.id ? updated : model)),
-        );
-      } else {
-        const created = await configApi.create<ModelSpec>("models", draft);
-        setModels((current) =>
-          [...current.filter((model) => model.id !== created.id), created].sort((left, right) =>
-            left.id.localeCompare(right.id),
-          ),
-        );
-      }
-      setDraft(null);
-      setError(null);
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : String(saveError));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleDelete(id: string) {
-    if (!confirm(`Delete model "${id}"?`)) {
-      return;
-    }
-
-    try {
-      await configApi.delete("models", id);
-      setModels((current) => current.filter((model) => model.id !== id));
-      setError(null);
-    } catch (deleteError) {
-      setError(
-        deleteError instanceof Error ? deleteError.message : String(deleteError),
-      );
-    }
-  }
+  }, [crud.draft?.provider, providerIds]);
 
   return (
     <div className="mx-auto max-w-5xl p-6 md:p-8">
@@ -116,30 +41,30 @@ export function ModelsPage() {
         </div>
         <button
           type="button"
-          onClick={() => setDraft({ ...EMPTY_MODEL })}
+          onClick={() => crud.startNew({ ...EMPTY_MODEL })}
           className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
         >
           New Model
         </button>
       </div>
 
-      {error ? (
+      {crud.error ? (
         <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          {error}
+          {crud.error}
         </div>
       ) : null}
 
-      {draft ? (
+      {crud.draft ? (
         <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h3 className="text-lg font-semibold text-slate-950">
-            {models.some((model) => model.id === draft.id) ? "Edit model" : "Create model"}
+            {crud.isEditingExisting ? "Edit model" : "Create model"}
           </h3>
           <div className="mt-4 grid gap-4 md:grid-cols-3">
             <Field label="Model ID">
               <input
-                value={draft.id}
+                value={crud.draft.id}
                 onChange={(event) =>
-                  setDraft((current) =>
+                  crud.setDraft((current) =>
                     current ? { ...current, id: event.target.value } : current,
                   )
                 }
@@ -148,9 +73,9 @@ export function ModelsPage() {
             </Field>
             <Field label="Provider ID">
               <select
-                value={draft.provider}
+                value={crud.draft.provider}
                 onChange={(event) =>
-                  setDraft((current) =>
+                  crud.setDraft((current) =>
                     current
                       ? { ...current, provider: event.target.value }
                       : current,
@@ -168,9 +93,9 @@ export function ModelsPage() {
             </Field>
             <Field label="Upstream Model">
               <input
-                value={draft.model}
+                value={crud.draft.model}
                 onChange={(event) =>
-                  setDraft((current) =>
+                  crud.setDraft((current) =>
                     current ? { ...current, model: event.target.value } : current,
                   )
                 }
@@ -182,15 +107,15 @@ export function ModelsPage() {
           <div className="mt-5 flex gap-3">
             <button
               type="button"
-              onClick={() => void handleSave()}
-              disabled={saving}
+              onClick={() => void crud.handleSave()}
+              disabled={crud.saving}
               className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {saving ? "Saving..." : "Save"}
+              {crud.saving ? "Saving..." : "Save"}
             </button>
             <button
               type="button"
-              onClick={() => setDraft(null)}
+              onClick={crud.cancelEdit}
               className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
             >
               Cancel
@@ -200,9 +125,9 @@ export function ModelsPage() {
       ) : null}
 
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-        {loading ? (
+        {crud.loading ? (
           <div className="px-5 py-6 text-sm text-slate-500">Loading models...</div>
-        ) : models.length === 0 ? (
+        ) : crud.items.length === 0 ? (
           <div className="px-5 py-6 text-sm text-slate-500">
             No managed models yet.
           </div>
@@ -217,7 +142,7 @@ export function ModelsPage() {
               </tr>
             </thead>
             <tbody>
-              {models.map((model) => (
+              {crud.items.map((model) => (
                 <tr
                   key={model.id}
                   className="border-t border-slate-200 text-sm text-slate-700"
@@ -229,14 +154,14 @@ export function ModelsPage() {
                     <div className="flex gap-4">
                       <button
                         type="button"
-                        onClick={() => setDraft({ ...model })}
+                        onClick={() => crud.startEdit(model)}
                         className="font-medium text-slate-700 transition hover:text-slate-950"
                       >
                         Edit
                       </button>
                       <button
                         type="button"
-                        onClick={() => void handleDelete(model.id)}
+                        onClick={() => void crud.handleDelete(model.id)}
                         className="font-medium text-rose-600 transition hover:text-rose-700"
                       >
                         Delete
@@ -250,20 +175,5 @@ export function ModelsPage() {
         )}
       </div>
     </div>
-  );
-}
-
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}) {
-  return (
-    <label className="block">
-      <span className="mb-1.5 block text-sm font-medium text-slate-600">{label}</span>
-      {children}
-    </label>
   );
 }

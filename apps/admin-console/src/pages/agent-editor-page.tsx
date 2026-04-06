@@ -1,6 +1,7 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { type AgentSpec, type Capabilities, configApi } from "@/lib/config-api";
+import { Field } from "@/components/form-components";
 import { AgentPreviewPanel } from "@/components/agent-preview-panel";
 import { PluginConfigWorkspace } from "@/components/plugin-config-workspace";
 import { pluginConfigEntryKey, pluginDisplayName } from "@/lib/plugin-config";
@@ -509,20 +510,5 @@ export function AgentEditorPage() {
         <AgentPreviewPanel draft={spec} />
       </div>
     </div>
-  );
-}
-
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}) {
-  return (
-    <label className="block">
-      <span className="mb-1.5 block text-sm font-medium text-slate-600">{label}</span>
-      {children}
-    </label>
   );
 }

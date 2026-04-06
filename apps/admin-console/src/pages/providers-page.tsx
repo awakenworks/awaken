@@ -1,9 +1,10 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   type ProviderRecord,
   type ProviderSpec,
-  configApi,
 } from "@/lib/config-api";
+import { useCrudPage } from "@/lib/use-crud-page";
+import { Field, ModeButton } from "@/components/form-components";
 
 const KNOWN_ADAPTERS = [
   "anthropic",
@@ -27,135 +28,58 @@ const EMPTY_PROVIDER: ProviderRecord = {
 };
 
 export function ProvidersPage() {
-  const [providers, setProviders] = useState<ProviderRecord[]>([]);
-  const [draft, setDraft] = useState<ProviderRecord | null>(null);
   const [apiKeyMode, setApiKeyMode] = useState<ApiKeyMode>("replace");
   const [apiKeyDraft, setApiKeyDraft] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  const isEditingExisting = useMemo(
-    () => (draft ? providers.some((provider) => provider.id === draft.id) : false),
-    [draft, providers],
+  const prepareSave = useCallback(
+    (draft: ProviderRecord): ProviderSpec => {
+      const payload: ProviderSpec = {
+        ...draft,
+        timeout_secs: Number(draft.timeout_secs) || 300,
+      };
+
+      if (apiKeyMode === "replace") {
+        if (apiKeyDraft.trim().length > 0) {
+          payload.api_key = apiKeyDraft.trim();
+        }
+      } else if (apiKeyMode === "clear") {
+        payload.api_key = "";
+      }
+
+      return payload;
+    },
+    [apiKeyMode, apiKeyDraft],
   );
+
+  const crud = useCrudPage<ProviderRecord, ProviderSpec>({
+    namespace: "providers",
+    entityLabel: "provider",
+    prepareSave,
+  });
+
   const adapterOptions = useMemo(() => {
     const options = new Set(KNOWN_ADAPTERS);
-    if (draft?.adapter) {
-      options.add(draft.adapter);
+    if (crud.draft?.adapter) {
+      options.add(crud.draft.adapter);
     }
     return Array.from(options).sort((left, right) => left.localeCompare(right));
-  }, [draft?.adapter]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      setLoading(true);
-      try {
-        const response = await configApi.list<ProviderRecord>("providers");
-        if (!cancelled) {
-          setProviders(response.items);
-          setError(null);
-        }
-      } catch (loadError) {
-        if (!cancelled) {
-          setError(
-            loadError instanceof Error ? loadError.message : String(loadError),
-          );
-          setProviders([]);
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    }
-
-    void load();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  }, [crud.draft?.adapter]);
 
   function startCreate() {
-    setDraft({ ...EMPTY_PROVIDER });
+    crud.startNew({ ...EMPTY_PROVIDER });
     setApiKeyMode("replace");
     setApiKeyDraft("");
   }
 
   function startEdit(provider: ProviderRecord) {
-    setDraft({ ...provider });
+    crud.startEdit(provider);
     setApiKeyMode("preserve");
     setApiKeyDraft("");
   }
 
   async function handleSave() {
-    if (!draft) {
-      return;
-    }
-
-    const payload: ProviderSpec = {
-      ...draft,
-      timeout_secs: Number(draft.timeout_secs) || 300,
-    };
-
-    if (apiKeyMode === "replace") {
-      if (apiKeyDraft.trim().length > 0) {
-        payload.api_key = apiKeyDraft.trim();
-      }
-    } else if (apiKeyMode === "clear") {
-      payload.api_key = "";
-    }
-
-    setSaving(true);
-    try {
-      if (isEditingExisting) {
-        const updated = await configApi.update<ProviderSpec, ProviderRecord>(
-          "providers",
-          draft.id,
-          payload,
-        );
-        setProviders((current) =>
-          current.map((provider) => (provider.id === updated.id ? updated : provider)),
-        );
-      } else {
-        const created = await configApi.create<ProviderSpec, ProviderRecord>(
-          "providers",
-          payload,
-        );
-        setProviders((current) =>
-          [...current.filter((provider) => provider.id !== created.id), created].sort(
-            (left, right) => left.id.localeCompare(right.id),
-          ),
-        );
-      }
-
-      setDraft(null);
-      setApiKeyDraft("");
-      setError(null);
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : String(saveError));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleDelete(id: string) {
-    if (!confirm(`Delete provider "${id}"?`)) {
-      return;
-    }
-
-    try {
-      await configApi.delete("providers", id);
-      setProviders((current) => current.filter((provider) => provider.id !== id));
-      setError(null);
-    } catch (deleteError) {
-      setError(
-        deleteError instanceof Error ? deleteError.message : String(deleteError),
-      );
-    }
+    await crud.handleSave();
+    setApiKeyDraft("");
   }
 
   return (
@@ -176,24 +100,24 @@ export function ProvidersPage() {
         </button>
       </div>
 
-      {error ? (
+      {crud.error ? (
         <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          {error}
+          {crud.error}
         </div>
       ) : null}
 
-      {draft ? (
+      {crud.draft ? (
         <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h3 className="text-lg font-semibold text-slate-950">
-            {isEditingExisting ? "Edit provider" : "Create provider"}
+            {crud.isEditingExisting ? "Edit provider" : "Create provider"}
           </h3>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
             <Field label="Provider ID">
               <input
-                value={draft.id}
+                value={crud.draft.id}
                 onChange={(event) =>
-                  setDraft((current) =>
+                  crud.setDraft((current) =>
                     current ? { ...current, id: event.target.value } : current,
                   )
                 }
@@ -203,9 +127,9 @@ export function ProvidersPage() {
 
             <Field label="Adapter">
               <select
-                value={draft.adapter}
+                value={crud.draft.adapter}
                 onChange={(event) =>
-                  setDraft((current) =>
+                  crud.setDraft((current) =>
                     current ? { ...current, adapter: event.target.value } : current,
                   )
                 }
@@ -221,9 +145,9 @@ export function ProvidersPage() {
 
             <Field label="Base URL">
               <input
-                value={String(draft.base_url ?? "")}
+                value={String(crud.draft.base_url ?? "")}
                 onChange={(event) =>
-                  setDraft((current) =>
+                  crud.setDraft((current) =>
                     current
                       ? {
                           ...current,
@@ -240,9 +164,9 @@ export function ProvidersPage() {
               <input
                 type="number"
                 min={1}
-                value={Number(draft.timeout_secs ?? 300)}
+                value={Number(crud.draft.timeout_secs ?? 300)}
                 onChange={(event) =>
-                  setDraft((current) =>
+                  crud.setDraft((current) =>
                     current
                       ? {
                           ...current,
@@ -261,15 +185,15 @@ export function ProvidersPage() {
               <div>
                 <h4 className="text-sm font-semibold text-slate-900">API Key</h4>
                 <p className="mt-1 text-sm text-slate-500">
-                  {isEditingExisting
-                    ? draft.has_api_key
+                  {crud.isEditingExisting
+                    ? crud.draft.has_api_key
                       ? "A key is currently stored. Keep it, replace it, or clear it."
                       : "No stored key. Requests will fall back to the adapter environment variable."
                     : "Optional. Leave empty to use the adapter environment variable."}
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
-                {isEditingExisting ? (
+                {crud.isEditingExisting ? (
                   <>
                     <ModeButton
                       active={apiKeyMode === "preserve"}
@@ -311,14 +235,14 @@ export function ProvidersPage() {
             <button
               type="button"
               onClick={() => void handleSave()}
-              disabled={saving}
+              disabled={crud.saving}
               className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {saving ? "Saving..." : "Save"}
+              {crud.saving ? "Saving..." : "Save"}
             </button>
             <button
               type="button"
-              onClick={() => setDraft(null)}
+              onClick={crud.cancelEdit}
               className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
             >
               Cancel
@@ -328,11 +252,11 @@ export function ProvidersPage() {
       ) : null}
 
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-        {loading ? (
+        {crud.loading ? (
           <div className="px-5 py-6 text-sm text-slate-500">
             Loading providers...
           </div>
-        ) : providers.length === 0 ? (
+        ) : crud.items.length === 0 ? (
           <div className="px-5 py-6 text-sm text-slate-500">
             No managed providers yet.
           </div>
@@ -348,7 +272,7 @@ export function ProvidersPage() {
               </tr>
             </thead>
             <tbody>
-              {providers.map((provider) => (
+              {crud.items.map((provider) => (
                 <tr
                   key={provider.id}
                   className="border-t border-slate-200 text-sm text-slate-700"
@@ -372,7 +296,7 @@ export function ProvidersPage() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => void handleDelete(provider.id)}
+                        onClick={() => void crud.handleDelete(provider.id)}
                         className="font-medium text-rose-600 transition hover:text-rose-700"
                       >
                         Delete
@@ -386,45 +310,5 @@ export function ProvidersPage() {
         )}
       </div>
     </div>
-  );
-}
-
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}) {
-  return (
-    <label className="block">
-      <span className="mb-1.5 block text-sm font-medium text-slate-600">{label}</span>
-      {children}
-    </label>
-  );
-}
-
-function ModeButton({
-  active,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={[
-        "rounded-full px-3 py-1.5 text-xs font-medium transition",
-        active
-          ? "bg-slate-950 text-white"
-          : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-100",
-      ].join(" ")}
-    >
-      {label}
-    </button>
   );
 }
