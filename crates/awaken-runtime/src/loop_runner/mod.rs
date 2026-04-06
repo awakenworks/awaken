@@ -29,8 +29,9 @@ use awaken_contract::contract::inference::InferenceOverride;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::suspension::ToolCallResume;
-use awaken_contract::contract::tool::ToolResult;
+use awaken_contract::contract::tool::{ToolResult, ToolStatus};
 use futures::channel::mpsc;
+use serde_json::Value;
 
 use crate::agent::state::{RunLifecycle, ToolCallStates};
 
@@ -123,6 +124,29 @@ fn tool_result_to_content(result: &ToolResult) -> String {
     match &result.message {
         Some(msg) => msg.clone(),
         None => serde_json::to_string(&result.data).unwrap_or_default(),
+    }
+}
+
+fn tool_result_to_resume_payload(result: &ToolResult) -> Value {
+    match result.status {
+        ToolStatus::Success => {
+            if result.metadata.is_empty() {
+                result.data.clone()
+            } else {
+                serde_json::json!({
+                    "data": result.data,
+                    "metadata": result.metadata,
+                })
+            }
+        }
+        ToolStatus::Error => {
+            if let Some(message) = result.message.as_ref() {
+                serde_json::json!({ "error": message })
+            } else {
+                result.data.clone()
+            }
+        }
+        ToolStatus::Pending => Value::Null,
     }
 }
 

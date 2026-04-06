@@ -282,7 +282,8 @@ mod tests {
     use awaken_contract::PersistedState;
     use awaken_contract::contract::active_agent::ActiveAgentIdKey;
     use awaken_contract::contract::content::ContentBlock;
-    use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
+    use awaken_contract::contract::event::AgentEvent;
+    use awaken_contract::contract::event_sink::{EventSink, NullEventSink, VecEventSink};
     use awaken_contract::contract::executor::{
         InferenceExecutionError, InferenceRequest, LlmExecutor,
     };
@@ -631,16 +632,17 @@ mod tests {
             plugins: vec![],
         });
         let runtime = Arc::new(AgentRuntime::new(resolver));
+        let sink = Arc::new(VecEventSink::new());
 
         let run_task = {
             let runtime = Arc::clone(&runtime);
+            let sink = sink.clone();
             tokio::spawn(async move {
-                let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
                 runtime
                     .run(
                         RunRequest::new("thread-live", vec![Message::user("go")])
                             .with_agent_id("agent"),
-                        sink.clone(),
+                        sink as Arc<dyn EventSink>,
                     )
                     .await
             })
@@ -675,6 +677,18 @@ mod tests {
         assert_eq!(
             result.termination,
             awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd
+        );
+
+        let events = sink.take();
+        assert!(
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    AgentEvent::ToolCallResumed { target_id, result }
+                        if target_id == "c1" && result == &json!({"x": 1})
+                )
+            }),
+            "resumed replay should emit ToolCallResumed with the final tool result: {events:?}"
         );
     }
 

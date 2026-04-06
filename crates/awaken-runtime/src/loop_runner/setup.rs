@@ -9,7 +9,6 @@ use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::message::Message;
 
 use super::AgentLoopError;
-use super::resume::detect_and_replay_resume;
 
 /// All resolved state needed before the main loop begins.
 pub(super) struct PreparedRun {
@@ -23,7 +22,7 @@ pub(super) async fn prepare_run(
     runtime: &PhaseRuntime,
     initial_agent_id: &str,
     initial_messages: Vec<Message>,
-    run_identity: &RunIdentity,
+    _run_identity: &RunIdentity,
 ) -> Result<PreparedRun, AgentLoopError> {
     let store = runtime.store();
     let mut messages: Vec<Arc<Message>> = initial_messages.into_iter().map(Arc::new).collect();
@@ -59,9 +58,6 @@ pub(super) async fn prepare_run(
     if agent.context_policy().is_some() {
         crate::context::trim_to_compaction_boundary(&mut messages);
     }
-
-    // State-driven resume detection: replay any Resuming tool calls.
-    detect_and_replay_resume(&agent, store, run_identity, &mut messages).await?;
 
     Ok(PreparedRun { agent, messages })
 }
