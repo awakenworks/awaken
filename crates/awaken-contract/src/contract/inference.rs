@@ -106,7 +106,7 @@ impl LLMResponse {
 // ---------------------------------------------------------------------------
 
 /// Context window management policy.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ContextWindowPolicy {
     /// Model's total context window size in tokens.
     pub max_context_tokens: usize,
@@ -146,7 +146,9 @@ impl Default for ContextWindowPolicy {
 }
 
 /// Auto-compaction strategy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextCompactionMode {
     #[default]
@@ -164,7 +166,7 @@ pub struct InferenceModelOverride {
 }
 
 /// Reasoning effort hint, independent of any LLM provider SDK.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffort {
     None,

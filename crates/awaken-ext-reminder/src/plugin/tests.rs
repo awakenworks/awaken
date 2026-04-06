@@ -274,3 +274,13 @@ fn plugin_registers_hook_at_after_tool_execute_phase() {
     let result = plugin.register(&mut registrar);
     assert!(result.is_ok(), "register should succeed");
 }
+
+#[test]
+fn plugin_exposes_reminder_config_schema() {
+    let plugin = ReminderPlugin::new(vec![]);
+    let schemas = plugin.config_schemas();
+
+    assert_eq!(schemas.len(), 1);
+    assert_eq!(schemas[0].key, "reminder");
+    assert_eq!(schemas[0].json_schema["type"], "object");
+}

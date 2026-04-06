@@ -521,6 +521,16 @@ fn plugin_instructions_mention_all_message_types() {
 }
 
 #[test]
+fn plugin_exposes_prompt_config_schema() {
+    let plugin = A2uiPlugin::with_catalog_id(TEST_CATALOG);
+    let schemas = plugin.config_schemas();
+
+    assert_eq!(schemas.len(), 1);
+    assert_eq!(schemas[0].key, A2UI_PLUGIN_ID);
+    assert_eq!(schemas[0].json_schema["type"], "object");
+}
+
+#[test]
 fn instruction_hook_uses_agent_catalog_override() {
     let hook = super::plugin::A2uiInstructionHook::new(
         A2uiPromptConfig::default().with_catalog_id(TEST_CATALOG),

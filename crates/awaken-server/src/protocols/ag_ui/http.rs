@@ -13,7 +13,7 @@ use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume
 use crate::app::AppState;
 use crate::http_run::wire_sse_relay;
 use crate::http_sse::{sse_body_stream, sse_response};
-use crate::routes::ApiError;
+use crate::routes::{ApiError, map_mailbox_error};
 use awaken_runtime::RunRequest;
 
 use super::encoder::AgUiEncoder;
@@ -315,7 +315,7 @@ async fn ag_ui_run_inner(st: AppState, payload: AgUiRunRequest) -> Result<Respon
         .mailbox
         .submit(request)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+        .map_err(map_mailbox_error)?;
 
     let encoder = AgUiEncoder::new();
     let sse_rx = wire_sse_relay(event_rx, encoder, st.config.sse_buffer_size, None);

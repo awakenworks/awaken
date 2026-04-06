@@ -8,6 +8,7 @@
 #![allow(missing_docs)]
 
 pub mod app;
+pub mod config_routes;
 pub mod event_relay;
 pub mod http_run;
 pub mod http_sse;

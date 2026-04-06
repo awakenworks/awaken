@@ -30,7 +30,7 @@ let stdio_config = McpServerConnectionConfig::stdio(
 );
 
 // HTTP/SSE transport: connect to a running server
-let http_config = McpServerConnectionConfig::sse(
+let http_config = McpServerConnectionConfig::http(
     "remote-server",
     "http://localhost:8080/sse",
 );

@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
-use awaken_contract::StateError;
 use awaken_contract::model::Phase;
-use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
+use awaken_contract::{PluginConfigKey, StateError};
+use awaken_runtime::plugins::{ConfigSchema, Plugin, PluginDescriptor, PluginRegistrar};
 
+use crate::config::{ReminderConfigKey, ReminderRulesConfig};
 use crate::rule::ReminderRule;
 
 use super::hook::ReminderHook;
@@ -46,5 +47,13 @@ impl Plugin for ReminderPlugin {
             },
         )?;
         Ok(())
+    }
+
+    fn config_schemas(&self) -> Vec<ConfigSchema> {
+        vec![ConfigSchema {
+            key: ReminderConfigKey::KEY,
+            json_schema: serde_json::to_value(schemars::schema_for!(ReminderRulesConfig))
+                .unwrap_or_default(),
+        }]
     }
 }

@@ -16,7 +16,7 @@ use awaken_contract::contract::suspension::ToolCallResume;
 use futures::channel::mpsc;
 
 use crate::cancellation::CancellationToken;
-use crate::registry::AgentResolver;
+use crate::registry::{AgentResolver, RegistryHandle, RegistrySet, RegistrySnapshot};
 
 pub use run_request::RunRequest;
 
@@ -77,6 +77,7 @@ pub struct AgentRuntime {
     pub(crate) profile_store:
         Option<Arc<dyn awaken_contract::contract::profile_store::ProfileStore>>,
     pub(crate) active_runs: ActiveRunRegistry,
+    pub(crate) registry_handle: Option<RegistryHandle>,
     #[cfg(feature = "a2a")]
     composite_registry: Option<Arc<CompositeAgentSpecRegistry>>,
 }
@@ -88,9 +89,16 @@ impl AgentRuntime {
             storage: None,
             profile_store: None,
             active_runs: ActiveRunRegistry::new(),
+            registry_handle: None,
             #[cfg(feature = "a2a")]
             composite_registry: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_registry_handle(mut self, handle: RegistryHandle) -> Self {
+        self.registry_handle = Some(handle);
+        self
     }
 
     #[must_use]
@@ -115,6 +123,29 @@ impl AgentRuntime {
     /// Return a cloned `Arc` of the agent resolver.
     pub fn resolver_arc(&self) -> Arc<dyn AgentResolver> {
         Arc::clone(&self.resolver)
+    }
+
+    pub fn registry_handle(&self) -> Option<RegistryHandle> {
+        self.registry_handle.clone()
+    }
+
+    pub fn registry_snapshot(&self) -> Option<RegistrySnapshot> {
+        self.registry_handle.as_ref().map(RegistryHandle::snapshot)
+    }
+
+    pub fn registry_version(&self) -> Option<u64> {
+        self.registry_handle.as_ref().map(RegistryHandle::version)
+    }
+
+    pub fn registry_set(&self) -> Option<RegistrySet> {
+        self.registry_snapshot()
+            .map(RegistrySnapshot::into_registries)
+    }
+
+    pub fn replace_registry_set(&self, registries: RegistrySet) -> Option<u64> {
+        self.registry_handle
+            .as_ref()
+            .map(|handle| handle.replace(registries))
     }
 
     #[cfg(feature = "a2a")]
@@ -234,6 +265,7 @@ mod tests {
         let rt = make_runtime();
         assert!(rt.storage.is_none());
         assert!(rt.profile_store.is_none());
+        assert!(rt.registry_handle().is_none());
     }
 
     #[test]

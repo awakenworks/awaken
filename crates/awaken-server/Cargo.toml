@@ -14,6 +14,7 @@ categories.workspace = true
 awaken-contract = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
 awaken-runtime = { workspace = true }
+awaken-ext-mcp = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -34,6 +35,8 @@ reqwest = { workspace = true }
 agent-client-protocol-schema = { workspace = true }
 agent-client-protocol = { workspace = true }
 tokio-util = { workspace = true }
+genai = { workspace = true }
+schemars = { workspace = true }
 
 # MCP server
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["server", "client"] }
@@ -49,12 +52,14 @@ awaken-ext-permission = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
-awaken-stores = { workspace = true }
+awaken-stores = { workspace = true, features = ["file", "postgres"] }
 awaken-runtime = { workspace = true }
 awaken-ext-observability = { workspace = true, features = ["otel"] }
 async-trait = { workspace = true }
 genai = { workspace = true }
 uuid = { workspace = true }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "json"], default-features = false }
+tempfile = "3"
 
 [features]
 default = ["permission"]

@@ -3,12 +3,16 @@
 //! Tables are auto-created on first access via `ensure_schema()`.
 
 use async_trait::async_trait;
+use awaken_contract::contract::config_store::{
+    ConfigChangeEvent, ConfigChangeKind, ConfigChangeNotifier, ConfigChangeSubscriber, ConfigStore,
+};
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
     RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::Thread;
 use sqlx::PgPool;
+use sqlx::postgres::PgListener;
 use tokio::sync::Mutex;
 
 /// PostgreSQL storage backend.
@@ -17,6 +21,8 @@ pub struct PostgresStore {
     threads_table: String,
     runs_table: String,
     messages_table: String,
+    configs_table: String,
+    config_notify_channel: String,
     schema_ready: Mutex<bool>,
 }
 
@@ -28,6 +34,8 @@ impl PostgresStore {
             threads_table: "awaken_threads".to_string(),
             runs_table: "awaken_runs".to_string(),
             messages_table: "awaken_messages".to_string(),
+            configs_table: "awaken_configs".to_string(),
+            config_notify_channel: "awaken_config_changes".to_string(),
             schema_ready: Mutex::new(false),
         }
     }
@@ -40,6 +48,8 @@ impl PostgresStore {
             threads_table: format!("{prefix}_threads"),
             runs_table: format!("{prefix}_runs"),
             messages_table: format!("{prefix}_messages"),
+            configs_table: format!("{prefix}_configs"),
+            config_notify_channel: format!("{prefix}_config_changes"),
             schema_ready: Mutex::new(false),
         }
     }
@@ -98,6 +108,20 @@ impl PostgresStore {
                 "CREATE INDEX IF NOT EXISTS idx_{}_thread_id ON {} (thread_id)",
                 self.messages_table, self.messages_table
             ),
+            format!(
+                "CREATE TABLE IF NOT EXISTS {} (
+                    namespace TEXT NOT NULL,
+                    id TEXT NOT NULL,
+                    data JSONB NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    PRIMARY KEY (namespace, id)
+                )",
+                self.configs_table
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_{}_namespace_id ON {} (namespace, id)",
+                self.configs_table, self.configs_table
+            ),
         ];
 
         for stmt in statements {
@@ -109,6 +133,23 @@ impl PostgresStore {
 
         *ready = true;
         Ok(())
+    }
+}
+
+struct PostgresConfigChangeSubscriber {
+    listener: PgListener,
+}
+
+#[async_trait]
+impl ConfigChangeSubscriber for PostgresConfigChangeSubscriber {
+    async fn next(&mut self) -> Result<ConfigChangeEvent, StorageError> {
+        let notification = self
+            .listener
+            .recv()
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?;
+        serde_json::from_str(notification.payload())
+            .map_err(|error| StorageError::Serialization(error.to_string()))
     }
 }
 
@@ -698,6 +739,154 @@ fn parse_run_status(s: &str) -> awaken_contract::contract::lifecycle::RunStatus 
     }
 }
 
+// ── ConfigStore ─────────────────────────────────────────────────────
+
+#[async_trait]
+impl ConfigStore for PostgresStore {
+    async fn get(
+        &self,
+        namespace: &str,
+        id: &str,
+    ) -> Result<Option<serde_json::Value>, StorageError> {
+        self.ensure_schema().await?;
+        let sql = format!(
+            "SELECT data FROM {} WHERE namespace = $1 AND id = $2",
+            self.configs_table
+        );
+        let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
+            .bind(namespace)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?;
+        Ok(row.map(|(value,)| value))
+    }
+
+    async fn list(
+        &self,
+        namespace: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
+        self.ensure_schema().await?;
+        let limit = limit.min(i64::MAX as usize) as i64;
+        let offset = offset.min(i64::MAX as usize) as i64;
+        let sql = format!(
+            "SELECT id, data FROM {} WHERE namespace = $1 ORDER BY id ASC LIMIT $2 OFFSET $3",
+            self.configs_table
+        );
+        sqlx::query_as(&sql)
+            .bind(namespace)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))
+    }
+
+    async fn put(
+        &self,
+        namespace: &str,
+        id: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), StorageError> {
+        self.ensure_schema().await?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?;
+
+        let sql = format!(
+            "INSERT INTO {} (namespace, id, data) VALUES ($1, $2, $3)
+             ON CONFLICT (namespace, id) DO UPDATE SET data = $3, updated_at = now()",
+            self.configs_table
+        );
+        sqlx::query(&sql)
+            .bind(namespace)
+            .bind(id)
+            .bind(value)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?;
+
+        let payload = serde_json::to_string(&ConfigChangeEvent {
+            namespace: namespace.to_string(),
+            id: id.to_string(),
+            kind: ConfigChangeKind::Put,
+        })
+        .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        sqlx::query("SELECT pg_notify($1, $2)")
+            .bind(&self.config_notify_channel)
+            .bind(payload)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn delete(&self, namespace: &str, id: &str) -> Result<(), StorageError> {
+        self.ensure_schema().await?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?;
+
+        let sql = format!(
+            "DELETE FROM {} WHERE namespace = $1 AND id = $2",
+            self.configs_table
+        );
+        let result = sqlx::query(&sql)
+            .bind(namespace)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?;
+
+        if result.rows_affected() > 0 {
+            let payload = serde_json::to_string(&ConfigChangeEvent {
+                namespace: namespace.to_string(),
+                id: id.to_string(),
+                kind: ConfigChangeKind::Delete,
+            })
+            .map_err(|error| StorageError::Serialization(error.to_string()))?;
+            sqlx::query("SELECT pg_notify($1, $2)")
+                .bind(&self.config_notify_channel)
+                .bind(payload)
+                .execute(&mut *tx)
+                .await
+                .map_err(|error| StorageError::Io(error.to_string()))?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?;
+        Ok(())
+    }
+}
+
+// ── ConfigChangeNotifier ────────────────────────────────────────────
+
+#[async_trait]
+impl ConfigChangeNotifier for PostgresStore {
+    async fn subscribe(&self) -> Result<Box<dyn ConfigChangeSubscriber>, StorageError> {
+        self.ensure_schema().await?;
+        let mut listener = PgListener::connect_with(&self.pool)
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?;
+        listener
+            .listen(&self.config_notify_channel)
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?;
+        Ok(Box::new(PostgresConfigChangeSubscriber { listener }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -726,6 +915,11 @@ mod tests {
         let prefix = "test_prefix";
         assert_eq!(format!("{prefix}_threads"), "test_prefix_threads");
         assert_eq!(format!("{prefix}_runs"), "test_prefix_runs");
+        assert_eq!(format!("{prefix}_configs"), "test_prefix_configs");
+        assert_eq!(
+            format!("{prefix}_config_changes"),
+            "test_prefix_config_changes"
+        );
     }
 
     // Integration tests below require a running PostgreSQL server.

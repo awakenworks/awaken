@@ -11,21 +11,24 @@ pub mod travel;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
 use tower_http::cors::{Any, CorsLayer};
 
 use awaken_contract::MailboxStore;
 use awaken_contract::ProfileStore;
+use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::inference::ContextWindowPolicy;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::tool::Tool;
-use awaken_contract::registry_spec::AgentSpec;
+use awaken_contract::registry_spec::{
+    AgentSpec, McpServerSpec, McpTransportKind, ModelSpec, ProviderSpec,
+};
 use awaken_ext_generative_ui::{
     A2uiPlugin, A2uiPromptConfig, A2uiPromptConfigKey, json_render, openui,
 };
-use awaken_ext_mcp::{McpPlugin, McpServerConnectionConfig, McpToolRegistryManager};
 use awaken_ext_observability::{InMemorySink, ObservabilityPlugin};
 use awaken_ext_permission::{
     PermissionConfigKey, PermissionPlugin, PermissionRuleEntry, PermissionRulesConfig,
@@ -37,15 +40,22 @@ use awaken_ext_skills::{
     InMemorySkillRegistry, SkillDiscoveryPlugin, SkillRegistry,
 };
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_runtime::engine::{GenaiExecutor, LlmRetryPolicy, RetryingExecutor};
+use awaken_runtime::engine::{LlmRetryPolicy, RetryingExecutor};
 use awaken_runtime::plugins::Plugin;
 use awaken_runtime::policies::{
     ConsecutiveErrorsPolicy, StopConditionPlugin, StopPolicy, TimeoutPolicy, TokenBudgetPolicy,
 };
 use awaken_runtime::registry::traits::ModelEntry;
-use awaken_server::app::{AppState, ServerConfig};
+use awaken_server::app::{
+    AppState, ServerConfig, SkillCatalogArgument, SkillCatalogContext, SkillCatalogEntry,
+    SkillCatalogProvider,
+};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
+use awaken_server::services::config_runtime::{
+    ConfigRuntimeError, ConfigRuntimeManager, ProviderExecutorFactory,
+    build_genai_provider_executor,
+};
 use awaken_stores::FileStore;
 
 use crate::starter_backend::frontend_tools::FrontendToolPlugin;
@@ -116,6 +126,27 @@ impl StarterBackendConfig {
             service_name: service_name.into(),
             enable_cors,
         }
+    }
+}
+
+const DEFAULT_PROVIDER_ID: &str = "default";
+const DEFAULT_MODEL_ID: &str = "default";
+const SCRIPTED_PROVIDER_ADAPTER: &str = "scripted";
+
+#[derive(Default)]
+struct StarterProviderFactory;
+
+impl ProviderExecutorFactory for StarterProviderFactory {
+    fn build(&self, spec: &ProviderSpec) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
+        if spec.adapter.eq_ignore_ascii_case(SCRIPTED_PROVIDER_ADAPTER) {
+            let executor: Arc<dyn LlmExecutor> = Arc::new(RetryingExecutor::new(
+                Arc::new(scripted_executor::ScriptedLlmExecutor::new()),
+                LlmRetryPolicy::default(),
+            ));
+            return Ok(executor);
+        }
+
+        build_genai_provider_executor(spec)
     }
 }
 
@@ -190,6 +221,94 @@ fn infer_openai_compatible_adapter(model_name: &str) -> genai::adapter::AdapterK
     }
 }
 
+fn adapter_kind_name(kind: genai::adapter::AdapterKind) -> &'static str {
+    use genai::adapter::AdapterKind;
+
+    match kind {
+        AdapterKind::OpenAI => "openai",
+        AdapterKind::OpenAIResp => "openai_resp",
+        AdapterKind::Anthropic => "anthropic",
+        AdapterKind::DeepSeek => "deepseek",
+        AdapterKind::Together => "together",
+        AdapterKind::Fireworks => "fireworks",
+        _ => "openai",
+    }
+}
+
+fn build_default_provider_spec(model_name: &str) -> ProviderSpec {
+    let has_openai_config =
+        std::env::var("OPENAI_BASE_URL").is_ok() || std::env::var("OPENAI_API_KEY").is_ok();
+
+    if has_openai_config {
+        let adapter_override = std::env::var("OPENAI_ADAPTER").ok();
+        let adapter = resolve_openai_compatible_adapter(model_name, adapter_override.as_deref());
+        ProviderSpec {
+            id: DEFAULT_PROVIDER_ID.into(),
+            adapter: adapter_kind_name(adapter).into(),
+            api_key: std::env::var("OPENAI_API_KEY").ok(),
+            base_url: std::env::var("OPENAI_BASE_URL").ok(),
+            ..Default::default()
+        }
+    } else {
+        tracing::info!("No LLM API key found, using scripted executor for deterministic testing");
+        ProviderSpec {
+            id: DEFAULT_PROVIDER_ID.into(),
+            adapter: SCRIPTED_PROVIDER_ADAPTER.into(),
+            ..Default::default()
+        }
+    }
+}
+
+#[derive(Clone)]
+struct RegistryBackedSkillCatalogProvider {
+    registry: Arc<dyn SkillRegistry>,
+}
+
+impl RegistryBackedSkillCatalogProvider {
+    fn new(registry: Arc<dyn SkillRegistry>) -> Self {
+        Self { registry }
+    }
+}
+
+impl SkillCatalogProvider for RegistryBackedSkillCatalogProvider {
+    fn list_skills(&self) -> Vec<SkillCatalogEntry> {
+        let mut entries = self
+            .registry
+            .snapshot()
+            .into_values()
+            .map(|skill| {
+                let meta = skill.meta();
+                SkillCatalogEntry {
+                    id: meta.id.clone(),
+                    name: meta.name.clone(),
+                    description: meta.description.clone(),
+                    allowed_tools: meta.allowed_tools.clone(),
+                    when_to_use: meta.when_to_use.clone(),
+                    arguments: meta
+                        .arguments
+                        .iter()
+                        .map(|argument| SkillCatalogArgument {
+                            name: argument.name.clone(),
+                            description: argument.description.clone(),
+                            required: argument.required,
+                        })
+                        .collect(),
+                    argument_hint: meta.argument_hint.clone(),
+                    user_invocable: meta.user_invocable,
+                    model_invocable: meta.model_invocable,
+                    model_override: meta.model_override.clone(),
+                    context: match meta.context {
+                        awaken_ext_skills::SkillContext::Inline => SkillCatalogContext::Inline,
+                        awaken_ext_skills::SkillContext::Fork => SkillCatalogContext::Fork,
+                    },
+                    paths: meta.paths.clone(),
+                }
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.id.cmp(&right.id));
+        entries
+    }
+}
 /// Convert a vec of (id, tool) pairs into a HashMap.
 pub fn tool_map_from_vec(tools: Vec<(&str, Arc<dyn Tool>)>) -> HashMap<String, Arc<dyn Tool>> {
     tools
@@ -624,6 +743,62 @@ Deterministic compatibility directives:\n\
         &prompt_overrides,
     );
 
+    let mut managed_agents = vec![default_agent.clone()];
+    if default_id != "permission" {
+        managed_agents.push(permission_agent.clone());
+    }
+    if default_id != "travel" {
+        managed_agents.push(travel_agent.clone());
+    }
+    if default_id != "research" {
+        managed_agents.push(research_agent.clone());
+    }
+    if default_id != "skills" {
+        managed_agents.push(skills_agent.clone());
+    }
+    if default_id != "limited" {
+        managed_agents.push(limited_agent.clone());
+    }
+    if default_id != "thinking" {
+        managed_agents.push(thinking_agent.clone());
+    }
+    if default_id != "a2a" {
+        managed_agents.push(a2a_agent.clone());
+    }
+    if default_id != "phases" {
+        managed_agents.push(phases_agent.clone());
+    }
+    if default_id != "genui" {
+        managed_agents.push(genui_agent.clone());
+    }
+    if default_id != "a2ui" {
+        managed_agents.push(a2ui_agent.clone());
+    }
+    if default_id != "json-render" {
+        managed_agents.push(json_render_agent.clone());
+    }
+    if default_id != "openui" {
+        managed_agents.push(openui_agent.clone());
+    }
+    if default_id != "json-render-ui" {
+        managed_agents.push(json_render_ui_agent.clone());
+    }
+    if default_id != "openui-ui" {
+        managed_agents.push(openui_ui_agent.clone());
+    }
+    if default_id != "profile" {
+        managed_agents.push(profile_agent.clone());
+    }
+    if default_id != "creative" {
+        managed_agents.push(creative_agent.clone());
+    }
+    if default_id != "compact" {
+        managed_agents.push(compact_agent.clone());
+    }
+    if default_id != "budget" {
+        managed_agents.push(budget_agent.clone());
+    }
+
     // -- Tools --
 
     let generative_ui_resolver = SharedAgentResolver::default();
@@ -664,51 +839,37 @@ Deterministic compatibility directives:\n\
         ("extract_resources", Arc::new(ExtractResourcesTool)),
     ];
 
-    // -- Build genai client and provider --
-    // Use scripted executor for deterministic testing when no LLM key is set.
+    // -- Managed defaults --
 
-    let base_executor: Arc<dyn LlmExecutor> = if std::env::var("OPENAI_BASE_URL").is_ok()
-        || std::env::var("OPENAI_API_KEY").is_ok()
-    {
-        let client = build_genai_client();
-        Arc::new(GenaiExecutor::with_client(client))
-    } else {
-        tracing::info!("No LLM API key found, using scripted executor for deterministic testing");
-        Arc::new(scripted_executor::ScriptedLlmExecutor::new())
+    let provider_factory = Arc::new(StarterProviderFactory) as Arc<dyn ProviderExecutorFactory>;
+    let default_provider = build_default_provider_spec(&args.model);
+    let default_model = ModelSpec {
+        id: DEFAULT_MODEL_ID.into(),
+        provider: DEFAULT_PROVIDER_ID.into(),
+        model: args.model.clone(),
     };
+    let executor = provider_factory
+        .build(&default_provider)
+        .expect("failed to build default provider executor");
 
-    let executor: Arc<dyn LlmExecutor> = Arc::new(RetryingExecutor::new(
-        base_executor,
-        LlmRetryPolicy::default(),
-    ));
+    // -- MCP managed defaults --
 
-    // -- MCP --
-
-    let mcp_manager = if let Some(ref cmd_str) = args.mcp_server_cmd {
+    let managed_mcp_servers = if let Some(ref cmd_str) = args.mcp_server_cmd {
         let parts: Vec<&str> = cmd_str.split_whitespace().collect();
         if let Some((command, cmd_args)) = parts.split_first() {
-            let cfg = McpServerConnectionConfig::stdio(
-                "mcp_demo",
-                *command,
-                cmd_args.iter().map(|s| s.to_string()).collect(),
-            );
-            match McpToolRegistryManager::connect([cfg]).await {
-                Ok(manager) => {
-                    let registry = manager.registry();
-                    tracing::info!(tools = registry.snapshot().len(), "MCP connected");
-                    Some(manager)
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "MCP failed to connect");
-                    None
-                }
-            }
+            vec![McpServerSpec {
+                id: "mcp_demo".into(),
+                transport: McpTransportKind::Stdio,
+                command: Some((*command).to_string()),
+                args: cmd_args.iter().map(|s| s.to_string()).collect(),
+                ..Default::default()
+            }]
         } else {
             tracing::warn!("MCP_SERVER_CMD is empty");
-            None
+            Vec::new()
         }
     } else {
-        None
+        Vec::new()
     };
 
     // -- File store --
@@ -718,13 +879,12 @@ Deterministic compatibility directives:\n\
     // -- Builder --
 
     let mut builder = AgentRuntimeBuilder::new()
-        .with_agent_spec(default_agent)
-        .with_provider("default", executor)
+        .with_provider(DEFAULT_PROVIDER_ID, executor)
         .with_model(
-            "default",
+            DEFAULT_MODEL_ID,
             ModelEntry {
-                provider: "default".into(),
-                model_name: args.model.clone(),
+                provider: default_model.provider.clone(),
+                model_name: default_model.model.clone(),
             },
         )
         .with_thread_run_store(file_store.clone() as Arc<dyn ThreadRunStore>)
@@ -732,74 +892,14 @@ Deterministic compatibility directives:\n\
             Arc::new(awaken_stores::InMemoryStore::default()) as Arc<dyn ProfileStore>
         );
 
+    for agent in &managed_agents {
+        builder = builder.with_agent_spec(agent.clone());
+    }
+
     for (id, tool) in &tools {
         builder = builder.with_tool(*id, Arc::clone(tool));
     }
 
-    // Register MCP tools via plugin lifecycle
-    if let Some(ref manager) = mcp_manager {
-        builder = builder.with_plugin(
-            "mcp",
-            Arc::new(McpPlugin::new(manager.registry())) as Arc<dyn Plugin>,
-        );
-    }
-
-    // -- Agent specs (skip if already the default) --
-
-    if default_id != "permission" {
-        builder = builder.with_agent_spec(permission_agent);
-    }
-    if default_id != "travel" {
-        builder = builder.with_agent_spec(travel_agent);
-    }
-    if default_id != "research" {
-        builder = builder.with_agent_spec(research_agent);
-    }
-    if default_id != "skills" {
-        builder = builder.with_agent_spec(skills_agent);
-    }
-    if default_id != "limited" {
-        builder = builder.with_agent_spec(limited_agent);
-    }
-    if default_id != "thinking" {
-        builder = builder.with_agent_spec(thinking_agent);
-    }
-    if default_id != "a2a" {
-        builder = builder.with_agent_spec(a2a_agent);
-    }
-    if default_id != "phases" {
-        builder = builder.with_agent_spec(phases_agent);
-    }
-    if default_id != "genui" {
-        builder = builder.with_agent_spec(genui_agent);
-    }
-    if default_id != "a2ui" {
-        builder = builder.with_agent_spec(a2ui_agent);
-    }
-    if default_id != "json-render" {
-        builder = builder.with_agent_spec(json_render_agent);
-    }
-    if default_id != "openui" {
-        builder = builder.with_agent_spec(openui_agent);
-    }
-    if default_id != "json-render-ui" {
-        builder = builder.with_agent_spec(json_render_ui_agent);
-    }
-    if default_id != "openui-ui" {
-        builder = builder.with_agent_spec(openui_ui_agent);
-    }
-    if default_id != "profile" {
-        builder = builder.with_agent_spec(profile_agent);
-    }
-    if default_id != "creative" {
-        builder = builder.with_agent_spec(creative_agent);
-    }
-    if default_id != "compact" {
-        builder = builder.with_agent_spec(compact_agent);
-    }
-    if default_id != "budget" {
-        builder = builder.with_agent_spec(budget_agent);
-    }
     // -- A2A remote agents --
 
     if let Some(ref remote_url) = args.a2a_remote_url {
@@ -920,7 +1020,7 @@ Deterministic compatibility directives:\n\
     builder = builder.with_plugin("observability", Arc::new(observability) as Arc<dyn Plugin>);
 
     // Skills: embedded skill + optional filesystem discovery via CompositeSkillRegistry
-    {
+    let skill_registry: Arc<dyn SkillRegistry> = {
         static GREETING_SKILL_MD: &str = "---
 name: greeting
 description: Adds friendly greeting behavior
@@ -961,14 +1061,45 @@ Always greet the user warmly and ask how you can help today.
 
         builder = builder.with_plugin(
             "skills-discovery",
-            Arc::new(SkillDiscoveryPlugin::new(registry)) as Arc<dyn Plugin>,
+            Arc::new(SkillDiscoveryPlugin::new(registry.clone())) as Arc<dyn Plugin>,
         );
-    }
+        registry
+    };
 
     // -- Build runtime --
 
     let runtime = builder.build().expect("failed to build runtime");
     let runtime = Arc::new(runtime);
+    let config_store = file_store.clone() as Arc<dyn ConfigStore>;
+    let config_runtime_manager = Arc::new(
+        ConfigRuntimeManager::new(runtime.clone(), config_store.clone())
+            .expect("failed to initialize config runtime manager")
+            .with_provider_factory(provider_factory)
+            .with_mcp_refresh_interval(Duration::from_secs(5)),
+    );
+
+    let bootstrapped = config_runtime_manager
+        .bootstrap_if_empty(
+            std::slice::from_ref(&default_provider),
+            std::slice::from_ref(&default_model),
+            &managed_agents,
+            &managed_mcp_servers,
+        )
+        .await
+        .expect("failed to bootstrap managed config store");
+    let config_version = config_runtime_manager
+        .apply()
+        .await
+        .expect("failed to publish managed config snapshot");
+    tracing::info!(
+        bootstrapped,
+        config_version,
+        "managed config snapshot published"
+    );
+    config_runtime_manager
+        .start_periodic_refresh(Duration::from_secs(5))
+        .expect("failed to start managed config refresh");
+
     let resolver = runtime.resolver_arc();
     generative_ui_resolver.set(resolver.clone());
 
@@ -987,12 +1118,18 @@ Always greet the user warmly and ask how you can help today.
     let state = AppState::new(
         runtime,
         mailbox,
-        file_store as Arc<dyn ThreadRunStore>,
+        file_store.clone() as Arc<dyn ThreadRunStore>,
         resolver,
         ServerConfig {
             address: args.http_addr.clone(),
             ..Default::default()
         },
+    )
+    .with_config_store(config_store)
+    .with_config_runtime_manager(config_runtime_manager)
+    .with_skill_catalog_provider(
+        Arc::new(RegistryBackedSkillCatalogProvider::new(skill_registry))
+            as Arc<dyn SkillCatalogProvider>,
     );
 
     let mut app = build_router().with_state(state);
