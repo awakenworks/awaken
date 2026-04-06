@@ -8,6 +8,8 @@
 
 在 crates.io 上发布名为 `awaken-agent`，Rust 代码中的导入仍然保持为 `awaken`。
 
+在线文档：[GitHub Pages（英文）](https://awakenworks.github.io/awaken/) | [GitHub Pages（中文）](https://awakenworks.github.io/awaken/zh-CN/)
+
 ## 30 秒速览
 
 1. **Tools** — 类型化函数，JSON Schema 在编译时自动生成
@@ -25,10 +27,10 @@ Agent 选择工具、调用工具、读写状态，如此循环 — 全部由运
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.1" }
-tokio = { version = "1", features = ["full"] }
-async-trait = "0.1"
-serde_json = "1"
+awaken = { package = "awaken-agent", version = "0.1.1" }
+tokio = { version = "1.51.0", features = ["full"] }
+async-trait = "0.1.89"
+serde_json = "1.0.149"
 ```
 
 `src/main.rs`：
@@ -249,10 +251,11 @@ cd examples/ai-sdk-starter && npm install && npm run dev
 
 | 目标 | 从这里开始 | 然后 |
 |---|---|---|
-| 构建第一个 Agent | [First Agent 教程](./src/tutorials/first-agent.md) | [构建 Agent 指南](./src/how-to/build-an-agent.md) |
+| 构建第一个 Agent | [快速上手](https://awakenworks.github.io/awaken/zh-CN/get-started.html) | [构建 Agent 路径](https://awakenworks.github.io/awaken/zh-CN/build-agents.html) |
 | 查看全栈应用 | [AI SDK starter](../../examples/ai-sdk-starter/) | [CopilotKit starter](../../examples/copilotkit-starter/) |
-| 探索 API | [参考文档](./src/reference/overview.md) | `cargo doc --workspace --no-deps --open` |
-| 从 tirea 迁移 | [迁移指南](./src/appendix/migration-from-tirea.md) | |
+| 探索 API | [参考文档](https://awakenworks.github.io/awaken/zh-CN/reference/overview.html) | `cargo doc --workspace --no-deps --open` |
+| 理解运行时 | [架构](https://awakenworks.github.io/awaken/zh-CN/explanation/architecture.html) | [Run 生命周期与 Phases](https://awakenworks.github.io/awaken/zh-CN/explanation/run-lifecycle-and-phases.html) |
+| 从 tirea 迁移 | [迁移指南](https://awakenworks.github.io/awaken/zh-CN/appendix/migration-from-tirea.html) | |
 
 ## 参与贡献
 

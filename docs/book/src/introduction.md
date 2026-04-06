@@ -43,20 +43,23 @@ All state access follows snapshot isolation. Phase hooks see an immutable snapsh
 
 ## What's in This Book
 
-- **Tutorials** — Learn by building a first agent and first tool
-- **How-to** — Task-focused implementation guides for integration and operations
+- **Get Started** — build a working mental model with the smallest runnable flows
+- **Build Agents** — add tools, plugins, MCP, skills, reminders, handoff, and UI capabilities
+- **Serve & Integrate** — expose HTTP endpoints and wire AI SDK or CopilotKit frontends
+- **State & Storage** — choose persistence, context shaping, and state lookup patterns
+- **Operate** — harden runtime behavior with observability, permissions, progress reporting, and tests
 - **Reference** — API, protocol, config, and schema lookup pages
-- **Explanation** — Architecture and design rationale
+- **Architecture** — runtime layering, phase execution, and design tradeoffs
 
 ## Recommended Reading Path
 
 If you are new to the repository, use this order:
 
-1. Read [First Agent](./tutorials/first-agent.md) to see the smallest runnable flow.
-2. Read [First Tool](./tutorials/first-tool.md) to understand state reads and writes.
-3. Read [Tool Trait](./reference/tool-trait.md) before writing production tools.
-4. Use [Build an Agent](./how-to/build-an-agent.md) and [Add a Tool](./how-to/add-a-tool.md) as implementation checklists.
-5. Return to [Architecture](./explanation/architecture.md) and [Run Lifecycle and Phases](./explanation/run-lifecycle-and-phases.md) when you need the full execution model.
+1. Start with [Get Started](./get-started.md) and complete [First Agent](./tutorials/first-agent.md).
+2. Move to [Build Agents](./build-agents.md) when you are ready to add tools and plugins.
+3. Use [Serve & Integrate](./serve-and-integrate.md) when the runtime needs to talk to HTTP clients or frontends.
+4. Use [State & Storage](./state-and-storage.md) and [Operate](./operate.md) as you move from demos to production behavior.
+5. Keep [Reference Overview](./reference/overview.md) and [Architecture](./explanation/architecture.md) open when you need exact contracts or runtime internals.
 
 ## Repository Map
 
