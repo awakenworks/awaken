@@ -46,6 +46,9 @@ and `crates/awaken-server/src/config_routes.rs`.
 | `POST` | `/v1/runs/:id/cancel` | Cancel a run by run ID |
 | `POST` | `/v1/runs/:id/decision` | Submit a HITL decision by run ID |
 
+Decision endpoints resolve the submitted target identifier against either the
+underlying tool-call ID or the active external `suspension_id`.
+
 ## Config and capabilities
 
 These endpoints are exposed by `config_routes()`. They are available when

@@ -132,9 +132,12 @@ No `ResumeInput` parameter. Resume is state-driven:
 pub fn prepare_resume(
     store: &StateStore,
     decisions: Vec<(String, ToolCallResume)>,
-    resume_mode: ToolCallResumeMode,
+    resume_mode_override: Option<ToolCallResumeMode>,
 ) -> Result<(), StateError>
 ```
+
+The decision target string may be either the internal tool-call ID or the
+active external `suspension_id`.
 
 ### D8: CancellationToken — cooperative cancellation
 
@@ -147,9 +150,15 @@ When cancelled, the loop writes `RunLifecycle::Done { reason: "cancelled" }` and
 
 ### D9: Runtime decision channel
 
-During execution, the loop monitors `decision_rx` for incoming `ToolCallDecision`s. When a decision arrives for a suspended tool call, the loop applies it and continues. This enables "live resume" without stopping the loop.
+When the run is in its waiting loop, the runtime listens on `decision_rx` for
+incoming `ToolCallDecision`s. When a decision arrives for a suspended tool
+call, the loop applies it and continues. This enables live resume once the
+current step has quiesced and the run has entered `Waiting`.
 
-Initially implemented as polling between phases. Future: `tokio::select!` with streaming inference for true concurrent monitoring.
+The current implementation does not monitor `decision_rx` during arbitrary
+in-flight tool execution, and it does not expose a separate run-level
+`Running+Waiting` state. Future work could use `tokio::select!` with streaming
+inference or tool tasks for true concurrent monitoring.
 
 ## Runtime flow
 
@@ -172,7 +181,7 @@ run_agent_loop(resolver, ...)
       ├─ Check ActiveAgentKey → re-resolve if changed (handoff)
       ├─ StepStart → BeforeInference → inference → AfterInference
       ├─ Tool execution
-      ├─ Check decision_rx → apply if pending
+      ├─ If step quiesces with suspended calls: enter waiting loop on decision_rx
       ├─ StepEnd → checkpoint persist
       └─ Check RunLifecycle → break if not Running
 ```

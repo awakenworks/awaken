@@ -52,6 +52,7 @@ pub enum AgentEvent {
         delta: String,
     },
 
+    /// Final payload for a previously suspended tool call after resume/cancel.
     ToolCallResumed { target_id: String, result: Value },
 
     MessagesSnapshot { messages: Vec<Value> },
@@ -141,6 +142,10 @@ pub enum RunInput {
 }
 ```
 
+`tool_call_id` here is the resume target identifier. In concrete protocols it
+may carry either the underlying tool-call ID or the active external
+`suspension_id`; the runtime resolves both to the same suspended call.
+
 ## RunOutput
 
 Type alias for the event stream returned by a run:
@@ -175,6 +180,17 @@ pub enum ToolCallOutcome {
     Suspended,
 }
 ```
+
+## Suspend / Resume Event Semantics
+
+- `ToolCallDone { outcome: Suspended, result.suspension = Some(...) }` means a
+  new suspension has been created. The embedded `SuspendTicket` carries both the
+  external suspension payload and the pending tool-call projection.
+- `ToolCallResumed { target_id, result }` means a previously suspended call has
+  produced its post-resume terminal payload. This is emitted for both replayed
+  completion and explicit cancel/deny flows.
+- `target_id` is the underlying runtime tool-call ID used to correlate the
+  resumed outcome with the original suspended call.
 
 ## TokenUsage
 

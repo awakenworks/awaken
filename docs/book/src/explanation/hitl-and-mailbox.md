@@ -36,6 +36,24 @@ pub struct PendingToolCall {
 }
 ```
 
+`suspension.id` and `pending.id` serve different purposes:
+
+- `suspension.id` is the external-facing suspension key. Protocols that expose
+  approval or interrupt IDs should use this value.
+- `pending.id` is the underlying runtime tool-call ID.
+
+The runtime can resolve resume decisions against either identifier.
+
+Why both are supported:
+
+- Internal runtime control paths naturally hold the stable tool-call ID.
+- Protocols and frontends often expose the current suspension as a separate
+  approval / interrupt object, so they naturally send back the external
+  `suspension.id`.
+- A single tool call can suspend multiple times over its lifetime; each
+  suspension gets a fresh external key while the underlying tool-call ID stays
+  stable.
+
 **resume_mode** -- how the agent loop should handle the decision when it arrives.
 
 ## ToolCallResumeMode
@@ -87,11 +105,19 @@ The `awaken-ext-permission` plugin uses suspension to implement ask-mode approva
 2. The permission checker creates a `SuspendTicket` with `ToolCallResumeMode::ReplayToolCall`.
 3. The suspension payload describes the tool and its arguments.
 4. The tool call transitions to `ToolCallStatus::Suspended`.
-5. The run transitions to `RunStatus::Waiting`.
+5. If the current step reaches quiescence with unresolved suspended calls, the
+   run transitions to `RunStatus::Waiting`.
 6. A frontend presents the approval prompt to the user.
 7. The user submits a `ToolCallResume` with `ResumeDecisionAction::Resume` or `Cancel`.
 8. On `Resume`, the tool call replays and executes normally.
 9. On `Cancel`, the tool call is cancelled and the run may continue with remaining calls.
+
+`RunStatus` is coarse. Today the runtime does not expose a separate
+`Running+Waiting` state. In sequential execution, a suspension usually moves the
+run to `Waiting` immediately because later calls have not started yet. In
+parallel modes, already-started calls in the current batch are allowed to
+finish first; only then, if suspended calls remain and no runnable work is
+left, does the run move to `Waiting`.
 
 ## Mailbox Architecture
 

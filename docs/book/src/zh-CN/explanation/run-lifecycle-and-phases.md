@@ -18,6 +18,15 @@ pub enum RunStatus {
 }
 ```
 
+- `Running -> Waiting`：当前 step 已经没有可继续推进的工作，且至少还有一个
+  tool call 处于 `Suspended`
+- `Waiting -> Running`：decision 到来后恢复执行
+- `Running -> Done` / `Waiting -> Done`：正常结束、取消或错误
+
+`RunStatus` 是粗粒度状态，当前没有单独的 `Running+Waiting`。如果同一批并行
+调用里一部分已挂起、另一部分仍在执行，run 仍然保持 `Running`，直到这批工
+作收敛。
+
 ## ToolCallStatus
 
 ```text
@@ -81,7 +90,8 @@ pub enum TerminationReason {
 }
 ```
 
-只有 `Suspended` 会映射到 `RunStatus::Waiting`；其他都映射为 `Done`。
+只有在当前 step 已收敛且没有 runnable work 时，`Suspended` 才会映射到
+`RunStatus::Waiting`；其他都映射为 `Done`。
 
 ## Stop Conditions
 
@@ -106,9 +116,11 @@ pub enum TerminationReason {
 - 持久化状态键
 - 挂起的 tool call 状态
 
-## 从 ToolCall 状态推导 RunStatus
+## 当前 RunStatus 投影规则
 
-run 的状态本质上是所有 tool call 状态的聚合投影：
+从语义上说，只有“存在 suspended call，且已经没有 runnable work”时，run
+才应该进入 waiting。tool-call 状态正是这个判断依据，但当前 runtime 只在
+run 层、并且只在 step 边界持久化 `RunStatus`：
 
 ```rust,ignore
 fn derive_run_status(calls: &HashMap<String, ToolCallState>) -> RunStatus {
@@ -128,6 +140,10 @@ fn derive_run_status(calls: &HashMap<String, ToolCallState>) -> RunStatus {
 }
 ```
 
+这是 quiescence 规则，不是一个独立持久化的 `Running+Waiting` 状态。并行
+batch 执行过程中，即使部分调用已经 suspended，只要还有调用在运行，run 仍
+然是 `Running`。
+
 ### 并行 tool call 时间线
 
 ```text
@@ -136,7 +152,7 @@ Time  tool_A(需审批)  tool_B(需审批)  tool_C(正常)   → Run Status
 t0    Created        Created        Created        Running
 t1    Suspended      Created        Running        Running
 t2    Suspended      Suspended      Running        Running
-t3    Suspended      Suspended      Succeeded      Waiting
+t3    Suspended      Suspended      Succeeded      Waiting     batch 收敛，仅剩 suspended call
 t4    Resuming       Suspended      Succeeded      Running
 t5    Succeeded      Suspended      Succeeded      Waiting
 t6    Succeeded      Resuming       Succeeded      Running
@@ -145,7 +161,19 @@ t7    Succeeded      Succeeded      Succeeded      Done
 
 ## 挂起如何桥接 run 层与 tool-call 层
 
-### 当前执行模型（串行 phases）
+### 持久化的挂起上下文
+
+挂起中的 tool call 不只是保存一个状态位。当前活跃的 `ToolCallState` 还会持久化：
+
+- `resume_mode`：decision 应如何重新投影回执行链路
+- `suspension_id`：当前这一次挂起的外部 key
+- `suspension_reason`：当前挂起动作/原因
+- `resume_input`：最近一次应用到该 call 的外部 decision 载荷
+
+同一个 tool call 再次挂起时，这些字段会被新的挂起上下文覆盖。因此一次
+tool call 可以反复 suspend -> resume -> suspend，并且每次都带新的外部 key。
+
+### 当前执行模型（按 step 收敛）
 
 当前 `execute_tools_with_interception` 基本分两段：
 
@@ -158,7 +186,7 @@ Phase 2 - Execute:
   对允许执行的调用做串行或并行执行
 ```
 
-如果任一调用挂起，step 会返回 `StepOutcome::Suspended`，然后：
+如果当前 step 结束时仍有挂起调用，step 会返回 `StepOutcome::Suspended`，然后：
 
 1. checkpoint 持久化
 2. 发出 `RunFinish(Suspended)`
@@ -178,6 +206,28 @@ loop {
 }
 ```
 
+- 只要部分 decision 到达，waiting loop 就可以做局部恢复；未恢复的 call 会继续等待
+- decision 可以批量到达，也可以逐个到达
+- 如果 replay 后再次挂起，新的 `suspension_id` / `suspension_reason` 会替换旧值，waiting loop 继续等待
+
+### Resume target 解析
+
+恢复时，运行时会先用 target 去匹配活跃的 tool-call ID；若未命中，再匹配当前
+活跃的 `suspension_id`。因此协议侧既可以发送：
+
+- 内部 tool-call ID
+- 面向外部的 suspension key
+
+两者最终都会路由到同一个 `ToolCallState`。
+
+之所以允许两种 target，是因为它们表达的是两层不同语义：
+
+- `call_id`：这是哪一个 tool call
+- `suspension_id`：这是这个 tool call 当前哪一次活跃挂起
+
+运行时内部用稳定的 `call_id` 维持状态，而对外协议可以继续使用用户可见的
+`suspension_id`。
+
 ### Resume replay
 
 恢复时会扫描 `status == Resuming` 的 tool call，并按 `ToolCallResumeMode` 回放：
@@ -188,9 +238,19 @@ loop {
 | `UseDecisionAsToolResult` | decision 结果 | 直接作为 tool result |
 | `PassDecisionToTool` | decision 结果 | 作为新参数传给 tool |
 
-### 局限：执行中到达的 decision
+恢复 replay 时，运行时也会把完整的挂起/恢复上下文重新注入 hook 和 tool：
 
-在当前串行模型里，decision 即使更早到达，也要等当前 Phase 2 工具执行结束后才会被消费，因此恢复存在额外延迟。
+- `PhaseContext.resume_input / suspension_id / suspension_reason`
+- `ToolCallContext.resume_input / suspension_id / suspension_reason`
+
+权限 hook、前端工具以及其它拦截器都应通过这组上下文字段判断自己当前是首次执行，
+还是一次恢复后的重入执行。
+
+### 局限：没有独立的 run 级 `Running+Waiting`
+
+当前实现的并发仍然是 step 级的。decision 即使更早到达，也要等当前 batch
+收敛并进入 waiting loop 后才会被消费；runtime 还没有把“部分 tool 正在跑，
+部分 tool 正在等 decision”表达成独立的 run 级状态。
 
 ## 并发执行模型（未来方向）
 

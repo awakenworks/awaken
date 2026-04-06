@@ -121,8 +121,19 @@ pub struct ToolCallContext {
     pub agent_spec: Arc<AgentSpec>,
     pub snapshot: Snapshot,
     pub activity_sink: Option<Arc<dyn EventSink>>,
+    pub cancellation_token: Option<CancellationToken>,
+    pub resume_input: Option<ToolCallResume>,
+    pub suspension_id: Option<String>,
+    pub suspension_reason: Option<String>,
 }
 ```
+
+- `resume_input` is populated when this execution is a replay of a suspended
+  tool call.
+- `suspension_id` / `suspension_reason` identify the active suspension being
+  replayed.
+- Frontend tools and suspension-aware backend tools should inspect these fields
+  instead of inferring resume state from arguments alone.
 
 ### Methods
 

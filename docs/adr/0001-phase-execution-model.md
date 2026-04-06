@@ -86,11 +86,14 @@ The loop runner checks `RunLifecycle.status` after every phase. If status is no 
 
 ```
 New → Running → Succeeded / Failed
-                → Suspended → Resumed → Running (re-execute)
+                → Suspended → Resuming → Running (re-execute)
                               → Cancelled
 ```
 
-Per-tool-call lifecycle within a step. Cleared at step boundaries via `ToolCallStatesUpdate::Clear`.
+Per-tool-call lifecycle within a step. Each entry also persists the active
+`resume_mode`, `suspension_id`, `suspension_reason`, and latest `resume_input`
+for the currently suspended or resuming call. Cleared at step boundaries via
+`ToolCallStatesUpdate::Clear`.
 
 ## Decision
 

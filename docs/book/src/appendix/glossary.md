@@ -19,9 +19,11 @@
 | `Tool` | 工具 | User-facing capability with descriptor, validation, and execution. |
 | `ToolDescriptor` | 工具描述符 | Tool metadata: id, name, description, parameters schema. |
 | `ToolResult` | 工具结果 | Tool execution result: success, error, or suspended. |
-| `ToolCallContext` | 工具调用上下文 | Execution context with state access, identity, and activity reporting. |
+| `ToolCallContext` | 工具调用上下文 | Execution context with state access, identity, activity reporting, and resume context (`resume_input`, `suspension_id`, `suspension_reason`). |
 | `TerminationReason` | 终止原因 | Why a run ended (NaturalEnd, Stopped, Error, etc.). |
-| `SuspendTicket` | 挂起票据 | Suspension payload with pending call and resume mode. |
+| `SuspendTicket` | 挂起票据 | Suspension payload with external suspension identity, pending call projection, and resume mode. |
+| `call_id` | 工具调用 ID | Stable internal identifier for a tool call across its full lifetime. |
+| `suspension_id` | 挂起 ID | External-facing identifier for the currently active suspension of a tool call. |
 | `MailboxJob` | 邮箱任务 | Durable job entry for async/HITL workflows. |
 | `RunRequest` | 运行请求 | Input to start a run: messages, thread ID, agent ID. |
 | `MergeStrategy` | 合并策略 | How parallel state mutations are reconciled: Exclusive (conflict = error) or Commutative (order-independent). |

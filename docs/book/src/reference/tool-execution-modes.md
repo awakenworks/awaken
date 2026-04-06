@@ -48,7 +48,8 @@ snapshot.
   any of them.
 - Enforces parallel patch conflict checks (`requires_conflict_check` returns
   `true`).
-- Does not stop on suspension or failure; all calls run to completion.
+- Does not stop the current batch on suspension or failure; all already-started
+  calls run to completion.
 - Use when tool calls are independent and you want an all-or-nothing approval
   gate for HITL workflows.
 
@@ -65,7 +66,8 @@ Executes all tool calls concurrently with the same frozen state snapshot.
   each decision is replayed as soon as it arrives, without waiting for the
   others.
 - Enforces parallel patch conflict checks.
-- Does not stop on suspension or failure; all calls run to completion.
+- Does not stop the current batch on suspension or failure; all already-started
+  calls run to completion.
 - Use when tool calls are independent and you want the fastest end-to-end
   completion without batching approval.
 
@@ -80,10 +82,16 @@ let executor = ParallelToolExecutor::streaming();
 |---|---|---|---|
 | Execution order | One at a time | All concurrently | All concurrently |
 | State freshness | Refreshed between calls | Frozen snapshot | Frozen snapshot |
-| Stops on suspension | Yes (first suspension) | No | No |
+| Stops on suspension | Yes (first suspension) | No, not within the current batch | No, not within the current batch |
 | Stops on failure | No | No | No |
 | Decision replay | N/A | Batch (all at once) | Immediate (one by one) |
 | Conflict checks | No | Yes | Yes |
+
+Parallel modes are step-level concurrency, not a separate run-level activity
+state. The run remains `Running` while the current batch still has active work.
+After the batch quiesces, if suspended calls remain and no runnable work is
+left, the run transitions to `Waiting`. There is no distinct `Running+Waiting`
+run status today.
 
 ## Executor trait
 

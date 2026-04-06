@@ -111,8 +111,16 @@ pub struct ToolCallContext {
     pub agent_spec: Arc<AgentSpec>,
     pub snapshot: Snapshot,
     pub activity_sink: Option<Arc<dyn EventSink>>,
+    pub cancellation_token: Option<CancellationToken>,
+    pub resume_input: Option<ToolCallResume>,
+    pub suspension_id: Option<String>,
+    pub suspension_reason: Option<String>,
 }
 ```
+
+- `resume_input`：如果这是一次挂起后的 replay 执行，这里会带上完整的 decision
+- `suspension_id` / `suspension_reason`：标识当前正在 replay 的那次挂起
+- 前端工具和需要感知恢复语义的后端工具，应优先读取这些字段，而不是仅靠参数推断
 
 ### 方法
 

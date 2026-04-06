@@ -14,13 +14,23 @@ Tool calls are the primary agent action mechanism. They can succeed, fail, or su
 
 ```
 Pending → Running → Succeeded / Failed
-                  → Suspended → Resumed → Running (re-execute)
+                  → Suspended → Resuming → Running (re-execute)
                                → Cancelled
 ```
 
 Implemented as `StateKey`s with ToolCall scope (namespaced per `call_id`).
 
-**Suspension is first-class**: Not an error path. A tool or `BeforeToolExecute` hook can suspend a call. Run transitions to Waiting; suspended state persists; external decision arrives asynchronously; agent loop replays at next step boundary. Three resume modes: ReplayToolCall (re-execute with decision context), UseDecisionAsResult (decision payload becomes result), PassDecisionToTool (decision as new arguments).
+**Suspension is first-class**: Not an error path. A tool or `BeforeToolExecute` hook can suspend a call. The run transitions to `Waiting` only after the current step reaches quiescence with no runnable work left and at least one suspended call. Suspended state persists; external decisions arrive asynchronously; the agent loop replays them at the next wait boundary. There is no separate run-level `Running+Waiting` state today. Three resume modes: ReplayToolCall (re-execute with decision context), UseDecisionAsResult (decision payload becomes result), PassDecisionToTool (decision as new arguments).
+
+Each suspended tool call persists both internal and external resume identity:
+
+- `call_id` remains the internal runtime identifier
+- `suspension_id` is the current external-facing suspension key
+- `suspension_reason` describes why this suspension was created
+- `resume_input` stores the latest applied decision payload
+
+Resume requests may target either `call_id` or `suspension_id`; both resolve to
+the same tool-call state.
 
 **Three execution modes** (per-agent config):
 

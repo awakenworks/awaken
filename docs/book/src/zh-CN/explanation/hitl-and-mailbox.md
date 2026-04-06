@@ -20,6 +20,20 @@ pub struct SuspendTicket {
 - `pending`：事件流里暴露给前端的待处理 tool call 投影
 - `resume_mode`：decision 到来后如何恢复
 
+`suspension.id` 和 `pending.id` 表达的是两层不同的标识：
+
+- `suspension.id`：面向协议/前端的挂起 key，适合做 approval / interrupt id
+- `pending.id`：运行时内部的底层 tool-call ID
+
+运行时恢复时可以接受这两种 target。
+
+之所以同时支持两种，是因为它们回答的是两类不同的问题：
+
+- 内部运行时更自然地持有稳定的 tool-call ID
+- 协议层和前端更自然地持有“当前这次挂起”的 approval / interrupt id
+- 同一个 tool call 的生命周期里可以多次挂起；底层 tool-call ID 保持稳定，
+  但每次挂起都会生成新的外部 `suspension.id`
+
 ## ToolCallResumeMode
 
 ```rust,ignore
@@ -64,10 +78,16 @@ pub struct ToolCallResume {
 1. tool call 命中 `behavior: ask`
 2. permission checker 生成 `SuspendTicket`
 3. tool call 进入 `Suspended`
-4. run 进入 `Waiting`
+4. 如果当前 step 已经没有可继续推进的工作且仍有挂起中的 tool call，run
+   才会进入 `Waiting`
 5. 前端提示用户审批
 6. 用户提交 `Resume` 或 `Cancel`
 7. `Resume` 时按 `resume_mode` 恢复；`Cancel` 时该 tool call 标记为取消
+
+`RunStatus` 是粗粒度状态。当前实现没有单独的 `Running+Waiting`。串行模式下，
+一旦挂起通常就会很快进入 `Waiting`；并行模式下，当前 batch 里已经启动的其
+他调用会先执行完，只有当 batch 收敛后仍存在尚未恢复的 suspended call，
+run 才会进入 `Waiting`。
 
 ## Mailbox 架构
 

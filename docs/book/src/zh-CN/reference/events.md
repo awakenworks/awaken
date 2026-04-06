@@ -65,6 +65,7 @@ pub enum AgentEvent {
         patch: Vec<Value>,
     },
 
+    /// 已挂起 tool call 在 resume/cancel 后产出的最终结果。
     ToolCallResumed { target_id: String, result: Value },
 
     StepStart { message_id: String },
@@ -132,6 +133,10 @@ struct RunMessage {
 
 至少需要一条消息。成功时服务器返回 `202 Accepted`。
 
+如果协议层要表达 resume target，传入的标识既可以是底层 tool-call ID，也可
+以是当前活跃的 `suspension_id`；运行时会把这两种 target 解析到同一个挂起
+中的 tool call。
+
 ## RunOutput
 
 run 返回的事件流类型别名：
@@ -179,6 +184,16 @@ pub enum ToolCallOutcome {
     Suspended,
 }
 ```
+
+## 挂起 / 恢复事件语义
+
+- `ToolCallDone { outcome: Suspended, result.suspension = Some(...) }` 表示新
+  的挂起已经建立。`SuspendTicket` 同时携带外部 suspension payload 和 pending
+  tool-call 投影。
+- `ToolCallResumed { target_id, result }` 表示一个之前挂起的 call 在
+  resume/cancel 之后已经产出最终结果。无论是批准后 replay 完成，还是显式
+  cancel/deny，都会走这个事件。
+- `target_id` 是底层运行时的 tool-call ID，用来把恢复后的结果关联回原始挂起。
 
 ## ToolResult
 

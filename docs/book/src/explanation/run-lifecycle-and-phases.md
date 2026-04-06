@@ -20,10 +20,16 @@ pub enum RunStatus {
 }
 ```
 
-- `Running -> Waiting`: a tool call suspends, the run pauses for external input.
+- `Running -> Waiting`: the current step has no runnable work left and at least
+  one tool call is suspended.
 - `Waiting -> Running`: decisions arrive, the run resumes.
 - `Running -> Done` or `Waiting -> Done`: terminal transition on completion, cancellation, or error.
 - `Done -> *`: not allowed. Terminal state.
+
+`RunStatus` is intentionally coarse. It does not encode a separate
+`Running+Waiting` state. If some tool calls are suspended while other calls in
+the same batch are still running, the run remains `Running` until the batch
+reaches quiescence.
 
 ## ToolCallStatus
 
@@ -107,7 +113,8 @@ pub enum TerminationReason {
 
 `TerminationReason::to_run_status()` maps each variant to the appropriate `RunStatus`:
 
-- `Suspended` maps to `RunStatus::Waiting` (the run can resume).
+- `Suspended` maps to `RunStatus::Waiting` once the current step has quiesced
+  and no runnable work remains.
 - All other variants map to `RunStatus::Done`.
 
 ## Stop Conditions
@@ -137,10 +144,12 @@ State is persisted at `StepEnd` after each inference round. The checkpoint inclu
 
 Checkpoints enable resume from the last completed step after a crash or intentional suspension.
 
-## RunStatus Derived from ToolCall States
+## Current RunStatus Projection
 
-A run's status is a **projection** of all its tool call states. Each tool call
-has an independent lifecycle; the run status is the aggregate:
+Conceptually, a run is waiting only when there are suspended tool calls and no
+remaining runnable work. Tool-call state is what determines that quiescence,
+but the current runtime persists `RunStatus` only at the run level and only at
+step boundaries:
 
 ```rust,ignore
 fn derive_run_status(calls: &HashMap<String, ToolCallState>) -> RunStatus {
@@ -166,15 +175,19 @@ fn derive_run_status(calls: &HashMap<String, ToolCallState>) -> RunStatus {
 }
 ```
 
-Decision table:
+Decision table for the current coarse run state:
 
 | Any `Running`/`Resuming`? | Any `Suspended`? | Run Status | Meaning |
 |---|---|---|---|
 | Yes | — | **Running** | Tools are actively executing |
-| No | Yes | **Waiting** | All execution done, awaiting external decisions |
+| No | Yes | **Waiting** | No runnable work remains; awaiting external decisions |
 | No | No | **Done** | All calls terminal → proceed to next step |
 
-### Parallel tool call state timeline
+This is a quiescence rule, not a separate persisted `Running+Waiting` run
+status. During a parallel batch, some tool calls may already be suspended while
+others are still running; the run remains `Running` until that batch finishes.
+
+### Parallel tool call timeline
 
 When an LLM returns multiple tool calls (e.g. `[tool_A, tool_B, tool_C]`), their
 states evolve independently:
@@ -185,20 +198,34 @@ Time  tool_A(approval-req)  tool_B(approval-req)  tool_C(normal)   → Run Statu
 t0    Created        Created        Created        Running     Step starts
 t1    Suspended      Created        Running        Running     tool_A intercepted
 t2    Suspended      Suspended      Running        Running     tool_B intercepted, tool_C executing
-t3    Suspended      Suspended      Succeeded      Waiting     tool_C done, no Running calls
+t3    Suspended      Suspended      Succeeded      Waiting     batch quiesced, only suspended calls remain
 t4    Resuming       Suspended      Succeeded      Running     tool_A decision arrives
 t5    Succeeded      Suspended      Succeeded      Waiting     tool_A replay done
 t6    Succeeded      Resuming       Succeeded      Running     tool_B decision arrives
 t7    Succeeded      Succeeded      Succeeded      Done        All terminal → next step
 ```
 
-At every transition the run status is re-derived from the aggregate of all call
-states. This means a single decision arriving does not end the wait — the run
-stays in `Waiting` until **all** suspended calls are resolved.
+The key point is that the run does not publish a separate `Running+Waiting`
+state. It flips to `Waiting` only after the current batch has finished all
+active work and unresolved suspended calls are the only remaining blockers.
 
 ## Suspension Bridges Run and Tool-Call Layers
 
-### Current execution model (serial phases)
+### Persistent suspend context
+
+Each suspended tool call persists more than just a status flag. The active
+`ToolCallState` stores:
+
+- `resume_mode` -- how the decision should be projected back into execution
+- `suspension_id` -- the current external suspension key
+- `suspension_reason` -- the current suspension action / reason string
+- `resume_input` -- the most recent external decision payload applied to the call
+
+These fields are replaced each time the same tool call suspends again. This is
+why a single tool call can suspend, resume, and suspend again with a fresh
+external key each time.
+
+### Current execution model (step-quiesced)
 
 Tool execution is split into two serial phases inside
 `execute_tools_with_interception`:
@@ -246,6 +273,29 @@ Key properties:
 - Decisions can arrive in batches or one at a time.
 - On `WaitOutcome::Resumed`, the orchestrator re-enters the step loop for the
   next LLM inference round.
+- If a replayed call suspends again, the new `suspension_id` / `suspension_reason`
+  replace the previous ones and the loop continues waiting.
+
+### Resume target resolution
+
+Resume decisions are routed by target identifier before any replay happens.
+The runtime first tries to match the incoming target against the active
+tool-call ID and then against the active `suspension_id`. This lets protocols
+use either:
+
+- the internal tool-call ID
+- the external suspension key shown to users
+
+Both resolve to the same `ToolCallState` entry.
+
+The reason both are accepted is that they answer different questions:
+
+- `call_id`: "which tool call is this?"
+- `suspension_id`: "which active suspension of that tool call is being resolved?"
+
+The runtime keeps `call_id` as the stable internal identity and treats
+`suspension_id` as the current external-facing identity for the active
+suspension.
 
 ### Resume replay
 
@@ -261,6 +311,16 @@ The `arguments` field already reflects the resume mode (set by
 | `PassDecisionToTool` | Decision result | Tool receives decision as arguments |
 
 Already-completed calls (`Succeeded`, `Failed`, `Cancelled`) are skipped.
+
+The runtime also re-injects the full suspend/resume context into hooks and
+tools during replay:
+
+- `PhaseContext.resume_input / suspension_id / suspension_reason`
+- `ToolCallContext.resume_input / suspension_id / suspension_reason`
+
+This is the canonical way for permission hooks, frontend tools, and other
+interceptors to tell whether they are running for the first time or as part of
+a resumed suspension.
 
 ### Limitation: decisions during execution
 

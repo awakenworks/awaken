@@ -19,15 +19,17 @@
 | `Tool` | 工具 | 暴露给 agent 的能力接口。 |
 | `ToolDescriptor` | 工具描述符 | tool 的 ID、名称、描述、参数 schema。 |
 | `ToolResult` | 工具结果 | tool 执行成功、失败或挂起后的结构化结果。 |
-| `ToolCallContext` | 工具调用上下文 | tool 执行期可读取状态和上报活动的上下文。 |
+| `ToolCallContext` | 工具调用上下文 | tool 执行期可读取状态、上报活动，并携带恢复上下文（`resume_input`、`suspension_id`、`suspension_reason`）的上下文。 |
 | `TerminationReason` | 终止原因 | run 结束的原因。 |
-| `SuspendTicket` | 挂起票据 | 描述挂起原因、恢复模式和待决 tool call。 |
+| `SuspendTicket` | 挂起票据 | 描述外部挂起标识、恢复模式和待决 tool call 投影的载荷。 |
+| `call_id` | 工具调用 ID | 一个 tool call 在完整生命周期内保持稳定的内部标识。 |
+| `suspension_id` | 挂起 ID | 某个 tool call 当前活跃挂起对应的外部标识。 |
 | `MailboxJob` | 邮箱任务 | 后台执行与 HITL 的持久化作业项。 |
 | `RunRequest` | 运行请求 | 启动 run 的输入。 |
 | `MergeStrategy` | 合并策略 | 并行状态写入如何合并。 |
 | `KeyScope` | 键作用域 | 状态键生命周期：`Run` 或 `Thread`。 |
 | `StateMap` | 状态映射 | `Snapshot` 背后的类型安全异构 map。 |
-| `RunStatus` | 运行状态 | 粗粒度 run 状态：`Running`、`Waiting`、`Done`。 |
+| `RunStatus` | 运行状态 | 粗粒度 run 状态：`Running`、`Waiting`、`Done`；当前没有单独的 `Running+Waiting`。 |
 | `ToolCallStatus` | 工具调用状态 | 单个 tool call 的状态。 |
 | `ResolvedAgent` | 已解析智能体 | 从 registries 解析完成、可直接运行的 agent。 |
 | `AgentResolver` | 智能体解析器 | 把 agent ID 解析成 `ResolvedAgent` 的组件。 |

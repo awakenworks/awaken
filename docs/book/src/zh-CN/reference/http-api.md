@@ -44,6 +44,9 @@
 | `POST` | `/v1/runs/:id/cancel` | 按 run ID 取消 |
 | `POST` | `/v1/runs/:id/decision` | 按 run ID 提交 HITL decision |
 
+`/decision` 相关接口会把提交的 target 标识解析为底层 tool-call ID 或当前活跃
+的外部 `suspension_id`。
+
 ## Config 与 Capabilities
 
 这些接口由 `config_routes()` 提供。只有 `AppState` 挂接了 config store 时才可用。
