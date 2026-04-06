@@ -16,9 +16,7 @@ use awaken_contract::contract::inference::{InferenceOverride, LLMResponse, Strea
 use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::message::{Message, ToolCall};
 use awaken_contract::contract::storage::ThreadRunStore;
-use awaken_contract::contract::suspension::{
-    SuspendTicket, ToolCallOutcome, ToolCallResumeMode, ToolCallStatus,
-};
+use awaken_contract::contract::suspension::{SuspendTicket, ToolCallOutcome, ToolCallStatus};
 use awaken_contract::contract::tool::ToolCallContext;
 use awaken_contract::model::Phase;
 
@@ -527,12 +525,6 @@ async fn emit_tool_completion(
     outcome: ToolCallOutcome,
 ) {
     let resume_state = active_resume_state(ctx.runtime.store(), &call.id);
-    let resume_mode = tool_result
-        .suspension
-        .as_ref()
-        .map(|t| t.resume_mode)
-        .unwrap_or_default();
-
     tracing::info!(
         tool_name = %call.name,
         call_id = %call.id,
@@ -540,24 +532,20 @@ async fn emit_tool_completion(
         "tool_call_done"
     );
 
-    if !(outcome == ToolCallOutcome::Suspended
-        && resume_mode == ToolCallResumeMode::UseDecisionAsToolResult)
-    {
-        let event = if resume_state.is_some() && outcome != ToolCallOutcome::Suspended {
-            AgentEvent::ToolCallResumed {
-                target_id: call.id.clone(),
-                result: super::tool_result_to_resume_payload(tool_result),
-            }
-        } else {
-            AgentEvent::ToolCallDone {
-                id: call.id.clone(),
-                message_id: String::new(),
-                result: tool_result.clone(),
-                outcome,
-            }
-        };
-        ctx.sink.emit(event).await;
-    }
+    let event = if resume_state.is_some() && outcome != ToolCallOutcome::Suspended {
+        AgentEvent::ToolCallResumed {
+            target_id: call.id.clone(),
+            result: super::tool_result_to_resume_payload(tool_result),
+        }
+    } else {
+        AgentEvent::ToolCallDone {
+            id: call.id.clone(),
+            message_id: String::new(),
+            result: tool_result.clone(),
+            outcome,
+        }
+    };
+    ctx.sink.emit(event).await;
 
     let tool_content = tool_result_to_content(tool_result);
     ctx.messages
