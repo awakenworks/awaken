@@ -97,6 +97,7 @@ export interface Capabilities {
   skills: SkillInfo[];
   models: ModelSpec[];
   providers: Array<{ id: string }>;
+  supported_adapters?: string[];
   namespaces: Array<{
     namespace: string;
     schema: Record<string, unknown>;

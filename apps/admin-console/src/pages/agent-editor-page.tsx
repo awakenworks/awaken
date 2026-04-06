@@ -176,20 +176,19 @@ export function AgentEditorPage() {
     const currentAllowed = spec.allowed_tools;
 
     if (checked) {
+      // Re-allow: add toolId back to the allowed list.
       if (!currentAllowed) {
-        return;
+        return; // already allowing all tools
       }
-
-      const nextAllowed = currentAllowed.filter((value) => value !== toolId);
+      const nextAllowed = [...currentAllowed, toolId];
       updateField(
         "allowed_tools",
-        nextAllowed.length === 0 || nextAllowed.length === allToolIds.length
-          ? undefined
-          : nextAllowed,
+        nextAllowed.length >= allToolIds.length ? undefined : nextAllowed,
       );
       return;
     }
 
+    // Disallow: remove toolId from the allowed list.
     const baseAllowed =
       currentAllowed && currentAllowed.length > 0 ? currentAllowed : allToolIds;
     updateField(

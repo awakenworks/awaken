@@ -288,6 +288,7 @@ pub struct ConfigRuntimeManager {
     provider_factory: Arc<dyn ProviderExecutorFactory>,
     change_notifier: Option<Arc<dyn ConfigChangeNotifier>>,
     mcp_registry_factory: Arc<dyn McpRegistryFactory>,
+    apply_lock: tokio::sync::Mutex<()>,
     active_mcp_registry: Mutex<Option<ActiveMcpRegistry>>,
     last_applied_fingerprint: RwLock<Option<u64>>,
     periodic_refresh: PeriodicRefresher,
@@ -315,6 +316,7 @@ impl ConfigRuntimeManager {
             provider_factory: Arc::new(GenaiProviderExecutorFactory),
             change_notifier: None,
             mcp_registry_factory: Arc::new(DefaultMcpRegistryFactory),
+            apply_lock: tokio::sync::Mutex::new(()),
             active_mcp_registry: Mutex::new(None),
             last_applied_fingerprint: RwLock::new(None),
             periodic_refresh: PeriodicRefresher::new(),
@@ -397,11 +399,13 @@ impl ConfigRuntimeManager {
     }
 
     pub async fn apply(&self) -> Result<u64, ConfigRuntimeError> {
+        let _guard = self.apply_lock.lock().await;
         let managed = self.load_managed_config().await?;
         self.publish(managed).await
     }
 
     pub async fn apply_if_changed(&self) -> Result<Option<u64>, ConfigRuntimeError> {
+        let _guard = self.apply_lock.lock().await;
         let managed = self.load_managed_config().await?;
         let current_fingerprint = *self.last_applied_fingerprint.read();
         if current_fingerprint == Some(managed.fingerprint) {
@@ -841,6 +845,28 @@ pub fn build_genai_provider_executor(
         Arc::new(executor),
         LlmRetryPolicy::default(),
     )))
+}
+
+/// Canonical list of provider adapter identifiers supported by the runtime.
+pub fn supported_adapters() -> &'static [&'static str] {
+    &[
+        "anthropic",
+        "openai",
+        "openai_resp",
+        "deepseek",
+        "gemini",
+        "ollama",
+        "cohere",
+        "together",
+        "fireworks",
+        "groq",
+        "xai",
+        "zai",
+        "bigmodel",
+        "aliyun",
+        "mimo",
+        "nebius",
+    ]
 }
 
 fn parse_adapter_kind(adapter: &str) -> Result<AdapterKind, ConfigRuntimeError> {
