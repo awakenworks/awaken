@@ -1,0 +1,39 @@
+{
+  "name": "awaken-openui-chat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"vite --port 3002\" \"cargo run -p ai-sdk-starter-agent\" --names ui,agent --prefix-colors blue,green --kill-others",
+    "dev:ui": "vite --port 3002",
+    "dev:agent": "cargo run -p ai-sdk-starter-agent",
+    "build": "vite build",
+    "preview": "vite preview --port 3002",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@openuidev/react-headless": "^0.7.11",
+    "@openuidev/react-lang": "^0.1.4",
+    "@openuidev/react-ui": "^0.9.20",
+    "lucide-react": "^0.468.0",
+    "react": "19",
+    "react-dom": "19",
+    "react-router": "^7"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^4",
+    "autoprefixer": "^10.4",
+    "concurrently": "^9.2",
+    "jsdom": "^28.1.0",
+    "postcss": "^8.5",
+    "tailwindcss": "^3.4",
+    "typescript": "^5",
+    "vite": "^6",
+    "vitest": "^4.0.18"
+  }
+}
