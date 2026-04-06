@@ -5,7 +5,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use agent_client_protocol::{self as acp, Client as _};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufRead, AsyncWrite, BufReader};
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -22,112 +21,6 @@ use super::types::{
     InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse, PromptRequest,
     PromptResponse, RequestPermissionResponse, ResourceLink,
 };
-
-/// JSON-RPC 2.0 request envelope.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcRequest {
-    pub jsonrpc: String,
-    pub method: String,
-    #[serde(default)]
-    pub params: Option<Value>,
-    #[serde(default)]
-    pub id: Option<Value>,
-}
-
-/// JSON-RPC 2.0 response envelope.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcResponse {
-    pub jsonrpc: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<JsonRpcError>,
-    pub id: Option<Value>,
-}
-
-/// JSON-RPC 2.0 error object.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcError {
-    pub code: i64,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<Value>,
-}
-
-/// JSON-RPC 2.0 notification envelope (no id).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcNotification {
-    pub jsonrpc: String,
-    pub method: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub params: Option<Value>,
-}
-
-impl JsonRpcResponse {
-    pub fn success(id: Option<Value>, result: Value) -> Self {
-        Self {
-            jsonrpc: "2.0".to_string(),
-            result: Some(result),
-            error: None,
-            id,
-        }
-    }
-
-    pub fn error(id: Option<Value>, code: i64, message: impl Into<String>) -> Self {
-        Self {
-            jsonrpc: "2.0".to_string(),
-            result: None,
-            error: Some(JsonRpcError {
-                code,
-                message: message.into(),
-                data: None,
-            }),
-            id,
-        }
-    }
-
-    pub fn method_not_found(id: Option<Value>) -> Self {
-        Self::error(id, -32601, "Method not found")
-    }
-
-    pub fn invalid_params(id: Option<Value>, message: impl Into<String>) -> Self {
-        Self::error(id, -32602, message)
-    }
-
-    pub fn internal_error(id: Option<Value>, message: impl Into<String>) -> Self {
-        Self::error(id, -32603, message)
-    }
-
-    pub fn resource_not_found(id: Option<Value>, message: impl Into<String>) -> Self {
-        Self::error(id, -32002, message)
-    }
-}
-
-impl JsonRpcNotification {
-    pub fn new(method: impl Into<String>, params: Value) -> Self {
-        Self {
-            jsonrpc: "2.0".to_string(),
-            method: method.into(),
-            params: Some(params),
-        }
-    }
-}
-
-pub fn parse_request(line: &str) -> Result<JsonRpcRequest, String> {
-    serde_json::from_str(line).map_err(|e| format!("invalid JSON-RPC request: {e}"))
-}
-
-pub fn serialize_response(response: &JsonRpcResponse) -> String {
-    serde_json::to_string(response).unwrap_or_else(|_| {
-        r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"serialization error"},"id":null}"#
-            .to_string()
-    })
-}
-
-pub fn serialize_notification(notification: &JsonRpcNotification) -> String {
-    serde_json::to_string(notification)
-        .unwrap_or_else(|_| r#"{"jsonrpc":"2.0","method":"error","params":null}"#.to_string())
-}
 
 struct SessionState {
     #[allow(dead_code)]
@@ -594,6 +487,10 @@ mod tests {
             .await
     }
 
+    fn parse_single_json_response(output: &str) -> serde_json::Value {
+        serde_json::from_str(output.trim()).expect("stdio response should be valid JSON")
+    }
+
     struct MultiAgentResolver;
 
     impl awaken_runtime::AgentResolver for MultiAgentResolver {
@@ -609,18 +506,6 @@ mod tests {
         fn agent_ids(&self) -> Vec<String> {
             vec!["alpha".to_string(), "beta".to_string()]
         }
-    }
-
-    #[test]
-    fn parse_valid_request() {
-        let line = r#"{"jsonrpc":"2.0","method":"session/new","params":{"cwd":"/tmp"},"id":1}"#;
-        let request = parse_request(line).unwrap();
-        assert_eq!(request.method, "session/new");
-    }
-
-    #[test]
-    fn parse_invalid_json() {
-        assert!(parse_request("not json").is_err());
     }
 
     #[test]
@@ -685,9 +570,9 @@ mod tests {
         let input =
             b"{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{\"protocolVersion\":1},\"id\":1}\n";
         let output_str = run_stdio_exchange(runtime, &input[..]).await;
-        let response: JsonRpcResponse = serde_json::from_str(output_str.trim()).unwrap();
-        assert!(response.result.is_some());
-        assert!(response.error.is_none());
+        let response = parse_single_json_response(&output_str);
+        assert!(response.get("result").is_some());
+        assert!(response.get("error").is_none());
     }
 
     #[tokio::test]
@@ -696,8 +581,8 @@ mod tests {
         let input =
             b"{\"jsonrpc\":\"2.0\",\"method\":\"session/new\",\"params\":{\"cwd\":\"/tmp\",\"mcpServers\":[]},\"id\":1}\n";
         let output_str = run_stdio_exchange(runtime, &input[..]).await;
-        let response: JsonRpcResponse = serde_json::from_str(output_str.trim()).unwrap();
-        let result = response.result.unwrap();
+        let response = parse_single_json_response(&output_str);
+        let result = &response["result"];
         assert!(result["sessionId"].as_str().unwrap().starts_with("sess_"));
     }
 
@@ -707,8 +592,8 @@ mod tests {
         let input =
             b"{\"jsonrpc\":\"2.0\",\"method\":\"session/new\",\"params\":{\"cwd\":\"tmp\",\"mcpServers\":[]},\"id\":2}\n";
         let output_str = run_stdio_exchange(runtime, &input[..]).await;
-        let response: JsonRpcResponse = serde_json::from_str(output_str.trim()).unwrap();
-        assert_eq!(response.error.unwrap().code, -32602);
+        let response = parse_single_json_response(&output_str);
+        assert_eq!(response["error"]["code"], -32602);
     }
 
     #[tokio::test]
@@ -716,8 +601,8 @@ mod tests {
         let runtime = test_runtime();
         let input = b"{\"jsonrpc\":\"2.0\",\"method\":\"unknown\",\"params\":{},\"id\":2}\n";
         let output_str = run_stdio_exchange(runtime, &input[..]).await;
-        let response: JsonRpcResponse = serde_json::from_str(output_str.trim()).unwrap();
-        assert_eq!(response.error.unwrap().code, -32601);
+        let response = parse_single_json_response(&output_str);
+        assert_eq!(response["error"]["code"], -32601);
     }
 
     #[tokio::test]
@@ -734,8 +619,8 @@ mod tests {
         let input =
             b"{\"jsonrpc\":\"2.0\",\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"hi\"}]},\"id\":1}\n";
         let output_str = run_stdio_exchange(runtime, &input[..]).await;
-        let response: JsonRpcResponse = serde_json::from_str(output_str.trim()).unwrap();
-        assert_eq!(response.error.unwrap().code, -32602);
+        let response = parse_single_json_response(&output_str);
+        assert_eq!(response["error"]["code"], -32602);
     }
 
     #[tokio::test]
@@ -744,8 +629,8 @@ mod tests {
         let input =
             b"{\"jsonrpc\":\"2.0\",\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"sess_bad\",\"prompt\":[{\"type\":\"text\",\"text\":\"hi\"}]},\"id\":1}\n";
         let output_str = run_stdio_exchange(runtime, &input[..]).await;
-        let response: JsonRpcResponse = serde_json::from_str(output_str.trim()).unwrap();
-        assert_eq!(response.error.unwrap().code, -32002);
+        let response = parse_single_json_response(&output_str);
+        assert_eq!(response["error"]["code"], -32002);
     }
 
     #[tokio::test]
