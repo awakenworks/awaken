@@ -625,9 +625,10 @@ async fn emit_suspend_completion(
     // is still emitted for consistency — encoders that don't need it return
     // an empty Vec.
     let _ = ticket; // all modes emit the event now
-    let suspend_result = awaken_contract::contract::tool::ToolResult::suspended(
+    let suspend_result = awaken_contract::contract::tool::ToolResult::suspended_with(
         &call.name,
-        format!("Tool '{}' suspended: awaiting approval", call.name),
+        &format!("Tool '{}' suspended: awaiting approval", call.name),
+        ticket.clone(),
     );
     ctx.sink
         .emit(AgentEvent::ToolCallDone {

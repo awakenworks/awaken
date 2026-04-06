@@ -2,7 +2,9 @@
 
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::lifecycle::{StoppedReason, TerminationReason};
-use awaken_contract::contract::suspension::ToolCallOutcome;
+use awaken_contract::contract::suspension::{
+    PendingToolCall, SuspendTicket, Suspension, ToolCallOutcome, ToolCallResumeMode,
+};
 use awaken_contract::contract::tool::ToolResult;
 use awaken_contract::contract::transport::Transcoder;
 use awaken_server::protocols::acp::encoder::{AcpEncoder, AcpOutput};
@@ -159,7 +161,7 @@ fn cancelled_maps_to_cancelled() {
 }
 
 #[test]
-fn suspended_maps_to_cancelled() {
+fn suspended_does_not_emit_terminal_output() {
     let mut enc = enc();
     let ev = enc.transcode(&AgentEvent::RunFinish {
         thread_id: "t".into(),
@@ -167,7 +169,11 @@ fn suspended_maps_to_cancelled() {
         result: None,
         termination: TerminationReason::Suspended,
     });
-    assert_eq!(assert_finished(&ev[0]), StopReason::Cancelled);
+    assert!(ev.is_empty());
+    let follow_up = enc.transcode(&AgentEvent::TextDelta {
+        delta: "still-running".into(),
+    });
+    assert_eq!(follow_up.len(), 1);
 }
 
 #[test]
@@ -253,15 +259,34 @@ fn tool_call_kind_inferred() {
 // ── Permission flow ─────────────────────────────────────────────────
 
 #[test]
-fn permission_confirm_emits_request_permission() {
+fn suspended_permission_tool_emits_request_permission() {
     let mut enc = enc();
-    let events = enc.on_agent_event(&AgentEvent::ToolCallReady {
+    let ready_events = enc.on_agent_event(&AgentEvent::ToolCallReady {
         id: "fc_1".into(),
-        name: "PermissionConfirm".into(),
-        arguments: json!({"tool_name": "bash", "tool_args": {"cmd": "ls"}}),
+        name: "bash".into(),
+        arguments: json!({"cmd": "ls"}),
     });
-    assert_eq!(events.len(), 2);
-    assert!(matches!(&events[1], AcpOutput::PermissionRequest(_)));
+    assert_eq!(ready_events.len(), 1);
+
+    let events = enc.on_agent_event(&AgentEvent::ToolCallDone {
+        id: "fc_1".into(),
+        message_id: "m1".into(),
+        result: ToolResult::suspended_with(
+            "bash",
+            "awaiting approval",
+            SuspendTicket::new(
+                Suspension {
+                    action: "tool:PermissionConfirm".into(),
+                    ..Default::default()
+                },
+                PendingToolCall::new("perm_fc_1", "permission_confirm", json!({"cmd": "ls"})),
+                ToolCallResumeMode::ReplayToolCall,
+            ),
+        ),
+        outcome: ToolCallOutcome::Suspended,
+    });
+    assert_eq!(events.len(), 1);
+    assert!(matches!(&events[0], AcpOutput::PermissionRequest(_)));
 }
 
 #[test]
