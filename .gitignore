@@ -3,6 +3,8 @@ target/
 rust_out
 
 # Node
+apps/admin-console/node_modules/
+apps/admin-console/dist/
 e2e/node_modules/
 examples/ai-sdk-starter/node_modules/
 examples/ai-sdk-starter/dist/
