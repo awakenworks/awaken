@@ -290,7 +290,7 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
                     st_cleanup.remove_replay_buffer(&tid);
                 });
 
-                return Ok(sse_response(sse_body_stream(final_rx)));
+                return Ok(ai_sdk_sse_response(sse_body_stream(final_rx)));
             }
         }
         // If reconnect or decision delivery failed, fall through.
@@ -301,7 +301,7 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
         let (_, rx) = tokio::sync::mpsc::channel(1);
         let encoder = AiSdkEncoder::new();
         let sse_rx = crate::http_run::wire_sse_relay(rx, encoder, st.config.sse_buffer_size, None);
-        return Ok(sse_response(sse_body_stream(sse_rx)));
+        return Ok(ai_sdk_sse_response(sse_body_stream(sse_rx)));
     }
 
     let messages = crate::request::inject_frontend_context(messages, state);

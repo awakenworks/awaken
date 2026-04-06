@@ -165,6 +165,7 @@ impl<'a> ConfigService<'a> {
             "skills": skills,
             "models": models,
             "providers": providers,
+            "supported_adapters": super::config_runtime::supported_adapters(),
             "namespaces": [
                 { "namespace": "agents", "schema": ConfigNamespace::Agents.schema_json()? },
                 { "namespace": "models", "schema": ConfigNamespace::Models.schema_json()? },

@@ -1,12 +1,13 @@
 import { useCallback, useMemo, useState } from "react";
 import {
+  configApi,
   type ProviderRecord,
   type ProviderSpec,
 } from "@/lib/config-api";
 import { useCrudPage } from "@/lib/use-crud-page";
 import { Field, ModeButton } from "@/components/form-components";
 
-const KNOWN_ADAPTERS = [
+const FALLBACK_ADAPTERS = [
   "anthropic",
   "openai",
   "openai_resp",
@@ -14,9 +15,15 @@ const KNOWN_ADAPTERS = [
   "gemini",
   "ollama",
   "cohere",
-  "scripted",
   "together",
   "fireworks",
+  "groq",
+  "xai",
+  "zai",
+  "bigmodel",
+  "aliyun",
+  "mimo",
+  "nebius",
 ];
 
 type ApiKeyMode = "preserve" | "replace" | "clear";
@@ -55,15 +62,21 @@ export function ProvidersPage() {
     namespace: "providers",
     entityLabel: "provider",
     prepareSave,
+    auxiliaryLoaders: () =>
+      configApi
+        .capabilities()
+        .then((caps) => [caps.supported_adapters ?? FALLBACK_ADAPTERS]),
   });
 
+  const serverAdapters = crud.auxiliaryData[0] as string[] | undefined;
+
   const adapterOptions = useMemo(() => {
-    const options = new Set(KNOWN_ADAPTERS);
+    const options = new Set(serverAdapters ?? FALLBACK_ADAPTERS);
     if (crud.draft?.adapter) {
       options.add(crud.draft.adapter);
     }
     return Array.from(options).sort((left, right) => left.localeCompare(right));
-  }, [crud.draft?.adapter]);
+  }, [crud.draft?.adapter, serverAdapters]);
 
   function startCreate() {
     crud.startNew({ ...EMPTY_PROVIDER });
