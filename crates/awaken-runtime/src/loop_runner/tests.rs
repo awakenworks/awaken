@@ -6,6 +6,8 @@ use crate::phase::ExecutionEnv;
 use crate::state::StateStore;
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::context_message::ContextMessage;
+use awaken_contract::contract::event::AgentEvent;
+use awaken_contract::contract::event_sink::VecEventSink;
 use awaken_contract::contract::message::{Message, Role};
 use awaken_contract::model::{
     PendingScheduledActions, Phase, ScheduledAction, ScheduledActionEnvelope,
@@ -30,6 +32,9 @@ fn test_runtime() -> (PhaseRuntime, ExecutionEnv) {
     store
         .install_plugin(LoopStatePlugin)
         .expect("install LoopStatePlugin");
+    store
+        .install_plugin(LoopActionHandlersPlugin)
+        .expect("install LoopActionHandlersPlugin");
 
     // Initialize RunLifecycle so step counting works
     let mut patch = crate::state::MutationBatch::new();
@@ -683,4 +688,302 @@ fn intercept_same_priority_keeps_first() {
 fn intercept_empty_returns_none() {
     let winner = resolve_intercept_payloads(vec![]);
     assert!(winner.is_none());
+}
+
+#[derive(Default)]
+struct DummyLlm;
+
+#[async_trait::async_trait]
+impl awaken_contract::contract::executor::LlmExecutor for DummyLlm {
+    async fn execute(
+        &self,
+        _request: awaken_contract::contract::executor::InferenceRequest,
+    ) -> Result<
+        awaken_contract::contract::inference::StreamResult,
+        awaken_contract::contract::executor::InferenceExecutionError,
+    > {
+        panic!("dummy llm should not execute in tool-only tests");
+    }
+
+    fn name(&self) -> &str {
+        "dummy"
+    }
+}
+
+#[derive(Default)]
+struct RecordingExecutor {
+    batches: std::sync::Mutex<Vec<Vec<String>>>,
+}
+
+impl RecordingExecutor {
+    fn take(&self) -> Vec<Vec<String>> {
+        std::mem::take(&mut *self.batches.lock().expect("lock poisoned"))
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::execution::ToolExecutor for RecordingExecutor {
+    async fn execute(
+        &self,
+        _tools: &std::collections::HashMap<
+            String,
+            std::sync::Arc<dyn awaken_contract::contract::tool::Tool>,
+        >,
+        calls: &[awaken_contract::contract::message::ToolCall],
+        _base_ctx: &awaken_contract::contract::tool::ToolCallContext,
+    ) -> Result<Vec<crate::execution::ToolExecutionResult>, crate::execution::ToolExecutorError>
+    {
+        self.batches.lock().expect("lock poisoned").push(
+            calls
+                .iter()
+                .map(|call| call.id.clone())
+                .collect::<Vec<String>>(),
+        );
+
+        Ok(calls
+            .iter()
+            .map(|call| crate::execution::ToolExecutionResult {
+                call: call.clone(),
+                result: awaken_contract::contract::tool::ToolResult::success(
+                    &call.name,
+                    serde_json::json!({"id": call.id}),
+                ),
+                outcome: awaken_contract::contract::suspension::ToolCallOutcome::Succeeded,
+                command: crate::state::StateCommand::new(),
+            })
+            .collect())
+    }
+
+    fn name(&self) -> &'static str {
+        "recording"
+    }
+}
+
+#[tokio::test]
+async fn resumed_calls_do_not_serialize_neighboring_fresh_batches() {
+    let (runtime, _env) = test_runtime();
+    let store = runtime.store();
+    let mut patch = crate::state::MutationBatch::new();
+    patch.update::<ToolCallStates>(crate::agent::state::ToolCallStatesUpdate::Put(
+        crate::agent::state::ToolCallState::new(
+            "c3",
+            "gamma",
+            serde_json::json!({"resumed": true}),
+            awaken_contract::contract::suspension::ToolCallStatus::Resuming,
+            1,
+        )
+        .with_resume_mode(awaken_contract::contract::suspension::ToolCallResumeMode::ReplayToolCall)
+        .with_suspension(
+            Some("perm_c3".into()),
+            Some("tool:PermissionConfirm".into()),
+        )
+        .with_resume_input(Some(
+            awaken_contract::contract::suspension::ToolCallResume {
+                decision_id: "decision-1".into(),
+                action: awaken_contract::contract::suspension::ResumeDecisionAction::Resume,
+                result: serde_json::json!({"approved": true}),
+                reason: None,
+                updated_at: 2,
+            },
+        )),
+    ));
+    store.commit(patch).expect("seed resume state");
+
+    let executor = std::sync::Arc::new(RecordingExecutor::default());
+    let mut agent = crate::registry::ResolvedAgent::new(
+        "agent",
+        "model",
+        "system",
+        std::sync::Arc::new(DummyLlm),
+    )
+    .with_tool_executor(executor.clone());
+
+    let sink: std::sync::Arc<dyn awaken_contract::contract::event_sink::EventSink> =
+        std::sync::Arc::new(awaken_contract::contract::event_sink::NullEventSink);
+    let mut messages = vec![std::sync::Arc::new(Message::user("go"))];
+    let run_identity = awaken_contract::contract::identity::RunIdentity::default();
+    let run_overrides = None;
+    let mut total_input_tokens = 0;
+    let mut total_output_tokens = 0;
+    let mut truncation_state = crate::context::TruncationState::new();
+    let mut ctx = super::step::StepContext {
+        agent: &mut agent,
+        messages: &mut messages,
+        runtime: &runtime,
+        sink,
+        checkpoint_store: None,
+        run_identity: &run_identity,
+        cancellation_token: None,
+        run_overrides: &run_overrides,
+        total_input_tokens: &mut total_input_tokens,
+        total_output_tokens: &mut total_output_tokens,
+        truncation_state: &mut truncation_state,
+        run_created_at: 0,
+    };
+    let calls = vec![
+        awaken_contract::contract::message::ToolCall::new("c1", "alpha", serde_json::json!({})),
+        awaken_contract::contract::message::ToolCall::new("c2", "beta", serde_json::json!({})),
+        awaken_contract::contract::message::ToolCall::new("c3", "gamma", serde_json::json!({})),
+        awaken_contract::contract::message::ToolCall::new("c4", "delta", serde_json::json!({})),
+        awaken_contract::contract::message::ToolCall::new("c5", "epsilon", serde_json::json!({})),
+    ];
+
+    let (_blocked, suspended) = super::step::execute_tools_with_interception(&mut ctx, &calls)
+        .await
+        .expect("tool execution should succeed");
+    assert!(!suspended, "recording executor never suspends");
+    assert_eq!(
+        executor.take(),
+        vec![
+            vec![String::from("c1"), String::from("c2")],
+            vec![String::from("c3")],
+            vec![String::from("c4"), String::from("c5")],
+        ]
+    );
+
+    let states = store.read::<ToolCallStates>().expect("tool call states");
+    let resumed = states.calls.get("c3").expect("resumed call state");
+    assert_eq!(
+        resumed.status,
+        awaken_contract::contract::suspension::ToolCallStatus::Succeeded
+    );
+    assert!(
+        resumed.resume_input.is_none(),
+        "terminal tool state should clear consumed resume input"
+    );
+    assert!(
+        resumed.suspension_id.is_none() && resumed.suspension_reason.is_none(),
+        "terminal tool state should not retain an active suspension context"
+    );
+}
+
+#[tokio::test]
+async fn cancelled_resume_is_emitted_once_even_when_other_calls_replay() {
+    let (runtime, _env) = test_runtime();
+    let store = runtime.store();
+    let mut patch = crate::state::MutationBatch::new();
+    patch.update::<ToolCallStates>(crate::agent::state::ToolCallStatesUpdate::Put(
+        crate::agent::state::ToolCallState::new(
+            "cancel_a",
+            "alpha",
+            serde_json::json!({"cancelled": true}),
+            awaken_contract::contract::suspension::ToolCallStatus::Cancelled,
+            1,
+        )
+        .with_resume_mode(awaken_contract::contract::suspension::ToolCallResumeMode::ReplayToolCall)
+        .with_suspension(
+            Some("perm_cancel_a".into()),
+            Some("tool:PermissionConfirm".into()),
+        )
+        .with_resume_input(Some(
+            awaken_contract::contract::suspension::ToolCallResume {
+                decision_id: "decision-cancel".into(),
+                action: awaken_contract::contract::suspension::ResumeDecisionAction::Cancel,
+                result: serde_json::json!({"kind": "permission_decision", "approved": false}),
+                reason: None,
+                updated_at: 2,
+            },
+        )),
+    ));
+    patch.update::<ToolCallStates>(crate::agent::state::ToolCallStatesUpdate::Put(
+        crate::agent::state::ToolCallState::new(
+            "resume_b",
+            "beta",
+            serde_json::json!({"resumed": true}),
+            awaken_contract::contract::suspension::ToolCallStatus::Resuming,
+            1,
+        )
+        .with_resume_mode(awaken_contract::contract::suspension::ToolCallResumeMode::ReplayToolCall)
+        .with_suspension(
+            Some("perm_resume_b".into()),
+            Some("tool:PermissionConfirm".into()),
+        )
+        .with_resume_input(Some(
+            awaken_contract::contract::suspension::ToolCallResume {
+                decision_id: "decision-resume".into(),
+                action: awaken_contract::contract::suspension::ResumeDecisionAction::Resume,
+                result: serde_json::json!({"kind": "permission_decision", "approved": true}),
+                reason: None,
+                updated_at: 2,
+            },
+        )),
+    ));
+    store
+        .commit(patch)
+        .expect("seed cancelled and resumed states");
+
+    let executor = std::sync::Arc::new(RecordingExecutor::default());
+    let agent = crate::registry::ResolvedAgent::new(
+        "agent",
+        "model",
+        "system",
+        std::sync::Arc::new(DummyLlm),
+    )
+    .with_tool_executor(executor);
+    let run_identity = awaken_contract::contract::identity::RunIdentity::default();
+    let sink = std::sync::Arc::new(VecEventSink::new());
+    let mut messages = vec![std::sync::Arc::new(Message::user("go"))];
+
+    super::resume::detect_and_replay_resume(
+        &agent,
+        &runtime,
+        &run_identity,
+        &mut messages,
+        sink.clone(),
+    )
+    .await
+    .expect("first replay should succeed");
+
+    super::resume::detect_and_replay_resume(
+        &agent,
+        &runtime,
+        &run_identity,
+        &mut messages,
+        sink.clone(),
+    )
+    .await
+    .expect("second replay should not re-emit cancelled resume");
+
+    let cancelled_events: Vec<_> = sink
+        .events()
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event,
+                AgentEvent::ToolCallResumed { target_id, .. } if target_id == "cancel_a"
+            )
+        })
+        .collect();
+    assert_eq!(
+        cancelled_events.len(),
+        1,
+        "cancelled resume should only emit one ToolCallResumed event"
+    );
+
+    let cancelled_messages: Vec<_> = messages
+        .iter()
+        .filter(|message| {
+            message.role == Role::Tool && message.tool_call_id.as_deref() == Some("cancel_a")
+        })
+        .collect();
+    assert_eq!(
+        cancelled_messages.len(),
+        1,
+        "cancelled resume should only append one tool message"
+    );
+
+    let states = store.read::<ToolCallStates>().expect("tool call states");
+    let cancelled = states.calls.get("cancel_a").expect("cancelled call state");
+    assert_eq!(
+        cancelled.status,
+        awaken_contract::contract::suspension::ToolCallStatus::Cancelled
+    );
+    assert!(
+        cancelled.resume_input.is_none(),
+        "cancelled terminal state should clear consumed resume input"
+    );
+    assert!(
+        cancelled.suspension_id.is_none() && cancelled.suspension_reason.is_none(),
+        "cancelled terminal state should not retain an active suspension context"
+    );
 }

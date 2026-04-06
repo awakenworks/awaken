@@ -524,11 +524,7 @@ impl Tool for FrontEndTool {
         let tool_name = &self.descriptor.id;
 
         if let Some(resume) = &ctx.resume_input {
-            let result = match resume.result {
-                Value::Bool(_) => args,
-                _ => resume.result.clone(),
-            };
-            return Ok(ToolResult::success(tool_name, result).into());
+            return Ok(ToolResult::success(tool_name, resume.result.clone()).into());
         }
 
         let pending_id = if ctx.call_id.trim().is_empty() {
@@ -1989,6 +1985,28 @@ mod tests {
         assert!(
             output.command.is_empty(),
             "FrontEndTool should not produce side-effects"
+        );
+    }
+
+    #[tokio::test]
+    async fn frontend_tool_resume_uses_decision_payload_verbatim() {
+        let desc = ToolDescriptor::new("ui_confirm", "UI Confirm", "Confirm dialog");
+        let tool = FrontEndTool::new(desc);
+        let mut ctx = ToolCallContext::test_default();
+        ctx.call_id = "call-fe-6".into();
+        ctx.resume_input = Some(crate::contract::suspension::ToolCallResume {
+            decision_id: "decision-1".into(),
+            action: crate::contract::suspension::ResumeDecisionAction::Resume,
+            result: json!(true),
+            reason: None,
+            updated_at: 1,
+        });
+
+        let output = tool.execute(json!({"ignored": true}), &ctx).await.unwrap();
+        assert_eq!(
+            output.result.data,
+            json!(true),
+            "frontend tool should return the decision payload exactly as provided"
         );
     }
 

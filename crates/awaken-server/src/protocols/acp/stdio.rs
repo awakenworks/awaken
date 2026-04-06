@@ -23,8 +23,6 @@ use super::types::{
 };
 
 struct SessionState {
-    #[allow(dead_code)]
-    cwd: String,
     agent_id: Option<String>,
     thread_id: String,
 }
@@ -123,7 +121,6 @@ impl acp::Agent for AcpAgent {
         self.sessions.lock().await.insert(
             session_id.clone(),
             SessionState {
-                cwd: args.cwd.to_string_lossy().into_owned(),
                 agent_id,
                 thread_id,
             },
@@ -182,7 +179,7 @@ impl acp::Agent for AcpAgent {
                     AcpOutput::PermissionRequest(request) => {
                         let tool_call_id = request.tool_call.tool_call_id.0.to_string();
                         let response = self.request_permission(request).await?;
-                        let resume = permission_response_to_resume(response);
+                        let resume = permission_response_to_resume(response)?;
                         if !self
                             .runtime
                             .send_decisions(&thread_id, vec![(tool_call_id, resume)])
@@ -202,19 +199,27 @@ impl acp::Agent for AcpAgent {
                             err = err.data(serde_json::json!({ "code": code }));
                         }
                         prompt_error = Some(err);
+                        self.runtime.cancel(&thread_id);
+                        break;
                     }
                 }
             }
+
+            if prompt_error.is_some() {
+                break;
+            }
+        }
+
+        if let Some(err) = prompt_error {
+            run_handle.abort();
+            let _ = run_handle.await;
+            return Err(err);
         }
 
         match run_handle.await {
             Ok(Ok(_)) => {}
             Ok(Err(err)) => return Err(acp::Error::into_internal_error(err)),
             Err(err) => return Err(acp::Error::into_internal_error(err)),
-        }
-
-        if let Some(err) = prompt_error {
-            return Err(err);
         }
 
         Ok(PromptResponse::new(final_stop_reason))
@@ -327,26 +332,60 @@ pub async fn serve_stdio(runtime: Arc<AgentRuntime>) {
     serve_stdio_io(runtime, stdin, stdout).await;
 }
 
-fn permission_response_to_resume(response: RequestPermissionResponse) -> ToolCallResume {
-    let action = match &response.outcome {
-        acp::RequestPermissionOutcome::Cancelled => ResumeDecisionAction::Cancel,
+fn permission_response_to_resume(
+    response: RequestPermissionResponse,
+) -> acp::Result<ToolCallResume> {
+    let (action, result) = match &response.outcome {
+        acp::RequestPermissionOutcome::Cancelled => (
+            ResumeDecisionAction::Cancel,
+            serde_json::json!({
+                "kind": "permission_decision",
+                "approved": false,
+                "cancelled": true,
+            }),
+        ),
         acp::RequestPermissionOutcome::Selected(selected) => {
-            if selected.option_id.0.contains("reject") {
-                ResumeDecisionAction::Cancel
-            } else {
-                ResumeDecisionAction::Resume
-            }
+            permission_option_to_resume(&selected.option_id.0)?
         }
-        _ => ResumeDecisionAction::Cancel,
+        _ => {
+            return Err(acp::Error::new(
+                -32602,
+                "unsupported ACP permission response outcome",
+            ));
+        }
     };
 
-    ToolCallResume {
+    Ok(ToolCallResume {
         decision_id: uuid::Uuid::now_v7().to_string(),
         action,
-        result: serde_json::to_value(&response).unwrap_or(Value::Null),
+        result,
         reason: None,
         updated_at: unix_timestamp_millis(),
-    }
+    })
+}
+
+fn permission_option_to_resume(option_id: &str) -> acp::Result<(ResumeDecisionAction, Value)> {
+    let (action, approved, policy) = match option_id {
+        "opt_allow_once" => (ResumeDecisionAction::Resume, true, "allow_once"),
+        "opt_allow_always" => (ResumeDecisionAction::Resume, true, "allow_always"),
+        "opt_reject_once" => (ResumeDecisionAction::Cancel, false, "reject_once"),
+        "opt_reject_always" => (ResumeDecisionAction::Cancel, false, "reject_always"),
+        other => {
+            return Err(acp::Error::new(
+                -32602,
+                format!("unsupported ACP permission option id: {other}"),
+            ));
+        }
+    };
+
+    Ok((
+        action,
+        serde_json::json!({
+            "kind": "permission_decision",
+            "approved": approved,
+            "policy": policy,
+        }),
+    ))
 }
 
 fn unix_timestamp_millis() -> u64 {
@@ -562,6 +601,58 @@ mod tests {
         assert_eq!(content.len(), 2);
         assert!(matches!(content[0], RuntimeContentBlock::Text { .. }));
         assert!(matches!(content[1], RuntimeContentBlock::Document { .. }));
+    }
+
+    #[test]
+    fn permission_response_maps_stable_allow_option_ids() {
+        let resume = permission_response_to_resume(RequestPermissionResponse::new(
+            acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                acp::PermissionOptionId::new("opt_allow_always"),
+            )),
+        ))
+        .expect("allow option should map");
+
+        assert_eq!(resume.action, ResumeDecisionAction::Resume);
+        assert_eq!(
+            resume.result,
+            serde_json::json!({
+                "kind": "permission_decision",
+                "approved": true,
+                "policy": "allow_always",
+            })
+        );
+    }
+
+    #[test]
+    fn permission_response_maps_stable_reject_option_ids() {
+        let resume = permission_response_to_resume(RequestPermissionResponse::new(
+            acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                acp::PermissionOptionId::new("opt_reject_once"),
+            )),
+        ))
+        .expect("reject option should map");
+
+        assert_eq!(resume.action, ResumeDecisionAction::Cancel);
+        assert_eq!(
+            resume.result,
+            serde_json::json!({
+                "kind": "permission_decision",
+                "approved": false,
+                "policy": "reject_once",
+            })
+        );
+    }
+
+    #[test]
+    fn permission_response_rejects_unknown_option_ids() {
+        let err = permission_response_to_resume(RequestPermissionResponse::new(
+            acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                acp::PermissionOptionId::new("reject_maybe"),
+            )),
+        ))
+        .expect_err("unknown option id should fail");
+
+        assert_eq!(err.code, agent_client_protocol::ErrorCode::InvalidParams);
     }
 
     #[tokio::test]
