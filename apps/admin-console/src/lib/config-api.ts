@@ -184,7 +184,7 @@ function normalizeCapabilities(capabilities: Capabilities): Capabilities {
   };
 }
 
-export function configUrl(namespace: string, id?: string): string {
+function configUrl(namespace: string, id?: string): string {
   const base = `${BACKEND_URL}/v1/config/${namespace}`;
   return id ? `${base}/${encodeURIComponent(id)}` : base;
 }
@@ -222,11 +222,6 @@ export const configApi = {
 
   delete: (namespace: string, id: string) =>
     fetchJson<void>(configUrl(namespace, id), { method: "DELETE" }),
-
-  schema: (namespace: string) =>
-    fetchJson<Record<string, unknown>>(
-      `${BACKEND_URL}/v1/config/${namespace}/$schema`,
-    ),
 
   capabilities: async () =>
     normalizeCapabilities(

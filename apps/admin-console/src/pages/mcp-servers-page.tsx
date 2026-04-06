@@ -1,10 +1,11 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import {
   type McpRestartPolicy,
   type McpServerRecord,
   type McpServerSpec,
-  configApi,
 } from "@/lib/config-api";
+import { useCrudPage } from "@/lib/use-crud-page";
+import { Field, ModeButton } from "@/components/form-components";
 import {
   parseJsonObject,
   parseLineList,
@@ -33,88 +34,13 @@ const EMPTY_SERVER: McpServerRecord = {
 };
 
 export function McpServersPage() {
-  const [servers, setServers] = useState<McpServerRecord[]>([]);
-  const [draft, setDraft] = useState<McpServerRecord | null>(null);
   const [argsDraft, setArgsDraft] = useState("");
   const [configDraft, setConfigDraft] = useState("{}");
   const [envDraft, setEnvDraft] = useState("{}");
   const [envMode, setEnvMode] = useState<EnvMode>("replace");
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  const isEditingExisting = useMemo(
-    () => (draft ? servers.some((server) => server.id === draft.id) : false),
-    [draft, servers],
-  );
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      setLoading(true);
-      try {
-        const response = await configApi.list<McpServerRecord>("mcp-servers");
-        if (!cancelled) {
-          setServers(response.items);
-          setError(null);
-        }
-      } catch (loadError) {
-        if (!cancelled) {
-          setError(
-            loadError instanceof Error ? loadError.message : String(loadError),
-          );
-          setServers([]);
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    }
-
-    void load();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  function startCreate() {
-    setDraft({
-      ...EMPTY_SERVER,
-      restart_policy: { ...DEFAULT_RESTART_POLICY },
-    });
-    setArgsDraft("");
-    setConfigDraft("{}");
-    setEnvDraft("{}");
-    setEnvMode("replace");
-  }
-
-  function startEdit(server: McpServerRecord) {
-    setDraft({
-      ...server,
-      command: String(server.command ?? ""),
-      url: String(server.url ?? ""),
-      args: [...(server.args ?? [])],
-      config: { ...(server.config ?? {}) },
-      restart_policy: {
-        ...DEFAULT_RESTART_POLICY,
-        ...(server.restart_policy ?? {}),
-      },
-    });
-    setArgsDraft(stringifyLineList(server.args));
-    setConfigDraft(stringifyJsonObject(server.config));
-    setEnvDraft("{}");
-    setEnvMode("preserve");
-  }
-
-  async function handleSave() {
-    if (!draft) {
-      return;
-    }
-
-    try {
+  const prepareSave = useCallback(
+    (draft: McpServerRecord): McpServerSpec => {
       const payload: McpServerSpec = {
         ...draft,
         command: draft.transport === "stdio" ? String(draft.command ?? "") : undefined,
@@ -134,51 +60,44 @@ export function McpServersPage() {
         payload.env = {};
       }
 
-      setSaving(true);
-      if (isEditingExisting) {
-        const updated = await configApi.update<McpServerSpec, McpServerRecord>(
-          "mcp-servers",
-          draft.id,
-          payload,
-        );
-        setServers((current) =>
-          current.map((server) => (server.id === updated.id ? updated : server)),
-        );
-      } else {
-        const created = await configApi.create<McpServerSpec, McpServerRecord>(
-          "mcp-servers",
-          payload,
-        );
-        setServers((current) =>
-          [...current.filter((server) => server.id !== created.id), created].sort(
-            (left, right) => left.id.localeCompare(right.id),
-          ),
-        );
-      }
+      return payload;
+    },
+    [argsDraft, configDraft, envMode, envDraft],
+  );
 
-      setDraft(null);
-      setError(null);
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : String(saveError));
-    } finally {
-      setSaving(false);
-    }
+  const crud = useCrudPage<McpServerRecord, McpServerSpec>({
+    namespace: "mcp-servers",
+    entityLabel: "MCP server",
+    prepareSave,
+  });
+
+  function startCreate() {
+    crud.startNew({
+      ...EMPTY_SERVER,
+      restart_policy: { ...DEFAULT_RESTART_POLICY },
+    });
+    setArgsDraft("");
+    setConfigDraft("{}");
+    setEnvDraft("{}");
+    setEnvMode("replace");
   }
 
-  async function handleDelete(id: string) {
-    if (!confirm(`Delete MCP server "${id}"?`)) {
-      return;
-    }
-
-    try {
-      await configApi.delete("mcp-servers", id);
-      setServers((current) => current.filter((server) => server.id !== id));
-      setError(null);
-    } catch (deleteError) {
-      setError(
-        deleteError instanceof Error ? deleteError.message : String(deleteError),
-      );
-    }
+  function startEdit(server: McpServerRecord) {
+    crud.setDraft({
+      ...server,
+      command: String(server.command ?? ""),
+      url: String(server.url ?? ""),
+      args: [...(server.args ?? [])],
+      config: { ...(server.config ?? {}) },
+      restart_policy: {
+        ...DEFAULT_RESTART_POLICY,
+        ...(server.restart_policy ?? {}),
+      },
+    });
+    setArgsDraft(stringifyLineList(server.args));
+    setConfigDraft(stringifyJsonObject(server.config));
+    setEnvDraft("{}");
+    setEnvMode("preserve");
   }
 
   return (
@@ -201,24 +120,24 @@ export function McpServersPage() {
         </button>
       </div>
 
-      {error ? (
+      {crud.error ? (
         <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          {error}
+          {crud.error}
         </div>
       ) : null}
 
-      {draft ? (
+      {crud.draft ? (
         <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h3 className="text-lg font-semibold text-slate-950">
-            {isEditingExisting ? "Edit MCP server" : "Create MCP server"}
+            {crud.isEditingExisting ? "Edit MCP server" : "Create MCP server"}
           </h3>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
             <Field label="Server ID">
               <input
-                value={draft.id}
+                value={crud.draft.id}
                 onChange={(event) =>
-                  setDraft((current) =>
+                  crud.setDraft((current) =>
                     current ? { ...current, id: event.target.value } : current,
                   )
                 }
@@ -228,9 +147,9 @@ export function McpServersPage() {
 
             <Field label="Transport">
               <select
-                value={draft.transport}
+                value={crud.draft.transport}
                 onChange={(event) =>
-                  setDraft((current) =>
+                  crud.setDraft((current) =>
                     current
                       ? {
                           ...current,
@@ -246,13 +165,13 @@ export function McpServersPage() {
               </select>
             </Field>
 
-            {draft.transport === "stdio" ? (
+            {crud.draft.transport === "stdio" ? (
               <>
                 <Field label="Command">
                   <input
-                    value={String(draft.command ?? "")}
+                    value={String(crud.draft.command ?? "")}
                     onChange={(event) =>
-                      setDraft((current) =>
+                      crud.setDraft((current) =>
                         current
                           ? { ...current, command: event.target.value }
                           : current,
@@ -273,9 +192,9 @@ export function McpServersPage() {
             ) : (
               <Field label="URL">
                 <input
-                  value={String(draft.url ?? "")}
+                  value={String(crud.draft.url ?? "")}
                   onChange={(event) =>
-                    setDraft((current) =>
+                    crud.setDraft((current) =>
                       current ? { ...current, url: event.target.value } : current,
                     )
                   }
@@ -288,9 +207,9 @@ export function McpServersPage() {
               <input
                 type="number"
                 min={1}
-                value={Number(draft.timeout_secs ?? 30)}
+                value={Number(crud.draft.timeout_secs ?? 30)}
                 onChange={(event) =>
-                  setDraft((current) =>
+                  crud.setDraft((current) =>
                     current
                       ? {
                           ...current,
@@ -321,12 +240,12 @@ export function McpServersPage() {
                     Environment JSON
                   </h4>
                   <p className="mt-1 text-sm text-slate-500">
-                    {isEditingExisting && draft.has_env
-                      ? `Existing keys: ${(draft.env_keys ?? []).join(", ") || "stored"}`
+                    {crud.isEditingExisting && crud.draft.has_env
+                      ? `Existing keys: ${(crud.draft.env_keys ?? []).join(", ") || "stored"}`
                       : "Provide a JSON object of environment variables."}
                   </p>
                 </div>
-                {isEditingExisting ? (
+                {crud.isEditingExisting ? (
                   <div className="flex flex-wrap gap-2">
                     <ModeButton
                       active={envMode === "preserve"}
@@ -375,9 +294,9 @@ export function McpServersPage() {
               <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
                 <input
                   type="checkbox"
-                  checked={Boolean(draft.restart_policy?.enabled)}
+                  checked={Boolean(crud.draft.restart_policy?.enabled)}
                   onChange={(event) =>
-                    setDraft((current) =>
+                    crud.setDraft((current) =>
                       current
                         ? {
                             ...current,
@@ -400,9 +319,9 @@ export function McpServersPage() {
                 <input
                   type="number"
                   min={0}
-                  value={String(draft.restart_policy?.max_attempts ?? "")}
+                  value={String(crud.draft.restart_policy?.max_attempts ?? "")}
                   onChange={(event) =>
-                    setDraft((current) =>
+                    crud.setDraft((current) =>
                       current
                         ? {
                             ...current,
@@ -425,9 +344,9 @@ export function McpServersPage() {
                 <input
                   type="number"
                   min={0}
-                  value={Number(draft.restart_policy?.delay_ms ?? 1000)}
+                  value={Number(crud.draft.restart_policy?.delay_ms ?? 1000)}
                   onChange={(event) =>
-                    setDraft((current) =>
+                    crud.setDraft((current) =>
                       current
                         ? {
                             ...current,
@@ -448,9 +367,9 @@ export function McpServersPage() {
                   type="number"
                   min={1}
                   step="0.1"
-                  value={Number(draft.restart_policy?.backoff_multiplier ?? 2)}
+                  value={Number(crud.draft.restart_policy?.backoff_multiplier ?? 2)}
                   onChange={(event) =>
-                    setDraft((current) =>
+                    crud.setDraft((current) =>
                       current
                         ? {
                             ...current,
@@ -471,9 +390,9 @@ export function McpServersPage() {
                 <input
                   type="number"
                   min={0}
-                  value={Number(draft.restart_policy?.max_delay_ms ?? 30000)}
+                  value={Number(crud.draft.restart_policy?.max_delay_ms ?? 30000)}
                   onChange={(event) =>
-                    setDraft((current) =>
+                    crud.setDraft((current) =>
                       current
                         ? {
                             ...current,
@@ -495,15 +414,15 @@ export function McpServersPage() {
           <div className="mt-5 flex gap-3">
             <button
               type="button"
-              onClick={() => void handleSave()}
-              disabled={saving}
+              onClick={() => void crud.handleSave()}
+              disabled={crud.saving}
               className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {saving ? "Saving..." : "Save"}
+              {crud.saving ? "Saving..." : "Save"}
             </button>
             <button
               type="button"
-              onClick={() => setDraft(null)}
+              onClick={crud.cancelEdit}
               className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
             >
               Cancel
@@ -513,11 +432,11 @@ export function McpServersPage() {
       ) : null}
 
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-        {loading ? (
+        {crud.loading ? (
           <div className="px-5 py-6 text-sm text-slate-500">
             Loading MCP servers...
           </div>
-        ) : servers.length === 0 ? (
+        ) : crud.items.length === 0 ? (
           <div className="px-5 py-6 text-sm text-slate-500">
             No managed MCP servers yet.
           </div>
@@ -533,7 +452,7 @@ export function McpServersPage() {
               </tr>
             </thead>
             <tbody>
-              {servers.map((server) => (
+              {crud.items.map((server) => (
                 <tr
                   key={server.id}
                   className="border-t border-slate-200 text-sm text-slate-700"
@@ -561,7 +480,7 @@ export function McpServersPage() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => void handleDelete(server.id)}
+                        onClick={() => void crud.handleDelete(server.id)}
                         className="font-medium text-rose-600 transition hover:text-rose-700"
                       >
                         Delete
@@ -575,45 +494,5 @@ export function McpServersPage() {
         )}
       </div>
     </div>
-  );
-}
-
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}) {
-  return (
-    <label className="block">
-      <span className="mb-1.5 block text-sm font-medium text-slate-600">{label}</span>
-      {children}
-    </label>
-  );
-}
-
-function ModeButton({
-  active,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={[
-        "rounded-full px-3 py-1.5 text-xs font-medium transition",
-        active
-          ? "bg-slate-950 text-white"
-          : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-100",
-      ].join(" ")}
-    >
-      {label}
-    </button>
   );
 }

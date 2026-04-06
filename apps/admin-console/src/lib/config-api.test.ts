@@ -1,9 +1,26 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ConfigApiError, configApi, configUrl } from "./config-api";
+import { BACKEND_URL, ConfigApiError, configApi } from "./config-api";
 
-describe("configUrl", () => {
-  it("encodes config ids", () => {
-    expect(configUrl("agents", "alpha/beta")).toContain("alpha%2Fbeta");
+describe("configUrl encoding", () => {
+  it("encodes config ids via the list endpoint", async () => {
+    // Verify id encoding by intercepting fetch and inspecting the URL
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({}),
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await configApi.get("agents", "alpha/beta");
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `${BACKEND_URL}/v1/config/agents/alpha%2Fbeta`,
+      undefined,
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 });
 
