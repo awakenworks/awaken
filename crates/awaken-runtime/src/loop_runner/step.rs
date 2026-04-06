@@ -30,9 +30,9 @@ use super::checkpoint::{StepCompletion, check_termination, complete_step};
 use super::inference::{compact_with_llm, execute_streaming};
 use super::{AgentLoopError, commit_update, now_ms, tool_result_to_content};
 use crate::agent::state::{
-    InferenceOverrideState, InferenceOverrideStateAction, RunLifecycle, RunLifecycleUpdate,
-    ToolCallStates, ToolCallStatesUpdate, ToolFilterState, ToolFilterStateAction,
-    ToolInterceptState, ToolInterceptStateAction,
+    InferenceOverrideState, InferenceOverrideStateAction, OptionalField, RunLifecycle,
+    RunLifecycleUpdate, ToolCallState, ToolCallStates, ToolCallStatesUpdate, ToolFilterState,
+    ToolFilterStateAction, ToolInterceptState, ToolInterceptStateAction,
 };
 
 /// Outcome of a single step.
@@ -83,6 +83,43 @@ pub(super) fn make_ctx(
     }
 }
 
+fn active_resume_state(store: &crate::state::StateStore, call_id: &str) -> Option<ToolCallState> {
+    store
+        .read::<ToolCallStates>()
+        .and_then(|states| states.calls.get(call_id).cloned())
+        .filter(|state| state.status == ToolCallStatus::Resuming)
+}
+
+fn apply_resume_context(ctx: PhaseContext, resume_state: Option<&ToolCallState>) -> PhaseContext {
+    let Some(resume_state) = resume_state else {
+        return ctx;
+    };
+
+    let ctx = ctx.with_suspension(
+        resume_state.suspension_id.clone(),
+        resume_state.suspension_reason.clone(),
+    );
+    if let Some(resume_input) = resume_state.resume_input.clone() {
+        ctx.with_resume_input(resume_input)
+    } else {
+        ctx
+    }
+}
+
+fn apply_tool_resume_context(
+    mut ctx: ToolCallContext,
+    resume_state: Option<&ToolCallState>,
+) -> ToolCallContext {
+    let Some(resume_state) = resume_state else {
+        return ctx;
+    };
+
+    ctx.resume_input = resume_state.resume_input.clone();
+    ctx.suspension_id = resume_state.suspension_id.clone();
+    ctx.suspension_reason = resume_state.suspension_reason.clone();
+    ctx
+}
+
 /// Build a `StateCommand` that upserts a `ToolCallStates` entry for a given call and status.
 fn tool_call_state_cmd(call: &ToolCall, status: ToolCallStatus) -> StateCommand {
     let mut cmd = StateCommand::new();
@@ -93,6 +130,9 @@ fn tool_call_state_cmd(call: &ToolCall, status: ToolCallStatus) -> StateCommand 
         status,
         updated_at: now_ms(),
         resume_mode: ToolCallResumeMode::default(),
+        suspension_id: OptionalField::Preserve,
+        suspension_reason: OptionalField::Clear,
+        resume_input: OptionalField::Clear,
     });
     cmd
 }
@@ -359,14 +399,18 @@ async fn intercept_tool_call(
 ) -> Result<Option<awaken_contract::contract::tool_intercept::ToolInterceptPayload>, AgentLoopError>
 {
     let store = ctx.runtime.store();
-    let before_ctx = make_ctx(
-        Phase::BeforeToolExecute,
-        ctx.messages,
-        ctx.run_identity,
-        store,
-        ctx.cancellation_token,
-    )
-    .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
+    let resume_state = active_resume_state(store, &call.id);
+    let before_ctx = apply_resume_context(
+        make_ctx(
+            Phase::BeforeToolExecute,
+            ctx.messages,
+            ctx.run_identity,
+            store,
+            ctx.cancellation_token,
+        )
+        .with_tool_info(&call.name, &call.id, Some(call.arguments.clone())),
+        resume_state.as_ref(),
+    );
 
     // GATHER only — submit ALL actions to handler queue
     let cmd = ctx
@@ -385,6 +429,7 @@ async fn intercept_tool_call(
             ctx.cancellation_token,
         )
         .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()));
+        let exec_ctx = apply_resume_context(exec_ctx, resume_state.as_ref());
         ctx.runtime
             .run_execute_loop(&ctx.agent.env, exec_ctx)
             .await?;
@@ -418,6 +463,7 @@ async fn build_tool_state_command(
     outcome: ToolCallOutcome,
 ) -> Result<StateCommand, AgentLoopError> {
     let store = ctx.runtime.store();
+    let resume_state = active_resume_state(store, &call.id);
     let terminal_status = match outcome {
         ToolCallOutcome::Suspended => ToolCallStatus::Suspended,
         ToolCallOutcome::Succeeded => ToolCallStatus::Succeeded,
@@ -437,6 +483,33 @@ async fn build_tool_state_command(
         status: terminal_status,
         updated_at: now_ms(),
         resume_mode,
+        suspension_id: tool_result
+            .suspension
+            .as_ref()
+            .map(|ticket| OptionalField::Set(ticket.suspension.id.clone()))
+            .unwrap_or_else(|| {
+                if terminal_status == ToolCallStatus::Suspended {
+                    OptionalField::Clear
+                } else {
+                    OptionalField::Preserve
+                }
+            }),
+        suspension_reason: tool_result
+            .suspension
+            .as_ref()
+            .map(|ticket| OptionalField::Set(ticket.suspension.action.clone()))
+            .unwrap_or_else(|| {
+                if terminal_status == ToolCallStatus::Suspended {
+                    OptionalField::Clear
+                } else {
+                    OptionalField::Preserve
+                }
+            }),
+        resume_input: if terminal_status == ToolCallStatus::Suspended {
+            OptionalField::Clear
+        } else {
+            OptionalField::Preserve
+        },
     });
 
     // Merge tool's own side-effects (same mechanism as plugin hooks)
@@ -445,15 +518,18 @@ async fn build_tool_state_command(
     }
 
     // Collect AfterToolExecute hook commands (same as plugin gather)
-    let after_ctx = make_ctx(
-        Phase::AfterToolExecute,
-        ctx.messages,
-        ctx.run_identity,
-        store,
-        ctx.cancellation_token,
-    )
-    .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()))
-    .with_tool_result(tool_result.clone());
+    let after_ctx = apply_resume_context(
+        make_ctx(
+            Phase::AfterToolExecute,
+            ctx.messages,
+            ctx.run_identity,
+            store,
+            ctx.cancellation_token,
+        )
+        .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()))
+        .with_tool_result(tool_result.clone()),
+        resume_state.as_ref(),
+    );
     let after_cmd = ctx
         .runtime
         .collect_commands(&ctx.agent.env, after_ctx)
@@ -531,6 +607,9 @@ fn build_suspend_state_command(call: &ToolCall, ticket: &SuspendTicket) -> State
         status: ToolCallStatus::Suspended,
         updated_at: now_ms(),
         resume_mode: ticket.resume_mode,
+        suspension_id: OptionalField::Set(ticket.suspension.id.clone()),
+        suspension_reason: OptionalField::Set(ticket.suspension.action.clone()),
+        resume_input: OptionalField::Clear,
     });
     cmd
 }
@@ -578,7 +657,7 @@ async fn emit_suspend_completion(
 /// checkpoint durability.
 ///
 /// Returns (block_reason, any_suspended).
-async fn execute_tools_with_interception(
+pub(super) async fn execute_tools_with_interception(
     ctx: &mut StepContext<'_>,
     calls: &[ToolCall],
 ) -> Result<(Option<String>, bool), AgentLoopError> {
@@ -642,15 +721,24 @@ async fn execute_tools_with_interception(
         snapshot: store.snapshot(),
         activity_sink: Some(ctx.sink.clone()),
         cancellation_token: ctx.cancellation_token.cloned(),
+        resume_input: None,
+        suspension_id: None,
+        suspension_reason: None,
     };
 
-    if ctx.agent.tool_executor.requires_incremental_state() {
+    let requires_resume_context = allowed_calls
+        .iter()
+        .any(|call| active_resume_state(store, &call.id).is_some());
+
+    if ctx.agent.tool_executor.requires_incremental_state() || requires_resume_context {
         // Incremental: execute one-by-one, commit per call
         for call in &allowed_calls {
+            let resume_state = active_resume_state(store, &call.id);
             let mut tool_ctx = base_tool_ctx.clone();
             tool_ctx.call_id = call.id.clone();
             tool_ctx.tool_name = call.name.clone();
             tool_ctx.snapshot = store.snapshot();
+            tool_ctx = apply_tool_resume_context(tool_ctx, resume_state.as_ref());
 
             let mut batch = ctx
                 .agent

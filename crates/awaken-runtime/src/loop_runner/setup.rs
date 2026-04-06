@@ -9,12 +9,13 @@ use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::message::Message;
 
 use super::AgentLoopError;
-use super::resume::detect_and_replay_resume;
+use super::resume::{ResumeEffects, detect_and_replay_resume};
 
 /// All resolved state needed before the main loop begins.
 pub(super) struct PreparedRun {
     pub agent: ResolvedAgent,
     pub messages: Vec<Arc<Message>>,
+    pub resume_effects: ResumeEffects,
 }
 
 /// Resolve the agent, trim compaction history, and replay any suspended tool calls.
@@ -61,7 +62,12 @@ pub(super) async fn prepare_run(
     }
 
     // State-driven resume detection: replay any Resuming tool calls.
-    detect_and_replay_resume(&agent, store, run_identity, &mut messages).await?;
+    let resume_effects =
+        detect_and_replay_resume(&agent, runtime, run_identity, &mut messages).await?;
 
-    Ok(PreparedRun { agent, messages })
+    Ok(PreparedRun {
+        agent,
+        messages,
+        resume_effects,
+    })
 }

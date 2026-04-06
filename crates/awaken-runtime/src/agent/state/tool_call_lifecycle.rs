@@ -1,11 +1,11 @@
 use crate::state::{MergeStrategy, StateKey};
-use awaken_contract::contract::suspension::{ToolCallResumeMode, ToolCallStatus};
+use awaken_contract::contract::suspension::{ToolCallResume, ToolCallResumeMode, ToolCallStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
 /// Per-tool-call lifecycle state.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallState {
     pub call_id: String,
     pub tool_name: String,
@@ -15,15 +15,38 @@ pub struct ToolCallState {
     /// Resume mode from the `SuspendTicket` (set when status becomes Suspended).
     #[serde(default)]
     pub resume_mode: ToolCallResumeMode,
+    /// External-facing suspension id used by protocols that distinguish
+    /// approval/interrupt ids from the underlying tool call id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspension_id: Option<String>,
+    /// Suspension reason/action from the active `SuspendTicket`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspension_reason: Option<String>,
+    /// Most recent external resume input applied to this suspended tool call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_input: Option<ToolCallResume>,
 }
 
 /// Keyed collection of tool call states for the current step.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallStateMap {
     pub calls: HashMap<String, ToolCallState>,
 }
 
 /// Update for the tool call states key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OptionalField<T> {
+    Preserve,
+    Clear,
+    Set(T),
+}
+
+impl<T> Default for OptionalField<T> {
+    fn default() -> Self {
+        Self::Preserve
+    }
+}
+
 pub enum ToolCallStatesUpdate {
     /// Upsert a tool call's lifecycle state (validates transition).
     Upsert {
@@ -34,6 +57,12 @@ pub enum ToolCallStatesUpdate {
         updated_at: u64,
         /// Resume mode from the `SuspendTicket` (meaningful when status is Suspended).
         resume_mode: ToolCallResumeMode,
+        /// External-facing suspension id, when the tool is suspended.
+        suspension_id: OptionalField<String>,
+        /// Suspension reason/action, when the tool is suspended.
+        suspension_reason: OptionalField<String>,
+        /// External resume payload applied while resuming/cancelling.
+        resume_input: OptionalField<ToolCallResume>,
     },
     /// Clear all tool call states (at step boundary).
     Clear,
@@ -58,6 +87,9 @@ impl StateKey for ToolCallStates {
                 status,
                 updated_at,
                 resume_mode,
+                suspension_id,
+                suspension_reason,
+                resume_input,
             } => {
                 let existing = value.calls.get(&call_id);
                 let current_status = existing.map(|s| s.status).unwrap_or(ToolCallStatus::New);
@@ -78,6 +110,35 @@ impl StateKey for ToolCallStates {
                 } else {
                     existing.map(|s| s.resume_mode).unwrap_or(resume_mode)
                 };
+                let effective_suspension_id = match suspension_id {
+                    OptionalField::Preserve => existing.and_then(|s| s.suspension_id.clone()),
+                    OptionalField::Clear => None,
+                    OptionalField::Set(id) => {
+                        let trimmed = id.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed.to_string())
+                        }
+                    }
+                };
+                let effective_suspension_reason = match suspension_reason {
+                    OptionalField::Preserve => existing.and_then(|s| s.suspension_reason.clone()),
+                    OptionalField::Clear => None,
+                    OptionalField::Set(reason) => {
+                        let trimmed = reason.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed.to_string())
+                        }
+                    }
+                };
+                let effective_resume_input = match resume_input {
+                    OptionalField::Preserve => existing.and_then(|s| s.resume_input.clone()),
+                    OptionalField::Clear => None,
+                    OptionalField::Set(value) => Some(value),
+                };
 
                 value.calls.insert(
                     call_id.clone(),
@@ -88,6 +149,9 @@ impl StateKey for ToolCallStates {
                         status,
                         updated_at,
                         resume_mode: effective_resume_mode,
+                        suspension_id: effective_suspension_id,
+                        suspension_reason: effective_suspension_reason,
+                        resume_input: effective_resume_input,
                     },
                 );
             }
@@ -118,6 +182,9 @@ mod tests {
                 status,
                 updated_at: ts,
                 resume_mode: ToolCallResumeMode::default(),
+                suspension_id: OptionalField::Preserve,
+                suspension_reason: OptionalField::Clear,
+                resume_input: OptionalField::Clear,
             },
         );
     }
@@ -291,11 +358,63 @@ mod tests {
                 status: ToolCallStatus::Running,
                 updated_at: 100,
                 resume_mode: ToolCallResumeMode::default(),
+                suspension_id: OptionalField::Preserve,
+                suspension_reason: OptionalField::Clear,
+                resume_input: OptionalField::Clear,
             },
         );
         let call = &states.calls["c1"];
         assert_eq!(call.tool_name, "search");
         assert_eq!(call.arguments["query"], "test");
+    }
+
+    #[test]
+    fn tool_call_suspension_context_roundtrip() {
+        let mut states = ToolCallStateMap::default();
+        ToolCallStates::apply(
+            &mut states,
+            ToolCallStatesUpdate::Upsert {
+                call_id: "c1".into(),
+                tool_name: "dangerous".into(),
+                arguments: serde_json::json!({"cmd": "rm"}),
+                status: ToolCallStatus::Suspended,
+                updated_at: 100,
+                resume_mode: ToolCallResumeMode::ReplayToolCall,
+                suspension_id: OptionalField::Set("perm_c1".into()),
+                suspension_reason: OptionalField::Set("tool:PermissionConfirm".into()),
+                resume_input: OptionalField::Clear,
+            },
+        );
+        ToolCallStates::apply(
+            &mut states,
+            ToolCallStatesUpdate::Upsert {
+                call_id: "c1".into(),
+                tool_name: "dangerous".into(),
+                arguments: serde_json::json!({"cmd": "rm"}),
+                status: ToolCallStatus::Cancelled,
+                updated_at: 200,
+                resume_mode: ToolCallResumeMode::ReplayToolCall,
+                suspension_id: OptionalField::Preserve,
+                suspension_reason: OptionalField::Preserve,
+                resume_input: OptionalField::Set(ToolCallResume {
+                    decision_id: "d1".into(),
+                    action: awaken_contract::contract::suspension::ResumeDecisionAction::Cancel,
+                    result: serde_json::json!({"approved": false}),
+                    reason: Some("user denied".into()),
+                    updated_at: 200,
+                }),
+            },
+        );
+        let call = &states.calls["c1"];
+        assert_eq!(call.suspension_id.as_deref(), Some("perm_c1"));
+        assert_eq!(
+            call.suspension_reason.as_deref(),
+            Some("tool:PermissionConfirm")
+        );
+        assert_eq!(
+            call.resume_input.as_ref().map(|resume| &resume.result),
+            Some(&serde_json::json!({"approved": false}))
+        );
     }
 
     #[test]
