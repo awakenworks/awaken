@@ -5,9 +5,7 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_contract::contract::config_store::{
-    ConfigChangeNotifier, ConfigNamespace, ConfigRegistry, ConfigStore,
-};
+use awaken_contract::contract::config_store::{ConfigChangeNotifier, ConfigStore};
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::storage::StorageError;
 use awaken_contract::{
@@ -37,49 +35,10 @@ use tokio::task::JoinHandle;
 
 const CONFIG_LOAD_PAGE_SIZE: usize = 1024;
 
-pub struct AgentNamespace;
-
-impl ConfigNamespace for AgentNamespace {
-    const NAMESPACE: &'static str = "agents";
-    type Value = AgentSpec;
-
-    fn id(value: &Self::Value) -> &str {
-        &value.id
-    }
-}
-
-pub struct ModelNamespace;
-
-impl ConfigNamespace for ModelNamespace {
-    const NAMESPACE: &'static str = "models";
-    type Value = ModelSpec;
-
-    fn id(value: &Self::Value) -> &str {
-        &value.id
-    }
-}
-
-pub struct ProviderNamespace;
-
-impl ConfigNamespace for ProviderNamespace {
-    const NAMESPACE: &'static str = "providers";
-    type Value = ProviderSpec;
-
-    fn id(value: &Self::Value) -> &str {
-        &value.id
-    }
-}
-
-pub struct McpServerNamespace;
-
-impl ConfigNamespace for McpServerNamespace {
-    const NAMESPACE: &'static str = "mcp-servers";
-    type Value = McpServerSpec;
-
-    fn id(value: &Self::Value) -> &str {
-        &value.id
-    }
-}
+const NS_AGENTS: &str = "agents";
+const NS_MODELS: &str = "models";
+const NS_PROVIDERS: &str = "providers";
+const NS_MCP_SERVERS: &str = "mcp-servers";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigRuntimeError {
@@ -146,57 +105,37 @@ impl AgentSpecRegistry for RemoteAgentFallbackRegistry {
     }
 }
 
-struct OverlayAgentRegistry {
-    local: Arc<dyn AgentSpecRegistry>,
-    fallback: Arc<dyn AgentSpecRegistry>,
+macro_rules! overlay_registry {
+    ($name:ident, $trait:ident, $get:ident -> $ret:ty, $ids:ident) => {
+        struct $name {
+            base: Arc<dyn $trait>,
+            overlay: Arc<dyn $trait>,
+        }
+
+        impl $name {
+            fn new(base: Arc<dyn $trait>, overlay: Arc<dyn $trait>) -> Self {
+                Self { base, overlay }
+            }
+        }
+
+        impl $trait for $name {
+            fn $get(&self, id: &str) -> $ret {
+                self.base.$get(id).or_else(|| self.overlay.$get(id))
+            }
+
+            fn $ids(&self) -> Vec<String> {
+                let mut ids = self.base.$ids();
+                ids.extend(self.overlay.$ids());
+                ids.sort();
+                ids.dedup();
+                ids
+            }
+        }
+    };
 }
 
-impl OverlayAgentRegistry {
-    fn new(local: Arc<dyn AgentSpecRegistry>, fallback: Arc<dyn AgentSpecRegistry>) -> Self {
-        Self { local, fallback }
-    }
-}
-
-impl AgentSpecRegistry for OverlayAgentRegistry {
-    fn get_agent(&self, id: &str) -> Option<AgentSpec> {
-        self.local
-            .get_agent(id)
-            .or_else(|| self.fallback.get_agent(id))
-    }
-
-    fn agent_ids(&self) -> Vec<String> {
-        let mut ids = self.local.agent_ids();
-        ids.extend(self.fallback.agent_ids());
-        ids.sort();
-        ids.dedup();
-        ids
-    }
-}
-
-struct OverlayToolRegistry {
-    base: Arc<dyn ToolRegistry>,
-    overlay: Arc<dyn ToolRegistry>,
-}
-
-impl OverlayToolRegistry {
-    fn new(base: Arc<dyn ToolRegistry>, overlay: Arc<dyn ToolRegistry>) -> Self {
-        Self { base, overlay }
-    }
-}
-
-impl ToolRegistry for OverlayToolRegistry {
-    fn get_tool(&self, id: &str) -> Option<Arc<dyn awaken_contract::contract::tool::Tool>> {
-        self.base.get_tool(id).or_else(|| self.overlay.get_tool(id))
-    }
-
-    fn tool_ids(&self) -> Vec<String> {
-        let mut ids = self.base.tool_ids();
-        ids.extend(self.overlay.tool_ids());
-        ids.sort();
-        ids.dedup();
-        ids
-    }
-}
+overlay_registry!(OverlayAgentRegistry, AgentSpecRegistry, get_agent -> Option<AgentSpec>, agent_ids);
+overlay_registry!(OverlayToolRegistry, ToolRegistry, get_tool -> Option<Arc<dyn awaken_contract::contract::tool::Tool>>, tool_ids);
 
 #[derive(Clone)]
 struct DynamicMcpToolRegistry {
@@ -421,18 +360,10 @@ impl ConfigRuntimeManager {
         agents: &[AgentSpec],
         mcp_servers: &[McpServerSpec],
     ) -> Result<bool, ConfigRuntimeError> {
-        let providers_reg =
-            ConfigRegistry::<ProviderNamespace>::new(self.store.clone() as Arc<dyn ConfigStore>);
-        let models_reg =
-            ConfigRegistry::<ModelNamespace>::new(self.store.clone() as Arc<dyn ConfigStore>);
-        let agents_reg = ConfigRegistry::<AgentNamespace>::new(self.store.clone());
-        let mcp_reg =
-            ConfigRegistry::<McpServerNamespace>::new(self.store.clone() as Arc<dyn ConfigStore>);
-
-        let has_providers = !providers_reg.list(0, 1).await?.is_empty();
-        let has_models = !models_reg.list(0, 1).await?.is_empty();
-        let has_agents = !agents_reg.list(0, 1).await?.is_empty();
-        let has_mcp_servers = !mcp_reg.list(0, 1).await?.is_empty();
+        let has_providers = !self.store.list(NS_PROVIDERS, 0, 1).await?.is_empty();
+        let has_models = !self.store.list(NS_MODELS, 0, 1).await?.is_empty();
+        let has_agents = !self.store.list(NS_AGENTS, 0, 1).await?.is_empty();
+        let has_mcp_servers = !self.store.list(NS_MCP_SERVERS, 0, 1).await?.is_empty();
 
         if has_providers || has_models || has_agents || has_mcp_servers {
             if has_providers && has_models && has_agents {
@@ -442,16 +373,24 @@ impl ConfigRuntimeManager {
         }
 
         for provider in providers {
-            providers_reg.put(provider).await?;
+            let json = serde_json::to_value(provider)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            self.store.put(NS_PROVIDERS, &provider.id, &json).await?;
         }
         for model in models {
-            models_reg.put(model).await?;
+            let json = serde_json::to_value(model)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            self.store.put(NS_MODELS, &model.id, &json).await?;
         }
         for agent in agents {
-            agents_reg.put(agent).await?;
+            let json = serde_json::to_value(agent)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            self.store.put(NS_AGENTS, &agent.id, &json).await?;
         }
         for server in mcp_servers {
-            mcp_reg.put(server).await?;
+            let json = serde_json::to_value(server)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            self.store.put(NS_MCP_SERVERS, &server.id, &json).await?;
         }
 
         Ok(true)
@@ -726,24 +665,16 @@ impl ConfigRuntimeManager {
     }
 
     async fn load_managed_config(&self) -> Result<ManagedConfigSnapshot, ConfigRuntimeError> {
-        let provider_values = self
-            .load_namespace_entries(ProviderNamespace::NAMESPACE)
-            .await?;
-        let model_values = self
-            .load_namespace_entries(ModelNamespace::NAMESPACE)
-            .await?;
-        let agent_values = self
-            .load_namespace_entries(AgentNamespace::NAMESPACE)
-            .await?;
-        let mcp_values = self
-            .load_namespace_entries(McpServerNamespace::NAMESPACE)
-            .await?;
+        let provider_values = self.load_namespace_entries(NS_PROVIDERS).await?;
+        let model_values = self.load_namespace_entries(NS_MODELS).await?;
+        let agent_values = self.load_namespace_entries(NS_AGENTS).await?;
+        let mcp_values = self.load_namespace_entries(NS_MCP_SERVERS).await?;
 
         let fingerprint = fingerprint_config(&[
-            (ProviderNamespace::NAMESPACE, &provider_values),
-            (ModelNamespace::NAMESPACE, &model_values),
-            (AgentNamespace::NAMESPACE, &agent_values),
-            (McpServerNamespace::NAMESPACE, &mcp_values),
+            (NS_PROVIDERS, &provider_values),
+            (NS_MODELS, &model_values),
+            (NS_AGENTS, &agent_values),
+            (NS_MCP_SERVERS, &mcp_values),
         ])?;
 
         Ok(ManagedConfigSnapshot {

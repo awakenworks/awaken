@@ -1,94 +1,66 @@
 use std::sync::Arc;
 
-use awaken_contract::contract::config_store::{ConfigNamespace, ConfigRegistry, ConfigStore};
+use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::{AgentSpec, ModelSpec, ProviderSpec};
 use awaken_stores::InMemoryStore;
 
 #[cfg(feature = "file")]
 use awaken_stores::FileStore;
 
-struct AgentNamespace;
-
-impl ConfigNamespace for AgentNamespace {
-    const NAMESPACE: &'static str = "agents";
-    type Value = AgentSpec;
-
-    fn id(value: &Self::Value) -> &str {
-        &value.id
-    }
-}
-
-struct ModelNamespace;
-
-impl ConfigNamespace for ModelNamespace {
-    const NAMESPACE: &'static str = "models";
-    type Value = ModelSpec;
-
-    fn id(value: &Self::Value) -> &str {
-        &value.id
-    }
-}
-
-struct ProviderNamespace;
-
-impl ConfigNamespace for ProviderNamespace {
-    const NAMESPACE: &'static str = "providers";
-    type Value = ProviderSpec;
-
-    fn id(value: &Self::Value) -> &str {
-        &value.id
-    }
-}
-
 async fn exercise_store(store: Arc<dyn ConfigStore>) {
-    let agents = ConfigRegistry::<AgentNamespace>::new(store.clone());
-    let models = ConfigRegistry::<ModelNamespace>::new(store.clone());
-    let providers = ConfigRegistry::<ProviderNamespace>::new(store);
+    let provider = ProviderSpec {
+        id: "openai".into(),
+        adapter: "openai".into(),
+        api_key: Some("sk-test".into()),
+        base_url: Some("https://proxy.example.com/v1".into()),
+        timeout_secs: 120,
+    };
+    let model = ModelSpec {
+        id: "gpt-4o-mini".into(),
+        provider: "openai".into(),
+        model: "gpt-4o-mini".into(),
+    };
+    let agent = AgentSpec {
+        id: "assistant".into(),
+        model: "gpt-4o-mini".into(),
+        system_prompt: "You are helpful.".into(),
+        ..Default::default()
+    };
 
-    providers
-        .put(&ProviderSpec {
-            id: "openai".into(),
-            adapter: "openai".into(),
-            api_key: Some("sk-test".into()),
-            base_url: Some("https://proxy.example.com/v1".into()),
-            timeout_secs: 120,
-        })
+    store
+        .put(
+            "providers",
+            &provider.id,
+            &serde_json::to_value(&provider).unwrap(),
+        )
         .await
         .unwrap();
-    models
-        .put(&ModelSpec {
-            id: "gpt-4o-mini".into(),
-            provider: "openai".into(),
-            model: "gpt-4o-mini".into(),
-        })
+    store
+        .put("models", &model.id, &serde_json::to_value(&model).unwrap())
         .await
         .unwrap();
-    agents
-        .put(&AgentSpec {
-            id: "assistant".into(),
-            model: "gpt-4o-mini".into(),
-            system_prompt: "You are helpful.".into(),
-            ..Default::default()
-        })
+    store
+        .put("agents", &agent.id, &serde_json::to_value(&agent).unwrap())
         .await
         .unwrap();
 
-    assert!(providers.exists("openai").await.unwrap());
-    assert_eq!(
-        models.get("gpt-4o-mini").await.unwrap().unwrap().provider,
-        "openai"
-    );
-    assert_eq!(
-        agents.get("assistant").await.unwrap().unwrap().model,
-        "gpt-4o-mini"
-    );
+    assert!(store.exists("providers", "openai").await.unwrap());
 
-    let listed = agents.list(0, 10).await.unwrap();
+    let model_value = store.get("models", "gpt-4o-mini").await.unwrap().unwrap();
+    let model_read: ModelSpec = serde_json::from_value(model_value).unwrap();
+    assert_eq!(model_read.provider, "openai");
+
+    let agent_value = store.get("agents", "assistant").await.unwrap().unwrap();
+    let agent_read: AgentSpec = serde_json::from_value(agent_value).unwrap();
+    assert_eq!(agent_read.model, "gpt-4o-mini");
+
+    let listed = store.list("agents", 0, 10).await.unwrap();
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].id, "assistant");
+    let listed_agent: AgentSpec = serde_json::from_value(listed[0].1.clone()).unwrap();
+    assert_eq!(listed_agent.id, "assistant");
 
-    providers.delete("openai").await.unwrap();
-    assert!(providers.get("openai").await.unwrap().is_none());
+    store.delete("providers", "openai").await.unwrap();
+    assert!(store.get("providers", "openai").await.unwrap().is_none());
 }
 
 #[tokio::test]

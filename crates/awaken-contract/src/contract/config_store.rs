@@ -1,11 +1,6 @@
 //! Async CRUD storage for namespaced JSON configuration documents.
 
-use std::marker::PhantomData;
-use std::sync::Arc;
-
 use async_trait::async_trait;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use super::storage::StorageError;
@@ -68,77 +63,10 @@ pub trait ConfigChangeNotifier: Send + Sync {
     async fn subscribe(&self) -> Result<Box<dyn ConfigChangeSubscriber>, StorageError>;
 }
 
-/// Typed namespace descriptor for a configuration entity.
-pub trait ConfigNamespace: 'static + Send + Sync {
-    /// Storage namespace (for example `"agents"` or `"models"`).
-    const NAMESPACE: &'static str;
-
-    /// Typed value stored in this namespace.
-    type Value: Serialize + DeserializeOwned + Send + Sync + 'static;
-
-    /// Extract the stable ID from a typed value.
-    fn id(value: &Self::Value) -> &str;
-}
-
-/// Typed wrapper over [`ConfigStore`] for a specific namespace.
-pub struct ConfigRegistry<N: ConfigNamespace> {
-    store: Arc<dyn ConfigStore>,
-    _namespace: PhantomData<N>,
-}
-
-impl<N: ConfigNamespace> ConfigRegistry<N> {
-    /// Create a typed registry backed by the given raw store.
-    pub fn new(store: Arc<dyn ConfigStore>) -> Self {
-        Self {
-            store,
-            _namespace: PhantomData,
-        }
-    }
-
-    /// Get one typed entry by ID.
-    pub async fn get(&self, id: &str) -> Result<Option<N::Value>, StorageError> {
-        let Some(value) = self.store.get(N::NAMESPACE, id).await? else {
-            return Ok(None);
-        };
-        let typed = serde_json::from_value(value)
-            .map_err(|error| StorageError::Serialization(error.to_string()))?;
-        Ok(Some(typed))
-    }
-
-    /// List typed entries in the namespace.
-    pub async fn list(&self, offset: usize, limit: usize) -> Result<Vec<N::Value>, StorageError> {
-        let values = self.store.list(N::NAMESPACE, offset, limit).await?;
-        values
-            .into_iter()
-            .map(|(_, value)| {
-                serde_json::from_value(value)
-                    .map_err(|error| StorageError::Serialization(error.to_string()))
-            })
-            .collect()
-    }
-
-    /// Upsert one typed entry.
-    pub async fn put(&self, value: &N::Value) -> Result<(), StorageError> {
-        let id = N::id(value);
-        let json = serde_json::to_value(value)
-            .map_err(|error| StorageError::Serialization(error.to_string()))?;
-        self.store.put(N::NAMESPACE, id, &json).await
-    }
-
-    /// Delete one typed entry by ID.
-    pub async fn delete(&self, id: &str) -> Result<(), StorageError> {
-        self.store.delete(N::NAMESPACE, id).await
-    }
-
-    /// Check whether an entry exists.
-    pub async fn exists(&self, id: &str) -> Result<bool, StorageError> {
-        self.store.exists(N::NAMESPACE, id).await
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     use tokio::sync::RwLock;
 
@@ -191,59 +119,39 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-    struct TestEntity {
-        id: String,
-        label: String,
-    }
+    #[tokio::test]
+    async fn config_store_round_trip() {
+        let store: Arc<dyn ConfigStore> = Arc::new(MemoryConfigStore::default());
+        let value = serde_json::json!({"id": "alpha", "label": "first"});
 
-    struct TestNamespace;
+        store.put("tests", "alpha", &value).await.unwrap();
 
-    impl ConfigNamespace for TestNamespace {
-        const NAMESPACE: &'static str = "tests";
-        type Value = TestEntity;
-
-        fn id(value: &Self::Value) -> &str {
-            &value.id
-        }
+        assert_eq!(store.get("tests", "alpha").await.unwrap(), Some(value));
     }
 
     #[tokio::test]
-    async fn typed_registry_round_trip() {
-        let store = Arc::new(MemoryConfigStore::default());
-        let registry = ConfigRegistry::<TestNamespace>::new(store);
-        let entity = TestEntity {
-            id: "alpha".into(),
-            label: "first".into(),
-        };
+    async fn config_store_lists_sorted_entries() {
+        let store: Arc<dyn ConfigStore> = Arc::new(MemoryConfigStore::default());
 
-        registry.put(&entity).await.unwrap();
-
-        assert_eq!(registry.get("alpha").await.unwrap(), Some(entity));
-    }
-
-    #[tokio::test]
-    async fn typed_registry_lists_sorted_entries() {
-        let store = Arc::new(MemoryConfigStore::default());
-        let registry = ConfigRegistry::<TestNamespace>::new(store);
-
-        registry
-            .put(&TestEntity {
-                id: "bravo".into(),
-                label: "second".into(),
-            })
+        store
+            .put(
+                "tests",
+                "bravo",
+                &serde_json::json!({"id": "bravo", "label": "second"}),
+            )
             .await
             .unwrap();
-        registry
-            .put(&TestEntity {
-                id: "alpha".into(),
-                label: "first".into(),
-            })
+        store
+            .put(
+                "tests",
+                "alpha",
+                &serde_json::json!({"id": "alpha", "label": "first"}),
+            )
             .await
             .unwrap();
 
-        let items = registry.list(0, 10).await.unwrap();
-        assert_eq!(items[0].id, "alpha");
-        assert_eq!(items[1].id, "bravo");
+        let items = store.list("tests", 0, 10).await.unwrap();
+        assert_eq!(items[0].0, "alpha");
+        assert_eq!(items[1].0, "bravo");
     }
 }
