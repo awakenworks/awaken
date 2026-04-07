@@ -37,12 +37,13 @@ impl ProfileAccess {
     }
 
     /// Read a typed value. Returns `K::Value::default()` if the entry is missing.
-    pub async fn read<K: ProfileKey>(
-        &self,
-        owner: &ProfileOwner,
-    ) -> Result<K::Value, StorageError> {
+    ///
+    /// - `K::KEY` is the namespace (which data type)
+    /// - `key` is the dynamic identifier (which instance)
+    pub async fn read<K: ProfileKey>(&self, key: &str) -> Result<K::Value, StorageError> {
         self.ensure_registered(K::KEY)?;
-        match self.store.get(owner, K::KEY).await? {
+        let owner = Self::key_to_owner(key);
+        match self.store.get(&owner, K::KEY).await? {
             Some(entry) => K::decode(entry.value).map_err(|e| StorageError::Io(e.to_string())),
             None => Ok(K::Value::default()),
         }
@@ -51,28 +52,33 @@ impl ProfileAccess {
     /// Write a typed value.
     pub async fn write<K: ProfileKey>(
         &self,
-        owner: &ProfileOwner,
+        key: &str,
         value: &K::Value,
     ) -> Result<(), StorageError> {
         self.ensure_registered(K::KEY)?;
         let json = K::encode(value).map_err(|e| StorageError::Io(e.to_string()))?;
-        self.store.set(owner, K::KEY, json).await
+        self.store.set(&Self::key_to_owner(key), K::KEY, json).await
     }
 
     /// Delete a typed entry.
-    pub async fn delete<K: ProfileKey>(&self, owner: &ProfileOwner) -> Result<(), StorageError> {
+    pub async fn delete<K: ProfileKey>(&self, key: &str) -> Result<(), StorageError> {
         self.ensure_registered(K::KEY)?;
-        self.store.delete(owner, K::KEY).await
+        self.store.delete(&Self::key_to_owner(key), K::KEY).await
     }
 
-    /// List all entries for an owner.
-    pub async fn list(&self, owner: &ProfileOwner) -> Result<Vec<ProfileEntry>, StorageError> {
-        self.store.list(owner).await
+    /// List all entries for a key.
+    pub async fn list(&self, key: &str) -> Result<Vec<ProfileEntry>, StorageError> {
+        self.store.list(&Self::key_to_owner(key)).await
     }
 
-    /// Delete all entries for an owner.
-    pub async fn clear_owner(&self, owner: &ProfileOwner) -> Result<(), StorageError> {
-        self.store.clear_owner(owner).await
+    /// Delete all entries for a key.
+    pub async fn clear(&self, key: &str) -> Result<(), StorageError> {
+        self.store.clear_owner(&Self::key_to_owner(key)).await
+    }
+
+    /// Map a user-facing key string to a `ProfileOwner` for storage.
+    fn key_to_owner(key: &str) -> ProfileOwner {
+        ProfileOwner::Agent(key.to_owned())
     }
 
     fn ensure_registered(&self, key: &str) -> Result<(), StorageError> {
@@ -179,59 +185,52 @@ mod tests {
     #[tokio::test]
     async fn read_missing_returns_default() {
         let access = make_access(&["locale"]);
-        let val = access.read::<Locale>(&ProfileOwner::System).await.unwrap();
+        let val = access.read::<Locale>("system").await.unwrap();
         assert_eq!(val, String::default());
     }
 
     #[tokio::test]
     async fn write_then_read_roundtrip() {
         let access = make_access(&["locale"]);
-        let owner = ProfileOwner::Agent("alice".into());
         access
-            .write::<Locale>(&owner, &"en-US".to_string())
+            .write::<Locale>("alice", &"en-US".to_string())
             .await
             .unwrap();
-        let val = access.read::<Locale>(&owner).await.unwrap();
+        let val = access.read::<Locale>("alice").await.unwrap();
         assert_eq!(val, "en-US");
     }
 
     #[tokio::test]
     async fn delete_removes_entry() {
         let access = make_access(&["locale"]);
-        let owner = ProfileOwner::System;
         access
-            .write::<Locale>(&owner, &"fr".to_string())
+            .write::<Locale>("system", &"fr".to_string())
             .await
             .unwrap();
-        access.delete::<Locale>(&owner).await.unwrap();
-        let val = access.read::<Locale>(&owner).await.unwrap();
+        access.delete::<Locale>("system").await.unwrap();
+        let val = access.read::<Locale>("system").await.unwrap();
         assert_eq!(val, String::default());
     }
 
     #[tokio::test]
     async fn unregistered_key_returns_error() {
         let access = make_access(&["locale"]);
-        let err = access
-            .read::<Unregistered>(&ProfileOwner::System)
-            .await
-            .unwrap_err();
+        let err = access.read::<Unregistered>("system").await.unwrap_err();
         assert!(err.to_string().contains("not registered"));
     }
 
     #[tokio::test]
-    async fn owners_are_isolated() {
+    async fn keys_are_isolated() {
         let access = make_access(&["locale"]);
-        let alice = ProfileOwner::Agent("alice".into());
-        let bob = ProfileOwner::Agent("bob".into());
         access
-            .write::<Locale>(&alice, &"en".to_string())
+            .write::<Locale>("alice", &"en".to_string())
             .await
             .unwrap();
         access
-            .write::<Locale>(&bob, &"fr".to_string())
+            .write::<Locale>("bob", &"fr".to_string())
             .await
             .unwrap();
-        assert_eq!(access.read::<Locale>(&alice).await.unwrap(), "en");
-        assert_eq!(access.read::<Locale>(&bob).await.unwrap(), "fr");
+        assert_eq!(access.read::<Locale>("alice").await.unwrap(), "en");
+        assert_eq!(access.read::<Locale>("bob").await.unwrap(), "fr");
     }
 }

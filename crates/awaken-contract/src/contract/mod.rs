@@ -12,6 +12,7 @@ pub mod mailbox;
 pub mod message;
 pub mod profile_store;
 pub mod progress;
+pub mod shared_state;
 pub mod storage;
 pub mod suspension;
 pub mod tool;

@@ -108,8 +108,45 @@ State keys registered with `persistent: true` in `StateKeyOptions` are serialize
 - Commit hooks (`CommitHook`) that fire after each successful state mutation
 - `StateCommand` processing for programmatic state operations
 
+## Shared State
+
+For state that must be shared **across thread and agent boundaries**, awaken provides a separate persistent layer built on the same `ProfileStore` backend used by profile data.
+
+### ProfileKey for shared state
+
+Shared state uses the same `ProfileKey` trait as profile data. The `KEY` constant serves as the namespace, and the `key: &str` parameter passed to `ProfileAccess` methods identifies the runtime instance:
+
+```rust,ignore
+pub trait ProfileKey: 'static + Send + Sync {
+    const KEY: &'static str;
+    type Value: Clone + Default + Serialize + DeserializeOwned + Send + Sync + 'static;
+}
+```
+
+Unlike `StateKey`, shared state does not participate in the `MutationBatch` / snapshot workflow -- it is accessed asynchronously through `ProfileAccess` with a `key: &str` parameter.
+
+### StateScope
+
+```rust,ignore
+pub struct StateScope(String);
+```
+
+An optional convenience builder for common key string patterns. Constructors: `global()`, `parent_thread(id)`, `agent_type(name)`, `thread(id)`, `new(arbitrary)`. Call `.as_str()` to get the key string for `ProfileAccess` methods. Users can also pass any raw `&str` directly.
+
+### State Management Overview
+
+| Layer | Scope | Access | Lifecycle | Use Case |
+|-------|-------|--------|-----------|----------|
+| Run State | Current run | Sync snapshot | Cleared at run start | Transient flags, counters |
+| Thread State | Same thread | Sync snapshot | Export/restore across runs | Tool call state, active agent |
+| Shared State | `ProfileKey` + `StateScope` | Async | Persistent | Cross-boundary sharing |
+| Profile State | `ProfileKey` + `key: &str` | Async | Persistent | User/agent preferences |
+
+Choose shared state when you need **dynamic scoping** or **cross-boundary access**. Choose `StateKey` when you need **sync access** or **transactional merge** during parallel tool execution.
+
 ## See Also
 
 - [State Keys](../reference/state-keys.md)
 - [Run Lifecycle and Phases](./run-lifecycle-and-phases.md)
 - [Architecture](./architecture.md)
+- [Use Shared State](../how-to/use-shared-state.md)
