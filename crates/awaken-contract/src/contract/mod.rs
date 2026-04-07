@@ -1,5 +1,4 @@
 pub mod active_agent;
-pub mod agent_card;
 pub mod bundle;
 pub mod content;
 pub mod context_message;
@@ -13,6 +12,7 @@ pub mod mailbox;
 pub mod message;
 pub mod profile_store;
 pub mod progress;
+pub mod shared_state;
 pub mod storage;
 pub mod suspension;
 pub mod tool;

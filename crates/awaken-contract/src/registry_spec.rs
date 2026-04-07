@@ -6,10 +6,10 @@
 //!
 //! Supersedes the former `AgentProfile` — see ADR-0009.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::contract::inference::{ContextWindowPolicy, ReasoningEffort};
@@ -95,7 +95,7 @@ pub struct AgentSpec {
     /// Excluded tool IDs (blacklist). Applied after `allowed_tools`.
     #[serde(default)]
     pub excluded_tools: Option<Vec<String>>,
-    /// Optional remote endpoint. If set, this agent runs on a remote A2A server.
+    /// Optional remote endpoint. If set, this agent runs on a remote backend.
     /// If None, this agent runs locally.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<RemoteEndpoint>,
@@ -112,40 +112,141 @@ pub struct AgentSpec {
     pub registry: Option<String>,
 }
 
-/// Remote endpoint configuration for agents running on external A2A servers.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Remote backend authentication configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RemoteAuth {
+    #[serde(rename = "type")]
+    pub auth_type: String,
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, Value>,
+}
+
+impl RemoteAuth {
+    #[must_use]
+    pub fn bearer(token: impl Into<String>) -> Self {
+        let mut params = BTreeMap::new();
+        params.insert("token".into(), Value::String(token.into()));
+        Self {
+            auth_type: "bearer".into(),
+            params,
+        }
+    }
+
+    #[must_use]
+    pub fn param_str(&self, key: &str) -> Option<&str> {
+        self.params.get(key).and_then(Value::as_str)
+    }
+}
+
+/// Remote endpoint configuration for agents running on external backends.
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct RemoteEndpoint {
+    #[serde(default = "default_remote_backend")]
+    pub backend: String,
     pub base_url: String,
-    #[serde(default)]
-    pub bearer_token: Option<String>,
-    /// Target agent ID on the remote server. If `None`, omits the agentId
-    /// field in the A2A request and lets the remote server use its default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_id: Option<String>,
-    #[serde(default = "default_poll_interval")]
-    pub poll_interval_ms: u64,
+    pub auth: Option<RemoteAuth>,
+    /// Target resource on the remote backend. Backend-specific semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
     #[serde(default = "default_timeout")]
     pub timeout_ms: u64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub options: BTreeMap<String, Value>,
 }
 
 impl Default for RemoteEndpoint {
     fn default() -> Self {
         Self {
+            backend: default_remote_backend(),
             base_url: String::new(),
-            bearer_token: None,
-            agent_id: None,
-            poll_interval_ms: default_poll_interval(),
+            auth: None,
+            target: None,
             timeout_ms: default_timeout(),
+            options: BTreeMap::new(),
         }
     }
 }
 
-fn default_poll_interval() -> u64 {
-    2000
+fn default_remote_backend() -> String {
+    "a2a".to_string()
 }
 
 fn default_timeout() -> u64 {
     300_000
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRemoteEndpoint {
+    #[serde(default)]
+    backend: Option<String>,
+    base_url: String,
+    #[serde(default)]
+    auth: Option<RemoteAuth>,
+    #[serde(default)]
+    target: Option<String>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    options: BTreeMap<String, Value>,
+    #[serde(default)]
+    bearer_token: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    poll_interval_ms: Option<u64>,
+}
+
+impl<'de> Deserialize<'de> for RemoteEndpoint {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawRemoteEndpoint::deserialize(deserializer)?;
+        let has_legacy_fields =
+            raw.bearer_token.is_some() || raw.agent_id.is_some() || raw.poll_interval_ms.is_some();
+        let has_canonical_fields = raw.backend.is_some()
+            || raw.auth.is_some()
+            || raw.target.is_some()
+            || !raw.options.is_empty();
+
+        if has_legacy_fields && has_canonical_fields {
+            return Err(serde::de::Error::custom(
+                "cannot mix legacy A2A endpoint fields with canonical remote endpoint fields",
+            ));
+        }
+
+        if has_legacy_fields {
+            let mut options = BTreeMap::new();
+            if let Some(poll_interval_ms) = raw.poll_interval_ms {
+                options.insert("poll_interval_ms".into(), Value::from(poll_interval_ms));
+            }
+            return Ok(Self {
+                backend: default_remote_backend(),
+                base_url: raw.base_url,
+                auth: raw.bearer_token.map(RemoteAuth::bearer),
+                target: raw.agent_id,
+                timeout_ms: raw.timeout_ms.unwrap_or_else(default_timeout),
+                options,
+            });
+        }
+
+        let backend = raw.backend.unwrap_or_else(default_remote_backend);
+        if backend.trim().is_empty() {
+            return Err(serde::de::Error::custom(
+                "remote endpoint backend must not be empty",
+            ));
+        }
+
+        Ok(Self {
+            backend,
+            base_url: raw.base_url,
+            auth: raw.auth,
+            target: raw.target,
+            timeout_ms: raw.timeout_ms.unwrap_or_else(default_timeout),
+            options: raw.options,
+        })
+    }
 }
 
 impl Default for AgentSpec {
@@ -443,6 +544,73 @@ mod tests {
         let spec =
             AgentSpec::new("test").with_section("custom", serde_json::json!({"key": "value"}));
         assert_eq!(spec.sections["custom"]["key"], "value");
+    }
+
+    #[test]
+    fn remote_endpoint_canonical_roundtrip_uses_single_shape() {
+        let mut options = BTreeMap::new();
+        options.insert("poll_interval_ms".into(), json!(1000));
+        let endpoint = RemoteEndpoint {
+            backend: "a2a".into(),
+            base_url: "https://remote.example.com/v1/a2a".into(),
+            auth: Some(RemoteAuth::bearer("tok_123")),
+            target: Some("worker".into()),
+            timeout_ms: 60_000,
+            options,
+        };
+
+        let encoded = serde_json::to_value(&endpoint).unwrap();
+        assert_eq!(encoded["backend"], "a2a");
+        assert_eq!(encoded["auth"]["type"], "bearer");
+        assert_eq!(encoded["auth"]["token"], "tok_123");
+        assert_eq!(encoded["target"], "worker");
+        assert_eq!(encoded["options"]["poll_interval_ms"], 1000);
+        assert!(encoded.get("bearer_token").is_none());
+        assert!(encoded.get("agent_id").is_none());
+        assert!(encoded.get("poll_interval_ms").is_none());
+
+        let parsed: RemoteEndpoint = serde_json::from_value(encoded).unwrap();
+        assert_eq!(parsed, endpoint);
+    }
+
+    #[test]
+    fn remote_endpoint_legacy_a2a_input_normalizes_to_canonical_shape() {
+        let endpoint: RemoteEndpoint = serde_json::from_value(json!({
+            "base_url": "https://remote.example.com/v1/a2a",
+            "bearer_token": "tok_legacy",
+            "agent_id": "worker",
+            "poll_interval_ms": 750,
+            "timeout_ms": 60_000
+        }))
+        .unwrap();
+
+        assert_eq!(endpoint.backend, "a2a");
+        assert_eq!(
+            endpoint
+                .auth
+                .as_ref()
+                .and_then(|auth| auth.param_str("token")),
+            Some("tok_legacy")
+        );
+        assert_eq!(endpoint.target.as_deref(), Some("worker"));
+        assert_eq!(endpoint.options.get("poll_interval_ms"), Some(&json!(750)));
+        assert_eq!(endpoint.timeout_ms, 60_000);
+    }
+
+    #[test]
+    fn remote_endpoint_rejects_mixed_legacy_and_canonical_fields() {
+        let err = serde_json::from_value::<RemoteEndpoint>(json!({
+            "backend": "a2a",
+            "base_url": "https://remote.example.com/v1/a2a",
+            "auth": { "type": "bearer", "token": "tok_new" },
+            "bearer_token": "tok_old"
+        }))
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("cannot mix legacy A2A endpoint fields")
+        );
     }
 
     #[test]

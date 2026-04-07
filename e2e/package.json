@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "test": "playwright test",
+    "test:interop": "playwright test -c playwright.interop.config.ts",
     "test:headed": "playwright test --headed"
   },
   "devDependencies": {

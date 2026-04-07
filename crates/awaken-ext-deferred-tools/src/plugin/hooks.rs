@@ -9,8 +9,6 @@ use awaken_runtime::state::StateCommand;
 
 use awaken_runtime::phase::TypedScheduledActionHandler;
 
-use awaken_contract::contract::profile_store::ProfileOwner;
-
 use crate::config::{DeferredToolsConfigKey, ToolLoadMode};
 use crate::policy::DiscBetaEvaluator;
 use crate::state::{
@@ -315,9 +313,9 @@ impl PhaseHook for LoadPriorsHook {
         };
 
         let config = ctx.config::<DeferredToolsConfigKey>().unwrap_or_default();
-        let owner = ProfileOwner::Agent(ctx.agent_spec.id.clone());
+        let key = ctx.agent_spec.id.as_str();
 
-        let priors = match profile_access.read::<AgentToolPriorsKey>(&owner).await {
+        let priors = match profile_access.read::<AgentToolPriorsKey>(key).await {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!(error = %e, "failed to read agent tool priors");
@@ -377,9 +375,9 @@ impl PhaseHook for PersistPriorsHook {
             return Ok(StateCommand::new());
         }
 
-        let owner = ProfileOwner::Agent(ctx.agent_spec.id.clone());
+        let key = ctx.agent_spec.id.as_str();
 
-        let mut priors = match profile_access.read::<AgentToolPriorsKey>(&owner).await {
+        let mut priors = match profile_access.read::<AgentToolPriorsKey>(key).await {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!(error = %e, "failed to read agent tool priors before update");
@@ -399,7 +397,7 @@ impl PhaseHook for PersistPriorsHook {
         priors.session_count += 1;
 
         if let Err(e) = profile_access
-            .write::<AgentToolPriorsKey>(&owner, &priors)
+            .write::<AgentToolPriorsKey>(key, &priors)
             .await
         {
             tracing::warn!(error = %e, "failed to persist agent tool priors");

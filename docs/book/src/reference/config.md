@@ -131,14 +131,22 @@ their configuration via `agent_spec.config::<MyConfigKey>()`.
 
 ## RemoteEndpoint
 
-Configuration for agents running on external A2A servers.
+Configuration for agents running on external backends. Today Awaken ships the
+`"a2a"` backend; backend-specific settings live under `options`.
 
 ```rust,ignore
 pub struct RemoteEndpoint {
+    pub backend: String,
     pub base_url: String,
-    pub bearer_token: Option<String>,
-    pub poll_interval_ms: u64,    // default: 2000
-    pub timeout_ms: u64,          // default: 300_000
+    pub auth: Option<RemoteAuth>,
+    pub target: Option<String>,
+    pub timeout_ms: u64,               // default: 300_000
+    pub options: BTreeMap<String, Value>,
+}
+
+pub struct RemoteAuth {
+    pub r#type: String,
+    // backend-specific auth fields, e.g. { "token": "..." } for bearer
 }
 ```
 
@@ -153,6 +161,7 @@ pub struct ServerConfig {
     pub replay_buffer_capacity: usize,     // default: 1024
     pub shutdown: ShutdownConfig,
     pub max_concurrent_requests: usize,    // default: 100
+    pub a2a_extended_card_bearer_token: Option<String>,
 }
 
 pub struct ShutdownConfig {
@@ -168,6 +177,7 @@ pub struct ShutdownConfig {
 | `sse_buffer_size` | `usize` | `64` | Maximum SSE channel buffer size per connection |
 | `replay_buffer_capacity` | `usize` | `1024` | Maximum SSE frames buffered per run for reconnection replay |
 | `max_concurrent_requests` | `usize` | `100` | Maximum in-flight requests; excess requests receive 503 |
+| `a2a_extended_card_bearer_token` | `Option<String>` | `None` | Enables authenticated `GET /v1/a2a/extendedAgentCard` when set |
 | `shutdown.timeout_secs` | `u64` | `30` | Seconds to wait for in-flight requests to drain before force-exiting |
 
 ## MailboxConfig

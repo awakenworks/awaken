@@ -13,6 +13,10 @@ use awaken_contract::contract::executor::LlmExecutor;
 
 use crate::builder::BuildError;
 
+#[cfg(feature = "a2a")]
+use super::BackendRegistry;
+#[cfg(feature = "a2a")]
+use super::memory::MapBackendRegistry;
 use super::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,
 };
@@ -81,6 +85,9 @@ impl AgentSystemConfig {
             models: Arc::new(model_reg),
             providers: Arc::new(provider_reg),
             plugins: Arc::new(MapPluginSource::new()),
+            #[cfg(feature = "a2a")]
+            backends: Arc::new(MapBackendRegistry::with_default_remote_backends())
+                as Arc<dyn BackendRegistry>,
         })
     }
 }

@@ -35,9 +35,6 @@ pub use model::{
     ScheduledActionSpec, TypedEffect,
 };
 
-// ── agent card ──
-pub use contract::agent_card::{AgentCard, AgentCardAuth};
-
 // ── registry spec (AgentSpec, PluginConfigKey) ──
 pub use registry_spec::{AgentSpec, PluginConfigKey};
 
@@ -59,6 +56,9 @@ pub use contract::mailbox::{
 
 // ── profile store ──
 pub use contract::profile_store::{ProfileEntry, ProfileKey, ProfileOwner, ProfileStore};
+
+// ── shared state ──
+pub use contract::shared_state::StateScope;
 
 // ── tool schema ──
 pub use contract::tool::TypedTool;

@@ -166,6 +166,87 @@ pub struct PersistedState {
 }
 ```
 
+## Shared State (ProfileKey + StateScope)
+
+For cross-boundary persistent state with dynamic scoping. Shared state uses `ProfileKey` --
+the same trait used for profile data -- combined with a `key: &str` parameter for the runtime
+key dimension. Unlike `StateKey`, shared state is accessed asynchronously through `ProfileAccess`
+and does not participate in the snapshot/mutation workflow.
+
+```rust,ignore
+pub trait ProfileKey: 'static + Send + Sync {
+    /// Namespace identifier (used as the storage namespace).
+    const KEY: &'static str;
+
+    /// The value type stored under this key.
+    type Value: Clone + Default + Serialize + DeserializeOwned + Send + Sync + 'static;
+
+    /// Serialize value to JSON.
+    fn encode(value: &Self::Value) -> Result<JsonValue, StateError>;
+
+    /// Deserialize value from JSON.
+    fn decode(value: JsonValue) -> Result<Self::Value, StateError>;
+}
+```
+
+The two dimensions for both shared and profile state are:
+- **Namespace** (`ProfileKey::KEY`) -- compile-time, binds to a `Value` type
+- **Key** (`&str` parameter) -- runtime, identifies which instance
+
+For shared state, the key is typically a `StateScope` string; for profile state, it is an agent name or `"system"`.
+
+**Crate path:** `awaken_contract::ProfileKey` (re-exported from `awaken_contract::contract::profile_store`)
+
+### StateScope
+
+```rust,ignore
+pub struct StateScope(String);
+```
+
+Optional convenience builder for common key string patterns. Constructors:
+
+| Method | Produced String | Use Case |
+|--------|----------------|----------|
+| `StateScope::global()` | `"global"` | System-wide shared state |
+| `StateScope::parent_thread(id)` | `"parent_thread::{id}"` | Parent-child agent sharing |
+| `StateScope::agent_type(name)` | `"agent_type::{name}"` | Per-agent-type sharing |
+| `StateScope::thread(id)` | `"thread::{id}"` | Thread-local persistent state |
+| `StateScope::new(s)` | `"{s}"` | Arbitrary grouping |
+
+Call `.as_str()` to get the key string. Users can also pass any raw `&str` directly.
+
+### ProfileAccess Methods
+
+`ProfileAccess` methods take `key: &str` for the runtime key dimension. The same methods
+serve both shared and profile state:
+
+```rust,ignore
+impl ProfileAccess {
+    async fn read<K: ProfileKey>(&self, key: &str) -> Result<K::Value, StorageError>;
+    async fn write<K: ProfileKey>(&self, key: &str, value: &K::Value) -> Result<(), StorageError>;
+    async fn delete<K: ProfileKey>(&self, key: &str) -> Result<(), StorageError>;
+}
+
+// Shared state usage:
+let scope = StateScope::global();
+let value = access.read::<MyKey>(scope.as_str()).await?;
+access.write::<MyKey>(scope.as_str(), &value).await?;
+
+// Profile state usage:
+let locale = access.read::<Locale>("alice").await?;
+access.write::<Locale>("system", &"en-US".into()).await?;
+```
+
+### Registration
+
+```rust,ignore
+impl PluginRegistrar {
+    /// Register a profile key (used for both profile state and shared state).
+    pub fn register_profile_key<K: ProfileKey>(&mut self) -> Result<(), StateError>;
+}
+```
+
 ## Related
 
 - [State and Snapshot Model](../explanation/state-and-snapshot-model.md)
+- [Use Shared State](../how-to/use-shared-state.md)

@@ -8,6 +8,8 @@ Production AI agent runtime for Rust — type-safe state, multi-protocol serving
 
 Published on crates.io as `awaken-agent`; keep importing it in Rust as `awaken`.
 
+Docs: [GitHub Pages](https://awakenworks.github.io/awaken/) | [Chinese docs](https://awakenworks.github.io/awaken/zh-CN/)
+
 <p align="center">
   <img src="./docs/assets/demo.svg" alt="Awaken demo — tool call + LLM streaming" width="800">
 </p>
@@ -27,10 +29,10 @@ Prerequisites:
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.1" }
-tokio = { version = "1", features = ["full"] }
-async-trait = "0.1"
-serde_json = "1"
+awaken = { package = "awaken-agent", version = "0.1.1" }
+tokio = { version = "1.51.0", features = ["full"] }
+async-trait = "0.1.89"
+serde_json = "1.0.149"
 ```
 
 ```bash
@@ -141,7 +143,7 @@ serve(state).await?;
 |---|---|---|
 | AI SDK v6 | `POST /v1/ai-sdk/chat` | React `useChat()` |
 | AG-UI | `POST /v1/ag-ui/run` | CopilotKit `<CopilotKit>` |
-| A2A | `POST /v1/a2a/tasks/send` | Other agents |
+| A2A | `POST /v1/a2a/message:send` | Other agents |
 
 **React + AI SDK v6:**
 
@@ -237,10 +239,11 @@ cd examples/ai-sdk-starter && npm install && npm run dev
 
 | Goal | Start with | Then |
 |---|---|---|
-| Build your first agent | [First Agent tutorial](./docs/book/src/tutorials/first-agent.md) | [Build an Agent guide](./docs/book/src/how-to/build-an-agent.md) |
+| Build your first agent | [Get Started](https://awakenworks.github.io/awaken/get-started.html) | [Build Agents](https://awakenworks.github.io/awaken/build-agents.html) |
 | See a full-stack app | [AI SDK starter](./examples/ai-sdk-starter/) | [CopilotKit starter](./examples/copilotkit-starter/) |
-| Explore the API | [Reference docs](./docs/book/src/reference/overview.md) | `cargo doc --workspace --no-deps --open` |
-| Migrate from tirea | [Migration guide](./docs/book/src/appendix/migration-from-tirea.md) | |
+| Explore the API | [Reference docs](https://awakenworks.github.io/awaken/reference/overview.html) | `cargo doc --workspace --no-deps --open` |
+| Understand the runtime | [Architecture](https://awakenworks.github.io/awaken/explanation/architecture.html) | [Run Lifecycle and Phases](https://awakenworks.github.io/awaken/explanation/run-lifecycle-and-phases.html) |
+| Migrate from tirea | [Migration guide](https://awakenworks.github.io/awaken/appendix/migration-from-tirea.html) | |
 
 ## Contributing
 

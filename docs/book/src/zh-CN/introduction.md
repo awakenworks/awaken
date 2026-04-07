@@ -43,20 +43,23 @@ AgentRuntime
 
 ## 本书内容
 
-- **教程** — 通过构建第一个智能体和第一个工具来学习
-- **操作指南** — 面向任务的集成与运维实现指南
+- **快速上手** — 用最小可运行流程建立整体心智模型
+- **构建 Agent** — 添加 Tool、Plugin、MCP、Skills、Reminder、Handoff 和 UI 能力
+- **服务与集成** — 暴露 HTTP 端点并接入 AI SDK 或 CopilotKit 前端
+- **状态与存储** — 选择持久化、上下文裁剪和状态访问模式
+- **运行与运维** — 用可观测性、权限、进度上报和测试加固生产行为
 - **参考** — API、协议、配置和 Schema 查阅页面
-- **解释** — 架构与设计原理
+- **架构** — 运行时分层、phase 执行与设计取舍
 
 ## 推荐阅读路径
 
 如果你是第一次接触本项目，建议按以下顺序阅读：
 
-1. 阅读 [第一个 Agent](./tutorials/first-agent.md) 了解最小可运行流程。
-2. 阅读 [第一个 Tool](./tutorials/first-tool.md) 理解状态读写。
-3. 在编写生产工具前，阅读 [Tool Trait 参考](./reference/tool-trait.md)。
-4. 使用 [构建 Agent](./how-to/build-an-agent.md) 和 [添加 Tool](./how-to/add-a-tool.md) 作为实现检查清单。
-5. 需要完整执行模型时，返回阅读 [架构](./explanation/architecture.md) 和 [Run 生命周期与阶段](./explanation/run-lifecycle-and-phases.md)。
+1. 先阅读 [快速上手](./get-started.md)，并完成 [第一个 Agent](./tutorials/first-agent.md)。
+2. 需要扩展能力时，进入 [构建 Agent](./build-agents.md)。
+3. 需要对接 HTTP 客户端或前端时，进入 [服务与集成](./serve-and-integrate.md)。
+4. 从演示走向生产时，阅读 [状态与存储](./state-and-storage.md) 和 [运行与运维](./operate.md)。
+5. 需要精确契约或运行时内部细节时，回到 [参考概览](./reference/overview.md) 和 [架构](./explanation/architecture.md)。
 
 ## 仓库导航
 

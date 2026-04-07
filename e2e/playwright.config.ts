@@ -13,6 +13,6 @@ export default defineConfig({
     cwd: '..',
     port: 38080,
     timeout: 120_000,
-    reuseExistingServer: true,
+    reuseExistingServer: false,
   },
 });

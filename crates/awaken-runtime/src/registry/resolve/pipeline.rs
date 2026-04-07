@@ -209,20 +209,24 @@ fn resolve_delegate_tools(
             let description: String = delegate_spec.system_prompt.chars().take(100).collect();
 
             let tool: Arc<dyn Tool> = if let Some(endpoint) = &delegate_spec.endpoint {
-                let mut config = crate::extensions::a2a::A2aConfig::new(&endpoint.base_url);
-                if let Some(token) = &endpoint.bearer_token {
-                    config = config.with_bearer_token(token);
-                }
-                if let Some(ref target_id) = endpoint.agent_id {
-                    config = config.with_target_agent_id(target_id);
-                }
-                config = config
-                    .with_poll_interval(std::time::Duration::from_millis(endpoint.poll_interval_ms))
-                    .with_timeout(std::time::Duration::from_millis(endpoint.timeout_ms));
-                Arc::new(crate::extensions::a2a::AgentTool::remote(
+                let factory = registries
+                    .backends
+                    .get_backend_factory(&endpoint.backend)
+                    .ok_or_else(|| ResolveError::UnsupportedRemoteBackend {
+                        agent_id: delegate_id.clone(),
+                        backend: endpoint.backend.clone(),
+                    })?;
+                let backend = factory.build(endpoint).map_err(|error| {
+                    ResolveError::InvalidRemoteEndpointConfig {
+                        agent_id: delegate_id.clone(),
+                        backend: endpoint.backend.clone(),
+                        message: error.to_string(),
+                    }
+                })?;
+                Arc::new(crate::extensions::a2a::AgentTool::with_backend(
                     delegate_id,
                     &description,
-                    config,
+                    backend,
                 ))
             } else {
                 let resolver: Arc<dyn crate::registry::AgentResolver> =
@@ -375,18 +379,33 @@ fn resolve_plugins(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "a2a")]
+    use crate::extensions::a2a::{
+        AgentBackend, AgentBackendError, AgentBackendFactory, AgentBackendFactoryError,
+        DelegateRunResult, DelegateRunStatus,
+    };
     use crate::plugins::{PluginDescriptor, PluginRegistrar};
+    #[cfg(feature = "a2a")]
+    use crate::registry::BackendRegistry;
+    #[cfg(feature = "a2a")]
+    use crate::registry::memory::MapBackendRegistry;
     use crate::registry::memory::{
         MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry,
         MapToolRegistry,
     };
     use crate::registry::traits::ModelEntry;
     use async_trait::async_trait;
+    #[cfg(feature = "a2a")]
+    use awaken_contract::contract::event_sink::EventSink;
     use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
     use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+    #[cfg(feature = "a2a")]
+    use awaken_contract::contract::message::Message;
     use awaken_contract::contract::tool::{
         ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
     };
+    #[cfg(feature = "a2a")]
+    use awaken_contract::registry_spec::RemoteEndpoint;
     use serde_json::Value;
 
     // -- Mock Tool --
@@ -431,6 +450,55 @@ mod tests {
 
         fn name(&self) -> &str {
             "mock"
+        }
+    }
+
+    #[cfg(feature = "a2a")]
+    struct StaticBackend {
+        result: DelegateRunResult,
+    }
+
+    #[cfg(feature = "a2a")]
+    #[async_trait]
+    impl AgentBackend for StaticBackend {
+        async fn execute(
+            &self,
+            _agent_id: &str,
+            _messages: Vec<Message>,
+            _event_sink: Arc<dyn EventSink>,
+            _parent_run_id: Option<String>,
+            _parent_tool_call_id: Option<String>,
+        ) -> Result<DelegateRunResult, AgentBackendError> {
+            Ok(self.result.clone())
+        }
+    }
+
+    #[cfg(feature = "a2a")]
+    struct StaticBackendFactory {
+        backend: &'static str,
+        result: DelegateRunResult,
+    }
+
+    #[cfg(feature = "a2a")]
+    impl AgentBackendFactory for StaticBackendFactory {
+        fn backend(&self) -> &str {
+            self.backend
+        }
+
+        fn build(
+            &self,
+            endpoint: &RemoteEndpoint,
+        ) -> Result<Arc<dyn AgentBackend>, AgentBackendFactoryError> {
+            if endpoint.backend != self.backend {
+                return Err(AgentBackendFactoryError::InvalidConfig(format!(
+                    "unexpected backend {}",
+                    endpoint.backend
+                )));
+            }
+
+            Ok(Arc::new(StaticBackend {
+                result: self.result.clone(),
+            }))
         }
     }
 
@@ -492,6 +560,9 @@ mod tests {
             models: Arc::new(model_reg),
             providers: Arc::new(provider_reg),
             plugins: Arc::new(plugin_reg),
+            #[cfg(feature = "a2a")]
+            backends: Arc::new(MapBackendRegistry::with_default_remote_backends())
+                as Arc<dyn BackendRegistry>,
         }
     }
 
@@ -564,6 +635,7 @@ mod tests {
 
         let spec = AgentSpec {
             endpoint: Some(RemoteEndpoint {
+                backend: "a2a".into(),
                 base_url: "https://remote.example.com".into(),
                 ..Default::default()
             }),
@@ -589,6 +661,139 @@ mod tests {
         );
         assert!(err.to_string().contains("remote-agent"));
         assert!(err.to_string().contains("cannot be resolved locally"));
+    }
+
+    #[cfg(feature = "a2a")]
+    #[test]
+    fn resolve_delegate_rejects_unknown_remote_backend() {
+        use awaken_contract::registry_spec::RemoteEndpoint;
+
+        let root = AgentSpec {
+            delegates: vec!["remote-worker".into()],
+            ..make_spec("root")
+        };
+        let remote = AgentSpec {
+            id: "remote-worker".into(),
+            endpoint: Some(RemoteEndpoint {
+                backend: "acp".into(),
+                base_url: "https://remote.example.com".into(),
+                ..Default::default()
+            }),
+            ..make_spec("remote-worker")
+        };
+
+        let mut model_reg = MapModelRegistry::new();
+        model_reg
+            .register_model(
+                "test-model",
+                ModelEntry {
+                    provider: "p".into(),
+                    model_name: "n".into(),
+                },
+            )
+            .unwrap();
+
+        let mut provider_reg = MapProviderRegistry::new();
+        provider_reg
+            .register_provider("p", Arc::new(MockExecutor))
+            .unwrap();
+
+        let mut agent_reg = MapAgentSpecRegistry::new();
+        agent_reg.register_spec(root).unwrap();
+        agent_reg.register_spec(remote).unwrap();
+
+        let regs = RegistrySet {
+            agents: Arc::new(agent_reg),
+            tools: Arc::new(MapToolRegistry::new()),
+            models: Arc::new(model_reg),
+            providers: Arc::new(provider_reg),
+            plugins: Arc::new(MapPluginSource::new()),
+            backends: Arc::new(MapBackendRegistry::with_default_remote_backends())
+                as Arc<dyn BackendRegistry>,
+        };
+
+        let err = resolve(&regs, "root").unwrap_err();
+        assert!(matches!(
+            err,
+            ResolveError::UnsupportedRemoteBackend {
+                ref agent_id,
+                ref backend,
+            } if agent_id == "remote-worker" && backend == "acp"
+        ));
+    }
+
+    #[cfg(feature = "a2a")]
+    #[tokio::test]
+    async fn resolve_delegate_uses_registered_backend_factory() {
+        let root = AgentSpec {
+            delegates: vec!["remote-worker".into()],
+            ..make_spec("root")
+        };
+        let remote = AgentSpec {
+            id: "remote-worker".into(),
+            endpoint: Some(RemoteEndpoint {
+                backend: "test-backend".into(),
+                base_url: "https://remote.example.com".into(),
+                ..Default::default()
+            }),
+            ..make_spec("remote-worker")
+        };
+
+        let mut model_reg = MapModelRegistry::new();
+        model_reg
+            .register_model(
+                "test-model",
+                ModelEntry {
+                    provider: "p".into(),
+                    model_name: "n".into(),
+                },
+            )
+            .unwrap();
+
+        let mut provider_reg = MapProviderRegistry::new();
+        provider_reg
+            .register_provider("p", Arc::new(MockExecutor))
+            .unwrap();
+
+        let mut agent_reg = MapAgentSpecRegistry::new();
+        agent_reg.register_spec(root).unwrap();
+        agent_reg.register_spec(remote).unwrap();
+
+        let mut backends = MapBackendRegistry::with_default_remote_backends();
+        backends
+            .register_backend_factory(Arc::new(StaticBackendFactory {
+                backend: "test-backend",
+                result: DelegateRunResult {
+                    agent_id: "remote-worker".into(),
+                    status: DelegateRunStatus::Completed,
+                    response: Some("from custom backend".into()),
+                    steps: 1,
+                    run_id: None,
+                },
+            }))
+            .unwrap();
+
+        let regs = RegistrySet {
+            agents: Arc::new(agent_reg),
+            tools: Arc::new(MapToolRegistry::new()),
+            models: Arc::new(model_reg),
+            providers: Arc::new(provider_reg),
+            plugins: Arc::new(MapPluginSource::new()),
+            backends: Arc::new(backends) as Arc<dyn BackendRegistry>,
+        };
+
+        let run = resolve(&regs, "root").unwrap();
+        let tool = run.tools.get("agent_run_remote-worker").unwrap();
+        let output = tool
+            .execute(
+                serde_json::json!({ "prompt": "delegate this" }),
+                &ToolCallContext::test_default(),
+            )
+            .await
+            .unwrap();
+
+        assert!(output.result.is_success());
+        assert_eq!(output.result.data["response"], "from custom backend");
     }
 
     #[test]
@@ -1422,6 +1627,9 @@ mod tests {
             models: Arc::new(model_reg),
             providers: Arc::new(provider_reg),
             plugins: Arc::new(MapPluginSource::new()),
+            #[cfg(feature = "a2a")]
+            backends: Arc::new(MapBackendRegistry::with_default_remote_backends())
+                as Arc<dyn BackendRegistry>,
         };
 
         let resolver = RegistrySetResolver::new(regs);

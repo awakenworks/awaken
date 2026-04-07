@@ -293,6 +293,6 @@
 [18.291539, "o", "P"]
 [18.332475, "o", "\r\n"]
 [18.633514, "o", "\r\n  \u001b[0;36mPOST /v1/ai-sdk/chat\u001b[0m   → React useChat()\r\n  \u001b[0;36mPOST /v1/ag-ui/run\u001b[0m     → CopilotKit\r\n"]
-[18.63354, "o", "  \u001b[0;36mPOST /v1/a2a/tasks/send\u001b[0m → Agent-to-Agent\r\n  \u001b[0;36mPOST /v1/mcp\u001b[0m           → Model Context Protocol\r\n\r\n"]
+[18.63354, "o", "  \u001b[0;36mPOST /v1/a2a/message:send\u001b[0m → Agent-to-Agent\r\n  \u001b[0;36mPOST /v1/mcp\u001b[0m           → Model Context Protocol\r\n\r\n"]
 [20.634596, "o", "\u001b[1;32m✅ One Rust binary. Tools + agents + state + plugins. Serve everywhere.\u001b[0m"]
 [20.63484, "o", "\r\n"]

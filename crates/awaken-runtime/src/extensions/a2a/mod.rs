@@ -9,9 +9,12 @@ mod backend;
 mod local_backend;
 mod progress_sink;
 
-pub use a2a_backend::A2aConfig;
+pub use a2a_backend::{A2aBackendFactory, A2aConfig};
 pub use agent_tool::AgentTool;
-pub use backend::{AgentBackend, AgentBackendError, DelegateRunResult, DelegateRunStatus};
+pub use backend::{
+    AgentBackend, AgentBackendError, AgentBackendFactory, AgentBackendFactoryError,
+    DelegateRunResult, DelegateRunStatus,
+};
 pub use local_backend::LocalBackend;
 
 #[cfg(test)]

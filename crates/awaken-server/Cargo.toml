@@ -12,6 +12,7 @@ categories.workspace = true
 
 [dependencies]
 awaken-contract = { workspace = true }
+awaken-protocol-a2a = { workspace = true }
 awaken-runtime = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -29,6 +30,7 @@ tokio-stream = "0.1"
 bytes = "1"
 parking_lot = { workspace = true }
 arc-swap = "1"
+reqwest = { workspace = true }
 
 # MCP server
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["server", "client"] }
@@ -48,13 +50,13 @@ awaken-stores = { workspace = true }
 awaken-runtime = { workspace = true }
 awaken-ext-observability = { workspace = true, features = ["otel"] }
 async-trait = { workspace = true }
-reqwest = { workspace = true }
 genai = { workspace = true }
 uuid = { workspace = true }
 
 [features]
 default = ["permission"]
 permission = ["dep:awaken-ext-permission"]
+nats = []
 otel = []
 
 [lints]

@@ -94,14 +94,25 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `POST` | `/v1/a2a/tasks/send` | 发送任务 |
-| `GET` | `/v1/a2a/tasks/:task_id` | 获取任务状态 |
-| `POST` | `/v1/a2a/tasks/:task_id/cancel` | 取消任务 |
-| `GET` | `/v1/a2a/.well-known/agent` | 获取默认 agent card |
-| `GET` | `/v1/a2a/agents` | 列出可用 agent |
-| `GET` | `/v1/a2a/agents/:agent_id/agent-card` | 获取指定 agent card |
-| `POST` | `/v1/a2a/agents/:agent_id/message:send` | 向指定 agent 发送消息 |
-| `GET`/`POST` | `/v1/a2a/agents/:agent_id/tasks/:task_action` | 指定 agent 下的任务操作 |
+| `GET` | `/.well-known/agent-card.json` | 获取公共/默认 agent card |
+| `POST` | `/v1/a2a/message:send` | 向公共/默认 A2A agent 发送消息 |
+| `POST` | `/v1/a2a/message:stream` | 通过 SSE 进行流式发送 |
+| `GET` | `/v1/a2a/tasks` | 列出 A2A 任务 |
+| `GET` | `/v1/a2a/tasks/:task_id` | 查询任务状态 |
+| `POST` | `/v1/a2a/tasks/:task_id:cancel` | 取消任务 |
+| `POST` | `/v1/a2a/tasks/:task_id:subscribe` | 通过 SSE 订阅任务更新 |
+| `POST` | `/v1/a2a/tasks/:task_id/pushNotificationConfigs` | 创建推送通知配置 |
+| `GET` | `/v1/a2a/tasks/:task_id/pushNotificationConfigs` | 列出推送通知配置 |
+| `GET` | `/v1/a2a/tasks/:task_id/pushNotificationConfigs/:config_id` | 获取推送通知配置 |
+| `DELETE` | `/v1/a2a/tasks/:task_id/pushNotificationConfigs/:config_id` | 删除推送通知配置 |
+| `GET` | `/v1/a2a/extendedAgentCard` | 获取扩展 agent card；未启用时返回 `501` |
+| `POST` | `/v1/a2a/:tenant/message:send` | 向 tenant 作用域 agent 发送消息 |
+| `POST` | `/v1/a2a/:tenant/message:stream` | tenant 作用域流式发送 |
+| `GET` | `/v1/a2a/:tenant/tasks` | 列出 tenant 作用域任务 |
+| `GET` | `/v1/a2a/:tenant/tasks/:task_id` | 查询 tenant 作用域任务状态 |
+| `POST` | `/v1/a2a/:tenant/tasks/:task_id:cancel` | 取消 tenant 作用域任务 |
+| `POST` | `/v1/a2a/:tenant/tasks/:task_id:subscribe` | 订阅 tenant 作用域任务更新 |
+| `GET` | `/v1/a2a/:tenant/extendedAgentCard` | 获取 tenant 作用域扩展 agent card |
 
 ## MCP HTTP 路由
 

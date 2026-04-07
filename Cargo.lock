@@ -396,11 +396,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-protocol-a2a"
+version = "0.1.2-dev"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "awaken-runtime"
 version = "0.1.2-dev"
 dependencies = [
  "async-trait",
  "awaken-contract",
+ "awaken-protocol-a2a",
  "awaken-runtime",
  "awaken-stores",
  "futures",
@@ -429,6 +438,7 @@ dependencies = [
  "awaken-contract",
  "awaken-ext-observability",
  "awaken-ext-permission",
+ "awaken-protocol-a2a",
  "awaken-runtime",
  "awaken-stores",
  "axum",

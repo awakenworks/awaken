@@ -5,6 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::message::Message;
+use awaken_contract::registry_spec::RemoteEndpoint;
 
 /// Result of a sub-agent execution.
 #[derive(Debug, Clone)]
@@ -63,6 +64,25 @@ pub trait AgentBackend: Send + Sync {
         parent_run_id: Option<String>,
         parent_tool_call_id: Option<String>,
     ) -> Result<DelegateRunResult, AgentBackendError>;
+}
+
+/// Errors from backend factory construction.
+#[derive(Debug, thiserror::Error)]
+pub enum AgentBackendFactoryError {
+    #[error("{0}")]
+    InvalidConfig(String),
+}
+
+/// Factory for constructing remote delegation backends from endpoint config.
+pub trait AgentBackendFactory: Send + Sync {
+    /// Stable backend kind handled by this factory.
+    fn backend(&self) -> &str;
+
+    /// Build a backend instance from a canonical remote endpoint.
+    fn build(
+        &self,
+        endpoint: &RemoteEndpoint,
+    ) -> Result<Arc<dyn AgentBackend>, AgentBackendFactoryError>;
 }
 
 /// Errors from agent backend execution.

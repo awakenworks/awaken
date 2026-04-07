@@ -78,7 +78,7 @@ sleep 0.3
 echo ""
 echo -e "  \033[0;36mPOST /v1/ai-sdk/chat\033[0m   → React useChat()"
 echo -e "  \033[0;36mPOST /v1/ag-ui/run\033[0m     → CopilotKit"
-echo -e "  \033[0;36mPOST /v1/a2a/tasks/send\033[0m → Agent-to-Agent"
+echo -e "  \033[0;36mPOST /v1/a2a/message:send\033[0m → Agent-to-Agent"
 echo -e "  \033[0;36mPOST /v1/mcp\033[0m           → Model Context Protocol"
 echo ""
 

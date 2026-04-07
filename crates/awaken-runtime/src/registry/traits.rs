@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+#[cfg(feature = "a2a")]
+use crate::extensions::a2a::AgentBackendFactory;
 use crate::plugins::Plugin;
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::tool::Tool;
@@ -75,6 +77,19 @@ pub trait PluginSource: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
+// BackendRegistry
+// ---------------------------------------------------------------------------
+
+/// Lookup interface for remote delegate backend factories.
+#[cfg(feature = "a2a")]
+pub trait BackendRegistry: Send + Sync {
+    /// Get a backend factory by backend kind.
+    fn get_backend_factory(&self, backend: &str) -> Option<Arc<dyn AgentBackendFactory>>;
+    /// List all registered backend kinds.
+    fn backend_ids(&self) -> Vec<String>;
+}
+
+// ---------------------------------------------------------------------------
 // RegistrySet
 // ---------------------------------------------------------------------------
 
@@ -86,4 +101,6 @@ pub struct RegistrySet {
     pub models: Arc<dyn ModelRegistry>,
     pub providers: Arc<dyn ProviderRegistry>,
     pub plugins: Arc<dyn PluginSource>,
+    #[cfg(feature = "a2a")]
+    pub backends: Arc<dyn BackendRegistry>,
 }

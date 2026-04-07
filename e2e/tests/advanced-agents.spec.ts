@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { aiSdkTextMessages } from './ai-sdk-test-utils';
+import { a2aSendMessagePayload } from './a2a-test-utils';
 
 const BASE_URL = 'http://127.0.0.1:38080';
 
@@ -72,11 +73,11 @@ test.describe('advanced agent variants', () => {
     expect(elapsed).toBeLessThan(60_000);
   });
 
-  // Secured agent (permission rules)
-  test('secured agent accepts run', async ({ request }) => {
+  // Permission agent (permission rules)
+  test('permission agent accepts run', async ({ request }) => {
     const res = await request.post('/v1/runs', {
       data: {
-        agentId: 'secured',
+        agentId: 'permission',
         messages: [{ role: 'user', content: 'What is the weather?' }],
       },
     });
@@ -86,7 +87,7 @@ test.describe('advanced agent variants', () => {
   // Slow agents (multi-round tool loops) — verify headers only via fetch+abort
   const slowAgents = ['profile'];
   // Fast agents — can use Playwright request which buffers the full body
-  const fastAgents = ['creative', 'compact', 'budget', 'secured'];
+  const fastAgents = ['creative', 'compact', 'budget', 'permission'];
 
   // All new agents via AG-UI
   for (const agentId of fastAgents) {
@@ -132,17 +133,14 @@ test.describe('advanced agent variants', () => {
     });
   }
 
-  // New agents in A2A agent list
-  test('new agents appear in A2A list', async ({ request }) => {
-    const res = await request.get('/v1/a2a/agents');
-    if (res.ok()) {
-      const agents = await res.json();
-      if (Array.isArray(agents)) {
-        const ids = agents.map((a: any) => a.agentId || a.id);
-        for (const expected of ['profile', 'creative', 'compact', 'budget', 'secured']) {
-          expect(ids).toContain(expected);
-        }
-      }
+  test('new agents accept A2A tenant routes', async ({ request }) => {
+    for (const agentId of ['profile', 'creative', 'compact', 'budget', 'permission']) {
+      const { taskId, data } = a2aSendMessagePayload(`Test ${agentId} via A2A`);
+      const res = await request.post(`/v1/a2a/${agentId}/message:send`, { data });
+      expect(res.ok()).toBeTruthy();
+
+      const body = await res.json();
+      expect(body.task?.id).toBe(taskId);
     }
   });
 });

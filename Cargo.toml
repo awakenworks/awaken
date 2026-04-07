@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/awaken-contract",
+    "crates/awaken-protocol-a2a",
     "crates/awaken-stores",
     "crates/awaken-runtime",
     "crates/awaken-ext-permission",
@@ -32,6 +33,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 awaken-contract = { version = "0.1.2-dev", path = "crates/awaken-contract" }
+awaken-protocol-a2a = { version = "0.1.2-dev", path = "crates/awaken-protocol-a2a" }
 awaken-stores = { version = "0.1.2-dev", path = "crates/awaken-stores" }
 awaken-runtime = { version = "0.1.2-dev", path = "crates/awaken-runtime" }
 awaken-ext-permission = { version = "0.1.2-dev", path = "crates/awaken-ext-permission" }

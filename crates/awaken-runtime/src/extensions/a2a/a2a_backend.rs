@@ -1,4 +1,4 @@
-//! Remote A2A agent delegation backend -- HTTP client for A2A protocol.
+//! Remote A2A agent delegation backend -- HTTP client for A2A v1.0 HTTP+JSON.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,20 +7,31 @@ use async_trait::async_trait;
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::message::{Message, Role};
-use serde::{Deserialize, Serialize};
+use awaken_contract::registry_spec::RemoteEndpoint;
+use awaken_protocol_a2a::{
+    Message as A2aMessage, MessageRole, Part, SendMessageConfiguration, SendMessageRequest,
+    SendMessageResponse, Task, TaskState,
+};
 use serde_json::Value;
 
-use super::backend::{AgentBackend, AgentBackendError, DelegateRunResult, DelegateRunStatus};
+use super::backend::{
+    AgentBackend, AgentBackendError, AgentBackendFactory, AgentBackendFactoryError,
+    DelegateRunResult, DelegateRunStatus,
+};
+
+const A2A_VERSION: &str = "1.0";
+const A2A_BACKEND: &str = "a2a";
+const POLL_INTERVAL_OPTION_KEY: &str = "poll_interval_ms";
 
 /// Configuration for a remote A2A agent endpoint.
 #[derive(Debug, Clone)]
 pub struct A2aConfig {
-    /// Base URL of the remote A2A server (e.g. "https://api.example.com").
+    /// Base URL of the remote A2A HTTP+JSON interface
+    /// (for example `https://api.example.com/v1/a2a`).
     pub base_url: String,
     /// Optional bearer token for authentication.
     pub bearer_token: Option<String>,
-    /// Target agent ID on the remote server. If `None`, omits agentId in the
-    /// A2A request and lets the remote server use its default agent.
+    /// Optional tenant path segment used to target a specific remote agent.
     pub target_agent_id: Option<String>,
     /// Interval between poll requests.
     pub poll_interval: Duration,
@@ -65,10 +76,91 @@ impl A2aConfig {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum A2aEndpointConfigError {
+    #[error("remote endpoint backend must be `a2a`, got `{0}`")]
+    UnsupportedBackend(String),
+    #[error("remote endpoint base_url must not be empty")]
+    EmptyBaseUrl,
+    #[error("A2A backend only supports bearer auth, got `{0}`")]
+    UnsupportedAuthType(String),
+    #[error("A2A bearer auth requires a string `token` field")]
+    MissingBearerToken,
+    #[error("A2A option `{key}` must be an unsigned integer")]
+    InvalidU64Option { key: &'static str },
+}
+
+impl A2aConfig {
+    pub(crate) fn try_from_remote_endpoint(
+        endpoint: &RemoteEndpoint,
+    ) -> Result<Self, A2aEndpointConfigError> {
+        if endpoint.backend != A2A_BACKEND {
+            return Err(A2aEndpointConfigError::UnsupportedBackend(
+                endpoint.backend.clone(),
+            ));
+        }
+
+        if endpoint.base_url.trim().is_empty() {
+            return Err(A2aEndpointConfigError::EmptyBaseUrl);
+        }
+
+        let mut config =
+            Self::new(&endpoint.base_url).with_timeout(Duration::from_millis(endpoint.timeout_ms));
+
+        if let Some(auth) = &endpoint.auth {
+            if auth.auth_type != "bearer" {
+                return Err(A2aEndpointConfigError::UnsupportedAuthType(
+                    auth.auth_type.clone(),
+                ));
+            }
+
+            let token = auth
+                .param_str("token")
+                .filter(|token| !token.is_empty())
+                .ok_or(A2aEndpointConfigError::MissingBearerToken)?;
+            config = config.with_bearer_token(token);
+        }
+
+        if let Some(target) = endpoint.target.as_deref() {
+            config = config.with_target_agent_id(target);
+        }
+
+        if let Some(value) = endpoint.options.get(POLL_INTERVAL_OPTION_KEY) {
+            let poll_interval_ms =
+                value
+                    .as_u64()
+                    .ok_or(A2aEndpointConfigError::InvalidU64Option {
+                        key: POLL_INTERVAL_OPTION_KEY,
+                    })?;
+            config = config.with_poll_interval(Duration::from_millis(poll_interval_ms));
+        }
+
+        Ok(config)
+    }
+}
+
 /// Backend that delegates to a remote agent via A2A HTTP protocol.
 pub struct A2aBackend {
     config: A2aConfig,
     client: reqwest::Client,
+}
+
+/// Factory for the built-in A2A remote backend.
+pub struct A2aBackendFactory;
+
+impl AgentBackendFactory for A2aBackendFactory {
+    fn backend(&self) -> &str {
+        A2A_BACKEND
+    }
+
+    fn build(
+        &self,
+        endpoint: &RemoteEndpoint,
+    ) -> Result<Arc<dyn AgentBackend>, AgentBackendFactoryError> {
+        let config = A2aConfig::try_from_remote_endpoint(endpoint)
+            .map_err(|error| AgentBackendFactoryError::InvalidConfig(error.to_string()))?;
+        Ok(Arc::new(A2aBackend::new(config)))
+    }
 }
 
 impl A2aBackend {
@@ -80,9 +172,21 @@ impl A2aBackend {
         }
     }
 
-    /// Build a request with optional bearer token.
+    fn interface_base_url(&self) -> String {
+        let base = self.config.base_url.trim_end_matches('/');
+        match self.config.target_agent_id.as_deref() {
+            Some(target) => format!("{base}/{target}"),
+            None => base.to_string(),
+        }
+    }
+
+    /// Build a request with the standard A2A version header and optional bearer token.
     fn build_request(&self, method: reqwest::Method, url: &str) -> reqwest::RequestBuilder {
-        let builder = self.client.request(method, url);
+        let builder = self
+            .client
+            .request(method, url)
+            .header("A2A-Version", A2A_VERSION)
+            .header(reqwest::header::ACCEPT, "application/json");
         match &self.config.bearer_token {
             Some(token) => builder.bearer_auth(token),
             None => builder,
@@ -90,25 +194,31 @@ impl A2aBackend {
     }
 
     /// Submit a task to the remote A2A endpoint.
-    async fn submit_task(&self, prompt: &str) -> Result<A2aSubmissionResponse, AgentBackendError> {
-        let url = format!(
-            "{}/v1/a2a/tasks/send",
-            self.config.base_url.trim_end_matches('/')
-        );
+    async fn submit_task(&self, prompt: &str) -> Result<SubmittedTask, AgentBackendError> {
+        let url = format!("{}/message:send", self.interface_base_url());
 
-        let mut body = serde_json::json!({
-            "message": {
-                "role": "user",
-                "parts": [{"type": "text", "text": prompt}]
-            }
-        });
-        if let Some(ref target_id) = self.config.target_agent_id {
-            body["agentId"] = serde_json::Value::String(target_id.clone());
-        }
+        let request = SendMessageRequest {
+            tenant: None,
+            message: A2aMessage {
+                task_id: None,
+                context_id: None,
+                message_id: uuid::Uuid::now_v7().to_string(),
+                role: MessageRole::User,
+                parts: vec![Part::text(prompt.to_string())],
+                metadata: None,
+            },
+            configuration: Some(SendMessageConfiguration {
+                accepted_output_modes: vec!["text/plain".to_string()],
+                task_push_notification_config: None,
+                history_length: None,
+                return_immediately: Some(true),
+            }),
+            metadata: None,
+        };
 
         let response = self
             .build_request(reqwest::Method::POST, &url)
-            .json(&body)
+            .json(&request)
             .send()
             .await
             .map_err(|e| {
@@ -119,21 +229,16 @@ impl A2aBackend {
             .error_for_status()
             .map_err(|e| AgentBackendError::RemoteError(format!("A2A submission rejected: {e}")))?;
 
-        response.json::<A2aSubmissionResponse>().await.map_err(|e| {
+        let response = response.json::<SendMessageResponse>().await.map_err(|e| {
             AgentBackendError::RemoteError(format!("failed to decode A2A submission: {e}"))
-        })
+        })?;
+
+        SubmittedTask::from_response(response)
     }
 
-    /// Fetch current task status from the runs endpoint.
-    ///
-    /// A2A task_send uses `task_id` as the thread_id, so we poll the
-    /// latest run for that thread rather than looking up by run_id.
-    async fn fetch_task_status(&self, task_id: &str) -> Result<A2aTaskSnapshot, AgentBackendError> {
-        let url = format!(
-            "{}/v1/threads/{}/runs/latest",
-            self.config.base_url.trim_end_matches('/'),
-            task_id.trim()
-        );
+    /// Fetch the current task snapshot from the remote endpoint.
+    async fn fetch_task(&self, task_id: &str) -> Result<TaskSnapshot, AgentBackendError> {
+        let url = format!("{}/tasks/{task_id}", self.interface_base_url());
 
         let response = self
             .build_request(reqwest::Method::GET, &url)
@@ -145,32 +250,29 @@ impl A2aBackend {
             .error_for_status()
             .map_err(|e| AgentBackendError::RemoteError(format!("task query rejected: {e}")))?;
 
-        let task_response = response.json::<A2aTaskResponse>().await.map_err(|e| {
+        let task = response.json::<Task>().await.map_err(|e| {
             AgentBackendError::RemoteError(format!("failed to decode task status: {e}"))
         })?;
 
-        Ok(map_task_status(&task_response))
+        Ok(TaskSnapshot::from_task(task))
     }
 
     /// Poll until the task reaches a terminal state or timeout.
-    async fn poll_to_completion(
-        &self,
-        task_id: &str,
-    ) -> Result<A2aTaskSnapshot, AgentBackendError> {
+    async fn poll_to_completion(&self, task_id: &str) -> Result<TaskSnapshot, AgentBackendError> {
         let deadline = tokio::time::Instant::now() + self.config.timeout;
 
         loop {
-            let snapshot = self.fetch_task_status(task_id).await?;
-            if snapshot.done {
+            let snapshot = self.fetch_task(task_id).await?;
+            if snapshot.is_done() {
                 return Ok(snapshot);
             }
 
             if tokio::time::Instant::now() >= deadline {
-                return Ok(A2aTaskSnapshot {
-                    status: RemoteTaskStatus::Timeout,
-                    error: Some("polling timeout exceeded".into()),
-                    done: true,
+                return Ok(TaskSnapshot {
+                    state: TaskState::Failed,
                     output_text: snapshot.output_text,
+                    failure_message: Some("polling timeout exceeded".to_string()),
+                    task_id: task_id.to_string(),
                 });
             }
 
@@ -189,11 +291,10 @@ impl AgentBackend for A2aBackend {
         _parent_run_id: Option<String>,
         _parent_tool_call_id: Option<String>,
     ) -> Result<DelegateRunResult, AgentBackendError> {
-        // Extract prompt text from user messages
         let prompt = messages
             .iter()
-            .filter(|m| m.role == Role::User)
-            .flat_map(|m| m.content.iter())
+            .filter(|message| message.role == Role::User)
+            .flat_map(|message| message.content.iter())
             .filter_map(|block| match block {
                 ContentBlock::Text { text } => Some(text.as_str()),
                 _ => None,
@@ -207,548 +308,368 @@ impl AgentBackend for A2aBackend {
             ));
         }
 
-        let submission = self.submit_task(&prompt).await?;
+        let submitted = self.submit_task(&prompt).await?;
+        let snapshot = if submitted.snapshot.is_done() {
+            submitted.snapshot
+        } else {
+            self.poll_to_completion(&submitted.snapshot.task_id).await?
+        };
 
-        tracing::info!(
-            task_id = %submission.task_id,
-            agent_id = %agent_id,
-            "a2a_task_submitted"
-        );
-
-        let snapshot = self.poll_to_completion(&submission.task_id).await?;
-
-        let (status, steps) = match snapshot.status {
-            RemoteTaskStatus::Completed => (DelegateRunStatus::Completed, 1),
-            RemoteTaskStatus::Failed => {
-                let msg = snapshot
-                    .error
-                    .unwrap_or_else(|| "remote agent run failed".into());
-                (DelegateRunStatus::Failed(msg), 0)
-            }
-            RemoteTaskStatus::Stopped => (DelegateRunStatus::Cancelled, 0),
-            RemoteTaskStatus::Timeout => (DelegateRunStatus::Timeout, 0),
-            RemoteTaskStatus::Running => (DelegateRunStatus::Timeout, 0),
+        let status = match snapshot.state {
+            TaskState::Completed => DelegateRunStatus::Completed,
+            TaskState::Canceled => DelegateRunStatus::Cancelled,
+            TaskState::Failed => DelegateRunStatus::Failed(
+                snapshot
+                    .failure_message
+                    .unwrap_or_else(|| "remote agent run failed".into()),
+            ),
+            TaskState::Rejected => DelegateRunStatus::Failed(
+                snapshot
+                    .failure_message
+                    .unwrap_or_else(|| "remote agent rejected the task".into()),
+            ),
+            TaskState::InputRequired => DelegateRunStatus::Failed(
+                snapshot
+                    .failure_message
+                    .unwrap_or_else(|| "remote agent requires additional input".into()),
+            ),
+            TaskState::AuthRequired => DelegateRunStatus::Failed(
+                snapshot
+                    .failure_message
+                    .unwrap_or_else(|| "remote agent requires authentication".into()),
+            ),
+            TaskState::Submitted | TaskState::Working => DelegateRunStatus::Timeout,
         };
 
         Ok(DelegateRunResult {
             agent_id: agent_id.to_string(),
             status,
             response: snapshot.output_text,
-            steps,
+            steps: 1,
             run_id: None,
         })
     }
 }
 
-// ---------------------------------------------------------------------------
-// A2A protocol types and mapping (moved from remote_a2a.rs)
-// ---------------------------------------------------------------------------
-
-/// Submission response from a remote A2A endpoint.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct A2aSubmissionResponse {
-    task_id: String,
+#[derive(Debug)]
+struct SubmittedTask {
+    snapshot: TaskSnapshot,
 }
 
-/// Task status response from the runs endpoint.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct A2aTaskResponse {
-    #[serde(default)]
-    pub status: String,
-    #[serde(default)]
-    pub termination_code: Option<String>,
-    #[serde(default)]
-    pub termination_detail: Option<String>,
-    #[serde(default)]
-    pub message: Option<Value>,
-    #[serde(default)]
-    pub history: Vec<Value>,
-    #[serde(default)]
-    pub artifacts: Vec<Value>,
+impl SubmittedTask {
+    fn from_response(response: SendMessageResponse) -> Result<Self, AgentBackendError> {
+        if let Some(task) = response.task {
+            return Ok(Self {
+                snapshot: TaskSnapshot::from_task(task),
+            });
+        }
+        if let Some(message) = response.message {
+            return Ok(Self {
+                snapshot: TaskSnapshot {
+                    task_id: uuid::Uuid::now_v7().to_string(),
+                    state: TaskState::Completed,
+                    output_text: extract_text_from_message(&message),
+                    failure_message: None,
+                },
+            });
+        }
+
+        Err(AgentBackendError::RemoteError(
+            "sendMessage response did not contain a task or message".into(),
+        ))
+    }
 }
 
-/// Status of a remote A2A task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RemoteTaskStatus {
-    Running,
-    Completed,
-    Failed,
-    Stopped,
-    Timeout,
-}
-
-/// Snapshot of a remote A2A task's state.
 #[derive(Debug, Clone)]
-pub(crate) struct A2aTaskSnapshot {
-    pub status: RemoteTaskStatus,
-    pub error: Option<String>,
-    pub done: bool,
-    pub output_text: Option<String>,
+struct TaskSnapshot {
+    task_id: String,
+    state: TaskState,
+    output_text: Option<String>,
+    failure_message: Option<String>,
 }
 
-pub(crate) fn extract_output_text(response: &A2aTaskResponse) -> Option<String> {
-    // Try artifacts first
-    for artifact in &response.artifacts {
-        if let Some(text) = extract_text_from_value(artifact) {
+impl TaskSnapshot {
+    fn from_task(task: Task) -> Self {
+        let output_text = extract_output_text(&task);
+        let failure_message = task
+            .status
+            .message
+            .as_ref()
+            .and_then(extract_text_from_message)
+            .or_else(|| {
+                if matches!(
+                    task.status.state,
+                    TaskState::Failed
+                        | TaskState::Rejected
+                        | TaskState::Canceled
+                        | TaskState::InputRequired
+                        | TaskState::AuthRequired
+                ) {
+                    Some(format!(
+                        "remote task ended in {}",
+                        task_state_name(task.status.state)
+                    ))
+                } else {
+                    None
+                }
+            });
+
+        Self {
+            task_id: task.id,
+            state: task.status.state,
+            output_text,
+            failure_message,
+        }
+    }
+
+    fn is_done(&self) -> bool {
+        matches!(
+            self.state,
+            TaskState::Completed
+                | TaskState::Failed
+                | TaskState::Canceled
+                | TaskState::Rejected
+                | TaskState::InputRequired
+                | TaskState::AuthRequired
+        )
+    }
+}
+
+fn extract_output_text(task: &Task) -> Option<String> {
+    for artifact in &task.artifacts {
+        if let Some(text) = extract_text_from_parts(&artifact.parts) {
             return Some(text);
         }
     }
-    // Then message
-    if let Some(ref message) = response.message
-        && let Some(text) = extract_text_from_value(message)
+    if let Some(message) = &task.status.message
+        && let Some(text) = extract_text_from_message(message)
     {
         return Some(text);
     }
-    // Then last history entry
-    for entry in response.history.iter().rev() {
-        if let Some(text) = extract_text_from_value(entry) {
-            return Some(text);
-        }
-    }
-    None
+    task.history
+        .iter()
+        .rev()
+        .find_map(extract_text_from_message)
 }
 
-pub(crate) fn extract_text_from_value(value: &Value) -> Option<String> {
-    match value {
-        Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
-        Value::Object(obj) => {
-            // Check role filter
-            if let Some(role) = obj.get("role").and_then(Value::as_str) {
-                let role_lower = role.trim().to_ascii_lowercase();
-                if role_lower != "assistant" && role_lower != "agent" {
-                    return None;
-                }
-            }
-            if let Some(text) = obj.get("text").and_then(Value::as_str) {
-                let trimmed = text.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_string());
-                }
-            }
-            if let Some(content) = obj.get("content") {
-                return extract_text_from_value(content);
-            }
-            if let Some(parts) = obj.get("parts").and_then(Value::as_array) {
-                let texts: Vec<String> = parts.iter().filter_map(extract_text_from_value).collect();
-                if !texts.is_empty() {
-                    return Some(texts.join("\n\n"));
-                }
-            }
-            if let Some(data) = obj.get("data") {
-                return match data {
-                    Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
-                    _ => None,
-                };
-            }
-            None
-        }
-        Value::Array(items) => {
-            let texts: Vec<String> = items.iter().filter_map(extract_text_from_value).collect();
-            if texts.is_empty() {
-                None
-            } else {
-                Some(texts.join("\n\n"))
-            }
-        }
-        _ => None,
-    }
+fn extract_text_from_message(message: &A2aMessage) -> Option<String> {
+    extract_text_from_parts(&message.parts)
 }
 
-pub(crate) fn map_task_status(response: &A2aTaskResponse) -> A2aTaskSnapshot {
-    let output_text = extract_output_text(response);
-    let status = response.status.trim().to_ascii_lowercase();
-    match status.as_str() {
-        "done" | "completed" => {
-            let termination = response
-                .termination_code
+fn extract_text_from_parts(parts: &[Part]) -> Option<String> {
+    let texts = parts
+        .iter()
+        .filter_map(|part| {
+            part.text
                 .as_deref()
-                .map(str::trim)
-                .map(str::to_ascii_lowercase);
-            match termination.as_deref() {
-                Some("cancelled") | Some("cancel_requested") => A2aTaskSnapshot {
-                    status: RemoteTaskStatus::Stopped,
-                    error: response.termination_detail.clone(),
-                    done: true,
-                    output_text,
-                },
-                Some("error") => A2aTaskSnapshot {
-                    status: RemoteTaskStatus::Failed,
-                    error: response
-                        .termination_detail
-                        .clone()
-                        .or_else(|| Some("remote run failed".into())),
-                    done: true,
-                    output_text,
-                },
-                _ => A2aTaskSnapshot {
-                    status: RemoteTaskStatus::Completed,
-                    error: response.termination_detail.clone(),
-                    done: true,
-                    output_text,
-                },
-            }
-        }
-        "failed" | "error" => A2aTaskSnapshot {
-            status: RemoteTaskStatus::Failed,
-            error: response
-                .termination_detail
-                .clone()
-                .or_else(|| Some("remote run failed".into())),
-            done: true,
-            output_text,
-        },
-        "cancelled" | "stopped" => A2aTaskSnapshot {
-            status: RemoteTaskStatus::Stopped,
-            error: response.termination_detail.clone(),
-            done: true,
-            output_text,
-        },
-        _ => A2aTaskSnapshot {
-            status: RemoteTaskStatus::Running,
-            error: None,
-            done: false,
-            output_text,
-        },
+                .map(ToOwned::to_owned)
+                .or_else(|| part.data.as_ref().map(Value::to_string))
+        })
+        .collect::<Vec<_>>();
+    if texts.is_empty() {
+        None
+    } else {
+        Some(texts.join("\n\n"))
+    }
+}
+
+fn task_state_name(state: TaskState) -> &'static str {
+    match state {
+        TaskState::Submitted => "TASK_STATE_SUBMITTED",
+        TaskState::Working => "TASK_STATE_WORKING",
+        TaskState::InputRequired => "TASK_STATE_INPUT_REQUIRED",
+        TaskState::AuthRequired => "TASK_STATE_AUTH_REQUIRED",
+        TaskState::Completed => "TASK_STATE_COMPLETED",
+        TaskState::Failed => "TASK_STATE_FAILED",
+        TaskState::Canceled => "TASK_STATE_CANCELED",
+        TaskState::Rejected => "TASK_STATE_REJECTED",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
     use serde_json::json;
 
-    #[test]
-    fn map_task_status_completed() {
-        let response = A2aTaskResponse {
-            status: "completed".into(),
-            termination_code: None,
-            termination_detail: None,
-            message: None,
-            history: vec![],
-            artifacts: vec![json!({"text": "result"})],
-        };
-        let snapshot = map_task_status(&response);
-        assert_eq!(snapshot.status, RemoteTaskStatus::Completed);
-        assert!(snapshot.done);
-        assert_eq!(snapshot.output_text.as_deref(), Some("result"));
-    }
-
-    #[test]
-    fn map_task_status_cancelled() {
-        let response = A2aTaskResponse {
-            status: "done".into(),
-            termination_code: Some("cancelled".into()),
-            termination_detail: Some("user cancelled".into()),
-            message: None,
-            history: vec![],
+    fn make_task(state: TaskState) -> Task {
+        Task {
+            id: "task-1".into(),
+            context_id: "ctx-1".into(),
+            status: awaken_protocol_a2a::TaskStatus {
+                state,
+                message: None,
+                timestamp: None,
+            },
             artifacts: vec![],
-        };
-        let snapshot = map_task_status(&response);
-        assert_eq!(snapshot.status, RemoteTaskStatus::Stopped);
-        assert!(snapshot.done);
-        assert_eq!(snapshot.error.as_deref(), Some("user cancelled"));
-    }
-
-    #[test]
-    fn map_task_status_failed() {
-        let response = A2aTaskResponse {
-            status: "failed".into(),
-            termination_code: None,
-            termination_detail: Some("out of memory".into()),
-            message: None,
             history: vec![],
-            artifacts: vec![],
-        };
-        let snapshot = map_task_status(&response);
-        assert_eq!(snapshot.status, RemoteTaskStatus::Failed);
-        assert!(snapshot.done);
+            metadata: None,
+        }
     }
 
     #[test]
-    fn map_task_status_running() {
-        let response = A2aTaskResponse {
-            status: "working".into(),
-            termination_code: None,
-            termination_detail: None,
-            message: None,
-            history: vec![],
-            artifacts: vec![],
+    fn extract_output_prefers_artifacts() {
+        let task = Task {
+            artifacts: vec![awaken_protocol_a2a::Artifact {
+                artifact_id: "response".into(),
+                name: None,
+                description: None,
+                parts: vec![Part::text("hello"), Part::text(" world")],
+                metadata: None,
+            }],
+            ..make_task(TaskState::Completed)
         };
-        let snapshot = map_task_status(&response);
-        assert_eq!(snapshot.status, RemoteTaskStatus::Running);
-        assert!(!snapshot.done);
+        assert_eq!(
+            extract_output_text(&task).as_deref(),
+            Some("hello\n\n world")
+        );
     }
 
     #[test]
-    fn extract_text_from_artifacts() {
-        let response = A2aTaskResponse {
-            status: "completed".into(),
-            termination_code: None,
-            termination_detail: None,
-            message: Some(json!({"role": "assistant", "content": "fallback"})),
-            history: vec![],
-            artifacts: vec![json!({
-                "parts": [
-                    {"text": "hello"},
-                    {"text": "world"}
-                ]
-            })],
+    fn extract_output_falls_back_to_status_message_then_history() {
+        let status_message = A2aMessage {
+            task_id: Some("task-1".into()),
+            context_id: Some("ctx-1".into()),
+            message_id: "msg-1".into(),
+            role: MessageRole::Agent,
+            parts: vec![Part::text("status output")],
+            metadata: None,
         };
-        let text = extract_output_text(&response);
-        assert_eq!(text.as_deref(), Some("hello\n\nworld"));
+        let task = Task {
+            status: awaken_protocol_a2a::TaskStatus {
+                state: TaskState::Completed,
+                message: Some(status_message.clone()),
+                timestamp: None,
+            },
+            history: vec![A2aMessage {
+                task_id: Some("task-1".into()),
+                context_id: Some("ctx-1".into()),
+                message_id: "msg-2".into(),
+                role: MessageRole::Agent,
+                parts: vec![Part::text("history output")],
+                metadata: None,
+            }],
+            ..make_task(TaskState::Completed)
+        };
+        assert_eq!(extract_output_text(&task).as_deref(), Some("status output"));
     }
 
     #[test]
-    fn extract_text_from_message_when_no_artifacts() {
-        let response = A2aTaskResponse {
-            status: "completed".into(),
-            termination_code: None,
-            termination_detail: None,
-            message: Some(json!({"role": "assistant", "text": "reply"})),
-            history: vec![],
-            artifacts: vec![],
+    fn task_snapshot_maps_failure_states() {
+        let task = Task {
+            status: awaken_protocol_a2a::TaskStatus {
+                state: TaskState::Rejected,
+                message: Some(A2aMessage {
+                    task_id: Some("task-1".into()),
+                    context_id: Some("ctx-1".into()),
+                    message_id: "msg-1".into(),
+                    role: MessageRole::Agent,
+                    parts: vec![Part::text("policy rejected")],
+                    metadata: None,
+                }),
+                timestamp: None,
+            },
+            ..make_task(TaskState::Rejected)
         };
-        let text = extract_output_text(&response);
-        assert_eq!(text.as_deref(), Some("reply"));
+        let snapshot = TaskSnapshot::from_task(task);
+        assert_eq!(snapshot.state, TaskState::Rejected);
+        assert_eq!(snapshot.failure_message.as_deref(), Some("policy rejected"));
     }
 
     #[test]
-    fn extract_text_from_history_fallback() {
-        let response = A2aTaskResponse {
-            status: "completed".into(),
-            termination_code: None,
-            termination_detail: None,
-            message: None,
-            history: vec![
-                json!({"role": "user", "text": "ignored"}),
-                json!({"role": "assistant", "text": "last reply"}),
-            ],
-            artifacts: vec![],
-        };
-        let text = extract_output_text(&response);
-        assert_eq!(text.as_deref(), Some("last reply"));
+    fn submitted_task_requires_follow_up_polling() {
+        let snapshot = TaskSnapshot::from_task(make_task(TaskState::Submitted));
+        assert!(!snapshot.is_done());
+    }
+
+    #[test]
+    fn send_message_response_requires_task_or_message() {
+        let err = SubmittedTask::from_response(SendMessageResponse::default()).unwrap_err();
+        assert!(err.to_string().contains("task or message"));
     }
 
     #[test]
     fn a2a_config_builder() {
-        let config = A2aConfig::new("https://api.example.com")
+        let config = A2aConfig::new("https://api.example.com/v1/a2a")
             .with_bearer_token("tok_123")
+            .with_target_agent_id("worker")
             .with_poll_interval(Duration::from_millis(5000))
             .with_timeout(Duration::from_secs(60));
 
-        assert_eq!(config.base_url, "https://api.example.com");
+        assert_eq!(config.base_url, "https://api.example.com/v1/a2a");
         assert_eq!(config.bearer_token.as_deref(), Some("tok_123"));
+        assert_eq!(config.target_agent_id.as_deref(), Some("worker"));
         assert_eq!(config.poll_interval, Duration::from_millis(5000));
         assert_eq!(config.timeout, Duration::from_secs(60));
     }
 
     #[test]
-    fn a2a_config_defaults() {
-        let config = A2aConfig::new("https://api.example.com");
-        assert!(config.bearer_token.is_none());
-        assert_eq!(config.poll_interval, Duration::from_millis(2000));
-        assert_eq!(config.timeout, Duration::from_secs(300));
-    }
-
-    #[test]
-    fn map_task_status_done_with_error_termination() {
-        let response = A2aTaskResponse {
-            status: "done".into(),
-            termination_code: Some("error".into()),
-            termination_detail: Some("internal error".into()),
-            message: None,
-            history: vec![],
-            artifacts: vec![],
+    fn a2a_config_try_from_remote_endpoint_reads_canonical_fields() {
+        let mut options = BTreeMap::new();
+        options.insert(POLL_INTERVAL_OPTION_KEY.into(), json!(1500));
+        let endpoint = RemoteEndpoint {
+            backend: "a2a".into(),
+            base_url: "https://api.example.com/v1/a2a".into(),
+            auth: Some(awaken_contract::registry_spec::RemoteAuth::bearer(
+                "tok_123",
+            )),
+            target: Some("worker".into()),
+            timeout_ms: 60_000,
+            options,
         };
-        let snapshot = map_task_status(&response);
-        assert_eq!(snapshot.status, RemoteTaskStatus::Failed);
-        assert!(snapshot.done);
-        assert_eq!(snapshot.error.as_deref(), Some("internal error"));
+
+        let config = A2aConfig::try_from_remote_endpoint(&endpoint).unwrap();
+        assert_eq!(config.base_url, "https://api.example.com/v1/a2a");
+        assert_eq!(config.bearer_token.as_deref(), Some("tok_123"));
+        assert_eq!(config.target_agent_id.as_deref(), Some("worker"));
+        assert_eq!(config.poll_interval, Duration::from_millis(1500));
+        assert_eq!(config.timeout, Duration::from_secs(60));
     }
 
     #[test]
-    fn extract_text_ignores_user_role_in_history() {
-        let value = json!({"role": "user", "text": "user input"});
-        assert!(extract_text_from_value(&value).is_none());
-    }
-
-    #[test]
-    fn extract_text_from_data_field() {
-        let value = json!({"data": "some data content"});
-        let text = extract_text_from_value(&value);
-        assert_eq!(text.as_deref(), Some("some data content"));
-    }
-
-    #[test]
-    fn extract_text_from_nested_content() {
-        let value = json!({"role": "assistant", "content": {"text": "nested"}});
-        let text = extract_text_from_value(&value);
-        assert_eq!(text.as_deref(), Some("nested"));
-    }
-
-    #[test]
-    fn extract_output_text_no_data() {
-        let response = A2aTaskResponse {
-            status: "completed".into(),
-            termination_code: None,
-            termination_detail: None,
-            message: None,
-            history: vec![],
-            artifacts: vec![],
+    fn a2a_config_try_from_remote_endpoint_rejects_non_bearer_auth() {
+        let endpoint = RemoteEndpoint {
+            backend: "a2a".into(),
+            base_url: "https://api.example.com/v1/a2a".into(),
+            auth: Some(awaken_contract::registry_spec::RemoteAuth {
+                auth_type: "basic".into(),
+                params: BTreeMap::new(),
+            }),
+            ..Default::default()
         };
-        assert!(extract_output_text(&response).is_none());
+
+        let err = A2aConfig::try_from_remote_endpoint(&endpoint).unwrap_err();
+        assert!(err.to_string().contains("only supports bearer auth"));
     }
 
     #[test]
-    fn extract_output_text_empty_artifacts_only() {
-        let response = A2aTaskResponse {
-            status: "completed".into(),
-            termination_code: None,
-            termination_detail: None,
-            message: None,
-            history: vec![],
-            artifacts: vec![json!({"text": ""}), json!({"text": "   "})],
-        };
-        assert!(extract_output_text(&response).is_none());
+    fn a2a_backend_factory_builds_backend_for_a2a_endpoint() {
+        let backend = A2aBackendFactory
+            .build(&RemoteEndpoint {
+                backend: "a2a".into(),
+                base_url: "https://api.example.com/v1/a2a".into(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let _backend: Arc<dyn AgentBackend> = backend;
     }
 
     #[test]
-    fn extract_text_from_value_plain_string() {
-        let value = json!("hello world");
+    fn extract_text_from_parts_supports_structured_data() {
+        let parts = vec![Part {
+            text: None,
+            raw: None,
+            url: None,
+            data: Some(json!({"ok": true})),
+            media_type: Some("application/json".into()),
+            filename: None,
+            metadata: None,
+        }];
         assert_eq!(
-            extract_text_from_value(&value).as_deref(),
-            Some("hello world")
+            extract_text_from_parts(&parts).as_deref(),
+            Some("{\"ok\":true}")
         );
-    }
-
-    #[test]
-    fn extract_text_from_value_whitespace_only() {
-        let value = json!("   \t\n  ");
-        assert!(extract_text_from_value(&value).is_none());
-    }
-
-    #[test]
-    fn extract_text_from_value_empty_string() {
-        let value = json!("");
-        assert!(extract_text_from_value(&value).is_none());
-    }
-
-    #[test]
-    fn extract_text_from_value_number() {
-        let value = json!(42);
-        assert!(extract_text_from_value(&value).is_none());
-    }
-
-    #[test]
-    fn extract_text_from_value_null() {
-        let value = json!(null);
-        assert!(extract_text_from_value(&value).is_none());
-    }
-
-    #[test]
-    fn extract_text_from_value_bool() {
-        let value = json!(true);
-        assert!(extract_text_from_value(&value).is_none());
-    }
-
-    #[test]
-    fn extract_text_from_value_empty_array() {
-        let value = json!([]);
-        assert!(extract_text_from_value(&value).is_none());
-    }
-
-    #[test]
-    fn extract_text_from_value_array_of_strings() {
-        let value = json!(["first", "second", "third"]);
-        assert_eq!(
-            extract_text_from_value(&value).as_deref(),
-            Some("first\n\nsecond\n\nthird")
-        );
-    }
-
-    #[test]
-    fn extract_text_from_value_object_with_agent_role() {
-        let value = json!({"role": "agent", "text": "agent reply"});
-        assert_eq!(
-            extract_text_from_value(&value).as_deref(),
-            Some("agent reply")
-        );
-    }
-
-    #[test]
-    fn extract_text_from_value_object_empty_text() {
-        let value = json!({"text": ""});
-        assert!(extract_text_from_value(&value).is_none());
-    }
-
-    #[test]
-    fn map_task_status_input_required() {
-        // "input-required" is not a terminal state, so it maps to Running
-        for status_str in &["input-required", "input_required"] {
-            let response = A2aTaskResponse {
-                status: (*status_str).into(),
-                termination_code: None,
-                termination_detail: None,
-                message: None,
-                history: vec![],
-                artifacts: vec![],
-            };
-            let snapshot = map_task_status(&response);
-            assert_eq!(snapshot.status, RemoteTaskStatus::Running);
-            assert!(!snapshot.done);
-        }
-    }
-
-    #[test]
-    fn map_task_status_case_insensitive() {
-        let response = A2aTaskResponse {
-            status: "COMPLETED".into(),
-            termination_code: None,
-            termination_detail: None,
-            message: None,
-            history: vec![],
-            artifacts: vec![],
-        };
-        let snapshot = map_task_status(&response);
-        assert_eq!(snapshot.status, RemoteTaskStatus::Completed);
-        assert!(snapshot.done);
-    }
-
-    #[test]
-    fn map_task_status_cancel_requested_termination() {
-        let response = A2aTaskResponse {
-            status: "done".into(),
-            termination_code: Some("cancel_requested".into()),
-            termination_detail: Some("cancellation requested".into()),
-            message: None,
-            history: vec![],
-            artifacts: vec![],
-        };
-        let snapshot = map_task_status(&response);
-        assert_eq!(snapshot.status, RemoteTaskStatus::Stopped);
-        assert!(snapshot.done);
-        assert_eq!(snapshot.error.as_deref(), Some("cancellation requested"));
-    }
-
-    #[test]
-    fn a2a_config_with_target_agent_id() {
-        let config = A2aConfig::new("https://api.example.com").with_target_agent_id("agent-42");
-        assert_eq!(config.target_agent_id.as_deref(), Some("agent-42"));
-    }
-
-    #[test]
-    fn extract_output_text_prefers_artifacts_over_message() {
-        let response = A2aTaskResponse {
-            status: "completed".into(),
-            termination_code: None,
-            termination_detail: None,
-            message: Some(json!({"role": "assistant", "text": "message text"})),
-            history: vec![json!({"role": "assistant", "text": "history text"})],
-            artifacts: vec![json!({"text": "artifact text"})],
-        };
-        let text = extract_output_text(&response);
-        assert_eq!(text.as_deref(), Some("artifact text"));
     }
 }

@@ -20,7 +20,7 @@ Each ID in `delegates` must be a registered agent in the `AgentSpecRegistry`. Du
 When the LLM calls a delegate tool, the `AgentTool` dispatches to the appropriate backend:
 
 - **Local agents** (no `endpoint` field) use `LocalBackend`, which resolves and executes the sub-agent inline within the same runtime.
-- **Remote agents** (with `endpoint` field) use `A2aBackend`, which sends an A2A `tasks/send` request and polls for completion.
+- **Remote agents** (with `endpoint` field) use `A2aBackend`, which sends an A2A `message:send` request and polls the resulting task for completion.
 
 ## Remote Agents via A2A
 
@@ -32,18 +32,22 @@ Remote agents are declared with an `endpoint` in `AgentSpec`:
   "model": "unused-for-remote",
   "system_prompt": "",
   "endpoint": {
-    "base_url": "https://analyst.example.com",
-    "bearer_token": "token-abc",
-    "poll_interval_ms": 1000,
-    "timeout_secs": 300
+    "backend": "a2a",
+    "base_url": "https://analyst.example.com/v1/a2a",
+    "auth": { "type": "bearer", "token": "token-abc" },
+    "target": "analyst",
+    "timeout_ms": 300000,
+    "options": {
+      "poll_interval_ms": 1000
+    }
   }
 }
 ```
 
 The `A2aBackend` handles the A2A protocol lifecycle:
 
-1. Sends a `tasks/send` request with the user message.
-2. Receives a `taskId` and polls `/tasks/:taskId` at the configured interval.
+1. Sends a `message:send` request with the user message.
+2. Receives a task wrapper, extracts `task.id`, and polls `/tasks/:task_id` at the configured interval.
 3. Returns the completed response as a `DelegateRunResult`.
 4. The result is formatted as a `ToolResult` and returned to the parent agent's LLM context.
 
