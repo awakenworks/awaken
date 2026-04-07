@@ -132,6 +132,7 @@ impl Tool for AgentTool {
                 messages,
                 sink,
                 Some(ctx.run_identity.run_id.clone()),
+                Some(ctx.run_identity.thread_id.clone()),
                 Some(ctx.call_id.clone()),
             )
             .await
