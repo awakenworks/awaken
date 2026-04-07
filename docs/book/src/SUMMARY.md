@@ -45,6 +45,7 @@
 - [Enable Observability](./how-to/enable-observability.md)
 - [Report Tool Progress](./how-to/report-tool-progress.md)
 - [Testing Strategy](./how-to/testing-strategy.md)
+- [Use Shared State](./how-to/use-shared-state.md)
 
 # Reference
 
@@ -66,6 +67,7 @@
 
 - [Architecture](./explanation/architecture.md)
 - [Agent Resolution](./explanation/agent-resolution.md)
+- [State Management](./explanation/state-management.md)
 - [State and Snapshot Model](./explanation/state-and-snapshot-model.md)
 - [Run Lifecycle and Phases](./explanation/run-lifecycle-and-phases.md)
 - [HITL and Mailbox](./explanation/hitl-and-mailbox.md)

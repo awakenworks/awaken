@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use awaken_contract::StateError;
-use awaken_contract::contract::profile_store::{ProfileKey, ProfileOwner};
+use awaken_contract::contract::profile_store::ProfileKey;
 use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::profile::{ProfileAccess, ProfileKeyRegistry};
 use awaken_stores::InMemoryStore;
@@ -55,11 +55,8 @@ fn build_access_from_plugin(plugin: &dyn Plugin) -> ProfileAccess {
 async fn plugin_registers_key_and_access_reads_writes() {
     let access = build_access_from_plugin(&TestProfilePlugin);
 
-    let alice = ProfileOwner::Agent("alice".into());
-    let bob = ProfileOwner::Agent("bob".into());
-
     // Read default (missing key returns Default)
-    let val = access.read::<AgentMemoryKey>(&alice).await.unwrap();
+    let val = access.read::<AgentMemoryKey>("alice").await.unwrap();
     assert_eq!(val, AgentMemory::default());
 
     // Write
@@ -67,16 +64,16 @@ async fn plugin_registers_key_and_access_reads_writes() {
         facts: vec!["likes rust".into(), "hates nulls".into()],
     };
     access
-        .write::<AgentMemoryKey>(&alice, &memory)
+        .write::<AgentMemoryKey>("alice", &memory)
         .await
         .unwrap();
 
     // Read back
-    let loaded = access.read::<AgentMemoryKey>(&alice).await.unwrap();
+    let loaded = access.read::<AgentMemoryKey>("alice").await.unwrap();
     assert_eq!(loaded, memory);
 
     // Isolation: bob still has default
-    let bob_val = access.read::<AgentMemoryKey>(&bob).await.unwrap();
+    let bob_val = access.read::<AgentMemoryKey>("bob").await.unwrap();
     assert_eq!(bob_val, AgentMemory::default());
 
     // Write for bob and verify both exist independently
@@ -84,38 +81,40 @@ async fn plugin_registers_key_and_access_reads_writes() {
         facts: vec!["prefers python".into()],
     };
     access
-        .write::<AgentMemoryKey>(&bob, &bob_memory)
+        .write::<AgentMemoryKey>("bob", &bob_memory)
         .await
         .unwrap();
-    assert_eq!(access.read::<AgentMemoryKey>(&alice).await.unwrap(), memory);
     assert_eq!(
-        access.read::<AgentMemoryKey>(&bob).await.unwrap(),
+        access.read::<AgentMemoryKey>("alice").await.unwrap(),
+        memory
+    );
+    assert_eq!(
+        access.read::<AgentMemoryKey>("bob").await.unwrap(),
         bob_memory
     );
 }
 
 #[tokio::test]
-async fn clear_owner_removes_all_entries() {
+async fn clear_removes_all_entries() {
     let access = build_access_from_plugin(&TestProfilePlugin);
 
-    let owner = ProfileOwner::Agent("charlie".into());
     let memory = AgentMemory {
         facts: vec!["fact one".into()],
     };
     access
-        .write::<AgentMemoryKey>(&owner, &memory)
+        .write::<AgentMemoryKey>("charlie", &memory)
         .await
         .unwrap();
 
     // Verify written
-    let entries = access.list(&owner).await.unwrap();
+    let entries = access.list("charlie").await.unwrap();
     assert_eq!(entries.len(), 1);
 
     // Clear
-    access.clear_owner(&owner).await.unwrap();
+    access.clear("charlie").await.unwrap();
 
     // Verify gone (reads default)
-    let val = access.read::<AgentMemoryKey>(&owner).await.unwrap();
+    let val = access.read::<AgentMemoryKey>("charlie").await.unwrap();
     assert_eq!(val, AgentMemory::default());
-    assert!(access.list(&owner).await.unwrap().is_empty());
+    assert!(access.list("charlie").await.unwrap().is_empty());
 }
