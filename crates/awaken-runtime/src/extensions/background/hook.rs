@@ -6,13 +6,16 @@ use awaken_contract::model::Phase;
 use crate::hooks::{PhaseContext, PhaseHook};
 use crate::state::StateCommand;
 
-use super::manager::BackgroundTaskManager;
-use super::state::{BackgroundTaskStateAction, BackgroundTaskStateKey};
+use crate::agent::state::PendingWorkKey;
 
-/// Phase hook that syncs background task metadata into the persisted state.
+use super::manager::BackgroundTaskManager;
+use super::state::BackgroundTaskStateKey;
+
+/// Phase hook that syncs background task metadata with the persisted state.
 ///
-/// Registered for both `RunStart` (restore from persisted state) and
-/// `RunEnd` (persist current task state).
+/// - `RunStart`: restores persisted metadata and performs orphan detection.
+/// - `RunEnd`: no-op (metadata is committed directly by the manager).
+/// - `StepEnd`: updates `PendingWorkKey` based on running task status.
 pub(crate) struct BackgroundTaskSyncHook {
     pub(crate) manager: Arc<BackgroundTaskManager>,
 }
@@ -31,11 +34,14 @@ impl PhaseHook for BackgroundTaskSyncHook {
                 Ok(StateCommand::new())
             }
             Phase::RunEnd => {
-                let persisted = self.manager.persisted_snapshot().await;
+                // Metadata is committed directly by the manager.
+                Ok(StateCommand::new())
+            }
+            Phase::StepEnd => {
+                let thread_id = &ctx.run_identity.thread_id;
+                let has_running = self.manager.has_running(thread_id).await;
                 let mut cmd = StateCommand::new();
-                cmd.update::<BackgroundTaskStateKey>(BackgroundTaskStateAction::ReplaceAll {
-                    tasks: persisted,
-                });
+                cmd.update::<PendingWorkKey>(has_running);
                 Ok(cmd)
             }
             _ => Ok(StateCommand::new()),
