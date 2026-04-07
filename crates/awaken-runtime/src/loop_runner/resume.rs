@@ -26,6 +26,7 @@ pub(super) enum WaitOutcome {
     Resumed,
     Cancelled,
     NoDecisionChannel,
+    InboxMessages(Vec<Value>),
 }
 
 fn resolve_call_target<'a>(
@@ -204,6 +205,7 @@ pub(super) async fn detect_and_replay_resume(
 
 pub(super) async fn wait_for_resume_or_cancel(
     decision_rx: Option<&mut UnboundedReceiver<Vec<(String, ToolCallResume)>>>,
+    inbox: Option<&mut crate::inbox::InboxReceiver>,
     cancellation_token: Option<&CancellationToken>,
     runtime: &PhaseRuntime,
 ) -> Result<WaitOutcome, AgentLoopError> {
@@ -211,9 +213,43 @@ pub(super) async fn wait_for_resume_or_cancel(
     let Some(rx) = decision_rx else {
         return Ok(WaitOutcome::NoDecisionChannel);
     };
+    let mut inbox = inbox;
 
     loop {
-        let first_batch = if let Some(token) = cancellation_token {
+        let first_batch = if let Some(inbox_rx) = inbox.as_deref_mut() {
+            enum WaitInput {
+                Decisions(Option<Vec<(String, ToolCallResume)>>),
+                Inbox(Option<Value>),
+            }
+
+            let next = if let Some(token) = cancellation_token {
+                tokio::select! {
+                    biased;
+                    _ = token.cancelled() => return Ok(WaitOutcome::Cancelled),
+                    next = rx.next() => WaitInput::Decisions(next),
+                    msg = inbox_rx.recv_or_cancel(None) => WaitInput::Inbox(msg),
+                }
+            } else {
+                tokio::select! {
+                    next = rx.next() => WaitInput::Decisions(next),
+                    msg = inbox_rx.recv_or_cancel(None) => WaitInput::Inbox(msg),
+                }
+            };
+
+            match next {
+                WaitInput::Decisions(Some(v)) => v,
+                WaitInput::Decisions(None) => return Ok(WaitOutcome::NoDecisionChannel),
+                WaitInput::Inbox(Some(msg)) => {
+                    let mut messages = vec![msg];
+                    messages.extend(inbox_rx.drain());
+                    return Ok(WaitOutcome::InboxMessages(messages));
+                }
+                WaitInput::Inbox(None) => {
+                    inbox = None;
+                    continue;
+                }
+            }
+        } else if let Some(token) = cancellation_token {
             tokio::select! {
                 biased;
                 _ = token.cancelled() => return Ok(WaitOutcome::Cancelled),

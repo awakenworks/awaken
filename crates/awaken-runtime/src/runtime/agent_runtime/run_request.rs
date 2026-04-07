@@ -1,10 +1,17 @@
 //! RunRequest — unified request for starting or resuming a run.
 
+use crate::inbox::{InboxReceiver, InboxSender};
 use awaken_contract::contract::inference::InferenceOverride;
 use awaken_contract::contract::mailbox::MailboxJobOrigin;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::suspension::ToolCallResume;
 use awaken_contract::contract::tool::ToolDescriptor;
+
+/// In-process inbox pair owned by a single run.
+pub struct RunInbox {
+    pub sender: InboxSender,
+    pub receiver: InboxReceiver,
+}
 
 /// Unified request for starting or resuming a run.
 pub struct RunRequest {
@@ -29,6 +36,8 @@ pub struct RunRequest {
     pub parent_thread_id: Option<String>,
     /// Continue a previous run instead of creating a new one.
     pub continue_run_id: Option<String>,
+    /// Optional in-process inbox pair for background-task notifications.
+    pub run_inbox: Option<RunInbox>,
 }
 
 impl RunRequest {
@@ -45,6 +54,7 @@ impl RunRequest {
             parent_run_id: None,
             parent_thread_id: None,
             continue_run_id: None,
+            run_inbox: None,
         }
     }
 
@@ -93,6 +103,12 @@ impl RunRequest {
     #[must_use]
     pub fn with_continue_run_id(mut self, continue_run_id: impl Into<String>) -> Self {
         self.continue_run_id = Some(continue_run_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_inbox(mut self, sender: InboxSender, receiver: InboxReceiver) -> Self {
+        self.run_inbox = Some(RunInbox { sender, receiver });
         self
     }
 }

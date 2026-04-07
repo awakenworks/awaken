@@ -10759,6 +10759,77 @@ async fn awaiting_tasks_preserves_step_count() {
     manager.cancel_all("thread-1").await;
 }
 
+/// Regression: the final NaturalEnd step should be completed exactly once
+/// before the run transitions to Waiting(awaiting_tasks).
+#[tokio::test]
+async fn awaiting_tasks_final_step_should_complete_once() {
+    let (runtime, manager, bg_plugin) = make_bg_runtime();
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![ContentBlock::text("spawning...")],
+            tool_calls: vec![ToolCall::new("c1", "spawn_bg", json!({}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("Waiting on tasks.")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent =
+        ResolvedAgent::new("test", "gpt-4o", "sys", llm).with_tool(Arc::new(SpawnBgTaskTool {
+            manager: manager.clone(),
+        }));
+
+    let resolver = FixedResolver::with_plugins(agent, vec![bg_plugin]);
+    let sink = Arc::new(VecEventSink::new());
+    let event_sink: Arc<dyn awaken::contract::event_sink::EventSink> = sink.clone();
+
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: event_sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("spawn a task")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.steps, 2, "LLM only executed two rounds");
+
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
+    assert_eq!(
+        lifecycle.step_count, 2,
+        "the final NaturalEnd step should not be completed twice"
+    );
+
+    let step_end_count = sink
+        .events()
+        .into_iter()
+        .filter(|event| matches!(event, AgentEvent::StepEnd))
+        .count();
+    assert_eq!(
+        step_end_count, 2,
+        "expected exactly one StepEnd per executed step"
+    );
+
+    manager.cancel_all("thread-1").await;
+}
+
 /// 4. Inbox messages from background tasks cause the loop to continue past
 ///    the initial NaturalEnd attempt (LLM is called again).
 #[tokio::test]

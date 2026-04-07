@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use awaken_contract::contract::message::{Message, Visibility};
 use futures::channel::mpsc;
 
 /// Callback invoked when [`InboxSender::send`] detects the receiver is gone.
@@ -102,6 +103,22 @@ impl InboxReceiver {
         }
         msgs
     }
+}
+
+/// Convert a structured inbox event into an internal user message.
+pub fn inbox_event_message(json: &serde_json::Value) -> Message {
+    let kind = json.get("kind").and_then(|k| k.as_str()).unwrap_or("event");
+    let task_id = json
+        .get("task_id")
+        .and_then(|t| t.as_str())
+        .unwrap_or("unknown");
+    let text = format!(
+        "<background-task-event kind=\"{kind}\" task_id=\"{task_id}\">\n{}\n</background-task-event>",
+        json
+    );
+    let mut msg = Message::user(text);
+    msg.visibility = Visibility::Internal;
+    msg
 }
 
 /// Create a new `(InboxSender, InboxReceiver)` pair.
@@ -210,5 +227,18 @@ mod tests {
         drop(rx);
         // Should not panic — no callback set
         assert!(!tx.send(serde_json::json!("lost")));
+    }
+
+    #[test]
+    fn inbox_event_message_uses_internal_user_semantics() {
+        let msg = inbox_event_message(&serde_json::json!({
+            "kind": "completed",
+            "task_id": "bg_1",
+            "result": {"ok": true}
+        }));
+        assert_eq!(msg.role, awaken_contract::contract::message::Role::User);
+        assert_eq!(msg.visibility, Visibility::Internal);
+        assert!(msg.text().contains("background-task-event"));
+        assert!(msg.text().contains("bg_1"));
     }
 }

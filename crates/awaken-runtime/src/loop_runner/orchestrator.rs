@@ -1,6 +1,7 @@
 //! Main agent loop orchestration.
 
 use crate::context::TruncationState;
+use crate::inbox::inbox_event_message;
 use crate::state::StateStore;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
@@ -18,24 +19,6 @@ use super::step::{self, StepContext, StepOutcome, execute_step};
 use super::{AgentLoopError, AgentLoopParams, AgentRunResult, commit_update, now_ms};
 use crate::agent::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
 use crate::state::MutationBatch;
-
-/// Create an internal user message from inbox event JSON.
-/// Uses User role (not System) so LLM providers treat it as context,
-/// with Internal visibility so it's hidden from API consumers.
-fn inbox_event_to_message(json: &serde_json::Value) -> awaken_contract::contract::message::Message {
-    let kind = json.get("kind").and_then(|k| k.as_str()).unwrap_or("event");
-    let task_id = json
-        .get("task_id")
-        .and_then(|t| t.as_str())
-        .unwrap_or("unknown");
-    let text = format!(
-        "<background-task-event kind=\"{kind}\" task_id=\"{task_id}\">\n{}\n</background-task-event>",
-        json
-    );
-    let mut msg = awaken_contract::contract::message::Message::user(text);
-    msg.visibility = awaken_contract::contract::message::Visibility::Internal;
-    msg
-}
 
 /// Returns `true` when any plugin has declared pending work.
 ///
@@ -268,7 +251,7 @@ pub(super) async fn run_agent_loop_impl(
                 let mut has_new_messages = false;
                 if let Some(ref mut inbox) = inbox {
                     for msg in inbox.drain() {
-                        messages.push(std::sync::Arc::new(inbox_event_to_message(&msg)));
+                        messages.push(std::sync::Arc::new(inbox_event_message(&msg)));
                         has_new_messages = true;
                     }
                 }
@@ -289,12 +272,10 @@ pub(super) async fn run_agent_loop_impl(
                         if let Some(ref mut inbox) = inbox {
                             match inbox.recv_or_cancel(cancellation_token.as_ref()).await {
                                 Some(msg) => {
-                                    messages
-                                        .push(std::sync::Arc::new(inbox_event_to_message(&msg)));
+                                    messages.push(std::sync::Arc::new(inbox_event_message(&msg)));
                                     for extra in inbox.drain() {
-                                        messages.push(std::sync::Arc::new(inbox_event_to_message(
-                                            &extra,
-                                        )));
+                                        messages
+                                            .push(std::sync::Arc::new(inbox_event_message(&extra)));
                                     }
                                     continue; // back to loop — LLM processes events
                                 }
@@ -313,19 +294,6 @@ pub(super) async fn run_agent_loop_impl(
                             pause_reason: "awaiting_tasks".into(),
                         },
                     )?;
-                    complete_step(StepCompletion {
-                        store,
-                        runtime,
-                        env: &agent.env,
-                        sink: sink.as_ref(),
-                        checkpoint_store,
-                        messages: &messages,
-                        run_identity: &run_identity,
-                        run_created_at,
-                        total_input_tokens,
-                        total_output_tokens,
-                    })
-                    .await?;
                     break TerminationReason::NaturalEnd;
                 } else {
                     break TerminationReason::NaturalEnd;
@@ -406,6 +374,7 @@ pub(super) async fn run_agent_loop_impl(
                 loop {
                     match wait_for_resume_or_cancel(
                         decision_rx.as_mut(),
+                        inbox.as_mut(),
                         cancellation_token.as_ref(),
                         runtime,
                     )
@@ -447,6 +416,22 @@ pub(super) async fn run_agent_loop_impl(
                             )?;
                             continue 'run_loop;
                         }
+                        WaitOutcome::InboxMessages(events) => {
+                            for event in events {
+                                messages.push(std::sync::Arc::new(inbox_event_message(&event)));
+                            }
+                            persist_checkpoint(
+                                store,
+                                checkpoint_store,
+                                &messages,
+                                &run_identity,
+                                run_created_at,
+                                total_input_tokens,
+                                total_output_tokens,
+                            )
+                            .await?;
+                            continue;
+                        }
                         WaitOutcome::Cancelled => {
                             break 'run_loop TerminationReason::Cancelled;
                         }
@@ -473,7 +458,7 @@ pub(super) async fn run_agent_loop_impl(
                 // Drain inbox messages that arrived during step execution
                 if let Some(ref mut inbox) = inbox {
                     for msg in inbox.drain() {
-                        messages.push(std::sync::Arc::new(inbox_event_to_message(&msg)));
+                        messages.push(std::sync::Arc::new(inbox_event_message(&msg)));
                     }
                 }
                 if let Some(reason) = check_termination(store) {
@@ -618,7 +603,7 @@ mod tests {
         use super::*;
         use crate::agent::state::{RunLifecycle, RunLifecycleUpdate};
         use crate::loop_runner::checkpoint::check_termination;
-        use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
+        use awaken_contract::contract::lifecycle::TerminationReason;
 
         fn store_with_lifecycle() -> StateStore {
             let store = StateStore::new();
@@ -722,8 +707,6 @@ mod tests {
     mod termination_sequence_tests {
         use super::*;
         use crate::agent::state::{RunLifecycle, RunLifecycleUpdate};
-        use awaken_contract::contract::lifecycle::RunStatus;
-
         fn store_with_lifecycle() -> StateStore {
             let store = StateStore::new();
             store
@@ -770,7 +753,6 @@ mod tests {
     mod persist_checkpoint_tests {
         use super::*;
         use crate::agent::state::{RunLifecycle, RunLifecycleUpdate};
-        use awaken_contract::contract::lifecycle::RunStatus;
 
         fn store_with_lifecycle() -> StateStore {
             let store = StateStore::new();
@@ -875,7 +857,7 @@ mod tests {
 
             let msgs = rx.drain();
             for msg in &msgs {
-                let m = super::inbox_event_to_message(msg);
+                let m = crate::inbox::inbox_event_message(msg);
                 assert_eq!(m.role, awaken_contract::contract::message::Role::User);
                 assert_eq!(
                     m.visibility,
@@ -892,7 +874,7 @@ mod tests {
                 "event_type": "data_ready",
                 "payload": {"rows": 100}
             });
-            let m = super::inbox_event_to_message(&event);
+            let m = crate::inbox::inbox_event_message(&event);
             let text = m.text();
             assert!(
                 text.contains("<background-task-event"),

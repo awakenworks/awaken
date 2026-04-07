@@ -60,7 +60,7 @@ impl AgentBackend for LocalBackend {
         // delivered to inbox_receiver via ctx.emit().
         #[cfg(feature = "background")]
         {
-            let mut bg_manager = crate::extensions::background::BackgroundTaskManager::new();
+            let bg_manager = crate::extensions::background::BackgroundTaskManager::new();
             bg_manager.set_owner_inbox(inbox_sender.clone());
             let bg_manager = std::sync::Arc::new(bg_manager);
             bg_manager.set_store(store.clone());

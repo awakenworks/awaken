@@ -8,7 +8,8 @@ use crate::loop_runner::{
 use awaken_contract::contract::active_agent::ActiveAgentIdKey;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::message::Message;
+use awaken_contract::contract::message::{Message, Role, Visibility};
+use awaken_contract::contract::suspension::ToolCallStatus;
 use awaken_contract::state::PersistedState;
 
 use super::AgentRuntime;
@@ -61,6 +62,7 @@ impl AgentRuntime {
             parent_run_id: req_parent_run_id,
             parent_thread_id: req_parent_thread_id,
             continue_run_id,
+            run_inbox,
         } = request;
         let agent_id = self.resolve_agent_id(agent_id, &thread_id).await?;
 
@@ -78,12 +80,11 @@ impl AgentRuntime {
 
         // Preflight resolve to register plugin-declared keys before restoring persisted state.
         // Without this, thread-scoped keys may be skipped as unknown during restore.
-        let preflight_key_registrations = self
+        let preflight_resolved = self
             .resolver
             .resolve(&agent_id)
-            .map_err(AgentLoopError::RuntimeError)?
-            .env
-            .key_registrations;
+            .map_err(AgentLoopError::RuntimeError)?;
+        let preflight_key_registrations = preflight_resolved.env.key_registrations.clone();
         if !preflight_key_registrations.is_empty() {
             store
                 .register_keys(&preflight_key_registrations)
@@ -110,6 +111,12 @@ impl AgentRuntime {
         } else {
             vec![]
         };
+        // When a new visible user message supersedes a suspended run,
+        // strip the abandoned tool call from history before continuing.
+        if should_supersede_suspended_calls(&request_messages, &decisions) {
+            strip_superseded_suspended_tool_calls(&mut messages, &store);
+        }
+
         // Clean up unpaired tool calls left by a cancelled run.
         // If the previous run was cancelled while a tool call was pending,
         // the history may contain assistant messages with tool_calls that
@@ -161,6 +168,14 @@ impl AgentRuntime {
 
         // Create channels for external control
         let (handle, cancellation_token, decision_rx) = self.create_run_channels(run_id.clone());
+        let run_inbox = run_inbox.unwrap_or_else(|| {
+            let (sender, receiver) = crate::inbox::inbox_channel();
+            super::run_request::RunInbox { sender, receiver }
+        });
+        let owner_inbox = run_inbox.sender.clone();
+        for plugin in &preflight_resolved.env.plugins {
+            plugin.bind_runtime_context(&store, Some(&owner_inbox));
+        }
 
         // Register active run (guard ensures cleanup on drop/panic/cancellation)
         self.register_run(&thread_id, handle)
@@ -183,7 +198,7 @@ impl AgentRuntime {
             decision_rx: Some(decision_rx),
             overrides,
             frontend_tools,
-            inbox: None,
+            inbox: Some(run_inbox.receiver),
             is_continuation,
         })
         .await
@@ -251,7 +266,6 @@ fn active_agent_from_state(state: &PersistedState) -> Option<String> {
 /// `Tool` role response. These "orphaned" calls confuse LLMs on the next
 /// turn. This function strips unanswered calls from all assistant messages.
 fn strip_unpaired_tool_calls(messages: &mut Vec<Message>) {
-    use awaken_contract::contract::message::Role;
     use std::collections::HashSet;
 
     // Collect all tool call IDs that have a Tool-role response.
@@ -275,6 +289,70 @@ fn strip_unpaired_tool_calls(messages: &mut Vec<Message>) {
     }
 
     // Remove trailing empty assistant messages (no text, no tool calls).
+    while let Some(last) = messages.last() {
+        if last.role == Role::Assistant
+            && last.tool_calls.is_none()
+            && last.text().trim().is_empty()
+        {
+            messages.pop();
+        } else {
+            break;
+        }
+    }
+}
+
+fn should_supersede_suspended_calls(
+    request_messages: &[Message],
+    decisions: &[(
+        String,
+        awaken_contract::contract::suspension::ToolCallResume,
+    )],
+) -> bool {
+    decisions.is_empty()
+        && request_messages
+            .iter()
+            .any(|message| message.role == Role::User && message.visibility == Visibility::All)
+}
+
+fn strip_superseded_suspended_tool_calls(
+    messages: &mut Vec<Message>,
+    store: &crate::state::StateStore,
+) {
+    use std::collections::HashSet;
+
+    let suspended_ids: HashSet<String> = store
+        .read::<crate::agent::state::ToolCallStates>()
+        .unwrap_or_default()
+        .calls
+        .into_iter()
+        .filter_map(|(call_id, state)| {
+            (state.status == ToolCallStatus::Suspended).then_some(call_id)
+        })
+        .collect();
+    if suspended_ids.is_empty() {
+        return;
+    }
+
+    for message in messages.iter_mut() {
+        if message.role != Role::Assistant {
+            continue;
+        }
+        if let Some(ref mut calls) = message.tool_calls {
+            calls.retain(|call| !suspended_ids.contains(&call.id));
+            if calls.is_empty() {
+                message.tool_calls = None;
+            }
+        }
+    }
+
+    messages.retain(|message| {
+        !(message.role == Role::Tool
+            && message
+                .tool_call_id
+                .as_ref()
+                .is_some_and(|call_id| suspended_ids.contains(call_id)))
+    });
+
     while let Some(last) = messages.last() {
         if last.role == Role::Assistant
             && last.tool_calls.is_none()
@@ -385,6 +463,94 @@ mod tests {
             } else {
                 Ok(ToolResult::success_with_message("dangerous", args, "approved").into())
             }
+        }
+    }
+
+    struct EchoTool {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Tool for EchoTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("echo", "echo", "echo success")
+        }
+
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolOutput, ToolError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolResult::success("echo", args).into())
+        }
+    }
+
+    struct SpawnShortBgTaskTool {
+        manager: Arc<crate::extensions::background::BackgroundTaskManager>,
+        delay_ms: u64,
+    }
+
+    #[async_trait]
+    impl Tool for SpawnShortBgTaskTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("spawn_bg", "spawn_bg", "spawn short background task")
+        }
+
+        async fn execute(
+            &self,
+            _args: Value,
+            ctx: &ToolCallContext,
+        ) -> Result<ToolOutput, ToolError> {
+            let delay = self.delay_ms;
+            self.manager
+                .spawn(
+                    &ctx.run_identity.thread_id,
+                    "bg",
+                    None,
+                    "short task",
+                    crate::extensions::background::TaskParentContext::default(),
+                    move |_task_ctx| async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                        crate::extensions::background::TaskResult::Success(json!({
+                            "done": true,
+                            "source": "background"
+                        }))
+                    },
+                )
+                .await
+                .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+            Ok(ToolResult::success("spawn_bg", json!({"spawned": true})).into())
+        }
+    }
+
+    struct RecordingLlm {
+        responses: Mutex<Vec<StreamResult>>,
+        requests: Arc<Mutex<Vec<InferenceRequest>>>,
+    }
+
+    impl RecordingLlm {
+        fn new(responses: Vec<StreamResult>, requests: Arc<Mutex<Vec<InferenceRequest>>>) -> Self {
+            Self {
+                responses: Mutex::new(responses),
+                requests,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmExecutor for RecordingLlm {
+        async fn execute(
+            &self,
+            request: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            self.requests.lock().expect("lock poisoned").push(request);
+            let mut responses = self.responses.lock().expect("lock poisoned");
+            Ok(responses.remove(0))
+        }
+
+        fn name(&self) -> &str {
+            "recording"
         }
     }
 
@@ -706,6 +872,262 @@ mod tests {
                 )
             }),
             "resumed replay should emit ToolCallResumed with the final tool result: {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn background_events_buffer_while_suspended_until_decision_arrives() {
+        use awaken_contract::contract::message::{Role, Visibility};
+
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let llm = Arc::new(RecordingLlm::new(
+            vec![
+                StreamResult {
+                    content: vec![ContentBlock::text("start tools")],
+                    tool_calls: vec![
+                        awaken_contract::contract::message::ToolCall::new(
+                            "bg1",
+                            "spawn_bg",
+                            json!({}),
+                        ),
+                        awaken_contract::contract::message::ToolCall::new(
+                            "c1",
+                            "dangerous",
+                            json!({"x": 1}),
+                        ),
+                    ],
+                    usage: None,
+                    stop_reason: Some(StopReason::ToolUse),
+                    has_incomplete_tool_calls: false,
+                },
+                StreamResult {
+                    content: vec![ContentBlock::text("done after approval")],
+                    tool_calls: vec![],
+                    usage: None,
+                    stop_reason: Some(StopReason::EndTurn),
+                    has_incomplete_tool_calls: false,
+                },
+            ],
+            requests.clone(),
+        ));
+        let manager = Arc::new(crate::extensions::background::BackgroundTaskManager::new());
+        let resolver = Arc::new(FixedResolver {
+            agent: ResolvedAgent::new("agent", "m", "sys", llm)
+                .with_tool(Arc::new(SpawnShortBgTaskTool {
+                    manager: manager.clone(),
+                    delay_ms: 25,
+                }))
+                .with_tool(Arc::new(ToggleSuspendTool {
+                    calls: AtomicUsize::new(0),
+                })),
+            plugins: vec![Arc::new(
+                crate::extensions::background::BackgroundTaskPlugin::new(manager),
+            )],
+        });
+        let runtime = Arc::new(AgentRuntime::new(resolver));
+        let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
+
+        let run_task = {
+            let runtime = runtime.clone();
+            let sink = sink.clone();
+            tokio::spawn(async move {
+                runtime
+                    .run(
+                        RunRequest::new("thread-bg-suspend", vec![Message::user("go")])
+                            .with_agent_id("agent"),
+                        sink,
+                    )
+                    .await
+            })
+        };
+
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert_eq!(
+            requests.lock().expect("lock poisoned").len(),
+            1,
+            "background completion must not resume the LLM before the suspended tool is decided"
+        );
+
+        let sent = runtime.send_decisions(
+            "thread-bg-suspend",
+            vec![(
+                "c1".into(),
+                ToolCallResume {
+                    decision_id: "d1".into(),
+                    action: ResumeDecisionAction::Resume,
+                    result: Value::Null,
+                    reason: None,
+                    updated_at: 1,
+                },
+            )],
+        );
+        assert!(sent, "decision should reach the waiting run");
+
+        let result = run_task
+            .await
+            .expect("join should succeed")
+            .expect("run should succeed");
+        assert_eq!(
+            result.termination,
+            awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd
+        );
+
+        let recorded = requests.lock().expect("lock poisoned");
+        assert_eq!(
+            recorded.len(),
+            2,
+            "run should resume exactly once after approval"
+        );
+        assert!(
+            recorded[1].messages.iter().any(|message| {
+                message.role == Role::User
+                    && message.visibility == Visibility::Internal
+                    && message.text().contains("background-task-event")
+                    && message.text().contains("\"done\":true")
+            }),
+            "buffered background event should be injected into the resumed request"
+        );
+    }
+
+    #[tokio::test]
+    async fn new_user_message_supersedes_suspended_calls_but_keeps_completed_results() {
+        use awaken_contract::contract::lifecycle::RunStatus;
+        use awaken_contract::contract::message::Role;
+        use awaken_contract::contract::storage::ThreadStore;
+        use awaken_stores::InMemoryStore;
+
+        let llm = Arc::new(ScriptedLlm::new(vec![
+            StreamResult {
+                content: vec![ContentBlock::text("call tools")],
+                tool_calls: vec![
+                    awaken_contract::contract::message::ToolCall::new(
+                        "c_echo",
+                        "echo",
+                        json!({"ok": true}),
+                    ),
+                    awaken_contract::contract::message::ToolCall::new(
+                        "c_suspend",
+                        "dangerous",
+                        json!({"danger": true}),
+                    ),
+                ],
+                usage: None,
+                stop_reason: Some(StopReason::ToolUse),
+                has_incomplete_tool_calls: false,
+            },
+            StreamResult {
+                content: vec![ContentBlock::text("fresh answer")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            },
+        ]));
+        let echo = Arc::new(EchoTool {
+            calls: AtomicUsize::new(0),
+        });
+        let dangerous = Arc::new(ToggleSuspendTool {
+            calls: AtomicUsize::new(0),
+        });
+        let resolver = Arc::new(FixedResolver {
+            agent: ResolvedAgent::new("agent", "m", "sys", llm)
+                .with_tool(echo.clone())
+                .with_tool(dangerous.clone()),
+            plugins: vec![],
+        });
+        let store = Arc::new(InMemoryStore::new());
+        let runtime = Arc::new(
+            AgentRuntime::new(resolver)
+                .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>),
+        );
+        let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
+
+        let first_run = {
+            let runtime = runtime.clone();
+            let sink = sink.clone();
+            tokio::spawn(async move {
+                runtime
+                    .run(
+                        RunRequest::new("thread-supersede", vec![Message::user("first")])
+                            .with_agent_id("agent"),
+                        sink,
+                    )
+                    .await
+            })
+        };
+
+        let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(run) = store
+                .latest_run("thread-supersede")
+                .await
+                .expect("latest run lookup should succeed")
+                && run.status == RunStatus::Waiting
+                && run.termination_code.as_deref() == Some("suspended")
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < wait_deadline,
+                "timed out waiting for suspended checkpoint"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        assert!(
+            runtime.cancel_and_wait_by_thread("thread-supersede").await,
+            "new message path should be able to supersede the suspended run"
+        );
+
+        let first = first_run
+            .await
+            .expect("join should succeed")
+            .expect("first run should terminate cleanly");
+        assert_eq!(
+            first.termination,
+            awaken_contract::contract::lifecycle::TerminationReason::Cancelled
+        );
+
+        let second = runtime
+            .run(
+                RunRequest::new("thread-supersede", vec![Message::user("second")])
+                    .with_agent_id("agent"),
+                sink,
+            )
+            .await
+            .expect("second run should succeed");
+        assert_eq!(
+            second.termination,
+            awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd
+        );
+        assert_eq!(
+            echo.calls.load(Ordering::SeqCst),
+            1,
+            "successful tool calls from the superseded run must not replay"
+        );
+        assert_eq!(
+            dangerous.calls.load(Ordering::SeqCst),
+            1,
+            "suspended tool calls must be superseded instead of replayed on new user input"
+        );
+
+        let messages = ThreadStore::load_messages(&*store, "thread-supersede")
+            .await
+            .expect("load messages should succeed")
+            .expect("thread messages should exist");
+        assert!(
+            messages.iter().any(|message| message.role == Role::Tool
+                && message.tool_call_id.as_deref() == Some("c_echo")),
+            "completed tool result should remain in durable history"
+        );
+        assert!(
+            !messages
+                .iter()
+                .filter(|message| message.role == Role::Assistant)
+                .filter_map(|message| message.tool_calls.as_ref())
+                .flatten()
+                .any(|call| call.id == "c_suspend"),
+            "superseded suspended tool calls should be stripped from later history"
         );
     }
 
