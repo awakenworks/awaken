@@ -93,7 +93,7 @@ pub(super) async fn persist_checkpoint(
         agent_id: run_identity.agent_id.clone(),
         parent_run_id: run_identity.parent_run_id.clone(),
         status: lifecycle.status,
-        termination_code: lifecycle.done_reason.clone(),
+        termination_code: lifecycle.status_reason.clone(),
         created_at: run_created_at / 1000,
         updated_at: if lifecycle.updated_at == 0 {
             run_created_at / 1000
@@ -134,9 +134,12 @@ pub(super) fn check_termination(store: &crate::state::StateStore) -> Option<Term
     match lifecycle.status {
         RunStatus::Running => None,
         RunStatus::Done => {
-            let reason = lifecycle.done_reason.as_deref().unwrap_or("unknown");
+            let reason = lifecycle.status_reason.as_deref().unwrap_or("unknown");
             Some(TerminationReason::from_done_reason(reason))
         }
-        RunStatus::Waiting => Some(TerminationReason::Suspended),
+        RunStatus::Waiting => match lifecycle.status_reason.as_deref() {
+            Some("awaiting_tasks") => None, // orchestrator handles this directly
+            _ => Some(TerminationReason::Suspended),
+        },
     }
 }
