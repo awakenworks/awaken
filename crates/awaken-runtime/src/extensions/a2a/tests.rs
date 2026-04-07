@@ -95,6 +95,7 @@ impl AgentBackend for MockBackend {
         _messages: Vec<Message>,
         _event_sink: Arc<dyn EventSink>,
         _parent_run_id: Option<String>,
+        _parent_thread_id: Option<String>,
         _parent_tool_call_id: Option<String>,
     ) -> Result<DelegateRunResult, AgentBackendError> {
         Ok(self.result.clone())
@@ -113,6 +114,7 @@ impl AgentBackend for FailingBackend {
         _messages: Vec<Message>,
         _event_sink: Arc<dyn EventSink>,
         _parent_run_id: Option<String>,
+        _parent_thread_id: Option<String>,
         _parent_tool_call_id: Option<String>,
     ) -> Result<DelegateRunResult, AgentBackendError> {
         Err(AgentBackendError::ExecutionFailed(self.error.clone()))
@@ -201,6 +203,7 @@ async fn agent_tool_with_mock_backend_success() {
             response: Some("done!".into()),
             steps: 3,
             run_id: None,
+            inbox: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "A helper agent", backend);
@@ -227,6 +230,7 @@ async fn agent_tool_with_mock_backend_failure() {
             response: None,
             steps: 0,
             run_id: None,
+            inbox: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -494,6 +498,7 @@ impl AgentBackend for CapturingBackend {
         _messages: Vec<Message>,
         _event_sink: Arc<dyn EventSink>,
         parent_run_id: Option<String>,
+        _parent_thread_id: Option<String>,
         parent_tool_call_id: Option<String>,
     ) -> Result<DelegateRunResult, AgentBackendError> {
         *self.captured_parent_run_id.lock().unwrap() = parent_run_id;
@@ -504,6 +509,7 @@ impl AgentBackend for CapturingBackend {
             response: Some("done".into()),
             steps: 1,
             run_id: None,
+            inbox: None,
         })
     }
 }
@@ -597,6 +603,7 @@ async fn agent_tool_propagates_child_run_id_in_metadata() {
             response: Some("done".into()),
             steps: 1,
             run_id: Some("child-run-123".into()),
+            inbox: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -629,6 +636,7 @@ async fn agent_tool_with_mock_backend_cancelled() {
             response: None,
             steps: 2,
             run_id: None,
+            inbox: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -657,6 +665,7 @@ async fn agent_tool_with_mock_backend_timeout() {
             response: Some("partial".into()),
             steps: 5,
             run_id: None,
+            inbox: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -685,6 +694,7 @@ async fn agent_tool_failed_status_contains_error_info() {
             response: None,
             steps: 1,
             run_id: None,
+            inbox: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -748,6 +758,7 @@ async fn agent_tool_command_is_empty() {
             response: Some("done".into()),
             steps: 1,
             run_id: None,
+            inbox: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -794,6 +805,7 @@ async fn agent_tool_result_data_has_all_fields() {
             response: Some("analysis complete".into()),
             steps: 7,
             run_id: Some("child-456".into()),
+            inbox: None,
         },
     });
     let tool = AgentTool::with_backend("analyst", "Data analyst", backend);
@@ -831,6 +843,7 @@ fn agent_tool_descriptor_tool_id_follows_pattern() {
             response: None,
             steps: 0,
             run_id: None,
+            inbox: None,
         },
     });
     let tool = AgentTool::with_backend("my-special-agent", "desc", backend);
@@ -879,6 +892,7 @@ async fn agent_tool_omits_child_run_id_when_none() {
             response: Some("done".into()),
             steps: 1,
             run_id: None,
+            inbox: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
