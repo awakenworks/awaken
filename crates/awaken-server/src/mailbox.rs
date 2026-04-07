@@ -49,6 +49,8 @@ struct RunRequestExtras {
     frontend_tools: Vec<awaken_contract::contract::tool::ToolDescriptor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     continue_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent_thread_id: Option<String>,
 }
 
 impl RunRequestExtras {
@@ -58,6 +60,7 @@ impl RunRequestExtras {
             decisions: request.decisions.clone(),
             frontend_tools: request.frontend_tools.clone(),
             continue_run_id: None, // populated by wake job, not by user requests
+            parent_thread_id: request.parent_thread_id.clone(),
         }
     }
 
@@ -66,6 +69,7 @@ impl RunRequestExtras {
             && self.decisions.is_empty()
             && self.frontend_tools.is_empty()
             && self.continue_run_id.is_none()
+            && self.parent_thread_id.is_none()
         {
             Ok(None)
         } else {
@@ -89,6 +93,9 @@ impl RunRequestExtras {
         }
         if let Some(crid) = self.continue_run_id {
             request = request.with_continue_run_id(crid);
+        }
+        if let Some(parent_thread_id) = self.parent_thread_id {
+            request = request.with_parent_thread_id(parent_thread_id);
         }
         request
     }
@@ -120,10 +127,11 @@ impl TaskDoneMailboxNotify {
 }
 
 impl awaken_runtime::inbox::OnInboxClosed for TaskDoneMailboxNotify {
-    fn closed(&self, _message: &serde_json::Value) {
+    fn closed(&self, message: &serde_json::Value) {
         let mailbox = self.mailbox.clone();
         let thread_id = self.thread_id.clone();
         let continue_run_id = self.continue_run_id.clone();
+        let wake_message = awaken_runtime::inbox::inbox_event_message(message);
 
         // Spawn because OnInboxClosed::closed is sync but enqueue+dispatch is async
         tokio::spawn(async move {
@@ -132,6 +140,7 @@ impl awaken_runtime::inbox::OnInboxClosed for TaskDoneMailboxNotify {
                 decisions: Vec::new(),
                 frontend_tools: Vec::new(),
                 continue_run_id,
+                parent_thread_id: None,
             };
             let request_extras = extras.to_value().ok().flatten();
 
@@ -140,13 +149,13 @@ impl awaken_runtime::inbox::OnInboxClosed for TaskDoneMailboxNotify {
                 job_id: uuid::Uuid::now_v7().to_string(),
                 mailbox_id: thread_id.clone(),
                 agent_id: String::new(),
-                messages: vec![Message::internal_system("<background-tasks-updated />")],
+                messages: vec![wake_message],
                 origin: awaken_contract::contract::mailbox::MailboxJobOrigin::Internal,
                 sender_id: None,
                 parent_run_id: None,
                 request_extras,
                 priority: 200,
-                dedupe_key: Some(format!("bg-wake:{thread_id}")),
+                dedupe_key: None,
                 generation: 0,
                 status: MailboxJobStatus::Queued,
                 available_at: now,
@@ -640,7 +649,7 @@ impl Mailbox {
                         job_id: uuid::Uuid::now_v7().to_string(),
                         mailbox_id: run.thread_id.clone(),
                         agent_id: run.agent_id.clone(),
-                        messages: vec![Message::internal_system("<background-tasks-updated />")],
+                        messages: vec![Message::internal_user("<background-tasks-updated />")],
                         origin: awaken_contract::contract::mailbox::MailboxJobOrigin::Internal,
                         sender_id: None,
                         parent_run_id: None,
@@ -650,6 +659,7 @@ impl Mailbox {
                                 decisions: Vec::new(),
                                 frontend_tools: Vec::new(),
                                 continue_run_id: Some(run.run_id.clone()),
+                                parent_thread_id: None,
                             };
                             extras.to_value().ok().flatten()
                         },
@@ -910,6 +920,15 @@ impl Mailbox {
                     }
                 }
             }
+            let continue_run_id = request.continue_run_id.clone();
+            let (inbox_sender, inbox_receiver) = awaken_runtime::inbox::inbox_channel_with_fallback(
+                Arc::new(TaskDoneMailboxNotify::new(
+                    this.clone(),
+                    job.mailbox_id.clone(),
+                    continue_run_id,
+                )),
+            );
+            request = request.with_inbox(inbox_sender, inbox_receiver);
 
             let result = this.runtime.run(request, Arc::new(sink)).await;
             let now = now_ms();
@@ -1238,9 +1257,29 @@ fn classify_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use awaken_contract::contract::content::ContentBlock;
+    use awaken_contract::contract::executor::{
+        InferenceExecutionError, InferenceRequest, LlmExecutor,
+    };
+    use awaken_contract::contract::inference::{StopReason, StreamResult};
+    use awaken_contract::contract::lifecycle::RunStatus;
     use awaken_contract::contract::mailbox::MailboxJobOrigin;
-    use awaken_contract::contract::message::Message;
-    use awaken_stores::InMemoryMailboxStore;
+    use awaken_contract::contract::message::{Message, ToolCall};
+    use awaken_contract::contract::storage::{RunRecord, RunStore, ThreadRunStore};
+    use awaken_contract::contract::tool::{
+        Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+    };
+    use awaken_runtime::extensions::background::{
+        BackgroundTaskManager, BackgroundTaskPlugin, TaskParentContext,
+        TaskResult as BackgroundTaskResult,
+    };
+    use awaken_runtime::loop_runner::build_agent_env;
+    use awaken_runtime::{Plugin, ResolvedAgent};
+    use awaken_stores::{InMemoryMailboxStore, InMemoryStore};
+    use serde_json::{Value, json};
+    use std::sync::Mutex as StdMutex;
+    use tokio::time::{Duration, Instant, sleep};
 
     // ── Helper ───────────────────────────────────────────────────────
 
@@ -1272,6 +1311,135 @@ mod tests {
             "test-consumer".to_string(),
             MailboxConfig::default(),
         ))
+    }
+
+    struct ScriptedLlm {
+        responses: StdMutex<Vec<StreamResult>>,
+    }
+
+    impl ScriptedLlm {
+        fn new(responses: Vec<StreamResult>) -> Self {
+            Self {
+                responses: StdMutex::new(responses),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmExecutor for ScriptedLlm {
+        async fn execute(
+            &self,
+            _request: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            let mut responses = self.responses.lock().expect("lock poisoned");
+            if responses.is_empty() {
+                Ok(StreamResult {
+                    content: vec![ContentBlock::text("done")],
+                    tool_calls: vec![],
+                    usage: None,
+                    stop_reason: Some(StopReason::EndTurn),
+                    has_incomplete_tool_calls: false,
+                })
+            } else {
+                Ok(responses.remove(0))
+            }
+        }
+
+        fn name(&self) -> &str {
+            "scripted"
+        }
+    }
+
+    struct FixedResolver {
+        agent: ResolvedAgent,
+        plugins: Vec<Arc<dyn Plugin>>,
+    }
+
+    impl awaken_runtime::AgentResolver for FixedResolver {
+        fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, awaken_runtime::RuntimeError> {
+            let mut agent = self.agent.clone();
+            agent.env = build_agent_env(&self.plugins, &agent)?;
+            Ok(agent)
+        }
+    }
+
+    struct SpawnShortBgTaskTool {
+        manager: Arc<BackgroundTaskManager>,
+        delay: Duration,
+    }
+
+    #[async_trait]
+    impl Tool for SpawnShortBgTaskTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("spawn_bg", "spawn_bg", "Spawn a short background task")
+        }
+
+        async fn execute(
+            &self,
+            _args: Value,
+            ctx: &ToolCallContext,
+        ) -> Result<ToolOutput, ToolError> {
+            let delay = self.delay;
+            self.manager
+                .spawn(
+                    &ctx.run_identity.thread_id,
+                    "bg",
+                    None,
+                    "short task",
+                    TaskParentContext::default(),
+                    move |_task_ctx| async move {
+                        sleep(delay).await;
+                        BackgroundTaskResult::Success(json!({"done": true}))
+                    },
+                )
+                .await
+                .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+            Ok(ToolResult::success("spawn_bg", json!({"spawned": true})).into())
+        }
+    }
+
+    async fn wait_for_latest_run<F>(
+        store: &InMemoryStore,
+        thread_id: &str,
+        predicate: F,
+    ) -> RunRecord
+    where
+        F: Fn(&RunRecord) -> bool,
+    {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(run) = store
+                .latest_run(thread_id)
+                .await
+                .expect("latest run lookup should succeed")
+                && predicate(&run)
+            {
+                return run;
+            }
+
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for run predicate on thread {thread_id}"
+            );
+            sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    fn seeded_waiting_run(run_id: &str, thread_id: &str, agent_id: &str) -> RunRecord {
+        RunRecord {
+            run_id: run_id.to_string(),
+            thread_id: thread_id.to_string(),
+            agent_id: agent_id.to_string(),
+            parent_run_id: None,
+            status: RunStatus::Waiting,
+            termination_code: Some("awaiting_tasks".into()),
+            created_at: 1,
+            updated_at: 1,
+            steps: 2,
+            input_tokens: 0,
+            output_tokens: 0,
+            state: None,
+        }
     }
 
     // ── Tests ────────────────────────────────────────────────────────
@@ -1688,6 +1856,7 @@ mod tests {
             decisions: vec![],
             frontend_tools: vec![ToolDescriptor::new("ft1", "FT1", "desc")],
             continue_run_id: None,
+            parent_thread_id: None,
         };
         let value = extras.to_value().unwrap().unwrap();
         let parsed = RunRequestExtras::from_value(&value).unwrap();
@@ -1704,6 +1873,7 @@ mod tests {
             decisions: vec![],
             frontend_tools: vec![],
             continue_run_id: None,
+            parent_thread_id: None,
         };
         assert!(extras.to_value().unwrap().is_none());
     }
@@ -1716,10 +1886,31 @@ mod tests {
             decisions: vec![],
             frontend_tools: vec![ToolDescriptor::new("ft1", "FT1", "desc")],
             continue_run_id: None,
+            parent_thread_id: Some("parent-thread".into()),
         };
         let request = RunRequest::new("t1", vec![Message::user("hi")]);
         let applied = extras.apply_to(request);
         assert_eq!(applied.frontend_tools.len(), 1);
+        assert_eq!(applied.parent_thread_id.as_deref(), Some("parent-thread"));
+    }
+
+    #[test]
+    fn build_job_round_trips_parent_thread_id() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store);
+
+        let request = RunRequest::new("thread-child", vec![Message::user("hi")])
+            .with_agent_id("agent")
+            .with_parent_thread_id("thread-parent");
+        let job = mailbox
+            .build_job(&request, "thread-child", request.messages.clone())
+            .expect("build job should succeed");
+
+        let extras = RunRequestExtras::from_value(job.request_extras.as_ref().unwrap())
+            .expect("extras should deserialize");
+        let restored = extras.apply_to(RunRequest::new(job.mailbox_id, job.messages));
+        assert_eq!(restored.parent_thread_id.as_deref(), Some("thread-parent"));
     }
 
     #[tokio::test]
@@ -1823,6 +2014,133 @@ mod tests {
             result.status,
             MailboxDispatchStatus::Running | MailboxDispatchStatus::Queued
         ));
+    }
+
+    #[tokio::test]
+    async fn waiting_thread_is_reactivated_by_incoming_message() {
+        let store = Arc::new(InMemoryStore::new());
+        store
+            .create_run(&seeded_waiting_run(
+                "run-waiting",
+                "thread-waiting",
+                "agent",
+            ))
+            .await
+            .expect("seed waiting run");
+
+        let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+            content: vec![ContentBlock::text("reactivated")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        }]));
+        let resolver = Arc::new(FixedResolver {
+            agent: ResolvedAgent::new("agent", "m", "sys", llm),
+            plugins: vec![],
+        });
+        let runtime = Arc::new(
+            AgentRuntime::new(resolver)
+                .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>),
+        );
+        let mailbox_store = make_store();
+        let mailbox = make_mailbox(runtime, mailbox_store);
+
+        mailbox
+            .submit_background(
+                RunRequest::new("thread-waiting", vec![Message::user("poke")])
+                    .with_agent_id("agent"),
+            )
+            .await
+            .expect("submit should succeed");
+
+        let latest = wait_for_latest_run(&store, "thread-waiting", |run| {
+            run.status == RunStatus::Done && run.updated_at > 1
+        })
+        .await;
+
+        assert_eq!(
+            latest.run_id, "run-waiting",
+            "incoming messages should continue the existing waiting run"
+        );
+        assert_eq!(latest.status, RunStatus::Done);
+    }
+
+    #[tokio::test]
+    async fn background_task_completion_should_enqueue_internal_wake_message() {
+        let store = Arc::new(InMemoryStore::new());
+        let mailbox_store = make_store();
+        let manager = Arc::new(BackgroundTaskManager::new());
+
+        let llm = Arc::new(ScriptedLlm::new(vec![
+            StreamResult {
+                content: vec![ContentBlock::text("spawning task")],
+                tool_calls: vec![ToolCall::new("c1", "spawn_bg", json!({}))],
+                usage: None,
+                stop_reason: Some(StopReason::ToolUse),
+                has_incomplete_tool_calls: false,
+            },
+            StreamResult {
+                content: vec![ContentBlock::text("waiting for background task")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            },
+        ]));
+        let agent = ResolvedAgent::new("agent", "m", "sys", llm).with_tool(Arc::new(
+            SpawnShortBgTaskTool {
+                manager: manager.clone(),
+                delay: Duration::from_millis(25),
+            },
+        ));
+        let resolver = Arc::new(FixedResolver {
+            agent,
+            plugins: vec![Arc::new(BackgroundTaskPlugin::new(manager))],
+        });
+        let runtime = Arc::new(
+            AgentRuntime::new(resolver)
+                .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>),
+        );
+        let mailbox = make_mailbox(runtime, mailbox_store.clone());
+
+        mailbox
+            .submit_background(
+                RunRequest::new("thread-bg", vec![Message::user("start")]).with_agent_id("agent"),
+            )
+            .await
+            .expect("submit should succeed");
+
+        let waiting = wait_for_latest_run(&store, "thread-bg", |run| {
+            run.status == RunStatus::Waiting
+                && run.termination_code.as_deref() == Some("awaiting_tasks")
+        })
+        .await;
+        sleep(Duration::from_millis(100)).await;
+
+        let jobs = mailbox_store
+            .list_jobs("thread-bg", None, 10, 0)
+            .await
+            .expect("list jobs should succeed");
+
+        assert!(
+            jobs.len() >= 2,
+            "background completion should enqueue an internal wake message; waiting run was {:?}, jobs were {:?}",
+            waiting,
+            jobs
+        );
+        assert!(
+            jobs.iter().skip(1).any(|job| {
+                job.messages.iter().any(|msg| {
+                    msg.role == awaken_contract::contract::message::Role::User
+                        && msg.visibility
+                            == awaken_contract::contract::message::Visibility::Internal
+                        && msg.text().contains("<background-task-event")
+                        && msg.text().contains("\"done\":true")
+                })
+            }),
+            "expected a synthetic background wake job after task completion"
+        );
     }
 
     // ── send_decision returns false for unknown id ──────────────────

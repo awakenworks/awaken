@@ -92,7 +92,7 @@ struct TaskHandle {
 pub struct BackgroundTaskManager {
     handles: Mutex<HashMap<TaskId, TaskHandle>>,
     counter: AtomicU64,
-    owner_inbox: Option<InboxSender>,
+    owner_inbox: std::sync::RwLock<Option<InboxSender>>,
     store: std::sync::OnceLock<StateStore>,
 }
 
@@ -101,15 +101,15 @@ impl BackgroundTaskManager {
         Self {
             handles: Mutex::new(HashMap::new()),
             counter: AtomicU64::new(0),
-            owner_inbox: None,
+            owner_inbox: std::sync::RwLock::new(None),
             store: std::sync::OnceLock::new(),
         }
     }
 
     /// Set the inbox sender that background tasks receive for pushing
     /// messages to the owner thread.
-    pub fn set_owner_inbox(&mut self, inbox: InboxSender) {
-        self.owner_inbox = Some(inbox);
+    pub fn set_owner_inbox(&self, inbox: InboxSender) {
+        *self.owner_inbox.write().expect("owner_inbox poisoned") = Some(inbox);
     }
 
     /// Provide the state store for metadata persistence.
@@ -144,6 +144,13 @@ impl BackgroundTaskManager {
     /// Returns a reference to the store, if set.
     fn store(&self) -> Option<&StateStore> {
         self.store.get()
+    }
+
+    fn owner_inbox(&self) -> Option<InboxSender> {
+        self.owner_inbox
+            .read()
+            .expect("owner_inbox poisoned")
+            .clone()
     }
 
     fn next_task_id(&self) -> TaskId {
@@ -192,7 +199,7 @@ impl BackgroundTaskManager {
         let ctx = TaskContext {
             task_id: task_id.clone(),
             cancel_token,
-            inbox: self.owner_inbox.clone(),
+            inbox: self.owner_inbox(),
         };
 
         let task_name = name.map(|n| n.to_string());
@@ -216,7 +223,7 @@ impl BackgroundTaskManager {
 
         let manager = Arc::clone(self);
         let tid = task_id.clone();
-        let owner_inbox = self.owner_inbox.clone();
+        let owner_inbox = self.owner_inbox();
         let owner = owner_thread_id.to_string();
         let ttype = task_type.to_string();
         let tname = task_name.clone();
@@ -469,7 +476,7 @@ impl BackgroundTaskManager {
 
         let manager = Arc::clone(self);
         let tid = task_id.clone();
-        let owner_inbox = self.owner_inbox.clone();
+        let owner_inbox = self.owner_inbox();
         let owner = owner_thread_id.to_string();
         let tname = task_name.clone();
         let desc = description.to_string();

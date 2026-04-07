@@ -105,7 +105,7 @@ impl SendMessageTool {
             job_id: job_id.clone(),
             mailbox_id: recipient_thread_id.to_string(),
             agent_id: recipient_agent_id.to_string(),
-            messages: vec![Message::internal_system(format!(
+            messages: vec![Message::internal_user(format!(
                 "<agent-message from=\"{sender_agent_id}\">\n{message}\n</agent-message>"
             ))],
             origin: MailboxJobOrigin::Internal,
@@ -456,7 +456,8 @@ mod tests {
     #[tokio::test]
     async fn agent_delivers_durable() {
         let (manager, _store) = make_manager_and_store();
-        let tool = make_tool(manager);
+        let mailbox = Arc::new(InMemoryMailboxStore::new());
+        let tool = SendMessageTool::new(manager, mailbox.clone());
         let ctx = make_ctx("thread-1", "sender");
         let r = tool
             .execute(
@@ -466,6 +467,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.result.data["status"], "accepted");
+
+        let jobs = mailbox.list_jobs("thread-2", None, 10, 0).await.unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].messages.len(), 1);
+        assert_eq!(
+            jobs[0].messages[0].role,
+            awaken_contract::contract::message::Role::User
+        );
+        assert_eq!(
+            jobs[0].messages[0].visibility,
+            awaken_contract::contract::message::Visibility::Internal
+        );
     }
 
     // -- agent live rejected --
@@ -529,6 +542,14 @@ mod tests {
             jobs[0].agent_id.is_empty(),
             "parent job agent_id should be empty for inference, got: '{}'",
             jobs[0].agent_id
+        );
+        assert_eq!(
+            jobs[0].messages[0].role,
+            awaken_contract::contract::message::Role::User
+        );
+        assert_eq!(
+            jobs[0].messages[0].visibility,
+            awaken_contract::contract::message::Visibility::Internal
         );
     }
 

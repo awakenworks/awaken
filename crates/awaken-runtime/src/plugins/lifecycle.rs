@@ -21,6 +21,17 @@ pub struct ConfigSchema {
 pub trait Plugin: Send + Sync + 'static {
     fn descriptor(&self) -> PluginDescriptor;
 
+    /// Bind per-run runtime context to the plugin instance.
+    ///
+    /// This is invoked at run startup and on agent handoff so plugins that
+    /// keep runtime-owned handles can bind to the current run's store or inbox.
+    fn bind_runtime_context(
+        &self,
+        _store: &crate::state::StateStore,
+        _owner_inbox: Option<&crate::inbox::InboxSender>,
+    ) {
+    }
+
     /// Declare capabilities: state keys, hooks, action handlers, effect handlers, permission checkers.
     /// Called once per resolve to build the ExecutionEnv.
     fn register(&self, _registrar: &mut PluginRegistrar) -> Result<(), StateError> {

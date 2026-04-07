@@ -42,6 +42,17 @@ impl Plugin for BackgroundTaskPlugin {
         }
     }
 
+    fn bind_runtime_context(
+        &self,
+        store: &StateStore,
+        owner_inbox: Option<&crate::inbox::InboxSender>,
+    ) {
+        self.manager.set_store(store.clone());
+        if let Some(inbox) = owner_inbox {
+            self.manager.set_owner_inbox(inbox.clone());
+        }
+    }
+
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
         registrar.register_key::<BackgroundTaskViewKey>(StateKeyOptions::default())?;
         registrar.register_key::<BackgroundTaskStateKey>(StateKeyOptions {

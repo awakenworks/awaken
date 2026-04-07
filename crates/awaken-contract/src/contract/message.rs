@@ -109,6 +109,19 @@ impl Message {
         }
     }
 
+    /// Create an internal user message (visible only to the LLM).
+    pub fn internal_user(text: impl Into<String>) -> Self {
+        Self {
+            id: Some(gen_message_id()),
+            role: Role::User,
+            content: vec![ContentBlock::text(text)],
+            tool_calls: None,
+            tool_call_id: None,
+            visibility: Visibility::Internal,
+            metadata: None,
+        }
+    }
+
     /// Create a user message with text.
     ///
     /// # Examples
@@ -370,6 +383,14 @@ mod tests {
     fn test_internal_system_message() {
         let msg = Message::internal_system("hidden reminder");
         assert_eq!(msg.role, Role::System);
+        assert_eq!(msg.text(), "hidden reminder");
+        assert_eq!(msg.visibility, Visibility::Internal);
+    }
+
+    #[test]
+    fn test_internal_user_message() {
+        let msg = Message::internal_user("hidden reminder");
+        assert_eq!(msg.role, Role::User);
         assert_eq!(msg.text(), "hidden reminder");
         assert_eq!(msg.visibility, Visibility::Internal);
     }
