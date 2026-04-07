@@ -51,6 +51,27 @@ impl AgentBackend for LocalBackend {
                 AgentBackendError::ExecutionFailed(format!("action handlers setup: {e}"))
             })?;
 
+        // Create inbox so the sub-agent can receive messages during execution.
+        let (inbox_sender, inbox_receiver) = crate::inbox::inbox_channel();
+
+        // Create a BackgroundTaskManager wired to this sub-agent's inbox.
+        // Any BackgroundTask spawned by the sub-agent will have its events
+        // delivered to inbox_receiver via ctx.emit().
+        #[cfg(feature = "background")]
+        {
+            let mut bg_manager = crate::extensions::background::BackgroundTaskManager::new();
+            bg_manager.set_owner_inbox(inbox_sender.clone());
+            let bg_manager = std::sync::Arc::new(bg_manager);
+            bg_manager.set_store(store.clone());
+            store
+                .install_plugin(crate::extensions::background::BackgroundTaskPlugin::new(
+                    bg_manager,
+                ))
+                .map_err(|e| {
+                    AgentBackendError::ExecutionFailed(format!("background task plugin setup: {e}"))
+                })?;
+        }
+
         let phase_runtime = crate::phase::PhaseRuntime::new(store.clone())
             .map_err(|e| AgentBackendError::ExecutionFailed(format!("phase setup failed: {e}")))?;
 
@@ -82,6 +103,8 @@ impl AgentBackend for LocalBackend {
             decision_rx: None,
             overrides: None,
             frontend_tools: Vec::new(),
+            inbox: Some(inbox_receiver),
+            is_continuation: false,
         })
         .await
         .map_err(|e| {
@@ -114,6 +137,7 @@ impl AgentBackend for LocalBackend {
             response,
             steps: result.steps,
             run_id: Some(child_run_id),
+            inbox: Some(inbox_sender),
         })
     }
 }

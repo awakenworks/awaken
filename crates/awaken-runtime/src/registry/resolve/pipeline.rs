@@ -769,6 +769,7 @@ mod tests {
                     response: Some("from custom backend".into()),
                     steps: 1,
                     run_id: None,
+                    inbox: None,
                 },
             }))
             .unwrap();

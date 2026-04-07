@@ -20,6 +20,9 @@ pub struct DelegateRunResult {
     pub steps: usize,
     /// Child run ID for observability lineage (local delegates only).
     pub run_id: Option<String>,
+    /// Inbox sender for sending messages to the sub-agent during execution.
+    /// Only available while the sub-agent is running (dropped after completion).
+    pub inbox: Option<crate::inbox::InboxSender>,
 }
 
 /// Terminal status of a delegated agent run.

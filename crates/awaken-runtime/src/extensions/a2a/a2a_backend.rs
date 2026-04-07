@@ -347,6 +347,7 @@ impl AgentBackend for A2aBackend {
             response: snapshot.output_text,
             steps: 1,
             run_id: None,
+            inbox: None,
         })
     }
 }
