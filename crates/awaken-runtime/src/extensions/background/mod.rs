@@ -6,13 +6,17 @@
 mod hook;
 mod manager;
 mod plugin;
-mod state;
+mod send_message_tool;
+pub(crate) mod state;
 mod types;
 
-pub use manager::BackgroundTaskManager;
+pub use manager::{BackgroundTaskManager, SendError, SpawnError};
 pub use plugin::BackgroundTaskPlugin;
-pub use state::PersistedTaskMeta;
-pub use types::{TaskId, TaskResult, TaskStatus, TaskSummary};
+pub use send_message_tool::SendMessageTool;
+pub use state::{BackgroundTaskViewKey, PersistedTaskMeta};
+pub use types::{
+    TaskContext, TaskEvent, TaskId, TaskParentContext, TaskResult, TaskStatus, TaskSummary,
+};
 
 #[cfg(test)]
 mod tests;

@@ -59,14 +59,22 @@ impl StateKey for BackgroundTaskViewKey {
 ///
 /// Task payloads (the actual futures) are NOT persisted — only metadata
 /// (id, name, status, error message, timestamps).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PersistedTaskMeta {
     pub task_id: TaskId,
+    #[serde(default)]
+    pub owner_thread_id: String,
     pub task_type: String,
+    /// Short unique name for addressing (e.g. "researcher").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Human-readable task description.
     pub description: String,
     pub status: TaskStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
     pub created_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at_ms: Option<u64>,
@@ -76,13 +84,16 @@ pub struct PersistedTaskMeta {
 
 impl PersistedTaskMeta {
     /// Build from a [`TaskSummary`].
-    pub fn from_summary(summary: &TaskSummary) -> Self {
+    pub fn from_summary(summary: &TaskSummary, owner_thread_id: &str) -> Self {
         Self {
             task_id: summary.task_id.clone(),
+            owner_thread_id: owner_thread_id.to_string(),
             task_type: summary.task_type.clone(),
+            name: None,
             description: summary.description.clone(),
             status: summary.status,
             error: summary.error.clone(),
+            result: summary.result.clone(),
             created_at_ms: summary.created_at_ms,
             completed_at_ms: summary.completed_at_ms,
             parent_context: summary.parent_context.clone(),
@@ -100,7 +111,7 @@ pub struct BackgroundTaskStateSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BackgroundTaskStateAction {
     /// Upsert a single task's metadata.
-    Upsert(PersistedTaskMeta),
+    Upsert(Box<PersistedTaskMeta>),
     /// Replace the entire task map (used on restore/sync).
     ReplaceAll {
         tasks: HashMap<TaskId, PersistedTaskMeta>,
@@ -111,7 +122,7 @@ impl BackgroundTaskStateSnapshot {
     pub(crate) fn reduce(&mut self, action: BackgroundTaskStateAction) {
         match action {
             BackgroundTaskStateAction::Upsert(meta) => {
-                self.tasks.insert(meta.task_id.clone(), meta);
+                self.tasks.insert(meta.task_id.clone(), *meta);
             }
             BackgroundTaskStateAction::ReplaceAll { tasks } => {
                 self.tasks = tasks;
