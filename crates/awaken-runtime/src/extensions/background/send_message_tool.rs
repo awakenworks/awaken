@@ -294,15 +294,10 @@ impl Tool for SendMessageTool {
             }
             "parent" => match ctx.run_identity.parent_thread_id.as_deref() {
                 Some(parent_tid) => {
-                    let parent_agent = ctx
-                        .run_identity
-                        .parent_run_id
-                        .as_deref()
-                        .unwrap_or_default();
-                    match self
-                        .send_via_mailbox(parent_tid, parent_agent, sender, message)
-                        .await
-                    {
+                    // Leave agent_id empty — the runner will infer the correct
+                    // agent from the thread's latest run record. We don't have
+                    // parent_agent_id in RunIdentity yet.
+                    match self.send_via_mailbox(parent_tid, "", sender, message).await {
                         Ok(job_id) => Self::make_receipt(job_id),
                         Err(e) => Self::make_error(MessageError::TransportFailed(e)),
                     }
@@ -358,6 +353,9 @@ mod tests {
             snapshot: store.snapshot(),
             activity_sink: None,
             cancellation_token: None,
+            resume_input: None,
+            suspension_id: None,
+            suspension_reason: None,
         }
     }
 
@@ -498,12 +496,13 @@ mod tests {
     #[tokio::test]
     async fn parent_with_thread_id_delivers() {
         let (manager, _store) = make_manager_and_store();
-        let tool = make_tool(manager);
+        let mailbox = Arc::new(InMemoryMailboxStore::new());
+        let tool = SendMessageTool::new(manager, mailbox.clone());
 
         let mut ctx = make_ctx("thread-child", "child-agent");
         ctx.run_identity = awaken_contract::contract::identity::RunIdentity::new(
             "thread-child".into(),
-            Some("thread-parent".into()), // parent_thread_id set
+            Some("thread-parent".into()),
             "run-child".into(),
             Some("run-parent".into()),
             "child-agent".into(),
@@ -518,6 +517,19 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.result.data["status"], "accepted");
+
+        // Verify the mailbox job routes to the PARENT's thread, not the child's
+        let jobs = mailbox
+            .list_jobs("thread-parent", None, 10, 0)
+            .await
+            .unwrap();
+        assert_eq!(jobs.len(), 1, "job should be queued on parent's thread");
+        // agent_id should be empty (inferred by runner), NOT "run-parent"
+        assert!(
+            jobs[0].agent_id.is_empty(),
+            "parent job agent_id should be empty for inference, got: '{}'",
+            jobs[0].agent_id
+        );
     }
 
     // -- validation --

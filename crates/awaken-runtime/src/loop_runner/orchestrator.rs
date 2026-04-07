@@ -535,17 +535,23 @@ pub(super) async fn run_agent_loop_impl(
         .map(|m| m.text())
         .unwrap_or_default();
 
-    // If lifecycle is Waiting (awaiting_tasks), signal it in the result
-    // so clients/protocol layers can distinguish "done" from "waiting".
-    let is_awaiting = lifecycle_now == Some(RunStatus::Waiting);
-    let result_json = if is_awaiting {
-        serde_json::json!({
-            "response": response,
-            "awaiting_tasks": true,
-        })
-    } else {
-        serde_json::json!({"response": response})
+    // Include run status and reason in RunFinish result so clients can
+    // distinguish "done" from "waiting" and know the specific reason.
+    let lifecycle_final = store.read::<RunLifecycle>();
+    let run_status = lifecycle_final
+        .as_ref()
+        .map(|l| l.status)
+        .unwrap_or(RunStatus::Done);
+    let status_reason = lifecycle_final.and_then(|l| l.status_reason);
+    let status_str = match run_status {
+        RunStatus::Running => "running",
+        RunStatus::Waiting => "waiting",
+        RunStatus::Done => "done",
     };
+    let mut result_json = serde_json::json!({"response": response, "status": status_str});
+    if let Some(reason) = &status_reason {
+        result_json["status_reason"] = serde_json::json!(reason);
+    }
 
     sink.emit(AgentEvent::RunFinish {
         thread_id: run_identity.thread_id.clone(),
