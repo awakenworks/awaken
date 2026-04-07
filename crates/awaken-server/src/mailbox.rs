@@ -47,6 +47,8 @@ struct RunRequestExtras {
     )>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     frontend_tools: Vec<awaken_contract::contract::tool::ToolDescriptor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    continue_run_id: Option<String>,
 }
 
 impl RunRequestExtras {
@@ -55,11 +57,16 @@ impl RunRequestExtras {
             overrides: request.overrides.clone(),
             decisions: request.decisions.clone(),
             frontend_tools: request.frontend_tools.clone(),
+            continue_run_id: None, // populated by wake job, not by user requests
         }
     }
 
     fn to_value(&self) -> Result<Option<serde_json::Value>, serde_json::Error> {
-        if self.overrides.is_none() && self.decisions.is_empty() && self.frontend_tools.is_empty() {
+        if self.overrides.is_none()
+            && self.decisions.is_empty()
+            && self.frontend_tools.is_empty()
+            && self.continue_run_id.is_none()
+        {
             Ok(None)
         } else {
             serde_json::to_value(self).map(Some)
@@ -80,7 +87,86 @@ impl RunRequestExtras {
         if !self.frontend_tools.is_empty() {
             request = request.with_frontend_tools(self.frontend_tools);
         }
+        if let Some(crid) = self.continue_run_id {
+            request = request.with_continue_run_id(crid);
+        }
         request
+    }
+}
+
+// ── TaskDoneMailboxNotify ────────────────────────────────────────────
+
+/// Fallback for inbox delivery when the agent's run has ended.
+///
+/// Implements [`OnInboxClosed`] — when an `InboxSender::send()` fails
+/// because the receiver was dropped (agent run returned with AwaitingTasks),
+/// this enqueues a mailbox wake job so the thread gets a continuation run.
+///
+/// Uses `dedupe_key` to coalesce multiple task completions into one wake job.
+pub struct TaskDoneMailboxNotify {
+    mailbox: Arc<Mailbox>,
+    thread_id: String,
+    continue_run_id: Option<String>,
+}
+
+impl TaskDoneMailboxNotify {
+    pub fn new(mailbox: Arc<Mailbox>, thread_id: String, continue_run_id: Option<String>) -> Self {
+        Self {
+            mailbox,
+            thread_id,
+            continue_run_id,
+        }
+    }
+}
+
+impl awaken_runtime::inbox::OnInboxClosed for TaskDoneMailboxNotify {
+    fn closed(&self, _message: &serde_json::Value) {
+        let mailbox = self.mailbox.clone();
+        let thread_id = self.thread_id.clone();
+        let continue_run_id = self.continue_run_id.clone();
+
+        // Spawn because OnInboxClosed::closed is sync but enqueue+dispatch is async
+        tokio::spawn(async move {
+            let extras = RunRequestExtras {
+                overrides: None,
+                decisions: Vec::new(),
+                frontend_tools: Vec::new(),
+                continue_run_id,
+            };
+            let request_extras = extras.to_value().ok().flatten();
+
+            let now = now_ms();
+            let job = MailboxJob {
+                job_id: uuid::Uuid::now_v7().to_string(),
+                mailbox_id: thread_id.clone(),
+                agent_id: String::new(),
+                messages: vec![Message::internal_system("<background-tasks-updated />")],
+                origin: awaken_contract::contract::mailbox::MailboxJobOrigin::Internal,
+                sender_id: None,
+                parent_run_id: None,
+                request_extras,
+                priority: 200,
+                dedupe_key: Some(format!("bg-wake:{thread_id}")),
+                generation: 0,
+                status: MailboxJobStatus::Queued,
+                available_at: now,
+                attempt_count: 0,
+                max_attempts: 3,
+                last_error: None,
+                claim_token: None,
+                claimed_by: None,
+                lease_until: None,
+                created_at: now,
+                updated_at: now,
+            };
+            if let Err(e) = mailbox.store.enqueue(&job).await {
+                tracing::warn!(thread_id, error = %e, "failed to enqueue background task wake job");
+                return;
+            }
+            // Dispatch immediately so idle workers pick up the wake job.
+            mailbox.get_or_create_worker(&thread_id).await;
+            mailbox.try_dispatch_next(&thread_id).await;
+        });
     }
 }
 
@@ -528,6 +614,71 @@ impl Mailbox {
             // Ensure worker exists for each mailbox with queued jobs.
             self.get_or_create_worker(mailbox_id).await;
             self.try_dispatch_next(mailbox_id).await;
+        }
+
+        // Recover threads stuck in awaiting_tasks with no queued wake job.
+        if let Some(run_store) = self.runtime.thread_run_store() {
+            let query = awaken_contract::contract::storage::RunQuery {
+                status: Some(awaken_contract::contract::lifecycle::RunStatus::Waiting),
+                limit: 200,
+                ..Default::default()
+            };
+            if let Ok(page) = run_store.list_runs(&query).await {
+                let queued_set: std::collections::HashSet<String> =
+                    mailbox_ids.iter().cloned().collect();
+                for run in &page.items {
+                    if run.termination_code.as_deref() != Some("awaiting_tasks") {
+                        continue;
+                    }
+                    // Skip if this thread already has a queued job
+                    if queued_set.contains(&run.thread_id) {
+                        continue;
+                    }
+                    // Enqueue a wake job for this orphaned awaiting_tasks thread
+                    let now_val = now_ms();
+                    let job = MailboxJob {
+                        job_id: uuid::Uuid::now_v7().to_string(),
+                        mailbox_id: run.thread_id.clone(),
+                        agent_id: run.agent_id.clone(),
+                        messages: vec![Message::internal_system("<background-tasks-updated />")],
+                        origin: awaken_contract::contract::mailbox::MailboxJobOrigin::Internal,
+                        sender_id: None,
+                        parent_run_id: None,
+                        request_extras: {
+                            let extras = RunRequestExtras {
+                                overrides: None,
+                                decisions: Vec::new(),
+                                frontend_tools: Vec::new(),
+                                continue_run_id: Some(run.run_id.clone()),
+                            };
+                            extras.to_value().ok().flatten()
+                        },
+                        priority: 200,
+                        dedupe_key: Some(format!("bg-wake:{}", run.thread_id)),
+                        generation: 0,
+                        status: MailboxJobStatus::Queued,
+                        available_at: now_val,
+                        attempt_count: 0,
+                        max_attempts: 3,
+                        last_error: None,
+                        claim_token: None,
+                        claimed_by: None,
+                        lease_until: None,
+                        created_at: now_val,
+                        updated_at: now_val,
+                    };
+                    if let Ok(()) = self.store.enqueue(&job).await {
+                        total += 1;
+                        tracing::info!(
+                            thread_id = %run.thread_id,
+                            run_id = %run.run_id,
+                            "recover: enqueued wake job for orphaned awaiting_tasks thread"
+                        );
+                        self.get_or_create_worker(&run.thread_id).await;
+                        self.try_dispatch_next(&run.thread_id).await;
+                    }
+                }
+            }
         }
 
         Ok(total)
@@ -1536,6 +1687,7 @@ mod tests {
             overrides: None,
             decisions: vec![],
             frontend_tools: vec![ToolDescriptor::new("ft1", "FT1", "desc")],
+            continue_run_id: None,
         };
         let value = extras.to_value().unwrap().unwrap();
         let parsed = RunRequestExtras::from_value(&value).unwrap();
@@ -1551,6 +1703,7 @@ mod tests {
             overrides: None,
             decisions: vec![],
             frontend_tools: vec![],
+            continue_run_id: None,
         };
         assert!(extras.to_value().unwrap().is_none());
     }
@@ -1562,6 +1715,7 @@ mod tests {
             overrides: None,
             decisions: vec![],
             frontend_tools: vec![ToolDescriptor::new("ft1", "FT1", "desc")],
+            continue_run_id: None,
         };
         let request = RunRequest::new("t1", vec![Message::user("hi")]);
         let applied = extras.apply_to(request);
