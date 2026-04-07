@@ -5,7 +5,7 @@ use awaken_contract::model::Phase;
 use awaken_contract::registry_spec::AgentSpec;
 
 use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
-use crate::state::{KeyScope, MutationBatch, StateKeyOptions};
+use crate::state::{KeyScope, MutationBatch, StateKeyOptions, StateStore};
 
 use super::hook::BackgroundTaskSyncHook;
 use super::manager::BackgroundTaskManager;
@@ -21,6 +21,17 @@ pub struct BackgroundTaskPlugin {
 impl BackgroundTaskPlugin {
     pub fn new(manager: Arc<BackgroundTaskManager>) -> Self {
         Self { manager }
+    }
+
+    /// Create the plugin and wire the store into the manager.
+    pub fn with_store(manager: Arc<BackgroundTaskManager>, store: StateStore) -> Self {
+        manager.set_store(store);
+        Self { manager }
+    }
+
+    /// Return the manager for inbox wiring.
+    pub fn manager(&self) -> &Arc<BackgroundTaskManager> {
+        &self.manager
     }
 }
 
@@ -50,6 +61,15 @@ impl Plugin for BackgroundTaskPlugin {
         registrar.register_phase_hook(
             BACKGROUND_TASKS_PLUGIN_ID,
             Phase::RunEnd,
+            BackgroundTaskSyncHook {
+                manager: self.manager.clone(),
+            },
+        )?;
+        // Update PendingWorkKey at step boundaries so the orchestrator
+        // can detect running tasks without knowing about this plugin.
+        registrar.register_phase_hook(
+            BACKGROUND_TASKS_PLUGIN_ID,
+            Phase::StepEnd,
             BackgroundTaskSyncHook {
                 manager: self.manager.clone(),
             },
