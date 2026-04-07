@@ -97,7 +97,7 @@ async fn max_rounds_plugin_sets_done_after_exceeding_limit() {
     assert_eq!(lifecycle.status, RunStatus::Done);
     assert!(
         lifecycle
-            .done_reason
+            .status_reason
             .as_ref()
             .unwrap()
             .contains("max_rounds")
@@ -345,7 +345,7 @@ async fn stop_condition_plugin_token_budget_fires() {
     assert_eq!(lifecycle.status, RunStatus::Done);
     assert!(
         lifecycle
-            .done_reason
+            .status_reason
             .as_ref()
             .unwrap()
             .contains("token_budget")
@@ -375,7 +375,7 @@ async fn stop_condition_plugin_consecutive_errors_fires() {
     assert_eq!(lifecycle.status, RunStatus::Done);
     assert!(
         lifecycle
-            .done_reason
+            .status_reason
             .as_ref()
             .unwrap()
             .contains("consecutive_errors")
@@ -591,7 +591,7 @@ async fn stats_accumulate_tokens_across_steps() {
     );
     assert!(
         lifecycle
-            .done_reason
+            .status_reason
             .as_ref()
             .unwrap()
             .contains("token_budget")
@@ -625,7 +625,7 @@ async fn stats_persist_across_store_restore() {
     );
     assert!(
         lifecycle
-            .done_reason
+            .status_reason
             .as_ref()
             .unwrap()
             .contains("token_budget")
@@ -678,7 +678,7 @@ async fn stats_consecutive_errors_reset_on_success() {
     assert_eq!(lifecycle.status, RunStatus::Done);
     assert!(
         lifecycle
-            .done_reason
+            .status_reason
             .as_ref()
             .unwrap()
             .contains("consecutive_errors")
@@ -707,7 +707,7 @@ async fn stats_with_error_response_increments_errors() {
     assert_eq!(lifecycle.status, RunStatus::Done);
     assert!(
         lifecycle
-            .done_reason
+            .status_reason
             .as_ref()
             .unwrap()
             .contains("consecutive_errors")
@@ -769,7 +769,7 @@ async fn step_count_matches_internal_counter() {
     assert_eq!(lifecycle.status, RunStatus::Done);
     assert!(
         lifecycle
-            .done_reason
+            .status_reason
             .as_ref()
             .unwrap()
             .contains("max_rounds")
@@ -1059,7 +1059,7 @@ async fn combined_policies_token_budget_fires_before_max_rounds() {
     assert_eq!(lifecycle.status, RunStatus::Done);
     assert!(
         lifecycle
-            .done_reason
+            .status_reason
             .as_ref()
             .unwrap()
             .contains("token_budget")
@@ -1121,7 +1121,7 @@ async fn consecutive_errors_exact_threshold() {
     assert_eq!(lifecycle.status, RunStatus::Done);
     assert!(
         lifecycle
-            .done_reason
+            .status_reason
             .as_ref()
             .unwrap()
             .contains("consecutive_errors")

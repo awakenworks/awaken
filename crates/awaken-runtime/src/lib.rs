@@ -16,6 +16,7 @@ mod error;
 pub mod execution;
 pub mod extensions;
 mod hooks;
+pub mod inbox;
 pub mod loop_runner;
 pub mod phase;
 pub mod plugins;

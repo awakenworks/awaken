@@ -9,8 +9,14 @@ pub struct RunLifecycleState {
     pub run_id: String,
     /// Coarse lifecycle status.
     pub status: RunStatus,
-    /// Optional terminal reason when `status=done`.
-    pub done_reason: Option<String>,
+    /// Reason string for the current status (set when Done or Waiting, None when Running).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "done_reason",
+        alias = "pause_reason"
+    )]
+    pub status_reason: Option<String>,
     /// Last update timestamp (unix millis).
     pub updated_at: u64,
     /// Total steps completed.
@@ -28,6 +34,7 @@ pub enum RunLifecycleUpdate {
     },
     SetWaiting {
         updated_at: u64,
+        pause_reason: String,
     },
     SetRunning {
         updated_at: u64,
@@ -74,7 +81,7 @@ impl StateKey for RunLifecycle {
             RunLifecycleUpdate::Start { run_id, updated_at } => {
                 value.run_id = run_id;
                 value.status = RunStatus::Running;
-                value.done_reason = None;
+                value.status_reason = None;
                 value.updated_at = updated_at;
                 value.step_count = 0;
             }
@@ -82,12 +89,17 @@ impl StateKey for RunLifecycle {
                 value.step_count += 1;
                 value.updated_at = updated_at;
             }
-            RunLifecycleUpdate::SetWaiting { updated_at } => {
+            RunLifecycleUpdate::SetWaiting {
+                updated_at,
+                pause_reason,
+            } => {
                 value.status = RunStatus::Waiting;
+                value.status_reason = Some(pause_reason);
                 value.updated_at = updated_at;
             }
             RunLifecycleUpdate::SetRunning { updated_at } => {
                 value.status = RunStatus::Running;
+                value.status_reason = None;
                 value.updated_at = updated_at;
             }
             RunLifecycleUpdate::Done {
@@ -95,7 +107,7 @@ impl StateKey for RunLifecycle {
                 updated_at,
             } => {
                 value.status = RunStatus::Done;
-                value.done_reason = Some(done_reason);
+                value.status_reason = Some(done_reason);
                 value.updated_at = updated_at;
             }
         }
@@ -168,7 +180,7 @@ mod tests {
             },
         );
         assert_eq!(state.status, RunStatus::Done);
-        assert_eq!(state.done_reason.as_deref(), Some("natural"));
+        assert_eq!(state.status_reason.as_deref(), Some("natural"));
         assert!(state.status.is_terminal());
     }
 
@@ -184,9 +196,82 @@ mod tests {
         );
         RunLifecycle::apply(
             &mut state,
-            RunLifecycleUpdate::SetWaiting { updated_at: 150 },
+            RunLifecycleUpdate::SetWaiting {
+                updated_at: 150,
+                pause_reason: "suspended".into(),
+            },
         );
         assert_eq!(state.status, RunStatus::Waiting);
+        assert_eq!(state.status_reason.as_deref(), Some("suspended"));
+    }
+
+    #[test]
+    fn run_lifecycle_status_reason_set_and_cleared() {
+        let mut state = RunLifecycleState::default();
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::Start {
+                run_id: "r1".into(),
+                updated_at: 100,
+            },
+        );
+        assert!(state.status_reason.is_none());
+
+        // SetWaiting stores status_reason
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::SetWaiting {
+                updated_at: 150,
+                pause_reason: "awaiting_tasks".into(),
+            },
+        );
+        assert_eq!(state.status_reason.as_deref(), Some("awaiting_tasks"));
+
+        // SetRunning clears status_reason
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::SetRunning { updated_at: 200 },
+        );
+        assert!(state.status_reason.is_none());
+
+        // SetWaiting again with different reason
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::SetWaiting {
+                updated_at: 250,
+                pause_reason: "user_input_required".into(),
+            },
+        );
+        assert_eq!(state.status_reason.as_deref(), Some("user_input_required"));
+
+        // Done sets status_reason
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::Done {
+                done_reason: "finished".into(),
+                updated_at: 300,
+            },
+        );
+        assert_eq!(state.status_reason.as_deref(), Some("finished"));
+    }
+
+    #[test]
+    fn run_lifecycle_status_reason_cleared_on_start() {
+        let mut state = RunLifecycleState {
+            run_id: "r1".into(),
+            status: RunStatus::Waiting,
+            status_reason: Some("old_reason".into()),
+            updated_at: 100,
+            step_count: 1,
+        };
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::Start {
+                run_id: "r2".into(),
+                updated_at: 200,
+            },
+        );
+        assert!(state.status_reason.is_none());
     }
 
     #[test]
@@ -236,7 +321,7 @@ mod tests {
         let mut state = RunLifecycleState {
             run_id: "r1".into(),
             status: RunStatus::Done,
-            done_reason: Some("natural".into()),
+            status_reason: Some("natural".into()),
             updated_at: 100,
             step_count: 1,
         };
@@ -258,14 +343,17 @@ mod tests {
         let mut state = RunLifecycleState {
             run_id: "r1".into(),
             status: RunStatus::Done,
-            done_reason: Some("natural".into()),
+            status_reason: Some("natural".into()),
             updated_at: 100,
             step_count: 1,
         };
         // Done -> Waiting should be rejected (state unchanged)
         RunLifecycle::apply(
             &mut state,
-            RunLifecycleUpdate::SetWaiting { updated_at: 200 },
+            RunLifecycleUpdate::SetWaiting {
+                updated_at: 200,
+                pause_reason: "suspended".into(),
+            },
         );
         assert_eq!(state.status, RunStatus::Done);
         assert_eq!(state.updated_at, 100);
@@ -276,7 +364,7 @@ mod tests {
         let mut state = RunLifecycleState {
             run_id: "r1".into(),
             status: RunStatus::Done,
-            done_reason: Some("natural".into()),
+            status_reason: Some("natural".into()),
             updated_at: 100,
             step_count: 1,
         };
@@ -295,7 +383,7 @@ mod tests {
         let mut state = RunLifecycleState {
             run_id: "r1".into(),
             status: RunStatus::Waiting,
-            done_reason: None,
+            status_reason: Some("suspended".into()),
             updated_at: 100,
             step_count: 1,
         };
@@ -315,7 +403,7 @@ mod tests {
         let state = RunLifecycleState {
             run_id: "r1".into(),
             status: RunStatus::Done,
-            done_reason: Some("natural".into()),
+            status_reason: Some("natural".into()),
             updated_at: 12345,
             step_count: 3,
         };
@@ -333,7 +421,7 @@ mod tests {
         let state = RunLifecycleState::default();
         assert!(state.run_id.is_empty());
         assert_eq!(state.status, RunStatus::default());
-        assert!(state.done_reason.is_none());
+        assert!(state.status_reason.is_none());
         assert_eq!(state.step_count, 0);
         assert_eq!(state.updated_at, 0);
     }
@@ -383,7 +471,10 @@ mod tests {
         );
         RunLifecycle::apply(
             &mut state,
-            RunLifecycleUpdate::SetWaiting { updated_at: 150 },
+            RunLifecycleUpdate::SetWaiting {
+                updated_at: 150,
+                pause_reason: "suspended".into(),
+            },
         );
         assert_eq!(state.status, RunStatus::Waiting);
 
@@ -409,7 +500,10 @@ mod tests {
         );
         RunLifecycle::apply(
             &mut state,
-            RunLifecycleUpdate::SetWaiting { updated_at: 150 },
+            RunLifecycleUpdate::SetWaiting {
+                updated_at: 150,
+                pause_reason: "suspended".into(),
+            },
         );
         RunLifecycle::apply(
             &mut state,
@@ -418,7 +512,10 @@ mod tests {
         assert_eq!(state.status, RunStatus::Running);
         RunLifecycle::apply(
             &mut state,
-            RunLifecycleUpdate::SetWaiting { updated_at: 250 },
+            RunLifecycleUpdate::SetWaiting {
+                updated_at: 250,
+                pause_reason: "suspended".into(),
+            },
         );
         assert_eq!(state.status, RunStatus::Waiting);
     }
@@ -438,7 +535,11 @@ mod tests {
             RunStatus::Running
         );
         assert_eq!(
-            RunLifecycleUpdate::SetWaiting { updated_at: 0 }.target_status(),
+            RunLifecycleUpdate::SetWaiting {
+                updated_at: 0,
+                pause_reason: "test".into()
+            }
+            .target_status(),
             RunStatus::Waiting
         );
         assert_eq!(
@@ -474,7 +575,10 @@ mod tests {
         // Transition to waiting, then start a new run
         RunLifecycle::apply(
             &mut state,
-            RunLifecycleUpdate::SetWaiting { updated_at: 250 },
+            RunLifecycleUpdate::SetWaiting {
+                updated_at: 250,
+                pause_reason: "suspended".into(),
+            },
         );
         RunLifecycle::apply(
             &mut state,
@@ -520,7 +624,7 @@ mod tests {
         let s1 = RunLifecycleState {
             run_id: "r1".into(),
             status: RunStatus::Running,
-            done_reason: None,
+            status_reason: None,
             updated_at: 100,
             step_count: 3,
         };
@@ -554,5 +658,122 @@ mod tests {
             },
         );
         assert!(state.status.is_terminal());
+    }
+
+    // -----------------------------------------------------------------------
+    // Continuation semantics: SetRunning preserves step_count
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn continuation_set_running_preserves_step_count() {
+        let mut state = RunLifecycleState::default();
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::Start {
+                run_id: "r1".into(),
+                updated_at: 100,
+            },
+        );
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::StepCompleted { updated_at: 200 },
+        );
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::StepCompleted { updated_at: 300 },
+        );
+        assert_eq!(state.step_count, 2);
+
+        // Simulate awaiting_tasks → continuation
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::SetWaiting {
+                updated_at: 400,
+                pause_reason: "awaiting_tasks".into(),
+            },
+        );
+        // Continuation: SetRunning instead of Start → step_count preserved
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::SetRunning { updated_at: 500 },
+        );
+        assert_eq!(state.status, RunStatus::Running);
+        assert_eq!(state.step_count, 2, "continuation must preserve step_count");
+        assert!(state.status_reason.is_none());
+    }
+
+    #[test]
+    fn new_start_resets_step_count_after_waiting() {
+        let mut state = RunLifecycleState::default();
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::Start {
+                run_id: "r1".into(),
+                updated_at: 100,
+            },
+        );
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::StepCompleted { updated_at: 200 },
+        );
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::SetWaiting {
+                updated_at: 300,
+                pause_reason: "awaiting_tasks".into(),
+            },
+        );
+        // New start (not continuation) → step_count resets
+        RunLifecycle::apply(
+            &mut state,
+            RunLifecycleUpdate::Start {
+                run_id: "r2".into(),
+                updated_at: 400,
+            },
+        );
+        assert_eq!(state.step_count, 0, "new Start must reset step_count");
+        assert_eq!(state.run_id, "r2");
+    }
+
+    #[test]
+    fn status_reason_serde_backward_compat_missing() {
+        // Old serialized state without any reason field
+        let json = r#"{"run_id":"r1","status":"waiting","updated_at":100,"step_count":0}"#;
+        let parsed: RunLifecycleState = serde_json::from_str(json).unwrap();
+        assert!(
+            parsed.status_reason.is_none(),
+            "missing status_reason should deserialize as None"
+        );
+    }
+
+    #[test]
+    fn status_reason_serde_backward_compat_done_reason_alias() {
+        // Old serialized state with done_reason field
+        let json = r#"{"run_id":"r1","status":"done","done_reason":"natural","updated_at":100,"step_count":1}"#;
+        let parsed: RunLifecycleState = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.status_reason.as_deref(), Some("natural"));
+    }
+
+    #[test]
+    fn status_reason_serde_backward_compat_pause_reason_alias() {
+        // Old serialized state with pause_reason field
+        let json = r#"{"run_id":"r1","status":"waiting","pause_reason":"awaiting_tasks","updated_at":100,"step_count":2}"#;
+        let parsed: RunLifecycleState = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.status_reason.as_deref(), Some("awaiting_tasks"));
+    }
+
+    #[test]
+    fn status_reason_included_in_serde() {
+        let state = RunLifecycleState {
+            run_id: "r1".into(),
+            status: RunStatus::Waiting,
+            status_reason: Some("awaiting_tasks".into()),
+            updated_at: 100,
+            step_count: 2,
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(json.contains("awaiting_tasks"));
+        let parsed: RunLifecycleState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.status_reason.as_deref(), Some("awaiting_tasks"));
     }
 }

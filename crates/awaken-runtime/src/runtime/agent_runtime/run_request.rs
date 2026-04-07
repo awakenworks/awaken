@@ -25,6 +25,8 @@ pub struct RunRequest {
     pub origin: MailboxJobOrigin,
     /// Parent run ID for child run linkage.
     pub parent_run_id: Option<String>,
+    /// Continue a previous run instead of creating a new one.
+    pub continue_run_id: Option<String>,
 }
 
 impl RunRequest {
@@ -39,6 +41,7 @@ impl RunRequest {
             frontend_tools: Vec::new(),
             origin: MailboxJobOrigin::User,
             parent_run_id: None,
+            continue_run_id: None,
         }
     }
 
@@ -75,6 +78,12 @@ impl RunRequest {
     #[must_use]
     pub fn with_parent_run_id(mut self, parent_run_id: impl Into<String>) -> Self {
         self.parent_run_id = Some(parent_run_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_continue_run_id(mut self, continue_run_id: impl Into<String>) -> Self {
+        self.continue_run_id = Some(continue_run_id.into());
         self
     }
 }
