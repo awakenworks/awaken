@@ -215,6 +215,8 @@ async fn main() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await;
 
