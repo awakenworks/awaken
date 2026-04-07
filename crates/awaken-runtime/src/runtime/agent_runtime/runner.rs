@@ -59,6 +59,8 @@ impl AgentRuntime {
             frontend_tools,
             origin: req_origin,
             parent_run_id: req_parent_run_id,
+            parent_thread_id: req_parent_thread_id,
+            continue_run_id,
         } = request;
         let agent_id = self.resolve_agent_id(agent_id, &thread_id).await?;
 
@@ -122,8 +124,21 @@ impl AgentRuntime {
             prepare_resume(&store, decisions, None).map_err(AgentLoopError::PhaseError)?;
         }
 
-        // Create run identity
-        let run_id = uuid::Uuid::now_v7().to_string();
+        // Create run identity — reuse previous run_id for continuations
+        let (run_id, is_continuation) = if let Some(crid) = continue_run_id {
+            (crid, true)
+        } else if let Some(ref ts) = self.storage
+            && let Some(prev) = ts
+                .latest_run(&thread_id)
+                .await
+                .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
+            && prev.status == awaken_contract::contract::lifecycle::RunStatus::Waiting
+            && prev.termination_code.as_deref() == Some("awaiting_tasks")
+        {
+            (prev.run_id.clone(), true)
+        } else {
+            (uuid::Uuid::now_v7().to_string(), false)
+        };
         let run_origin = match req_origin {
             awaken_contract::contract::mailbox::MailboxJobOrigin::User => {
                 awaken_contract::contract::identity::RunOrigin::User
@@ -137,7 +152,7 @@ impl AgentRuntime {
         };
         let run_identity = RunIdentity::new(
             thread_id.clone(),
-            None,
+            req_parent_thread_id,
             run_id.clone(),
             req_parent_run_id,
             agent_id.clone(),
@@ -168,6 +183,8 @@ impl AgentRuntime {
             decision_rx: Some(decision_rx),
             overrides,
             frontend_tools,
+            inbox: None,
+            is_continuation,
         })
         .await
     }

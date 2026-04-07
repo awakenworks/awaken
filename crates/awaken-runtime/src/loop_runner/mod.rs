@@ -66,6 +66,7 @@ impl crate::plugins::Plugin for LoopStatePlugin {
         })?;
         r.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
         r.register_key::<ContextMessageStore>(StateKeyOptions::default())?;
+        r.register_key::<crate::agent::state::PendingWorkKey>(StateKeyOptions::default())?;
 
         Ok(())
     }
@@ -178,6 +179,11 @@ pub struct AgentLoopParams<'a> {
     /// whose execution happens client-side. They are made visible to the LLM but
     /// have no executor — the runtime intercepts them before execution and suspends.
     pub frontend_tools: Vec<awaken_contract::contract::tool::ToolDescriptor>,
+    /// Optional inbox receiver for background-task messages.
+    pub inbox: Option<crate::inbox::InboxReceiver>,
+    /// When `true`, the run is a continuation of a previous awaiting_tasks run.
+    /// The orchestrator emits `SetRunning` instead of `Start`.
+    pub is_continuation: bool,
 }
 
 /// Build an execution environment for the agent loop.
