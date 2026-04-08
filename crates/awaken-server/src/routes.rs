@@ -350,8 +350,6 @@ async fn get_thread_messages(
     Path(id): Path<String>,
     Query(params): Query<MessageQueryParams>,
 ) -> Result<Json<Value>, ApiError> {
-    use awaken_contract::contract::message::Visibility;
-
     // Verify thread exists
     st.store
         .load_thread(&id)
@@ -365,21 +363,7 @@ async fn get_thread_messages(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .unwrap_or_default();
-
-    // Filter by visibility unless `?visibility=all` is specified
-    let include_internal = params
-        .visibility
-        .as_deref()
-        .is_some_and(|v| v.eq_ignore_ascii_case("all"));
-
-    let messages: Vec<_> = if include_internal {
-        messages
-    } else {
-        messages
-            .into_iter()
-            .filter(|m| m.visibility != Visibility::Internal)
-            .collect()
-    };
+    let messages = params.filter_messages(messages);
 
     let offset = params.offset_or_default();
     let limit = params.clamped_limit();

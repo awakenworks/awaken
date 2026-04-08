@@ -313,6 +313,7 @@ async fn thread_messages(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .unwrap_or_default();
+    let messages = params.filter_messages(messages);
 
     let offset = params.offset_or_default();
     let limit = params.clamped_limit();

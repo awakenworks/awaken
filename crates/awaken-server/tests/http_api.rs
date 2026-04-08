@@ -732,6 +732,116 @@ mod integration {
     }
 
     #[tokio::test]
+    async fn get_messages_for_thread_filters_internal_by_default() {
+        let test = make_test_app();
+        let id = seed_thread(&test.store, None).await;
+        let msgs = vec![
+            Message::user("visible-user"),
+            Message::internal_system("hidden-system"),
+            Message::assistant("visible-assistant"),
+        ];
+        test.store.save_messages(&id, &msgs).await.unwrap();
+
+        let (status, body) = get_json(test.router, &format!("/v1/threads/{id}/messages")).await;
+        assert_eq!(status, StatusCode::OK);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(body["total"].as_u64(), Some(2));
+        assert_eq!(
+            messages[0]["content"][0]["text"].as_str(),
+            Some("visible-user")
+        );
+        assert_eq!(
+            messages[1]["content"][0]["text"].as_str(),
+            Some("visible-assistant")
+        );
+    }
+
+    #[tokio::test]
+    async fn get_messages_for_thread_includes_internal_when_requested() {
+        let test = make_test_app();
+        let id = seed_thread(&test.store, None).await;
+        let msgs = vec![
+            Message::user("visible-user"),
+            Message::internal_system("hidden-system"),
+        ];
+        test.store.save_messages(&id, &msgs).await.unwrap();
+
+        let (status, body) = get_json(
+            test.router,
+            &format!("/v1/threads/{id}/messages?visibility=all"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(body["total"].as_u64(), Some(2));
+        assert_eq!(
+            messages[1]["content"][0]["text"].as_str(),
+            Some("hidden-system")
+        );
+        assert_eq!(messages[1]["visibility"].as_str(), Some("internal"));
+    }
+
+    #[tokio::test]
+    async fn ai_sdk_thread_messages_filter_internal_by_default() {
+        let test = make_test_app();
+        let id = seed_thread(&test.store, None).await;
+        let msgs = vec![
+            Message::user("visible-user"),
+            Message::internal_system("hidden-system"),
+            Message::assistant("visible-assistant"),
+        ];
+        test.store.save_messages(&id, &msgs).await.unwrap();
+
+        let (status, body) =
+            get_json(test.router, &format!("/v1/ai-sdk/threads/{id}/messages")).await;
+        assert_eq!(status, StatusCode::OK);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(body["total"].as_u64(), Some(2));
+        assert_eq!(messages[0]["role"].as_str(), Some("user"));
+        assert_eq!(
+            messages[0]["parts"][0]["text"].as_str(),
+            Some("visible-user")
+        );
+        assert_eq!(messages[1]["role"].as_str(), Some("assistant"));
+        assert_eq!(
+            messages[1]["parts"][0]["text"].as_str(),
+            Some("visible-assistant")
+        );
+    }
+
+    #[tokio::test]
+    async fn ag_ui_thread_messages_filter_internal_by_default() {
+        let test = make_test_app();
+        let id = seed_thread(&test.store, None).await;
+        let msgs = vec![
+            Message::user("visible-user"),
+            Message::internal_system("hidden-system"),
+            Message::assistant("visible-assistant"),
+        ];
+        test.store.save_messages(&id, &msgs).await.unwrap();
+
+        let (status, body) =
+            get_json(test.router, &format!("/v1/ag-ui/threads/{id}/messages")).await;
+        assert_eq!(status, StatusCode::OK);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(body["total"].as_u64(), Some(2));
+        assert_eq!(messages[0]["role"].as_str(), Some("user"));
+        assert_eq!(
+            messages[0]["content"][0]["text"].as_str(),
+            Some("visible-user")
+        );
+        assert_eq!(messages[1]["role"].as_str(), Some("assistant"));
+        assert_eq!(
+            messages[1]["content"][0]["text"].as_str(),
+            Some("visible-assistant")
+        );
+    }
+
+    #[tokio::test]
     async fn messages_include_tool_results() {
         let test = make_test_app();
         let id = seed_thread(&test.store, None).await;
