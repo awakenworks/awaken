@@ -371,9 +371,7 @@ fn extract_tool_call_decisions(msgs: &[UIMessage]) -> Vec<(String, ToolCallResum
                     } else {
                         ResumeDecisionAction::Resume
                     };
-                    let target_id = approval_id
-                        .clone()
-                        .unwrap_or_else(|| tool_call_id.clone());
+                    let target_id = approval_id.clone().unwrap_or_else(|| tool_call_id.clone());
                     (target_id, action, approval.clone())
                 }
                 _ => continue,
