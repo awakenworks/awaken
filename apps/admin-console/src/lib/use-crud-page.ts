@@ -39,6 +39,50 @@ function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+export interface CrudPageLoadResult<TRecord extends { id: string }> {
+  items: TRecord[];
+  auxiliaryData: unknown[];
+  auxiliaryError: string | null;
+}
+
+export async function loadCrudPageData<TRecord extends { id: string }>(
+  namespace: string,
+  auxiliaryLoaders?: () => Promise<unknown[]>,
+): Promise<CrudPageLoadResult<TRecord>> {
+  const listPromise = configApi.list<TRecord>(namespace);
+  const auxiliaryPromise = auxiliaryLoaders?.();
+  const [listResult, auxiliaryResult] = await Promise.allSettled([
+    listPromise,
+    auxiliaryPromise ?? Promise.resolve(undefined),
+  ] as const);
+
+  if (listResult.status === "rejected") {
+    throw listResult.reason;
+  }
+
+  if (!auxiliaryPromise) {
+    return {
+      items: listResult.value.items,
+      auxiliaryData: [],
+      auxiliaryError: null,
+    };
+  }
+
+  if (auxiliaryResult.status === "rejected") {
+    return {
+      items: listResult.value.items,
+      auxiliaryData: [],
+      auxiliaryError: toErrorMessage(auxiliaryResult.reason),
+    };
+  }
+
+  return {
+    items: listResult.value.items,
+    auxiliaryData: auxiliaryResult.value ?? [],
+    auxiliaryError: null,
+  };
+}
+
 export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
   options: CrudPageOptions<TRecord, TSpec>,
 ): CrudPageState<TRecord> {
@@ -60,21 +104,11 @@ export function useCrudPage<TRecord extends { id: string }, TSpec = TRecord>(
     async function load() {
       setLoading(true);
       try {
-        const promises: [Promise<{ items: TRecord[] }>, ...Promise<unknown>[]] = [
-          configApi.list<TRecord>(namespace),
-        ];
-        const auxPromise = auxiliaryLoaders?.();
-        if (auxPromise) {
-          promises.push(auxPromise);
-        }
-
-        const results = await Promise.all(promises);
+        const result = await loadCrudPageData<TRecord>(namespace, auxiliaryLoaders);
         if (!cancelled) {
-          setItems((results[0] as { items: TRecord[] }).items);
-          if (results.length > 1) {
-            setAuxiliaryData(results[1] as unknown[]);
-          }
-          setError(null);
+          setItems(result.items);
+          setAuxiliaryData(result.auxiliaryData);
+          setError(result.auxiliaryError);
         }
       } catch (loadError) {
         if (!cancelled) {
