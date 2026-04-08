@@ -63,12 +63,13 @@ export function ModelsPage() {
             <Field label="Model ID">
               <input
                 value={crud.draft.id}
+                disabled={crud.isEditingExisting}
                 onChange={(event) =>
                   crud.setDraft((current) =>
                     current ? { ...current, id: event.target.value } : current,
                   )
                 }
-                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500 disabled:bg-slate-100 disabled:text-slate-500"
               />
             </Field>
             <Field label="Provider ID">

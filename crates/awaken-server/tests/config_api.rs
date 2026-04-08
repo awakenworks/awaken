@@ -806,6 +806,26 @@ async fn capabilities_include_skill_registry_when_available() {
 }
 
 #[tokio::test]
+async fn capabilities_report_runtime_supported_adapters_without_scripted() {
+    let app = make_app().await;
+
+    let (status, capabilities) =
+        request_json(&app.router, Method::GET, "/v1/capabilities", None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let adapters = capabilities["supported_adapters"]
+        .as_array()
+        .expect("supported_adapters should be an array");
+    assert!(adapters.iter().any(|value| value == "openai"));
+    assert!(adapters.iter().any(|value| value == "groq"));
+    assert!(adapters.iter().any(|value| value == "nebius"));
+    assert!(
+        !adapters.iter().any(|value| value == "scripted"),
+        "admin capabilities must not advertise adapters the runtime rejects"
+    );
+}
+
+#[tokio::test]
 async fn periodic_refresh_publishes_external_store_changes() {
     let app = make_app().await;
     app.manager
