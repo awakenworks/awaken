@@ -233,6 +233,7 @@ fn make_agent_spec_deny_all() -> AgentSpec {
                 ]
             }),
         )]),
+        locality: Default::default(),
         registry: None,
     }
 }

@@ -99,6 +99,9 @@ pub struct AgentSpec {
     /// If None, this agent runs locally.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<RemoteEndpoint>,
+    /// Execution locality. Supersedes `endpoint` — when set, `endpoint` is ignored.
+    #[serde(default, skip_serializing_if = "is_local_locality")]
+    pub locality: AgentLocality,
     /// IDs of sub-agents this agent can delegate to.
     /// Each ID must be a registered agent in the AgentSpecRegistry.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -174,6 +177,50 @@ fn default_remote_backend() -> String {
 
 fn default_timeout() -> u64 {
     300_000
+}
+
+// ---------------------------------------------------------------------------
+// AgentLocality — execution location for agents
+// ---------------------------------------------------------------------------
+
+/// Execution location for an agent — determines which backend handles it.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentLocality {
+    /// Execute in the local process (default).
+    #[default]
+    Local,
+    /// Execute on a fixed remote endpoint via A2A protocol.
+    Remote(RemoteEndpoint),
+    /// Dynamically schedule to a Worker Node in the cluster.
+    Distributed(DistributedConfig),
+}
+
+/// Configuration for distributed (Worker-scheduled) agents.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct DistributedConfig {
+    /// Adapter type on the Worker, e.g. "claude", "codex", "openclaw".
+    pub adapter_type: String,
+    /// Scheduling policy.
+    #[serde(default)]
+    pub scheduling: SchedulingPolicy,
+}
+
+/// How the Scheduler selects a Worker Node.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SchedulingPolicy {
+    /// Prefer the Worker that caches this agent's session.
+    #[default]
+    SessionAffinity,
+    /// Pick the least-loaded Worker.
+    LeastLoaded,
+    /// Always use a specific Worker.
+    Pinned { node_id: String },
+}
+
+fn is_local_locality(l: &AgentLocality) -> bool {
+    matches!(l, AgentLocality::Local)
 }
 
 #[derive(Debug, Deserialize)]
@@ -425,6 +472,7 @@ impl Default for AgentSpec {
             allowed_tools: None,
             excluded_tools: None,
             endpoint: None,
+            locality: AgentLocality::Local,
             delegates: Vec::new(),
             sections: HashMap::new(),
             registry: None,
@@ -541,6 +589,32 @@ impl AgentSpec {
     #[must_use]
     pub fn with_endpoint(mut self, endpoint: RemoteEndpoint) -> Self {
         self.endpoint = Some(endpoint);
+        self
+    }
+
+    /// Returns the effective locality, preferring `locality` over legacy `endpoint`.
+    pub fn effective_locality(&self) -> AgentLocality {
+        match &self.locality {
+            AgentLocality::Local => {
+                if let Some(ref ep) = self.endpoint {
+                    AgentLocality::Remote(ep.clone())
+                } else {
+                    AgentLocality::Local
+                }
+            }
+            other => other.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_distributed(mut self, config: DistributedConfig) -> Self {
+        self.locality = AgentLocality::Distributed(config);
+        self
+    }
+
+    #[must_use]
+    pub fn with_remote_locality(mut self, endpoint: RemoteEndpoint) -> Self {
+        self.locality = AgentLocality::Remote(endpoint);
         self
     }
 
@@ -787,5 +861,153 @@ mod tests {
         assert_eq!(spec.id, "reviewer");
         assert_eq!(spec.model, "claude-opus");
         assert!(spec.active_hook_filter.contains("permission"));
+    }
+}
+
+#[cfg(test)]
+mod locality_tests {
+    use super::*;
+
+    #[test]
+    fn default_locality_is_local() {
+        let spec = AgentSpec::new("test");
+        assert!(matches!(spec.effective_locality(), AgentLocality::Local));
+    }
+
+    #[test]
+    fn legacy_endpoint_becomes_remote_locality() {
+        let spec = AgentSpec {
+            endpoint: Some(RemoteEndpoint {
+                base_url: "http://example.com".into(),
+                ..Default::default()
+            }),
+            ..AgentSpec::new("test")
+        };
+        assert!(matches!(
+            spec.effective_locality(),
+            AgentLocality::Remote(_)
+        ));
+    }
+
+    #[test]
+    fn explicit_distributed_locality() {
+        let spec = AgentSpec::new("test").with_distributed(DistributedConfig {
+            adapter_type: "codex".into(),
+            scheduling: SchedulingPolicy::SessionAffinity,
+        });
+        assert!(matches!(
+            spec.effective_locality(),
+            AgentLocality::Distributed(_)
+        ));
+    }
+
+    #[test]
+    fn locality_serde_roundtrip() {
+        let distributed = AgentLocality::Distributed(DistributedConfig {
+            adapter_type: "claude".into(),
+            scheduling: SchedulingPolicy::Pinned {
+                node_id: "node-1".into(),
+            },
+        });
+        let json = serde_json::to_string(&distributed).unwrap();
+        let parsed: AgentLocality = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, AgentLocality::Distributed(_)));
+    }
+
+    #[test]
+    fn locality_skipped_when_local_in_serialization() {
+        let spec = AgentSpec::new("test");
+        let json = serde_json::to_value(&spec).unwrap();
+        assert!(json.get("locality").is_none());
+    }
+
+    #[test]
+    fn legacy_spec_with_only_endpoint_effective_locality_returns_remote() {
+        let spec: AgentSpec = serde_json::from_value(serde_json::json!({
+            "id": "legacy-agent",
+            "model": "gpt-4",
+            "system_prompt": "hello",
+            "endpoint": {
+                "base_url": "https://remote.example.com"
+            }
+        }))
+        .unwrap();
+
+        // locality field defaults to Local, but effective_locality upgrades
+        assert!(matches!(spec.locality, AgentLocality::Local));
+        assert!(matches!(
+            spec.effective_locality(),
+            AgentLocality::Remote(_)
+        ));
+        if let AgentLocality::Remote(ep) = spec.effective_locality() {
+            assert_eq!(ep.base_url, "https://remote.example.com");
+        }
+    }
+
+    #[test]
+    fn spec_with_endpoint_and_distributed_locality_locality_wins() {
+        let spec: AgentSpec = serde_json::from_value(serde_json::json!({
+            "id": "dual-agent",
+            "model": "gpt-4",
+            "system_prompt": "hello",
+            "endpoint": {
+                "base_url": "https://remote.example.com"
+            },
+            "locality": {
+                "type": "distributed",
+                "adapter_type": "codex"
+            }
+        }))
+        .unwrap();
+
+        // locality is Distributed, so effective_locality ignores the endpoint
+        assert!(matches!(
+            spec.effective_locality(),
+            AgentLocality::Distributed(_)
+        ));
+        if let AgentLocality::Distributed(cfg) = spec.effective_locality() {
+            assert_eq!(cfg.adapter_type, "codex");
+        }
+    }
+
+    #[test]
+    fn all_scheduling_policy_variants_roundtrip_json() {
+        let policies = vec![
+            SchedulingPolicy::SessionAffinity,
+            SchedulingPolicy::LeastLoaded,
+            SchedulingPolicy::Pinned {
+                node_id: "node-42".into(),
+            },
+        ];
+
+        for policy in policies {
+            let json = serde_json::to_string(&policy).unwrap();
+            let parsed: SchedulingPolicy = serde_json::from_str(&json).unwrap();
+            // Verify round-trip by re-serializing
+            let json2 = serde_json::to_string(&parsed).unwrap();
+            assert_eq!(json, json2, "policy round-trip mismatch for: {json}");
+        }
+    }
+
+    #[test]
+    fn distributed_config_with_empty_adapter_type_serializes() {
+        let config = DistributedConfig {
+            adapter_type: String::new(),
+            scheduling: SchedulingPolicy::default(),
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["adapter_type"], "");
+        assert_eq!(json["scheduling"], "session_affinity");
+
+        // Roundtrip
+        let parsed: DistributedConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.adapter_type, "");
+    }
+
+    #[test]
+    fn agent_locality_local_serializes_as_tagged_format() {
+        let locality = AgentLocality::Local;
+        let json = serde_json::to_value(&locality).unwrap();
+        assert_eq!(json, serde_json::json!({"type": "local"}));
     }
 }

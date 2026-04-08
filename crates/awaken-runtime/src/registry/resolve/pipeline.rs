@@ -13,7 +13,7 @@ use awaken_contract::contract::tool::Tool;
 
 use crate::registry::snapshot::RegistryHandle;
 use crate::registry::traits::RegistrySet;
-use awaken_contract::registry_spec::AgentSpec;
+use awaken_contract::registry_spec::{AgentLocality, AgentSpec};
 
 use super::error::ResolveError;
 
@@ -217,34 +217,79 @@ fn resolve_delegate_tools(
 
             let description: String = delegate_spec.system_prompt.chars().take(100).collect();
 
-            let tool: Arc<dyn Tool> = if let Some(endpoint) = &delegate_spec.endpoint {
-                let factory = registries
-                    .backends
-                    .get_backend_factory(&endpoint.backend)
-                    .ok_or_else(|| ResolveError::UnsupportedRemoteBackend {
-                        agent_id: delegate_id.clone(),
-                        backend: endpoint.backend.clone(),
+            let tool: Arc<dyn Tool> = match delegate_spec.effective_locality() {
+                AgentLocality::Local => {
+                    let resolver: Arc<dyn crate::registry::AgentResolver> =
+                        Arc::new(RegistrySetResolver::new(registries.clone()));
+                    Arc::new(crate::extensions::a2a::AgentTool::local(
+                        delegate_id,
+                        &description,
+                        resolver,
+                    ))
+                }
+                AgentLocality::Remote(ref endpoint) => {
+                    let factory = registries
+                        .backends
+                        .get_backend_factory(&endpoint.backend)
+                        .ok_or_else(|| ResolveError::UnsupportedRemoteBackend {
+                            agent_id: delegate_id.clone(),
+                            backend: endpoint.backend.clone(),
+                        })?;
+                    let backend = factory.build(endpoint).map_err(|error| {
+                        ResolveError::InvalidRemoteEndpointConfig {
+                            agent_id: delegate_id.clone(),
+                            backend: endpoint.backend.clone(),
+                            message: error.to_string(),
+                        }
                     })?;
-                let backend = factory.build(endpoint).map_err(|error| {
-                    ResolveError::InvalidRemoteEndpointConfig {
-                        agent_id: delegate_id.clone(),
-                        backend: endpoint.backend.clone(),
-                        message: error.to_string(),
-                    }
-                })?;
-                Arc::new(crate::extensions::a2a::AgentTool::with_backend(
-                    delegate_id,
-                    &description,
-                    backend,
-                ))
-            } else {
-                let resolver: Arc<dyn crate::registry::AgentResolver> =
-                    Arc::new(RegistrySetResolver::new(registries.clone()));
-                Arc::new(crate::extensions::a2a::AgentTool::local(
-                    delegate_id,
-                    &description,
-                    resolver,
-                ))
+                    Arc::new(crate::extensions::a2a::AgentTool::with_backend(
+                        delegate_id,
+                        &description,
+                        backend,
+                    ))
+                }
+                AgentLocality::Distributed(ref config) => {
+                    let scheduler_url = std::env::var("ARD_SCHEDULER_URL").unwrap_or_else(|_| {
+                        let port = std::env::var("ARD_PORT")
+                            .ok()
+                            .and_then(|p| p.parse::<u16>().ok())
+                            .unwrap_or(7878);
+                        format!("http://127.0.0.1:{port}")
+                    });
+
+                    let mut options = std::collections::BTreeMap::new();
+                    options.insert(
+                        "adapter_type".into(),
+                        serde_json::Value::String(config.adapter_type.clone()),
+                    );
+
+                    let endpoint = awaken_contract::registry_spec::RemoteEndpoint {
+                        backend: "scheduled".into(),
+                        base_url: scheduler_url,
+                        options,
+                        ..Default::default()
+                    };
+
+                    let factory = registries
+                        .backends
+                        .get_backend_factory("scheduled")
+                        .ok_or_else(|| ResolveError::UnsupportedRemoteBackend {
+                            agent_id: delegate_id.clone(),
+                            backend: "scheduled".into(),
+                        })?;
+                    let backend = factory.build(&endpoint).map_err(|error| {
+                        ResolveError::InvalidRemoteEndpointConfig {
+                            agent_id: delegate_id.clone(),
+                            backend: "scheduled".into(),
+                            message: error.to_string(),
+                        }
+                    })?;
+                    Arc::new(crate::extensions::a2a::AgentTool::with_backend(
+                        delegate_id,
+                        &description,
+                        backend,
+                    ))
+                }
             };
             let tool_id = tool.descriptor().id;
             tools.insert(tool_id, tool);
