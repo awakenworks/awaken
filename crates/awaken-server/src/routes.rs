@@ -364,18 +364,14 @@ async fn get_thread_messages(
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .unwrap_or_default();
     let messages = params.filter_messages(messages);
+    let page = params.paginate(messages).map_err(ApiError::BadRequest)?;
 
-    let offset = params.offset_or_default();
-    let limit = params.clamped_limit();
-    let total = messages.len();
-    let slice: Vec<_> = messages.into_iter().skip(offset).take(limit).collect();
-    let has_more = offset + slice.len() < total;
-
-    let value = serde_json::to_value(&slice).map_err(|e| ApiError::Internal(e.to_string()))?;
+    let value = serde_json::to_value(&page.items).map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(json!({
         "messages": value,
-        "total": total,
-        "has_more": has_more,
+        "total": page.total,
+        "has_more": page.has_more,
+        "next_cursor": page.next_cursor,
     })))
 }
 

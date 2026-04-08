@@ -314,22 +314,16 @@ async fn thread_messages(
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .unwrap_or_default();
     let messages = params.filter_messages(messages);
-
-    let offset = params.offset_or_default();
-    let limit = params.clamped_limit();
     let encoded_messages = encode_history_messages(messages);
-    let total = encoded_messages.len();
-
-    let encoded = encoded_messages
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .collect::<Vec<_>>();
+    let page = params
+        .paginate(encoded_messages)
+        .map_err(ApiError::BadRequest)?;
 
     Ok(Json(serde_json::json!({
-        "messages": encoded,
-        "total": total,
-        "has_more": offset + encoded.len() < total,
+        "messages": page.items,
+        "total": page.total,
+        "has_more": page.has_more,
+        "next_cursor": page.next_cursor,
     })))
 }
 

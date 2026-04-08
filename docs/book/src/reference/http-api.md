@@ -129,6 +129,7 @@ Current built-in namespaces:
 
 - `offset` — number of items to skip
 - `limit` — maximum items to return, clamped to `1..=200`
+- `cursor` — message-history pagination cursor; when provided it takes precedence over `offset`, and history responses return `next_cursor`
 - `status` — run filter: `running`, `waiting`, or `done`
 - `visibility` — message filter: omit for external-only, set to `all` to include internal messages
 
