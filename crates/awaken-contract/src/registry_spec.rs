@@ -99,9 +99,12 @@ pub struct AgentSpec {
     /// If None, this agent runs locally.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<RemoteEndpoint>,
-    /// Execution locality. Supersedes `endpoint` — when set, `endpoint` is ignored.
-    #[serde(default, skip_serializing_if = "is_local_locality")]
-    pub locality: AgentLocality,
+    /// Optional execution locality override.
+    ///
+    /// When present, this supersedes the legacy `endpoint` field. When absent,
+    /// `endpoint` retains its legacy meaning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locality: Option<AgentLocality>,
     /// IDs of sub-agents this agent can delegate to.
     /// Each ID must be a registered agent in the AgentSpecRegistry.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -217,10 +220,6 @@ pub enum SchedulingPolicy {
     LeastLoaded,
     /// Always use a specific Worker.
     Pinned { node_id: String },
-}
-
-fn is_local_locality(l: &AgentLocality) -> bool {
-    matches!(l, AgentLocality::Local)
 }
 
 #[derive(Debug, Deserialize)]
@@ -472,7 +471,7 @@ impl Default for AgentSpec {
             allowed_tools: None,
             excluded_tools: None,
             endpoint: None,
-            locality: AgentLocality::Local,
+            locality: None,
             delegates: Vec::new(),
             sections: HashMap::new(),
             registry: None,
@@ -592,29 +591,38 @@ impl AgentSpec {
         self
     }
 
-    /// Returns the effective locality, preferring `locality` over legacy `endpoint`.
+    /// Returns the effective locality, preferring explicit `locality` over legacy `endpoint`.
     pub fn effective_locality(&self) -> AgentLocality {
-        match &self.locality {
-            AgentLocality::Local => {
-                if let Some(ref ep) = self.endpoint {
-                    AgentLocality::Remote(ep.clone())
-                } else {
-                    AgentLocality::Local
-                }
-            }
-            other => other.clone(),
+        match self.locality.as_ref() {
+            Some(AgentLocality::Local) => AgentLocality::Local,
+            Some(other) => other.clone(),
+            None => match &self.endpoint {
+                Some(ep) => AgentLocality::Remote(ep.clone()),
+                None => AgentLocality::Local,
+            },
         }
     }
 
     #[must_use]
+    pub fn is_directly_runnable_locally(&self) -> bool {
+        matches!(self.effective_locality(), AgentLocality::Local)
+    }
+
+    #[must_use]
+    pub fn with_local_locality(mut self) -> Self {
+        self.locality = Some(AgentLocality::Local);
+        self
+    }
+
+    #[must_use]
     pub fn with_distributed(mut self, config: DistributedConfig) -> Self {
-        self.locality = AgentLocality::Distributed(config);
+        self.locality = Some(AgentLocality::Distributed(config));
         self
     }
 
     #[must_use]
     pub fn with_remote_locality(mut self, endpoint: RemoteEndpoint) -> Self {
-        self.locality = AgentLocality::Remote(endpoint);
+        self.locality = Some(AgentLocality::Remote(endpoint));
         self
     }
 
@@ -934,7 +942,7 @@ mod locality_tests {
         .unwrap();
 
         // locality field defaults to Local, but effective_locality upgrades
-        assert!(matches!(spec.locality, AgentLocality::Local));
+        assert!(spec.locality.is_none());
         assert!(matches!(
             spec.effective_locality(),
             AgentLocality::Remote(_)
@@ -968,6 +976,26 @@ mod locality_tests {
         if let AgentLocality::Distributed(cfg) = spec.effective_locality() {
             assert_eq!(cfg.adapter_type, "codex");
         }
+    }
+
+    #[test]
+    fn explicit_locality_local_overrides_legacy_endpoint_and_roundtrips() {
+        let spec = AgentSpec::new("test")
+            .with_endpoint(RemoteEndpoint {
+                base_url: "https://remote.example.com".into(),
+                ..Default::default()
+            })
+            .with_local_locality();
+
+        assert!(matches!(spec.locality, Some(AgentLocality::Local)));
+        assert!(matches!(spec.effective_locality(), AgentLocality::Local));
+
+        let json = serde_json::to_value(&spec).unwrap();
+        assert_eq!(json["locality"], serde_json::json!({ "type": "local" }));
+
+        let parsed: AgentSpec = serde_json::from_value(json).unwrap();
+        assert!(matches!(parsed.locality, Some(AgentLocality::Local)));
+        assert!(matches!(parsed.effective_locality(), AgentLocality::Local));
     }
 
     #[test]

@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::message::{Message, Role};
-use awaken_contract::registry_spec::RemoteEndpoint;
+use awaken_contract::registry_spec::{RemoteEndpoint, SchedulingPolicy};
 use serde::{Deserialize, Serialize};
 
 use super::backend::{
@@ -16,6 +16,7 @@ use super::backend::{
 
 const SCHEDULED_BACKEND: &str = "scheduled";
 const ADAPTER_TYPE_OPTION_KEY: &str = "adapter_type";
+const SCHEDULING_OPTION_KEY: &str = "scheduling";
 
 /// Configuration for a scheduler-dispatched agent endpoint.
 #[derive(Debug, Clone)]
@@ -24,6 +25,8 @@ pub struct ScheduledConfig {
     pub scheduler_url: String,
     /// Adapter type on the Worker, e.g. "claude", "codex", "openclaw".
     pub adapter_type: String,
+    /// Scheduling policy to forward to the scheduler.
+    pub scheduling: SchedulingPolicy,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -34,6 +37,8 @@ pub(crate) enum ScheduledEndpointConfigError {
     EmptyBaseUrl,
     #[error("scheduled backend requires `adapter_type` in options")]
     MissingAdapterType,
+    #[error("scheduled backend requires a valid `scheduling` option: {0}")]
+    InvalidSchedulingPolicy(String),
 }
 
 impl ScheduledConfig {
@@ -57,9 +62,21 @@ impl ScheduledConfig {
             .filter(|s| !s.is_empty())
             .ok_or(ScheduledEndpointConfigError::MissingAdapterType)?;
 
+        let scheduling = endpoint
+            .options
+            .get(SCHEDULING_OPTION_KEY)
+            .map(|value| {
+                serde_json::from_value::<SchedulingPolicy>(value.clone()).map_err(|error| {
+                    ScheduledEndpointConfigError::InvalidSchedulingPolicy(error.to_string())
+                })
+            })
+            .transpose()?
+            .unwrap_or_default();
+
         Ok(Self {
             scheduler_url: endpoint.base_url.clone(),
             adapter_type: adapter_type.to_string(),
+            scheduling,
         })
     }
 }
@@ -103,6 +120,7 @@ impl ScheduledBackend {
 struct DispatchRequest {
     agent_id: String,
     adapter_type: String,
+    scheduling: SchedulingPolicy,
     prompt: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     parent_run_id: Option<String>,
@@ -158,6 +176,7 @@ impl AgentBackend for ScheduledBackend {
         let request = DispatchRequest {
             agent_id: agent_id.to_string(),
             adapter_type: self.config.adapter_type.clone(),
+            scheduling: self.config.scheduling.clone(),
             prompt,
             parent_run_id,
         };
@@ -224,6 +243,10 @@ mod tests {
         let config = ScheduledConfig::try_from_remote_endpoint(&endpoint).unwrap();
         assert_eq!(config.scheduler_url, "http://127.0.0.1:7878");
         assert_eq!(config.adapter_type, "claude");
+        assert!(matches!(
+            config.scheduling,
+            SchedulingPolicy::SessionAffinity
+        ));
     }
 
     #[test]
@@ -284,6 +307,51 @@ mod tests {
 
         let backend = ScheduledBackendFactory.build(&endpoint).unwrap();
         let _backend: Arc<dyn AgentBackend> = backend;
+    }
+
+    #[test]
+    fn config_from_endpoint_extracts_scheduling_policy() {
+        let mut options = BTreeMap::new();
+        options.insert(ADAPTER_TYPE_OPTION_KEY.into(), json!("codex"));
+        options.insert(
+            SCHEDULING_OPTION_KEY.into(),
+            serde_json::to_value(SchedulingPolicy::Pinned {
+                node_id: "node-7".into(),
+            })
+            .unwrap(),
+        );
+        let endpoint = RemoteEndpoint {
+            backend: "scheduled".into(),
+            base_url: "http://127.0.0.1:7878".into(),
+            options,
+            ..Default::default()
+        };
+
+        let config = ScheduledConfig::try_from_remote_endpoint(&endpoint).unwrap();
+        assert_eq!(config.adapter_type, "codex");
+        assert!(matches!(
+            config.scheduling,
+            SchedulingPolicy::Pinned { ref node_id } if node_id == "node-7"
+        ));
+    }
+
+    #[test]
+    fn config_from_endpoint_rejects_invalid_scheduling_policy() {
+        let mut options = BTreeMap::new();
+        options.insert(ADAPTER_TYPE_OPTION_KEY.into(), json!("codex"));
+        options.insert(
+            SCHEDULING_OPTION_KEY.into(),
+            json!({ "pinned": { "node_id": 7 } }),
+        );
+        let endpoint = RemoteEndpoint {
+            backend: "scheduled".into(),
+            base_url: "http://127.0.0.1:7878".into(),
+            options,
+            ..Default::default()
+        };
+
+        let err = ScheduledConfig::try_from_remote_endpoint(&endpoint).unwrap_err();
+        assert!(err.to_string().contains("scheduling"));
     }
 
     #[test]
@@ -395,5 +463,23 @@ mod tests {
             err.to_string().contains("adapter_type"),
             "expected adapter_type error, got: {err}"
         );
+    }
+
+    #[test]
+    fn dispatch_request_serializes_scheduling_policy() {
+        let request = DispatchRequest {
+            agent_id: "worker".into(),
+            adapter_type: "codex".into(),
+            scheduling: SchedulingPolicy::LeastLoaded,
+            prompt: "hello".into(),
+            parent_run_id: Some("run-1".into()),
+        };
+
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["agent_id"], "worker");
+        assert_eq!(json["adapter_type"], "codex");
+        assert_eq!(json["scheduling"], "least_loaded");
+        assert_eq!(json["prompt"], "hello");
+        assert_eq!(json["parent_run_id"], "run-1");
     }
 }

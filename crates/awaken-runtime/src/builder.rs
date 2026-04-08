@@ -182,17 +182,31 @@ impl AgentRuntimeBuilder {
         self
     }
 
-    /// Build the `AgentRuntime` and validate all registered agents can
-    /// resolve successfully.
+    /// Build the `AgentRuntime` and validate all locally runnable registered
+    /// agents can resolve successfully.
     ///
-    /// Performs a dry-run resolve for every registered agent, catching
-    /// configuration errors (missing models, providers, plugins) at build time.
-    /// Use [`build_unchecked()`](Self::build_unchecked) to skip validation.
+    /// Performs a dry-run resolve for every registered agent whose effective
+    /// locality is local, catching configuration errors (missing models,
+    /// providers, plugins) at build time. Non-local agents stay registered for
+    /// delegation, but are not resolved as top-level local agents here. Use
+    /// [`build_unchecked()`](Self::build_unchecked) to skip validation.
     pub fn build(self) -> Result<AgentRuntime, BuildError> {
         let runtime = self.build_unchecked()?;
+        let registries = runtime
+            .registry_set()
+            .expect("builder-created runtimes always expose a registry snapshot");
         let resolver = runtime.resolver();
         let mut errors = Vec::new();
         for agent_id in resolver.agent_ids() {
+            let Some(spec) = registries.agents.get_agent(&agent_id) else {
+                errors.push(format!(
+                    "{agent_id}: missing agent spec in registry snapshot"
+                ));
+                continue;
+            };
+            if !spec.is_directly_runnable_locally() {
+                continue;
+            }
             if let Err(e) = resolver.resolve(&agent_id) {
                 errors.push(format!("{agent_id}: {e}"));
             }
@@ -597,6 +611,64 @@ mod tests {
             .build();
 
         assert!(result.is_ok());
+    }
+
+    #[cfg(feature = "a2a")]
+    #[test]
+    fn build_skips_validation_for_non_local_agents() {
+        let result = AgentRuntimeBuilder::new()
+            .with_agent_spec(
+                AgentSpec::new("distributed-worker")
+                    .with_model("missing-worker-model")
+                    .with_system_prompt("sys")
+                    .with_distributed(awaken_contract::registry_spec::DistributedConfig {
+                        adapter_type: "codex".into(),
+                        scheduling: awaken_contract::registry_spec::SchedulingPolicy::LeastLoaded,
+                    }),
+            )
+            .build();
+
+        let runtime =
+            result.expect("non-local agents should stay registered without local resolve");
+        let err = runtime
+            .resolver()
+            .resolve("distributed-worker")
+            .unwrap_err();
+        assert!(err.to_string().contains("cannot be resolved locally"));
+    }
+
+    #[cfg(feature = "a2a")]
+    #[test]
+    fn build_allows_local_roots_to_delegate_to_distributed_agents_without_worker_models() {
+        let root = AgentSpec::new("root")
+            .with_model("m")
+            .with_system_prompt("root")
+            .with_delegate("worker");
+        let worker = AgentSpec::new("worker")
+            .with_model("missing-worker-model")
+            .with_system_prompt("worker")
+            .with_distributed(awaken_contract::registry_spec::DistributedConfig {
+                adapter_type: "codex".into(),
+                scheduling: awaken_contract::registry_spec::SchedulingPolicy::Pinned {
+                    node_id: "node-1".into(),
+                },
+            });
+
+        let runtime = AgentRuntimeBuilder::new()
+            .with_agent_specs(vec![root, worker])
+            .with_model(
+                "m",
+                ModelEntry {
+                    provider: "p".into(),
+                    model_name: "n".into(),
+                },
+            )
+            .with_provider("p", Arc::new(MockExecutor))
+            .build()
+            .expect("local roots should validate even when distributed delegates are not local");
+
+        let resolved = runtime.resolver().resolve("root").unwrap();
+        assert!(resolved.tools.contains_key("agent_run_worker"));
     }
 
     #[test]

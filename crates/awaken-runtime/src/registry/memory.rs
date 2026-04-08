@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::builder::BuildError;
 #[cfg(feature = "a2a")]
-use crate::extensions::a2a::{A2aBackendFactory, AgentBackendFactory};
+use crate::extensions::a2a::{A2aBackendFactory, AgentBackendFactory, ScheduledBackendFactory};
 use crate::plugins::Plugin;
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::tool::Tool;
@@ -161,6 +161,9 @@ impl MapBackendRegistry {
             .register_backend_factory(Arc::new(A2aBackendFactory))
             .expect("fresh backend registry should accept built-in A2A backend");
         registry
+            .register_backend_factory(Arc::new(ScheduledBackendFactory))
+            .expect("fresh backend registry should accept built-in scheduled backend");
+        registry
     }
 }
 
@@ -255,6 +258,15 @@ mod tests {
     fn get_missing_key_returns_none() {
         let reg = MapRegistry::<String>::new();
         assert_eq!(reg.get("missing"), None);
+    }
+
+    #[cfg(feature = "a2a")]
+    #[test]
+    fn default_remote_backends_include_scheduled_backend() {
+        let reg = MapBackendRegistry::with_default_remote_backends();
+        let mut backends = reg.backend_ids();
+        backends.sort();
+        assert_eq!(backends, vec!["a2a".to_string(), "scheduled".to_string()]);
     }
 
     #[test]

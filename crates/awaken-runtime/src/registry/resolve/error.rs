@@ -27,7 +27,7 @@ pub enum ResolveError {
         backend: String,
         message: String,
     },
-    #[error("remote agent `{0}` cannot be resolved locally — use it as a delegate instead")]
+    #[error("non-local agent `{0}` cannot be resolved locally — use it as a delegate instead")]
     RemoteAgentNotDirectlyRunnable(String),
     #[error("tool ID conflict: \"{tool_id}\" registered by both {source_a} and {source_b}")]
     ToolIdConflict {

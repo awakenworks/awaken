@@ -14,6 +14,8 @@ use awaken_contract::contract::tool::Tool;
 use crate::registry::snapshot::RegistryHandle;
 use crate::registry::traits::RegistrySet;
 use awaken_contract::registry_spec::{AgentLocality, AgentSpec};
+#[cfg(feature = "a2a")]
+use awaken_contract::registry_spec::{DistributedConfig, RemoteEndpoint};
 
 use super::error::ResolveError;
 
@@ -92,7 +94,7 @@ fn lookup_spec(registries: &RegistrySet, agent_id: &str) -> Result<AgentSpec, Re
         .ok_or_else(|| ResolveError::AgentNotFound(agent_id.into()))?;
 
     #[cfg(feature = "a2a")]
-    if spec.endpoint.is_some() {
+    if !spec.is_directly_runnable_locally() {
         return Err(ResolveError::RemoteAgentNotDirectlyRunnable(
             spec.id.clone(),
         ));
@@ -249,26 +251,7 @@ fn resolve_delegate_tools(
                     ))
                 }
                 AgentLocality::Distributed(ref config) => {
-                    let scheduler_url = std::env::var("ARD_SCHEDULER_URL").unwrap_or_else(|_| {
-                        let port = std::env::var("ARD_PORT")
-                            .ok()
-                            .and_then(|p| p.parse::<u16>().ok())
-                            .unwrap_or(7878);
-                        format!("http://127.0.0.1:{port}")
-                    });
-
-                    let mut options = std::collections::BTreeMap::new();
-                    options.insert(
-                        "adapter_type".into(),
-                        serde_json::Value::String(config.adapter_type.clone()),
-                    );
-
-                    let endpoint = awaken_contract::registry_spec::RemoteEndpoint {
-                        backend: "scheduled".into(),
-                        base_url: scheduler_url,
-                        options,
-                        ..Default::default()
-                    };
+                    let endpoint = distributed_endpoint(delegate_id, config)?;
 
                     let factory = registries
                         .backends
@@ -304,6 +287,43 @@ fn resolve_delegate_tools(
     }
 
     Ok(())
+}
+
+#[cfg(feature = "a2a")]
+fn distributed_endpoint(
+    agent_id: &str,
+    config: &DistributedConfig,
+) -> Result<RemoteEndpoint, ResolveError> {
+    let scheduler_url = std::env::var("ARD_SCHEDULER_URL").unwrap_or_else(|_| {
+        let port = std::env::var("ARD_PORT")
+            .ok()
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(7878);
+        format!("http://127.0.0.1:{port}")
+    });
+
+    let mut options = std::collections::BTreeMap::new();
+    options.insert(
+        "adapter_type".into(),
+        serde_json::Value::String(config.adapter_type.clone()),
+    );
+    options.insert(
+        "scheduling".into(),
+        serde_json::to_value(&config.scheduling).map_err(|error| {
+            ResolveError::InvalidRemoteEndpointConfig {
+                agent_id: agent_id.to_string(),
+                backend: "scheduled".into(),
+                message: format!("failed to encode scheduling policy: {error}"),
+            }
+        })?,
+    );
+
+    Ok(RemoteEndpoint {
+        backend: "scheduled".into(),
+        base_url: scheduler_url,
+        options,
+        ..Default::default()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -749,6 +769,66 @@ mod tests {
 
     #[cfg(feature = "a2a")]
     #[test]
+    fn resolve_remote_locality_agent_returns_error_before_model_lookup() {
+        let spec = AgentSpec::new("remote-agent")
+            .with_model("missing-model")
+            .with_remote_locality(RemoteEndpoint {
+                backend: "a2a".into(),
+                base_url: "https://remote.example.com".into(),
+                ..Default::default()
+            });
+
+        let regs = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![],
+            spec,
+        );
+
+        let err = resolve(&regs, "remote-agent").unwrap_err();
+        assert!(
+            matches!(err, ResolveError::RemoteAgentNotDirectlyRunnable(ref id) if id == "remote-agent")
+        );
+    }
+
+    #[cfg(feature = "a2a")]
+    #[test]
+    fn resolve_distributed_agent_returns_error_before_model_lookup() {
+        let spec = AgentSpec::new("distributed-agent")
+            .with_model("missing-model")
+            .with_distributed(awaken_contract::registry_spec::DistributedConfig {
+                adapter_type: "codex".into(),
+                scheduling: awaken_contract::registry_spec::SchedulingPolicy::LeastLoaded,
+            });
+
+        let regs = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![],
+            spec,
+        );
+
+        let err = resolve(&regs, "distributed-agent").unwrap_err();
+        assert!(matches!(
+            err,
+            ResolveError::RemoteAgentNotDirectlyRunnable(ref id) if id == "distributed-agent"
+        ));
+    }
+
+    #[cfg(feature = "a2a")]
+    #[test]
     fn resolve_delegate_rejects_unknown_remote_backend() {
         use awaken_contract::registry_spec::RemoteEndpoint;
 
@@ -879,6 +959,57 @@ mod tests {
 
         assert!(output.result.is_success());
         assert_eq!(output.result.data["response"], "from custom backend");
+    }
+
+    #[cfg(feature = "a2a")]
+    #[test]
+    fn resolve_distributed_delegate_uses_default_scheduled_backend() {
+        let root = AgentSpec {
+            delegates: vec!["distributed-worker".into()],
+            ..make_spec("root")
+        };
+        let worker = AgentSpec::new("distributed-worker")
+            .with_model("worker-model-not-registered")
+            .with_distributed(awaken_contract::registry_spec::DistributedConfig {
+                adapter_type: "codex".into(),
+                scheduling: awaken_contract::registry_spec::SchedulingPolicy::Pinned {
+                    node_id: "node-3".into(),
+                },
+            })
+            .with_system_prompt("remote worker");
+
+        let mut model_reg = MapModelRegistry::new();
+        model_reg
+            .register_model(
+                "test-model",
+                ModelEntry {
+                    provider: "p".into(),
+                    model_name: "n".into(),
+                },
+            )
+            .unwrap();
+
+        let mut provider_reg = MapProviderRegistry::new();
+        provider_reg
+            .register_provider("p", Arc::new(MockExecutor))
+            .unwrap();
+
+        let mut agent_reg = MapAgentSpecRegistry::new();
+        agent_reg.register_spec(root).unwrap();
+        agent_reg.register_spec(worker).unwrap();
+
+        let regs = RegistrySet {
+            agents: Arc::new(agent_reg),
+            tools: Arc::new(MapToolRegistry::new()),
+            models: Arc::new(model_reg),
+            providers: Arc::new(provider_reg),
+            plugins: Arc::new(MapPluginSource::new()),
+            backends: Arc::new(MapBackendRegistry::with_default_remote_backends())
+                as Arc<dyn BackendRegistry>,
+        };
+
+        let run = resolve(&regs, "root").unwrap();
+        assert!(run.tools.contains_key("agent_run_distributed-worker"));
     }
 
     #[test]
@@ -1096,7 +1227,7 @@ mod tests {
             ),
             (
                 ResolveError::RemoteAgentNotDirectlyRunnable("r".into()),
-                "remote agent `r` cannot be resolved locally — use it as a delegate instead",
+                "non-local agent `r` cannot be resolved locally — use it as a delegate instead",
             ),
             (
                 ResolveError::ToolIdConflict {
