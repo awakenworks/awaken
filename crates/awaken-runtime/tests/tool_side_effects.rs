@@ -307,6 +307,8 @@ async fn tool_state_mutation_applied_after_execution() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -353,6 +355,8 @@ async fn tool_scheduled_action_executed() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -437,6 +441,8 @@ async fn tool_empty_command_has_no_side_effects() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -493,6 +499,8 @@ async fn parallel_tool_commands_merge() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();

@@ -6,7 +6,9 @@
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::inference::TokenUsage;
 use awaken_contract::contract::lifecycle::{StoppedReason, TerminationReason};
-use awaken_contract::contract::suspension::ToolCallOutcome;
+use awaken_contract::contract::suspension::{
+    PendingToolCall, SuspendTicket, Suspension, ToolCallOutcome, ToolCallResumeMode,
+};
 use awaken_contract::contract::tool::ToolResult;
 use awaken_contract::contract::transport::Transcoder;
 use awaken_server::protocols::ag_ui::encoder::AgUiEncoder;
@@ -284,6 +286,49 @@ fn suspended_emits_run_finished() {
             .iter()
             .any(|e| matches!(e, Event::RunFinished { .. }))
     );
+}
+
+#[test]
+fn suspended_run_uses_pending_interrupt_id() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    enc.on_agent_event(&AgentEvent::ToolCallDone {
+        id: "tc1".into(),
+        message_id: "m1".into(),
+        result: ToolResult::suspended_with(
+            "dangerous",
+            "needs approval",
+            SuspendTicket::new(
+                Suspension {
+                    id: "perm_tc1".into(),
+                    action: "tool:PermissionConfirm".into(),
+                    message: "Permission required".into(),
+                    parameters: json!({"cmd": "rm"}),
+                    response_schema: None,
+                },
+                PendingToolCall::new("tc1", "dangerous", json!({"cmd": "rm"})),
+                ToolCallResumeMode::ReplayToolCall,
+            ),
+        ),
+        outcome: ToolCallOutcome::Suspended,
+    });
+
+    let events = enc.on_agent_event(&AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: None,
+        termination: TerminationReason::Suspended,
+    });
+
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            Event::RunFinished {
+                interrupt: Some(interrupt),
+                ..
+            } if interrupt.id.as_deref() == Some("perm_tc1")
+                && interrupt.reason.as_deref() == Some("tool:PermissionConfirm")
+        )
+    }));
 }
 
 #[test]

@@ -285,6 +285,8 @@ async fn skill_activation_elevates_permission_for_dangerous_tool() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -387,6 +389,8 @@ async fn dangerous_tool_blocked_without_skill_activation() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -478,6 +482,8 @@ async fn permission_elevation_persists_across_steps_within_run() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();

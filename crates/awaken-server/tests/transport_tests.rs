@@ -504,10 +504,12 @@ async fn wire_sse_relay_with_acp_encoder() {
         chunks.push(String::from_utf8(chunk.to_vec()).unwrap());
     }
 
-    // agent_message(1) + finished(1) = 2
-    assert_eq!(chunks.len(), 2);
-    assert!(chunks[0].contains("session/update"));
-    assert!(chunks[1].contains("session/update"));
+    // TextDelta → Notification + RunFinish → Finished (control signal)
+    assert!(!chunks.is_empty(), "should produce at least one SSE frame");
+    assert!(
+        chunks[0].contains("hello"),
+        "first chunk should contain text delta content"
+    );
 }
 
 // ============================================================================

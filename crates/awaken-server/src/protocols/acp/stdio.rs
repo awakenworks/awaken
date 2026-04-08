@@ -1,378 +1,492 @@
-//! JSON-RPC 2.0 stdio server for ACP protocol.
-//!
-//! Reads line-delimited JSON-RPC 2.0 requests from stdin, dispatches them,
-//! and writes responses/notifications to stdout.
+//! ACP stdio server backed by the official `agent-client-protocol` Rust SDK.
 
+use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use agent_client_protocol::{self as acp, Client as _};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncWrite, BufReader};
+use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+use awaken_contract::contract::content::ContentBlock as RuntimeContentBlock;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
 use awaken_runtime::AgentRuntime;
 
-use super::encoder::AcpEncoder;
+use super::encoder::{AcpEncoder, AcpOutput};
+use super::types::{
+    AgentCapabilities, ContentBlock, EmbeddedResource, EmbeddedResourceResource, Implementation,
+    InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse, PromptRequest,
+    PromptResponse, RequestPermissionResponse, ResourceLink,
+};
 
-/// JSON-RPC 2.0 request envelope.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcRequest {
-    pub jsonrpc: String,
-    pub method: String,
-    #[serde(default)]
-    pub params: Option<Value>,
-    #[serde(default)]
-    pub id: Option<Value>,
+struct SessionState {
+    agent_id: Option<String>,
+    thread_id: String,
 }
 
-/// JSON-RPC 2.0 response envelope.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcResponse {
-    pub jsonrpc: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<JsonRpcError>,
-    pub id: Option<Value>,
+type Sessions = Arc<Mutex<HashMap<String, SessionState>>>;
+
+#[derive(Debug)]
+enum ClientCommand {
+    SessionNotification {
+        notification: acp::SessionNotification,
+        response_tx: oneshot::Sender<acp::Result<()>>,
+    },
+    RequestPermission {
+        request: acp::RequestPermissionRequest,
+        response_tx: oneshot::Sender<acp::Result<acp::RequestPermissionResponse>>,
+    },
 }
 
-/// JSON-RPC 2.0 error object.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcError {
-    pub code: i64,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<Value>,
+struct AcpAgent {
+    runtime: Arc<AgentRuntime>,
+    sessions: Sessions,
+    client_tx: mpsc::UnboundedSender<ClientCommand>,
 }
 
-/// JSON-RPC 2.0 notification envelope (no id).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcNotification {
-    pub jsonrpc: String,
-    pub method: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub params: Option<Value>,
-}
-
-impl JsonRpcResponse {
-    /// Create a success response.
-    pub fn success(id: Option<Value>, result: Value) -> Self {
+impl AcpAgent {
+    fn new(
+        runtime: Arc<AgentRuntime>,
+        sessions: Sessions,
+        client_tx: mpsc::UnboundedSender<ClientCommand>,
+    ) -> Self {
         Self {
-            jsonrpc: "2.0".to_string(),
-            result: Some(result),
-            error: None,
-            id,
+            runtime,
+            sessions,
+            client_tx,
         }
     }
 
-    /// Create an error response.
-    pub fn error(id: Option<Value>, code: i64, message: impl Into<String>) -> Self {
-        Self {
-            jsonrpc: "2.0".to_string(),
-            result: None,
-            error: Some(JsonRpcError {
-                code,
-                message: message.into(),
-                data: None,
-            }),
-            id,
+    async fn send_notification(&self, notification: acp::SessionNotification) -> acp::Result<()> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.client_tx
+            .send(ClientCommand::SessionNotification {
+                notification,
+                response_tx,
+            })
+            .map_err(|_| acp::Error::internal_error())?;
+        response_rx
+            .await
+            .map_err(|_| acp::Error::internal_error())?
+    }
+
+    async fn request_permission(
+        &self,
+        request: acp::RequestPermissionRequest,
+    ) -> acp::Result<acp::RequestPermissionResponse> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.client_tx
+            .send(ClientCommand::RequestPermission {
+                request,
+                response_tx,
+            })
+            .map_err(|_| acp::Error::internal_error())?;
+        response_rx
+            .await
+            .map_err(|_| acp::Error::internal_error())?
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl acp::Agent for AcpAgent {
+    async fn initialize(&self, args: InitializeRequest) -> acp::Result<InitializeResponse> {
+        Ok(build_initialize_response(args))
+    }
+
+    async fn authenticate(
+        &self,
+        _args: acp::AuthenticateRequest,
+    ) -> acp::Result<acp::AuthenticateResponse> {
+        Ok(acp::AuthenticateResponse::default())
+    }
+
+    async fn new_session(&self, args: NewSessionRequest) -> acp::Result<NewSessionResponse> {
+        if !args.cwd.is_absolute() {
+            return Err(acp::Error::new(-32602, "cwd must be an absolute path"));
         }
-    }
-
-    /// Method not found error (-32601).
-    pub fn method_not_found(id: Option<Value>) -> Self {
-        Self::error(id, -32601, "Method not found")
-    }
-
-    /// Invalid params error (-32602).
-    pub fn invalid_params(id: Option<Value>, message: impl Into<String>) -> Self {
-        Self::error(id, -32602, message)
-    }
-
-    /// Internal error (-32603).
-    pub fn internal_error(id: Option<Value>, message: impl Into<String>) -> Self {
-        Self::error(id, -32603, message)
-    }
-}
-
-impl JsonRpcNotification {
-    /// Create a notification.
-    pub fn new(method: impl Into<String>, params: Value) -> Self {
-        Self {
-            jsonrpc: "2.0".to_string(),
-            method: method.into(),
-            params: Some(params),
-        }
-    }
-}
-
-/// Parse a JSON-RPC 2.0 request from a line.
-pub fn parse_request(line: &str) -> Result<JsonRpcRequest, String> {
-    serde_json::from_str(line).map_err(|e| format!("invalid JSON-RPC request: {e}"))
-}
-
-/// Serialize a JSON-RPC 2.0 response to a line.
-pub fn serialize_response(response: &JsonRpcResponse) -> String {
-    serde_json::to_string(response).unwrap_or_else(|_| {
-        r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"serialization error"},"id":null}"#
-            .to_string()
-    })
-}
-
-/// Serialize a JSON-RPC 2.0 notification to a line.
-pub fn serialize_notification(notification: &JsonRpcNotification) -> String {
-    serde_json::to_string(notification)
-        .unwrap_or_else(|_| r#"{"jsonrpc":"2.0","method":"error","params":null}"#.to_string())
-}
-
-// ── Stdio server ────────────────────────────────────────────────────
-
-/// Server capabilities returned by `initialize`.
-fn server_capabilities() -> Value {
-    serde_json::json!({
-        "protocolVersion": "0.1.0",
-        "serverInfo": {
-            "name": "awaken-acp-stdio",
-            "version": env!("CARGO_PKG_VERSION"),
-        },
-        "capabilities": {
-            "streaming": true,
-            "toolCallNotifications": true,
-            "permissionFlow": true,
-        },
-    })
-}
-
-/// Write a single line to the given writer and flush.
-async fn write_line<W: AsyncWriteExt + Unpin>(writer: &mut W, line: &str) -> std::io::Result<()> {
-    writer.write_all(line.as_bytes()).await?;
-    writer.write_all(b"\n").await?;
-    writer.flush().await
-}
-
-/// Run the ACP stdio server, reading from `input` and writing to `output`.
-///
-/// This generic form accepts any `AsyncBufRead` + `AsyncWrite` to enable
-/// testing without actual stdin/stdout.
-pub async fn serve_stdio_io<R, W>(runtime: Arc<AgentRuntime>, input: R, mut output: W)
-where
-    R: tokio::io::AsyncBufRead + Unpin,
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    let mut lines = input.lines();
-
-    while let Ok(Some(line)) = lines.next_line().await {
-        let line = line.trim().to_string();
-        if line.is_empty() {
-            continue;
+        if !args.mcp_servers.is_empty() {
+            return Err(acp::Error::new(
+                -32602,
+                "mcpServers are not supported by this ACP stdio server",
+            ));
         }
 
-        let request = match parse_request(&line) {
-            Ok(req) => req,
-            Err(e) => {
-                let resp = JsonRpcResponse::error(None, -32700, format!("Parse error: {e}"));
-                let _ = write_line(&mut output, &serialize_response(&resp)).await;
-                continue;
+        let session_id = generate_session_id();
+        let thread_id = uuid::Uuid::now_v7().to_string();
+        let agent_id = select_session_agent_id(self.runtime.resolver())?;
+
+        self.sessions.lock().await.insert(
+            session_id.clone(),
+            SessionState {
+                agent_id,
+                thread_id,
+            },
+        );
+
+        Ok(NewSessionResponse::new(session_id))
+    }
+
+    async fn prompt(&self, args: PromptRequest) -> acp::Result<PromptResponse> {
+        let session_id = args.session_id.0.to_string();
+        let content = prompt_blocks_to_message_content(&args.prompt)
+            .map_err(|e| acp::Error::new(-32602, e))?;
+        if content.is_empty() {
+            return Err(acp::Error::new(
+                -32602,
+                "prompt must contain at least one supported content block",
+            ));
+        }
+
+        let (agent_id, thread_id) = {
+            let guard = self.sessions.lock().await;
+            match guard.get(&session_id) {
+                Some(state) => (state.agent_id.clone(), state.thread_id.clone()),
+                None => {
+                    return Err(acp::Error::new(
+                        -32002,
+                        format!("session not found: {session_id}"),
+                    ));
+                }
             }
         };
 
-        match request.method.as_str() {
-            "initialize" => {
-                let resp = JsonRpcResponse::success(request.id, server_capabilities());
-                let _ = write_line(&mut output, &serialize_response(&resp)).await;
+        let messages = vec![Message::user_with_content(content)];
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink = crate::transport::channel_sink::ChannelEventSink::new(event_tx);
+        let mut run_request = awaken_runtime::RunRequest::new(thread_id.clone(), messages);
+        if let Some(agent_id) = agent_id {
+            run_request = run_request.with_agent_id(agent_id);
+        }
+        let runtime = Arc::clone(&self.runtime);
+        let run_handle =
+            tokio::spawn(async move { runtime.run(run_request, Arc::new(sink)).await });
+
+        let mut encoder = AcpEncoder::new().with_session_id(&session_id);
+        let mut final_stop_reason = acp::StopReason::EndTurn;
+        let mut prompt_error: Option<acp::Error> = None;
+
+        while let Some(event) = event_rx.recv().await {
+            for output in encoder.on_agent_event(&event) {
+                match output {
+                    AcpOutput::Notification(notification) => {
+                        self.send_notification(notification)
+                            .await
+                            .map_err(acp::Error::into_internal_error)?;
+                    }
+                    AcpOutput::PermissionRequest(request) => {
+                        let tool_call_id = request.tool_call.tool_call_id.0.to_string();
+                        let response = self.request_permission(request).await?;
+                        let resume = permission_response_to_resume(response)?;
+                        if !self
+                            .runtime
+                            .send_decisions(&thread_id, vec![(tool_call_id, resume)])
+                        {
+                            return Err(acp::Error::new(
+                                -32603,
+                                "no active run for permission response",
+                            ));
+                        }
+                    }
+                    AcpOutput::Finished(reason) => {
+                        final_stop_reason = reason;
+                    }
+                    AcpOutput::Error { message, code } => {
+                        let mut err = acp::Error::new(-32603, message);
+                        if let Some(code) = code {
+                            err = err.data(serde_json::json!({ "code": code }));
+                        }
+                        prompt_error = Some(err);
+                        self.runtime.cancel(&thread_id);
+                        break;
+                    }
+                }
             }
-            "run_prompt" => {
-                handle_run_prompt(runtime.clone(), request, &mut output).await;
+
+            if prompt_error.is_some() {
+                break;
             }
-            "session/update" => {
-                // Tool call decision notification (from client).
-                handle_session_update(&runtime, request, &mut output).await;
+        }
+
+        if let Some(err) = prompt_error {
+            run_handle.abort();
+            let _ = run_handle.await;
+            return Err(err);
+        }
+
+        match run_handle.await {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => return Err(acp::Error::into_internal_error(err)),
+            Err(err) => return Err(acp::Error::into_internal_error(err)),
+        }
+
+        Ok(PromptResponse::new(final_stop_reason))
+    }
+
+    async fn cancel(&self, args: acp::CancelNotification) -> acp::Result<()> {
+        let thread_id = {
+            let guard = self.sessions.lock().await;
+            guard
+                .get(args.session_id.0.as_ref())
+                .map(|state| state.thread_id.clone())
+        };
+        if let Some(thread_id) = thread_id {
+            self.runtime.cancel(&thread_id);
+        }
+        Ok(())
+    }
+}
+
+fn build_initialize_response(request: InitializeRequest) -> InitializeResponse {
+    let capabilities = AgentCapabilities::new();
+    InitializeResponse::new(request.protocol_version)
+        .agent_capabilities(capabilities)
+        .agent_info(Implementation::new("awaken-acp", env!("CARGO_PKG_VERSION")))
+}
+
+async fn run_client_commands(
+    conn: acp::AgentSideConnection,
+    mut rx: mpsc::UnboundedReceiver<ClientCommand>,
+) {
+    while let Some(command) = rx.recv().await {
+        match command {
+            ClientCommand::SessionNotification {
+                notification,
+                response_tx,
+            } => {
+                let _ = response_tx.send(conn.session_notification(notification).await);
             }
-            "session/request_permission" => {
-                // Permission decision from client.
-                handle_permission_decision(&runtime, request, &mut output).await;
-            }
-            _ => {
-                let resp = JsonRpcResponse::method_not_found(request.id);
-                let _ = write_line(&mut output, &serialize_response(&resp)).await;
+            ClientCommand::RequestPermission {
+                request,
+                response_tx,
+            } => {
+                let _ = response_tx.send(conn.request_permission(request).await);
             }
         }
     }
 }
 
-/// Run the ACP stdio server on actual stdin/stdout.
+fn generate_session_id() -> String {
+    format!("sess_{}", uuid::Uuid::now_v7().simple())
+}
+
+fn select_session_agent_id(
+    resolver: &dyn awaken_runtime::AgentResolver,
+) -> acp::Result<Option<String>> {
+    let mut agent_ids = resolver.agent_ids();
+    agent_ids.sort();
+    agent_ids.dedup();
+
+    if agent_ids.iter().any(|agent_id| agent_id == "default") {
+        return Ok(Some("default".to_string()));
+    }
+
+    match agent_ids.as_slice() {
+        [] => Ok(None),
+        [agent_id] => Ok(Some(agent_id.clone())),
+        _ => Err(acp::Error::new(
+            -32603,
+            "ACP stdio requires a `default` agent or exactly one registered agent",
+        )),
+    }
+}
+
+pub async fn serve_stdio_io<R, W>(runtime: Arc<AgentRuntime>, input: R, output: W)
+where
+    R: AsyncBufRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    let local_set = tokio::task::LocalSet::new();
+    local_set
+        .run_until(async move {
+            let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
+            let (client_tx, client_rx) = mpsc::unbounded_channel();
+            let agent = AcpAgent::new(runtime, sessions, client_tx);
+
+            let (conn, io_task) = acp::AgentSideConnection::new(
+                agent,
+                output.compat_write(),
+                input.compat(),
+                |future| {
+                    tokio::task::spawn_local(future);
+                },
+            );
+
+            let client_task = tokio::task::spawn_local(run_client_commands(conn, client_rx));
+            let io_result = io_task.await;
+            client_task.abort();
+            let _ = client_task.await;
+
+            if let Err(err) = io_result {
+                tracing::warn!(error = ?err, "acp stdio connection terminated with error");
+            }
+        })
+        .await;
+}
+
 pub async fn serve_stdio(runtime: Arc<AgentRuntime>) {
     let stdin = BufReader::new(tokio::io::stdin());
     let stdout = tokio::io::stdout();
     serve_stdio_io(runtime, stdin, stdout).await;
 }
 
-/// Handle `run_prompt` — execute an agent run and stream events as notifications.
-async fn handle_run_prompt<W: AsyncWriteExt + Unpin>(
-    runtime: Arc<AgentRuntime>,
-    request: JsonRpcRequest,
-    output: &mut W,
-) {
-    let params = request.params.unwrap_or(Value::Null);
-
-    let agent_id = params
-        .get("agentId")
-        .or_else(|| params.get("agent_id"))
-        .and_then(Value::as_str)
-        .unwrap_or("default")
-        .to_string();
-
-    let thread_id = params
-        .get("threadId")
-        .or_else(|| params.get("thread_id"))
-        .and_then(Value::as_str)
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
-
-    let text = params
-        .get("message")
-        .or_else(|| params.get("text"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
-
-    if text.is_empty() {
-        let resp = JsonRpcResponse::invalid_params(request.id, "message text is required");
-        let _ = write_line(output, &serialize_response(&resp)).await;
-        return;
-    }
-
-    let messages = vec![Message::user(text)];
-
-    // ACK the request immediately with the run/thread identifiers
-    let run_id = uuid::Uuid::now_v7().to_string();
-    let resp = JsonRpcResponse::success(
-        request.id,
-        serde_json::json!({
-            "runId": run_id,
-            "threadId": thread_id,
-        }),
-    );
-    let _ = write_line(output, &serialize_response(&resp)).await;
-
-    // Execute the run and stream events via a channel
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-    let sink = crate::transport::channel_sink::ChannelEventSink::new(event_tx);
-    let run_request = awaken_runtime::RunRequest::new(thread_id, messages).with_agent_id(agent_id);
-
-    // Spawn the run in a background task so we can stream events synchronously
-    let rt = runtime.clone();
-    let run_handle = tokio::spawn(async move {
-        if let Err(e) = rt.run(run_request, Arc::new(sink)).await {
-            tracing::warn!(error = %e, "stdio run failed");
+fn permission_response_to_resume(
+    response: RequestPermissionResponse,
+) -> acp::Result<ToolCallResume> {
+    let (action, result) = match &response.outcome {
+        acp::RequestPermissionOutcome::Cancelled => (
+            ResumeDecisionAction::Cancel,
+            serde_json::json!({
+                "kind": "permission_decision",
+                "approved": false,
+                "cancelled": true,
+            }),
+        ),
+        acp::RequestPermissionOutcome::Selected(selected) => {
+            permission_option_to_resume(&selected.option_id.0)?
         }
-        // sink is dropped here, closing event_rx
-    });
-
-    // Stream events as JSON-RPC notifications
-    let mut encoder = AcpEncoder::new();
-    while let Some(event) = event_rx.recv().await {
-        let acp_events = encoder.on_agent_event(&event);
-        for acp_ev in acp_events {
-            if let Ok(params) = serde_json::to_value(&acp_ev) {
-                let method = match &acp_ev {
-                    super::encoder::AcpEvent::SessionUpdate(_) => "session/update",
-                    super::encoder::AcpEvent::RequestPermission(_) => "session/request_permission",
-                };
-                let notif = JsonRpcNotification::new(method, params);
-                let _ = write_line(output, &serialize_notification(&notif)).await;
-            }
+        _ => {
+            return Err(acp::Error::new(
+                -32602,
+                "unsupported ACP permission response outcome",
+            ));
         }
-    }
-
-    // Ensure the run task completes
-    let _ = run_handle.await;
-}
-
-/// Handle `session/update` — forward tool call decisions.
-async fn handle_session_update<W: AsyncWriteExt + Unpin>(
-    runtime: &AgentRuntime,
-    request: JsonRpcRequest,
-    output: &mut W,
-) {
-    let params = request.params.unwrap_or(Value::Null);
-
-    let thread_id = params
-        .get("threadId")
-        .or_else(|| params.get("thread_id"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
-
-    let tool_call_id = params
-        .get("toolCallId")
-        .or_else(|| params.get("tool_call_id"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
-
-    let action_str = params
-        .get("action")
-        .and_then(Value::as_str)
-        .unwrap_or("resume");
-
-    if thread_id.is_empty() || tool_call_id.is_empty() {
-        let resp =
-            JsonRpcResponse::invalid_params(request.id, "threadId and toolCallId are required");
-        let _ = write_line(output, &serialize_response(&resp)).await;
-        return;
-    }
-
-    let action = match action_str {
-        "resume" => ResumeDecisionAction::Resume,
-        "cancel" => ResumeDecisionAction::Cancel,
-        _ => ResumeDecisionAction::Resume,
     };
 
-    let resume = ToolCallResume {
+    Ok(ToolCallResume {
         decision_id: uuid::Uuid::now_v7().to_string(),
         action,
-        result: params.get("result").cloned().unwrap_or(Value::Null),
-        reason: params
-            .get("reason")
-            .and_then(Value::as_str)
-            .map(String::from),
-        updated_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0),
+        result,
+        reason: None,
+        updated_at: unix_timestamp_millis(),
+    })
+}
+
+fn permission_option_to_resume(option_id: &str) -> acp::Result<(ResumeDecisionAction, Value)> {
+    let (action, approved, policy) = match option_id {
+        "opt_allow_once" => (ResumeDecisionAction::Resume, true, "allow_once"),
+        "opt_allow_always" => (ResumeDecisionAction::Resume, true, "allow_always"),
+        "opt_reject_once" => (ResumeDecisionAction::Cancel, false, "reject_once"),
+        "opt_reject_always" => (ResumeDecisionAction::Cancel, false, "reject_always"),
+        other => {
+            return Err(acp::Error::new(
+                -32602,
+                format!("unsupported ACP permission option id: {other}"),
+            ));
+        }
     };
 
-    let sent = runtime.send_decisions(thread_id, vec![(tool_call_id.to_string(), resume)]);
+    Ok((
+        action,
+        serde_json::json!({
+            "kind": "permission_decision",
+            "approved": approved,
+            "policy": policy,
+        }),
+    ))
+}
 
-    if sent {
-        // Notification — no response needed unless there's an id
-        if let Some(id) = request.id {
-            let resp = JsonRpcResponse::success(Some(id), serde_json::json!({"ok": true}));
-            let _ = write_line(output, &serialize_response(&resp)).await;
+fn unix_timestamp_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn prompt_blocks_to_message_content(
+    blocks: &[ContentBlock],
+) -> Result<Vec<RuntimeContentBlock>, String> {
+    let mut content = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        match block {
+            ContentBlock::Text(text) => {
+                content.push(RuntimeContentBlock::text(text.text.clone()));
+            }
+            ContentBlock::ResourceLink(link) => {
+                content.push(resource_link_to_runtime_content(link));
+            }
+            ContentBlock::Resource(resource) => {
+                content.push(embedded_resource_to_runtime_content(resource)?);
+            }
+            ContentBlock::Image(_) => {
+                return Err("image prompt content is not supported by this ACP server".to_string());
+            }
+            ContentBlock::Audio(_) => {
+                return Err("audio prompt content is not supported by this ACP server".to_string());
+            }
+            _ => return Err("unsupported ACP prompt content block".to_string()),
         }
-    } else if let Some(id) = request.id {
-        let resp = JsonRpcResponse::internal_error(Some(id), "no active run for thread");
-        let _ = write_line(output, &serialize_response(&resp)).await;
+    }
+    Ok(content)
+}
+
+fn resource_link_to_runtime_content(link: &ResourceLink) -> RuntimeContentBlock {
+    let title = link.title.clone().or_else(|| Some(link.name.clone()));
+    RuntimeContentBlock::document_url(link.uri.clone(), title)
+}
+
+fn embedded_resource_to_runtime_content(
+    resource: &EmbeddedResource,
+) -> Result<RuntimeContentBlock, String> {
+    match &resource.resource {
+        EmbeddedResourceResource::TextResourceContents(text) => {
+            Ok(RuntimeContentBlock::text(text.text.clone()))
+        }
+        EmbeddedResourceResource::BlobResourceContents(blob) => {
+            let media_type = blob
+                .mime_type
+                .clone()
+                .unwrap_or_else(|| infer_media_type_from_uri(&blob.uri));
+            Ok(RuntimeContentBlock::document_base64(
+                media_type,
+                blob.blob.clone(),
+                path_title(&blob.uri),
+            ))
+        }
+        _ => Err("unsupported embedded ACP resource".to_string()),
     }
 }
 
-/// Handle `session/request_permission` — forward permission decisions.
-async fn handle_permission_decision<W: AsyncWriteExt + Unpin>(
-    runtime: &AgentRuntime,
-    request: JsonRpcRequest,
-    output: &mut W,
-) {
-    // Re-use session/update logic — permission decisions are a specific kind of tool call resume
-    handle_session_update(runtime, request, output).await;
+fn infer_media_type_from_uri(uri: &str) -> String {
+    match Path::new(uri).extension().and_then(|ext| ext.to_str()) {
+        Some("png") => "image/png".to_string(),
+        Some("jpg") | Some("jpeg") => "image/jpeg".to_string(),
+        Some("gif") => "image/gif".to_string(),
+        Some("pdf") => "application/pdf".to_string(),
+        _ => "application/octet-stream".to_string(),
+    }
+}
+
+fn path_title(uri: &str) -> Option<String> {
+    Path::new(uri)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(ToString::to_string)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::types::ProtocolVersion;
     use super::*;
-    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// Stub resolver that always returns an error (no agents registered).
-    /// Used for testing the stdio transport layer without a real agent.
+    use crate::protocols::acp::types as wire_types;
+    use async_trait::async_trait;
+    use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
+    use awaken_contract::contract::inference::{
+        StopReason as RuntimeStopReason, StreamResult, TokenUsage,
+    };
+    use awaken_contract::contract::message::ToolCall as RuntimeToolCall;
+    use awaken_contract::contract::tool::{FrontEndTool, ToolDescriptor};
+    use awaken_runtime::builder::AgentRuntimeBuilder;
+    use awaken_runtime::registry::traits::ModelEntry;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, split};
+    use tokio::time::{Duration, timeout};
+
     struct StubResolver;
+
     impl awaken_runtime::AgentResolver for StubResolver {
         fn resolve(
             &self,
@@ -388,201 +502,366 @@ mod tests {
         Arc::new(AgentRuntime::new(Arc::new(StubResolver)))
     }
 
-    #[test]
-    fn parse_valid_request() {
-        let line = r#"{"jsonrpc":"2.0","method":"session/start","params":{"agentId":"a1"},"id":1}"#;
-        let req = parse_request(line).unwrap();
-        assert_eq!(req.jsonrpc, "2.0");
-        assert_eq!(req.method, "session/start");
-        assert_eq!(req.id, Some(json!(1)));
+    struct FrontendToolMockExecutor {
+        call_count: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl awaken_contract::contract::executor::LlmExecutor for FrontendToolMockExecutor {
+        async fn execute(
+            &self,
+            _request: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            let count = self.call_count.fetch_add(1, Ordering::Relaxed);
+            if count == 0 {
+                Ok(StreamResult {
+                    content: vec![],
+                    tool_calls: vec![RuntimeToolCall::new(
+                        "call_frontend_1",
+                        "ask_user",
+                        serde_json::json!({"question": "What color?"}),
+                    )],
+                    usage: Some(TokenUsage::default()),
+                    stop_reason: Some(RuntimeStopReason::ToolUse),
+                    has_incomplete_tool_calls: false,
+                })
+            } else {
+                Ok(StreamResult {
+                    content: vec![RuntimeContentBlock::text("unexpected follow-up turn")],
+                    tool_calls: vec![],
+                    usage: Some(TokenUsage::default()),
+                    stop_reason: Some(RuntimeStopReason::EndTurn),
+                    has_incomplete_tool_calls: false,
+                })
+            }
+        }
+
+        fn name(&self) -> &str {
+            "frontend-mock"
+        }
+    }
+
+    fn frontend_tool_runtime() -> Arc<AgentRuntime> {
+        let frontend_tool = ToolDescriptor::new("ask_user", "ask_user", "Ask the user a question");
+
+        let builder = AgentRuntimeBuilder::new()
+            .with_model(
+                "test-model",
+                ModelEntry {
+                    provider: "mock".into(),
+                    model_name: "mock-model".into(),
+                },
+            )
+            .with_provider(
+                "mock",
+                Arc::new(FrontendToolMockExecutor {
+                    call_count: AtomicUsize::new(0),
+                }),
+            )
+            .with_tool("ask_user", Arc::new(FrontEndTool::new(frontend_tool)))
+            .with_agent_spec(awaken_contract::registry_spec::AgentSpec {
+                id: "frontend".into(),
+                model: "test-model".into(),
+                system_prompt: "You delegate to a frontend tool".into(),
+                max_rounds: 2,
+                ..Default::default()
+            });
+
+        Arc::new(builder.build().expect("build runtime"))
+    }
+
+    async fn run_stdio_exchange(runtime: Arc<AgentRuntime>, input: &[u8]) -> String {
+        let local_set = tokio::task::LocalSet::new();
+        local_set
+            .run_until(async move {
+                let (client_stream, server_stream) = tokio::io::duplex(16 * 1024);
+                let (mut client_reader, mut client_writer) = split(client_stream);
+                let (server_reader, server_writer) = split(server_stream);
+
+                let server_task = tokio::task::spawn_local(async move {
+                    serve_stdio_io(runtime, BufReader::new(server_reader), server_writer).await;
+                });
+
+                client_writer.write_all(input).await.unwrap();
+                client_writer.flush().await.unwrap();
+
+                let mut output = Vec::new();
+                let mut first_chunk = [0_u8; 4096];
+                if let Ok(Ok(bytes_read)) = timeout(
+                    Duration::from_millis(200),
+                    client_reader.read(&mut first_chunk),
+                )
+                .await
+                    && bytes_read > 0
+                {
+                    output.extend_from_slice(&first_chunk[..bytes_read]);
+                }
+
+                client_writer.shutdown().await.unwrap();
+                client_reader.read_to_end(&mut output).await.unwrap();
+                let _ = server_task.await;
+
+                String::from_utf8(output).unwrap()
+            })
+            .await
+    }
+
+    fn parse_single_json_response(output: &str) -> serde_json::Value {
+        serde_json::from_str(output.trim()).expect("stdio response should be valid JSON")
+    }
+
+    struct MultiAgentResolver;
+
+    impl awaken_runtime::AgentResolver for MultiAgentResolver {
+        fn resolve(
+            &self,
+            agent_id: &str,
+        ) -> Result<awaken_runtime::ResolvedAgent, awaken_runtime::RuntimeError> {
+            Err(awaken_runtime::RuntimeError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })
+        }
+
+        fn agent_ids(&self) -> Vec<String> {
+            vec!["alpha".to_string(), "beta".to_string()]
+        }
     }
 
     #[test]
-    fn parse_notification_without_id() {
-        let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"text":"hi"}}"#;
-        let req = parse_request(line).unwrap();
-        assert!(req.id.is_none());
+    fn initialize_response_has_spec_fields() {
+        let response = build_initialize_response(InitializeRequest::new(ProtocolVersion::V1));
+        let json = serde_json::to_value(&response).unwrap();
+        assert!(json.get("protocolVersion").is_some());
+        assert!(json.get("agentCapabilities").is_some());
+        assert!(json.get("agentInfo").is_some());
     }
 
     #[test]
-    fn parse_invalid_json() {
-        let result = parse_request("not json");
-        assert!(result.is_err());
+    fn generate_session_id_format() {
+        let session_id = generate_session_id();
+        assert!(session_id.starts_with("sess_"));
     }
 
     #[test]
-    fn success_response_serde() {
-        let resp = JsonRpcResponse::success(Some(json!(1)), json!({"ok": true}));
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("\"result\""));
-        assert!(!json.contains("\"error\""));
+    fn select_session_agent_id_uses_single_registered_agent() {
+        struct SingleAgentResolver;
+
+        impl awaken_runtime::AgentResolver for SingleAgentResolver {
+            fn resolve(
+                &self,
+                agent_id: &str,
+            ) -> Result<awaken_runtime::ResolvedAgent, awaken_runtime::RuntimeError> {
+                Err(awaken_runtime::RuntimeError::AgentNotFound {
+                    agent_id: agent_id.to_string(),
+                })
+            }
+
+            fn agent_ids(&self) -> Vec<String> {
+                vec!["echo".to_string()]
+            }
+        }
+
+        let selected = select_session_agent_id(&SingleAgentResolver).unwrap();
+        assert_eq!(selected.as_deref(), Some("echo"));
     }
 
     #[test]
-    fn error_response_serde() {
-        let resp = JsonRpcResponse::error(Some(json!(1)), -32600, "Invalid Request");
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("-32600"));
-        assert!(json.contains("Invalid Request"));
-        assert!(!json.contains("\"result\""));
+    fn select_session_agent_id_rejects_ambiguous_registry() {
+        let err = select_session_agent_id(&MultiAgentResolver).unwrap_err();
+        assert_eq!(err.code, agent_client_protocol::ErrorCode::InternalError);
     }
 
     #[test]
-    fn method_not_found_response() {
-        let resp = JsonRpcResponse::method_not_found(Some(json!(1)));
-        let err = resp.error.unwrap();
-        assert_eq!(err.code, -32601);
+    fn prompt_blocks_to_message_content_supports_resource_link() {
+        let blocks = vec![
+            ContentBlock::from("hello"),
+            ContentBlock::ResourceLink(ResourceLink::new("README", "file:///repo/README.md")),
+        ];
+        let content = prompt_blocks_to_message_content(&blocks).unwrap();
+        assert_eq!(content.len(), 2);
+        assert!(matches!(content[0], RuntimeContentBlock::Text { .. }));
+        assert!(matches!(content[1], RuntimeContentBlock::Document { .. }));
     }
 
     #[test]
-    fn invalid_params_response() {
-        let resp = JsonRpcResponse::invalid_params(Some(json!(1)), "missing field");
-        let err = resp.error.unwrap();
-        assert_eq!(err.code, -32602);
-        assert_eq!(err.message, "missing field");
+    fn permission_response_maps_stable_allow_option_ids() {
+        let resume = permission_response_to_resume(RequestPermissionResponse::new(
+            acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                acp::PermissionOptionId::new("opt_allow_always"),
+            )),
+        ))
+        .expect("allow option should map");
+
+        assert_eq!(resume.action, ResumeDecisionAction::Resume);
+        assert_eq!(
+            resume.result,
+            serde_json::json!({
+                "kind": "permission_decision",
+                "approved": true,
+                "policy": "allow_always",
+            })
+        );
     }
 
     #[test]
-    fn notification_serde() {
-        let notif = JsonRpcNotification::new("session/update", json!({"text": "hello"}));
-        let json = serialize_notification(&notif);
-        assert!(json.contains("session/update"));
-        assert!(json.contains("hello"));
+    fn permission_response_maps_stable_reject_option_ids() {
+        let resume = permission_response_to_resume(RequestPermissionResponse::new(
+            acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                acp::PermissionOptionId::new("opt_reject_once"),
+            )),
+        ))
+        .expect("reject option should map");
+
+        assert_eq!(resume.action, ResumeDecisionAction::Cancel);
+        assert_eq!(
+            resume.result,
+            serde_json::json!({
+                "kind": "permission_decision",
+                "approved": false,
+                "policy": "reject_once",
+            })
+        );
     }
 
     #[test]
-    fn serialize_response_handles_all_cases() {
-        let success = serialize_response(&JsonRpcResponse::success(None, json!(42)));
-        assert!(success.contains("42"));
+    fn permission_response_rejects_unknown_option_ids() {
+        let err = permission_response_to_resume(RequestPermissionResponse::new(
+            acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                acp::PermissionOptionId::new("reject_maybe"),
+            )),
+        ))
+        .expect_err("unknown option id should fail");
 
-        let error = serialize_response(&JsonRpcResponse::internal_error(None, "boom"));
-        assert!(error.contains("boom"));
-    }
-
-    #[test]
-    fn roundtrip_request() {
-        let req = JsonRpcRequest {
-            jsonrpc: "2.0".into(),
-            method: "test/method".into(),
-            params: Some(json!({"key": "val"})),
-            id: Some(json!("req-1")),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        let parsed: JsonRpcRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.method, "test/method");
-        assert_eq!(parsed.id, Some(json!("req-1")));
-    }
-
-    #[test]
-    fn server_capabilities_has_required_fields() {
-        let caps = server_capabilities();
-        assert!(caps.get("protocolVersion").is_some());
-        assert!(caps.get("serverInfo").is_some());
-        assert!(caps.get("capabilities").is_some());
-        assert_eq!(caps["capabilities"]["streaming"], true);
-        assert_eq!(caps["capabilities"]["permissionFlow"], true);
+        assert_eq!(err.code, agent_client_protocol::ErrorCode::InvalidParams);
     }
 
     #[tokio::test]
-    async fn serve_stdio_initialize_method() {
+    async fn serve_stdio_initialize() {
         let runtime = test_runtime();
+        let input =
+            b"{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{\"protocolVersion\":1},\"id\":1}\n";
+        let output_str = run_stdio_exchange(runtime, &input[..]).await;
+        let response = parse_single_json_response(&output_str);
+        assert!(response.get("result").is_some());
+        assert!(response.get("error").is_none());
+    }
 
-        let input = b"{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"id\":1}\n";
-        let mut output = Vec::new();
+    #[tokio::test]
+    async fn serve_stdio_session_new() {
+        let runtime = test_runtime();
+        let input =
+            b"{\"jsonrpc\":\"2.0\",\"method\":\"session/new\",\"params\":{\"cwd\":\"/tmp\",\"mcpServers\":[]},\"id\":1}\n";
+        let output_str = run_stdio_exchange(runtime, &input[..]).await;
+        let response = parse_single_json_response(&output_str);
+        let result = &response["result"];
+        assert!(result["sessionId"].as_str().unwrap().starts_with("sess_"));
+    }
 
-        serve_stdio_io(runtime, &input[..], &mut output).await;
-
-        let output_str = String::from_utf8(output).unwrap();
-        let resp: JsonRpcResponse = serde_json::from_str(output_str.trim()).unwrap();
-        assert!(resp.result.is_some());
-        assert!(resp.error.is_none());
-        assert_eq!(resp.id, Some(json!(1)));
-        let result = resp.result.unwrap();
-        assert!(result.get("protocolVersion").is_some());
+    #[tokio::test]
+    async fn serve_stdio_session_new_rejects_relative_cwd() {
+        let runtime = test_runtime();
+        let input =
+            b"{\"jsonrpc\":\"2.0\",\"method\":\"session/new\",\"params\":{\"cwd\":\"tmp\",\"mcpServers\":[]},\"id\":2}\n";
+        let output_str = run_stdio_exchange(runtime, &input[..]).await;
+        let response = parse_single_json_response(&output_str);
+        assert_eq!(response["error"]["code"], -32602);
     }
 
     #[tokio::test]
     async fn serve_stdio_unknown_method() {
         let runtime = test_runtime();
-
-        let input = b"{\"jsonrpc\":\"2.0\",\"method\":\"unknown/method\",\"id\":2}\n";
-        let mut output = Vec::new();
-
-        serve_stdio_io(runtime, &input[..], &mut output).await;
-
-        let output_str = String::from_utf8(output).unwrap();
-        let resp: JsonRpcResponse = serde_json::from_str(output_str.trim()).unwrap();
-        assert!(resp.error.is_some());
-        assert_eq!(resp.error.unwrap().code, -32601);
+        let input = b"{\"jsonrpc\":\"2.0\",\"method\":\"unknown\",\"params\":{},\"id\":2}\n";
+        let output_str = run_stdio_exchange(runtime, &input[..]).await;
+        let response = parse_single_json_response(&output_str);
+        assert_eq!(response["error"]["code"], -32601);
     }
 
     #[tokio::test]
     async fn serve_stdio_parse_error() {
         let runtime = test_runtime();
-
-        let input = b"not valid json\n";
-        let mut output = Vec::new();
-
-        serve_stdio_io(runtime, &input[..], &mut output).await;
-
-        let output_str = String::from_utf8(output).unwrap();
-        let resp: JsonRpcResponse = serde_json::from_str(output_str.trim()).unwrap();
-        assert!(resp.error.is_some());
-        assert_eq!(resp.error.unwrap().code, -32700);
+        let input = b"not json\n";
+        let output_str = run_stdio_exchange(runtime, &input[..]).await;
+        assert!(output_str.trim().is_empty());
     }
 
     #[tokio::test]
-    async fn serve_stdio_empty_lines_skipped() {
+    async fn serve_stdio_session_prompt_requires_session() {
         let runtime = test_runtime();
+        let input =
+            b"{\"jsonrpc\":\"2.0\",\"method\":\"session/prompt\",\"params\":{\"prompt\":[{\"type\":\"text\",\"text\":\"hi\"}]},\"id\":1}\n";
+        let output_str = run_stdio_exchange(runtime, &input[..]).await;
+        let response = parse_single_json_response(&output_str);
+        assert_eq!(response["error"]["code"], -32602);
+    }
 
-        let input = b"\n  \n{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"id\":3}\n\n";
-        let mut output = Vec::new();
+    #[tokio::test]
+    async fn serve_stdio_session_prompt_invalid_session() {
+        let runtime = test_runtime();
+        let input =
+            b"{\"jsonrpc\":\"2.0\",\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"sess_bad\",\"prompt\":[{\"type\":\"text\",\"text\":\"hi\"}]},\"id\":1}\n";
+        let output_str = run_stdio_exchange(runtime, &input[..]).await;
+        let response = parse_single_json_response(&output_str);
+        assert_eq!(response["error"]["code"], -32002);
+    }
 
-        serve_stdio_io(runtime, &input[..], &mut output).await;
-
-        let output_str = String::from_utf8(output).unwrap();
-        // Should only have one response line
+    #[tokio::test]
+    async fn serve_stdio_unknown_notification_silently_ignored() {
+        let runtime = test_runtime();
+        let input = concat!(
+            "{\"jsonrpc\":\"2.0\",\"method\":\"_custom/something\",\"params\":{}}\n",
+            "{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{\"protocolVersion\":1},\"id\":1}\n",
+        );
+        let output_str = run_stdio_exchange(runtime, input.as_bytes()).await;
         let lines: Vec<&str> = output_str.trim().lines().collect();
         assert_eq!(lines.len(), 1);
-        let resp: JsonRpcResponse = serde_json::from_str(lines[0]).unwrap();
-        assert_eq!(resp.id, Some(json!(3)));
     }
 
     #[tokio::test]
-    async fn serve_stdio_run_prompt_no_message() {
-        let runtime = test_runtime();
+    async fn prompt_rejects_generic_frontend_tool_suspension() {
+        let runtime = frontend_tool_runtime();
+        let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
+        let (client_tx, mut client_rx) = mpsc::unbounded_channel();
+        let agent = AcpAgent::new(runtime, Arc::clone(&sessions), client_tx);
 
-        let input = b"{\"jsonrpc\":\"2.0\",\"method\":\"run_prompt\",\"params\":{},\"id\":4}\n";
-        let mut output = Vec::new();
+        let client_task = tokio::spawn(async move {
+            while let Some(command) = client_rx.recv().await {
+                match command {
+                    ClientCommand::SessionNotification { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    ClientCommand::RequestPermission { response_tx, .. } => {
+                        let _ = response_tx.send(Err(acp::Error::new(
+                            -32603,
+                            "generic frontend suspension must not be converted into request_permission",
+                        )));
+                    }
+                }
+            }
+        });
 
-        serve_stdio_io(runtime, &input[..], &mut output).await;
+        let session = acp::Agent::new_session(&agent, wire_types::NewSessionRequest::new("/tmp"))
+            .await
+            .expect("new_session should succeed");
 
-        let output_str = String::from_utf8(output).unwrap();
-        let resp: JsonRpcResponse = serde_json::from_str(output_str.trim()).unwrap();
-        assert!(resp.error.is_some());
-        assert_eq!(resp.error.unwrap().code, -32602);
-    }
+        let err = acp::Agent::prompt(
+            &agent,
+            wire_types::PromptRequest::new(
+                session.session_id,
+                vec![wire_types::ContentBlock::from(
+                    "ask the frontend user a question",
+                )],
+            ),
+        )
+        .await
+        .expect_err("generic frontend tool suspension should be rejected");
 
-    #[tokio::test]
-    async fn serve_stdio_multiple_requests() {
-        let runtime = test_runtime();
-
-        let input = concat!(
-            "{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"id\":1}\n",
-            "{\"jsonrpc\":\"2.0\",\"method\":\"unknown\",\"id\":2}\n",
+        assert!(
+            err.message
+                .contains("only supports suspended tool action 'tool:PermissionConfirm'"),
+            "unexpected ACP error: {err:?}"
         );
-        let mut output = Vec::new();
 
-        serve_stdio_io(runtime, input.as_bytes(), &mut output).await;
-
-        let output_str = String::from_utf8(output).unwrap();
-        let lines: Vec<&str> = output_str.trim().lines().collect();
-        assert_eq!(lines.len(), 2);
-
-        let resp1: JsonRpcResponse = serde_json::from_str(lines[0]).unwrap();
-        assert!(resp1.result.is_some());
-
-        let resp2: JsonRpcResponse = serde_json::from_str(lines[1]).unwrap();
-        assert!(resp2.error.is_some());
+        client_task.abort();
+        let _ = client_task.await;
     }
 }

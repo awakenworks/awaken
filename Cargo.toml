@@ -59,9 +59,12 @@ genai = "0.6.0-beta.10"
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 reqwest = { version = "0.13", features = ["json"] }
 schemars = "1"
+agent-client-protocol-schema = "0.11"
+agent-client-protocol = "0.10.4"
 jsonschema = "0.45"
 parking_lot = "0.12"
 proptest = "1"
+tokio-util = { version = "0.7", features = ["compat"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

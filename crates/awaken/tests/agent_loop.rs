@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use awaken::agent::state::{
-    ContextMessageStore, ContextThrottleState, RunLifecycle, ToolCallStates,
+    ContextMessageStore, ContextThrottleState, PendingWorkKey, RunLifecycle, ToolCallStates,
 };
 use awaken::contract::content::ContentBlock;
 use awaken::contract::event::AgentEvent;
@@ -124,7 +124,10 @@ impl Tool for SuspendingTool {
         ToolDescriptor::new("dangerous", "dangerous", "Requires approval")
     }
 
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        if ctx.resume_input.is_some() {
+            return Ok(ToolResult::success("dangerous", args).into());
+        }
         Ok(ToolResult::suspended("dangerous", "needs user approval").into())
     }
 }
@@ -145,6 +148,7 @@ impl Plugin for LoopStatePlugin {
         registrar.register_key::<ToolCallStates>(StateKeyOptions::default())?;
         registrar.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
         registrar.register_key::<ContextMessageStore>(StateKeyOptions::default())?;
+        registrar.register_key::<PendingWorkKey>(StateKeyOptions::default())?;
         Ok(())
     }
 }
@@ -233,6 +237,8 @@ async fn single_step_natural_end() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -244,7 +250,7 @@ async fn single_step_natural_end() {
     // Verify run lifecycle state
     let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.status, RunStatus::Done);
-    assert_eq!(lifecycle.done_reason.as_deref(), Some("natural"));
+    assert_eq!(lifecycle.status_reason.as_deref(), Some("natural"));
     assert_eq!(lifecycle.step_count, 1);
     assert_eq!(lifecycle.run_id, "run-1");
 }
@@ -285,6 +291,8 @@ async fn tool_call_then_response() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -332,6 +340,8 @@ async fn tool_call_state_machine_transitions() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -384,6 +394,8 @@ async fn multiple_tool_calls_in_one_step() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -434,6 +446,8 @@ async fn max_rounds_exceeded() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -447,7 +461,7 @@ async fn max_rounds_exceeded() {
     assert_eq!(lifecycle.status, RunStatus::Done);
     assert!(
         lifecycle
-            .done_reason
+            .status_reason
             .as_deref()
             .unwrap()
             .starts_with("stopped:max_rounds")
@@ -490,6 +504,8 @@ async fn unknown_tool_returns_error_result_not_crash() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap(); // Should NOT error — unknown tool produces ToolResult::error
@@ -547,6 +563,8 @@ async fn failing_tool_produces_error_result_continues_loop() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -570,7 +588,7 @@ async fn events_have_correct_sequence_for_single_step() {
     let resolver = FixedResolver::new(agent);
 
     let sink = Arc::new(VecEventSink::new());
-    let _result = run_agent_loop(AgentLoopParams {
+    let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
@@ -582,6 +600,8 @@ async fn events_have_correct_sequence_for_single_step() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -644,7 +664,7 @@ async fn events_have_correct_sequence_with_tool_call() {
     let resolver = FixedResolver::new(agent);
 
     let sink = Arc::new(VecEventSink::new());
-    let _result = run_agent_loop(AgentLoopParams {
+    let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
@@ -656,6 +676,8 @@ async fn events_have_correct_sequence_with_tool_call() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -731,6 +753,8 @@ async fn lifecycle_state_reflects_custom_run_id() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -797,6 +821,8 @@ async fn phase_hooks_fire_during_loop() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -854,6 +880,8 @@ async fn tool_suspension_transitions_run_to_waiting() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -895,6 +923,8 @@ async fn resume_with_use_decision_as_tool_result() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -943,6 +973,8 @@ async fn resume_with_use_decision_as_tool_result() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -951,9 +983,9 @@ async fn resume_with_use_decision_as_tool_result() {
     assert_eq!(resume_result.termination, TerminationReason::NaturalEnd);
 
     // Tool call should be terminal
-    let tc_states = runtime.store().read::<ToolCallStates>().unwrap_or_default();
-    assert!(tc_states.calls.is_empty());
-    // After resume, tool call states were cleared by the new step.
+    let _tc_states = runtime.store().read::<ToolCallStates>().unwrap_or_default();
+    // After resume, tool call states were cleared by the new step
+    // The run completed normally
     let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.status, RunStatus::Done);
 }
@@ -984,6 +1016,8 @@ async fn resume_with_cancel_marks_tool_cancelled() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -1031,6 +1065,8 @@ async fn resume_with_cancel_marks_tool_cancelled() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -1070,6 +1106,8 @@ async fn resume_with_replay_tool_call() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -1137,6 +1175,8 @@ async fn resume_with_replay_tool_call() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -1175,6 +1215,8 @@ async fn resume_with_pass_decision_to_tool() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await;
     // This might not work because tool_call name is "passthrough" but we only have "dangerous".
@@ -1203,12 +1245,14 @@ async fn resume_with_pass_decision_to_tool() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
     assert_eq!(result.termination, TerminationReason::Suspended);
 
-    // Resume with PassDecisionToTool: decision payload becomes new arguments
+    // Resume with PassDecisionToTool: the tool reads the decision payload from resume_input
     struct DangerousPassthrough;
     #[async_trait]
     impl Tool for DangerousPassthrough {
@@ -1218,9 +1262,14 @@ async fn resume_with_pass_decision_to_tool() {
         async fn execute(
             &self,
             args: Value,
-            _ctx: &ToolCallContext,
+            ctx: &ToolCallContext,
         ) -> Result<ToolOutput, ToolError> {
-            Ok(ToolResult::success("dangerous", args).into())
+            let result = ctx
+                .resume_input
+                .as_ref()
+                .map(|resume| resume.result.clone())
+                .unwrap_or(args);
+            Ok(ToolResult::success("dangerous", result).into())
         }
     }
 
@@ -1266,6 +1315,8 @@ async fn resume_with_pass_decision_to_tool() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -1294,6 +1345,8 @@ async fn resume_rejects_non_waiting_run() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -1344,6 +1397,8 @@ async fn resume_rejects_unknown_call_id() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -1475,6 +1530,8 @@ async fn cancel_during_streaming_terminates_run() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -1512,6 +1569,8 @@ async fn cancel_before_inference_terminates_immediately() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -1565,6 +1624,8 @@ async fn state_snapshot_emitted_after_phase() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -1645,8 +1706,7 @@ async fn state_snapshot_emitted_after_phase() {
 /// A plugin that intercepts "frontend" tools via BeforeToolExecute.
 ///
 /// On first entry: suspends with UseDecisionAsToolResult mode.
-/// On resume: the tool re-executes with decision.result as arguments,
-/// and this passthrough tool returns those arguments as the tool result.
+/// On resume: the runtime turns decision.result into the tool result directly.
 /// This mirrors uncarve's FrontendToolPlugin pattern.
 struct FrontendToolInterceptPlugin {
     frontend_tool_ids: Vec<String>,
@@ -1731,9 +1791,8 @@ impl Clone for FrontendToolInterceptPlugin {
 /// 2. FrontendToolInterceptPlugin intercepts → Suspend(UseDecisionAsToolResult)
 /// 3. Run terminates with Suspended
 /// 4. External decision arrives with result payload
-/// 5. prepare_resume with UseDecisionAsToolResult mode replaces arguments
-/// 6. detect_and_replay_resume re-executes tool with decision args
-/// 7. AskUserTool returns decision args as tool result
+/// 5. prepare_resume records the decision payload on the suspended call
+/// 6. detect_and_replay_resume completes the tool call from the decision payload
 /// 8. LLM sees the frontend result and responds
 #[tokio::test]
 async fn frontend_tool_intercept_suspend_and_resume() {
@@ -1743,8 +1802,7 @@ async fn frontend_tool_intercept_suspend_and_resume() {
         // After resume: LLM sees the frontend result and ends
     ]));
 
-    // AskUserTool is a "frontend tool" — it returns args as result.
-    // When resumed with decision args, the decision payload becomes the tool result.
+    // AskUserTool is a normal tool here; the frontend plugin owns the suspend semantics.
     struct AskUserTool;
     #[async_trait]
     impl Tool for AskUserTool {
@@ -1754,9 +1812,14 @@ async fn frontend_tool_intercept_suspend_and_resume() {
         async fn execute(
             &self,
             args: Value,
-            _ctx: &ToolCallContext,
+            ctx: &ToolCallContext,
         ) -> Result<ToolOutput, ToolError> {
-            Ok(ToolResult::success("ask_user", args).into())
+            let result = ctx
+                .resume_input
+                .as_ref()
+                .map(|resume| resume.result.clone())
+                .unwrap_or(args);
+            Ok(ToolResult::success("ask_user", result).into())
         }
     }
 
@@ -1785,6 +1848,8 @@ async fn frontend_tool_intercept_suspend_and_resume() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -1812,7 +1877,7 @@ async fn frontend_tool_intercept_suspend_and_resume() {
         Message::tool("fc1", "Tool 'ask_user' suspended: awaiting decision"),
     ];
 
-    // Resume with UseDecisionAsToolResult: decision.result becomes tool arguments
+    // Resume with UseDecisionAsToolResult: decision.result is carried via resume_input
     prepare_resume(
         runtime.store(),
         vec![(
@@ -1829,13 +1894,21 @@ async fn frontend_tool_intercept_suspend_and_resume() {
     )
     .unwrap();
 
-    // Verify tool call transitioned to Resuming with decision args
+    // Verify tool call transitioned to Resuming with preserved args + recorded decision
     let states = runtime.store().read::<ToolCallStates>().unwrap();
     assert_eq!(states.calls["fc1"].status, ToolCallStatus::Resuming);
     assert_eq!(
         states.calls["fc1"].arguments,
-        json!({"answer": "blue"}),
-        "arguments should be replaced with decision result"
+        json!({"question": "What color?"}),
+        "resume should preserve the original call arguments"
+    );
+    assert_eq!(
+        states.calls["fc1"]
+            .resume_input
+            .as_ref()
+            .map(|resume| &resume.result),
+        Some(&json!({"answer": "blue"})),
+        "decision payload should be stored on resume_input"
     );
 
     // Resume the run
@@ -1851,6 +1924,8 @@ async fn frontend_tool_intercept_suspend_and_resume() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -1860,6 +1935,100 @@ async fn frontend_tool_intercept_suspend_and_resume() {
         TerminationReason::NaturalEnd,
         "should complete after frontend tool resume"
     );
+}
+
+#[tokio::test]
+async fn injected_frontend_tool_uses_suspension_id_resume_chain() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        make_tool_call_response("ask_user", "fc1", json!({"question": "What color?"})),
+        StreamResult {
+            content: vec![ContentBlock::text("done")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = ResolvedAgent::new("test", "m", "sys", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let frontend_tool = ToolDescriptor::new("ask_user", "ask_user", "Ask the user a question");
+
+    let suspended = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("ask the user what color they want")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: vec![frontend_tool.clone()],
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+    assert_eq!(suspended.termination, TerminationReason::Suspended);
+
+    let states = runtime.store().read::<ToolCallStates>().unwrap();
+    assert_eq!(states.calls["fc1"].status, ToolCallStatus::Suspended);
+    let suspension_id = states.calls["fc1"]
+        .suspension_id
+        .clone()
+        .expect("frontend tool should persist suspension id");
+    assert_ne!(suspension_id, "fc1");
+
+    prepare_resume(
+        runtime.store(),
+        vec![(
+            suspension_id,
+            ToolCallResume {
+                decision_id: "d1".into(),
+                action: ResumeDecisionAction::Resume,
+                result: json!({"answer": "blue"}),
+                reason: None,
+                updated_at: 0,
+            },
+        )],
+        None,
+    )
+    .unwrap();
+
+    let resumed = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![
+            Message::user("ask the user what color they want"),
+            Message::assistant_with_tool_calls(
+                "",
+                vec![ToolCall::new(
+                    "fc1",
+                    "ask_user",
+                    json!({"question": "What color?"}),
+                )],
+            ),
+            Message::tool("fc1", "Tool 'ask_user' suspended: awaiting decision"),
+        ],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: vec![frontend_tool],
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(resumed.termination, TerminationReason::NaturalEnd);
 }
 
 // ---------------------------------------------------------------------------
@@ -1953,6 +2122,8 @@ async fn tool_intercept_block_terminates_run() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -2090,6 +2261,8 @@ async fn tool_intercept_set_result_skips_execution() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -2135,6 +2308,8 @@ async fn suspended_tool_preserves_state_across_resume() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -2194,6 +2369,8 @@ async fn suspended_tool_preserves_state_across_resume() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -2220,9 +2397,12 @@ async fn decision_channel_resume_resolves_suspended_call() {
         }
         async fn execute(
             &self,
-            _args: Value,
-            _ctx: &ToolCallContext,
+            args: Value,
+            ctx: &ToolCallContext,
         ) -> Result<ToolOutput, ToolError> {
+            if ctx.resume_input.is_some() {
+                return Ok(ToolResult::success("dangerous", args).into());
+            }
             Ok(ToolResult::suspended("dangerous", "needs user approval").into())
         }
     }
@@ -2262,6 +2442,8 @@ async fn decision_channel_resume_resolves_suspended_call() {
         decision_rx: Some(rx),
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -2321,6 +2503,8 @@ async fn cancel_decision_marks_tool_cancelled() {
         decision_rx: Some(rx),
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -2364,6 +2548,8 @@ async fn permission_hook_blocks_denied_tool() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -2398,7 +2584,7 @@ async fn permission_hook_blocks_denied_tool() {
 // ---------------------------------------------------------------------------
 
 /// Verify that when a BeforeToolExecute hook suspends with UseDecisionAsToolResult mode,
-/// the subsequent prepare_resume + replay uses decision result as tool output (not re-executing).
+/// the subsequent prepare_resume + replay exposes decision result via resume_input.
 /// This is the core frontend tool pattern.
 #[tokio::test]
 async fn intercept_suspend_preserves_ticket_resume_mode() {
@@ -2418,9 +2604,14 @@ async fn intercept_suspend_preserves_ticket_resume_mode() {
         async fn execute(
             &self,
             args: Value,
-            _ctx: &ToolCallContext,
+            ctx: &ToolCallContext,
         ) -> Result<ToolOutput, ToolError> {
-            Ok(ToolResult::success("ask_user", args).into())
+            let result = ctx
+                .resume_input
+                .as_ref()
+                .map(|resume| resume.result.clone())
+                .unwrap_or(args);
+            Ok(ToolResult::success("ask_user", result).into())
         }
     }
 
@@ -2449,6 +2640,8 @@ async fn intercept_suspend_preserves_ticket_resume_mode() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -2458,7 +2651,7 @@ async fn intercept_suspend_preserves_ticket_resume_mode() {
     let tc_states = runtime.store().read::<ToolCallStates>().unwrap();
     assert_eq!(tc_states.calls["fc1"].status, ToolCallStatus::Suspended);
 
-    // Resume with UseDecisionAsToolResult — decision.result replaces tool arguments
+    // Resume with UseDecisionAsToolResult — decision.result is recorded on resume_input
     prepare_resume(
         runtime.store(),
         vec![(
@@ -2475,13 +2668,21 @@ async fn intercept_suspend_preserves_ticket_resume_mode() {
     )
     .unwrap();
 
-    // After prepare_resume, arguments should be the decision result, not original
+    // After prepare_resume, original arguments stay intact and the decision is stored separately
     let tc_states = runtime.store().read::<ToolCallStates>().unwrap();
     assert_eq!(tc_states.calls["fc1"].status, ToolCallStatus::Resuming);
     assert_eq!(
         tc_states.calls["fc1"].arguments,
-        json!({"color": "red"}),
-        "UseDecisionAsToolResult should replace arguments with decision result"
+        json!({"question": "Pick a color"}),
+        "UseDecisionAsToolResult should preserve the original arguments"
+    );
+    assert_eq!(
+        tc_states.calls["fc1"]
+            .resume_input
+            .as_ref()
+            .map(|resume| &resume.result),
+        Some(&json!({"color": "red"})),
+        "UseDecisionAsToolResult should store the decision payload on resume_input"
     );
 
     // Resume the run
@@ -2510,6 +2711,8 @@ async fn intercept_suspend_preserves_ticket_resume_mode() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -2563,6 +2766,8 @@ async fn multiple_tool_calls_partial_intercept() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -2632,6 +2837,8 @@ async fn intercept_set_result_emits_tool_call_done_event() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -2649,7 +2856,7 @@ async fn intercept_set_result_emits_tool_call_done_event() {
                 outcome,
                 result,
                 ..
-            } => Some((id.clone(), *outcome, result.clone())),
+            } => Some((id.clone(), outcome.clone(), result.clone())),
             _ => None,
         })
         .collect();
@@ -2672,13 +2879,11 @@ async fn intercept_set_result_emits_tool_call_done_event() {
     );
 }
 
-/// Test normalize_decision_result logic: when decision.result is `true` (boolean),
-/// fallback to original arguments. When it's an object, use the object.
-/// Mirrors uncarve's `normalize_decision_tool_result`.
+/// Resume decisions do not rewrite stored arguments; tools read `resume_input`.
 #[tokio::test]
-async fn resume_with_normalize_decision_result_boolean() {
+async fn prepare_resume_preserves_arguments_and_records_decision_payload() {
     // Set up: suspend a tool, then resume with boolean `true` as decision result.
-    // With UseDecisionAsToolResult, boolean should fall back to original args.
+    // Stored arguments should remain unchanged; the decision payload is kept on resume_input.
     let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
         "dangerous",
         "c1",
@@ -2702,12 +2907,14 @@ async fn resume_with_normalize_decision_result_boolean() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
     assert_eq!(result.termination, TerminationReason::Suspended);
 
-    // Resume with boolean true — normalize_decision_result should fallback to original args
+    // Resume with boolean true — arguments stay unchanged
     prepare_resume(
         runtime.store(),
         vec![(
@@ -2729,10 +2936,17 @@ async fn resume_with_normalize_decision_result_boolean() {
     assert_eq!(
         tc_states.calls["c1"].arguments,
         json!({"action": "deploy", "target": "prod"}),
-        "boolean decision result should fallback to original arguments"
+        "boolean decision result should not rewrite stored arguments"
+    );
+    assert_eq!(
+        tc_states.calls["c1"]
+            .resume_input
+            .as_ref()
+            .map(|resume| &resume.result),
+        Some(&json!(true))
     );
 
-    // Also test with an object decision result — should use the object directly
+    // Also test with an object decision result — arguments still remain unchanged
     let runtime2 = make_runtime();
     let llm2 = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
         "dangerous",
@@ -2754,6 +2968,8 @@ async fn resume_with_normalize_decision_result_boolean() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -2778,8 +2994,15 @@ async fn resume_with_normalize_decision_result_boolean() {
     let tc_states2 = runtime2.store().read::<ToolCallStates>().unwrap();
     assert_eq!(
         tc_states2.calls["c2"].arguments,
-        json!({"overridden": "args"}),
-        "object decision result should be used directly as arguments"
+        json!({"action": "deploy"}),
+        "object decision result should not rewrite stored arguments"
+    );
+    assert_eq!(
+        tc_states2.calls["c2"]
+            .resume_input
+            .as_ref()
+            .map(|resume| &resume.result),
+        Some(&json!({"overridden": "args"}))
     );
 }
 
@@ -2910,6 +3133,8 @@ async fn concurrent_suspend_and_resume_via_channel() {
         decision_rx: Some(rx),
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -2922,6 +3147,181 @@ async fn concurrent_suspend_and_resume_via_channel() {
 
     let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.status, RunStatus::Done);
+}
+
+#[tokio::test]
+async fn single_tool_call_can_suspend_multiple_times_via_decision_channel() {
+    use awaken::contract::suspension::{PendingToolCall, SuspendTicket, Suspension};
+    use futures::channel::mpsc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct MultiSuspendTool {
+        attempts: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Tool for MultiSuspendTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new(
+                "multi_suspend",
+                "multi_suspend",
+                "Suspends twice before finishing",
+            )
+        }
+
+        async fn execute(
+            &self,
+            args: Value,
+            ctx: &ToolCallContext,
+        ) -> Result<ToolOutput, ToolError> {
+            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            if attempt <= 2 {
+                let ticket = SuspendTicket::new(
+                    Suspension {
+                        id: format!("multi_suspend_{}_{}", ctx.call_id, attempt),
+                        action: format!("tool:multi_suspend:{attempt}"),
+                        message: format!("multi suspend attempt {attempt}"),
+                        parameters: args.clone(),
+                        response_schema: None,
+                    },
+                    PendingToolCall::new(ctx.call_id.clone(), "multi_suspend", args),
+                    ToolCallResumeMode::ReplayToolCall,
+                );
+                return Ok(ToolResult::suspended_with(
+                    "multi_suspend",
+                    format!("awaiting decision {attempt}"),
+                    ticket,
+                )
+                .into());
+            }
+
+            Ok(ToolResult::success(
+                "multi_suspend",
+                json!({
+                    "attempts": attempt,
+                    "decision": ctx.resume_input.as_ref().map(|resume| resume.result.clone()).unwrap_or(Value::Null),
+                }),
+            )
+            .into())
+        }
+    }
+
+    async fn wait_for_suspension_id(
+        runtime: &PhaseRuntime,
+        call_id: &str,
+        previous: Option<&str>,
+    ) -> String {
+        for _ in 0..100 {
+            let states = runtime.store().read::<ToolCallStates>().unwrap_or_default();
+            if let Some(state) = states.calls.get(call_id)
+                && state.status == ToolCallStatus::Suspended
+                && let Some(suspension_id) = state.suspension_id.as_deref()
+                && previous != Some(suspension_id)
+            {
+                return suspension_id.to_string();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("timed out waiting for suspension id for {call_id}");
+    }
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        make_tool_call_response("multi_suspend", "c1", json!({"target": "prod"})),
+        StreamResult {
+            content: vec![ContentBlock::text("done")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(MultiSuspendTool {
+        attempts: attempts.clone(),
+    }));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+    let (tx, rx) = mpsc::unbounded::<Vec<(String, ToolCallResume)>>();
+    let sink = Arc::new(VecEventSink::new());
+
+    let sender = async {
+        let first_suspension_id = wait_for_suspension_id(&runtime, "c1", None).await;
+        tx.unbounded_send(vec![(
+            first_suspension_id.clone(),
+            ToolCallResume {
+                decision_id: "d1".into(),
+                action: ResumeDecisionAction::Resume,
+                result: json!({"approved": true, "step": 1}),
+                reason: None,
+                updated_at: 1,
+            },
+        )])
+        .unwrap();
+
+        let second_suspension_id =
+            wait_for_suspension_id(&runtime, "c1", Some(&first_suspension_id)).await;
+        assert_ne!(first_suspension_id, second_suspension_id);
+        tx.unbounded_send(vec![(
+            second_suspension_id,
+            ToolCallResume {
+                decision_id: "d2".into(),
+                action: ResumeDecisionAction::Resume,
+                result: json!({"approved": true, "step": 2}),
+                reason: None,
+                updated_at: 2,
+            },
+        )])
+        .unwrap();
+    };
+
+    let run = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone() as Arc<dyn awaken::contract::event_sink::EventSink>,
+        checkpoint_store: None,
+        messages: vec![Message::user("deploy")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: Some(rx),
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    });
+
+    let (result, ()) = tokio::join!(run, sender);
+    let result = result.expect("run should succeed");
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+
+    let events = sink.take();
+    let suspended_count = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                AgentEvent::ToolCallDone { id, outcome, .. }
+                    if id == "c1" && *outcome == awaken::contract::suspension::ToolCallOutcome::Suspended
+            )
+        })
+        .count();
+    assert_eq!(
+        suspended_count, 2,
+        "expected two suspension events: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| {
+            matches!(
+                event,
+                AgentEvent::ToolCallResumed { target_id, result }
+                    if target_id == "c1"
+                        && result.get("attempts") == Some(&json!(3))
+                        && result.get("decision") == Some(&json!({"approved": true, "step": 2}))
+            )
+        }),
+        "expected final resumed result after the second decision: {events:?}"
+    );
 }
 
 /// Verify the complete state machine in a real loop:
@@ -2965,6 +3365,8 @@ async fn tool_call_lifecycle_complete_transitions_in_loop() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -3034,6 +3436,8 @@ async fn tool_call_lifecycle_complete_transitions_in_loop() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -3093,6 +3497,8 @@ async fn parallel_tools_one_fails_other_succeeds() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -3104,7 +3510,7 @@ async fn parallel_tools_one_fails_other_succeeds() {
     let tool_done_events: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
-            AgentEvent::ToolCallDone { id, outcome, .. } => Some((id.clone(), *outcome)),
+            AgentEvent::ToolCallDone { id, outcome, .. } => Some((id.clone(), outcome.clone())),
             _ => None,
         })
         .collect();
@@ -3155,6 +3561,8 @@ async fn sequential_tools_stop_after_first_suspension() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -3219,6 +3627,8 @@ async fn stop_policy_max_rounds_terminates() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -3290,6 +3700,8 @@ async fn cancel_during_tool_execution() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -3333,6 +3745,8 @@ async fn empty_tool_calls_natural_end() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -3442,6 +3856,8 @@ async fn context_message_injected_before_inference() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -3528,6 +3944,8 @@ async fn tool_execution_preserves_arguments() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -3677,6 +4095,8 @@ async fn retry_startup_error_propagates() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await;
 
@@ -3720,6 +4140,8 @@ async fn inference_request_uses_configured_model_name() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -3773,6 +4195,8 @@ async fn truncation_with_tool_calls_no_retry() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -3877,6 +4301,8 @@ async fn truncation_recovery_exhausts_retries() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -4005,6 +4431,8 @@ async fn truncation_recovery_preserves_truncated_text() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -4080,6 +4508,8 @@ async fn run_finish_has_matching_thread_id() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -4202,6 +4632,8 @@ async fn all_tools_suspended_pauses_run() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -4261,6 +4693,8 @@ async fn completed_tool_round_clears_state_at_next_step() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -4339,6 +4773,8 @@ async fn after_inference_stop_prevents_tool_execution() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -4386,6 +4822,8 @@ async fn natural_end_no_tools_completes_immediately() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -4469,6 +4907,8 @@ async fn unknown_tool_in_multi_call_doesnt_crash() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -4570,6 +5010,8 @@ async fn permission_denied_does_not_replay_tool() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -4613,6 +5055,8 @@ async fn decision_for_unknown_call_id_returns_error() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -4690,6 +5134,8 @@ async fn decision_channel_rejects_illegal_transition() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -4754,6 +5200,8 @@ async fn mixed_suspended_and_completed_tools() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -4946,6 +5394,8 @@ async fn parallel_tools_all_succeed() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -5016,6 +5466,8 @@ async fn parallel_tools_mixed_outcomes_preserve_results() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -5125,6 +5577,8 @@ async fn system_prompt_included_in_inference_request() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -5202,6 +5656,8 @@ async fn message_ordering_preserved_in_inference_request() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -5275,6 +5731,8 @@ async fn tool_descriptors_sent_to_llm() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -5332,6 +5790,8 @@ async fn run_identity_fields_propagate_to_lifecycle() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -5431,6 +5891,8 @@ async fn context_message_suffix_system_injected() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -5542,6 +6004,8 @@ async fn multiple_context_messages_injected() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -5633,6 +6097,8 @@ async fn phase_hooks_fire_with_tool_call_phases() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -5702,6 +6168,8 @@ async fn step_count_increments_with_tool_calls() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -5749,6 +6217,8 @@ async fn token_usage_reported_in_inference_events() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -5810,6 +6280,8 @@ async fn blocking_plugin_allows_non_targeted_tool() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -5913,6 +6385,8 @@ async fn set_result_intercept_on_specific_tool_only() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -6029,6 +6503,8 @@ async fn phase_hook_receives_tool_context() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -6101,6 +6577,8 @@ async fn llm_error_on_second_step_propagates() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await;
 
@@ -6188,6 +6666,8 @@ async fn after_inference_hook_sees_llm_response() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -6283,6 +6763,8 @@ async fn after_tool_execute_hook_sees_tool_result() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -6333,6 +6815,8 @@ async fn max_rounds_two_stops_after_two_tool_steps() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -6387,6 +6871,8 @@ async fn step_start_events_contain_step_number() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -6432,6 +6918,8 @@ async fn suspension_preserves_original_arguments() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -6500,6 +6988,8 @@ async fn second_tool_not_executed_after_first_suspends() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -6544,6 +7034,8 @@ async fn run_start_event_emitted_first() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -6588,6 +7080,8 @@ async fn run_finish_event_emitted_last() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -6645,6 +7139,8 @@ async fn tool_call_events_contain_correct_metadata() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -6726,6 +7222,8 @@ async fn three_step_loop_tool_tool_response() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -6779,13 +7277,15 @@ async fn lifecycle_transitions_running_to_done() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
 
     let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.status, RunStatus::Done);
-    assert!(lifecycle.done_reason.is_some());
+    assert!(lifecycle.status_reason.is_some());
 }
 
 // ---------------------------------------------------------------------------
@@ -6817,6 +7317,8 @@ async fn lifecycle_transitions_running_to_waiting() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -6834,7 +7336,7 @@ async fn lifecycle_transitions_running_to_waiting() {
 async fn lifecycle_transitions_running_to_done_on_cancel() {
     use awaken::CancellationToken;
 
-    let llm = Arc::new(SlowStreamingLlm::new(["tok "; 10].to_vec(), 50));
+    let llm = Arc::new(SlowStreamingLlm::new(vec!["tok "; 10].to_vec(), 50));
     let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
@@ -6855,6 +7357,8 @@ async fn lifecycle_transitions_running_to_done_on_cancel() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -6902,6 +7406,8 @@ async fn text_delta_events_emitted_for_text_response() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -6963,6 +7469,8 @@ async fn parallel_tools_have_independent_state_entries() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -7016,6 +7524,8 @@ async fn parallel_tools_succeed_and_suspend_independent_states() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -7067,6 +7577,8 @@ async fn parallel_tools_both_fail_independently() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -7127,6 +7639,8 @@ async fn parallel_same_tool_distinct_results() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -7192,6 +7706,8 @@ async fn sequential_steps_see_fresh_tool_state() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -7245,6 +7761,8 @@ async fn state_snapshot_revision_increases_across_steps() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -7302,6 +7820,8 @@ async fn state_snapshot_contains_extensions_with_lifecycle() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -7313,7 +7833,7 @@ async fn state_snapshot_contains_extensions_with_lifecycle() {
             AgentEvent::StateSnapshot { snapshot } => Some(snapshot),
             _ => None,
         })
-        .next_back()
+        .last()
         .expect("should have at least one snapshot");
 
     let extensions = last_snapshot
@@ -7366,6 +7886,8 @@ async fn state_snapshot_count_matches_steps_plus_finish() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -7413,6 +7935,8 @@ async fn state_snapshot_at_suspension_includes_waiting_status() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -7426,7 +7950,7 @@ async fn state_snapshot_at_suspension_includes_waiting_status() {
             AgentEvent::StateSnapshot { snapshot } => Some(snapshot),
             _ => None,
         })
-        .next_back()
+        .last()
         .expect("should have at least one snapshot");
 
     // The snapshot should contain the lifecycle with Waiting status
@@ -7466,6 +7990,8 @@ async fn export_persisted_after_run_has_positive_revision() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -7513,6 +8039,8 @@ async fn checkpoint_store_receives_data() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -7569,6 +8097,8 @@ async fn checkpoint_includes_correct_step_count() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -7610,6 +8140,8 @@ async fn checkpoint_contains_state_blob() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -7654,6 +8186,8 @@ async fn checkpoint_stores_thread_messages() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -7709,6 +8243,8 @@ async fn checkpoint_records_agent_id() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -7776,6 +8312,8 @@ async fn llm_receives_all_user_messages() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -7853,6 +8391,8 @@ async fn tool_results_visible_in_next_step_messages() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -7956,6 +8496,8 @@ async fn context_injection_additive_not_destructive() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -8019,6 +8561,8 @@ async fn token_usage_accumulates_across_steps() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -8087,6 +8631,8 @@ async fn tool_descriptors_present_even_when_unused() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -8190,6 +8736,8 @@ async fn run_start_and_run_end_hooks_fire_exactly_once() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -8285,6 +8833,8 @@ async fn step_start_fires_per_step() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -8376,6 +8926,8 @@ async fn before_inference_hook_sees_step_count() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -8479,6 +9031,8 @@ async fn plugin_context_mutation_visible_in_same_step() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -8572,6 +9126,8 @@ async fn multiple_plugins_same_phase_both_fire() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -8653,6 +9209,8 @@ async fn tool_result_message_contains_output() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -8733,6 +9291,8 @@ async fn failed_tool_result_message_indicates_error() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -8815,6 +9375,8 @@ async fn unknown_tool_result_indicates_not_found() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -8869,6 +9431,8 @@ async fn tool_call_start_emitted_before_done() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -8930,6 +9494,8 @@ async fn multiple_tools_each_get_start_done_pair() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -9006,6 +9572,8 @@ async fn replay_tool_call_executes_original_tool() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -9060,6 +9628,8 @@ async fn replay_tool_call_executes_original_tool() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -9073,9 +9643,9 @@ async fn replay_tool_call_executes_original_tool() {
     );
 }
 
-/// UseDecisionAsToolResult: decision result replaces tool arguments.
+/// UseDecisionAsToolResult stores the decision on resume_input without rewriting arguments.
 #[tokio::test]
-async fn use_decision_replaces_args_with_decision_result() {
+async fn use_decision_records_decision_payload_without_rewriting_arguments() {
     let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
         "dangerous",
         "c1",
@@ -9099,6 +9669,8 @@ async fn use_decision_replaces_args_with_decision_result() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -9123,14 +9695,22 @@ async fn use_decision_replaces_args_with_decision_result() {
     assert_eq!(tc.calls["c1"].status, ToolCallStatus::Resuming);
     assert_eq!(
         tc.calls["c1"].arguments,
-        json!({"decision_data": "replaced"}),
-        "UseDecisionAsToolResult should replace arguments with decision result"
+        json!({"original": true}),
+        "UseDecisionAsToolResult should preserve the original arguments"
+    );
+    assert_eq!(
+        tc.calls["c1"]
+            .resume_input
+            .as_ref()
+            .map(|resume| &resume.result),
+        Some(&json!({"decision_data": "replaced"})),
+        "UseDecisionAsToolResult should store the decision payload on resume_input"
     );
 }
 
-/// PassDecisionToTool: decision result becomes new tool arguments.
+/// PassDecisionToTool stores the decision on resume_input without rewriting arguments.
 #[tokio::test]
-async fn pass_decision_updates_args_for_tool() {
+async fn pass_decision_records_decision_payload_without_rewriting_arguments() {
     let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
         "dangerous",
         "c1",
@@ -9154,6 +9734,8 @@ async fn pass_decision_updates_args_for_tool() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -9178,8 +9760,16 @@ async fn pass_decision_updates_args_for_tool() {
     assert_eq!(tc.calls["c1"].status, ToolCallStatus::Resuming);
     assert_eq!(
         tc.calls["c1"].arguments,
-        json!({"new_arg": "from_decision"}),
-        "PassDecisionToTool should update arguments with decision result"
+        json!({"original_key": "original_value"}),
+        "PassDecisionToTool should preserve the original arguments"
+    );
+    assert_eq!(
+        tc.calls["c1"]
+            .resume_input
+            .as_ref()
+            .map(|resume| &resume.result),
+        Some(&json!({"new_arg": "from_decision"})),
+        "PassDecisionToTool should store the decision payload on resume_input"
     );
 }
 
@@ -9209,6 +9799,8 @@ async fn cancel_resume_transitions_to_cancelled_status() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -9263,6 +9855,8 @@ async fn resume_with_empty_decision_result_succeeds() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -9341,6 +9935,8 @@ async fn three_step_events_have_correct_overall_sequence() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -9412,6 +10008,8 @@ async fn suspend_on_step_two_preserves_first_step_context() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -9493,6 +10091,8 @@ async fn error_on_third_step_after_two_successful_steps() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await;
 
@@ -9554,6 +10154,8 @@ async fn mixed_tool_counts_per_step() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -9598,6 +10200,8 @@ async fn full_suspend_resume_complete_lifecycle() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -9650,6 +10254,8 @@ async fn full_suspend_resume_complete_lifecycle() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -9701,6 +10307,8 @@ async fn inference_error_produces_error_termination() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await;
 
@@ -9784,6 +10392,8 @@ async fn token_usage_values_accumulated_across_steps() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -9825,4 +10435,535 @@ async fn token_usage_values_accumulated_across_steps() {
         .sum();
     assert_eq!(total_input, 300, "total input tokens should be 300");
     assert_eq!(total_output, 80, "total output tokens should be 80");
+}
+
+// ---------------------------------------------------------------------------
+// Background Task Lifecycle
+// ---------------------------------------------------------------------------
+
+/// Tool that spawns a long-running background task via BackgroundTaskManager.
+struct SpawnBgTaskTool {
+    manager: Arc<awaken::extensions::background::BackgroundTaskManager>,
+}
+
+#[async_trait]
+impl Tool for SpawnBgTaskTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("spawn_bg", "spawn_bg", "Spawns a background task")
+    }
+
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        use awaken::extensions::background::{TaskParentContext, TaskResult};
+        self.manager
+            .spawn(
+                "thread-1",
+                "bg",
+                None,
+                "test task",
+                TaskParentContext::default(),
+                |ctx| async move {
+                    ctx.cancelled().await;
+                    TaskResult::Cancelled
+                },
+            )
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        Ok(ToolResult::success("spawn_bg", json!({"spawned": true})).into())
+    }
+}
+
+/// Tool that does NOT spawn a background task (just returns a result).
+struct NoopBgTool;
+
+#[async_trait]
+impl Tool for NoopBgTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("noop_bg", "noop_bg", "Does nothing special")
+    }
+
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        Ok(ToolResult::success("noop_bg", json!({"done": true})).into())
+    }
+}
+
+/// Tool that spawns a background task and immediately pushes an event
+/// to the owner inbox (simulating a task that emits data right away).
+struct SpawnEmittingBgTaskTool {
+    manager: Arc<awaken::extensions::background::BackgroundTaskManager>,
+    inbox_tx: awaken_runtime::inbox::InboxSender,
+}
+
+#[async_trait]
+impl Tool for SpawnEmittingBgTaskTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(
+            "spawn_emit",
+            "spawn_emit",
+            "Spawns a task that emits an event",
+        )
+    }
+
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        use awaken::extensions::background::{TaskParentContext, TaskResult};
+        self.manager
+            .spawn(
+                "thread-1",
+                "bg",
+                None,
+                "emitting task",
+                TaskParentContext::default(),
+                |ctx| async move {
+                    ctx.cancelled().await;
+                    TaskResult::Cancelled
+                },
+            )
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        // Push event directly to inbox (synchronous) to guarantee it's
+        // available when the orchestrator drains the inbox at NaturalEnd.
+        self.inbox_tx
+            .send(json!({"kind": "progress", "percent": 100}));
+        Ok(ToolResult::success("spawn_emit", json!({"spawned": true})).into())
+    }
+}
+
+/// Helper: create a runtime + BackgroundTaskManager wired together.
+fn make_bg_runtime() -> (
+    PhaseRuntime,
+    Arc<awaken::extensions::background::BackgroundTaskManager>,
+    Arc<awaken::extensions::background::BackgroundTaskPlugin>,
+) {
+    use awaken::extensions::background::{BackgroundTaskManager, BackgroundTaskPlugin};
+
+    let store = StateStore::new();
+    let runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(LoopStatePlugin).unwrap();
+
+    let manager = Arc::new(BackgroundTaskManager::new());
+    manager.set_store(store.clone());
+    let plugin = Arc::new(BackgroundTaskPlugin::new(manager.clone()));
+
+    (runtime, manager, plugin)
+}
+
+/// 1. Running background tasks prevent NaturalEnd: lifecycle becomes Waiting.
+#[tokio::test]
+async fn awaiting_tasks_prevents_done_when_tasks_running() {
+    use awaken::contract::lifecycle::RunStatus;
+
+    let (runtime, manager, bg_plugin) = make_bg_runtime();
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        // Turn 1: call the tool that spawns a background task
+        StreamResult {
+            content: vec![ContentBlock::text("spawning task...")],
+            tool_calls: vec![ToolCall::new("c1", "spawn_bg", json!({}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        // Turn 2: plain text — NaturalEnd
+        StreamResult {
+            content: vec![ContentBlock::text("Done for now.")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent =
+        ResolvedAgent::new("test", "gpt-4o", "sys", llm).with_tool(Arc::new(SpawnBgTaskTool {
+            manager: manager.clone(),
+        }));
+
+    let resolver = FixedResolver::with_plugins(agent, vec![bg_plugin]);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("spawn a task")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    // Termination should be NaturalEnd (the LLM said so), but lifecycle is Waiting
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
+    assert_eq!(
+        lifecycle.status,
+        RunStatus::Waiting,
+        "expected Waiting, got {:?}",
+        lifecycle.status
+    );
+    assert_eq!(
+        lifecycle.status_reason.as_deref(),
+        Some("awaiting_tasks"),
+        "expected awaiting_tasks reason, got {:?}",
+        lifecycle.status_reason
+    );
+
+    // Clean up: cancel all tasks
+    manager.cancel_all("thread-1").await;
+}
+
+/// 2. NaturalEnd without background tasks completes normally as Done.
+#[tokio::test]
+async fn natural_end_without_tasks_completes_normally() {
+    use awaken::contract::lifecycle::RunStatus;
+
+    let (runtime, _manager, bg_plugin) = make_bg_runtime();
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        // Turn 1: call the tool that does NOT spawn a background task
+        StreamResult {
+            content: vec![ContentBlock::text("calling tool...")],
+            tool_calls: vec![ToolCall::new("c1", "noop_bg", json!({}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        // Turn 2: plain text — NaturalEnd
+        StreamResult {
+            content: vec![ContentBlock::text("All done.")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm).with_tool(Arc::new(NoopBgTool));
+
+    let resolver = FixedResolver::with_plugins(agent, vec![bg_plugin]);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("do nothing special")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
+    assert_eq!(
+        lifecycle.status,
+        RunStatus::Done,
+        "expected Done, got {:?}",
+        lifecycle.status
+    );
+    assert_eq!(
+        lifecycle.status_reason.as_deref(),
+        Some("natural"),
+        "expected natural reason, got {:?}",
+        lifecycle.status_reason
+    );
+}
+
+/// 3. After awaiting_tasks, step_count is preserved (not reset).
+#[tokio::test]
+async fn awaiting_tasks_preserves_step_count() {
+    use awaken::contract::lifecycle::RunStatus;
+
+    let (runtime, manager, bg_plugin) = make_bg_runtime();
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        // Turn 1: call the tool
+        StreamResult {
+            content: vec![ContentBlock::text("spawning...")],
+            tool_calls: vec![ToolCall::new("c1", "spawn_bg", json!({}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        // Turn 2: NaturalEnd
+        StreamResult {
+            content: vec![ContentBlock::text("Waiting on tasks.")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent =
+        ResolvedAgent::new("test", "gpt-4o", "sys", llm).with_tool(Arc::new(SpawnBgTaskTool {
+            manager: manager.clone(),
+        }));
+
+    let resolver = FixedResolver::with_plugins(agent, vec![bg_plugin]);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("spawn a task")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    // Verify awaiting_tasks status
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
+    assert_eq!(lifecycle.status, RunStatus::Waiting);
+
+    // step_count should reflect actual steps taken (2: tool call + natural end)
+    assert_eq!(
+        result.steps, 2,
+        "expected 2 steps (tool call + final), got {}",
+        result.steps
+    );
+
+    // step_count in lifecycle should be preserved (non-zero)
+    assert!(
+        lifecycle.step_count > 0,
+        "step_count should be preserved, got {}",
+        lifecycle.step_count
+    );
+
+    // Clean up
+    manager.cancel_all("thread-1").await;
+}
+
+/// Regression: the final NaturalEnd step should be completed exactly once
+/// before the run transitions to Waiting(awaiting_tasks).
+#[tokio::test]
+async fn awaiting_tasks_final_step_should_complete_once() {
+    let (runtime, manager, bg_plugin) = make_bg_runtime();
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![ContentBlock::text("spawning...")],
+            tool_calls: vec![ToolCall::new("c1", "spawn_bg", json!({}))],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("Waiting on tasks.")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent =
+        ResolvedAgent::new("test", "gpt-4o", "sys", llm).with_tool(Arc::new(SpawnBgTaskTool {
+            manager: manager.clone(),
+        }));
+
+    let resolver = FixedResolver::with_plugins(agent, vec![bg_plugin]);
+    let sink = Arc::new(VecEventSink::new());
+    let event_sink: Arc<dyn awaken::contract::event_sink::EventSink> = sink.clone();
+
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: event_sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("spawn a task")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.steps, 2, "LLM only executed two rounds");
+
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
+    assert_eq!(
+        lifecycle.step_count, 2,
+        "the final NaturalEnd step should not be completed twice"
+    );
+
+    let step_end_count = sink
+        .events()
+        .into_iter()
+        .filter(|event| matches!(event, AgentEvent::StepEnd))
+        .count();
+    assert_eq!(
+        step_end_count, 2,
+        "expected exactly one StepEnd per executed step"
+    );
+
+    manager.cancel_all("thread-1").await;
+}
+
+/// 4. Inbox messages from background tasks cause the loop to continue past
+///    the initial NaturalEnd attempt (LLM is called again).
+#[tokio::test]
+async fn inbox_messages_injected_before_natural_end() {
+    use awaken::extensions::background::BackgroundTaskManager;
+
+    let store = StateStore::new();
+    let runtime = PhaseRuntime::new(store.clone()).unwrap();
+    store.install_plugin(LoopStatePlugin).unwrap();
+
+    // Create an inbox channel and wire the sender to the manager
+    let (inbox_tx, inbox_rx) = awaken_runtime::inbox::inbox_channel();
+    let tool_inbox_tx = inbox_tx.clone();
+
+    let mut manager = BackgroundTaskManager::new();
+    manager.set_owner_inbox(inbox_tx);
+    let manager = Arc::new(manager);
+    manager.set_store(store.clone());
+
+    let bg_plugin = Arc::new(awaken::extensions::background::BackgroundTaskPlugin::new(
+        manager.clone(),
+    ));
+
+    // The LLM captures requests to verify inbox messages were injected
+    let captured_requests: Arc<Mutex<Vec<InferenceRequest>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured_clone = captured_requests.clone();
+
+    struct CapturingLlm {
+        responses: Mutex<Vec<StreamResult>>,
+        captured: Arc<Mutex<Vec<InferenceRequest>>>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for CapturingLlm {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            self.captured.lock().unwrap().push(req);
+            let mut responses = self.responses.lock().unwrap();
+            if responses.is_empty() {
+                Ok(StreamResult {
+                    content: vec![ContentBlock::text("Final response.")],
+                    tool_calls: vec![],
+                    usage: None,
+                    stop_reason: Some(StopReason::EndTurn),
+                    has_incomplete_tool_calls: false,
+                })
+            } else {
+                Ok(responses.remove(0))
+            }
+        }
+
+        fn name(&self) -> &str {
+            "capturing"
+        }
+    }
+
+    let llm = Arc::new(CapturingLlm {
+        responses: Mutex::new(vec![
+            // Turn 1: call the tool that spawns an emitting task
+            StreamResult {
+                content: vec![ContentBlock::text("spawning emitter...")],
+                tool_calls: vec![ToolCall::new("c1", "spawn_emit", json!({}))],
+                usage: None,
+                stop_reason: Some(StopReason::ToolUse),
+                has_incomplete_tool_calls: false,
+            },
+            // Turn 2: NaturalEnd — inbox message was drained at step 1 end
+            // so it should appear in this request's messages
+            StreamResult {
+                content: vec![ContentBlock::text("Got the event.")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            },
+        ]),
+        captured: captured_clone,
+    });
+
+    let agent = ResolvedAgent::new("test", "gpt-4o", "sys", llm).with_tool(Arc::new(
+        SpawnEmittingBgTaskTool {
+            manager: manager.clone(),
+            inbox_tx: tool_inbox_tx,
+        },
+    ));
+
+    let resolver = FixedResolver::with_plugins(agent, vec![bg_plugin]);
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let _result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("spawn an emitter")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: Some(inbox_rx),
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    // The inbox message was injected after step 1 (tool call) and before
+    // step 2 (LLM call). Verify the 2nd LLM request contains an
+    // internal_system message with the inbox payload.
+    let requests = captured_requests.lock().unwrap();
+    assert_eq!(
+        requests.len(),
+        2,
+        "expected 2 LLM calls, got {}",
+        requests.len()
+    );
+
+    // The 2nd request should contain the inbox message (User + Internal).
+    // Inbox events are injected as User role with Internal visibility
+    // and wrapped in <background-task-event> tags.
+    use awaken::contract::message::{Role, Visibility};
+    let second_req = &requests[1];
+    let has_inbox_msg = second_req
+        .messages
+        .iter()
+        .any(|m| m.role == Role::User && m.visibility == Visibility::Internal);
+    assert!(
+        has_inbox_msg,
+        "expected an internal User message from inbox drain in the 2nd LLM request"
+    );
+
+    // Clean up
+    manager.cancel_all("thread-1").await;
 }

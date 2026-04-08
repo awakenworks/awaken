@@ -29,8 +29,9 @@ use awaken_contract::contract::inference::InferenceOverride;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::suspension::ToolCallResume;
-use awaken_contract::contract::tool::ToolResult;
+use awaken_contract::contract::tool::{ToolResult, ToolStatus};
 use futures::channel::mpsc;
+use serde_json::Value;
 
 use crate::agent::state::{RunLifecycle, ToolCallStates};
 
@@ -65,6 +66,7 @@ impl crate::plugins::Plugin for LoopStatePlugin {
         })?;
         r.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
         r.register_key::<ContextMessageStore>(StateKeyOptions::default())?;
+        r.register_key::<crate::agent::state::PendingWorkKey>(StateKeyOptions::default())?;
 
         Ok(())
     }
@@ -126,6 +128,29 @@ fn tool_result_to_content(result: &ToolResult) -> String {
     }
 }
 
+fn tool_result_to_resume_payload(result: &ToolResult) -> Value {
+    match result.status {
+        ToolStatus::Success => {
+            if result.metadata.is_empty() {
+                result.data.clone()
+            } else {
+                serde_json::json!({
+                    "data": result.data,
+                    "metadata": result.metadata,
+                })
+            }
+        }
+        ToolStatus::Error => {
+            if let Some(message) = result.message.as_ref() {
+                serde_json::json!({ "error": message })
+            } else {
+                result.data.clone()
+            }
+        }
+        ToolStatus::Pending => Value::Null,
+    }
+}
+
 /// All parameters for executing the agent loop.
 pub struct AgentLoopParams<'a> {
     /// Resolves agent IDs to config + execution environment.
@@ -154,6 +179,11 @@ pub struct AgentLoopParams<'a> {
     /// whose execution happens client-side. They are made visible to the LLM but
     /// have no executor — the runtime intercepts them before execution and suspends.
     pub frontend_tools: Vec<awaken_contract::contract::tool::ToolDescriptor>,
+    /// Optional inbox receiver for background-task messages.
+    pub inbox: Option<crate::inbox::InboxReceiver>,
+    /// When `true`, the run is a continuation of a previous awaiting_tasks run.
+    /// The orchestrator emits `SetRunning` instead of `Start`.
+    pub is_continuation: bool,
 }
 
 /// Build an execution environment for the agent loop.

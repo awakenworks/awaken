@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::lifecycle::TerminationReason;
+use awaken_contract::contract::suspension::ToolCallResumeMode;
 use awaken_contract::contract::tool::ToolStatus;
 use awaken_contract::contract::transport::Transcoder;
 use serde_json::{Value, json};
@@ -182,12 +183,22 @@ impl AiSdkEncoder {
                         vec![UIStreamEvent::tool_output_available(id, output)]
                     }
                     ToolStatus::Pending => {
-                        // Suspended tool call — frontend should provide the
-                        // result. Emit nothing here; the TOOL_CALL_END from
-                        // ToolCallReady already set state to input-available.
-                        // The frontend renders its UI (color picker, user
-                        // input, etc.) and submits via addToolOutput.
-                        Vec::new()
+                        if let Some(ticket) = result.suspension.as_ref()
+                            && ticket.resume_mode == ToolCallResumeMode::ReplayToolCall
+                            && !ticket.suspension.id.trim().is_empty()
+                        {
+                            vec![UIStreamEvent::tool_approval_request(
+                                &ticket.suspension.id,
+                                id,
+                            )]
+                        } else {
+                            // Suspended tool call — frontend should provide the
+                            // result. Emit nothing here; the TOOL_CALL_END from
+                            // ToolCallReady already set state to input-available.
+                            // The frontend renders its UI (color picker, user
+                            // input, etc.) and submits via addToolOutput.
+                            Vec::new()
+                        }
                     }
                     ToolStatus::Error => {
                         let error_text =

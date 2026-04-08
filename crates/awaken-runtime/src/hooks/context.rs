@@ -8,6 +8,7 @@ use awaken_contract::StateError;
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::inference::LLMResponse;
 use awaken_contract::contract::message::Message;
+use awaken_contract::contract::suspension::ToolCallResume;
 use awaken_contract::contract::tool::ToolResult;
 use awaken_contract::model::Phase;
 use awaken_contract::registry_spec::{AgentSpec, PluginConfigKey};
@@ -42,7 +43,9 @@ pub struct PhaseContext {
     pub llm_response: Option<LLMResponse>,
 
     // Resume decision (set during BeforeToolExecute when resuming a suspended tool call)
-    pub resume_input: Option<awaken_contract::contract::suspension::ToolCallResume>,
+    pub resume_input: Option<ToolCallResume>,
+    pub suspension_id: Option<String>,
+    pub suspension_reason: Option<String>,
 
     /// Optional cancellation token for cooperative cancellation at phase boundaries.
     pub cancellation_token: Option<CancellationToken>,
@@ -66,6 +69,8 @@ impl PhaseContext {
             tool_result: None,
             llm_response: None,
             resume_input: None,
+            suspension_id: None,
+            suspension_reason: None,
             cancellation_token: None,
             profile_access: None,
         }
@@ -134,11 +139,19 @@ impl PhaseContext {
     }
 
     #[must_use]
-    pub fn with_resume_input(
-        mut self,
-        resume: awaken_contract::contract::suspension::ToolCallResume,
-    ) -> Self {
+    pub fn with_resume_input(mut self, resume: ToolCallResume) -> Self {
         self.resume_input = Some(resume);
+        self
+    }
+
+    #[must_use]
+    pub fn with_suspension(
+        mut self,
+        suspension_id: Option<String>,
+        suspension_reason: Option<String>,
+    ) -> Self {
+        self.suspension_id = suspension_id;
+        self.suspension_reason = suspension_reason;
         self
     }
 

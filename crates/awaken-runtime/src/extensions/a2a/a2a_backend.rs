@@ -289,6 +289,7 @@ impl AgentBackend for A2aBackend {
         messages: Vec<Message>,
         _event_sink: Arc<dyn EventSink>,
         _parent_run_id: Option<String>,
+        _parent_thread_id: Option<String>,
         _parent_tool_call_id: Option<String>,
     ) -> Result<DelegateRunResult, AgentBackendError> {
         let prompt = messages
@@ -347,6 +348,7 @@ impl AgentBackend for A2aBackend {
             response: snapshot.output_text,
             steps: 1,
             run_id: None,
+            inbox: None,
         })
     }
 }

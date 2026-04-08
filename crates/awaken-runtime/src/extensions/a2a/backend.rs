@@ -20,6 +20,9 @@ pub struct DelegateRunResult {
     pub steps: usize,
     /// Child run ID for observability lineage (local delegates only).
     pub run_id: Option<String>,
+    /// Inbox sender for sending messages to the sub-agent during execution.
+    /// Only available while the sub-agent is running (dropped after completion).
+    pub inbox: Option<crate::inbox::InboxSender>,
 }
 
 /// Terminal status of a delegated agent run.
@@ -62,6 +65,7 @@ pub trait AgentBackend: Send + Sync {
         messages: Vec<Message>,
         event_sink: Arc<dyn EventSink>,
         parent_run_id: Option<String>,
+        parent_thread_id: Option<String>,
         parent_tool_call_id: Option<String>,
     ) -> Result<DelegateRunResult, AgentBackendError>;
 }
