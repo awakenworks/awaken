@@ -208,6 +208,7 @@ impl ProgressAwareStdioTransport {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        cmd.kill_on_drop(true);
         for (key, value) in &config.env {
             cmd.env(key, value);
         }
@@ -357,18 +358,23 @@ impl ProgressAwareStdioTransport {
         if sampling_handler.is_some() {
             capabilities.sampling = Some(SamplingCapabilities::default());
         }
-        let init_result: InitializeResult = serde_json::from_value(
-            transport
-                .send_request(
-                    "initialize",
-                    Some(initialize_params(
-                        serde_json::to_value(&capabilities).unwrap_or_else(|_| json!({})),
-                        config.config.clone(),
-                    )),
-                    None,
-                )
-                .await?,
-        )?;
+        let init_result = match transport
+            .send_request(
+                "initialize",
+                Some(initialize_params(
+                    serde_json::to_value(&capabilities).unwrap_or_else(|_| json!({})),
+                    config.config.clone(),
+                )),
+                None,
+            )
+            .await
+        {
+            Ok(value) => serde_json::from_value::<InitializeResult>(value)?,
+            Err(err) => {
+                let _ = transport.close().await;
+                return Err(err);
+            }
+        };
         let _ = transport
             .send_notification("notifications/initialized", Some(json!({})))
             .await;
@@ -1365,6 +1371,9 @@ pub(crate) fn call_result_to_tool_data(call_result: &CallToolResult) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::time::Instant;
+
     use super::*;
     use mcp::CreateMessageResult;
 
@@ -1538,6 +1547,72 @@ mod tests {
             rx.try_recv().is_err(),
             "malformed notifications must be ignored"
         );
+    }
+
+    #[tokio::test]
+    async fn http_transport_close_is_idempotent() {
+        let cfg = mcp::transport::McpServerConnectionConfig::http(
+            "http-close",
+            "http://127.0.0.1:9".to_string(),
+        );
+        let transport = ProgressAwareHttpTransport::connect(&cfg, None).unwrap();
+
+        transport.close().await.unwrap();
+        transport.close().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_connect_init_failure_cleans_up_child_process() {
+        let pid_file = format!(
+            "/tmp/awaken-ext-mcp-stdio-cleanup-{}.pid",
+            std::process::id()
+        );
+        let _ = fs::remove_file(&pid_file);
+
+        let mut cfg = mcp::transport::McpServerConnectionConfig::stdio(
+            "stdio-cleanup",
+            "/bin/sh",
+            vec![
+                "-c".to_string(),
+                format!("echo $$ > \"{pid_file}\"; trap 'exit 0' INT TERM; sleep 30"),
+            ],
+        );
+        cfg.timeout_secs = 1;
+
+        let err = match ProgressAwareStdioTransport::connect(&cfg, None).await {
+            Ok(_) => panic!("expected stdio initialization failure"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, McpTransportError::Timeout(_)));
+
+        let started = Instant::now();
+        let pid = loop {
+            if let Ok(contents) = fs::read_to_string(&pid_file)
+                && let Ok(pid) = contents.trim().parse::<i32>()
+            {
+                break pid;
+            }
+            assert!(started.elapsed() < Duration::from_secs(2));
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match nix::sys::signal::kill(Pid::from_raw(pid), None) {
+                Ok(()) => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "child process was not cleaned up"
+                    );
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(nix::errno::Errno::ESRCH) => break,
+                Err(err) => panic!("unexpected process status error: {err}"),
+            }
+        }
+
+        let _ = fs::remove_file(&pid_file);
     }
 
     #[test]
