@@ -682,7 +682,20 @@ fn is_finish_step_frame(frame: &Bytes) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::stream;
     use serde_json::json;
+
+    #[test]
+    fn ai_sdk_sse_response_sets_transport_header() {
+        let response = ai_sdk_sse_response(stream::empty());
+        assert_eq!(
+            response
+                .headers()
+                .get(AI_SDK_STREAM_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some(AI_SDK_STREAM_VERSION)
+        );
+    }
 
     #[test]
     fn detects_suspended_finish_frame() {

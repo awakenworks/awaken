@@ -399,13 +399,25 @@ impl ConfigRuntimeManager {
     }
 
     pub async fn apply(&self) -> Result<u64, ConfigRuntimeError> {
-        let _guard = self.apply_lock.lock().await;
+        let _guard = self.lock_apply().await;
+        self.apply_locked().await
+    }
+
+    pub async fn apply_if_changed(&self) -> Result<Option<u64>, ConfigRuntimeError> {
+        let _guard = self.lock_apply().await;
+        self.apply_if_changed_locked().await
+    }
+
+    pub(crate) async fn lock_apply(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.apply_lock.lock().await
+    }
+
+    pub(crate) async fn apply_locked(&self) -> Result<u64, ConfigRuntimeError> {
         let managed = self.load_managed_config().await?;
         self.publish(managed).await
     }
 
-    pub async fn apply_if_changed(&self) -> Result<Option<u64>, ConfigRuntimeError> {
-        let _guard = self.apply_lock.lock().await;
+    async fn apply_if_changed_locked(&self) -> Result<Option<u64>, ConfigRuntimeError> {
         let managed = self.load_managed_config().await?;
         let current_fingerprint = *self.last_applied_fingerprint.read();
         if current_fingerprint == Some(managed.fingerprint) {
@@ -517,15 +529,15 @@ impl ConfigRuntimeManager {
         specs: &[McpServerSpec],
     ) -> Result<PreparedMcpRegistry, ConfigRuntimeError> {
         let current = self.active_mcp_registry.lock().clone();
-        if let Some(current) = current {
-            if current.specs == specs {
-                self.ensure_mcp_periodic_refresh(&current.handle)?;
-                return Ok(PreparedMcpRegistry {
-                    tool_registry: Some(current.tool_registry),
-                    next_state: None,
-                    state_changed: false,
-                });
-            }
+        if let Some(current) = current
+            && current.specs == specs
+        {
+            self.ensure_mcp_periodic_refresh(&current.handle)?;
+            return Ok(PreparedMcpRegistry {
+                tool_registry: Some(current.tool_registry),
+                next_state: None,
+                state_changed: false,
+            });
         }
 
         let next_state = self

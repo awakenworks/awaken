@@ -204,6 +204,8 @@ impl<'a> ConfigService<'a> {
         namespace: ConfigNamespace,
         body: Value,
     ) -> Result<Value, ConfigServiceError> {
+        let manager = self.runtime_manager()?;
+        let _apply_guard = manager.lock_apply().await;
         let (id, body) = self.prepare_body(namespace, None, body).await?;
         if self.store.exists(namespace.as_str(), &id).await? {
             return Err(ConfigServiceError::Conflict(format!(
@@ -213,7 +215,8 @@ impl<'a> ConfigService<'a> {
             )));
         }
 
-        self.persist_and_apply(namespace, &id, None, body).await
+        self.persist_and_apply_locked(manager.as_ref(), namespace, &id, None, body)
+            .await
     }
 
     pub async fn update(
@@ -222,6 +225,8 @@ impl<'a> ConfigService<'a> {
         id: &str,
         body: Value,
     ) -> Result<Value, ConfigServiceError> {
+        let manager = self.runtime_manager()?;
+        let _apply_guard = manager.lock_apply().await;
         let (body_id, body) = self.prepare_body(namespace, Some(id), body).await?;
         if body_id != id {
             return Err(ConfigServiceError::InvalidPayload(format!(
@@ -230,7 +235,8 @@ impl<'a> ConfigService<'a> {
         }
 
         let previous = self.store.get(namespace.as_str(), id).await?;
-        self.persist_and_apply(namespace, id, previous, body).await
+        self.persist_and_apply_locked(manager.as_ref(), namespace, id, previous, body)
+            .await
     }
 
     pub async fn delete(
@@ -238,6 +244,8 @@ impl<'a> ConfigService<'a> {
         namespace: ConfigNamespace,
         id: &str,
     ) -> Result<(), ConfigServiceError> {
+        let manager = self.runtime_manager()?;
+        let _apply_guard = manager.lock_apply().await;
         let previous = self
             .store
             .get(namespace.as_str(), id)
@@ -247,7 +255,11 @@ impl<'a> ConfigService<'a> {
             })?;
 
         self.store.delete(namespace.as_str(), id).await?;
-        let apply_result = self.apply_runtime_changes().await;
+        let apply_result = manager
+            .apply_locked()
+            .await
+            .map(|_| ())
+            .map_err(map_runtime_error);
         if let Err(error) = apply_result {
             self.store.put(namespace.as_str(), id, &previous).await?;
             return Err(error);
@@ -255,8 +267,19 @@ impl<'a> ConfigService<'a> {
         Ok(())
     }
 
-    async fn persist_and_apply(
+    fn runtime_manager(
         &self,
+    ) -> Result<&Arc<crate::services::config_runtime::ConfigRuntimeManager>, ConfigServiceError>
+    {
+        self.state
+            .config_runtime_manager
+            .as_ref()
+            .ok_or(ConfigServiceError::NotEnabled)
+    }
+
+    async fn persist_and_apply_locked(
+        &self,
+        manager: &crate::services::config_runtime::ConfigRuntimeManager,
         namespace: ConfigNamespace,
         id: &str,
         previous: Option<Value>,
@@ -265,7 +288,11 @@ impl<'a> ConfigService<'a> {
         self.validate_payload(namespace, &body)?;
         self.store.put(namespace.as_str(), id, &body).await?;
 
-        let apply_result = self.apply_runtime_changes().await;
+        let apply_result = manager
+            .apply_locked()
+            .await
+            .map(|_| ())
+            .map_err(map_runtime_error);
         if let Err(error) = apply_result {
             match previous {
                 Some(previous) => self.store.put(namespace.as_str(), id, &previous).await?,
@@ -275,15 +302,6 @@ impl<'a> ConfigService<'a> {
         }
 
         self.redact_response(namespace, body)
-    }
-
-    async fn apply_runtime_changes(&self) -> Result<(), ConfigServiceError> {
-        let manager = self
-            .state
-            .config_runtime_manager
-            .as_ref()
-            .ok_or(ConfigServiceError::NotEnabled)?;
-        manager.apply().await.map(|_| ()).map_err(map_runtime_error)
     }
 
     async fn prepare_body(
@@ -301,12 +319,12 @@ impl<'a> ConfigService<'a> {
             .ok_or(ConfigServiceError::MissingId)?
             .to_string();
 
-        if let Some(path_id) = path_id {
-            if path_id != id {
-                return Err(ConfigServiceError::InvalidPayload(format!(
-                    "path id '{path_id}' does not match body id '{id}'"
-                )));
-            }
+        if let Some(path_id) = path_id
+            && path_id != id
+        {
+            return Err(ConfigServiceError::InvalidPayload(format!(
+                "path id '{path_id}' does not match body id '{id}'"
+            )));
         }
 
         match namespace {
@@ -520,4 +538,361 @@ where
 {
     serde_json::from_value(value.clone())
         .map_err(|error| ConfigServiceError::InvalidPayload(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use awaken_contract::contract::config_store::ConfigStore;
+    use awaken_contract::contract::executor::{
+        InferenceExecutionError, InferenceRequest, LlmExecutor,
+    };
+    use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+    use awaken_contract::{AgentSpec, ModelSpec, ProviderSpec};
+    use awaken_runtime::builder::AgentRuntimeBuilder;
+    use awaken_runtime::registry::traits::ModelEntry;
+    use serde_json::{Value, json};
+    use tokio::sync::Notify;
+
+    use crate::app::{AppState, ServerConfig};
+    use crate::mailbox::{Mailbox, MailboxConfig};
+    use crate::services::config_runtime::{ConfigRuntimeManager, ProviderExecutorFactory};
+
+    use super::{ConfigNamespace, ConfigService, ConfigServiceError};
+
+    struct ImmediateExecutor;
+
+    #[async_trait]
+    impl LlmExecutor for ImmediateExecutor {
+        async fn execute(
+            &self,
+            _request: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            Ok(StreamResult {
+                content: vec![],
+                tool_calls: vec![],
+                usage: Some(TokenUsage::default()),
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+
+        fn name(&self) -> &str {
+            "immediate"
+        }
+    }
+
+    struct TestProviderFactory;
+
+    impl ProviderExecutorFactory for TestProviderFactory {
+        fn build(
+            &self,
+            spec: &ProviderSpec,
+        ) -> Result<Arc<dyn LlmExecutor>, crate::services::config_runtime::ConfigRuntimeError>
+        {
+            if spec.adapter.eq_ignore_ascii_case("stub") {
+                return Ok(Arc::new(ImmediateExecutor));
+            }
+
+            Err(
+                crate::services::config_runtime::ConfigRuntimeError::UnsupportedProviderAdapter(
+                    spec.adapter.clone(),
+                ),
+            )
+        }
+    }
+
+    struct BlockingConfigStore {
+        inner: Arc<awaken_stores::InMemoryStore>,
+        block_lists: AtomicBool,
+        list_started: AtomicBool,
+        release_lists: Notify,
+    }
+
+    impl BlockingConfigStore {
+        fn new(inner: Arc<awaken_stores::InMemoryStore>) -> Self {
+            Self {
+                inner,
+                block_lists: AtomicBool::new(false),
+                list_started: AtomicBool::new(false),
+                release_lists: Notify::new(),
+            }
+        }
+
+        fn block_lists(&self) {
+            self.list_started.store(false, Ordering::SeqCst);
+            self.block_lists.store(true, Ordering::SeqCst);
+        }
+
+        fn unblock_lists(&self) {
+            self.block_lists.store(false, Ordering::SeqCst);
+            self.release_lists.notify_waiters();
+        }
+
+        fn list_started(&self) -> bool {
+            self.list_started.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl ConfigStore for BlockingConfigStore {
+        async fn get(
+            &self,
+            namespace: &str,
+            id: &str,
+        ) -> Result<Option<Value>, awaken_contract::contract::storage::StorageError> {
+            ConfigStore::get(self.inner.as_ref(), namespace, id).await
+        }
+
+        async fn list(
+            &self,
+            namespace: &str,
+            offset: usize,
+            limit: usize,
+        ) -> Result<Vec<(String, Value)>, awaken_contract::contract::storage::StorageError>
+        {
+            if self.block_lists.load(Ordering::SeqCst) {
+                self.list_started.store(true, Ordering::SeqCst);
+                self.release_lists.notified().await;
+            }
+
+            ConfigStore::list(self.inner.as_ref(), namespace, offset, limit).await
+        }
+
+        async fn put(
+            &self,
+            namespace: &str,
+            id: &str,
+            value: &Value,
+        ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+            ConfigStore::put(self.inner.as_ref(), namespace, id, value).await
+        }
+
+        async fn delete(
+            &self,
+            namespace: &str,
+            id: &str,
+        ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+            ConfigStore::delete(self.inner.as_ref(), namespace, id).await
+        }
+    }
+
+    fn bootstrap_agent() -> AgentSpec {
+        AgentSpec {
+            id: "bootstrap".into(),
+            model: "bootstrap".into(),
+            system_prompt: "bootstrap".into(),
+            max_rounds: 1,
+            ..Default::default()
+        }
+    }
+
+    async fn build_state(
+        config_store: Arc<dyn ConfigStore>,
+    ) -> (AppState, Arc<ConfigRuntimeManager>) {
+        let thread_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let runtime = Arc::new(
+            AgentRuntimeBuilder::new()
+                .with_provider("bootstrap", Arc::new(ImmediateExecutor))
+                .with_model(
+                    "bootstrap",
+                    ModelEntry {
+                        provider: "bootstrap".into(),
+                        model_name: "bootstrap-model".into(),
+                    },
+                )
+                .with_agent_spec(bootstrap_agent())
+                .with_thread_run_store(thread_store.clone())
+                .build()
+                .expect("build runtime"),
+        );
+
+        let manager = Arc::new(
+            ConfigRuntimeManager::new(runtime.clone(), config_store.clone())
+                .expect("config runtime manager")
+                .with_provider_factory(Arc::new(TestProviderFactory)),
+        );
+        let resolver = runtime.resolver_arc();
+        manager
+            .bootstrap_if_empty(
+                &[ProviderSpec {
+                    id: "bootstrap".into(),
+                    adapter: "stub".into(),
+                    ..Default::default()
+                }],
+                &[ModelSpec {
+                    id: "bootstrap".into(),
+                    provider: "bootstrap".into(),
+                    model: "bootstrap-model".into(),
+                }],
+                &[bootstrap_agent()],
+                &[],
+            )
+            .await
+            .expect("bootstrap config store");
+        manager.apply().await.expect("publish config");
+
+        let mailbox = Arc::new(Mailbox::new(
+            runtime.clone(),
+            Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+            "config-service-test".into(),
+            MailboxConfig::default(),
+        ));
+        let state = AppState::new(
+            runtime,
+            mailbox,
+            thread_store,
+            resolver,
+            ServerConfig::default(),
+        )
+        .with_config_store(config_store)
+        .with_config_runtime_manager(manager.clone());
+
+        (state, manager)
+    }
+
+    async fn wait_until(
+        timeout: Duration,
+        interval: Duration,
+        mut predicate: impl FnMut() -> bool,
+    ) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while tokio::time::Instant::now() < deadline {
+            if predicate() {
+                return true;
+            }
+            tokio::time::sleep(interval).await;
+        }
+        predicate()
+    }
+
+    #[tokio::test]
+    async fn create_waits_for_in_flight_apply_before_writing_store() {
+        let raw_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let blocking_store = Arc::new(BlockingConfigStore::new(raw_store.clone()));
+        let config_store = blocking_store.clone() as Arc<dyn ConfigStore>;
+        let (state, manager) = build_state(config_store.clone()).await;
+
+        blocking_store.block_lists();
+        let apply_task = tokio::spawn({
+            let manager = manager.clone();
+            async move {
+                manager
+                    .apply_if_changed()
+                    .await
+                    .expect("apply_if_changed should complete")
+            }
+        });
+
+        let list_blocked = wait_until(Duration::from_secs(1), Duration::from_millis(10), || {
+            blocking_store.list_started()
+        })
+        .await;
+        assert!(
+            list_blocked,
+            "background apply should enter the config snapshot load"
+        );
+
+        let create_task = tokio::spawn({
+            let state = state.clone();
+            async move {
+                let service = ConfigService::new(&state).expect("config service");
+                service
+                    .create(
+                        ConfigNamespace::Providers,
+                        json!({
+                            "id": "serialized",
+                            "adapter": "stub"
+                        }),
+                    )
+                    .await
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let pending = ConfigStore::get(config_store.as_ref(), "providers", "serialized")
+            .await
+            .expect("read provider");
+        assert!(
+            pending.is_none(),
+            "config writes must wait for in-flight apply snapshots before touching the store"
+        );
+        assert!(
+            !create_task.is_finished(),
+            "create should stay blocked behind the apply lock"
+        );
+
+        blocking_store.unblock_lists();
+        let apply_result = apply_task.await.expect("join apply task");
+        assert_eq!(apply_result, None);
+
+        let created = create_task
+            .await
+            .expect("join create task")
+            .expect("create should succeed");
+        assert_eq!(created["id"], "serialized");
+
+        let stored = ConfigStore::get(config_store.as_ref(), "providers", "serialized")
+            .await
+            .expect("read provider after create");
+        assert_eq!(
+            stored
+                .as_ref()
+                .and_then(|value| value.get("id"))
+                .and_then(Value::as_str),
+            Some("serialized")
+        );
+    }
+
+    #[tokio::test]
+    async fn service_requires_runtime_manager_for_mutations() {
+        let thread_store = Arc::new(awaken_stores::InMemoryStore::new());
+        let runtime = Arc::new(
+            AgentRuntimeBuilder::new()
+                .with_provider("bootstrap", Arc::new(ImmediateExecutor))
+                .with_model(
+                    "bootstrap",
+                    ModelEntry {
+                        provider: "bootstrap".into(),
+                        model_name: "bootstrap-model".into(),
+                    },
+                )
+                .with_agent_spec(bootstrap_agent())
+                .with_thread_run_store(thread_store.clone())
+                .build()
+                .expect("build runtime"),
+        );
+        let mailbox = Arc::new(Mailbox::new(
+            runtime.clone(),
+            Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+            "config-service-test".into(),
+            MailboxConfig::default(),
+        ));
+        let state = AppState::new(
+            runtime.clone(),
+            mailbox,
+            thread_store,
+            runtime.resolver_arc(),
+            ServerConfig::default(),
+        )
+        .with_config_store(Arc::new(awaken_stores::InMemoryStore::new()));
+
+        let service = ConfigService::new(&state).expect("config service");
+        let error = service
+            .create(
+                ConfigNamespace::Providers,
+                json!({
+                    "id": "missing-manager",
+                    "adapter": "stub"
+                }),
+            )
+            .await
+            .expect_err("missing manager should reject writes");
+        assert!(matches!(error, ConfigServiceError::NotEnabled));
+    }
 }

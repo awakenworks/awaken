@@ -4,6 +4,7 @@ import { type AgentSpec, type Capabilities, configApi } from "@/lib/config-api";
 import { Field } from "@/components/form-components";
 import { AgentPreviewPanel } from "@/components/agent-preview-panel";
 import { PluginConfigWorkspace } from "@/components/plugin-config-workspace";
+import { isToolAllowed, nextAllowedTools } from "@/lib/agent-tool-selection";
 import { pluginConfigEntryKey, pluginDisplayName } from "@/lib/plugin-config";
 import { adminRoutes } from "@/lib/routes";
 
@@ -173,27 +174,9 @@ export function AgentEditorPage() {
 
   function toggleAllowedTool(toolId: string, checked: boolean) {
     const allToolIds = (capabilities?.tools ?? []).map((tool) => tool.id);
-    const currentAllowed = spec.allowed_tools;
-
-    if (checked) {
-      // Re-allow: add toolId back to the allowed list.
-      if (!currentAllowed) {
-        return; // already allowing all tools
-      }
-      const nextAllowed = [...currentAllowed, toolId];
-      updateField(
-        "allowed_tools",
-        nextAllowed.length >= allToolIds.length ? undefined : nextAllowed,
-      );
-      return;
-    }
-
-    // Disallow: remove toolId from the allowed list.
-    const baseAllowed =
-      currentAllowed && currentAllowed.length > 0 ? currentAllowed : allToolIds;
     updateField(
       "allowed_tools",
-      baseAllowed.filter((value) => value !== toolId),
+      nextAllowedTools(spec.allowed_tools, allToolIds, toolId, checked),
     );
   }
 
@@ -368,9 +351,7 @@ export function AgentEditorPage() {
           </p>
           <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {capabilities.tools.map((tool) => {
-              const allowed = spec.allowed_tools;
-              const checked =
-                !allowed || allowed.length === 0 || allowed.includes(tool.id);
+              const checked = isToolAllowed(spec.allowed_tools, tool.id);
               return (
                 <label
                   key={tool.id}
