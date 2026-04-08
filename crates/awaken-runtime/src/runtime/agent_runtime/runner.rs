@@ -89,11 +89,10 @@ impl AgentRuntime {
 
         // Preflight resolve to register plugin-declared keys before restoring persisted state.
         // Without this, thread-scoped keys may be skipped as unknown during restore.
-        let preflight_key_registrations = run_resolver
+        let preflight_resolved = run_resolver
             .resolve(&agent_id)
-            .map_err(AgentLoopError::RuntimeError)?
-            .env
-            .key_registrations;
+            .map_err(AgentLoopError::RuntimeError)?;
+        let preflight_key_registrations = preflight_resolved.env.key_registrations.clone();
         if !preflight_key_registrations.is_empty() {
             store
                 .register_keys(&preflight_key_registrations)
