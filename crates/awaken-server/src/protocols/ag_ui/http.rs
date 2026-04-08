@@ -335,15 +335,11 @@ async fn thread_messages(
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .unwrap_or_default();
     let messages = params.filter_messages(messages);
+    let page = params.paginate(messages).map_err(ApiError::BadRequest)?;
 
-    let offset = params.offset_or_default();
-    let limit = params.clamped_limit();
-    let total = messages.len();
-
-    let encoded: Vec<Value> = messages
+    let encoded: Vec<Value> = page
+        .items
         .into_iter()
-        .skip(offset)
-        .take(limit)
         .map(|m| {
             let role = match m.role {
                 awaken_contract::contract::message::Role::System => Role::System,
@@ -361,8 +357,9 @@ async fn thread_messages(
 
     Ok(Json(serde_json::json!({
         "messages": encoded,
-        "total": total,
-        "has_more": offset + encoded.len() < total,
+        "total": page.total,
+        "has_more": page.has_more,
+        "next_cursor": page.next_cursor,
     })))
 }
 

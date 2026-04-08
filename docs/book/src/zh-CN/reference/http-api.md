@@ -125,6 +125,7 @@
 
 - `offset`：跳过的条数
 - `limit`：返回上限，范围会被限制在 `1..=200`
+- `cursor`：消息历史分页游标；提供后会优先于 `offset`，历史消息接口响应会返回 `next_cursor`
 - `status`：按 run 状态过滤，支持 `running`、`waiting`、`done`
 - `visibility`：消息可见性过滤；省略时只看外部消息，`all` 表示包含内部消息
 
