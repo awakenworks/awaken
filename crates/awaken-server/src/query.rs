@@ -1,5 +1,6 @@
 //! Shared query-parameter types for paginated endpoints.
 
+use awaken_contract::contract::message::{Message, Visibility};
 use serde::Deserialize;
 
 /// Default page size for list endpoints.
@@ -28,6 +29,25 @@ impl MessageQueryParams {
     /// Return `offset` or `0` when unset.
     pub fn offset_or_default(&self) -> usize {
         self.offset.unwrap_or(0)
+    }
+
+    /// Return `true` when internal messages should be included.
+    pub fn include_internal(&self) -> bool {
+        self.visibility
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("all"))
+    }
+
+    /// Filter messages according to the requested visibility mode.
+    pub fn filter_messages(&self, messages: Vec<Message>) -> Vec<Message> {
+        if self.include_internal() {
+            messages
+        } else {
+            messages
+                .into_iter()
+                .filter(|message| message.visibility != Visibility::Internal)
+                .collect()
+        }
     }
 }
 
@@ -62,5 +82,43 @@ mod tests {
 
         let some: MessageQueryParams = serde_json::from_str(r#"{"offset": 10}"#).unwrap();
         assert_eq!(some.offset_or_default(), 10);
+    }
+
+    #[test]
+    fn include_internal_only_when_visibility_is_all() {
+        let none: MessageQueryParams = serde_json::from_str("{}").unwrap();
+        assert!(!none.include_internal());
+
+        let all: MessageQueryParams = serde_json::from_str(r#"{"visibility":"all"}"#).unwrap();
+        assert!(all.include_internal());
+
+        let case_insensitive: MessageQueryParams =
+            serde_json::from_str(r#"{"visibility":"ALL"}"#).unwrap();
+        assert!(case_insensitive.include_internal());
+
+        let other: MessageQueryParams = serde_json::from_str(r#"{"visibility":"none"}"#).unwrap();
+        assert!(!other.include_internal());
+    }
+
+    #[test]
+    fn filter_messages_hides_internal_by_default() {
+        let params: MessageQueryParams = serde_json::from_str("{}").unwrap();
+        let messages = vec![Message::user("visible"), Message::internal_system("hidden")];
+
+        let filtered = params.filter_messages(messages);
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].text(), "visible");
+    }
+
+    #[test]
+    fn filter_messages_keeps_internal_when_requested() {
+        let params: MessageQueryParams = serde_json::from_str(r#"{"visibility":"all"}"#).unwrap();
+        let messages = vec![Message::user("visible"), Message::internal_system("hidden")];
+
+        let filtered = params.filter_messages(messages);
+
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[1].visibility, Visibility::Internal);
     }
 }
