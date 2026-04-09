@@ -191,8 +191,35 @@ impl AgentRuntimeBuilder {
     pub fn build(self) -> Result<AgentRuntime, BuildError> {
         let runtime = self.build_unchecked()?;
         let resolver = runtime.resolver();
+        #[cfg(feature = "a2a")]
+        let registries = runtime.registry_set();
         let mut errors = Vec::new();
         for agent_id in resolver.agent_ids() {
+            #[cfg(feature = "a2a")]
+            if let Some(spec) = registries
+                .as_ref()
+                .and_then(|set| set.agents.get_agent(&agent_id))
+                && let Some(endpoint) = spec.endpoint.as_ref()
+            {
+                match registries
+                    .as_ref()
+                    .and_then(|set| set.backends.get_backend_factory(&endpoint.backend))
+                {
+                    Some(factory) => {
+                        if let Err(error) = factory.build(endpoint) {
+                            errors.push(format!(
+                                "{agent_id}: invalid remote endpoint config: {error}"
+                            ));
+                        }
+                    }
+                    None => errors.push(format!(
+                        "{agent_id}: unsupported remote backend '{}'",
+                        endpoint.backend
+                    )),
+                }
+                continue;
+            }
+
             if let Err(e) = resolver.resolve(&agent_id) {
                 errors.push(format!("{agent_id}: {e}"));
             }
@@ -287,6 +314,8 @@ mod tests {
     use awaken_contract::contract::tool::{
         ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
     };
+    #[cfg(feature = "a2a")]
+    use awaken_contract::registry_spec::RemoteEndpoint;
     use serde_json::Value;
 
     use crate::registry::memory::{
@@ -728,6 +757,30 @@ mod tests {
             .build()
             .unwrap();
         assert!(runtime.profile_store.is_some());
+    }
+
+    #[cfg(feature = "a2a")]
+    #[test]
+    fn build_allows_endpoint_agents_when_backend_factory_exists() {
+        let runtime = AgentRuntimeBuilder::new()
+            .with_agent_spec(
+                AgentSpec::new("remote-agent")
+                    .with_model("remote-model")
+                    .with_system_prompt("remote")
+                    .with_endpoint(RemoteEndpoint {
+                        backend: "a2a".into(),
+                        base_url: "https://remote.example.com".into(),
+                        ..Default::default()
+                    }),
+            )
+            .build()
+            .expect("endpoint agents should validate through backend factory");
+
+        let spec = runtime
+            .registry_set()
+            .and_then(|set| set.agents.get_agent("remote-agent"))
+            .expect("remote agent should remain registered");
+        assert!(spec.endpoint.is_some());
     }
 
     #[test]

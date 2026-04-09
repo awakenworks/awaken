@@ -2,16 +2,31 @@
 
 use std::sync::Arc;
 
+#[cfg(feature = "a2a")]
+use crate::extensions::a2a::{
+    AgentBackend, AgentBackendError, DelegateRunResult, DelegateRunStatus,
+};
 use crate::loop_runner::{
     AgentLoopError, AgentLoopParams, AgentRunResult, prepare_resume, run_agent_loop,
 };
 use crate::registry::AgentResolver;
+#[cfg(feature = "a2a")]
+use crate::registry::RegistrySet;
 use awaken_contract::contract::active_agent::ActiveAgentIdKey;
+use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
+use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
+#[cfg(feature = "a2a")]
+use awaken_contract::contract::message::gen_message_id;
 use awaken_contract::contract::message::{Message, Role, Visibility};
+use awaken_contract::contract::storage::{RunRecord, ThreadRunStore};
 use awaken_contract::contract::suspension::ToolCallStatus;
+use awaken_contract::now_ms;
+#[cfg(feature = "a2a")]
+use awaken_contract::registry_spec::AgentSpec;
 use awaken_contract::state::PersistedState;
+use serde_json::{Value, json};
 
 use super::AgentRuntime;
 use super::run_request::RunRequest;
@@ -66,6 +81,30 @@ impl AgentRuntime {
             run_inbox,
         } = request;
         let agent_id = self.resolve_agent_id(agent_id, &thread_id).await?;
+        #[cfg(feature = "a2a")]
+        let registry_set = self.registry_set();
+
+        #[cfg(feature = "a2a")]
+        if let Some(ref registries) = registry_set
+            && let Some(spec) = registries.agents.get_agent(&agent_id)
+            && spec.endpoint.is_some()
+        {
+            return self
+                .run_non_local_endpoint(
+                    registries.clone(),
+                    spec,
+                    agent_id,
+                    request_messages,
+                    thread_id,
+                    req_origin,
+                    req_parent_run_id,
+                    req_parent_thread_id,
+                    continue_run_id,
+                    sink,
+                )
+                .await;
+        }
+
         let run_resolver: Arc<dyn AgentResolver> = if let Some(snapshot) = self.registry_snapshot()
         {
             Arc::new(crate::registry::resolve::RegistrySetResolver::new(
@@ -212,6 +251,225 @@ impl AgentRuntime {
         .await
     }
 
+    #[cfg(feature = "a2a")]
+    #[allow(clippy::too_many_arguments)]
+    async fn run_non_local_endpoint(
+        &self,
+        registries: RegistrySet,
+        spec: AgentSpec,
+        agent_id: String,
+        request_messages: Vec<Message>,
+        thread_id: String,
+        req_origin: awaken_contract::contract::mailbox::MailboxJobOrigin,
+        req_parent_run_id: Option<String>,
+        req_parent_thread_id: Option<String>,
+        continue_run_id: Option<String>,
+        sink: Arc<dyn EventSink>,
+    ) -> Result<AgentRunResult, AgentLoopError> {
+        let mut messages = self
+            .load_non_local_messages(&thread_id, request_messages)
+            .await?;
+        let backend = build_non_local_endpoint_backend(&registries, &spec)?;
+        let run_id = continue_run_id.unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+        let run_created_at = now_ms();
+        let run_origin = match req_origin {
+            awaken_contract::contract::mailbox::MailboxJobOrigin::User => {
+                awaken_contract::contract::identity::RunOrigin::User
+            }
+            awaken_contract::contract::mailbox::MailboxJobOrigin::A2A => {
+                awaken_contract::contract::identity::RunOrigin::Subagent
+            }
+            awaken_contract::contract::mailbox::MailboxJobOrigin::Internal => {
+                awaken_contract::contract::identity::RunOrigin::Internal
+            }
+        };
+        let run_identity = RunIdentity::new(
+            thread_id.clone(),
+            req_parent_thread_id.clone(),
+            run_id.clone(),
+            req_parent_run_id.clone(),
+            agent_id.clone(),
+            run_origin,
+        );
+
+        let (handle, cancellation_token, _decision_rx) = self.create_run_channels(run_id.clone());
+        self.register_run(&thread_id, handle)
+            .map_err(AgentLoopError::RuntimeError)?;
+        let _guard = RunSlotGuard {
+            runtime: self,
+            run_id: run_id.clone(),
+        };
+
+        sink.emit(AgentEvent::RunStart {
+            thread_id: thread_id.clone(),
+            run_id: run_id.clone(),
+            parent_run_id: req_parent_run_id.clone(),
+        })
+        .await;
+        sink.emit(AgentEvent::StepStart {
+            message_id: gen_message_id(),
+        })
+        .await;
+
+        let execution_started_at = now_ms();
+        let execute = backend.execute(
+            &agent_id,
+            messages.clone(),
+            Arc::clone(&sink),
+            req_parent_run_id,
+            req_parent_thread_id,
+            None,
+        );
+        tokio::pin!(execute);
+
+        let delegate_result = tokio::select! {
+            _ = cancellation_token.cancelled() => {
+                return self
+                    .finish_non_local_run(
+                        &thread_id,
+                        &run_id,
+                        &agent_id,
+                        run_identity.parent_run_id.clone(),
+                        run_created_at,
+                        messages,
+                        TerminationReason::Cancelled,
+                        0,
+                        String::new(),
+                        &sink,
+                    )
+                    .await;
+            }
+            result = &mut execute => match result {
+                Ok(result) => result,
+                Err(error) => {
+                    let termination = TerminationReason::Error(non_local_backend_error_message(&error));
+                    return self
+                        .finish_non_local_run(
+                            &thread_id,
+                            &run_id,
+                            &agent_id,
+                            run_identity.parent_run_id.clone(),
+                            run_created_at,
+                            messages,
+                            termination,
+                            0,
+                            String::new(),
+                            &sink,
+                        )
+                        .await;
+                }
+            },
+        };
+
+        let (termination, response, steps) = finalize_non_local_delegate_result(delegate_result);
+        if !response.is_empty() {
+            sink.emit(AgentEvent::TextDelta {
+                delta: response.clone(),
+            })
+            .await;
+            messages.push(Message::assistant(response.clone()));
+        }
+
+        if matches!(
+            termination,
+            TerminationReason::NaturalEnd | TerminationReason::BehaviorRequested
+        ) {
+            sink.emit(AgentEvent::InferenceComplete {
+                model: spec.model.clone(),
+                usage: None,
+                duration_ms: now_ms().saturating_sub(execution_started_at),
+            })
+            .await;
+        }
+
+        self.finish_non_local_run(
+            &thread_id,
+            &run_id,
+            &agent_id,
+            run_identity.parent_run_id.clone(),
+            run_created_at,
+            messages,
+            termination,
+            steps,
+            response,
+            &sink,
+        )
+        .await
+    }
+
+    #[cfg(feature = "a2a")]
+    async fn load_non_local_messages(
+        &self,
+        thread_id: &str,
+        request_messages: Vec<Message>,
+    ) -> Result<Vec<Message>, AgentLoopError> {
+        let mut messages = if let Some(ref storage) = self.storage {
+            storage
+                .load_messages(thread_id)
+                .await
+                .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        strip_unpaired_tool_calls(&mut messages);
+        messages.extend(request_messages);
+        Ok(messages)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_non_local_run(
+        &self,
+        thread_id: &str,
+        run_id: &str,
+        agent_id: &str,
+        parent_run_id: Option<String>,
+        run_created_at: u64,
+        messages: Vec<Message>,
+        termination: TerminationReason,
+        steps: usize,
+        response: String,
+        sink: &Arc<dyn EventSink>,
+    ) -> Result<AgentRunResult, AgentLoopError> {
+        let (status, status_reason) = termination.to_run_status();
+        let mut result_json = json!({
+            "response": response,
+            "status": run_status_label(status),
+        });
+        if let Some(reason) = &status_reason {
+            result_json["status_reason"] = Value::String(reason.clone());
+        }
+
+        persist_non_local_checkpoint(
+            self.storage.as_deref(),
+            thread_id,
+            run_id,
+            agent_id,
+            parent_run_id,
+            run_created_at,
+            &messages,
+            status,
+            status_reason,
+            steps,
+        )
+        .await?;
+
+        sink.emit(AgentEvent::StepEnd).await;
+        sink.emit(AgentEvent::RunFinish {
+            thread_id: thread_id.to_string(),
+            run_id: run_id.to_string(),
+            result: Some(result_json),
+            termination: termination.clone(),
+        })
+        .await;
+
+        Ok(AgentRunResult {
+            response,
+            termination,
+            steps,
+        })
+    }
+
     async fn resolve_agent_id(
         &self,
         requested_agent_id: Option<String>,
@@ -255,6 +513,113 @@ impl AgentRuntime {
             Ok(Some(agent_id.to_string()))
         }
     }
+}
+
+#[cfg(feature = "a2a")]
+fn build_non_local_endpoint_backend(
+    registries: &RegistrySet,
+    spec: &AgentSpec,
+) -> Result<Arc<dyn AgentBackend>, AgentLoopError> {
+    let endpoint = spec.endpoint.as_ref().ok_or_else(|| {
+        AgentLoopError::RuntimeError(crate::error::RuntimeError::ResolveFailed {
+            message: format!(
+                "agent '{}' is local and should not use non-local endpoint root path",
+                spec.id
+            ),
+        })
+    })?;
+    let factory = registries
+        .backends
+        .get_backend_factory(&endpoint.backend)
+        .ok_or_else(|| {
+            AgentLoopError::RuntimeError(crate::error::RuntimeError::ResolveFailed {
+                message: format!(
+                    "unsupported remote backend '{}' for agent '{}'",
+                    endpoint.backend, spec.id
+                ),
+            })
+        })?;
+    factory.build(endpoint).map_err(|error| {
+        AgentLoopError::RuntimeError(crate::error::RuntimeError::ResolveFailed {
+            message: format!(
+                "invalid remote endpoint config for agent '{}': {error}",
+                spec.id
+            ),
+        })
+    })
+}
+
+#[cfg(feature = "a2a")]
+fn finalize_non_local_delegate_result(
+    result: DelegateRunResult,
+) -> (TerminationReason, String, usize) {
+    let DelegateRunResult {
+        status,
+        response,
+        steps,
+        ..
+    } = result;
+    let response = response.unwrap_or_default();
+    let termination = match status {
+        DelegateRunStatus::Completed => TerminationReason::NaturalEnd,
+        DelegateRunStatus::Cancelled => TerminationReason::Cancelled,
+        DelegateRunStatus::Timeout => TerminationReason::Error("timeout".into()),
+        DelegateRunStatus::Failed(message) => TerminationReason::Error(message),
+    };
+    (termination, response, steps)
+}
+
+#[cfg(feature = "a2a")]
+fn non_local_backend_error_message(error: &AgentBackendError) -> String {
+    match error {
+        AgentBackendError::AgentNotFound(message)
+        | AgentBackendError::ExecutionFailed(message)
+        | AgentBackendError::RemoteError(message) => message.clone(),
+    }
+}
+
+fn run_status_label(status: RunStatus) -> &'static str {
+    match status {
+        RunStatus::Running => "running",
+        RunStatus::Waiting => "waiting",
+        RunStatus::Done => "done",
+    }
+}
+
+async fn persist_non_local_checkpoint(
+    storage: Option<&dyn ThreadRunStore>,
+    thread_id: &str,
+    run_id: &str,
+    agent_id: &str,
+    parent_run_id: Option<String>,
+    run_created_at: u64,
+    messages: &[Message],
+    status: RunStatus,
+    status_reason: Option<String>,
+    steps: usize,
+) -> Result<(), AgentLoopError> {
+    let Some(storage) = storage else {
+        return Ok(());
+    };
+
+    let record = RunRecord {
+        run_id: run_id.to_string(),
+        thread_id: thread_id.to_string(),
+        agent_id: agent_id.to_string(),
+        parent_run_id,
+        status,
+        termination_code: status_reason,
+        created_at: run_created_at / 1000,
+        updated_at: now_ms() / 1000,
+        steps,
+        input_tokens: 0,
+        output_tokens: 0,
+        state: None,
+    };
+    storage
+        .checkpoint(thread_id, messages, &record)
+        .await
+        .map_err(|error| AgentLoopError::StorageError(error.to_string()))
 }
 
 fn active_agent_from_state(state: &PersistedState) -> Option<String> {
@@ -376,8 +741,22 @@ fn strip_superseded_suspended_tool_calls(
 #[cfg(test)]
 mod tests {
     use super::super::*;
+    #[cfg(feature = "a2a")]
+    use crate::extensions::a2a::{
+        AgentBackend, AgentBackendError, AgentBackendFactory, AgentBackendFactoryError,
+        DelegateRunResult, DelegateRunStatus,
+    };
     use crate::loop_runner::build_agent_env;
     use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
+    #[cfg(feature = "a2a")]
+    use crate::registry::memory::{
+        MapAgentSpecRegistry, MapBackendRegistry, MapModelRegistry, MapPluginSource,
+        MapProviderRegistry, MapToolRegistry,
+    };
+    #[cfg(feature = "a2a")]
+    use crate::registry::snapshot::RegistryHandle;
+    #[cfg(feature = "a2a")]
+    use crate::registry::traits::{BackendRegistry, ModelEntry, RegistrySet};
     use crate::registry::{AgentResolver, ResolvedAgent};
     use crate::state::{KeyScope, StateCommand, StateKey, StateKeyOptions};
     use crate::{PhaseContext, PhaseHook};
@@ -391,7 +770,7 @@ mod tests {
         InferenceExecutionError, InferenceRequest, LlmExecutor,
     };
     use awaken_contract::contract::inference::{InferenceOverride, StopReason, StreamResult};
-    use awaken_contract::contract::lifecycle::RunStatus;
+    use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
     use awaken_contract::contract::message::Message;
     use awaken_contract::contract::storage::{
         RunQuery, RunRecord, RunStore, ThreadRunStore, ThreadStore,
@@ -401,6 +780,8 @@ mod tests {
     use awaken_contract::contract::tool::{
         Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
     };
+    #[cfg(feature = "a2a")]
+    use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
     use awaken_stores::InMemoryStore;
     use serde_json::{Value, json};
     use std::collections::HashMap;
@@ -448,6 +829,158 @@ mod tests {
         fn name(&self) -> &str {
             "scripted"
         }
+    }
+
+    #[cfg(feature = "a2a")]
+    struct StaticRemoteBackend;
+
+    #[cfg(feature = "a2a")]
+    #[async_trait]
+    impl AgentBackend for StaticRemoteBackend {
+        async fn execute(
+            &self,
+            agent_id: &str,
+            _messages: Vec<Message>,
+            _event_sink: Arc<dyn EventSink>,
+            _parent_run_id: Option<String>,
+            _parent_thread_id: Option<String>,
+            _parent_tool_call_id: Option<String>,
+        ) -> Result<DelegateRunResult, AgentBackendError> {
+            Ok(DelegateRunResult {
+                agent_id: agent_id.to_string(),
+                status: DelegateRunStatus::Completed,
+                response: Some("remote root response".into()),
+                steps: 1,
+                run_id: Some("child-remote-run".into()),
+                inbox: None,
+            })
+        }
+    }
+
+    #[cfg(feature = "a2a")]
+    struct StaticRemoteBackendFactory;
+
+    #[cfg(feature = "a2a")]
+    impl AgentBackendFactory for StaticRemoteBackendFactory {
+        fn backend(&self) -> &str {
+            "test-remote"
+        }
+
+        fn build(
+            &self,
+            endpoint: &RemoteEndpoint,
+        ) -> Result<Arc<dyn AgentBackend>, AgentBackendFactoryError> {
+            if endpoint.backend != "test-remote" {
+                return Err(AgentBackendFactoryError::InvalidConfig(format!(
+                    "unexpected backend '{}'",
+                    endpoint.backend
+                )));
+            }
+            Ok(Arc::new(StaticRemoteBackend))
+        }
+    }
+
+    #[cfg(feature = "a2a")]
+    #[tokio::test]
+    async fn run_supports_endpoint_root_agents() {
+        let mut models = MapModelRegistry::new();
+        models
+            .register_model(
+                "test-model",
+                ModelEntry {
+                    provider: "mock".into(),
+                    model_name: "mock-model".into(),
+                },
+            )
+            .unwrap();
+
+        let mut providers = MapProviderRegistry::new();
+        providers
+            .register_provider("mock", Arc::new(ScriptedLlm::new(Vec::new())))
+            .unwrap();
+
+        let mut agents = MapAgentSpecRegistry::new();
+        agents
+            .register_spec(
+                AgentSpec::new("remote-root")
+                    .with_model("test-model")
+                    .with_system_prompt("remote root")
+                    .with_endpoint(RemoteEndpoint {
+                        backend: "test-remote".into(),
+                        base_url: "https://remote.example.com".into(),
+                        ..Default::default()
+                    }),
+            )
+            .unwrap();
+
+        let mut backends = MapBackendRegistry::new();
+        backends
+            .register_backend_factory(Arc::new(StaticRemoteBackendFactory))
+            .unwrap();
+
+        let registries = RegistrySet {
+            agents: Arc::new(agents),
+            tools: Arc::new(MapToolRegistry::new()),
+            models: Arc::new(models),
+            providers: Arc::new(providers),
+            plugins: Arc::new(MapPluginSource::new()),
+            backends: Arc::new(backends) as Arc<dyn BackendRegistry>,
+        };
+        let handle = RegistryHandle::new(registries.clone());
+        let runtime = AgentRuntime::new(Arc::new(
+            crate::registry::resolve::DynamicRegistryResolver::new(handle.clone()),
+        ))
+        .with_registry_handle(handle)
+        .with_thread_run_store(Arc::new(InMemoryStore::new()));
+
+        let sink = Arc::new(VecEventSink::new());
+        let result = runtime
+            .run(
+                RunRequest::new("remote-thread", vec![Message::user("hello")])
+                    .with_agent_id("remote-root"),
+                sink.clone(),
+            )
+            .await
+            .expect("endpoint root run should succeed");
+
+        assert_eq!(result.response, "remote root response");
+        assert!(matches!(result.termination, TerminationReason::NaturalEnd));
+
+        let events = sink.events();
+        assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::TextDelta { delta } if delta == "remote root response"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::RunFinish {
+                termination: TerminationReason::NaturalEnd,
+                ..
+            }
+        )));
+
+        let latest_run = runtime
+            .thread_run_store()
+            .expect("store")
+            .latest_run("remote-thread")
+            .await
+            .expect("run lookup should succeed")
+            .expect("run record should be persisted");
+        assert_eq!(latest_run.agent_id, "remote-root");
+        assert_eq!(latest_run.status, RunStatus::Done);
+
+        let messages = runtime
+            .thread_run_store()
+            .expect("store")
+            .load_messages("remote-thread")
+            .await
+            .expect("message lookup should succeed")
+            .expect("messages should be persisted");
+        assert!(messages.iter().any(|message| {
+            message.role == awaken_contract::contract::message::Role::Assistant
+                && message.text() == "remote root response"
+        }));
     }
 
     struct ToggleSuspendTool {
