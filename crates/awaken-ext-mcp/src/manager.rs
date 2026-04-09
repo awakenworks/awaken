@@ -498,13 +498,17 @@ async fn connect_server(
 }
 
 async fn disconnect_server(slot: &mut McpServerSlot) -> Result<(), McpError> {
-    let runtime = slot.runtime.take();
-    if slot.lifecycle == McpServerLifecycle::Connected {
-        slot.lifecycle = McpServerLifecycle::Disconnected;
-    }
+    let transport = slot
+        .runtime
+        .as_ref()
+        .map(|runtime| runtime.transport.clone());
 
-    if let Some(runtime) = runtime {
-        runtime.transport.close().await?;
+    if let Some(transport) = transport {
+        transport.close().await?;
+        slot.runtime = None;
+        if slot.lifecycle == McpServerLifecycle::Connected {
+            slot.lifecycle = McpServerLifecycle::Disconnected;
+        }
     }
 
     Ok(())
@@ -628,6 +632,25 @@ fn mark_server_failure(slot: &mut McpServerSlot, attempted_at: SystemTime, err: 
     slot.health.permanently_failed = slot.lifecycle == McpServerLifecycle::PermanentlyFailed;
 }
 
+fn mark_server_permanent_failure(slot: &mut McpServerSlot) {
+    slot.lifecycle = McpServerLifecycle::PermanentlyFailed;
+    slot.runtime = None;
+    slot.tools_cache.clear();
+    slot.published_tools.clear();
+    slot.health.permanently_failed = true;
+    slot.health.reconnecting = false;
+}
+
+fn finish_reconnect_failure(slot: &mut McpServerSlot, err: &McpError) {
+    slot.health.last_error = Some(err.to_string());
+    slot.reconnect_attempts = slot.reconnect_attempts.saturating_add(1);
+    slot.health.reconnecting = false;
+
+    if slot.reconnect_attempts >= MAX_RECONNECT_ATTEMPTS {
+        mark_server_permanent_failure(slot);
+    }
+}
+
 async fn record_tool_transport_success(state: &Weak<McpRegistryState>, server_name: &str) {
     let Some(state) = state.upgrade() else {
         return;
@@ -737,42 +760,32 @@ async fn attempt_reconnect(
     state_weak: Weak<McpRegistryState>,
 ) -> Result<(), McpError> {
     if slot.reconnect_attempts >= MAX_RECONNECT_ATTEMPTS {
-        slot.lifecycle = McpServerLifecycle::PermanentlyFailed;
-        slot.runtime = None;
-        slot.tools_cache.clear();
-        slot.published_tools.clear();
-        slot.health.permanently_failed = true;
-        slot.health.reconnecting = false;
+        mark_server_permanent_failure(slot);
         return Err(McpError::ServerPermanentlyFailed(slot.meta.name.clone()));
     }
 
     slot.health.reconnecting = true;
+    let reconnect_result = async {
+        disconnect_server(slot).await?;
 
-    disconnect_server(slot).await?;
+        let backoff = reconnect_backoff(slot.reconnect_attempts);
+        tokio::time::sleep(backoff).await;
 
-    let backoff = reconnect_backoff(slot.reconnect_attempts);
-    tokio::time::sleep(backoff).await;
+        connect_server(slot, sampling_handler).await?;
+        refresh_server(slot, &state_weak).await?;
+        Ok::<(), McpError>(())
+    }
+    .await;
 
-    match connect_server(slot, sampling_handler).await {
+    match reconnect_result {
         Ok(()) => {
             slot.reconnect_attempts = 0;
             slot.health.reconnecting = false;
             slot.health.permanently_failed = false;
-            refresh_server(slot, &state_weak).await?;
             Ok(())
         }
         Err(err) => {
-            slot.reconnect_attempts = slot.reconnect_attempts.saturating_add(1);
-
-            if slot.reconnect_attempts >= MAX_RECONNECT_ATTEMPTS {
-                slot.lifecycle = McpServerLifecycle::PermanentlyFailed;
-                slot.runtime = None;
-                slot.tools_cache.clear();
-                slot.published_tools.clear();
-                slot.health.permanently_failed = true;
-            }
-
-            slot.health.reconnecting = false;
+            finish_reconnect_failure(slot, &err);
             Err(err)
         }
     }
@@ -1350,6 +1363,21 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct CloseFailingTransport {
+        tools: Vec<McpToolDefinition>,
+        close_error: &'static str,
+    }
+
+    impl CloseFailingTransport {
+        fn new(tool_name: &str, close_error: &'static str) -> Self {
+            Self {
+                tools: vec![MockTransport::tool_def(tool_name)],
+                close_error,
+            }
+        }
+    }
+
     #[async_trait]
     impl McpToolTransport for FailingRefreshTransport {
         async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
@@ -1382,6 +1410,40 @@ mod tests {
 
         fn transport_type(&self) -> TransportTypeId {
             TransportTypeId::Stdio
+        }
+    }
+
+    #[async_trait]
+    impl McpToolTransport for CloseFailingTransport {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            Ok(self.tools.clone())
+        }
+
+        async fn call_tool(
+            &self,
+            name: &str,
+            _args: Value,
+            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        ) -> Result<CallToolResult, McpTransportError> {
+            Ok(CallToolResult {
+                content: vec![mcp::ToolContent::Text {
+                    text: format!("called {name}"),
+                    annotations: None,
+                    meta: None,
+                }],
+                structured_content: None,
+                is_error: None,
+            })
+        }
+
+        fn transport_type(&self) -> TransportTypeId {
+            TransportTypeId::Stdio
+        }
+
+        async fn close(&self) -> Result<(), McpTransportError> {
+            Err(McpTransportError::TransportError(
+                self.close_error.to_string(),
+            ))
         }
     }
 
@@ -1574,6 +1636,25 @@ mod tests {
         McpToolRegistryManager::from_transports(transports)
             .await
             .unwrap()
+    }
+
+    fn test_slot(name: &str, transport: Arc<dyn McpToolTransport>) -> McpServerSlot {
+        McpServerSlot {
+            meta: McpServerMetadata {
+                name: name.to_string(),
+                config: cfg(name),
+            },
+            lifecycle: McpServerLifecycle::Connected,
+            runtime: Some(McpServerRuntime {
+                transport_type: transport.transport_type(),
+                transport,
+                capabilities: None,
+            }),
+            health: McpRefreshHealth::default(),
+            reconnect_attempts: 0,
+            tools_cache: vec![MockTransport::tool_def("echo")],
+            published_tools: HashMap::new(),
+        }
     }
 
     // ── McpTool descriptor format ──
@@ -1814,6 +1895,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn disconnect_server_close_failure_preserves_runtime_and_lifecycle() {
+        let transport = Arc::new(CloseFailingTransport::new("echo", "scripted close failure"))
+            as Arc<dyn McpToolTransport>;
+        let mut slot = test_slot("srv", transport);
+
+        let err = disconnect_server(&mut slot).await.unwrap_err();
+
+        assert!(err.to_string().contains("scripted close failure"));
+        assert_eq!(slot.lifecycle, McpServerLifecycle::Connected);
+        assert!(slot.runtime.is_some());
+    }
+
+    #[tokio::test]
     async fn refresh_reconnect_starts_only_after_failure_threshold() {
         let transport = Arc::new(FailingRefreshTransport::new(vec![MockTransport::tool_def(
             "echo",
@@ -1840,6 +1934,7 @@ mod tests {
         assert_eq!(servers[0].health.consecutive_failures, 2);
         assert_eq!(servers[0].reconnect_attempts, 0);
         assert!(servers[0].runtime.is_some());
+        assert!(!servers[0].health.reconnecting);
 
         drop(servers);
 
@@ -1848,6 +1943,7 @@ mod tests {
         let servers = read_lock(&mgr.state.servers);
         assert_eq!(servers[0].reconnect_attempts, 1);
         assert!(servers[0].runtime.is_none());
+        assert!(!servers[0].health.reconnecting);
         assert!(servers[0].published_tools.contains_key("mcp__srv__echo"));
     }
 
@@ -1879,7 +1975,154 @@ mod tests {
         assert_eq!(servers[0].reconnect_attempts, MAX_RECONNECT_ATTEMPTS);
         assert_eq!(servers[0].lifecycle, McpServerLifecycle::PermanentlyFailed);
         assert!(servers[0].health.permanently_failed);
+        assert!(!servers[0].health.reconnecting);
+        assert!(servers[0].runtime.is_none());
         assert!(servers[0].published_tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn attempt_reconnect_close_failure_counts_attempt_and_clears_reconnecting() {
+        let transport = Arc::new(CloseFailingTransport::new("echo", "scripted close failure"))
+            as Arc<dyn McpToolTransport>;
+        let mut slot = test_slot("srv", transport);
+        slot.health.consecutive_failures = FAILURE_THRESHOLD;
+        slot.health.reconnecting = true;
+        slot.health.last_error = Some("previous failure".to_string());
+
+        let err = attempt_reconnect(&mut slot, None, Weak::new())
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("scripted close failure"));
+        assert_eq!(slot.reconnect_attempts, 1);
+        assert!(!slot.health.reconnecting);
+        assert!(
+            slot.health
+                .last_error
+                .as_deref()
+                .is_some_and(|msg| msg.contains("scripted close failure"))
+        );
+        assert_eq!(slot.lifecycle, McpServerLifecycle::Connected);
+        assert!(slot.runtime.is_some());
+    }
+
+    #[tokio::test]
+    async fn attempt_reconnect_at_budget_marks_permanent_failure_without_transitioning() {
+        let transport = Arc::new(MockTransport::with_tools(vec![MockTransport::tool_def(
+            "echo",
+        )])) as Arc<dyn McpToolTransport>;
+        let mut slot = test_slot("srv", transport);
+        slot.reconnect_attempts = MAX_RECONNECT_ATTEMPTS;
+        slot.health.reconnecting = true;
+        slot.published_tools.insert(
+            "mcp__srv__echo".to_string(),
+            Arc::new(McpTool::new(
+                Weak::new(),
+                "mcp__srv__echo".to_string(),
+                "srv".to_string(),
+                MockTransport::tool_def("echo"),
+                TransportTypeId::Stdio,
+            )) as Arc<dyn Tool>,
+        );
+
+        let err = attempt_reconnect(&mut slot, None, Weak::new())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, McpError::ServerPermanentlyFailed(name) if name == "srv"));
+        assert_eq!(slot.lifecycle, McpServerLifecycle::PermanentlyFailed);
+        assert!(slot.runtime.is_none());
+        assert!(slot.tools_cache.is_empty());
+        assert!(slot.published_tools.is_empty());
+        assert!(slot.health.permanently_failed);
+        assert!(!slot.health.reconnecting);
+        assert_eq!(slot.reconnect_attempts, MAX_RECONNECT_ATTEMPTS);
+    }
+
+    #[tokio::test]
+    async fn attempt_reconnect_close_failure_at_budget_marks_permanent_failure() {
+        let transport = Arc::new(CloseFailingTransport::new("echo", "scripted close failure"))
+            as Arc<dyn McpToolTransport>;
+        let mut slot = test_slot("srv", transport);
+        slot.reconnect_attempts = MAX_RECONNECT_ATTEMPTS - 1;
+        slot.health.consecutive_failures = FAILURE_THRESHOLD;
+        slot.health.reconnecting = true;
+        slot.published_tools.insert(
+            "mcp__srv__echo".to_string(),
+            Arc::new(McpTool::new(
+                Weak::new(),
+                "mcp__srv__echo".to_string(),
+                "srv".to_string(),
+                MockTransport::tool_def("echo"),
+                TransportTypeId::Stdio,
+            )) as Arc<dyn Tool>,
+        );
+
+        let err = attempt_reconnect(&mut slot, None, Weak::new())
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("scripted close failure"));
+        assert_eq!(slot.reconnect_attempts, MAX_RECONNECT_ATTEMPTS);
+        assert_eq!(slot.lifecycle, McpServerLifecycle::PermanentlyFailed);
+        assert!(slot.runtime.is_none());
+        assert!(slot.tools_cache.is_empty());
+        assert!(slot.published_tools.is_empty());
+        assert!(slot.health.permanently_failed);
+        assert!(!slot.health.reconnecting);
+    }
+
+    #[test]
+    fn reset_server_health_on_success_clears_reconnect_state() {
+        let transport = Arc::new(MockTransport::with_tools(vec![MockTransport::tool_def(
+            "echo",
+        )])) as Arc<dyn McpToolTransport>;
+        let mut slot = test_slot("srv", transport);
+        let attempted_at = SystemTime::now();
+
+        slot.lifecycle = McpServerLifecycle::Disconnected;
+        slot.reconnect_attempts = 3;
+        slot.health.last_error = Some("boom".to_string());
+        slot.health.consecutive_failures = FAILURE_THRESHOLD;
+        slot.health.reconnecting = true;
+        slot.health.permanently_failed = true;
+
+        reset_server_health_on_success(&mut slot, attempted_at);
+
+        assert_eq!(slot.lifecycle, McpServerLifecycle::Connected);
+        assert_eq!(slot.reconnect_attempts, 0);
+        assert_eq!(slot.health.consecutive_failures, 0);
+        assert!(!slot.health.reconnecting);
+        assert!(!slot.health.permanently_failed);
+        assert!(slot.health.last_error.is_none());
+        assert_eq!(slot.health.last_success_at, Some(attempted_at));
+    }
+
+    #[tokio::test]
+    async fn manual_reconnect_close_failure_preserves_runtime_and_clears_reconnecting() {
+        let mgr = make_manager_with(vec![("srv", vec![MockTransport::tool_def("echo")])]).await;
+        {
+            let mut servers = write_lock(&mgr.state.servers);
+            servers[0].runtime = Some(McpServerRuntime {
+                transport_type: TransportTypeId::Stdio,
+                transport: Arc::new(CloseFailingTransport::new(
+                    "echo",
+                    "scripted reconnect close failure",
+                )) as Arc<dyn McpToolTransport>,
+                capabilities: None,
+            });
+            servers[0].lifecycle = McpServerLifecycle::Connected;
+        }
+
+        let err = mgr.reconnect("srv").await.unwrap_err();
+        assert!(err.to_string().contains("scripted reconnect close failure"));
+
+        let servers = read_lock(&mgr.state.servers);
+        let slot = &servers[0];
+        assert_eq!(slot.lifecycle, McpServerLifecycle::Connected);
+        assert!(slot.runtime.is_some());
+        assert!(!slot.health.reconnecting);
+        assert_eq!(slot.reconnect_attempts, 0);
     }
 
     #[tokio::test]
