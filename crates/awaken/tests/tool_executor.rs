@@ -300,20 +300,25 @@ async fn sequential_stops_after_first_suspension_in_loop() {
     let lifecycle = rt.store().read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.status, RunStatus::Waiting);
 
-    // The second tool should not execute, but it should be backfilled as an
-    // interrupted failed result so the tool-call batch remains complete.
+    // The second tool should not execute, but its call is backfilled as interrupted.
     let events = sink.take();
     let tool_dones: Vec<_> = events
         .iter()
-        .filter_map(|event| match event {
-            AgentEvent::ToolCallDone { id, outcome, .. } => Some((id.as_str(), *outcome)),
-            _ => None,
+        .filter_map(|e| {
+            if let AgentEvent::ToolCallDone { id, outcome, .. } = e {
+                Some((id.as_str(), *outcome))
+            } else {
+                None
+            }
         })
         .collect();
-    assert_eq!(tool_dones.len(), 2);
-    let by_id: std::collections::HashMap<_, _> = tool_dones.into_iter().collect();
-    assert_eq!(by_id.get("c1"), Some(&ToolCallOutcome::Suspended));
-    assert_eq!(by_id.get("c2"), Some(&ToolCallOutcome::Failed));
+    assert_eq!(
+        tool_dones,
+        vec![
+            ("c1", ToolCallOutcome::Suspended),
+            ("c2", ToolCallOutcome::Failed),
+        ]
+    );
 }
 
 // ===========================================================================

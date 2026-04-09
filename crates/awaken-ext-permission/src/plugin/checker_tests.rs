@@ -2,16 +2,16 @@ use std::sync::Arc;
 
 use awaken_contract::StateMap;
 use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
-use awaken_contract::contract::tool_intercept::{ToolInterceptAction, ToolInterceptPayload};
-use awaken_contract::model::{Phase, ScheduledActionSpec};
+use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
+use awaken_contract::model::Phase;
 use awaken_contract::state::Snapshot;
-use awaken_runtime::{PhaseContext, PhaseHook};
+use awaken_runtime::{PhaseContext, ToolGateHook};
 use serde_json::json;
 
 use crate::rules::{PermissionRule, ToolPermissionBehavior};
 use crate::state::{PermissionPolicy, PermissionPolicyKey};
 
-use super::checker::PermissionInterceptHook;
+use super::checker::PermissionToolGateHook;
 
 fn snapshot_with_policy(policy: PermissionPolicy) -> Snapshot {
     let mut state_map = StateMap::default();
@@ -20,7 +20,7 @@ fn snapshot_with_policy(policy: PermissionPolicy) -> Snapshot {
 }
 
 fn make_ctx(snapshot: Snapshot, tool_name: &str, tool_args: serde_json::Value) -> PhaseContext {
-    PhaseContext::new(Phase::BeforeToolExecute, snapshot).with_tool_info(
+    PhaseContext::new(Phase::ToolGate, snapshot).with_tool_info(
         tool_name,
         "call_1",
         Some(tool_args),
@@ -37,13 +37,6 @@ fn resume_input() -> ToolCallResume {
     }
 }
 
-fn decode_intercept(cmd: &awaken_runtime::state::StateCommand) -> Option<ToolInterceptPayload> {
-    cmd.scheduled_actions()
-        .iter()
-        .find(|a| a.key == ToolInterceptAction::KEY)
-        .map(|a| ToolInterceptAction::decode_payload(a.payload.clone()).unwrap())
-}
-
 // -----------------------------------------------------------------------
 // Vulnerability test: resumed denied tool must still be blocked
 // -----------------------------------------------------------------------
@@ -57,8 +50,7 @@ async fn resumed_denied_tool_is_blocked() {
     let ctx = make_ctx(snapshot_with_policy(policy), "dangerous_tool", json!({}))
         .with_resume_input(resume_input());
 
-    let cmd = PermissionInterceptHook.run(&ctx).await.unwrap();
-    let intercept = decode_intercept(&cmd);
+    let intercept = PermissionToolGateHook.run(&ctx).await.unwrap();
 
     // A denied tool MUST be blocked even when resumed
     assert!(
@@ -80,9 +72,8 @@ async fn resumed_allowed_tool_proceeds() {
     let ctx = make_ctx(snapshot_with_policy(policy), "safe_tool", json!({}))
         .with_resume_input(resume_input());
 
-    let cmd = PermissionInterceptHook.run(&ctx).await.unwrap();
     assert!(
-        decode_intercept(&cmd).is_none(),
+        PermissionToolGateHook.run(&ctx).await.unwrap().is_none(),
         "allowed tool should proceed on resume"
     );
 }
@@ -100,10 +91,9 @@ async fn resumed_ask_tool_proceeds() {
     let ctx = make_ctx(snapshot_with_policy(policy), "ask_tool", json!({}))
         .with_resume_input(resume_input());
 
-    let cmd = PermissionInterceptHook.run(&ctx).await.unwrap();
     // Ask was already approved by user via resume, should not re-suspend
     assert!(
-        decode_intercept(&cmd).is_none(),
+        PermissionToolGateHook.run(&ctx).await.unwrap().is_none(),
         "ask tool should proceed on resume (user already approved)"
     );
 }
@@ -120,9 +110,8 @@ async fn non_resumed_denied_tool_is_blocked() {
 
     let ctx = make_ctx(snapshot_with_policy(policy), "dangerous_tool", json!({}));
 
-    let cmd = PermissionInterceptHook.run(&ctx).await.unwrap();
     assert!(matches!(
-        decode_intercept(&cmd),
+        PermissionToolGateHook.run(&ctx).await.unwrap(),
         Some(ToolInterceptPayload::Block { .. })
     ));
 }
@@ -139,9 +128,8 @@ async fn non_resumed_ask_tool_is_suspended() {
 
     let ctx = make_ctx(snapshot_with_policy(policy), "ask_tool", json!({}));
 
-    let cmd = PermissionInterceptHook.run(&ctx).await.unwrap();
     assert!(matches!(
-        decode_intercept(&cmd),
+        PermissionToolGateHook.run(&ctx).await.unwrap(),
         Some(ToolInterceptPayload::Suspend(_))
     ));
 }
