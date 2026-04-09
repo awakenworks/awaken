@@ -280,7 +280,7 @@ fn resolve_delegate_tools(
                         agent_id: delegate_id.clone(),
                         backend: endpoint.backend.clone(),
                     })?;
-                factory.build(endpoint).map_err(|error| {
+                factory.validate(endpoint).map_err(|error| {
                     ResolveError::InvalidRemoteEndpointConfig {
                         agent_id: delegate_id.clone(),
                         backend: endpoint.backend.clone(),
@@ -512,6 +512,8 @@ mod tests {
     #[cfg(feature = "a2a")]
     use awaken_contract::registry_spec::RemoteEndpoint;
     use serde_json::Value;
+    #[cfg(feature = "a2a")]
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // -- Mock Tool --
 
@@ -578,6 +580,8 @@ mod tests {
     struct StaticBackendFactory {
         backend: &'static str,
         result: DelegateRunResult,
+        validate_count: Arc<AtomicUsize>,
+        build_count: Arc<AtomicUsize>,
     }
 
     #[cfg(feature = "a2a")]
@@ -586,10 +590,22 @@ mod tests {
             self.backend
         }
 
+        fn validate(&self, endpoint: &RemoteEndpoint) -> Result<(), AgentBackendFactoryError> {
+            self.validate_count.fetch_add(1, Ordering::SeqCst);
+            if endpoint.backend != self.backend {
+                return Err(AgentBackendFactoryError::InvalidConfig(format!(
+                    "unexpected backend {}",
+                    endpoint.backend
+                )));
+            }
+            Ok(())
+        }
+
         fn build(
             &self,
             endpoint: &RemoteEndpoint,
         ) -> Result<Arc<dyn AgentBackend>, AgentBackendFactoryError> {
+            self.build_count.fetch_add(1, Ordering::SeqCst);
             if endpoint.backend != self.backend {
                 return Err(AgentBackendFactoryError::InvalidConfig(format!(
                     "unexpected backend {}",
@@ -826,6 +842,8 @@ mod tests {
     #[cfg(feature = "a2a")]
     #[tokio::test]
     async fn resolve_delegate_uses_registered_backend_factory() {
+        let validate_count = Arc::new(AtomicUsize::new(0));
+        let build_count = Arc::new(AtomicUsize::new(0));
         let root = AgentSpec {
             delegates: vec!["remote-worker".into()],
             ..make_spec("root")
@@ -873,6 +891,8 @@ mod tests {
                     run_id: None,
                     inbox: None,
                 },
+                validate_count: validate_count.clone(),
+                build_count: build_count.clone(),
             }))
             .unwrap();
 
@@ -886,6 +906,8 @@ mod tests {
         };
 
         let run = resolve(&regs, "root").unwrap();
+        assert_eq!(validate_count.load(Ordering::SeqCst), 1);
+        assert_eq!(build_count.load(Ordering::SeqCst), 0);
         let tool = run.tools.get("agent_run_remote-worker").unwrap();
         let output = tool
             .execute(
@@ -897,6 +919,8 @@ mod tests {
 
         assert!(output.result.is_success());
         assert_eq!(output.result.data["response"], "from custom backend");
+        assert_eq!(validate_count.load(Ordering::SeqCst), 1);
+        assert_eq!(build_count.load(Ordering::SeqCst), 1);
     }
 
     #[test]

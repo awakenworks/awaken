@@ -9,9 +9,9 @@ mod agent_tool;
 mod progress_sink;
 
 pub use crate::backend::{
-    BackendRunResult as DelegateRunResult, BackendRunStatus as DelegateRunStatus,
-    ExecutionBackend as AgentBackend, ExecutionBackendError as AgentBackendError,
-    ExecutionBackendFactory as AgentBackendFactory,
+    BackendAbortRequest as DelegateAbortRequest, BackendRunResult as DelegateRunResult,
+    BackendRunStatus as DelegateRunStatus, ExecutionBackend as AgentBackend,
+    ExecutionBackendError as AgentBackendError, ExecutionBackendFactory as AgentBackendFactory,
     ExecutionBackendFactoryError as AgentBackendFactoryError, LocalBackend,
 };
 pub use a2a_backend::{A2aBackendFactory, A2aConfig};

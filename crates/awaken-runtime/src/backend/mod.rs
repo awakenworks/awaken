@@ -63,9 +63,6 @@ impl BackendCapabilities {
     #[must_use]
     pub fn unsupported_features(&self, request: &BackendRunRequest<'_>) -> Vec<&'static str> {
         let mut unsupported = Vec::new();
-        if request.control.cancellation_token.is_some() && !self.cancellation {
-            unsupported.push("cancellation");
-        }
         if (!request.decisions.is_empty() || request.control.decision_rx.is_some())
             && !self.decisions
         {
@@ -108,6 +105,13 @@ pub struct BackendRunRequest<'a> {
     pub is_continuation: bool,
 }
 
+/// Best-effort abort request for an in-flight backend execution.
+pub struct BackendAbortRequest<'a> {
+    pub agent_id: &'a str,
+    pub run_identity: &'a RunIdentity,
+    pub parent: Option<&'a BackendParentContext>,
+}
+
 /// Result of executing an agent through a runtime backend.
 #[derive(Debug, Clone)]
 pub struct BackendRunResult {
@@ -147,6 +151,10 @@ pub trait ExecutionBackend: Send + Sync {
         BackendCapabilities::default()
     }
 
+    async fn abort(&self, _request: BackendAbortRequest<'_>) -> Result<(), ExecutionBackendError> {
+        Ok(())
+    }
+
     async fn execute(
         &self,
         request: BackendRunRequest<'_>,
@@ -156,6 +164,10 @@ pub trait ExecutionBackend: Send + Sync {
 /// Factory for backend implementations backed by canonical `RemoteEndpoint` config.
 pub trait ExecutionBackendFactory: Send + Sync {
     fn backend(&self) -> &str;
+
+    fn validate(&self, endpoint: &RemoteEndpoint) -> Result<(), ExecutionBackendFactoryError> {
+        self.build(endpoint).map(|_| ())
+    }
 
     fn build(
         &self,

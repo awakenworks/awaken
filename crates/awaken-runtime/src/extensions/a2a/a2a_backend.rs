@@ -152,6 +152,12 @@ impl ExecutionBackendFactory for A2aBackendFactory {
         A2A_BACKEND
     }
 
+    fn validate(&self, endpoint: &RemoteEndpoint) -> Result<(), ExecutionBackendFactoryError> {
+        A2aConfig::try_from_remote_endpoint(endpoint)
+            .map(|_| ())
+            .map_err(|error| ExecutionBackendFactoryError::InvalidConfig(error.to_string()))
+    }
+
     fn build(
         &self,
         endpoint: &RemoteEndpoint,
@@ -262,32 +268,22 @@ impl A2aBackend {
     async fn poll_to_completion(
         &self,
         task_id: &str,
-        cancellation_token: Option<&crate::cancellation::CancellationToken>,
-    ) -> Result<TaskSnapshot, ExecutionBackendError> {
+    ) -> Result<PollCompletion, ExecutionBackendError> {
         let deadline = tokio::time::Instant::now() + self.config.timeout;
 
         loop {
-            if cancellation_token.is_some_and(crate::cancellation::CancellationToken::is_cancelled)
-            {
-                return Ok(TaskSnapshot {
-                    state: TaskState::Canceled,
-                    output_text: None,
-                    failure_message: Some("cancelled".to_string()),
-                    task_id: task_id.to_string(),
-                });
-            }
             let snapshot = self.fetch_task(task_id).await?;
             if snapshot.is_done() {
-                return Ok(snapshot);
+                return Ok(PollCompletion::Finished(snapshot));
             }
 
             if tokio::time::Instant::now() >= deadline {
-                return Ok(TaskSnapshot {
-                    state: TaskState::Failed,
+                return Ok(PollCompletion::TimedOut(TaskSnapshot {
+                    state: snapshot.state,
                     output_text: snapshot.output_text,
                     failure_message: Some("polling timeout exceeded".to_string()),
                     task_id: task_id.to_string(),
-                });
+                }));
             }
 
             tokio::time::sleep(self.config.poll_interval).await;
@@ -299,7 +295,7 @@ impl A2aBackend {
 impl ExecutionBackend for A2aBackend {
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities {
-            cancellation: true,
+            cancellation: false,
             decisions: false,
             overrides: false,
             frontend_tools: false,
@@ -330,60 +326,13 @@ impl ExecutionBackend for A2aBackend {
         }
 
         let submitted = self.submit_task(&prompt).await?;
-        let snapshot = if submitted.snapshot.is_done() {
-            submitted.snapshot
+        let completion = if submitted.snapshot.is_done() {
+            PollCompletion::Finished(submitted.snapshot)
         } else {
-            self.poll_to_completion(
-                &submitted.snapshot.task_id,
-                request.control.cancellation_token.as_ref(),
-            )
-            .await?
+            self.poll_to_completion(&submitted.snapshot.task_id).await?
         };
 
-        let (status, termination) = match snapshot.state {
-            TaskState::Completed => (BackendRunStatus::Completed, TerminationReason::NaturalEnd),
-            TaskState::Canceled => (BackendRunStatus::Cancelled, TerminationReason::Cancelled),
-            TaskState::Failed => {
-                let message = snapshot
-                    .failure_message
-                    .unwrap_or_else(|| "remote agent run failed".into());
-                (
-                    BackendRunStatus::Failed(message.clone()),
-                    TerminationReason::Error(message),
-                )
-            }
-            TaskState::Rejected => {
-                let message = snapshot
-                    .failure_message
-                    .unwrap_or_else(|| "remote agent rejected the task".into());
-                (
-                    BackendRunStatus::Failed(message.clone()),
-                    TerminationReason::Error(message),
-                )
-            }
-            TaskState::InputRequired => {
-                let message = snapshot
-                    .failure_message
-                    .unwrap_or_else(|| "remote agent requires additional input".into());
-                (
-                    BackendRunStatus::Failed(message.clone()),
-                    TerminationReason::Error(message),
-                )
-            }
-            TaskState::AuthRequired => {
-                let message = snapshot
-                    .failure_message
-                    .unwrap_or_else(|| "remote agent requires authentication".into());
-                (
-                    BackendRunStatus::Failed(message.clone()),
-                    TerminationReason::Error(message),
-                )
-            }
-            TaskState::Submitted | TaskState::Working => (
-                BackendRunStatus::Timeout,
-                TerminationReason::Error("polling timeout exceeded".into()),
-            ),
-        };
+        let (snapshot, status, termination) = map_completion_result(completion);
         Ok(BackendRunResult {
             agent_id: request.agent_id.to_string(),
             status,
@@ -393,6 +342,76 @@ impl ExecutionBackend for A2aBackend {
             run_id: None,
             inbox: None,
         })
+    }
+}
+
+enum PollCompletion {
+    Finished(TaskSnapshot),
+    TimedOut(TaskSnapshot),
+}
+
+fn map_completion_result(
+    completion: PollCompletion,
+) -> (TaskSnapshot, BackendRunStatus, TerminationReason) {
+    match completion {
+        PollCompletion::TimedOut(snapshot) => (
+            snapshot,
+            BackendRunStatus::Timeout,
+            TerminationReason::Error("polling timeout exceeded".into()),
+        ),
+        PollCompletion::Finished(snapshot) => {
+            let (status, termination) = match snapshot.state {
+                TaskState::Completed => {
+                    (BackendRunStatus::Completed, TerminationReason::NaturalEnd)
+                }
+                TaskState::Canceled => (BackendRunStatus::Cancelled, TerminationReason::Cancelled),
+                TaskState::Failed => {
+                    let message = snapshot
+                        .failure_message
+                        .clone()
+                        .unwrap_or_else(|| "remote agent run failed".into());
+                    (
+                        BackendRunStatus::Failed(message.clone()),
+                        TerminationReason::Error(message),
+                    )
+                }
+                TaskState::Rejected => {
+                    let message = snapshot
+                        .failure_message
+                        .clone()
+                        .unwrap_or_else(|| "remote agent rejected the task".into());
+                    (
+                        BackendRunStatus::Failed(message.clone()),
+                        TerminationReason::Error(message),
+                    )
+                }
+                TaskState::InputRequired => {
+                    let message = snapshot
+                        .failure_message
+                        .clone()
+                        .unwrap_or_else(|| "remote agent requires additional input".into());
+                    (
+                        BackendRunStatus::Failed(message.clone()),
+                        TerminationReason::Error(message),
+                    )
+                }
+                TaskState::AuthRequired => {
+                    let message = snapshot
+                        .failure_message
+                        .clone()
+                        .unwrap_or_else(|| "remote agent requires authentication".into());
+                    (
+                        BackendRunStatus::Failed(message.clone()),
+                        TerminationReason::Error(message),
+                    )
+                }
+                TaskState::Submitted | TaskState::Working => (
+                    BackendRunStatus::Failed("remote agent did not reach a terminal state".into()),
+                    TerminationReason::Error("remote agent did not reach a terminal state".into()),
+                ),
+            };
+            (snapshot, status, termination)
+        }
     }
 }
 
@@ -699,6 +718,50 @@ mod tests {
             .unwrap();
 
         let _backend: Arc<dyn crate::backend::ExecutionBackend> = backend;
+    }
+
+    #[test]
+    fn a2a_backend_factory_validates_endpoint_config_without_building() {
+        A2aBackendFactory
+            .validate(&RemoteEndpoint {
+                backend: "a2a".into(),
+                base_url: "https://api.example.com/v1/a2a".into(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let err = A2aBackendFactory
+            .validate(&RemoteEndpoint {
+                backend: "a2a".into(),
+                base_url: "https://api.example.com/v1/a2a".into(),
+                auth: Some(awaken_contract::registry_spec::RemoteAuth {
+                    auth_type: "basic".into(),
+                    params: BTreeMap::new(),
+                }),
+                ..Default::default()
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("only supports bearer auth"));
+    }
+
+    #[test]
+    fn timed_out_poll_completion_maps_to_timeout_status() {
+        let timed_out_snapshot = TaskSnapshot {
+            task_id: "task-1".into(),
+            state: TaskState::Working,
+            output_text: Some("partial output".into()),
+            failure_message: Some("polling timeout exceeded".into()),
+        };
+
+        let (snapshot, status, termination) =
+            map_completion_result(PollCompletion::TimedOut(timed_out_snapshot.clone()));
+
+        assert!(matches!(status, BackendRunStatus::Timeout));
+        assert_eq!(snapshot.output_text, timed_out_snapshot.output_text);
+        assert!(matches!(
+            termination,
+            TerminationReason::Error(message) if message == "polling timeout exceeded"
+        ));
     }
 
     #[test]

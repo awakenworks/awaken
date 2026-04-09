@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use crate::backend::{
-    BackendControl, BackendRunRequest, ExecutionBackendError, execute_resolved_execution,
-    execution_capabilities, validate_execution_request,
+    BackendAbortRequest, BackendControl, BackendRunRequest, ExecutionBackendError,
+    execute_resolved_execution, execution_capabilities, validate_execution_request,
 };
 use crate::loop_runner::{AgentLoopError, AgentRunResult};
 use crate::registry::{ExecutionResolver, ResolvedBackendAgent, ResolvedExecution};
@@ -148,6 +148,7 @@ impl AgentRuntime {
 
         let (handle, cancellation_token, raw_decision_rx) =
             self.create_run_channels(run_id.clone());
+        let runtime_cancellation_token = cancellation_token.clone();
         let decision_rx = if capabilities.decisions {
             Some(raw_decision_rx)
         } else {
@@ -169,7 +170,7 @@ impl AgentRuntime {
             phase_runtime: phase_runtime.as_ref(),
             checkpoint_store: phase_runtime.as_ref().and(self.storage.as_deref()),
             control: BackendControl {
-                cancellation_token: Some(cancellation_token),
+                cancellation_token: capabilities.cancellation.then_some(cancellation_token),
                 decision_rx,
             },
             decisions,
@@ -214,6 +215,7 @@ impl AgentRuntime {
                     run_created_at,
                     &run_identity,
                     &sink,
+                    runtime_cancellation_token,
                 )
                 .await
             }
@@ -237,13 +239,17 @@ impl AgentRuntime {
         store
             .install_plugin(crate::loop_runner::LoopStatePlugin)
             .map_err(AgentLoopError::PhaseError)?;
-
-        let preflight_key_registrations = preflight_resolved.env.key_registrations.clone();
-        if !preflight_key_registrations.is_empty() {
-            store
-                .register_keys(&preflight_key_registrations)
-                .map_err(AgentLoopError::PhaseError)?;
-        }
+        let run_inbox = run_inbox.unwrap_or_else(|| {
+            let (sender, receiver) = crate::inbox::inbox_channel();
+            super::run_request::RunInbox { sender, receiver }
+        });
+        let owner_inbox = run_inbox.sender.clone();
+        crate::backend::LocalBackend::bind_local_execution_env(
+            &store,
+            preflight_resolved,
+            Some(&owner_inbox),
+        )
+        .map_err(AgentLoopError::PhaseError)?;
 
         let mut messages = if let Some(ref ts) = self.storage {
             if let Some(prev_run) = ts
@@ -269,15 +275,6 @@ impl AgentRuntime {
         strip_unpaired_tool_calls(&mut messages);
         messages.extend(request_messages);
 
-        let run_inbox = run_inbox.unwrap_or_else(|| {
-            let (sender, receiver) = crate::inbox::inbox_channel();
-            super::run_request::RunInbox { sender, receiver }
-        });
-        let owner_inbox = run_inbox.sender.clone();
-        for plugin in &preflight_resolved.env.plugins {
-            plugin.bind_runtime_context(&store, Some(&owner_inbox));
-        }
-
         Ok(PreparedLocalRootExecution {
             messages,
             phase_runtime,
@@ -293,6 +290,7 @@ impl AgentRuntime {
         run_created_at: u64,
         run_identity: &RunIdentity,
         sink: &Arc<dyn EventSink>,
+        runtime_cancellation_token: crate::cancellation::CancellationToken,
     ) -> Result<AgentRunResult, AgentLoopError> {
         sink.emit(AgentEvent::RunStart {
             thread_id: run_identity.thread_id.clone(),
@@ -306,10 +304,48 @@ impl AgentRuntime {
         .await;
 
         let execution_started_at = now_ms();
-        let delegate_result = match non_local.backend.execute(request).await {
-            Ok(result) => result,
-            Err(error) => {
-                let termination = TerminationReason::Error(non_local_backend_error_message(error));
+        let backend_execution = non_local.backend.execute(request);
+        tokio::pin!(backend_execution);
+        let delegate_result = tokio::select! {
+            result = &mut backend_execution => {
+                match result {
+                    Ok(result) => result,
+                    Err(error) => {
+                        let termination = TerminationReason::Error(non_local_backend_error_message(error));
+                        return self
+                            .finish_non_local_run(
+                                &run_identity.thread_id,
+                                &run_identity.run_id,
+                                &run_identity.agent_id,
+                                run_identity.parent_run_id.clone(),
+                                run_created_at,
+                                messages,
+                                termination,
+                                0,
+                                String::new(),
+                                sink,
+                            )
+                            .await;
+                    }
+                }
+            }
+            _ = runtime_cancellation_token.cancelled() => {
+                if let Err(error) = non_local
+                    .backend
+                    .abort(BackendAbortRequest {
+                        agent_id: &run_identity.agent_id,
+                        run_identity,
+                        parent: None,
+                    })
+                    .await
+                {
+                    tracing::warn!(
+                        agent_id = %run_identity.agent_id,
+                        run_id = %run_identity.run_id,
+                        error = %error,
+                        "non-local backend abort hook failed after cancellation"
+                    );
+                }
                 return self
                     .finish_non_local_run(
                         &run_identity.thread_id,
@@ -318,7 +354,7 @@ impl AgentRuntime {
                         run_identity.parent_run_id.clone(),
                         run_created_at,
                         messages,
-                        termination,
+                        TerminationReason::Cancelled,
                         0,
                         String::new(),
                         sink,
@@ -780,6 +816,8 @@ mod tests {
     struct StaticRemoteBackend {
         response: String,
         delay_ms: u64,
+        cancellation: bool,
+        abort_count: Arc<AtomicUsize>,
     }
 
     #[cfg(feature = "a2a")]
@@ -787,12 +825,20 @@ mod tests {
     impl AgentBackend for StaticRemoteBackend {
         fn capabilities(&self) -> crate::backend::BackendCapabilities {
             crate::backend::BackendCapabilities {
-                cancellation: true,
+                cancellation: self.cancellation,
                 decisions: false,
                 overrides: false,
                 frontend_tools: false,
                 continuation: false,
             }
+        }
+
+        async fn abort(
+            &self,
+            _request: crate::backend::BackendAbortRequest<'_>,
+        ) -> Result<(), AgentBackendError> {
+            self.abort_count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
 
         async fn execute(
@@ -815,7 +861,9 @@ mod tests {
     }
 
     #[cfg(feature = "a2a")]
-    struct StaticRemoteBackendFactory;
+    struct StaticRemoteBackendFactory {
+        abort_count: Arc<AtomicUsize>,
+    }
 
     #[cfg(feature = "a2a")]
     impl AgentBackendFactory for StaticRemoteBackendFactory {
@@ -838,15 +886,25 @@ mod tests {
                 .get("delay_ms")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0);
+            let cancellation = endpoint
+                .options
+                .get("supports_cancellation")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true);
             Ok(Arc::new(StaticRemoteBackend {
                 response: "remote root response".into(),
                 delay_ms,
+                cancellation,
+                abort_count: self.abort_count.clone(),
             }))
         }
     }
 
     #[cfg(feature = "a2a")]
-    fn build_remote_runtime(endpoint: RemoteEndpoint) -> AgentRuntime {
+    fn build_remote_runtime(
+        endpoint: RemoteEndpoint,
+        abort_count: Arc<AtomicUsize>,
+    ) -> AgentRuntime {
         let mut models = MapModelRegistry::new();
         models
             .register_model(
@@ -875,7 +933,7 @@ mod tests {
 
         let mut backends = MapBackendRegistry::new();
         backends
-            .register_backend_factory(Arc::new(StaticRemoteBackendFactory))
+            .register_backend_factory(Arc::new(StaticRemoteBackendFactory { abort_count }))
             .unwrap();
 
         let registries = RegistrySet {
@@ -897,11 +955,14 @@ mod tests {
     #[cfg(feature = "a2a")]
     #[tokio::test]
     async fn run_supports_endpoint_root_agents() {
-        let runtime = build_remote_runtime(RemoteEndpoint {
-            backend: "test-remote".into(),
-            base_url: "https://remote.example.com".into(),
-            ..Default::default()
-        });
+        let runtime = build_remote_runtime(
+            RemoteEndpoint {
+                backend: "test-remote".into(),
+                base_url: "https://remote.example.com".into(),
+                ..Default::default()
+            },
+            Arc::new(AtomicUsize::new(0)),
+        );
 
         let sink = Arc::new(VecEventSink::new());
         let result = runtime
@@ -956,11 +1017,14 @@ mod tests {
     #[cfg(feature = "a2a")]
     #[tokio::test]
     async fn run_rejects_remote_overrides_without_backend_capability() {
-        let runtime = build_remote_runtime(RemoteEndpoint {
-            backend: "test-remote".into(),
-            base_url: "https://remote.example.com".into(),
-            ..Default::default()
-        });
+        let runtime = build_remote_runtime(
+            RemoteEndpoint {
+                backend: "test-remote".into(),
+                base_url: "https://remote.example.com".into(),
+                ..Default::default()
+            },
+            Arc::new(AtomicUsize::new(0)),
+        );
 
         let error = runtime
             .run(
@@ -980,12 +1044,104 @@ mod tests {
 
     #[cfg(feature = "a2a")]
     #[tokio::test]
+    async fn run_allows_non_local_root_backends_without_cancellation_capability() {
+        let abort_count = Arc::new(AtomicUsize::new(0));
+        let runtime = Arc::new(build_remote_runtime(
+            RemoteEndpoint {
+                backend: "test-remote".into(),
+                base_url: "https://remote.example.com".into(),
+                options: std::collections::BTreeMap::from([
+                    ("delay_ms".into(), json!(5_000_u64)),
+                    ("supports_cancellation".into(), json!(false)),
+                ]),
+                ..Default::default()
+            },
+            abort_count.clone(),
+        ));
+
+        let run_handle = {
+            let runtime = runtime.clone();
+            tokio::spawn(async move {
+                runtime
+                    .run(
+                        RunRequest::new("remote-thread-cancel", vec![Message::user("hello")])
+                            .with_agent_id("remote-root"),
+                        Arc::new(VecEventSink::new()),
+                    )
+                    .await
+            })
+        };
+
+        let mut cancelled = false;
+        for _ in 0..20 {
+            if runtime.cancel("remote-thread-cancel") {
+                cancelled = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(cancelled);
+
+        let result = run_handle
+            .await
+            .expect("task should join")
+            .expect("cancelled run should still return a result");
+        assert!(matches!(result.termination, TerminationReason::Cancelled));
+        assert_eq!(abort_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "a2a")]
+    #[tokio::test]
+    async fn run_non_local_root_cancel_invokes_backend_abort_hook() {
+        let abort_count = Arc::new(AtomicUsize::new(0));
+        let runtime = Arc::new(build_remote_runtime(
+            RemoteEndpoint {
+                backend: "test-remote".into(),
+                base_url: "https://remote.example.com".into(),
+                options: std::collections::BTreeMap::from([("delay_ms".into(), json!(5_000_u64))]),
+                ..Default::default()
+            },
+            abort_count.clone(),
+        ));
+
+        let run_handle = {
+            let runtime = runtime.clone();
+            tokio::spawn(async move {
+                runtime
+                    .run(
+                        RunRequest::new("remote-thread-abort", vec![Message::user("hello")])
+                            .with_agent_id("remote-root"),
+                        Arc::new(VecEventSink::new()),
+                    )
+                    .await
+            })
+        };
+
+        let mut cancelled = false;
+        for _ in 0..20 {
+            if runtime.cancel("remote-thread-abort") {
+                cancelled = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(cancelled);
+        let _ = run_handle.await.expect("task should join");
+
+        assert_eq!(abort_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "a2a")]
+    #[tokio::test]
     async fn run_rejects_remote_resume_decisions_without_backend_capability() {
-        let runtime = build_remote_runtime(RemoteEndpoint {
-            backend: "test-remote".into(),
-            base_url: "https://remote.example.com".into(),
-            ..Default::default()
-        });
+        let runtime = build_remote_runtime(
+            RemoteEndpoint {
+                backend: "test-remote".into(),
+                base_url: "https://remote.example.com".into(),
+                ..Default::default()
+            },
+            Arc::new(AtomicUsize::new(0)),
+        );
 
         let error = runtime
             .run(
@@ -1012,11 +1168,14 @@ mod tests {
     #[cfg(feature = "a2a")]
     #[tokio::test]
     async fn run_rejects_remote_frontend_tools_without_backend_capability() {
-        let runtime = build_remote_runtime(RemoteEndpoint {
-            backend: "test-remote".into(),
-            base_url: "https://remote.example.com".into(),
-            ..Default::default()
-        });
+        let runtime = build_remote_runtime(
+            RemoteEndpoint {
+                backend: "test-remote".into(),
+                base_url: "https://remote.example.com".into(),
+                ..Default::default()
+            },
+            Arc::new(AtomicUsize::new(0)),
+        );
 
         let error = runtime
             .run(
@@ -1041,11 +1200,14 @@ mod tests {
 
     #[tokio::test]
     async fn run_rejects_remote_continuation_without_backend_capability() {
-        let runtime = build_remote_runtime(RemoteEndpoint {
-            backend: "test-remote".into(),
-            base_url: "https://remote.example.com".into(),
-            ..Default::default()
-        });
+        let runtime = build_remote_runtime(
+            RemoteEndpoint {
+                backend: "test-remote".into(),
+                base_url: "https://remote.example.com".into(),
+                ..Default::default()
+            },
+            Arc::new(AtomicUsize::new(0)),
+        );
 
         let error = runtime
             .run(
@@ -1071,7 +1233,10 @@ mod tests {
         endpoint
             .options
             .insert("delay_ms".into(), serde_json::json!(100));
-        let runtime = Arc::new(build_remote_runtime(endpoint));
+        let runtime = Arc::new(build_remote_runtime(
+            endpoint,
+            Arc::new(AtomicUsize::new(0)),
+        ));
         let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
 
         let run_task = {

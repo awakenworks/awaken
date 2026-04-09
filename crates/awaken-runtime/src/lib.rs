@@ -35,9 +35,9 @@ pub use error::RuntimeError;
 pub use profile::ProfileAccess;
 
 pub use backend::{
-    BackendCapabilities, BackendControl, BackendParentContext, BackendRunRequest, BackendRunResult,
-    BackendRunStatus, ExecutionBackend, ExecutionBackendError, ExecutionBackendFactory,
-    ExecutionBackendFactoryError, LocalBackend,
+    BackendAbortRequest, BackendCapabilities, BackendControl, BackendParentContext,
+    BackendRunRequest, BackendRunResult, BackendRunStatus, ExecutionBackend, ExecutionBackendError,
+    ExecutionBackendFactory, ExecutionBackendFactoryError, LocalBackend,
 };
 pub use builder::{AgentRuntimeBuilder, BuildError};
 pub use phase::{
