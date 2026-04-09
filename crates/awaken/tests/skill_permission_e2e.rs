@@ -15,6 +15,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -37,11 +40,12 @@ use awaken::loop_runner::{AgentLoopParams, build_agent_env, run_agent_loop};
 use awaken::registry::AgentSpec;
 use awaken::*;
 use awaken::{AgentResolver, ResolvedAgent, RuntimeError};
+use awaken_runtime::execution::ParallelToolExecutor;
 
 use awaken::ext_permission::PermissionPlugin;
 use awaken::ext_skills::{
-    EmbeddedSkill, EmbeddedSkillData, InMemorySkillRegistry, SkillActivateTool,
-    SkillDiscoveryPlugin,
+    ActiveSkillInstructionsPlugin, EmbeddedSkill, EmbeddedSkillData, InMemorySkillRegistry,
+    SkillActivateTool, SkillDiscoveryPlugin,
 };
 
 // ---------------------------------------------------------------------------
@@ -50,13 +54,19 @@ use awaken::ext_skills::{
 
 struct ScriptedLlm {
     responses: std::sync::Mutex<Vec<StreamResult>>,
+    captured_requests: Mutex<Vec<InferenceRequest>>,
 }
 
 impl ScriptedLlm {
     fn new(responses: Vec<StreamResult>) -> Self {
         Self {
             responses: std::sync::Mutex::new(responses),
+            captured_requests: Mutex::new(Vec::new()),
         }
+    }
+
+    fn captured_requests(&self) -> Vec<InferenceRequest> {
+        self.captured_requests.lock().unwrap().clone()
     }
 }
 
@@ -64,8 +74,9 @@ impl ScriptedLlm {
 impl LlmExecutor for ScriptedLlm {
     async fn execute(
         &self,
-        _req: InferenceRequest,
+        req: InferenceRequest,
     ) -> Result<StreamResult, InferenceExecutionError> {
+        self.captured_requests.lock().unwrap().push(req);
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             Ok(StreamResult {
@@ -101,6 +112,54 @@ impl Tool for DangerousTool {
     }
     async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         Ok(ToolResult::success("dangerous_tool", json!({"status": "executed"})).into())
+    }
+}
+
+struct CountingDangerousTool {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for CountingDangerousTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(
+            "dangerous_tool",
+            "Dangerous Tool",
+            "A tool that requires permission elevation",
+        )
+    }
+
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(ToolResult::success("dangerous_tool", json!({"status": "executed"})).into())
+    }
+}
+
+struct CountingWeatherTool {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for CountingWeatherTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(
+            "get_weather",
+            "Get Weather",
+            "Return weather for a location",
+        )
+    }
+
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(ToolResult::success(
+            "get_weather",
+            json!({
+                "location": args["location"].clone(),
+                "temp": 25,
+                "condition": "sunny"
+            }),
+        )
+        .into())
     }
 }
 
@@ -208,6 +267,21 @@ fn make_skill_registry() -> Arc<InMemorySkillRegistry> {
 }
 
 fn make_agent_spec_deny_all() -> AgentSpec {
+    make_agent_spec_deny_all_with_extra_allowed_tools(&[])
+}
+
+fn make_agent_spec_deny_all_with_extra_allowed_tools(extra_allowed_tools: &[&str]) -> AgentSpec {
+    let mut rules = vec![
+        json!({ "tool": "skill", "behavior": "allow" }),
+        json!({ "tool": "load_skill_resource", "behavior": "allow" }),
+        json!({ "tool": "skill_script", "behavior": "allow" }),
+    ];
+    rules.extend(
+        extra_allowed_tools
+            .iter()
+            .map(|tool| json!({ "tool": tool, "behavior": "allow" })),
+    );
+
     AgentSpec {
         id: "test".into(),
         model: "m".into(),
@@ -226,11 +300,7 @@ fn make_agent_spec_deny_all() -> AgentSpec {
             "permission".to_string(),
             json!({
                 "default_behavior": "deny",
-                "rules": [
-                    { "tool": "skill", "behavior": "allow" },
-                    { "tool": "load_skill_resource", "behavior": "allow" },
-                    { "tool": "skill_script", "behavior": "allow" },
-                ]
+                "rules": rules
             }),
         )]),
         registry: None,
@@ -545,7 +615,705 @@ async fn permission_elevation_persists_across_steps_within_run() {
 }
 
 // ===========================================================================
-// TEST 4: New run starts without previous permission elevation
+// TEST 4: Same-step skill activation unlocks guarded tools
+// ===========================================================================
+
+#[tokio::test]
+async fn same_step_skill_activation_unlocks_guarded_tool() {
+    let registry = make_skill_registry();
+    let discovery_plugin = SkillDiscoveryPlugin::new(registry.clone());
+    let dangerous_calls = Arc::new(AtomicUsize::new(0));
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        tool_step(vec![
+            ToolCall::new("c1", "skill", json!({"skill": "power-skill"})),
+            ToolCall::new("c2", "dangerous_tool", json!({})),
+        ]),
+        text_step("done"),
+    ]));
+
+    let spec = make_agent_spec_deny_all();
+    let mut agent = ResolvedAgent::new("test", "m", "sys", llm);
+    agent.spec = Arc::new(spec);
+    let agent = agent
+        .with_tool(Arc::new(CountingDangerousTool {
+            calls: dangerous_calls.clone(),
+        }))
+        .with_tool(Arc::new(SkillActivateTool::new(registry)))
+        .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
+
+    let rt = make_runtime();
+    let plugins: Vec<Arc<dyn Plugin>> =
+        vec![Arc::new(discovery_plugin), Arc::new(PermissionPlugin)];
+    let resolver = FixedResolver::with_plugins(agent, plugins);
+    let sink = Arc::new(VecEventSink::new());
+
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        result.termination,
+        TerminationReason::NaturalEnd,
+        "same-step skill activation should unlock the guarded tool and still reach step 2"
+    );
+    assert_eq!(result.steps, 2, "run should advance past the tool step");
+    assert_eq!(
+        dangerous_calls.load(Ordering::SeqCst),
+        1,
+        "guarded tool execute() should run exactly once after skill activation"
+    );
+
+    let events = sink.take();
+    let tool_dones: HashMap<String, ToolCallOutcome> = events
+        .iter()
+        .filter_map(|event| {
+            if let AgentEvent::ToolCallDone { id, outcome, .. } = event {
+                Some((id.clone(), *outcome))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(tool_dones.get("c1"), Some(&ToolCallOutcome::Succeeded));
+    assert_eq!(tool_dones.get("c2"), Some(&ToolCallOutcome::Succeeded));
+}
+
+// ===========================================================================
+// TEST 5: Same-step skill activation also works with the default sequential executor
+// ===========================================================================
+
+#[tokio::test]
+async fn same_step_skill_activation_unlocks_guarded_tool_with_sequential_executor() {
+    let registry = make_skill_registry();
+    let discovery_plugin = SkillDiscoveryPlugin::new(registry.clone());
+    let dangerous_calls = Arc::new(AtomicUsize::new(0));
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        tool_step(vec![
+            ToolCall::new("c1", "skill", json!({"skill": "power-skill"})),
+            ToolCall::new("c2", "dangerous_tool", json!({})),
+        ]),
+        text_step("done"),
+    ]));
+
+    let spec = make_agent_spec_deny_all();
+    let mut agent = ResolvedAgent::new("test", "m", "sys", llm);
+    agent.spec = Arc::new(spec);
+    let agent = agent
+        .with_tool(Arc::new(CountingDangerousTool {
+            calls: dangerous_calls.clone(),
+        }))
+        .with_tool(Arc::new(SkillActivateTool::new(registry)));
+
+    let rt = make_runtime();
+    let plugins: Vec<Arc<dyn Plugin>> =
+        vec![Arc::new(discovery_plugin), Arc::new(PermissionPlugin)];
+    let resolver = FixedResolver::with_plugins(agent, plugins);
+
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: Arc::new(VecEventSink::new()),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(result.steps, 2);
+    assert_eq!(
+        dangerous_calls.load(Ordering::SeqCst),
+        1,
+        "sequential execution should still run the guarded tool after skill activation"
+    );
+}
+
+// ===========================================================================
+// TEST 6: Same-step skill activation should not drop other already-allowed tools
+// ===========================================================================
+
+#[tokio::test]
+async fn same_step_skill_activation_preserves_other_parallel_tools() {
+    let registry = make_skill_registry();
+    let discovery_plugin = SkillDiscoveryPlugin::new(registry.clone());
+    let dangerous_calls = Arc::new(AtomicUsize::new(0));
+    let weather_calls = Arc::new(AtomicUsize::new(0));
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        tool_step(vec![
+            ToolCall::new("c1", "skill", json!({"skill": "power-skill"})),
+            ToolCall::new("c2", "get_weather", json!({"location": "Tokyo"})),
+            ToolCall::new("c3", "dangerous_tool", json!({})),
+        ]),
+        text_step("done"),
+    ]));
+
+    let spec = make_agent_spec_deny_all_with_extra_allowed_tools(&["get_weather"]);
+    let mut agent = ResolvedAgent::new("test", "m", "sys", llm);
+    agent.spec = Arc::new(spec);
+    let agent = agent
+        .with_tool(Arc::new(CountingDangerousTool {
+            calls: dangerous_calls.clone(),
+        }))
+        .with_tool(Arc::new(CountingWeatherTool {
+            calls: weather_calls.clone(),
+        }))
+        .with_tool(Arc::new(SkillActivateTool::new(registry)))
+        .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
+
+    let rt = make_runtime();
+    let plugins: Vec<Arc<dyn Plugin>> =
+        vec![Arc::new(discovery_plugin), Arc::new(PermissionPlugin)];
+    let resolver = FixedResolver::with_plugins(agent, plugins);
+    let sink = Arc::new(VecEventSink::new());
+
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(
+        weather_calls.load(Ordering::SeqCst),
+        1,
+        "already-allowed tool should still execute even when a later call needs skill elevation"
+    );
+    assert_eq!(
+        dangerous_calls.load(Ordering::SeqCst),
+        1,
+        "guarded tool should execute after re-checking permissions with the activated skill"
+    );
+
+    let tool_dones: HashMap<String, ToolCallOutcome> = sink
+        .take()
+        .iter()
+        .filter_map(|event| {
+            if let AgentEvent::ToolCallDone { id, outcome, .. } = event {
+                Some((id.clone(), *outcome))
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(tool_dones.get("c1"), Some(&ToolCallOutcome::Succeeded));
+    assert_eq!(tool_dones.get("c2"), Some(&ToolCallOutcome::Succeeded));
+    assert_eq!(tool_dones.get("c3"), Some(&ToolCallOutcome::Succeeded));
+}
+
+// ===========================================================================
+// TEST 7: Same-step skill activation should allow multiple guarded tools
+// ===========================================================================
+
+#[tokio::test]
+async fn same_step_skill_activation_allows_multiple_guarded_tools() {
+    let registry = make_skill_registry();
+    let discovery_plugin = SkillDiscoveryPlugin::new(registry.clone());
+    let dangerous_calls = Arc::new(AtomicUsize::new(0));
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        tool_step(vec![
+            ToolCall::new("c1", "skill", json!({"skill": "power-skill"})),
+            ToolCall::new("c2", "dangerous_tool", json!({"slot": 1})),
+            ToolCall::new("c3", "dangerous_tool", json!({"slot": 2})),
+        ]),
+        text_step("done"),
+    ]));
+
+    let spec = make_agent_spec_deny_all();
+    let mut agent = ResolvedAgent::new("test", "m", "sys", llm);
+    agent.spec = Arc::new(spec);
+    let agent = agent
+        .with_tool(Arc::new(CountingDangerousTool {
+            calls: dangerous_calls.clone(),
+        }))
+        .with_tool(Arc::new(SkillActivateTool::new(registry)))
+        .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
+
+    let rt = make_runtime();
+    let plugins: Vec<Arc<dyn Plugin>> =
+        vec![Arc::new(discovery_plugin), Arc::new(PermissionPlugin)];
+    let resolver = FixedResolver::with_plugins(agent, plugins);
+    let sink = Arc::new(VecEventSink::new());
+
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(
+        dangerous_calls.load(Ordering::SeqCst),
+        2,
+        "both guarded tools should execute after the same-step skill activation"
+    );
+
+    let tool_dones: HashMap<String, ToolCallOutcome> = sink
+        .take()
+        .iter()
+        .filter_map(|event| {
+            if let AgentEvent::ToolCallDone { id, outcome, .. } = event {
+                Some((id.clone(), *outcome))
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(tool_dones.get("c1"), Some(&ToolCallOutcome::Succeeded));
+    assert_eq!(tool_dones.get("c2"), Some(&ToolCallOutcome::Succeeded));
+    assert_eq!(tool_dones.get("c3"), Some(&ToolCallOutcome::Succeeded));
+}
+
+// ===========================================================================
+// TEST 8: Same-step skill activation should work when another tool comes first
+// ===========================================================================
+
+#[tokio::test]
+async fn same_step_skill_activation_preserves_allowed_tool_before_skill() {
+    let registry = make_skill_registry();
+    let discovery_plugin = SkillDiscoveryPlugin::new(registry.clone());
+    let dangerous_calls = Arc::new(AtomicUsize::new(0));
+    let weather_calls = Arc::new(AtomicUsize::new(0));
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        tool_step(vec![
+            ToolCall::new("c1", "get_weather", json!({"location": "Tokyo"})),
+            ToolCall::new("c2", "skill", json!({"skill": "power-skill"})),
+            ToolCall::new("c3", "dangerous_tool", json!({})),
+        ]),
+        text_step("done"),
+    ]));
+
+    let spec = make_agent_spec_deny_all_with_extra_allowed_tools(&["get_weather"]);
+    let mut agent = ResolvedAgent::new("test", "m", "sys", llm);
+    agent.spec = Arc::new(spec);
+    let agent = agent
+        .with_tool(Arc::new(CountingWeatherTool {
+            calls: weather_calls.clone(),
+        }))
+        .with_tool(Arc::new(CountingDangerousTool {
+            calls: dangerous_calls.clone(),
+        }))
+        .with_tool(Arc::new(SkillActivateTool::new(registry)))
+        .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
+
+    let rt = make_runtime();
+    let plugins: Vec<Arc<dyn Plugin>> =
+        vec![Arc::new(discovery_plugin), Arc::new(PermissionPlugin)];
+    let resolver = FixedResolver::with_plugins(agent, plugins);
+    let sink = Arc::new(VecEventSink::new());
+
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(
+        weather_calls.load(Ordering::SeqCst),
+        1,
+        "allowed tool before skill activation should not be dropped"
+    );
+    assert_eq!(
+        dangerous_calls.load(Ordering::SeqCst),
+        1,
+        "guarded tool after the skill should still execute"
+    );
+
+    let tool_dones: HashMap<String, ToolCallOutcome> = sink
+        .take()
+        .iter()
+        .filter_map(|event| {
+            if let AgentEvent::ToolCallDone { id, outcome, .. } = event {
+                Some((id.clone(), *outcome))
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(tool_dones.get("c1"), Some(&ToolCallOutcome::Succeeded));
+    assert_eq!(tool_dones.get("c2"), Some(&ToolCallOutcome::Succeeded));
+    assert_eq!(tool_dones.get("c3"), Some(&ToolCallOutcome::Succeeded));
+}
+
+// ===========================================================================
+// TEST 9: Guarded tool before skill should still block the batch
+// ===========================================================================
+
+#[tokio::test]
+async fn guarded_tool_before_skill_blocks_same_step_activation_attempt() {
+    let registry = make_skill_registry();
+    let discovery_plugin = SkillDiscoveryPlugin::new(registry.clone());
+    let dangerous_calls = Arc::new(AtomicUsize::new(0));
+
+    let llm = Arc::new(ScriptedLlm::new(vec![tool_step(vec![
+        ToolCall::new("c1", "dangerous_tool", json!({})),
+        ToolCall::new("c2", "skill", json!({"skill": "power-skill"})),
+    ])]));
+
+    let spec = make_agent_spec_deny_all();
+    let mut agent = ResolvedAgent::new("test", "m", "sys", llm);
+    agent.spec = Arc::new(spec);
+    let agent = agent
+        .with_tool(Arc::new(CountingDangerousTool {
+            calls: dangerous_calls.clone(),
+        }))
+        .with_tool(Arc::new(SkillActivateTool::new(registry)))
+        .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
+
+    let rt = make_runtime();
+    let plugins: Vec<Arc<dyn Plugin>> =
+        vec![Arc::new(discovery_plugin), Arc::new(PermissionPlugin)];
+    let resolver = FixedResolver::with_plugins(agent, plugins);
+    let sink = Arc::new(VecEventSink::new());
+
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        matches!(result.termination, TerminationReason::Blocked(_)),
+        "guarded tool appearing before skill should still block the step"
+    );
+    assert_eq!(
+        dangerous_calls.load(Ordering::SeqCst),
+        0,
+        "blocked guarded tool must not execute"
+    );
+
+    let tool_dones: HashMap<String, ToolCallOutcome> = sink
+        .take()
+        .iter()
+        .filter_map(|event| {
+            if let AgentEvent::ToolCallDone { id, outcome, .. } = event {
+                Some((id.clone(), *outcome))
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(tool_dones.get("c1"), Some(&ToolCallOutcome::Failed));
+    assert!(
+        matches!(tool_dones.get("c2"), Some(ToolCallOutcome::Failed)),
+        "later skill call should be backfilled as interrupted instead of being silently dropped"
+    );
+}
+
+// ===========================================================================
+// TEST 10: Allowed prefix should commit before later blocked guarded tool
+// ===========================================================================
+
+#[tokio::test]
+async fn allowed_prefix_commits_before_later_guarded_tool_blocks() {
+    let registry = make_skill_registry();
+    let discovery_plugin = SkillDiscoveryPlugin::new(registry.clone());
+    let weather_calls = Arc::new(AtomicUsize::new(0));
+    let dangerous_calls = Arc::new(AtomicUsize::new(0));
+
+    let llm = Arc::new(ScriptedLlm::new(vec![tool_step(vec![
+        ToolCall::new("c1", "get_weather", json!({"location": "Tokyo"})),
+        ToolCall::new("c2", "dangerous_tool", json!({})),
+        ToolCall::new("c3", "skill", json!({"skill": "power-skill"})),
+    ])]));
+
+    let spec = make_agent_spec_deny_all_with_extra_allowed_tools(&["get_weather"]);
+    let mut agent = ResolvedAgent::new("test", "m", "sys", llm);
+    agent.spec = Arc::new(spec);
+    let agent = agent
+        .with_tool(Arc::new(CountingWeatherTool {
+            calls: weather_calls.clone(),
+        }))
+        .with_tool(Arc::new(CountingDangerousTool {
+            calls: dangerous_calls.clone(),
+        }))
+        .with_tool(Arc::new(SkillActivateTool::new(registry)))
+        .with_tool_executor(Arc::new(ParallelToolExecutor::streaming()));
+
+    let rt = make_runtime();
+    let plugins: Vec<Arc<dyn Plugin>> =
+        vec![Arc::new(discovery_plugin), Arc::new(PermissionPlugin)];
+    let resolver = FixedResolver::with_plugins(agent, plugins);
+    let sink = Arc::new(VecEventSink::new());
+
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        matches!(result.termination, TerminationReason::Blocked(_)),
+        "later guarded tool should still block when no prior skill has activated"
+    );
+    assert_eq!(
+        weather_calls.load(Ordering::SeqCst),
+        1,
+        "allowed tool before the blocked guarded call should still execute"
+    );
+    assert_eq!(
+        dangerous_calls.load(Ordering::SeqCst),
+        0,
+        "blocked guarded tool must not execute"
+    );
+
+    let tool_dones: HashMap<String, ToolCallOutcome> = sink
+        .take()
+        .iter()
+        .filter_map(|event| {
+            if let AgentEvent::ToolCallDone { id, outcome, .. } = event {
+                Some((id.clone(), *outcome))
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(tool_dones.get("c1"), Some(&ToolCallOutcome::Succeeded));
+    assert_eq!(tool_dones.get("c2"), Some(&ToolCallOutcome::Failed));
+    assert!(
+        matches!(tool_dones.get("c3"), Some(ToolCallOutcome::Failed)),
+        "later skill call should be backfilled as interrupted once a prior guarded tool blocks"
+    );
+}
+
+// ===========================================================================
+// TEST 11: Standalone skill activation still advances to the next step
+// ===========================================================================
+
+#[tokio::test]
+async fn standalone_skill_activation_advances_to_next_step() {
+    let registry = make_skill_registry();
+    let discovery_plugin = SkillDiscoveryPlugin::new(registry.clone());
+    let instructions_plugin = ActiveSkillInstructionsPlugin::new(registry.clone());
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        tool_step(vec![ToolCall::new(
+            "c1",
+            "skill",
+            json!({"skill": "power-skill"}),
+        )]),
+        text_step("done"),
+    ]));
+
+    let spec = make_agent_spec_deny_all();
+    let mut agent = ResolvedAgent::new("test", "m", "sys", llm);
+    agent.spec = Arc::new(spec);
+    let agent = agent.with_tool(Arc::new(SkillActivateTool::new(registry)));
+
+    let rt = make_runtime();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![
+        Arc::new(discovery_plugin),
+        Arc::new(instructions_plugin),
+        Arc::new(PermissionPlugin),
+    ];
+    let resolver = FixedResolver::with_plugins(agent, plugins);
+    let sink = Arc::new(VecEventSink::new());
+
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: sink.clone(),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        result.termination,
+        TerminationReason::NaturalEnd,
+        "standalone skill activation should not stall the loop"
+    );
+    assert_eq!(
+        result.steps, 2,
+        "run should enter step 2 after skill activation"
+    );
+
+    let events = sink.take();
+    let inference_complete_count = events
+        .iter()
+        .filter(|event| matches!(event, AgentEvent::InferenceComplete { .. }))
+        .count();
+    assert_eq!(
+        inference_complete_count, 2,
+        "loop should perform a second inference after the standalone skill activation"
+    );
+}
+
+// ===========================================================================
+// TEST 12: Step 2 should receive injected active skill instructions
+// ===========================================================================
+
+#[tokio::test]
+async fn standalone_skill_activation_injects_active_instructions_on_next_inference() {
+    let registry = make_skill_registry();
+    let discovery_plugin = SkillDiscoveryPlugin::new(registry.clone());
+    let instructions_plugin = ActiveSkillInstructionsPlugin::new(registry.clone());
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        tool_step(vec![ToolCall::new(
+            "c1",
+            "skill",
+            json!({"skill": "power-skill"}),
+        )]),
+        text_step("done"),
+    ]));
+    let llm_clone = llm.clone();
+
+    let spec = make_agent_spec_deny_all();
+    let mut agent = ResolvedAgent::new("test", "m", "sys", llm);
+    agent.spec = Arc::new(spec);
+    let agent = agent.with_tool(Arc::new(SkillActivateTool::new(registry)));
+
+    let rt = make_runtime();
+    let plugins: Vec<Arc<dyn Plugin>> = vec![
+        Arc::new(discovery_plugin),
+        Arc::new(instructions_plugin),
+        Arc::new(PermissionPlugin),
+    ];
+    let resolver = FixedResolver::with_plugins(agent, plugins);
+
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &rt,
+        sink: Arc::new(VecEventSink::new()),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: id(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+
+    let requests = llm_clone.captured_requests();
+    assert_eq!(
+        requests.len(),
+        2,
+        "skill activation should trigger a second inference request"
+    );
+
+    let second_request_messages = &requests[1].messages;
+    let has_active_instructions = second_request_messages
+        .iter()
+        .any(|message| message.text().contains("<active_skill_instructions>"))
+        && second_request_messages.iter().any(|message| {
+            message
+                .text()
+                .contains("This skill grants access to dangerous_tool.")
+        });
+    assert!(
+        has_active_instructions,
+        "second inference request should contain the activated skill instructions, got messages: {:?}",
+        second_request_messages
+    );
+}
+
+// ===========================================================================
+// TEST 13: New run starts without previous permission elevation
 // ===========================================================================
 
 #[tokio::test]
@@ -601,7 +1369,7 @@ async fn new_run_starts_without_previous_permission_elevation() {
 }
 
 // ===========================================================================
-// TEST 5: Skill state resets between runs
+// TEST 14: Skill state resets between runs
 // ===========================================================================
 
 #[tokio::test]
@@ -656,7 +1424,7 @@ async fn skill_state_resets_between_runs() {
 }
 
 // ===========================================================================
-// TEST 6: Thread-scoped policy persists across runs
+// TEST 15: Thread-scoped policy persists across runs
 // ===========================================================================
 
 #[tokio::test]

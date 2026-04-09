@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+use awaken_contract::StateError;
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::{EventSink, VecEventSink};
@@ -20,12 +21,16 @@ use awaken_contract::contract::message::{Message, ToolCall};
 use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
+use awaken_contract::state::{StateKey, StateKeyOptions};
 
 use awaken_runtime::engine::MockLlmExecutor;
+use awaken_runtime::execution::ParallelToolExecutor;
 use awaken_runtime::loop_runner::build_agent_env;
-use awaken_runtime::plugins::Plugin;
+use awaken_runtime::phase::PhaseHook;
+use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::registry::{AgentResolver, ResolvedAgent};
 use awaken_runtime::runtime::{AgentRuntime, RunRequest};
+use awaken_runtime::{PhaseContext, StateCommand};
 
 struct ScriptedLlm {
     responses: std::sync::Mutex<Vec<StreamResult>>,
@@ -71,6 +76,98 @@ impl Tool for SuspendOnceTool {
         } else {
             Ok(ToolResult::success("dangerous", json!({"ok": true})).into())
         }
+    }
+}
+
+struct UnlockState;
+
+impl StateKey for UnlockState {
+    const KEY: &'static str = "test.event_lifecycle.unlock_state";
+    type Value = bool;
+    type Update = bool;
+
+    fn apply(value: &mut Self::Value, update: Self::Update) {
+        *value = update;
+    }
+}
+
+struct UnlockTool {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for UnlockTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("unlock", "unlock", "marks the guard as unlocked")
+    }
+
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let mut cmd = StateCommand::new();
+        cmd.update::<UnlockState>(true);
+        Ok(ToolOutput::with_command(
+            ToolResult::success("unlock", json!({"unlocked": true})),
+            cmd,
+        ))
+    }
+}
+
+struct GuardedTool {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for GuardedTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("guarded", "guarded", "requires unlock state")
+    }
+
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(ToolResult::success("guarded", json!({"ok": true})).into())
+    }
+}
+
+#[derive(Clone)]
+struct UnlockGuardHook;
+
+#[async_trait]
+impl PhaseHook for UnlockGuardHook {
+    async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        let Some(tool_name) = ctx.tool_name.as_deref() else {
+            return Ok(StateCommand::new());
+        };
+        if tool_name != "guarded" || ctx.state::<UnlockState>().copied().unwrap_or(false) {
+            return Ok(StateCommand::new());
+        }
+
+        let mut cmd = StateCommand::new();
+        cmd.schedule_action::<awaken_contract::contract::tool_intercept::ToolInterceptAction>(
+            awaken_contract::contract::tool_intercept::ToolInterceptPayload::Block {
+                reason: "guarded tool requires unlock".into(),
+            },
+        )?;
+        Ok(cmd)
+    }
+}
+
+struct UnlockGuardPlugin;
+
+impl Plugin for UnlockGuardPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
+            name: "unlock-guard-plugin",
+        }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_key::<UnlockState>(StateKeyOptions::default())?;
+        registrar.register_phase_hook(
+            "unlock-guard-plugin",
+            awaken_contract::model::Phase::BeforeToolExecute,
+            UnlockGuardHook,
+        )?;
+        Ok(())
     }
 }
 
@@ -484,6 +581,146 @@ async fn tool_call_flow_complete_lifecycle() {
     } else {
         panic!("last event should be RunFinish");
     }
+}
+
+#[tokio::test]
+async fn prior_tool_state_allows_later_guarded_tool_in_same_step() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![ContentBlock::text("tools")],
+            tool_calls: vec![
+                ToolCall::new("u1", "unlock", json!({})),
+                ToolCall::new("g1", "guarded", json!({})),
+            ],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("done")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+    let unlock_calls = Arc::new(AtomicUsize::new(0));
+    let guarded_calls = Arc::new(AtomicUsize::new(0));
+    let resolver = Arc::new(FixedResolver {
+        agent: ResolvedAgent::new("test", "m", "sys", llm)
+            .with_tool(Arc::new(UnlockTool {
+                calls: unlock_calls.clone(),
+            }))
+            .with_tool(Arc::new(GuardedTool {
+                calls: guarded_calls.clone(),
+            }))
+            .with_tool_executor(Arc::new(ParallelToolExecutor::streaming())),
+        plugins: vec![Arc::new(UnlockGuardPlugin)],
+    });
+    let runtime = AgentRuntime::new(resolver);
+    let sink = Arc::new(VecEventSink::new());
+
+    let result = runtime
+        .run(
+            RunRequest::new("thread-unlock", vec![Message::user("go")]).with_agent_id("test"),
+            sink.clone() as Arc<dyn EventSink>,
+        )
+        .await
+        .expect("run should succeed");
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(unlock_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(guarded_calls.load(Ordering::SeqCst), 1);
+
+    let events = sink.take();
+    verify_event_ordering(&events);
+    let done_ids: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::ToolCallDone { id, outcome, .. } => Some((id.as_str(), *outcome)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        done_ids,
+        vec![
+            (
+                "u1",
+                awaken_contract::contract::suspension::ToolCallOutcome::Succeeded
+            ),
+            (
+                "g1",
+                awaken_contract::contract::suspension::ToolCallOutcome::Succeeded
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn guarded_tool_before_unlock_still_blocks_same_step() {
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("tools")],
+        tool_calls: vec![
+            ToolCall::new("g1", "guarded", json!({})),
+            ToolCall::new("u1", "unlock", json!({})),
+        ],
+        usage: None,
+        stop_reason: Some(StopReason::ToolUse),
+        has_incomplete_tool_calls: false,
+    }]));
+    let unlock_calls = Arc::new(AtomicUsize::new(0));
+    let guarded_calls = Arc::new(AtomicUsize::new(0));
+    let resolver = Arc::new(FixedResolver {
+        agent: ResolvedAgent::new("test", "m", "sys", llm)
+            .with_tool(Arc::new(UnlockTool {
+                calls: unlock_calls.clone(),
+            }))
+            .with_tool(Arc::new(GuardedTool {
+                calls: guarded_calls.clone(),
+            }))
+            .with_tool_executor(Arc::new(ParallelToolExecutor::streaming())),
+        plugins: vec![Arc::new(UnlockGuardPlugin)],
+    });
+    let runtime = AgentRuntime::new(resolver);
+    let sink = Arc::new(VecEventSink::new());
+
+    let result = runtime
+        .run(
+            RunRequest::new("thread-blocked-order", vec![Message::user("go")])
+                .with_agent_id("test"),
+            sink.clone() as Arc<dyn EventSink>,
+        )
+        .await
+        .expect("run should succeed");
+
+    assert!(
+        matches!(result.termination, TerminationReason::Blocked(ref reason) if reason == "guarded tool requires unlock")
+    );
+    assert_eq!(unlock_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(guarded_calls.load(Ordering::SeqCst), 0);
+
+    let events = sink.take();
+    verify_event_ordering(&events);
+    let done_ids: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::ToolCallDone { id, outcome, .. } => Some((id.as_str(), *outcome)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        done_ids,
+        vec![
+            (
+                "g1",
+                awaken_contract::contract::suspension::ToolCallOutcome::Failed
+            ),
+            (
+                "u1",
+                awaken_contract::contract::suspension::ToolCallOutcome::Failed
+            ),
+        ]
+    );
 }
 
 // ---------------------------------------------------------------------------
