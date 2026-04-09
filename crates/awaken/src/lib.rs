@@ -135,5 +135,6 @@ pub use awaken_runtime::{
     AgentResolver, AgentRuntime, AgentRuntimeBuilder, BuildError, CancellationToken, CommitEvent,
     CommitHook, DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv, MutationBatch, PhaseContext, PhaseHook,
     PhaseRuntime, Plugin, PluginDescriptor, PluginRegistrar, ResolvedAgent, RunRequest,
-    RuntimeError, StateCommand, StateStore, TypedEffectHandler, TypedScheduledActionHandler,
+    RuntimeError, StateCommand, StateStore, ToolGateHook, TypedEffectHandler,
+    TypedScheduledActionHandler,
 };

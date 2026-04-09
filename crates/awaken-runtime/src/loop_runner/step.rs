@@ -18,8 +18,8 @@ use awaken_contract::contract::message::{Message, ToolCall};
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::suspension::{SuspendTicket, ToolCallOutcome, ToolCallStatus};
 use awaken_contract::contract::tool::ToolCallContext;
-use awaken_contract::contract::tool_intercept::{ToolInterceptAction, ToolInterceptPayload};
-use awaken_contract::model::{Phase, ScheduledActionSpec};
+use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
+use awaken_contract::model::Phase;
 
 use super::actions::{
     apply_context_messages, apply_tool_filter_payloads, merge_override_payloads,
@@ -31,8 +31,9 @@ use super::{AgentLoopError, commit_update, now_ms, tool_result_to_content};
 use crate::agent::state::{
     InferenceOverrideState, InferenceOverrideStateAction, RunLifecycle, RunLifecycleUpdate,
     ToolCallState, ToolCallStates, ToolCallStatesUpdate, ToolFilterState, ToolFilterStateAction,
-    ToolInterceptState, ToolInterceptStateAction,
 };
+
+const INTERRUPTED_TOOL_MESSAGE: &str = "[Tool execution was interrupted]";
 
 /// Outcome of a single step.
 pub(super) enum StepOutcome {
@@ -66,7 +67,46 @@ pub(super) struct StepContext<'a> {
     pub run_created_at: u64,
 }
 
-const INTERRUPTED_TOOL_MESSAGE: &str = "[Tool execution was interrupted]";
+pub(super) struct ToolBatchTranscript {
+    assistant_message: Option<Arc<Message>>,
+    tool_messages: Vec<Arc<Message>>,
+}
+
+impl ToolBatchTranscript {
+    pub(super) fn for_inference(text: String, calls: Vec<ToolCall>) -> Self {
+        Self {
+            assistant_message: Some(Arc::new(Message::assistant_with_tool_calls(text, calls))),
+            tool_messages: Vec::new(),
+        }
+    }
+
+    pub(super) fn for_resume() -> Self {
+        Self {
+            assistant_message: None,
+            tool_messages: Vec::new(),
+        }
+    }
+
+    fn visible_messages(&self, committed: &[Arc<Message>]) -> Vec<Arc<Message>> {
+        let mut visible = committed.to_vec();
+        if let Some(message) = &self.assistant_message {
+            visible.push(Arc::clone(message));
+        }
+        visible.extend(self.tool_messages.iter().cloned());
+        visible
+    }
+
+    fn push_tool_message(&mut self, message: Arc<Message>) {
+        self.tool_messages.push(message);
+    }
+
+    pub(super) fn commit_into(self, committed: &mut Vec<Arc<Message>>) {
+        if let Some(message) = self.assistant_message {
+            committed.push(message);
+        }
+        committed.extend(self.tool_messages);
+    }
+}
 
 pub(super) fn make_ctx(
     phase: Phase,
@@ -82,6 +122,23 @@ pub(super) fn make_ctx(
         Some(token) => ctx.with_cancellation_token(token.clone()),
         None => ctx,
     }
+}
+
+fn tool_phase_context(
+    ctx: &StepContext<'_>,
+    transcript: &ToolBatchTranscript,
+    phase: Phase,
+    call: &ToolCall,
+) -> PhaseContext {
+    let visible_messages = transcript.visible_messages(ctx.messages);
+    make_ctx(
+        phase,
+        &visible_messages,
+        ctx.run_identity,
+        ctx.runtime.store(),
+        ctx.cancellation_token,
+    )
+    .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()))
 }
 
 fn active_resume_state(store: &crate::state::StateStore, call_id: &str) -> Option<ToolCallState> {
@@ -386,93 +443,119 @@ async fn run_inference_phase(
     Ok((stream_result, duration_ms))
 }
 
-/// Run BeforeToolExecute phase via collect_commands and check for intercept.
+/// Run ToolGate hooks for a tool call and resolve the winning decision.
 ///
-/// Returns `Some(payload)` if any hook scheduled a `ToolInterceptAction`,
-/// `None` if the tool should execute normally.
-async fn intercept_tool_call(
+/// ToolGate is pure and may be re-evaluated after earlier allowed tool calls
+/// commit new state in the same step.
+async fn run_tool_gate(
     ctx: &mut StepContext<'_>,
+    transcript: &ToolBatchTranscript,
     call: &ToolCall,
-) -> Result<Option<awaken_contract::contract::tool_intercept::ToolInterceptPayload>, AgentLoopError>
-{
+) -> Result<Option<ToolInterceptPayload>, AgentLoopError> {
     let store = ctx.runtime.store();
-    let (cmd, resume_state) = collect_before_tool_execute_command(ctx, call).await?;
+    let resume_state = active_resume_state(store, &call.id);
+    let gate_ctx = apply_resume_context(
+        tool_phase_context(ctx, transcript, Phase::ToolGate, call),
+        resume_state.as_ref(),
+    );
+
+    let mut payloads = Vec::new();
+    for hook in ctx.agent.env.tool_gate_hooks() {
+        if let Some(payload) = hook.hook.run(&gate_ctx).await? {
+            tracing::debug!(
+                plugin_id = %hook.plugin_id,
+                tool_name = %call.name,
+                call_id = %call.id,
+                payload = ?payload,
+                "tool_gate_decision"
+            );
+            payloads.push(payload);
+        }
+    }
+
+    Ok(resolve_intercept_payloads(payloads))
+}
+
+/// Run BeforeToolExecute immediately before the tool actually executes.
+async fn run_before_tool_execute(
+    ctx: &mut StepContext<'_>,
+    transcript: &ToolBatchTranscript,
+    call: &ToolCall,
+) -> Result<(), AgentLoopError> {
+    let store = ctx.runtime.store();
+    let resume_state = active_resume_state(store, &call.id);
+    let before_ctx = apply_resume_context(
+        tool_phase_context(ctx, transcript, Phase::BeforeToolExecute, call),
+        resume_state.as_ref(),
+    );
+
+    // GATHER only — submit ALL actions to handler queue
+    let cmd = ctx
+        .runtime
+        .collect_commands(&ctx.agent.env, before_ctx.clone())
+        .await?;
 
     if !cmd.is_empty() {
         ctx.runtime.submit_command(&ctx.agent.env, cmd).await?;
         // Run EXECUTE for any remaining handler-based actions
-        let exec_ctx = apply_resume_context(
-            make_ctx(
-                Phase::BeforeToolExecute,
-                ctx.messages,
-                ctx.run_identity,
-                store,
-                ctx.cancellation_token,
-            )
-            .with_tool_info(&call.name, &call.id, Some(call.arguments.clone())),
-            resume_state.as_ref(),
-        );
+        let exec_ctx = tool_phase_context(ctx, transcript, Phase::BeforeToolExecute, call);
+        let exec_ctx = apply_resume_context(exec_ctx, resume_state.as_ref());
         ctx.runtime
             .run_execute_loop(&ctx.agent.env, exec_ctx)
             .await?;
     }
-
-    // Read accumulated intercepts from state
-    let intercept_state = store.read::<ToolInterceptState>().unwrap_or_default();
-
-    // Clear accumulator for next tool call
-    let mut clear_patch = crate::state::MutationBatch::new();
-    clear_patch.update::<ToolInterceptState>(ToolInterceptStateAction::Clear);
-    store.commit(clear_patch)?;
-
-    // Resolve winning intercept from accumulated payloads
-    Ok(resolve_intercept_payloads(intercept_state.payloads))
+    Ok(())
 }
 
-async fn collect_before_tool_execute_command(
+struct AppliedIntercept {
+    blocked_reason: Option<String>,
+    suspended: bool,
+}
+
+async fn apply_intercept_payload(
     ctx: &mut StepContext<'_>,
+    transcript: &mut ToolBatchTranscript,
     call: &ToolCall,
-) -> Result<(StateCommand, Option<ToolCallState>), AgentLoopError> {
-    let store = ctx.runtime.store();
-    let resume_state = active_resume_state(store, &call.id);
-    let before_ctx = apply_resume_context(
-        make_ctx(
-            Phase::BeforeToolExecute,
-            ctx.messages,
-            ctx.run_identity,
-            store,
-            ctx.cancellation_token,
-        )
-        .with_tool_info(&call.name, &call.id, Some(call.arguments.clone())),
-        resume_state.as_ref(),
-    );
-    let cmd = ctx
-        .runtime
-        .collect_commands(&ctx.agent.env, before_ctx)
-        .await?;
-    Ok((cmd, resume_state))
-}
-
-fn resolve_intercept_payloads_from_command(
-    command: &StateCommand,
-) -> Result<Option<ToolInterceptPayload>, AgentLoopError> {
-    let payloads = command
-        .scheduled_actions()
-        .iter()
-        .filter(|action| {
-            action.phase == ToolInterceptAction::PHASE && action.key == ToolInterceptAction::KEY
-        })
-        .map(|action| ToolInterceptAction::decode_payload(action.payload.clone()))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(resolve_intercept_payloads(payloads))
-}
-
-async fn peek_tool_intercept(
-    ctx: &mut StepContext<'_>,
-    call: &ToolCall,
-) -> Result<Option<ToolInterceptPayload>, AgentLoopError> {
-    let (cmd, _) = collect_before_tool_execute_command(ctx, call).await?;
-    resolve_intercept_payloads_from_command(&cmd)
+    payload: ToolInterceptPayload,
+) -> Result<AppliedIntercept, AgentLoopError> {
+    match payload {
+        ToolInterceptPayload::Block { reason } => {
+            let result = awaken_contract::contract::tool::ToolResult::error(&call.name, &reason);
+            let cmd = build_tool_state_command(
+                ctx,
+                transcript,
+                call,
+                &result,
+                StateCommand::new(),
+                ToolCallOutcome::Failed,
+            )
+            .await?;
+            ctx.runtime.submit_command(&ctx.agent.env, cmd).await?;
+            emit_tool_completion(ctx, transcript, call, &result, ToolCallOutcome::Failed).await;
+            Ok(AppliedIntercept {
+                blocked_reason: Some(reason),
+                suspended: false,
+            })
+        }
+        ToolInterceptPayload::Suspend(ticket) => {
+            let cmd = build_suspend_state_command(call, &ticket);
+            ctx.runtime.submit_command(&ctx.agent.env, cmd).await?;
+            emit_suspend_completion(ctx, transcript, call, &ticket).await;
+            Ok(AppliedIntercept {
+                blocked_reason: None,
+                suspended: true,
+            })
+        }
+        ToolInterceptPayload::SetResult(result) => {
+            let outcome = ToolCallOutcome::from_tool_result(&result);
+            complete_tool_call(ctx, transcript, call, &result, StateCommand::new(), outcome)
+                .await?;
+            Ok(AppliedIntercept {
+                blocked_reason: None,
+                suspended: outcome == ToolCallOutcome::Suspended,
+            })
+        }
+    }
 }
 
 /// Build a StateCommand for a completed tool call.
@@ -485,6 +568,7 @@ async fn peek_tool_intercept(
 /// Pure state construction — no side effects (no events, no messages, no commit).
 async fn build_tool_state_command(
     ctx: &mut StepContext<'_>,
+    transcript: &ToolBatchTranscript,
     call: &ToolCall,
     tool_result: &awaken_contract::contract::tool::ToolResult,
     tool_command: StateCommand,
@@ -528,15 +612,8 @@ async fn build_tool_state_command(
 
     // Collect AfterToolExecute hook commands (same as plugin gather)
     let after_ctx = apply_resume_context(
-        make_ctx(
-            Phase::AfterToolExecute,
-            ctx.messages,
-            ctx.run_identity,
-            store,
-            ctx.cancellation_token,
-        )
-        .with_tool_info(&call.name, &call.id, Some(call.arguments.clone()))
-        .with_tool_result(tool_result.clone()),
+        tool_phase_context(ctx, transcript, Phase::AfterToolExecute, call)
+            .with_tool_result(tool_result.clone()),
         resume_state.as_ref(),
     );
     let after_cmd = ctx
@@ -554,6 +631,7 @@ async fn build_tool_state_command(
 /// Side-effect only — no state mutation.
 async fn emit_tool_completion(
     ctx: &mut StepContext<'_>,
+    transcript: &mut ToolBatchTranscript,
     call: &ToolCall,
     tool_result: &awaken_contract::contract::tool::ToolResult,
     outcome: ToolCallOutcome,
@@ -582,8 +660,7 @@ async fn emit_tool_completion(
     ctx.sink.emit(event).await;
 
     let tool_content = tool_result_to_content(tool_result);
-    ctx.messages
-        .push(Arc::new(Message::tool(&call.id, tool_content)));
+    transcript.push_tool_message(Arc::new(Message::tool(&call.id, tool_content)));
 }
 
 /// Complete a single tool call: build state, emit events, commit.
@@ -592,13 +669,15 @@ async fn emit_tool_completion(
 /// where each tool commits individually.
 async fn complete_tool_call(
     ctx: &mut StepContext<'_>,
+    transcript: &mut ToolBatchTranscript,
     call: &ToolCall,
     tool_result: &awaken_contract::contract::tool::ToolResult,
     tool_command: StateCommand,
     outcome: ToolCallOutcome,
 ) -> Result<(), AgentLoopError> {
-    let cmd = build_tool_state_command(ctx, call, tool_result, tool_command, outcome).await?;
-    emit_tool_completion(ctx, call, tool_result, outcome).await;
+    let cmd =
+        build_tool_state_command(ctx, transcript, call, tool_result, tool_command, outcome).await?;
+    emit_tool_completion(ctx, transcript, call, tool_result, outcome).await;
     ctx.runtime.submit_command(&ctx.agent.env, cmd).await?;
     Ok(())
 }
@@ -626,6 +705,7 @@ fn build_suspend_state_command(call: &ToolCall, ticket: &SuspendTicket) -> State
 /// Emit suspend-related events and append message.
 async fn emit_suspend_completion(
     ctx: &mut StepContext<'_>,
+    transcript: &mut ToolBatchTranscript,
     call: &ToolCall,
     ticket: &SuspendTicket,
 ) {
@@ -653,48 +733,68 @@ async fn emit_suspend_completion(
             outcome: ToolCallOutcome::Suspended,
         })
         .await;
-    ctx.messages.push(Arc::new(Message::tool(
+    transcript.push_tool_message(Arc::new(Message::tool(
         &call.id,
         format!("Tool '{}' suspended: awaiting decision", call.name),
     )));
 }
 
+async fn complete_interrupted_tool_call(
+    ctx: &mut StepContext<'_>,
+    transcript: &mut ToolBatchTranscript,
+    call: &ToolCall,
+) -> Result<(), AgentLoopError> {
+    let result =
+        awaken_contract::contract::tool::ToolResult::error(&call.name, INTERRUPTED_TOOL_MESSAGE);
+    let mut cmd = StateCommand::new();
+    cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Put(ToolCallState::new(
+        call.id.clone(),
+        call.name.clone(),
+        call.arguments.clone(),
+        ToolCallStatus::Failed,
+        now_ms(),
+    )));
+    emit_tool_completion(ctx, transcript, call, &result, ToolCallOutcome::Failed).await;
+    ctx.runtime.submit_command(&ctx.agent.env, cmd).await?;
+    Ok(())
+}
+
 async fn backfill_interrupted_tool_calls(
     ctx: &mut StepContext<'_>,
+    transcript: &mut ToolBatchTranscript,
     calls: &[ToolCall],
 ) -> Result<(), AgentLoopError> {
     for call in calls {
-        let result = awaken_contract::contract::tool::ToolResult::error(
-            &call.name,
-            INTERRUPTED_TOOL_MESSAGE,
-        );
-        let mut cmd = StateCommand::new();
-        cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Put(ToolCallState::new(
-            call.id.clone(),
-            call.name.clone(),
-            call.arguments.clone(),
-            ToolCallStatus::Failed,
-            now_ms(),
-        )));
-        ctx.runtime.submit_command(&ctx.agent.env, cmd).await?;
-        emit_tool_completion(ctx, call, &result, ToolCallOutcome::Failed).await;
+        complete_interrupted_tool_call(ctx, transcript, call).await?;
     }
     Ok(())
 }
 
-struct AllowedExecutionOutcome {
+struct ReadyExecutionOutcome {
     suspended: bool,
     processed_calls: usize,
 }
 
-async fn execute_allowed_tool_calls(
+async fn run_before_tool_execute_batch(
     ctx: &mut StepContext<'_>,
+    transcript: &ToolBatchTranscript,
+    calls: &[ToolCall],
+) -> Result<(), AgentLoopError> {
+    for call in calls {
+        run_before_tool_execute(ctx, transcript, call).await?;
+    }
+    Ok(())
+}
+
+async fn execute_ready_tool_calls(
+    ctx: &mut StepContext<'_>,
+    transcript: &mut ToolBatchTranscript,
     allowed_calls: &[ToolCall],
-) -> Result<AllowedExecutionOutcome, AgentLoopError> {
+) -> Result<ReadyExecutionOutcome, AgentLoopError> {
     let store = ctx.runtime.store();
 
     if allowed_calls.is_empty() {
-        return Ok(AllowedExecutionOutcome {
+        return Ok(ReadyExecutionOutcome {
             suspended: false,
             processed_calls: 0,
         });
@@ -721,6 +821,7 @@ async fn execute_allowed_tool_calls(
 
     if ctx.agent.tool_executor.requires_incremental_state() {
         for call in allowed_calls {
+            run_before_tool_execute_batch(ctx, transcript, std::slice::from_ref(call)).await?;
             let resume_state = active_resume_state(store, &call.id);
             let mut tool_ctx = base_tool_ctx.clone();
             tool_ctx.call_id = call.id.clone();
@@ -741,6 +842,7 @@ async fn execute_allowed_tool_calls(
             let outcome = exec_result.outcome;
             complete_tool_call(
                 ctx,
+                transcript,
                 &exec_result.call,
                 &exec_result.result,
                 exec_result.command,
@@ -761,6 +863,7 @@ async fn execute_allowed_tool_calls(
             let resume_state = active_resume_state(store, &call.id);
 
             if let Some(resume_state) = resume_state.as_ref() {
+                run_before_tool_execute_batch(ctx, transcript, std::slice::from_ref(call)).await?;
                 let mut tool_ctx = base_tool_ctx.clone();
                 tool_ctx.call_id = call.id.clone();
                 tool_ctx.tool_name = call.name.clone();
@@ -781,6 +884,7 @@ async fn execute_allowed_tool_calls(
                 let outcome = exec_result.outcome;
                 complete_tool_call(
                     ctx,
+                    transcript,
                     &exec_result.call,
                     &exec_result.result,
                     exec_result.command,
@@ -805,6 +909,7 @@ async fn execute_allowed_tool_calls(
                 index += 1;
             }
             let segment = &allowed_calls[segment_start..index];
+            run_before_tool_execute_batch(ctx, transcript, segment).await?;
             let mut segment_ctx = base_tool_ctx.clone();
             segment_ctx.snapshot = store.snapshot();
 
@@ -820,6 +925,7 @@ async fn execute_allowed_tool_calls(
                 let outcome = exec_result.outcome;
                 complete_tool_call(
                     ctx,
+                    transcript,
                     &exec_result.call,
                     &exec_result.result,
                     exec_result.command,
@@ -838,6 +944,7 @@ async fn execute_allowed_tool_calls(
             }
         }
     } else {
+        run_before_tool_execute_batch(ctx, transcript, allowed_calls).await?;
         let exec_results = ctx
             .agent
             .tool_executor
@@ -849,6 +956,7 @@ async fn execute_allowed_tool_calls(
             let outcome = exec_result.outcome;
             complete_tool_call(
                 ctx,
+                transcript,
                 &exec_result.call,
                 &exec_result.result,
                 exec_result.command,
@@ -862,9 +970,28 @@ async fn execute_allowed_tool_calls(
         }
     }
 
-    Ok(AllowedExecutionOutcome {
+    Ok(ReadyExecutionOutcome {
         suspended,
         processed_calls,
+    })
+}
+
+struct AllowedExecutionOutcome {
+    blocked_reason: Option<String>,
+    suspended: bool,
+    processed_calls: usize,
+}
+
+async fn execute_allowed_tool_calls(
+    ctx: &mut StepContext<'_>,
+    transcript: &mut ToolBatchTranscript,
+    allowed_calls: &[ToolCall],
+) -> Result<AllowedExecutionOutcome, AgentLoopError> {
+    let batch = execute_ready_tool_calls(ctx, transcript, allowed_calls).await?;
+    Ok(AllowedExecutionOutcome {
+        blocked_reason: None,
+        suspended: batch.suspended,
+        processed_calls: batch.processed_calls,
     })
 }
 
@@ -878,64 +1005,61 @@ async fn execute_allowed_tool_calls(
 /// Returns (block_reason, any_suspended).
 pub(super) async fn execute_tools_with_interception(
     ctx: &mut StepContext<'_>,
+    transcript: &mut ToolBatchTranscript,
     calls: &[ToolCall],
 ) -> Result<(Option<String>, bool), AgentLoopError> {
     let mut suspended = false;
     let mut allowed_calls: Vec<ToolCall> = Vec::new();
     for (index, call) in calls.iter().enumerate() {
-        if !allowed_calls.is_empty() && peek_tool_intercept(ctx, call).await?.is_some() {
-            let batch = execute_allowed_tool_calls(ctx, &allowed_calls).await?;
+        let mut intercept = run_tool_gate(ctx, transcript, call).await?;
+
+        if intercept.is_some() && !allowed_calls.is_empty() {
+            let batch = execute_allowed_tool_calls(ctx, transcript, &allowed_calls).await?;
             let interrupted_allowed = allowed_calls[batch.processed_calls..].to_vec();
             allowed_calls.clear();
-            if batch.suspended {
-                suspended = true;
-                backfill_interrupted_tool_calls(ctx, &interrupted_allowed).await?;
-                backfill_interrupted_tool_calls(ctx, &calls[index..]).await?;
-                return Ok((None, suspended));
-            }
-        }
 
-        match intercept_tool_call(ctx, call).await? {
-            Some(ToolInterceptPayload::Block { reason }) => {
-                let result =
-                    awaken_contract::contract::tool::ToolResult::error(&call.name, &reason);
-                let cmd = build_tool_state_command(
-                    ctx,
-                    call,
-                    &result,
-                    StateCommand::new(),
-                    ToolCallOutcome::Failed,
-                )
-                .await?;
-                ctx.runtime.submit_command(&ctx.agent.env, cmd).await?;
-                emit_tool_completion(ctx, call, &result, ToolCallOutcome::Failed).await;
-                backfill_interrupted_tool_calls(ctx, &calls[index + 1..]).await?;
+            if let Some(reason) = batch.blocked_reason {
+                backfill_interrupted_tool_calls(ctx, transcript, &calls[index..]).await?;
                 return Ok((Some(reason), suspended));
             }
-            Some(ToolInterceptPayload::Suspend(ticket)) => {
-                let cmd = build_suspend_state_command(call, &ticket);
-                ctx.runtime.submit_command(&ctx.agent.env, cmd).await?;
-                emit_suspend_completion(ctx, call, &ticket).await;
+
+            if batch.suspended {
+                suspended = true;
+                backfill_interrupted_tool_calls(ctx, transcript, &interrupted_allowed).await?;
+                backfill_interrupted_tool_calls(ctx, transcript, &calls[index..]).await?;
+                return Ok((None, suspended));
+            }
+
+            intercept = run_tool_gate(ctx, transcript, call).await?;
+        }
+
+        if let Some(payload) = intercept {
+            let applied = apply_intercept_payload(ctx, transcript, call, payload).await?;
+            if let Some(reason) = applied.blocked_reason {
+                backfill_interrupted_tool_calls(ctx, transcript, &calls[index + 1..]).await?;
+                return Ok((Some(reason), suspended));
+            }
+            if applied.suspended {
                 suspended = true;
             }
-            Some(ToolInterceptPayload::SetResult(result)) => {
-                let outcome = ToolCallOutcome::from_tool_result(&result);
-                complete_tool_call(ctx, call, &result, StateCommand::new(), outcome).await?;
-                if outcome == ToolCallOutcome::Suspended {
-                    suspended = true;
-                }
-            }
-            None => {
-                allowed_calls.push(call.clone());
-            }
+        } else {
+            allowed_calls.push(call.clone());
         }
     }
 
     if !allowed_calls.is_empty() {
-        let batch = execute_allowed_tool_calls(ctx, &allowed_calls).await?;
+        let batch = execute_allowed_tool_calls(ctx, transcript, &allowed_calls).await?;
+        if let Some(reason) = batch.blocked_reason {
+            return Ok((Some(reason), suspended));
+        }
         if batch.suspended {
             suspended = true;
-            backfill_interrupted_tool_calls(ctx, &allowed_calls[batch.processed_calls..]).await?;
+            backfill_interrupted_tool_calls(
+                ctx,
+                transcript,
+                &allowed_calls[batch.processed_calls..],
+            )
+            .await?;
         }
     }
 
@@ -1044,15 +1168,14 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
     }
 
     // --- Tool calls ---
-    ctx.messages
-        .push(Arc::new(Message::assistant_with_tool_calls(
-            stream_result.text(),
-            stream_result.tool_calls.clone(),
-        )));
+    let mut transcript =
+        ToolBatchTranscript::for_inference(stream_result.text(), stream_result.tool_calls.clone());
 
-    // Intercept + execute tool calls via unified pipeline
+    // Intercept + execute tool calls via unified pipeline.
+    // Messages stay step-local until the batch has complete visible outputs.
     let (blocked_reason, suspended) =
-        execute_tools_with_interception(ctx, &stream_result.tool_calls).await?;
+        execute_tools_with_interception(ctx, &mut transcript, &stream_result.tool_calls).await?;
+    transcript.commit_into(ctx.messages);
 
     if let Some(reason) = blocked_reason {
         commit_update::<RunLifecycle>(

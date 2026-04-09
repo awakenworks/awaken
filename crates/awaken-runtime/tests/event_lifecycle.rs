@@ -26,7 +26,7 @@ use awaken_contract::state::{StateKey, StateKeyOptions};
 use awaken_runtime::engine::MockLlmExecutor;
 use awaken_runtime::execution::ParallelToolExecutor;
 use awaken_runtime::loop_runner::build_agent_env;
-use awaken_runtime::phase::PhaseHook;
+use awaken_runtime::phase::ToolGateHook;
 use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::registry::{AgentResolver, ResolvedAgent};
 use awaken_runtime::runtime::{AgentRuntime, RunRequest};
@@ -132,22 +132,23 @@ impl Tool for GuardedTool {
 struct UnlockGuardHook;
 
 #[async_trait]
-impl PhaseHook for UnlockGuardHook {
-    async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+impl ToolGateHook for UnlockGuardHook {
+    async fn run(
+        &self,
+        ctx: &PhaseContext,
+    ) -> Result<Option<awaken_contract::contract::tool_intercept::ToolInterceptPayload>, StateError>
+    {
         let Some(tool_name) = ctx.tool_name.as_deref() else {
-            return Ok(StateCommand::new());
+            return Ok(None);
         };
         if tool_name != "guarded" || ctx.state::<UnlockState>().copied().unwrap_or(false) {
-            return Ok(StateCommand::new());
+            return Ok(None);
         }
-
-        let mut cmd = StateCommand::new();
-        cmd.schedule_action::<awaken_contract::contract::tool_intercept::ToolInterceptAction>(
+        Ok(Some(
             awaken_contract::contract::tool_intercept::ToolInterceptPayload::Block {
                 reason: "guarded tool requires unlock".into(),
             },
-        )?;
-        Ok(cmd)
+        ))
     }
 }
 
@@ -162,11 +163,7 @@ impl Plugin for UnlockGuardPlugin {
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
         registrar.register_key::<UnlockState>(StateKeyOptions::default())?;
-        registrar.register_phase_hook(
-            "unlock-guard-plugin",
-            awaken_contract::model::Phase::BeforeToolExecute,
-            UnlockGuardHook,
-        )?;
+        registrar.register_tool_gate_hook("unlock-guard-plugin", UnlockGuardHook)?;
         Ok(())
     }
 }
@@ -713,11 +710,11 @@ async fn guarded_tool_before_unlock_still_blocks_same_step() {
         vec![
             (
                 "g1",
-                awaken_contract::contract::suspension::ToolCallOutcome::Failed
+                awaken_contract::contract::suspension::ToolCallOutcome::Failed,
             ),
             (
                 "u1",
-                awaken_contract::contract::suspension::ToolCallOutcome::Failed
+                awaken_contract::contract::suspension::ToolCallOutcome::Failed,
             ),
         ]
     );

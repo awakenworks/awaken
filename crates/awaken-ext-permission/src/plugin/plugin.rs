@@ -7,7 +7,7 @@ use awaken_runtime::state::{KeyScope, MutationBatch, StateKeyOptions};
 use crate::config::{PermissionConfigKey, PermissionRulesConfig};
 use crate::state::{PermissionAction, PermissionOverridesKey, PermissionPolicyKey};
 
-use super::checker::PermissionInterceptHook;
+use super::checker::PermissionToolGateHook;
 use super::filter::PermissionToolFilterHook;
 
 /// Stable plugin name for the permission extension.
@@ -20,8 +20,7 @@ pub const PERMISSION_PLUGIN_NAME: &str = "permission";
 /// - [`PermissionOverridesKey`]: run-scoped temporary overrides
 /// - A `BeforeInference` phase hook that removes unconditionally denied tools
 ///   from the tool list before the LLM sees them
-/// - A `BeforeToolExecute` phase hook that evaluates rules and schedules
-///   `ToolInterceptAction` to block or suspend tool calls
+/// - A `ToolGate` hook that evaluates rules and blocks or suspends tool calls
 pub struct PermissionPlugin;
 
 impl Plugin for PermissionPlugin {
@@ -50,11 +49,7 @@ impl Plugin for PermissionPlugin {
             PermissionToolFilterHook,
         )?;
 
-        registrar.register_phase_hook(
-            PERMISSION_PLUGIN_NAME,
-            Phase::BeforeToolExecute,
-            PermissionInterceptHook,
-        )?;
+        registrar.register_tool_gate_hook(PERMISSION_PLUGIN_NAME, PermissionToolGateHook)?;
 
         Ok(())
     }

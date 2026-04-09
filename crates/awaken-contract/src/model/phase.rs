@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// assert!(Phase::RunStart.is_run_level());
 /// assert!(!Phase::RunStart.is_step_level());
 /// assert!(Phase::BeforeInference.is_step_level());
-/// assert_eq!(Phase::ALL.len(), 8);
+/// assert_eq!(Phase::ALL.len(), 9);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -19,6 +19,7 @@ pub enum Phase {
     StepStart,
     BeforeInference,
     AfterInference,
+    ToolGate,
     BeforeToolExecute,
     AfterToolExecute,
     StepEnd,
@@ -27,11 +28,12 @@ pub enum Phase {
 
 impl Phase {
     /// All phases in execution order.
-    pub const ALL: [Phase; 8] = [
+    pub const ALL: [Phase; 9] = [
         Phase::RunStart,
         Phase::StepStart,
         Phase::BeforeInference,
         Phase::AfterInference,
+        Phase::ToolGate,
         Phase::BeforeToolExecute,
         Phase::AfterToolExecute,
         Phase::StepEnd,
@@ -56,6 +58,7 @@ impl std::fmt::Display for Phase {
             Phase::StepStart => write!(f, "StepStart"),
             Phase::BeforeInference => write!(f, "BeforeInference"),
             Phase::AfterInference => write!(f, "AfterInference"),
+            Phase::ToolGate => write!(f, "ToolGate"),
             Phase::BeforeToolExecute => write!(f, "BeforeToolExecute"),
             Phase::AfterToolExecute => write!(f, "AfterToolExecute"),
             Phase::StepEnd => write!(f, "StepEnd"),
@@ -69,8 +72,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn phase_all_has_8_variants() {
-        assert_eq!(Phase::ALL.len(), 8);
+    fn phase_all_has_9_variants() {
+        assert_eq!(Phase::ALL.len(), 9);
     }
 
     #[test]
@@ -80,10 +83,11 @@ mod tests {
         assert_eq!(order[1], Phase::StepStart);
         assert_eq!(order[2], Phase::BeforeInference);
         assert_eq!(order[3], Phase::AfterInference);
-        assert_eq!(order[4], Phase::BeforeToolExecute);
-        assert_eq!(order[5], Phase::AfterToolExecute);
-        assert_eq!(order[6], Phase::StepEnd);
-        assert_eq!(order[7], Phase::RunEnd);
+        assert_eq!(order[4], Phase::ToolGate);
+        assert_eq!(order[5], Phase::BeforeToolExecute);
+        assert_eq!(order[6], Phase::AfterToolExecute);
+        assert_eq!(order[7], Phase::StepEnd);
+        assert_eq!(order[8], Phase::RunEnd);
     }
 
     #[test]
@@ -96,6 +100,7 @@ mod tests {
             Phase::StepStart,
             Phase::BeforeInference,
             Phase::AfterInference,
+            Phase::ToolGate,
             Phase::BeforeToolExecute,
             Phase::AfterToolExecute,
             Phase::StepEnd,
@@ -130,6 +135,10 @@ mod tests {
             serde_json::to_string(&Phase::BeforeToolExecute).unwrap(),
             "\"before_tool_execute\""
         );
+        assert_eq!(
+            serde_json::to_string(&Phase::ToolGate).unwrap(),
+            "\"tool_gate\""
+        );
     }
 
     #[test]
@@ -139,6 +148,7 @@ mod tests {
             "StepStart",
             "BeforeInference",
             "AfterInference",
+            "ToolGate",
             "BeforeToolExecute",
             "AfterToolExecute",
             "StepEnd",
@@ -158,7 +168,7 @@ mod tests {
         for phase in Phase::ALL {
             assert!(set.insert(phase), "duplicate phase: {phase}");
         }
-        assert_eq!(set.len(), 8);
+        assert_eq!(set.len(), 9);
     }
 
     #[test]

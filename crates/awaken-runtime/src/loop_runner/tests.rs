@@ -4,28 +4,20 @@ use super::*;
 use crate::hooks::PhaseContext;
 use crate::phase::ExecutionEnv;
 use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
-use crate::registry::ResolvedAgent;
 use crate::state::StateStore;
-use crate::{PhaseHook, StateCommand};
-use awaken_contract::StateError;
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::context_message::ContextMessage;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::VecEventSink;
 use awaken_contract::contract::message::{Message, Role};
-use awaken_contract::contract::suspension::{
-    PendingToolCall, SuspendTicket, Suspension, ToolCallOutcome, ToolCallResumeMode,
-};
+use awaken_contract::contract::suspension::{SuspendTicket, ToolCallOutcome, ToolCallStatus};
 use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
-use awaken_contract::contract::tool_intercept::{ToolInterceptAction, ToolInterceptPayload};
 use awaken_contract::model::{
     PendingScheduledActions, Phase, ScheduledAction, ScheduledActionEnvelope,
     ScheduledActionQueueUpdate, ScheduledActionSpec,
 };
-use awaken_contract::state::{StateKey, StateKeyOptions};
-use serde_json::{Value, json};
 
 use super::actions::{
     LoopActionHandlersPlugin, apply_context_messages, apply_tool_filter_payloads,
@@ -33,10 +25,11 @@ use super::actions::{
 };
 use crate::agent::state::{
     AddContextMessage, InferenceOverrideState, InferenceOverrideStateAction,
-    InferenceOverrideStateValue, RunLifecycle, RunLifecycleUpdate, ToolFilterState,
+    InferenceOverrideStateValue, RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolFilterState,
     ToolFilterStateAction, ToolFilterStateValue,
 };
-use crate::phase::PhaseRuntime;
+use crate::phase::{PhaseRuntime, ToolGateHook};
+use crate::state::{StateCommand, StateKey, StateKeyOptions};
 
 /// Helper: create a PhaseRuntime + ExecutionEnv with action handlers registered.
 fn test_runtime() -> (PhaseRuntime, ExecutionEnv) {
@@ -63,10 +56,7 @@ fn test_runtime() -> (PhaseRuntime, ExecutionEnv) {
     (runtime, env)
 }
 
-fn test_runtime_with_plugin<P>(plugin: P) -> (PhaseRuntime, ExecutionEnv)
-where
-    P: Plugin + Clone,
-{
+fn test_runtime_with_plugins(plugins: Vec<Arc<dyn Plugin>>) -> (PhaseRuntime, ExecutionEnv) {
     let store = StateStore::new();
     store
         .install_plugin(LoopStatePlugin)
@@ -74,9 +64,6 @@ where
     store
         .install_plugin(LoopActionHandlersPlugin)
         .expect("install LoopActionHandlersPlugin");
-    store
-        .install_plugin(plugin.clone())
-        .expect("install plugin");
 
     let mut patch = crate::state::MutationBatch::new();
     patch.update::<RunLifecycle>(RunLifecycleUpdate::Start {
@@ -86,11 +73,9 @@ where
     store.commit(patch).expect("init lifecycle");
 
     let runtime = PhaseRuntime::new(store).expect("create runtime");
-
-    let env_plugins: Vec<Arc<dyn Plugin>> =
-        vec![Arc::new(LoopActionHandlersPlugin), Arc::new(plugin)];
-    let env = ExecutionEnv::from_plugins(&env_plugins, &Default::default())
-        .expect("build env with plugin");
+    let mut all_plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(LoopActionHandlersPlugin)];
+    all_plugins.extend(plugins);
+    let env = ExecutionEnv::from_plugins(&all_plugins, &Default::default()).expect("build env");
     (runtime, env)
 }
 
@@ -800,6 +785,157 @@ impl crate::execution::ToolExecutor for RecordingExecutor {
     }
 }
 
+struct ToolGateUnlockKey;
+
+impl StateKey for ToolGateUnlockKey {
+    const KEY: &'static str = "test.tool_gate.unlock";
+    type Value = bool;
+    type Update = bool;
+
+    fn apply(value: &mut Self::Value, update: Self::Update) {
+        *value = update;
+    }
+}
+
+struct UnlockTool;
+
+#[async_trait::async_trait]
+impl Tool for UnlockTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("unlock", "unlock", "unlock state")
+    }
+
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _ctx: &ToolCallContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let mut command = StateCommand::new();
+        command.update::<ToolGateUnlockKey>(true);
+        Ok(ToolOutput::with_command(
+            ToolResult::success("unlock", serde_json::json!({"unlocked": true})),
+            command,
+        ))
+    }
+}
+
+struct SuspendedUnlockTool;
+
+#[async_trait::async_trait]
+impl Tool for SuspendedUnlockTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("unlock", "unlock", "suspending unlock state")
+    }
+
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _ctx: &ToolCallContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let ticket = SuspendTicket::new(
+            awaken_contract::contract::suspension::Suspension {
+                id: "suspend_unlock".into(),
+                action: "tool:UnlockConfirm".into(),
+                message: "unlock requires approval".into(),
+                parameters: serde_json::json!({}),
+                response_schema: None,
+            },
+            awaken_contract::contract::suspension::PendingToolCall::new(
+                "call_unlock",
+                "unlock",
+                serde_json::json!({}),
+            ),
+            awaken_contract::contract::suspension::ToolCallResumeMode::ReplayToolCall,
+        );
+        Ok(ToolResult::suspended_with("unlock", "unlock suspended", ticket).into())
+    }
+}
+
+struct GuardedTool;
+
+#[async_trait::async_trait]
+impl Tool for GuardedTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("guarded", "guarded", "guarded")
+    }
+
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _ctx: &ToolCallContext,
+    ) -> Result<ToolOutput, ToolError> {
+        Ok(ToolResult::success("guarded", serde_json::json!({"ok": true})).into())
+    }
+}
+
+struct UnlockingToolGateHook;
+
+#[async_trait::async_trait]
+impl ToolGateHook for UnlockingToolGateHook {
+    async fn run(
+        &self,
+        ctx: &PhaseContext,
+    ) -> Result<
+        Option<awaken_contract::contract::tool_intercept::ToolInterceptPayload>,
+        awaken_contract::StateError,
+    > {
+        if ctx.tool_name.as_deref() != Some("guarded") {
+            return Ok(None);
+        }
+
+        if ctx.state::<ToolGateUnlockKey>().copied().unwrap_or(false) {
+            Ok(None)
+        } else {
+            Ok(Some(
+                awaken_contract::contract::tool_intercept::ToolInterceptPayload::Block {
+                    reason: "guarded locked".into(),
+                },
+            ))
+        }
+    }
+}
+
+struct GuardedBeforeHook {
+    calls: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl crate::hooks::PhaseHook for GuardedBeforeHook {
+    async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, awaken_contract::StateError> {
+        if ctx.tool_name.as_deref() == Some("guarded")
+            && let Some(call_id) = ctx.tool_call_id.clone()
+        {
+            self.calls.lock().expect("lock poisoned").push(call_id);
+        }
+        Ok(StateCommand::new())
+    }
+}
+
+struct ToolGateTestPlugin {
+    before_calls: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl Plugin for ToolGateTestPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor {
+            name: "tool-gate-test",
+        }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), awaken_contract::StateError> {
+        registrar.register_key::<ToolGateUnlockKey>(StateKeyOptions::default())?;
+        registrar.register_tool_gate_hook("tool-gate-test", UnlockingToolGateHook)?;
+        registrar.register_phase_hook(
+            "tool-gate-test",
+            Phase::BeforeToolExecute,
+            GuardedBeforeHook {
+                calls: Arc::clone(&self.before_calls),
+            },
+        )?;
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn resumed_calls_do_not_serialize_neighboring_fresh_batches() {
     let (runtime, _env) = test_runtime();
@@ -869,9 +1005,13 @@ async fn resumed_calls_do_not_serialize_neighboring_fresh_batches() {
         awaken_contract::contract::message::ToolCall::new("c5", "epsilon", serde_json::json!({})),
     ];
 
-    let (_blocked, suspended) = super::step::execute_tools_with_interception(&mut ctx, &calls)
-        .await
-        .expect("tool execution should succeed");
+    let mut transcript = super::step::ToolBatchTranscript::for_resume();
+    let (_blocked, suspended) =
+        super::step::execute_tools_with_interception(&mut ctx, &mut transcript, &calls)
+            .await
+            .expect("tool execution should succeed");
+    drop(ctx);
+    transcript.commit_into(&mut messages);
     assert!(!suspended, "recording executor never suspends");
     assert_eq!(
         executor.take(),
@@ -880,6 +1020,10 @@ async fn resumed_calls_do_not_serialize_neighboring_fresh_batches() {
             vec![String::from("c3")],
             vec![String::from("c4"), String::from("c5")],
         ]
+    );
+    assert!(
+        messages.iter().all(|message| message.tool_calls.is_none()),
+        "resume replay should not append a fresh assistant tool-call message"
     );
 
     let states = store.read::<ToolCallStates>().expect("tool call states");
@@ -895,336 +1039,6 @@ async fn resumed_calls_do_not_serialize_neighboring_fresh_batches() {
     assert!(
         resumed.suspension_id.is_none() && resumed.suspension_reason.is_none(),
         "terminal tool state should not retain an active suspension context"
-    );
-}
-
-struct UnlockState;
-
-impl StateKey for UnlockState {
-    const KEY: &'static str = "test.loop_runner.unlock_state";
-    type Value = bool;
-    type Update = bool;
-
-    fn apply(value: &mut Self::Value, update: Self::Update) {
-        *value = update;
-    }
-}
-
-struct BeforeToolCountState;
-
-impl StateKey for BeforeToolCountState {
-    const KEY: &'static str = "test.loop_runner.before_tool_count";
-    type Value = usize;
-    type Update = usize;
-
-    fn apply(value: &mut Self::Value, update: Self::Update) {
-        *value += update;
-    }
-}
-
-struct UnlockTool;
-
-#[async_trait::async_trait]
-impl Tool for UnlockTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new("unlock", "unlock", "unlock guarded tools")
-    }
-
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
-        let mut cmd = StateCommand::new();
-        cmd.update::<UnlockState>(true);
-        Ok(ToolOutput::with_command(
-            ToolResult::success("unlock", json!({"unlocked": true})),
-            cmd,
-        ))
-    }
-}
-
-struct GuardedTool;
-
-#[async_trait::async_trait]
-impl Tool for GuardedTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new("guarded", "guarded", "guarded tool")
-    }
-
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
-        Ok(ToolResult::success("guarded", json!({"ok": true})).into())
-    }
-}
-
-struct SuspendingTool;
-
-#[async_trait::async_trait]
-impl Tool for SuspendingTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new("suspending", "suspending", "always suspends")
-    }
-
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
-        let ticket = SuspendTicket::new(
-            Suspension {
-                id: "suspend-1".into(),
-                action: "tool:PermissionConfirm".into(),
-                message: "Approve?".into(),
-                parameters: json!({"tool": "suspending"}),
-                response_schema: None,
-            },
-            PendingToolCall::new("c1", "suspending", json!({})),
-            ToolCallResumeMode::ReplayToolCall,
-        );
-        Ok(ToolResult::suspended_with("suspending", "needs approval", ticket).into())
-    }
-}
-
-#[derive(Clone)]
-struct CountingGuardHook;
-
-#[async_trait::async_trait]
-impl PhaseHook for CountingGuardHook {
-    async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
-        let Some(tool_name) = ctx.tool_name.as_deref() else {
-            return Ok(StateCommand::new());
-        };
-        if tool_name != "guarded" {
-            return Ok(StateCommand::new());
-        }
-
-        let mut cmd = StateCommand::new();
-        cmd.update::<BeforeToolCountState>(1);
-        if !ctx.state::<UnlockState>().copied().unwrap_or(false) {
-            cmd.schedule_action::<ToolInterceptAction>(ToolInterceptPayload::Block {
-                reason: "guarded tool requires unlock".into(),
-            })?;
-        }
-        Ok(cmd)
-    }
-}
-
-#[derive(Clone)]
-struct AlwaysBlockGuardedHook;
-
-#[async_trait::async_trait]
-impl PhaseHook for AlwaysBlockGuardedHook {
-    async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
-        let Some(tool_name) = ctx.tool_name.as_deref() else {
-            return Ok(StateCommand::new());
-        };
-        if tool_name != "guarded" {
-            return Ok(StateCommand::new());
-        }
-
-        let mut cmd = StateCommand::new();
-        cmd.schedule_action::<ToolInterceptAction>(ToolInterceptPayload::Block {
-            reason: "guarded tool blocked".into(),
-        })?;
-        Ok(cmd)
-    }
-}
-
-#[derive(Clone)]
-struct GuardPlugin<H> {
-    name: &'static str,
-    hook: H,
-}
-
-impl<H> Plugin for GuardPlugin<H>
-where
-    H: PhaseHook + Clone,
-{
-    fn descriptor(&self) -> PluginDescriptor {
-        PluginDescriptor { name: self.name }
-    }
-
-    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        registrar.register_key::<UnlockState>(StateKeyOptions::default())?;
-        registrar.register_key::<BeforeToolCountState>(StateKeyOptions::default())?;
-        registrar.register_phase_hook(self.name, Phase::BeforeToolExecute, self.hook.clone())?;
-        Ok(())
-    }
-}
-
-fn make_step_context<'a>(
-    runtime: &'a PhaseRuntime,
-    agent: &'a mut ResolvedAgent,
-    messages: &'a mut Vec<Arc<Message>>,
-    sink: Arc<dyn awaken_contract::contract::event_sink::EventSink>,
-    run_identity: &'a awaken_contract::contract::identity::RunIdentity,
-    run_overrides: &'a Option<awaken_contract::contract::inference::InferenceOverride>,
-    total_input_tokens: &'a mut u64,
-    total_output_tokens: &'a mut u64,
-    truncation_state: &'a mut crate::context::TruncationState,
-) -> super::step::StepContext<'a> {
-    super::step::StepContext {
-        agent,
-        messages,
-        runtime,
-        sink,
-        checkpoint_store: None,
-        run_identity,
-        cancellation_token: None,
-        run_overrides,
-        total_input_tokens,
-        total_output_tokens,
-        truncation_state,
-        run_created_at: 0,
-    }
-}
-
-#[tokio::test]
-async fn recheck_after_flushing_allowed_calls_does_not_double_apply_before_tool_side_effects() {
-    let plugin = GuardPlugin {
-        name: "counting-guard",
-        hook: CountingGuardHook,
-    };
-    let (runtime, env) = test_runtime_with_plugin(plugin);
-    let store = runtime.store();
-
-    let mut agent = ResolvedAgent::new("agent", "model", "system", Arc::new(DummyLlm))
-        .with_tool(Arc::new(UnlockTool))
-        .with_tool(Arc::new(GuardedTool));
-    agent.env = env;
-
-    let sink: Arc<dyn awaken_contract::contract::event_sink::EventSink> =
-        Arc::new(awaken_contract::contract::event_sink::NullEventSink);
-    let mut messages = vec![Arc::new(Message::user("go"))];
-    let run_identity = awaken_contract::contract::identity::RunIdentity::default();
-    let run_overrides = None;
-    let mut total_input_tokens = 0;
-    let mut total_output_tokens = 0;
-    let mut truncation_state = crate::context::TruncationState::new();
-    let mut ctx = make_step_context(
-        &runtime,
-        &mut agent,
-        &mut messages,
-        sink,
-        &run_identity,
-        &run_overrides,
-        &mut total_input_tokens,
-        &mut total_output_tokens,
-        &mut truncation_state,
-    );
-    let calls = vec![
-        awaken_contract::contract::message::ToolCall::new("u1", "unlock", json!({})),
-        awaken_contract::contract::message::ToolCall::new("g1", "guarded", json!({})),
-    ];
-
-    let (blocked, suspended) = super::step::execute_tools_with_interception(&mut ctx, &calls)
-        .await
-        .expect("tool execution should succeed");
-
-    assert!(blocked.is_none(), "guarded call should be re-allowed");
-    assert!(!suspended, "no tool should suspend");
-    assert_eq!(
-        store.read::<BeforeToolCountState>().unwrap_or_default(),
-        1,
-        "BeforeToolExecute side effects should only commit once for the guarded call",
-    );
-    assert_eq!(
-        store.read::<UnlockState>(),
-        Some(true),
-        "unlock tool should commit state before guarded tool is rechecked",
-    );
-}
-
-#[tokio::test]
-async fn suspended_flush_backfills_interrupted_results_for_unprocessed_calls() {
-    let plugin = GuardPlugin {
-        name: "always-block-guarded",
-        hook: AlwaysBlockGuardedHook,
-    };
-    let (runtime, env) = test_runtime_with_plugin(plugin);
-
-    let mut agent = ResolvedAgent::new("agent", "model", "system", Arc::new(DummyLlm))
-        .with_tool(Arc::new(SuspendingTool))
-        .with_tool(Arc::new(GuardedTool))
-        .with_tool_executor(Arc::new(crate::execution::SequentialToolExecutor));
-    agent.env = env;
-
-    let sink = Arc::new(VecEventSink::new());
-    let mut messages = vec![
-        Arc::new(Message::user("go")),
-        Arc::new(Message::assistant_with_tool_calls(
-            "",
-            vec![
-                awaken_contract::contract::message::ToolCall::new("c1", "suspending", json!({})),
-                awaken_contract::contract::message::ToolCall::new("c2", "guarded", json!({})),
-                awaken_contract::contract::message::ToolCall::new("c3", "tail", json!({})),
-            ],
-        )),
-    ];
-    let run_identity = awaken_contract::contract::identity::RunIdentity::default();
-    let run_overrides = None;
-    let mut total_input_tokens = 0;
-    let mut total_output_tokens = 0;
-    let mut truncation_state = crate::context::TruncationState::new();
-    let mut ctx = make_step_context(
-        &runtime,
-        &mut agent,
-        &mut messages,
-        sink.clone(),
-        &run_identity,
-        &run_overrides,
-        &mut total_input_tokens,
-        &mut total_output_tokens,
-        &mut truncation_state,
-    );
-    let calls = vec![
-        awaken_contract::contract::message::ToolCall::new("c1", "suspending", json!({})),
-        awaken_contract::contract::message::ToolCall::new("c2", "guarded", json!({})),
-        awaken_contract::contract::message::ToolCall::new("c3", "tail", json!({})),
-    ];
-
-    let (blocked, suspended) = super::step::execute_tools_with_interception(&mut ctx, &calls)
-        .await
-        .expect("tool execution should succeed");
-
-    assert!(
-        blocked.is_none(),
-        "suspending prefix should not be reported as blocked"
-    );
-    assert!(suspended, "the run should suspend on the first tool");
-
-    let tool_messages: Vec<_> = messages
-        .iter()
-        .filter(|message| message.role == Role::Tool)
-        .map(|message| {
-            (
-                message.tool_call_id.clone().expect("tool message call id"),
-                message.text(),
-            )
-        })
-        .collect();
-    assert_eq!(
-        tool_messages.len(),
-        3,
-        "all tool calls need a terminal placeholder"
-    );
-    assert!(
-        tool_messages[1].1.contains("interrupted"),
-        "current guarded call should be backfilled with an interrupted result"
-    );
-    assert!(
-        tool_messages[2].1.contains("interrupted"),
-        "later calls should also be backfilled with interrupted results"
-    );
-
-    let done_events: Vec<_> = sink
-        .events()
-        .into_iter()
-        .filter_map(|event| match event {
-            AgentEvent::ToolCallDone { id, outcome, .. } => Some((id, outcome)),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        done_events,
-        vec![
-            ("c1".into(), ToolCallOutcome::Suspended),
-            ("c2".into(), ToolCallOutcome::Failed),
-            ("c3".into(), ToolCallOutcome::Failed),
-        ],
-        "unprocessed calls should no longer be silently dropped after a suspended flush",
     );
 }
 
@@ -1357,4 +1171,190 @@ async fn cancelled_resume_is_emitted_once_even_when_other_calls_replay() {
         cancelled.suspension_id.is_none() && cancelled.suspension_reason.is_none(),
         "cancelled terminal state should not retain an active suspension context"
     );
+}
+
+#[tokio::test]
+async fn tool_gate_recheck_executes_before_tool_hook_once() {
+    let before_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (runtime, env) = test_runtime_with_plugins(vec![Arc::new(ToolGateTestPlugin {
+        before_calls: Arc::clone(&before_calls),
+    })]);
+    runtime
+        .store()
+        .install_plugin(ToolGateTestPlugin {
+            before_calls: Arc::clone(&before_calls),
+        })
+        .expect("install tool gate test plugin keys");
+    let store = runtime.store();
+
+    let sink = Arc::new(VecEventSink::new());
+    let sink_dyn: Arc<dyn awaken_contract::contract::event_sink::EventSink> = sink.clone();
+    let mut messages = vec![Arc::new(Message::user("go"))];
+    let run_identity = awaken_contract::contract::identity::RunIdentity::default();
+    let run_overrides = None;
+    let mut total_input_tokens = 0;
+    let mut total_output_tokens = 0;
+    let mut truncation_state = crate::context::TruncationState::new();
+    let mut agent =
+        crate::registry::ResolvedAgent::new("agent", "model", "system", Arc::new(DummyLlm))
+            .with_tools(vec![Arc::new(UnlockTool), Arc::new(GuardedTool)]);
+    agent.env = env;
+
+    let mut ctx = super::step::StepContext {
+        agent: &mut agent,
+        messages: &mut messages,
+        runtime: &runtime,
+        sink: sink_dyn,
+        checkpoint_store: None,
+        run_identity: &run_identity,
+        cancellation_token: None,
+        run_overrides: &run_overrides,
+        total_input_tokens: &mut total_input_tokens,
+        total_output_tokens: &mut total_output_tokens,
+        truncation_state: &mut truncation_state,
+        run_created_at: 0,
+    };
+    let calls = vec![
+        awaken_contract::contract::message::ToolCall::new("c1", "unlock", serde_json::json!({})),
+        awaken_contract::contract::message::ToolCall::new("c2", "guarded", serde_json::json!({})),
+    ];
+
+    let mut transcript =
+        super::step::ToolBatchTranscript::for_inference(String::new(), calls.clone());
+    let (blocked, suspended) =
+        super::step::execute_tools_with_interception(&mut ctx, &mut transcript, &calls)
+            .await
+            .expect("tool execution should succeed");
+    drop(ctx);
+    transcript.commit_into(&mut messages);
+
+    assert!(blocked.is_none(), "tool gate should re-open after unlock");
+    assert!(!suspended, "unlock + guarded should complete");
+    assert_eq!(
+        before_calls.lock().expect("lock poisoned").as_slice(),
+        &["c2".to_string()],
+        "BeforeToolExecute should run once for the guarded call after ToolGate recheck",
+    );
+    assert_eq!(store.read::<ToolGateUnlockKey>(), Some(true));
+
+    let states = store.read::<ToolCallStates>().expect("tool call states");
+    assert_eq!(
+        states.calls.get("c1").expect("unlock state").status,
+        ToolCallStatus::Succeeded
+    );
+    assert_eq!(
+        states.calls.get("c2").expect("guarded state").status,
+        ToolCallStatus::Succeeded
+    );
+}
+
+#[tokio::test]
+async fn tool_gate_flush_suspension_backfills_rechecked_and_later_calls() {
+    let before_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (runtime, env) = test_runtime_with_plugins(vec![Arc::new(ToolGateTestPlugin {
+        before_calls: Arc::clone(&before_calls),
+    })]);
+    runtime
+        .store()
+        .install_plugin(ToolGateTestPlugin {
+            before_calls: Arc::clone(&before_calls),
+        })
+        .expect("install tool gate test plugin keys");
+    let store = runtime.store();
+
+    let sink = Arc::new(VecEventSink::new());
+    let sink_dyn: Arc<dyn awaken_contract::contract::event_sink::EventSink> = sink.clone();
+    let mut messages = vec![Arc::new(Message::user("go"))];
+    let run_identity = awaken_contract::contract::identity::RunIdentity::default();
+    let run_overrides = None;
+    let mut total_input_tokens = 0;
+    let mut total_output_tokens = 0;
+    let mut truncation_state = crate::context::TruncationState::new();
+    let mut agent =
+        crate::registry::ResolvedAgent::new("agent", "model", "system", Arc::new(DummyLlm))
+            .with_tools(vec![Arc::new(SuspendedUnlockTool), Arc::new(GuardedTool)]);
+    agent.env = env;
+
+    let mut ctx = super::step::StepContext {
+        agent: &mut agent,
+        messages: &mut messages,
+        runtime: &runtime,
+        sink: sink_dyn,
+        checkpoint_store: None,
+        run_identity: &run_identity,
+        cancellation_token: None,
+        run_overrides: &run_overrides,
+        total_input_tokens: &mut total_input_tokens,
+        total_output_tokens: &mut total_output_tokens,
+        truncation_state: &mut truncation_state,
+        run_created_at: 0,
+    };
+    let calls = vec![
+        awaken_contract::contract::message::ToolCall::new("c1", "unlock", serde_json::json!({})),
+        awaken_contract::contract::message::ToolCall::new("c2", "guarded", serde_json::json!({})),
+        awaken_contract::contract::message::ToolCall::new("c3", "guarded", serde_json::json!({})),
+    ];
+
+    let mut transcript =
+        super::step::ToolBatchTranscript::for_inference(String::new(), calls.clone());
+    let (blocked, suspended) =
+        super::step::execute_tools_with_interception(&mut ctx, &mut transcript, &calls)
+            .await
+            .expect("tool execution should succeed");
+    drop(ctx);
+    transcript.commit_into(&mut messages);
+
+    assert!(blocked.is_none());
+    assert!(suspended, "suspending prefix call should suspend the batch");
+    assert!(
+        before_calls.lock().expect("lock poisoned").is_empty(),
+        "guarded calls should never reach BeforeToolExecute after prefix suspension",
+    );
+
+    let states = store.read::<ToolCallStates>().expect("tool call states");
+    assert_eq!(
+        states.calls.get("c1").expect("unlock state").status,
+        ToolCallStatus::Suspended
+    );
+    assert_eq!(
+        states.calls.get("c2").expect("guarded state").status,
+        ToolCallStatus::Failed
+    );
+    assert_eq!(
+        states.calls.get("c3").expect("later guarded state").status,
+        ToolCallStatus::Failed
+    );
+
+    let interrupted: Vec<_> = messages
+        .iter()
+        .filter(|message| {
+            message.role == Role::Tool
+                && matches!(message.tool_call_id.as_deref(), Some("c2" | "c3"))
+        })
+        .map(|message| text_of(message))
+        .collect();
+    assert_eq!(
+        interrupted,
+        vec![
+            "[Tool execution was interrupted]".to_string(),
+            "[Tool execution was interrupted]".to_string(),
+        ]
+    );
+
+    let failed_events: Vec<_> = sink
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            AgentEvent::ToolCallDone { id, outcome, .. }
+                if matches!(
+                    (id.as_str(), outcome),
+                    ("c2", ToolCallOutcome::Failed) | ("c3", ToolCallOutcome::Failed)
+                ) =>
+            {
+                Some(id)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(failed_events, vec!["c2".to_string(), "c3".to_string()]);
 }

@@ -2,7 +2,7 @@
 //!
 //! All scheduled actions flow through the handler queue via
 //! `TypedScheduledActionHandler`. Accumulator actions (`ExcludeTool`,
-//! `IncludeOnlyTools`, `SetInferenceOverride`, `ToolInterceptAction`) write to
+//! `IncludeOnlyTools`, `SetInferenceOverride`) write to
 //! transient state keys. The orchestrator reads from state after the EXECUTE
 //! loop and clears the accumulators for the next step/call.
 
@@ -17,15 +17,13 @@ use awaken_contract::StateError;
 use awaken_contract::contract::context_message::ContextMessage;
 use awaken_contract::contract::inference::InferenceOverride;
 use awaken_contract::contract::message::{Message, Role};
-use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
 
 use crate::agent::state::{
     AddContextMessage, ContextMessageAction, ContextMessageStore, ContextThrottleState,
     ContextThrottleUpdate, ExcludeTool, IncludeOnlyTools, InferenceOverrideState,
     InferenceOverrideStateAction, RunLifecycle, SetInferenceOverride, ToolFilterState,
-    ToolFilterStateAction, ToolInterceptState, ToolInterceptStateAction,
+    ToolFilterStateAction,
 };
-use awaken_contract::contract::tool_intercept::ToolInterceptAction;
 
 /// Merge multiple inference override payloads with last-wins-per-field semantics.
 pub(super) fn merge_override_payloads(
@@ -156,22 +154,6 @@ impl TypedScheduledActionHandler<SetInferenceOverride> for SetInferenceOverrideH
     }
 }
 
-/// Handler for `ToolInterceptAction` — writes to [`ToolInterceptState`].
-pub(super) struct ToolInterceptHandler;
-
-#[async_trait]
-impl TypedScheduledActionHandler<ToolInterceptAction> for ToolInterceptHandler {
-    async fn handle_typed(
-        &self,
-        _ctx: &PhaseContext,
-        payload: ToolInterceptPayload,
-    ) -> Result<StateCommand, StateError> {
-        let mut cmd = StateCommand::new();
-        cmd.update::<ToolInterceptState>(ToolInterceptStateAction::Push(Box::new(payload)));
-        Ok(cmd)
-    }
-}
-
 /// Handler for `AddContextMessage` — applies throttle logic, upserts accepted
 /// messages into [`ContextMessageStore`], updates [`ContextThrottleState`].
 pub(super) struct ContextMessageHandler;
@@ -261,14 +243,11 @@ impl crate::plugins::Plugin for LoopActionHandlersPlugin {
         // State keys for action accumulators
         r.register_key::<ToolFilterState>(StateKeyOptions::default())?;
         r.register_key::<InferenceOverrideState>(StateKeyOptions::default())?;
-        r.register_key::<ToolInterceptState>(StateKeyOptions::default())?;
-
         // Handlers
         r.register_scheduled_action::<AddContextMessage, _>(ContextMessageHandler)?;
         r.register_scheduled_action::<ExcludeTool, _>(ExcludeToolHandler)?;
         r.register_scheduled_action::<IncludeOnlyTools, _>(IncludeOnlyToolsHandler)?;
         r.register_scheduled_action::<SetInferenceOverride, _>(SetInferenceOverrideHandler)?;
-        r.register_scheduled_action::<ToolInterceptAction, _>(ToolInterceptHandler)?;
         Ok(())
     }
 }

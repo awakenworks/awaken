@@ -11,14 +11,14 @@ use awaken::contract::executor::{InferenceExecutionError, InferenceRequest, LlmE
 use awaken::contract::identity::{RunIdentity, RunOrigin};
 use awaken::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken::contract::message::{Message, ToolCall};
+use awaken::contract::message::{Message, Role, ToolCall};
 use awaken::contract::suspension::{
     ResumeDecisionAction, ToolCallResume, ToolCallResumeMode, ToolCallStatus,
 };
 use awaken::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
-use awaken::contract::tool_intercept::{ToolInterceptAction, ToolInterceptPayload};
+use awaken::contract::tool_intercept::ToolInterceptPayload;
 use awaken::loop_runner::{AgentLoopParams, build_agent_env, prepare_resume, run_agent_loop};
 use awaken::*;
 use awaken::{AgentResolver, ResolvedAgent};
@@ -853,6 +853,18 @@ fn make_tool_call_response(tool_name: &str, call_id: &str, args: Value) -> Strea
         stop_reason: Some(StopReason::ToolUse),
         has_incomplete_tool_calls: false,
     }
+}
+
+fn message_text(message: &Message) -> String {
+    message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 #[tokio::test]
@@ -1703,7 +1715,7 @@ async fn state_snapshot_emitted_after_phase() {
 // Frontend tool interception tests
 // ---------------------------------------------------------------------------
 
-/// A plugin that intercepts "frontend" tools via BeforeToolExecute.
+/// A plugin that intercepts "frontend" tools via ToolGate.
 ///
 /// On first entry: suspends with UseDecisionAsToolResult mode.
 /// On resume: the runtime turns decision.result into the tool result directly.
@@ -1713,25 +1725,25 @@ struct FrontendToolInterceptPlugin {
 }
 
 #[async_trait]
-impl PhaseHook for FrontendToolInterceptPlugin {
+impl ToolGateHook for FrontendToolInterceptPlugin {
     async fn run(
         &self,
         ctx: &awaken::PhaseContext,
-    ) -> Result<awaken::StateCommand, awaken::StateError> {
+    ) -> Result<Option<ToolInterceptPayload>, awaken::StateError> {
         use awaken::contract::suspension::{PendingToolCall, SuspendTicket, Suspension};
 
         let tool_name = match &ctx.tool_name {
             Some(name) => name.as_str(),
-            None => return Ok(awaken::StateCommand::new()),
+            None => return Ok(None),
         };
 
         if !self.frontend_tool_ids.iter().any(|id| id == tool_name) {
-            return Ok(awaken::StateCommand::new());
+            return Ok(None);
         }
 
         // If resuming, don't intercept — let the tool execute with decision args
         if ctx.resume_input.is_some() {
-            return Ok(awaken::StateCommand::new());
+            return Ok(None);
         }
 
         // First entry: suspend with UseDecisionAsToolResult
@@ -1749,9 +1761,7 @@ impl PhaseHook for FrontendToolInterceptPlugin {
             ToolCallResumeMode::UseDecisionAsToolResult,
         );
 
-        let mut cmd = awaken::StateCommand::new();
-        cmd.schedule_action::<ToolInterceptAction>(ToolInterceptPayload::Suspend(ticket))?;
-        Ok(cmd)
+        Ok(Some(ToolInterceptPayload::Suspend(ticket)))
     }
 }
 
@@ -1767,11 +1777,7 @@ impl Plugin for FrontendToolInterceptPluginWrapper {
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        registrar.register_phase_hook(
-            "frontend-tool-intercept",
-            awaken::Phase::BeforeToolExecute,
-            self.plugin.clone(),
-        )?;
+        registrar.register_tool_gate_hook("frontend-tool-intercept", self.plugin.clone())?;
         Ok(())
     }
 }
@@ -2035,7 +2041,7 @@ async fn injected_frontend_tool_uses_suspension_id_resume_chain() {
 // Tool interception tests: Block, SetResult, state transitions
 // ---------------------------------------------------------------------------
 
-/// Plugin that blocks a specific tool via BeforeToolExecute.
+/// Plugin that blocks a specific tool via ToolGate.
 struct BlockingPlugin {
     blocked_tool: String,
     reason: String,
@@ -2051,25 +2057,23 @@ impl Clone for BlockingPlugin {
 }
 
 #[async_trait]
-impl PhaseHook for BlockingPlugin {
+impl ToolGateHook for BlockingPlugin {
     async fn run(
         &self,
         ctx: &awaken::PhaseContext,
-    ) -> Result<awaken::StateCommand, awaken::StateError> {
+    ) -> Result<Option<ToolInterceptPayload>, awaken::StateError> {
         let tool_name = match &ctx.tool_name {
             Some(name) => name.as_str(),
-            None => return Ok(awaken::StateCommand::new()),
+            None => return Ok(None),
         };
 
         if tool_name != self.blocked_tool {
-            return Ok(awaken::StateCommand::new());
+            return Ok(None);
         }
 
-        let mut cmd = awaken::StateCommand::new();
-        cmd.schedule_action::<ToolInterceptAction>(ToolInterceptPayload::Block {
+        Ok(Some(ToolInterceptPayload::Block {
             reason: self.reason.clone(),
-        })?;
-        Ok(cmd)
+        }))
     }
 }
 
@@ -2083,11 +2087,7 @@ impl Plugin for BlockingPluginWrapper {
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        registrar.register_phase_hook(
-            "blocking-plugin",
-            awaken::Phase::BeforeToolExecute,
-            self.0.clone(),
-        )?;
+        registrar.register_tool_gate_hook("blocking-plugin", self.0.clone())?;
         Ok(())
     }
 }
@@ -2154,25 +2154,21 @@ impl Clone for SetResultPlugin {
 }
 
 #[async_trait]
-impl PhaseHook for SetResultPlugin {
+impl ToolGateHook for SetResultPlugin {
     async fn run(
         &self,
         ctx: &awaken::PhaseContext,
-    ) -> Result<awaken::StateCommand, awaken::StateError> {
+    ) -> Result<Option<ToolInterceptPayload>, awaken::StateError> {
         let tool_name = match &ctx.tool_name {
             Some(name) => name.as_str(),
-            None => return Ok(awaken::StateCommand::new()),
+            None => return Ok(None),
         };
 
         if tool_name != self.target_tool {
-            return Ok(awaken::StateCommand::new());
+            return Ok(None);
         }
 
-        let mut cmd = awaken::StateCommand::new();
-        cmd.schedule_action::<ToolInterceptAction>(ToolInterceptPayload::SetResult(
-            self.result.clone(),
-        ))?;
-        Ok(cmd)
+        Ok(Some(ToolInterceptPayload::SetResult(self.result.clone())))
     }
 }
 
@@ -2186,11 +2182,7 @@ impl Plugin for SetResultPluginWrapper {
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        registrar.register_phase_hook(
-            "set-result-plugin",
-            awaken::Phase::BeforeToolExecute,
-            self.0.clone(),
-        )?;
+        registrar.register_tool_gate_hook("set-result-plugin", self.0.clone())?;
         Ok(())
     }
 }
@@ -3016,7 +3008,7 @@ async fn concurrent_suspend_and_resume_via_channel() {
     use awaken::contract::suspension::{PendingToolCall, SuspendTicket, Suspension};
     use futures::channel::mpsc;
 
-    // Plugin that suspends ALL tool calls via BeforeToolExecute intercept
+    // Plugin that suspends ALL tool calls via ToolGate
     struct SuspendAllPlugin;
     impl Clone for SuspendAllPlugin {
         fn clone(&self) -> Self {
@@ -3024,18 +3016,18 @@ async fn concurrent_suspend_and_resume_via_channel() {
         }
     }
     #[async_trait]
-    impl PhaseHook for SuspendAllPlugin {
+    impl ToolGateHook for SuspendAllPlugin {
         async fn run(
             &self,
             ctx: &awaken::PhaseContext,
-        ) -> Result<awaken::StateCommand, awaken::StateError> {
+        ) -> Result<Option<ToolInterceptPayload>, awaken::StateError> {
             let tool_name = match &ctx.tool_name {
                 Some(name) => name.as_str(),
-                None => return Ok(awaken::StateCommand::new()),
+                None => return Ok(None),
             };
             // If resuming, let it proceed
             if ctx.resume_input.is_some() {
-                return Ok(awaken::StateCommand::new());
+                return Ok(None);
             }
             let call_id = ctx.tool_call_id.as_deref().unwrap_or("");
             let args = ctx.tool_args.clone().unwrap_or_default();
@@ -3050,9 +3042,7 @@ async fn concurrent_suspend_and_resume_via_channel() {
                 PendingToolCall::new(call_id, tool_name, args),
                 ToolCallResumeMode::ReplayToolCall,
             );
-            let mut cmd = awaken::StateCommand::new();
-            cmd.schedule_action::<ToolInterceptAction>(ToolInterceptPayload::Suspend(ticket))?;
-            Ok(cmd)
+            Ok(Some(ToolInterceptPayload::Suspend(ticket)))
         }
     }
     struct SuspendAllPluginWrapper;
@@ -3063,11 +3053,7 @@ async fn concurrent_suspend_and_resume_via_channel() {
             }
         }
         fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-            registrar.register_phase_hook(
-                "suspend-all",
-                awaken::Phase::BeforeToolExecute,
-                SuspendAllPlugin,
-            )?;
+            registrar.register_tool_gate_hook("suspend-all", SuspendAllPlugin)?;
             Ok(())
         }
     }
@@ -4557,17 +4543,17 @@ async fn all_tools_suspended_pauses_run() {
         }
     }
     #[async_trait]
-    impl PhaseHook for SuspendAllHook {
+    impl ToolGateHook for SuspendAllHook {
         async fn run(
             &self,
             ctx: &awaken::PhaseContext,
-        ) -> Result<awaken::StateCommand, awaken::StateError> {
+        ) -> Result<Option<ToolInterceptPayload>, awaken::StateError> {
             let tool_name = match &ctx.tool_name {
                 Some(name) => name.as_str(),
-                None => return Ok(awaken::StateCommand::new()),
+                None => return Ok(None),
             };
             if ctx.resume_input.is_some() {
-                return Ok(awaken::StateCommand::new());
+                return Ok(None);
             }
             let call_id = ctx.tool_call_id.as_deref().unwrap_or("");
             let args = ctx.tool_args.clone().unwrap_or_default();
@@ -4582,9 +4568,7 @@ async fn all_tools_suspended_pauses_run() {
                 PendingToolCall::new(call_id, tool_name, args),
                 ToolCallResumeMode::ReplayToolCall,
             );
-            let mut cmd = awaken::StateCommand::new();
-            cmd.schedule_action::<ToolInterceptAction>(ToolInterceptPayload::Suspend(ticket))?;
-            Ok(cmd)
+            Ok(Some(ToolInterceptPayload::Suspend(ticket)))
         }
     }
     struct SuspendAllWrapper;
@@ -4595,11 +4579,7 @@ async fn all_tools_suspended_pauses_run() {
             }
         }
         fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-            registrar.register_phase_hook(
-                "suspend-all-test",
-                awaken::Phase::BeforeToolExecute,
-                SuspendAllHook,
-            )?;
+            registrar.register_tool_gate_hook("suspend-all-test", SuspendAllHook)?;
             Ok(())
         }
     }
@@ -5230,13 +5210,11 @@ async fn mixed_suspended_and_completed_tools() {
         "dangerous tool should be suspended"
     );
 
-    // calc (c3) should not execute, but it should be backfilled with an
-    // interrupted failed result so the assistant tool-call batch stays
-    // structurally complete in message/state history.
+    // calc (c3) should be backfilled as interrupted after sequential suspension.
     assert_eq!(
         tc_states.calls["c3"].status,
         ToolCallStatus::Failed,
-        "later tools after a suspension should be backfilled as interrupted"
+        "calc tool should be backfilled as interrupted after suspension"
     );
 
     // Verify events
@@ -5265,7 +5243,7 @@ async fn mixed_suspended_and_completed_tools() {
             calc_outcome,
             Some((_, awaken::contract::suspension::ToolCallOutcome::Failed))
         ),
-        "later calc tool should be backfilled as Failed instead of being silently dropped"
+        "calc should emit Failed ToolCallDone when interrupted"
     );
 }
 
@@ -8212,6 +8190,145 @@ async fn checkpoint_stores_thread_messages() {
         "should store at least user + assistant messages, got {}",
         msgs.len()
     );
+}
+
+#[tokio::test]
+async fn checkpoint_stores_blocked_tool_batch_consistently() {
+    use awaken::stores::InMemoryStore;
+
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![],
+        tool_calls: vec![
+            ToolCall::new("c1", "echo", json!({"message": "hello"})),
+            ToolCall::new("c2", "calc", json!({"result": 2})),
+        ],
+        usage: None,
+        stop_reason: Some(StopReason::ToolUse),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
+        .with_tool(Arc::new(EchoTool))
+        .with_tool(Arc::new(CalcTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(
+        agent,
+        vec![Arc::new(BlockingPluginWrapper(BlockingPlugin {
+            blocked_tool: "echo".into(),
+            reason: "tool is forbidden".into(),
+        }))],
+    );
+
+    let checkpoint = Arc::new(InMemoryStore::new());
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink,
+        checkpoint_store: Some(checkpoint.as_ref()),
+        messages: vec![Message::user("use tools")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    assert!(matches!(
+        result.termination,
+        TerminationReason::Blocked(ref reason) if reason == "tool is forbidden"
+    ));
+
+    use awaken::contract::storage::ThreadStore;
+    let msgs = checkpoint
+        .load_messages("thread-1")
+        .await
+        .unwrap()
+        .expect("checkpoint messages");
+    assert_eq!(msgs.len(), 4);
+    assert_eq!(msgs[0].role, Role::User);
+    assert_eq!(message_text(&msgs[0]), "use tools");
+    assert_eq!(msgs[1].role, Role::Assistant);
+    let calls = msgs[1].tool_calls.as_ref().expect("assistant tool calls");
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].id, "c1");
+    assert_eq!(calls[1].id, "c2");
+    assert_eq!(msgs[2].role, Role::Tool);
+    assert_eq!(msgs[2].tool_call_id.as_deref(), Some("c1"));
+    assert_eq!(message_text(&msgs[2]), "tool is forbidden");
+    assert_eq!(msgs[3].role, Role::Tool);
+    assert_eq!(msgs[3].tool_call_id.as_deref(), Some("c2"));
+    assert_eq!(message_text(&msgs[3]), "[Tool execution was interrupted]");
+}
+
+#[tokio::test]
+async fn checkpoint_stores_suspended_tool_batch_consistently() {
+    use awaken::stores::InMemoryStore;
+
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![],
+        tool_calls: vec![
+            ToolCall::new("c1", "dangerous", json!({"action": "delete"})),
+            ToolCall::new("c2", "calc", json!({"result": 2})),
+        ],
+        usage: None,
+        stop_reason: Some(StopReason::ToolUse),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = ResolvedAgent::new("test", "m", "sys", llm)
+        .with_tool(Arc::new(SuspendingTool))
+        .with_tool(Arc::new(CalcTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let checkpoint = Arc::new(InMemoryStore::new());
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink,
+        checkpoint_store: Some(checkpoint.as_ref()),
+        messages: vec![Message::user("run dangerous tool")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::Suspended);
+
+    use awaken::contract::storage::ThreadStore;
+    let msgs = checkpoint
+        .load_messages("thread-1")
+        .await
+        .unwrap()
+        .expect("checkpoint messages");
+    assert_eq!(msgs.len(), 4);
+    assert_eq!(msgs[0].role, Role::User);
+    assert_eq!(message_text(&msgs[0]), "run dangerous tool");
+    assert_eq!(msgs[1].role, Role::Assistant);
+    let calls = msgs[1].tool_calls.as_ref().expect("assistant tool calls");
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].id, "c1");
+    assert_eq!(calls[1].id, "c2");
+    assert_eq!(msgs[2].role, Role::Tool);
+    assert_eq!(msgs[2].tool_call_id.as_deref(), Some("c1"));
+    assert_eq!(message_text(&msgs[2]), "needs user approval");
+    assert_eq!(msgs[3].role, Role::Tool);
+    assert_eq!(msgs[3].tool_call_id.as_deref(), Some("c2"));
+    assert_eq!(message_text(&msgs[3]), "[Tool execution was interrupted]");
 }
 
 /// Checkpoint records correct agent_id from identity.

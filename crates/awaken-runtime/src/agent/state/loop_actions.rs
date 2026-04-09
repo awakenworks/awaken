@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use crate::state::{MergeStrategy, StateKey};
 use awaken_contract::contract::context_message::ContextMessage;
 use awaken_contract::contract::inference::InferenceOverride;
-use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
 
 // ---------------------------------------------------------------------------
 // Action specs
@@ -213,35 +212,6 @@ impl StateKey for InferenceOverrideState {
             InferenceOverrideStateAction::Clear => {
                 value.overrides = None;
             }
-        }
-    }
-}
-
-/// Accumulated tool intercept decisions for the current tool call.
-/// Written by `ToolInterceptAction` handler. Read and cleared by orchestrator.
-pub struct ToolInterceptState;
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ToolInterceptStateValue {
-    pub payloads: Vec<ToolInterceptPayload>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ToolInterceptStateAction {
-    Push(Box<ToolInterceptPayload>),
-    Clear,
-}
-
-impl StateKey for ToolInterceptState {
-    const KEY: &'static str = "__runtime.tool_intercept_state";
-    const MERGE: MergeStrategy = MergeStrategy::Commutative;
-    type Value = ToolInterceptStateValue;
-    type Update = ToolInterceptStateAction;
-
-    fn apply(value: &mut Self::Value, update: Self::Update) {
-        match update {
-            ToolInterceptStateAction::Push(payload) => value.payloads.push(*payload),
-            ToolInterceptStateAction::Clear => value.payloads.clear(),
         }
     }
 }
