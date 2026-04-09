@@ -6,6 +6,7 @@ use serde_json::json;
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::tool::{Tool, ToolCallContext};
 use awaken_contract::registry_spec::{AgentSpec, RemoteAuth, RemoteEndpoint};
 
@@ -155,12 +156,11 @@ async fn agent_tool_execute_fails_for_missing_agent() {
     let tool = AgentTool::local("missing", "desc", resolver);
     let ctx = ToolCallContext::test_default();
 
-    // Backend error is returned as ToolResult::error (not ToolError)
-    let output = tool
+    let err = tool
         .execute(json!({"prompt": "do work"}), &ctx)
         .await
-        .unwrap();
-    assert!(!output.result.is_success());
+        .expect_err("missing local agent should fail before backend execution");
+    assert!(err.to_string().contains("agent not found: missing"));
 }
 
 #[tokio::test]
@@ -188,6 +188,7 @@ async fn agent_tool_with_mock_backend_success() {
         result: DelegateRunResult {
             agent_id: "helper".into(),
             status: DelegateRunStatus::Completed,
+            termination: TerminationReason::NaturalEnd,
             response: Some("done!".into()),
             steps: 3,
             run_id: None,
@@ -215,6 +216,7 @@ async fn agent_tool_with_mock_backend_failure() {
         result: DelegateRunResult {
             agent_id: "helper".into(),
             status: DelegateRunStatus::Failed("out of memory".into()),
+            termination: TerminationReason::Error("out of memory".into()),
             response: None,
             steps: 0,
             run_id: None,
@@ -495,6 +497,7 @@ impl AgentBackend for CapturingBackend {
         Ok(DelegateRunResult {
             agent_id: request.agent_id.to_string(),
             status: DelegateRunStatus::Completed,
+            termination: TerminationReason::NaturalEnd,
             response: Some("done".into()),
             steps: 1,
             run_id: None,
@@ -589,6 +592,7 @@ async fn agent_tool_propagates_child_run_id_in_metadata() {
         result: DelegateRunResult {
             agent_id: "helper".into(),
             status: DelegateRunStatus::Completed,
+            termination: TerminationReason::NaturalEnd,
             response: Some("done".into()),
             steps: 1,
             run_id: Some("child-run-123".into()),
@@ -622,6 +626,7 @@ async fn agent_tool_with_mock_backend_cancelled() {
         result: DelegateRunResult {
             agent_id: "helper".into(),
             status: DelegateRunStatus::Cancelled,
+            termination: TerminationReason::Cancelled,
             response: None,
             steps: 2,
             run_id: None,
@@ -651,6 +656,7 @@ async fn agent_tool_with_mock_backend_timeout() {
         result: DelegateRunResult {
             agent_id: "helper".into(),
             status: DelegateRunStatus::Timeout,
+            termination: TerminationReason::Error("timeout".into()),
             response: Some("partial".into()),
             steps: 5,
             run_id: None,
@@ -680,6 +686,7 @@ async fn agent_tool_failed_status_contains_error_info() {
         result: DelegateRunResult {
             agent_id: "helper".into(),
             status: DelegateRunStatus::Failed("rate limit exceeded".into()),
+            termination: TerminationReason::Error("rate limit exceeded".into()),
             response: None,
             steps: 1,
             run_id: None,
@@ -744,6 +751,7 @@ async fn agent_tool_command_is_empty() {
         result: DelegateRunResult {
             agent_id: "helper".into(),
             status: DelegateRunStatus::Completed,
+            termination: TerminationReason::NaturalEnd,
             response: Some("done".into()),
             steps: 1,
             run_id: None,
@@ -791,6 +799,7 @@ async fn agent_tool_result_data_has_all_fields() {
         result: DelegateRunResult {
             agent_id: "analyst".into(),
             status: DelegateRunStatus::Completed,
+            termination: TerminationReason::NaturalEnd,
             response: Some("analysis complete".into()),
             steps: 7,
             run_id: Some("child-456".into()),
@@ -829,6 +838,7 @@ fn agent_tool_descriptor_tool_id_follows_pattern() {
         result: DelegateRunResult {
             agent_id: "my-special-agent".into(),
             status: DelegateRunStatus::Completed,
+            termination: TerminationReason::NaturalEnd,
             response: None,
             steps: 0,
             run_id: None,
@@ -878,6 +888,7 @@ async fn agent_tool_omits_child_run_id_when_none() {
         result: DelegateRunResult {
             agent_id: "helper".into(),
             status: DelegateRunStatus::Completed,
+            termination: TerminationReason::NaturalEnd,
             response: Some("done".into()),
             steps: 1,
             run_id: None,

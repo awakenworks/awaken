@@ -505,6 +505,7 @@ mod tests {
     use async_trait::async_trait;
     use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
     use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+    use awaken_contract::contract::lifecycle::TerminationReason;
     use awaken_contract::contract::tool::{
         ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
     };
@@ -866,6 +867,7 @@ mod tests {
                 result: DelegateRunResult {
                     agent_id: "remote-worker".into(),
                     status: DelegateRunStatus::Completed,
+                    termination: TerminationReason::NaturalEnd,
                     response: Some("from custom backend".into()),
                     steps: 1,
                     run_id: None,

@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use crate::backend::{
-    BackendControl, BackendParentContext, BackendRunRequest, ExecutionBackend, LocalBackend,
+    BackendControl, BackendParentContext, BackendRunRequest, ExecutionBackend,
+    execute_resolved_execution,
 };
 use crate::registry::{
     AgentResolver, ExecutionResolver, LocalExecutionResolver, ResolvedBackendAgent,
@@ -53,10 +54,21 @@ impl AgentTool {
         description: impl Into<String>,
         config: A2aConfig,
     ) -> Self {
-        Self::with_backend(agent_id, description, Arc::new(A2aBackend::new(config)))
+        let agent_id = agent_id.into();
+        let description = description.into();
+        Self::with_execution_resolver(
+            agent_id.clone(),
+            description.clone(),
+            Arc::new(FixedExecutionResolver::non_local(
+                &agent_id,
+                &description,
+                Arc::new(A2aBackend::new(config)),
+            )),
+        )
     }
 
     /// Create a tool with a custom backend (for testing).
+    #[cfg(test)]
     pub fn with_backend(
         agent_id: impl Into<String>,
         description: impl Into<String>,
@@ -67,7 +79,7 @@ impl AgentTool {
         Self {
             agent_id: agent_id.clone(),
             description: description.clone(),
-            resolver: Arc::new(StaticExecutionResolver::non_local(
+            resolver: Arc::new(FixedExecutionResolver::non_local(
                 &agent_id,
                 &description,
                 backend,
@@ -161,13 +173,14 @@ impl Tool for AgentTool {
             phase_runtime: None,
             checkpoint_store: None,
             control: BackendControl::default(),
+            decisions: Vec::new(),
             overrides: None,
             frontend_tools: Vec::new(),
             inbox: None,
             is_continuation: false,
         };
 
-        match execute_resolved(&resolved, request).await {
+        match execute_resolved_execution(&resolved, request).await {
             Ok(result) => {
                 let status_str = result.status.to_string();
                 let mut tool_result = ToolResult::success(
@@ -192,22 +205,11 @@ impl Tool for AgentTool {
     }
 }
 
-async fn execute_resolved(
-    resolved: &ResolvedExecution,
-    request: BackendRunRequest<'_>,
-) -> Result<crate::backend::BackendRunResult, crate::backend::ExecutionBackendError> {
-    match resolved {
-        ResolvedExecution::Local(_) => LocalBackend::new().execute(request).await,
-        ResolvedExecution::NonLocal(agent) => agent.backend.execute(request).await,
-    }
-}
-
-struct StaticExecutionResolver {
-    local: Option<crate::registry::ResolvedAgent>,
+struct FixedExecutionResolver {
     execution: ResolvedExecution,
 }
 
-impl StaticExecutionResolver {
+impl FixedExecutionResolver {
     fn non_local(agent_id: &str, description: &str, backend: Arc<dyn ExecutionBackend>) -> Self {
         let spec = Arc::new(awaken_contract::registry_spec::AgentSpec {
             id: agent_id.to_string(),
@@ -216,22 +218,16 @@ impl StaticExecutionResolver {
             ..Default::default()
         });
         Self {
-            local: None,
             execution: ResolvedExecution::NonLocal(ResolvedBackendAgent { spec, backend }),
         }
     }
 }
 
-impl AgentResolver for StaticExecutionResolver {
+impl AgentResolver for FixedExecutionResolver {
     fn resolve(
         &self,
         agent_id: &str,
     ) -> Result<crate::registry::ResolvedAgent, crate::RuntimeError> {
-        if let Some(agent) = &self.local {
-            if agent.id() == agent_id {
-                return Ok(agent.clone());
-            }
-        }
         Err(crate::RuntimeError::ResolveFailed {
             message: format!("agent '{agent_id}' cannot be resolved locally"),
         })
@@ -242,7 +238,7 @@ impl AgentResolver for StaticExecutionResolver {
     }
 }
 
-impl ExecutionResolver for StaticExecutionResolver {
+impl ExecutionResolver for FixedExecutionResolver {
     fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, crate::RuntimeError> {
         if self.execution.spec().id == agent_id {
             Ok(self.execution.clone())

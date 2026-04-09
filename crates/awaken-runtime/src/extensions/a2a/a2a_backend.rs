@@ -4,11 +4,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::backend::{
-    BackendRunRequest, BackendRunResult, BackendRunStatus, ExecutionBackend, ExecutionBackendError,
-    ExecutionBackendFactory, ExecutionBackendFactoryError,
+    BackendCapabilities, BackendRunRequest, BackendRunResult, BackendRunStatus, ExecutionBackend,
+    ExecutionBackendError, ExecutionBackendFactory, ExecutionBackendFactoryError,
 };
 use async_trait::async_trait;
 use awaken_contract::contract::content::ContentBlock;
+use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::message::Role;
 use awaken_contract::registry_spec::RemoteEndpoint;
 use awaken_protocol_a2a::{
@@ -296,6 +297,16 @@ impl A2aBackend {
 
 #[async_trait]
 impl ExecutionBackend for A2aBackend {
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            cancellation: true,
+            decisions: false,
+            overrides: false,
+            frontend_tools: false,
+            continuation: false,
+        }
+    }
+
     async fn execute(
         &self,
         request: BackendRunRequest<'_>,
@@ -329,34 +340,54 @@ impl ExecutionBackend for A2aBackend {
             .await?
         };
 
-        let status = match snapshot.state {
-            TaskState::Completed => BackendRunStatus::Completed,
-            TaskState::Canceled => BackendRunStatus::Cancelled,
-            TaskState::Failed => BackendRunStatus::Failed(
-                snapshot
+        let (status, termination) = match snapshot.state {
+            TaskState::Completed => (BackendRunStatus::Completed, TerminationReason::NaturalEnd),
+            TaskState::Canceled => (BackendRunStatus::Cancelled, TerminationReason::Cancelled),
+            TaskState::Failed => {
+                let message = snapshot
                     .failure_message
-                    .unwrap_or_else(|| "remote agent run failed".into()),
-            ),
-            TaskState::Rejected => BackendRunStatus::Failed(
-                snapshot
+                    .unwrap_or_else(|| "remote agent run failed".into());
+                (
+                    BackendRunStatus::Failed(message.clone()),
+                    TerminationReason::Error(message),
+                )
+            }
+            TaskState::Rejected => {
+                let message = snapshot
                     .failure_message
-                    .unwrap_or_else(|| "remote agent rejected the task".into()),
-            ),
-            TaskState::InputRequired => BackendRunStatus::Failed(
-                snapshot
+                    .unwrap_or_else(|| "remote agent rejected the task".into());
+                (
+                    BackendRunStatus::Failed(message.clone()),
+                    TerminationReason::Error(message),
+                )
+            }
+            TaskState::InputRequired => {
+                let message = snapshot
                     .failure_message
-                    .unwrap_or_else(|| "remote agent requires additional input".into()),
-            ),
-            TaskState::AuthRequired => BackendRunStatus::Failed(
-                snapshot
+                    .unwrap_or_else(|| "remote agent requires additional input".into());
+                (
+                    BackendRunStatus::Failed(message.clone()),
+                    TerminationReason::Error(message),
+                )
+            }
+            TaskState::AuthRequired => {
+                let message = snapshot
                     .failure_message
-                    .unwrap_or_else(|| "remote agent requires authentication".into()),
+                    .unwrap_or_else(|| "remote agent requires authentication".into());
+                (
+                    BackendRunStatus::Failed(message.clone()),
+                    TerminationReason::Error(message),
+                )
+            }
+            TaskState::Submitted | TaskState::Working => (
+                BackendRunStatus::Timeout,
+                TerminationReason::Error("polling timeout exceeded".into()),
             ),
-            TaskState::Submitted | TaskState::Working => BackendRunStatus::Timeout,
         };
         Ok(BackendRunResult {
             agent_id: request.agent_id.to_string(),
             status,
+            termination,
             response: snapshot.output_text,
             steps: 1,
             run_id: None,

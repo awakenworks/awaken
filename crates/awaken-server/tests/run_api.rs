@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use awaken_contract::contract::content::extract_text;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::lifecycle::RunStatus;
+use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_contract::contract::storage::{RunRecord, RunStore, ThreadStore};
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_contract::registry_spec::RemoteEndpoint;
@@ -122,6 +122,16 @@ struct StaticRemoteBackend;
 
 #[async_trait]
 impl AgentBackend for StaticRemoteBackend {
+    fn capabilities(&self) -> awaken_runtime::BackendCapabilities {
+        awaken_runtime::BackendCapabilities {
+            cancellation: true,
+            decisions: false,
+            overrides: false,
+            frontend_tools: false,
+            continuation: false,
+        }
+    }
+
     async fn execute(
         &self,
         request: awaken_runtime::backend::BackendRunRequest<'_>,
@@ -129,6 +139,7 @@ impl AgentBackend for StaticRemoteBackend {
         Ok(DelegateRunResult {
             agent_id: request.agent_id.to_string(),
             status: DelegateRunStatus::Completed,
+            termination: TerminationReason::NaturalEnd,
             response: Some("hello from remote root".into()),
             steps: 1,
             run_id: Some("remote-child-run".into()),

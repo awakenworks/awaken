@@ -4,10 +4,11 @@ use async_trait::async_trait;
 use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
 use awaken_contract::contract::lifecycle::TerminationReason;
 
-use crate::loop_runner::{AgentLoopParams, run_agent_loop};
+use crate::loop_runner::{AgentLoopParams, prepare_resume, run_agent_loop};
 
 use super::{
-    BackendRunRequest, BackendRunResult, BackendRunStatus, ExecutionBackend, ExecutionBackendError,
+    BackendCapabilities, BackendRunRequest, BackendRunResult, BackendRunStatus, ExecutionBackend,
+    ExecutionBackendError,
 };
 
 /// Local runtime backend for executing the standard loop in-process.
@@ -28,6 +29,10 @@ impl Default for LocalBackend {
 
 #[async_trait]
 impl ExecutionBackend for LocalBackend {
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::full()
+    }
+
     async fn execute(
         &self,
         request: BackendRunRequest<'_>,
@@ -44,6 +49,11 @@ impl ExecutionBackend for LocalBackend {
             )
         })?;
         let run_id = run_identity.run_id.clone();
+        if !request.decisions.is_empty() {
+            prepare_resume(phase_runtime.store(), request.decisions, None)
+                .map_err(crate::loop_runner::AgentLoopError::PhaseError)
+                .map_err(ExecutionBackendError::Loop)?;
+        }
 
         let result = run_agent_loop(AgentLoopParams {
             resolver: request.resolver,
@@ -61,11 +71,12 @@ impl ExecutionBackend for LocalBackend {
             is_continuation: request.is_continuation,
         })
         .await
-        .map_err(|error| ExecutionBackendError::ExecutionFailed(error.to_string()))?;
+        .map_err(ExecutionBackendError::Loop)?;
 
         Ok(BackendRunResult {
             agent_id: request.agent_id.to_string(),
             status: map_termination(&result.termination),
+            termination: result.termination,
             response: if result.response.is_empty() {
                 None
             } else {
@@ -111,6 +122,11 @@ impl LocalBackend {
 
         let phase_runtime = crate::phase::PhaseRuntime::new(store.clone())
             .map_err(|error| ExecutionBackendError::ExecutionFailed(error.to_string()))?;
+        if !request.decisions.is_empty() {
+            prepare_resume(phase_runtime.store(), request.decisions, None)
+                .map_err(crate::loop_runner::AgentLoopError::PhaseError)
+                .map_err(ExecutionBackendError::Loop)?;
+        }
 
         let (owner_inbox, inbox_receiver) = match request.inbox {
             Some(receiver) => (None, receiver),
@@ -171,11 +187,12 @@ impl LocalBackend {
             is_continuation: false,
         })
         .await
-        .map_err(|error| ExecutionBackendError::ExecutionFailed(error.to_string()))?;
+        .map_err(ExecutionBackendError::Loop)?;
 
         Ok(BackendRunResult {
             agent_id: request.agent_id.to_string(),
             status: map_termination(&result.termination),
+            termination: result.termination,
             response: if result.response.is_empty() {
                 None
             } else {
