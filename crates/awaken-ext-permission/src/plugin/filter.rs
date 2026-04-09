@@ -11,8 +11,8 @@ use crate::state::{PermissionOverridesKey, PermissionPolicyKey, permission_rules
 /// tool list before the LLM sees them.
 ///
 /// Only exact-match, argument-independent Deny rules are applied here.
-/// Conditional denies (argument-based) remain handled by
-/// [`super::checker::PermissionInterceptHook`] at `BeforeToolExecute`.
+/// Conditional rules remain handled by [`super::checker::PermissionToolGateHook`]
+/// at `ToolGate`.
 pub(super) struct PermissionToolFilterHook;
 
 #[async_trait]
