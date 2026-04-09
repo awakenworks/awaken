@@ -1091,6 +1091,77 @@ fn multiple_tool_calls_produce_correct_sequence() {
     );
 }
 
+#[test]
+fn mixed_same_step_tool_results_preserve_order() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let mut all_events = Vec::new();
+
+    all_events.extend(enc.on_agent_event(&AgentEvent::ToolCallStart {
+        id: "c1".into(),
+        name: "get_weather".into(),
+    }));
+    all_events.extend(enc.on_agent_event(&AgentEvent::ToolCallReady {
+        id: "c1".into(),
+        name: "get_weather".into(),
+        arguments: json!({"location": "Tokyo"}),
+    }));
+    all_events.extend(enc.on_agent_event(&AgentEvent::ToolCallDone {
+        id: "c1".into(),
+        message_id: "m1".into(),
+        result: ToolResult::success("get_weather", json!({"temp": 25})),
+        outcome: ToolCallOutcome::Succeeded,
+    }));
+
+    all_events.extend(enc.on_agent_event(&AgentEvent::ToolCallStart {
+        id: "c2".into(),
+        name: "dangerous_tool".into(),
+    }));
+    all_events.extend(enc.on_agent_event(&AgentEvent::ToolCallReady {
+        id: "c2".into(),
+        name: "dangerous_tool".into(),
+        arguments: json!({}),
+    }));
+    all_events.extend(enc.on_agent_event(&AgentEvent::ToolCallDone {
+        id: "c2".into(),
+        message_id: "m2".into(),
+        result: ToolResult::error("dangerous_tool", "permission denied"),
+        outcome: ToolCallOutcome::Failed,
+    }));
+
+    let tool_events: Vec<_> = all_events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                Event::ToolCallStart { .. }
+                    | Event::ToolCallEnd { .. }
+                    | Event::ToolCallResult { .. }
+            )
+        })
+        .collect();
+    assert_eq!(tool_events.len(), 6);
+    assert!(
+        matches!(tool_events[0], Event::ToolCallStart { tool_call_id, .. } if tool_call_id == "c1")
+    );
+    assert!(
+        matches!(tool_events[1], Event::ToolCallEnd { tool_call_id, .. } if tool_call_id == "c1")
+    );
+    assert!(
+        matches!(tool_events[2], Event::ToolCallResult { tool_call_id, content, .. }
+            if tool_call_id == "c1" && content == r#"{"temp":25}"#)
+    );
+    assert!(
+        matches!(tool_events[3], Event::ToolCallStart { tool_call_id, .. } if tool_call_id == "c2")
+    );
+    assert!(
+        matches!(tool_events[4], Event::ToolCallEnd { tool_call_id, .. } if tool_call_id == "c2")
+    );
+    assert!(
+        matches!(tool_events[5], Event::ToolCallResult { tool_call_id, content, .. }
+            if tool_call_id == "c2" && content == "permission denied")
+    );
+}
+
 // 6. Failed tool produces error result event
 #[test]
 fn failed_tool_produces_error_result() {
