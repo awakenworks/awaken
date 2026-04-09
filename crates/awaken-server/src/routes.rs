@@ -11,9 +11,10 @@ use serde_json::{Value, json};
 use awaken_contract::contract::message::Message;
 
 use crate::app::AppState;
+use crate::config_routes::config_routes;
 use crate::http_run::wire_sse_relay;
 use crate::http_sse::{sse_body_stream, sse_response};
-use crate::mailbox::{MailboxDispatchStatus, MailboxError};
+use crate::mailbox::{ACTIVE_RUN_CONFLICT_MESSAGE, MailboxDispatchStatus, MailboxError};
 use crate::protocols::a2a::http::a2a_routes;
 use crate::protocols::ag_ui::http::ag_ui_routes;
 use crate::protocols::ai_sdk_v6::http::ai_sdk_routes;
@@ -25,6 +26,7 @@ use awaken_runtime::RunRequest;
 #[derive(Debug)]
 pub enum ApiError {
     BadRequest(String),
+    Conflict(String),
     NotFound(String),
     ThreadNotFound(String),
     RunNotFound(String),
@@ -35,6 +37,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
+            ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg),
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
             ApiError::ThreadNotFound(id) => {
                 (StatusCode::NOT_FOUND, format!("thread not found: {id}"))
@@ -46,8 +49,11 @@ impl IntoResponse for ApiError {
     }
 }
 
-fn map_mailbox_error(err: MailboxError) -> ApiError {
-    match err {
+pub(crate) fn map_mailbox_error(error: MailboxError) -> ApiError {
+    match error {
+        MailboxError::Validation(msg) if msg == ACTIVE_RUN_CONFLICT_MESSAGE => {
+            ApiError::Conflict(msg)
+        }
         MailboxError::Validation(msg) => ApiError::BadRequest(msg),
         MailboxError::Store(err) => ApiError::Internal(err.to_string()),
         MailboxError::Internal(msg) => ApiError::Internal(msg),
@@ -63,6 +69,7 @@ pub fn build_router() -> Router<AppState> {
         .merge(health_routes())
         .merge(thread_routes())
         .merge(run_routes())
+        .merge(config_routes())
         .merge(ai_sdk_routes())
         .merge(ag_ui_routes())
         .merge(a2a_routes())
@@ -350,8 +357,6 @@ async fn get_thread_messages(
     Path(id): Path<String>,
     Query(params): Query<MessageQueryParams>,
 ) -> Result<Json<Value>, ApiError> {
-    use awaken_contract::contract::message::Visibility;
-
     // Verify thread exists
     st.store
         .load_thread(&id)
@@ -365,33 +370,15 @@ async fn get_thread_messages(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .unwrap_or_default();
+    let messages = params.filter_messages(messages);
+    let page = params.paginate(messages).map_err(ApiError::BadRequest)?;
 
-    // Filter by visibility unless `?visibility=all` is specified
-    let include_internal = params
-        .visibility
-        .as_deref()
-        .is_some_and(|v| v.eq_ignore_ascii_case("all"));
-
-    let messages: Vec<_> = if include_internal {
-        messages
-    } else {
-        messages
-            .into_iter()
-            .filter(|m| m.visibility != Visibility::Internal)
-            .collect()
-    };
-
-    let offset = params.offset_or_default();
-    let limit = params.clamped_limit();
-    let total = messages.len();
-    let slice: Vec<_> = messages.into_iter().skip(offset).take(limit).collect();
-    let has_more = offset + slice.len() < total;
-
-    let value = serde_json::to_value(&slice).map_err(|e| ApiError::Internal(e.to_string()))?;
+    let value = serde_json::to_value(&page.items).map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(json!({
         "messages": value,
-        "total": total,
-        "has_more": has_more,
+        "total": page.total,
+        "has_more": page.has_more,
+        "next_cursor": page.next_cursor,
     })))
 }
 

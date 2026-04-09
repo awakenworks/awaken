@@ -563,6 +563,46 @@ mod integration {
         assert_eq!(messages.len(), 4);
         assert_eq!(body["total"].as_u64(), Some(10));
         assert_eq!(body["has_more"].as_bool(), Some(true));
+        assert_eq!(body["next_cursor"].as_str(), Some("7"));
+    }
+
+    #[tokio::test]
+    async fn get_thread_messages_cursor_pagination() {
+        let test = make_test_app();
+        let id = seed_thread(&test.store, None).await;
+        let msgs: Vec<Message> = (0..6).map(|i| Message::user(format!("msg-{i}"))).collect();
+        test.store.save_messages(&id, &msgs).await.unwrap();
+
+        let (status, body) = get_json(
+            test.router,
+            &format!("/v1/threads/{id}/messages?cursor=2&limit=2"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let messages = body["messages"].as_array().expect("messages array");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["content"][0]["text"].as_str(), Some("msg-2"));
+        assert_eq!(messages[1]["content"][0]["text"].as_str(), Some("msg-3"));
+        assert_eq!(body["total"].as_u64(), Some(6));
+        assert_eq!(body["has_more"].as_bool(), Some(true));
+        assert_eq!(body["next_cursor"].as_str(), Some("4"));
+    }
+
+    #[tokio::test]
+    async fn get_thread_messages_invalid_cursor_returns_400() {
+        let test = make_test_app();
+        let id = seed_thread(&test.store, None).await;
+
+        let (status, body) = get_json(
+            test.router,
+            &format!("/v1/threads/{id}/messages?cursor=not-a-number"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"].as_str(),
+            Some("cursor must be an unsigned integer offset")
+        );
     }
 
     #[tokio::test]
@@ -729,6 +769,158 @@ mod integration {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0]["role"].as_str(), Some("user"));
         assert_eq!(messages[1]["role"].as_str(), Some("assistant"));
+    }
+
+    #[tokio::test]
+    async fn get_messages_for_thread_filters_internal_by_default() {
+        let test = make_test_app();
+        let id = seed_thread(&test.store, None).await;
+        let msgs = vec![
+            Message::user("visible-user"),
+            Message::internal_system("hidden-system"),
+            Message::assistant("visible-assistant"),
+        ];
+        test.store.save_messages(&id, &msgs).await.unwrap();
+
+        let (status, body) = get_json(test.router, &format!("/v1/threads/{id}/messages")).await;
+        assert_eq!(status, StatusCode::OK);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(body["total"].as_u64(), Some(2));
+        assert_eq!(
+            messages[0]["content"][0]["text"].as_str(),
+            Some("visible-user")
+        );
+        assert_eq!(
+            messages[1]["content"][0]["text"].as_str(),
+            Some("visible-assistant")
+        );
+    }
+
+    #[tokio::test]
+    async fn get_messages_for_thread_includes_internal_when_requested() {
+        let test = make_test_app();
+        let id = seed_thread(&test.store, None).await;
+        let msgs = vec![
+            Message::user("visible-user"),
+            Message::internal_system("hidden-system"),
+        ];
+        test.store.save_messages(&id, &msgs).await.unwrap();
+
+        let (status, body) = get_json(
+            test.router,
+            &format!("/v1/threads/{id}/messages?visibility=all"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(body["total"].as_u64(), Some(2));
+        assert_eq!(
+            messages[1]["content"][0]["text"].as_str(),
+            Some("hidden-system")
+        );
+        assert_eq!(messages[1]["visibility"].as_str(), Some("internal"));
+    }
+
+    #[tokio::test]
+    async fn ai_sdk_thread_messages_filter_internal_by_default() {
+        let test = make_test_app();
+        let id = seed_thread(&test.store, None).await;
+        let msgs = vec![
+            Message::user("visible-user"),
+            Message::internal_system("hidden-system"),
+            Message::assistant("visible-assistant"),
+        ];
+        test.store.save_messages(&id, &msgs).await.unwrap();
+
+        let (status, body) =
+            get_json(test.router, &format!("/v1/ai-sdk/threads/{id}/messages")).await;
+        assert_eq!(status, StatusCode::OK);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(body["total"].as_u64(), Some(2));
+        assert_eq!(messages[0]["role"].as_str(), Some("user"));
+        assert_eq!(
+            messages[0]["parts"][0]["text"].as_str(),
+            Some("visible-user")
+        );
+        assert_eq!(messages[1]["role"].as_str(), Some("assistant"));
+        assert_eq!(
+            messages[1]["parts"][0]["text"].as_str(),
+            Some("visible-assistant")
+        );
+    }
+
+    #[tokio::test]
+    async fn ai_sdk_thread_messages_support_cursor_pagination() {
+        let test = make_test_app();
+        let id = seed_thread(&test.store, None).await;
+        let msgs: Vec<Message> = (0..5).map(|i| Message::user(format!("msg-{i}"))).collect();
+        test.store.save_messages(&id, &msgs).await.unwrap();
+
+        let (status, body) = get_json(
+            test.router,
+            &format!("/v1/ai-sdk/threads/{id}/messages?cursor=1&limit=2"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["parts"][0]["text"].as_str(), Some("msg-1"));
+        assert_eq!(messages[1]["parts"][0]["text"].as_str(), Some("msg-2"));
+        assert_eq!(body["has_more"].as_bool(), Some(true));
+        assert_eq!(body["next_cursor"].as_str(), Some("3"));
+    }
+
+    #[tokio::test]
+    async fn ag_ui_thread_messages_filter_internal_by_default() {
+        let test = make_test_app();
+        let id = seed_thread(&test.store, None).await;
+        let msgs = vec![
+            Message::user("visible-user"),
+            Message::internal_system("hidden-system"),
+            Message::assistant("visible-assistant"),
+        ];
+        test.store.save_messages(&id, &msgs).await.unwrap();
+
+        let (status, body) =
+            get_json(test.router, &format!("/v1/ag-ui/threads/{id}/messages")).await;
+        assert_eq!(status, StatusCode::OK);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(body["total"].as_u64(), Some(2));
+        assert_eq!(messages[0]["role"].as_str(), Some("user"));
+        assert_eq!(
+            messages[0]["content"][0]["text"].as_str(),
+            Some("visible-user")
+        );
+        assert_eq!(messages[1]["role"].as_str(), Some("assistant"));
+        assert_eq!(
+            messages[1]["content"][0]["text"].as_str(),
+            Some("visible-assistant")
+        );
+    }
+
+    #[tokio::test]
+    async fn ag_ui_thread_messages_support_cursor_pagination() {
+        let test = make_test_app();
+        let id = seed_thread(&test.store, None).await;
+        let msgs: Vec<Message> = (0..5).map(|i| Message::user(format!("msg-{i}"))).collect();
+        test.store.save_messages(&id, &msgs).await.unwrap();
+
+        let (status, body) = get_json(
+            test.router,
+            &format!("/v1/ag-ui/threads/{id}/messages?cursor=1&limit=2"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["content"][0]["text"].as_str(), Some("msg-1"));
+        assert_eq!(messages[1]["content"][0]["text"].as_str(), Some("msg-2"));
+        assert_eq!(body["has_more"].as_bool(), Some(true));
+        assert_eq!(body["next_cursor"].as_str(), Some("3"));
     }
 
     #[tokio::test]

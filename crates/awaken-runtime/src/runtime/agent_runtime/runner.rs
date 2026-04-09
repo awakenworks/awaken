@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::loop_runner::{
     AgentLoopError, AgentLoopParams, AgentRunResult, prepare_resume, run_agent_loop,
 };
+use crate::registry::AgentResolver;
 use awaken_contract::contract::active_agent::ActiveAgentIdKey;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
@@ -65,6 +66,14 @@ impl AgentRuntime {
             run_inbox,
         } = request;
         let agent_id = self.resolve_agent_id(agent_id, &thread_id).await?;
+        let run_resolver: Arc<dyn AgentResolver> = if let Some(snapshot) = self.registry_snapshot()
+        {
+            Arc::new(crate::registry::resolve::RegistrySetResolver::new(
+                snapshot.into_registries(),
+            ))
+        } else {
+            self.resolver_arc()
+        };
 
         // Create runtime infrastructure
         let store = crate::state::StateStore::new();
@@ -80,8 +89,7 @@ impl AgentRuntime {
 
         // Preflight resolve to register plugin-declared keys before restoring persisted state.
         // Without this, thread-scoped keys may be skipped as unknown during restore.
-        let preflight_resolved = self
-            .resolver
+        let preflight_resolved = run_resolver
             .resolve(&agent_id)
             .map_err(AgentLoopError::RuntimeError)?;
         let preflight_key_registrations = preflight_resolved.env.key_registrations.clone();
@@ -187,7 +195,7 @@ impl AgentRuntime {
 
         // Execute the loop
         run_agent_loop(AgentLoopParams {
-            resolver: self.resolver.as_ref(),
+            resolver: run_resolver.as_ref(),
             agent_id: &agent_id,
             runtime: &phase_runtime,
             sink,

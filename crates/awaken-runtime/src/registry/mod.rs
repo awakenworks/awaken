@@ -8,6 +8,7 @@ pub mod config;
 pub mod memory;
 pub mod resolve;
 pub mod resolver;
+pub mod snapshot;
 pub mod traits;
 
 pub use awaken_contract::registry_spec::AgentSpec;
@@ -22,6 +23,7 @@ pub use memory::{
 };
 pub use resolve::ResolveError;
 pub use resolver::{AgentResolver, ResolvedAgent};
+pub use snapshot::{RegistryHandle, RegistrySnapshot};
 #[cfg(feature = "a2a")]
 pub use traits::BackendRegistry;
 pub use traits::{

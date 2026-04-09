@@ -13,6 +13,9 @@ pub mod file;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 
+#[cfg(feature = "sqlite")]
+pub mod sqlite_mailbox;
+
 pub use memory::InMemoryStore;
 pub use memory_mailbox::InMemoryMailboxStore;
 
@@ -21,3 +24,6 @@ pub use file::FileStore;
 
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresStore;
+
+#[cfg(feature = "sqlite")]
+pub use sqlite_mailbox::SqliteMailboxStore;

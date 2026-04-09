@@ -48,9 +48,11 @@ and `crates/awaken-server/src/config_routes.rs`.
 
 ## Config and capabilities
 
-These endpoints are exposed by `config_routes()`. They are available when
-`AppState` is constructed with a config store. Without a config store, the
-mutation and read routes return `400` with `config management API not enabled`.
+These endpoints are exposed by `config_routes()`. Read and schema routes require
+`AppState` to be constructed with a config store. Mutation routes additionally
+require a config runtime manager so writes can validate and publish a new
+registry snapshot. Without the required config wiring, the routes return `400`
+with `config management API not enabled`.
 
 | Method | Path | Description |
 |---|---|---|
@@ -129,6 +131,7 @@ Current built-in namespaces:
 
 - `offset` — number of items to skip
 - `limit` — maximum items to return, clamped to `1..=200`
+- `cursor` — message-history pagination cursor; when provided it takes precedence over `offset`, and history responses return `next_cursor`
 - `status` — run filter: `running`, `waiting`, or `done`
 - `visibility` — message filter: omit for external-only, set to `all` to include internal messages
 

@@ -8,10 +8,15 @@
 
 #![cfg(feature = "postgres")]
 
+use awaken_contract::contract::config_store::{
+    ConfigChangeKind, ConfigChangeNotifier, ConfigStore,
+};
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{RunQuery, RunStore, ThreadRunStore, ThreadStore};
 use awaken_contract::thread::Thread;
 use awaken_stores::PostgresStore;
+use serde_json::json;
+use tokio::time::{Duration, timeout};
 
 mod support;
 use support::make_run;
@@ -22,6 +27,23 @@ async fn make_store() -> Option<PostgresStore> {
     let url = std::env::var("DATABASE_URL").ok()?;
     let pool = sqlx::PgPool::connect(&url).await.ok()?;
     let store = PostgresStore::new(pool);
+    store.ensure_schema().await.ok()?;
+    Some(store)
+}
+
+async fn make_prefixed_store(prefix: &str) -> Option<PostgresStore> {
+    let url = std::env::var("DATABASE_URL").ok()?;
+    let pool = sqlx::PgPool::connect(&url).await.ok()?;
+    let unique = format!(
+        "{}_{}_{}",
+        prefix,
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_millis()
+    );
+    let store = PostgresStore::with_prefix(pool, &unique);
     store.ensure_schema().await.ok()?;
     Some(store)
 }
@@ -257,4 +279,153 @@ async fn auto_initializes_schema() {
     // First access should auto-create tables
     let loaded = store.load_thread("nonexistent").await.unwrap();
     assert!(loaded.is_none());
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via DATABASE_URL"]
+async fn config_store_round_trip() {
+    let Some(store) = make_prefixed_store("cfg_round_trip").await else {
+        return;
+    };
+
+    ConfigStore::put(
+        &store,
+        "providers",
+        "openai",
+        &json!({
+            "id": "openai",
+            "adapter": "openai",
+            "api_key": "sk-test"
+        }),
+    )
+    .await
+    .unwrap();
+    ConfigStore::put(
+        &store,
+        "providers",
+        "anthropic",
+        &json!({
+            "id": "anthropic",
+            "adapter": "anthropic"
+        }),
+    )
+    .await
+    .unwrap();
+
+    let stored = ConfigStore::get(&store, "providers", "openai")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored["adapter"], "openai");
+
+    let listed = ConfigStore::list(&store, "providers", 0, 10).await.unwrap();
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0].0, "anthropic");
+    assert_eq!(listed[0].1["id"], "anthropic");
+    assert_eq!(listed[1].0, "openai");
+    assert_eq!(listed[1].1["id"], "openai");
+
+    let paged = ConfigStore::list(&store, "providers", 1, 1).await.unwrap();
+    assert_eq!(paged.len(), 1);
+    assert_eq!(paged[0].0, "openai");
+
+    ConfigStore::delete(&store, "providers", "openai")
+        .await
+        .unwrap();
+    ConfigStore::delete(&store, "providers", "anthropic")
+        .await
+        .unwrap();
+    assert!(
+        ConfigStore::get(&store, "providers", "openai")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via DATABASE_URL"]
+async fn config_store_large_limit_is_clamped() {
+    let Some(store) = make_prefixed_store("cfg_large_limit").await else {
+        return;
+    };
+
+    ConfigStore::put(
+        &store,
+        "providers",
+        "alpha",
+        &json!({
+            "id": "alpha",
+            "adapter": "openai"
+        }),
+    )
+    .await
+    .unwrap();
+
+    let listed = ConfigStore::list(&store, "providers", 0, usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].0, "alpha");
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via DATABASE_URL"]
+async fn config_store_emits_notify_events() {
+    let Some(store) = make_prefixed_store("cfg_notify").await else {
+        return;
+    };
+    let mut subscriber = store.subscribe().await.unwrap();
+
+    ConfigStore::put(
+        &store,
+        "mcp-servers",
+        "notify",
+        &json!({
+            "id": "notify",
+            "transport": "stdio",
+            "command": "notify-mcp"
+        }),
+    )
+    .await
+    .unwrap();
+
+    let put_event = timeout(Duration::from_secs(2), subscriber.next())
+        .await
+        .expect("timed out waiting for put notification")
+        .unwrap();
+    assert_eq!(put_event.namespace, "mcp-servers");
+    assert_eq!(put_event.id, "notify");
+    assert_eq!(put_event.kind, ConfigChangeKind::Put);
+
+    ConfigStore::delete(&store, "mcp-servers", "notify")
+        .await
+        .unwrap();
+
+    let delete_event = timeout(Duration::from_secs(2), subscriber.next())
+        .await
+        .expect("timed out waiting for delete notification")
+        .unwrap();
+    assert_eq!(delete_event.namespace, "mcp-servers");
+    assert_eq!(delete_event.id, "notify");
+    assert_eq!(delete_event.kind, ConfigChangeKind::Delete);
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via DATABASE_URL"]
+async fn deleting_missing_config_does_not_emit_notify_event() {
+    let Some(store) = make_prefixed_store("cfg_missing_delete").await else {
+        return;
+    };
+    let mut subscriber = store.subscribe().await.unwrap();
+
+    ConfigStore::delete(&store, "mcp-servers", "missing")
+        .await
+        .unwrap();
+
+    let result = timeout(Duration::from_millis(250), subscriber.next()).await;
+    assert!(
+        result.is_err(),
+        "deleting a missing config entry should not emit a notify event"
+    );
 }

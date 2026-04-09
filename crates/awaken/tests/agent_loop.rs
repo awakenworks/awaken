@@ -5230,11 +5230,13 @@ async fn mixed_suspended_and_completed_tools() {
         "dangerous tool should be suspended"
     );
 
-    // calc (c3) should NOT have executed (sequential executor stops after suspension)
-    assert!(
-        !tc_states.calls.contains_key("c3"),
-        "calc tool should not have executed after suspension, but got: {:?}",
-        tc_states.calls.get("c3")
+    // calc (c3) should not execute, but it should be backfilled with an
+    // interrupted failed result so the assistant tool-call batch stays
+    // structurally complete in message/state history.
+    assert_eq!(
+        tc_states.calls["c3"].status,
+        ToolCallStatus::Failed,
+        "later tools after a suspension should be backfilled as interrupted"
     );
 
     // Verify events
@@ -5255,6 +5257,15 @@ async fn mixed_suspended_and_completed_tools() {
             Some((_, awaken::contract::suspension::ToolCallOutcome::Succeeded))
         ),
         "echo should emit Succeeded ToolCallDone"
+    );
+
+    let calc_outcome = tool_done_events.iter().find(|(id, _)| id == "c3");
+    assert!(
+        matches!(
+            calc_outcome,
+            Some((_, awaken::contract::suspension::ToolCallOutcome::Failed))
+        ),
+        "later calc tool should be backfilled as Failed instead of being silently dropped"
     );
 }
 

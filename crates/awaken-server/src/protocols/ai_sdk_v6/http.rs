@@ -17,14 +17,20 @@ use futures::StreamExt;
 use serde_json::{Value, json};
 
 use awaken_contract::contract::content::{ContentBlock, extract_text};
+use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::message::{Message, Role, ToolCall};
+use awaken_contract::registry_spec::AgentSpec;
 
 use crate::app::AppState;
 use crate::http_run::wire_sse_relay;
 use crate::http_sse::{sse_body_stream, sse_response};
-use crate::routes::ApiError;
+use crate::routes::{ApiError, map_mailbox_error};
+use crate::transport::channel_sink::BoundedChannelEventSink;
 use crate::transport::replay_buffer::EventReplayBuffer;
 use awaken_runtime::RunRequest;
+use awaken_runtime::registry::resolve::RegistrySetResolver;
+use awaken_runtime::registry::{AgentSpecRegistry, RegistryHandle, RegistrySet};
+use awaken_runtime::{AgentResolver, AgentRuntime};
 
 use super::encoder::AiSdkEncoder;
 use super::request::{AiSdkChatRequest, ProcessedRequest};
@@ -61,6 +67,10 @@ pub fn ai_sdk_routes() -> Router<AppState> {
         .route(
             "/v1/ai-sdk/agents/:agent_id/runs",
             post(ai_sdk_chat_agent_scoped),
+        )
+        .route(
+            "/v1/ai-sdk/agent-previews/runs",
+            post(ai_sdk_chat_preview_agent),
         )
         // AI SDK reconnect: GET {api}/{chatId}/stream → chatId = thread_id
         .route("/v1/ai-sdk/chat/:thread_id/stream", get(resume_stream))
@@ -103,6 +113,116 @@ async fn ai_sdk_chat_agent_scoped(
 ) -> Result<Response, ApiError> {
     payload.agent_id = Some(agent_id);
     ai_sdk_chat_inner(st, payload).await
+}
+
+/// Draft-agent preview route:
+/// `POST /v1/ai-sdk/agent-previews/runs`
+async fn ai_sdk_chat_preview_agent(
+    State(st): State<AppState>,
+    Json(payload): Json<super::request::PreviewAgentChatRequest>,
+) -> Result<Response, ApiError> {
+    let super::request::PreviewAgentChatRequest {
+        messages,
+        thread_id,
+        state,
+        mut agent,
+    } = payload;
+
+    if agent.model.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "preview agent model cannot be empty".to_string(),
+        ));
+    }
+
+    if agent.id.trim().is_empty() {
+        agent.id = "draft-preview".to_string();
+    }
+
+    let processed = super::request::process_preview_chat_request(messages, thread_id, state)
+        .map_err(ApiError::BadRequest)?;
+    let candidate = build_preview_registry_set(&st, &agent)?;
+    let preview_runtime = Arc::new(
+        AgentRuntime::new(Arc::new(RegistrySetResolver::new(candidate.clone())))
+            .with_registry_handle(RegistryHandle::new(candidate)),
+    );
+
+    let mut request = RunRequest::new(
+        processed.thread_id,
+        crate::request::inject_frontend_context(processed.messages, processed.state),
+    )
+    .with_agent_id(agent.id);
+    if !processed.decisions.is_empty() {
+        request = request.with_decisions(processed.decisions);
+    }
+
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(st.config.sse_buffer_size.max(32));
+    let sink: Arc<dyn EventSink> = Arc::new(BoundedChannelEventSink::new(event_tx));
+    tokio::spawn(async move {
+        let _ = preview_runtime.run(request, sink).await;
+    });
+
+    let encoder = AiSdkEncoder::new();
+    let sse_rx = wire_sse_relay(event_rx, encoder, st.config.sse_buffer_size, None);
+    Ok(ai_sdk_sse_response(sse_body_stream(sse_rx)))
+}
+
+#[derive(Clone)]
+struct PreviewAgentRegistry {
+    preview: AgentSpec,
+    fallback: Arc<dyn AgentSpecRegistry>,
+}
+
+impl PreviewAgentRegistry {
+    fn new(preview: AgentSpec, fallback: Arc<dyn AgentSpecRegistry>) -> Self {
+        Self { preview, fallback }
+    }
+}
+
+impl AgentSpecRegistry for PreviewAgentRegistry {
+    fn get_agent(&self, id: &str) -> Option<AgentSpec> {
+        if id == self.preview.id {
+            Some(self.preview.clone())
+        } else {
+            self.fallback.get_agent(id)
+        }
+    }
+
+    fn agent_ids(&self) -> Vec<String> {
+        let mut ids = self.fallback.agent_ids();
+        if !ids.iter().any(|id| id == &self.preview.id) {
+            ids.push(self.preview.id.clone());
+        }
+        ids
+    }
+}
+
+fn build_preview_registry_set(st: &AppState, agent: &AgentSpec) -> Result<RegistrySet, ApiError> {
+    let current = st
+        .runtime
+        .registry_set()
+        .ok_or_else(|| ApiError::Internal("runtime does not expose a registry snapshot".into()))?;
+
+    let candidate = RegistrySet {
+        agents: Arc::new(PreviewAgentRegistry::new(
+            agent.clone(),
+            current.agents.clone(),
+        )),
+        tools: current.tools.clone(),
+        models: current.models.clone(),
+        providers: current.providers.clone(),
+        plugins: current.plugins.clone(),
+        backends: current.backends.clone(),
+    };
+
+    if agent.endpoint.is_none() {
+        RegistrySetResolver::new(candidate.clone())
+            .resolve(&agent.id)
+            .map_err(|error| {
+                ApiError::BadRequest(format!("invalid preview agent '{}': {error}", agent.id))
+            })?;
+    }
+
+    Ok(candidate)
 }
 
 // ── Core chat handler ───────────────────────────────────────────────
@@ -170,7 +290,7 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
                     st_cleanup.remove_replay_buffer(&tid);
                 });
 
-                return Ok(sse_response(sse_body_stream(final_rx)));
+                return Ok(ai_sdk_sse_response(sse_body_stream(final_rx)));
             }
         }
         // If reconnect or decision delivery failed, fall through.
@@ -181,7 +301,7 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
         let (_, rx) = tokio::sync::mpsc::channel(1);
         let encoder = AiSdkEncoder::new();
         let sse_rx = crate::http_run::wire_sse_relay(rx, encoder, st.config.sse_buffer_size, None);
-        return Ok(sse_response(sse_body_stream(sse_rx)));
+        return Ok(ai_sdk_sse_response(sse_body_stream(sse_rx)));
     }
 
     let messages = crate::request::inject_frontend_context(messages, state);
@@ -197,7 +317,7 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
         .mailbox
         .submit(request)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+        .map_err(map_mailbox_error)?;
 
     let replay_buffer = Arc::new(EventReplayBuffer::new(st.config.replay_buffer_capacity));
 
@@ -313,22 +433,17 @@ async fn thread_messages(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .unwrap_or_default();
-
-    let offset = params.offset_or_default();
-    let limit = params.clamped_limit();
+    let messages = params.filter_messages(messages);
     let encoded_messages = encode_history_messages(messages);
-    let total = encoded_messages.len();
-
-    let encoded = encoded_messages
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .collect::<Vec<_>>();
+    let page = params
+        .paginate(encoded_messages)
+        .map_err(ApiError::BadRequest)?;
 
     Ok(Json(serde_json::json!({
-        "messages": encoded,
-        "total": total,
-        "has_more": offset + encoded.len() < total,
+        "messages": page.items,
+        "total": page.total,
+        "has_more": page.has_more,
+        "next_cursor": page.next_cursor,
     })))
 }
 
@@ -562,7 +677,20 @@ fn is_finish_step_frame(frame: &Bytes) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::stream;
     use serde_json::json;
+
+    #[test]
+    fn ai_sdk_sse_response_sets_transport_header() {
+        let response = ai_sdk_sse_response(stream::empty());
+        assert_eq!(
+            response
+                .headers()
+                .get(AI_SDK_STREAM_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some(AI_SDK_STREAM_VERSION)
+        );
+    }
 
     #[test]
     fn detects_suspended_finish_frame() {

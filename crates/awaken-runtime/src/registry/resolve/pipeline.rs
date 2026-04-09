@@ -11,6 +11,7 @@ use crate::registry::{AgentResolver, ResolvedAgent};
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::tool::Tool;
 
+use crate::registry::snapshot::RegistryHandle;
 use crate::registry::traits::RegistrySet;
 use awaken_contract::registry_spec::AgentSpec;
 
@@ -45,7 +46,10 @@ pub(crate) fn inject_default_plugins(
 /// 1. **Lookup** — fetch spec, model, executor from registries.
 /// 2. **Plugin pipeline** — resolve plugins, inject defaults, validate config.
 /// 3. **Tool pipeline** — collect global + delegate + plugin tools, filter.
-fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedAgent, ResolveError> {
+pub(crate) fn resolve_registry_set(
+    registries: &RegistrySet,
+    agent_id: &str,
+) -> Result<ResolvedAgent, ResolveError> {
     // Stage 1: Lookup
     let spec = lookup_spec(registries, agent_id)?;
     let (executor, model_name) = resolve_model_and_executor(registries, &spec)?;
@@ -69,6 +73,11 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedAgent, Re
         context_summarizer: None,
         env,
     })
+}
+
+#[cfg(test)]
+fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedAgent, ResolveError> {
+    resolve_registry_set(registries, agent_id)
 }
 
 // ---------------------------------------------------------------------------
@@ -256,29 +265,58 @@ fn resolve_delegate_tools(
 // AgentResolver implementation
 // ---------------------------------------------------------------------------
 
-/// Resolver that bridges `RegistrySet` into `AgentResolver`.
+/// Resolver that bridges a fixed `RegistrySet` into `AgentResolver`.
 ///
 /// Separates the registry aggregation concern (`RegistrySet`) from the
 /// resolution logic. `RegistrySet` stays a pure data container.
-pub(crate) struct RegistrySetResolver {
+pub struct RegistrySetResolver {
     registries: RegistrySet,
 }
 
 impl RegistrySetResolver {
-    pub(crate) fn new(registries: RegistrySet) -> Self {
+    pub fn new(registries: RegistrySet) -> Self {
         Self { registries }
     }
 }
 
 impl AgentResolver for RegistrySetResolver {
     fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, RuntimeError> {
-        resolve(&self.registries, agent_id).map_err(|e| RuntimeError::ResolveFailed {
+        resolve_registry_set(&self.registries, agent_id).map_err(|e| RuntimeError::ResolveFailed {
             message: e.to_string(),
         })
     }
 
     fn agent_ids(&self) -> Vec<String> {
         self.registries.agents.agent_ids()
+    }
+}
+
+/// Resolver backed by a versioned registry handle.
+///
+/// Each call resolves against the current published registry snapshot,
+/// allowing callers to swap registry contents without replacing the runtime.
+pub(crate) struct DynamicRegistryResolver {
+    handle: RegistryHandle,
+}
+
+impl DynamicRegistryResolver {
+    pub(crate) fn new(handle: RegistryHandle) -> Self {
+        Self { handle }
+    }
+}
+
+impl AgentResolver for DynamicRegistryResolver {
+    fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, RuntimeError> {
+        let snapshot = self.handle.snapshot();
+        resolve_registry_set(snapshot.registries(), agent_id).map_err(|e| {
+            RuntimeError::ResolveFailed {
+                message: e.to_string(),
+            }
+        })
+    }
+
+    fn agent_ids(&self) -> Vec<String> {
+        self.handle.snapshot().registries().agents.agent_ids()
     }
 }
 

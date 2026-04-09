@@ -36,7 +36,10 @@ pub use model::{
 };
 
 // ── registry spec (AgentSpec, PluginConfigKey) ──
-pub use registry_spec::{AgentSpec, PluginConfigKey};
+pub use registry_spec::{
+    AgentSpec, McpRestartPolicy, McpServerSpec, McpTransportKind, ModelSpec, PluginConfigKey,
+    ProviderSpec,
+};
 
 // ── state ──
 pub use state::{
@@ -55,6 +58,9 @@ pub use contract::mailbox::{
 };
 
 // ── profile store ──
+pub use contract::config_store::{
+    ConfigChangeEvent, ConfigChangeKind, ConfigChangeNotifier, ConfigChangeSubscriber, ConfigStore,
+};
 pub use contract::profile_store::{ProfileEntry, ProfileKey, ProfileOwner, ProfileStore};
 
 // ── shared state ──

@@ -6,7 +6,7 @@ import {
 } from "./protocol";
 
 const BACKEND_URL =
-  import.meta.env.VITE_BACKEND_URL ?? "http://localhost:38080";
+  import.meta.env.VITE_BACKEND_URL ?? "http://127.0.0.1:38080";
 
 export function chatApiUrl(agentId: string): string {
   return `${BACKEND_URL}/v1/ai-sdk/agents/${agentId}/runs`;

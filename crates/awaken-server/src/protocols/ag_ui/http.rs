@@ -13,7 +13,7 @@ use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume
 use crate::app::AppState;
 use crate::http_run::wire_sse_relay;
 use crate::http_sse::{sse_body_stream, sse_response};
-use crate::routes::ApiError;
+use crate::routes::{ApiError, map_mailbox_error};
 use awaken_runtime::RunRequest;
 
 use super::encoder::AgUiEncoder;
@@ -315,7 +315,7 @@ async fn ag_ui_run_inner(st: AppState, payload: AgUiRunRequest) -> Result<Respon
         .mailbox
         .submit(request)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+        .map_err(map_mailbox_error)?;
 
     let encoder = AgUiEncoder::new();
     let sse_rx = wire_sse_relay(event_rx, encoder, st.config.sse_buffer_size, None);
@@ -334,15 +334,12 @@ async fn thread_messages(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .unwrap_or_default();
+    let messages = params.filter_messages(messages);
+    let page = params.paginate(messages).map_err(ApiError::BadRequest)?;
 
-    let offset = params.offset_or_default();
-    let limit = params.clamped_limit();
-    let total = messages.len();
-
-    let encoded: Vec<Value> = messages
+    let encoded: Vec<Value> = page
+        .items
         .into_iter()
-        .skip(offset)
-        .take(limit)
         .map(|m| {
             let role = match m.role {
                 awaken_contract::contract::message::Role::System => Role::System,
@@ -360,8 +357,9 @@ async fn thread_messages(
 
     Ok(Json(serde_json::json!({
         "messages": encoded,
-        "total": total,
-        "has_more": offset + encoded.len() < total,
+        "total": page.total,
+        "has_more": page.has_more,
+        "next_cursor": page.next_cursor,
     })))
 }
 

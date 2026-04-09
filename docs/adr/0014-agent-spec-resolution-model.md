@@ -7,7 +7,7 @@
 
 ## Context
 
-ADR-0004 introduced `ConfigStore` with live configuration resolution at every execution boundary. ADR-0009 refined this with `AgentProfile` and per-phase boundary resolution. In practice, the implementation converged on a simpler model: a data-only `AgentSpec` resolved once at run start, with re-resolution only on handoff. There is no `ConfigStore`, no `AgentProfile`, and no per-phase live resolution.
+ADR-0004 introduced `ConfigStore` with live configuration resolution at every execution boundary. ADR-0009 refined this with `AgentProfile` and per-phase boundary resolution. In practice, the implementation converged on a simpler model: a data-only `AgentSpec` resolved once at run start, with re-resolution only on handoff. A persisted `ConfigStore` may exist for configuration management APIs, but runtime execution does not resolve from live config sources at every phase boundary.
 
 ## Decision
 
@@ -17,19 +17,20 @@ ADR-0004 introduced `ConfigStore` with live configuration resolution at every ex
 
 ### D2: Resolve once at run start
 
-`AgentSpec` is resolved once when a run begins. `PhaseContext` receives `Arc<AgentSpec>` for the duration of the run. Plugins read `ctx.agent_spec` for configuration values.
+When a run begins, the runtime binds the current registry snapshot and resolves the initial `AgentSpec` from that snapshot. `PhaseContext` receives `Arc<AgentSpec>` for the duration of the run. Plugins read `ctx.agent_spec` for configuration values.
 
 ### D3: Re-resolve at step boundaries on handoff
 
 Re-resolution occurs at step boundaries only when `ActiveAgentIdKey` indicates the active agent has changed (handoff). The loop runner checks the state key after each step completes. If the agent id differs, the new `AgentSpec` is resolved from the registry before the next step begins. No re-resolution occurs at `BeforeInference`, `BeforeToolExecute`, or other mid-step phases.
 
-### D4: No ConfigStore or live config resolution
+### D4: No per-phase live config resolution
 
-There is no `ConfigStore`, no `ConfigSlot`, no `ConfigMap`. Configuration is not resolved from multiple live sources at every boundary. Dynamic config changes require either a handoff (agent switch) or a new run.
+A persisted `ConfigStore` may exist to hold serializable `AgentSpec` / `ModelSpec` / `ProviderSpec` / `McpServerSpec` documents, but runtime execution does not query it directly at every boundary. Config changes are compiled into versioned registry snapshots; new runs see the latest published snapshot, while active runs and in-flight steps keep their pinned snapshot. Dynamic config changes still require either a handoff (agent switch) or a new run to observe different agent specs.
 
 ## Consequences
 
 - Plugins access configuration via `ctx.agent_spec` — a single, consistent snapshot for the entire step.
+- Config management APIs can persist new specs and publish a new registry snapshot without changing the per-step execution model.
 - Dynamic configuration changes mid-step are not possible; this simplifies reasoning about what config is active.
 - Handoff remains the mechanism for switching agent configuration without resetting runtime state.
 - The `AgentRegistry` stores named `AgentSpec` definitions for lookup during resolution.

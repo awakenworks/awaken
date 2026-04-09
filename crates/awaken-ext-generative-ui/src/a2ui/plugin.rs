@@ -11,7 +11,7 @@ use awaken_contract::model::Phase;
 use awaken_contract::registry_spec::AgentSpec;
 
 use awaken_runtime::agent::state::AddContextMessage;
-use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
+use awaken_runtime::plugins::{ConfigSchema, Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::state::MutationBatch;
 use awaken_runtime::{PhaseContext, PhaseHook, StateCommand};
 
@@ -205,6 +205,14 @@ impl Plugin for A2uiPlugin {
         )?;
         registrar.register_tool(A2UI_TOOL_ID, Arc::new(A2uiRenderTool::new()))?;
         Ok(())
+    }
+
+    fn config_schemas(&self) -> Vec<ConfigSchema> {
+        vec![ConfigSchema {
+            key: A2uiPromptConfigKey::KEY,
+            json_schema: serde_json::to_value(schemars::schema_for!(A2uiPromptConfig))
+                .unwrap_or_default(),
+        }]
     }
 
     fn on_activate(

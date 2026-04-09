@@ -172,6 +172,12 @@ async fn turn3_with_provider_executed_history_returns_non_empty_response() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get("x-vercel-ai-ui-message-stream")
+            .and_then(|value| value.to_str().ok()),
+        Some("v1")
+    );
 
     let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
     let body_str = String::from_utf8_lossy(&body);
@@ -234,12 +240,70 @@ async fn plain_multi_turn_without_tools_returns_non_empty_response() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get("x-vercel-ai-ui-message-stream")
+            .and_then(|value| value.to_str().ok()),
+        Some("v1")
+    );
 
     let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
     assert!(
         body.len() > 10,
         "Plain multi-turn response should not be empty (got {} bytes)",
         body.len(),
+    );
+}
+
+/// Resume-only requests without an active suspended run should still return the
+/// AI SDK stream header so `DefaultChatTransport` can classify the empty stream.
+#[tokio::test]
+async fn resume_only_without_active_run_sets_ai_sdk_stream_header() {
+    let app = make_app();
+
+    let payload = json!({
+        "threadId": "thread-resume-only",
+        "messages": [
+            {
+                "id": "msg-assistant",
+                "role": "assistant",
+                "parts": [
+                    {
+                        "type": "tool-confirm",
+                        "toolCallId": "call-1",
+                        "toolName": "confirm",
+                        "state": "output-available",
+                        "output": { "approved": true }
+                    }
+                ]
+            }
+        ]
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ai-sdk/chat")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get("x-vercel-ai-ui-message-stream")
+            .and_then(|value| value.to_str().ok()),
+        Some("v1")
+    );
+
+    let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    assert!(
+        body.is_empty(),
+        "resume-only path without an active run should return an empty SSE body"
     );
 }
 

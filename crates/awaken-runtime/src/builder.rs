@@ -18,6 +18,7 @@ use crate::registry::memory::MapBackendRegistry;
 use crate::registry::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,
 };
+use crate::registry::snapshot::RegistryHandle;
 use crate::registry::traits::{AgentSpecRegistry, ModelEntry, RegistrySet};
 use crate::runtime::AgentRuntime;
 
@@ -237,11 +238,12 @@ impl AgentRuntimeBuilder {
             backends: Arc::new(self.backends) as Arc<dyn BackendRegistry>,
         };
 
+        let registry_handle = RegistryHandle::new(registry_set.clone());
         let resolver: Arc<dyn crate::registry::AgentResolver> = Arc::new(
-            crate::registry::resolve::RegistrySetResolver::new(registry_set),
+            crate::registry::resolve::DynamicRegistryResolver::new(registry_handle.clone()),
         );
 
-        let mut runtime = AgentRuntime::new(resolver);
+        let mut runtime = AgentRuntime::new(resolver).with_registry_handle(registry_handle);
 
         #[cfg(feature = "a2a")]
         if let Some(composite) = composite_registry {
@@ -287,6 +289,11 @@ mod tests {
     };
     use serde_json::Value;
 
+    use crate::registry::memory::{
+        MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry,
+        MapToolRegistry,
+    };
+
     struct MockTool {
         id: String,
     }
@@ -325,6 +332,43 @@ mod tests {
 
         fn name(&self) -> &str {
             "mock"
+        }
+    }
+
+    fn make_registry_set(agent_id: &str, model_id: &str, model_name: &str) -> RegistrySet {
+        let mut agents = MapAgentSpecRegistry::new();
+        agents
+            .register_spec(AgentSpec {
+                id: agent_id.into(),
+                model: model_id.into(),
+                system_prompt: format!("system-{agent_id}"),
+                ..Default::default()
+            })
+            .expect("register test agent");
+
+        let mut models = MapModelRegistry::new();
+        models
+            .register_model(
+                model_id,
+                ModelEntry {
+                    provider: "mock".into(),
+                    model_name: model_name.into(),
+                },
+            )
+            .expect("register test model");
+
+        let mut providers = MapProviderRegistry::new();
+        providers
+            .register_provider("mock", Arc::new(MockExecutor))
+            .expect("register test provider");
+
+        RegistrySet {
+            agents: Arc::new(agents),
+            tools: Arc::new(MapToolRegistry::new()),
+            models: Arc::new(models),
+            providers: Arc::new(providers),
+            plugins: Arc::new(MapPluginSource::new()),
+            backends: Arc::new(MapBackendRegistry::new()),
         }
     }
 
@@ -553,6 +597,66 @@ mod tests {
             .build();
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn builder_runtime_starts_with_registry_version_one() {
+        let runtime = AgentRuntimeBuilder::new()
+            .with_agent_spec(AgentSpec {
+                id: "versioned-agent".into(),
+                model: "m".into(),
+                system_prompt: "sys".into(),
+                ..Default::default()
+            })
+            .with_model(
+                "m",
+                ModelEntry {
+                    provider: "mock".into(),
+                    model_name: "model-v1".into(),
+                },
+            )
+            .with_provider("mock", Arc::new(MockExecutor))
+            .build()
+            .unwrap();
+
+        assert_eq!(runtime.registry_version(), Some(1));
+        assert!(runtime.registry_handle().is_some());
+    }
+
+    #[test]
+    fn replacing_registry_set_updates_dynamic_resolver() {
+        let runtime = AgentRuntimeBuilder::new()
+            .with_agent_spec(AgentSpec {
+                id: "agent-v1".into(),
+                model: "m".into(),
+                system_prompt: "sys".into(),
+                ..Default::default()
+            })
+            .with_model(
+                "m",
+                ModelEntry {
+                    provider: "mock".into(),
+                    model_name: "model-v1".into(),
+                },
+            )
+            .with_provider("mock", Arc::new(MockExecutor))
+            .build()
+            .unwrap();
+
+        assert!(runtime.resolver().resolve("agent-v1").is_ok());
+        assert!(runtime.resolver().resolve("agent-v2").is_err());
+
+        let version = runtime
+            .replace_registry_set(make_registry_set("agent-v2", "m2", "model-v2"))
+            .expect("builder runtimes should expose a registry handle");
+
+        assert_eq!(version, 2);
+        assert_eq!(runtime.registry_version(), Some(2));
+        assert!(runtime.resolver().resolve("agent-v1").is_err());
+
+        let resolved = runtime.resolver().resolve("agent-v2").unwrap();
+        assert_eq!(resolved.id(), "agent-v2");
+        assert_eq!(resolved.model, "model-v2");
     }
 
     #[test]

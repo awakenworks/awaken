@@ -959,6 +959,58 @@ fn multiple_tool_calls_correct_sequence() {
     assert_eq!(outputs, vec!["c1", "c2"]);
 }
 
+#[test]
+fn mixed_same_step_tool_results_preserve_order() {
+    let mut enc = make_encoder_with_run("t1", "r1");
+    let mut all = Vec::new();
+
+    all.extend(enc.on_agent_event(&AgentEvent::ToolCallStart {
+        id: "c1".into(),
+        name: "get_weather".into(),
+    }));
+    all.extend(enc.on_agent_event(&AgentEvent::ToolCallReady {
+        id: "c1".into(),
+        name: "get_weather".into(),
+        arguments: json!({"location": "Tokyo"}),
+    }));
+    all.extend(enc.on_agent_event(&AgentEvent::ToolCallDone {
+        id: "c1".into(),
+        message_id: "m1".into(),
+        result: ToolResult::success("get_weather", json!({"temp": 25})),
+        outcome: ToolCallOutcome::Succeeded,
+    }));
+
+    all.extend(enc.on_agent_event(&AgentEvent::ToolCallStart {
+        id: "c2".into(),
+        name: "dangerous_tool".into(),
+    }));
+    all.extend(enc.on_agent_event(&AgentEvent::ToolCallReady {
+        id: "c2".into(),
+        name: "dangerous_tool".into(),
+        arguments: json!({}),
+    }));
+    all.extend(enc.on_agent_event(&AgentEvent::ToolCallDone {
+        id: "c2".into(),
+        message_id: "m2".into(),
+        result: ToolResult::error("dangerous_tool", "permission denied"),
+        outcome: ToolCallOutcome::Failed,
+    }));
+
+    let outputs: Vec<_> = all
+        .iter()
+        .filter_map(|event| match event {
+            UIStreamEvent::ToolOutputAvailable { tool_call_id, .. } => {
+                Some((tool_call_id.as_str(), "available"))
+            }
+            UIStreamEvent::ToolOutputError { tool_call_id, .. } => {
+                Some((tool_call_id.as_str(), "error"))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(outputs, vec![("c1", "available"), ("c2", "error")]);
+}
+
 // 6.
 #[test]
 fn failed_tool_produces_error_result() {
