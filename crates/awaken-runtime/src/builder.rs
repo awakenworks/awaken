@@ -8,6 +8,7 @@ use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::AgentSpec;
 
+use crate::backend::ExecutionBackendFactory;
 use crate::plugins::Plugin;
 #[cfg(feature = "a2a")]
 use crate::registry::BackendRegistry;
@@ -172,10 +173,7 @@ impl AgentRuntimeBuilder {
 
     /// Register a remote delegate backend factory by its backend kind.
     #[cfg(feature = "a2a")]
-    pub fn with_agent_backend_factory(
-        mut self,
-        factory: Arc<dyn crate::extensions::a2a::AgentBackendFactory>,
-    ) -> Self {
+    pub fn with_agent_backend_factory(mut self, factory: Arc<dyn ExecutionBackendFactory>) -> Self {
         if let Err(e) = self.backends.register_backend_factory(factory) {
             self.errors.push(e);
         }
@@ -192,32 +190,25 @@ impl AgentRuntimeBuilder {
         let runtime = self.build_unchecked()?;
         let resolver = runtime.resolver();
         #[cfg(feature = "a2a")]
+        let execution_resolver = runtime.execution_resolver();
+        #[cfg(feature = "a2a")]
         let registries = runtime.registry_set();
         let mut errors = Vec::new();
         for agent_id in resolver.agent_ids() {
             #[cfg(feature = "a2a")]
-            if let Some(spec) = registries
-                .as_ref()
-                .and_then(|set| set.agents.get_agent(&agent_id))
-                && let Some(endpoint) = spec.endpoint.as_ref()
             {
-                match registries
-                    .as_ref()
-                    .and_then(|set| set.backends.get_backend_factory(&endpoint.backend))
-                {
-                    Some(factory) => {
-                        if let Err(error) = factory.build(endpoint) {
-                            errors.push(format!(
-                                "{agent_id}: invalid remote endpoint config: {error}"
-                            ));
-                        }
-                    }
-                    None => errors.push(format!(
-                        "{agent_id}: unsupported remote backend '{}'",
-                        endpoint.backend
-                    )),
+                if let Err(error) = execution_resolver.resolve_execution(&agent_id) {
+                    errors.push(format!("{agent_id}: {error}"));
+                    continue;
                 }
-                continue;
+
+                if let Some(spec) = registries
+                    .as_ref()
+                    .and_then(|set| set.agents.get_agent(&agent_id))
+                    && spec.endpoint.is_some()
+                {
+                    continue;
+                }
             }
 
             if let Err(e) = resolver.resolve(&agent_id) {
@@ -266,11 +257,12 @@ impl AgentRuntimeBuilder {
         };
 
         let registry_handle = RegistryHandle::new(registry_set.clone());
-        let resolver: Arc<dyn crate::registry::AgentResolver> = Arc::new(
+        let resolver: Arc<dyn crate::registry::ExecutionResolver> = Arc::new(
             crate::registry::resolve::DynamicRegistryResolver::new(registry_handle.clone()),
         );
 
-        let mut runtime = AgentRuntime::new(resolver).with_registry_handle(registry_handle);
+        let mut runtime = AgentRuntime::new_with_execution_resolver(resolver)
+            .with_registry_handle(registry_handle);
 
         #[cfg(feature = "a2a")]
         if let Some(composite) = composite_registry {

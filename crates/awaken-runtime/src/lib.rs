@@ -8,6 +8,7 @@
 #![allow(missing_docs)]
 
 pub mod agent;
+pub mod backend;
 pub mod builder;
 pub(crate) mod cancellation;
 pub mod context;
@@ -33,12 +34,17 @@ pub use awaken_contract::{CancellationHandle, CancellationToken};
 pub use error::RuntimeError;
 pub use profile::ProfileAccess;
 
+pub use backend::{
+    BackendControl, BackendParentContext, BackendRunRequest, BackendRunResult, BackendRunStatus,
+    ExecutionBackend, ExecutionBackendError, ExecutionBackendFactory, ExecutionBackendFactoryError,
+    LocalBackend,
+};
 pub use builder::{AgentRuntimeBuilder, BuildError};
 pub use phase::{
     DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv, PhaseContext, PhaseHook, PhaseRuntime,
     TypedEffectHandler, TypedScheduledActionHandler,
 };
 pub use plugins::{Plugin, PluginDescriptor, PluginRegistrar};
-pub use registry::{AgentResolver, ResolvedAgent};
+pub use registry::{AgentResolver, ExecutionResolver, ResolvedAgent, ResolvedExecution};
 pub use runtime::{AgentRuntime, RunRequest};
 pub use state::{CommitEvent, CommitHook, MutationBatch, StateCommand, StateStore};

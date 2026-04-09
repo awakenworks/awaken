@@ -2,29 +2,23 @@
 
 use std::sync::Arc;
 
-#[cfg(feature = "a2a")]
-use crate::extensions::a2a::{
-    AgentBackend, AgentBackendError, DelegateRunResult, DelegateRunStatus,
+use crate::backend::{
+    BackendControl, BackendRunRequest, BackendRunResult, BackendRunStatus, ExecutionBackendError,
 };
 use crate::loop_runner::{
     AgentLoopError, AgentLoopParams, AgentRunResult, prepare_resume, run_agent_loop,
 };
-use crate::registry::AgentResolver;
-#[cfg(feature = "a2a")]
-use crate::registry::RegistrySet;
+use crate::registry::{AgentResolver, ExecutionResolver, ResolvedBackendAgent, ResolvedExecution};
 use awaken_contract::contract::active_agent::ActiveAgentIdKey;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-#[cfg(feature = "a2a")]
 use awaken_contract::contract::message::gen_message_id;
 use awaken_contract::contract::message::{Message, Role, Visibility};
 use awaken_contract::contract::storage::{RunRecord, ThreadRunStore};
 use awaken_contract::contract::suspension::ToolCallStatus;
 use awaken_contract::now_ms;
-#[cfg(feature = "a2a")]
-use awaken_contract::registry_spec::AgentSpec;
 use awaken_contract::state::PersistedState;
 use serde_json::{Value, json};
 
@@ -81,18 +75,23 @@ impl AgentRuntime {
             run_inbox,
         } = request;
         let agent_id = self.resolve_agent_id(agent_id, &thread_id).await?;
-        #[cfg(feature = "a2a")]
-        let registry_set = self.registry_set();
+        let run_resolver: Arc<dyn ExecutionResolver> =
+            if let Some(snapshot) = self.registry_snapshot() {
+                Arc::new(crate::registry::resolve::RegistrySetResolver::new(
+                    snapshot.into_registries(),
+                ))
+            } else {
+                self.execution_resolver_arc()
+            };
+        let resolved_execution = run_resolver
+            .resolve_execution(&agent_id)
+            .map_err(AgentLoopError::RuntimeError)?;
 
-        #[cfg(feature = "a2a")]
-        if let Some(ref registries) = registry_set
-            && let Some(spec) = registries.agents.get_agent(&agent_id)
-            && spec.endpoint.is_some()
-        {
+        if let ResolvedExecution::NonLocal(non_local) = resolved_execution {
             return self
-                .run_non_local_endpoint(
-                    registries.clone(),
-                    spec,
+                .run_non_local_execution(
+                    run_resolver.as_ref(),
+                    non_local,
                     agent_id,
                     request_messages,
                     thread_id,
@@ -104,14 +103,8 @@ impl AgentRuntime {
                 )
                 .await;
         }
-
-        let run_resolver: Arc<dyn AgentResolver> = if let Some(snapshot) = self.registry_snapshot()
-        {
-            Arc::new(crate::registry::resolve::RegistrySetResolver::new(
-                snapshot.into_registries(),
-            ))
-        } else {
-            self.resolver_arc()
+        let ResolvedExecution::Local(preflight_resolved) = resolved_execution else {
+            unreachable!("non-local execution returned from local branch")
         };
 
         // Create runtime infrastructure
@@ -128,9 +121,6 @@ impl AgentRuntime {
 
         // Preflight resolve to register plugin-declared keys before restoring persisted state.
         // Without this, thread-scoped keys may be skipped as unknown during restore.
-        let preflight_resolved = run_resolver
-            .resolve(&agent_id)
-            .map_err(AgentLoopError::RuntimeError)?;
         let preflight_key_registrations = preflight_resolved.env.key_registrations.clone();
         if !preflight_key_registrations.is_empty() {
             store
@@ -232,7 +222,6 @@ impl AgentRuntime {
             run_id: run_id.clone(),
         };
 
-        // Execute the loop
         run_agent_loop(AgentLoopParams {
             resolver: run_resolver.as_ref(),
             agent_id: &agent_id,
@@ -251,12 +240,11 @@ impl AgentRuntime {
         .await
     }
 
-    #[cfg(feature = "a2a")]
     #[allow(clippy::too_many_arguments)]
-    async fn run_non_local_endpoint(
+    async fn run_non_local_execution(
         &self,
-        registries: RegistrySet,
-        spec: AgentSpec,
+        run_resolver: &dyn AgentResolver,
+        non_local: ResolvedBackendAgent,
         agent_id: String,
         request_messages: Vec<Message>,
         thread_id: String,
@@ -269,7 +257,6 @@ impl AgentRuntime {
         let mut messages = self
             .load_non_local_messages(&thread_id, request_messages)
             .await?;
-        let backend = build_non_local_endpoint_backend(&registries, &spec)?;
         let run_id = continue_run_id.unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
         let run_created_at = now_ms();
         let run_origin = match req_origin {
@@ -312,18 +299,29 @@ impl AgentRuntime {
         .await;
 
         let execution_started_at = now_ms();
-        let execute = backend.execute(
-            &agent_id,
-            messages.clone(),
-            Arc::clone(&sink),
-            req_parent_run_id,
-            req_parent_thread_id,
-            None,
-        );
-        tokio::pin!(execute);
+        let execute = non_local.backend.execute(BackendRunRequest {
+            agent_id: &agent_id,
+            messages: messages.clone(),
+            sink: Arc::clone(&sink),
+            resolver: run_resolver,
+            run_identity: Some(run_identity.clone()),
+            parent: None,
+            phase_runtime: None,
+            checkpoint_store: None,
+            control: BackendControl {
+                cancellation_token: Some(cancellation_token),
+                decision_rx: None,
+            },
+            overrides: None,
+            frontend_tools: Vec::new(),
+            inbox: None,
+            is_continuation: false,
+        });
 
-        let delegate_result = tokio::select! {
-            _ = cancellation_token.cancelled() => {
+        let delegate_result = match execute.await {
+            Ok(result) => result,
+            Err(error) => {
+                let termination = TerminationReason::Error(non_local_backend_error_message(error));
                 return self
                     .finish_non_local_run(
                         &thread_id,
@@ -332,36 +330,16 @@ impl AgentRuntime {
                         run_identity.parent_run_id.clone(),
                         run_created_at,
                         messages,
-                        TerminationReason::Cancelled,
+                        termination,
                         0,
                         String::new(),
                         &sink,
                     )
                     .await;
             }
-            result = &mut execute => match result {
-                Ok(result) => result,
-                Err(error) => {
-                    let termination = TerminationReason::Error(non_local_backend_error_message(&error));
-                    return self
-                        .finish_non_local_run(
-                            &thread_id,
-                            &run_id,
-                            &agent_id,
-                            run_identity.parent_run_id.clone(),
-                            run_created_at,
-                            messages,
-                            termination,
-                            0,
-                            String::new(),
-                            &sink,
-                        )
-                        .await;
-                }
-            },
         };
 
-        let (termination, response, steps) = finalize_non_local_delegate_result(delegate_result);
+        let (termination, response, steps) = finalize_non_local_delegate_result(&delegate_result);
         if !response.is_empty() {
             sink.emit(AgentEvent::TextDelta {
                 delta: response.clone(),
@@ -375,7 +353,7 @@ impl AgentRuntime {
             TerminationReason::NaturalEnd | TerminationReason::BehaviorRequested
         ) {
             sink.emit(AgentEvent::InferenceComplete {
-                model: spec.model.clone(),
+                model: non_local.spec.model.clone(),
                 usage: None,
                 duration_ms: now_ms().saturating_sub(execution_started_at),
             })
@@ -515,66 +493,30 @@ impl AgentRuntime {
     }
 }
 
-#[cfg(feature = "a2a")]
-fn build_non_local_endpoint_backend(
-    registries: &RegistrySet,
-    spec: &AgentSpec,
-) -> Result<Arc<dyn AgentBackend>, AgentLoopError> {
-    let endpoint = spec.endpoint.as_ref().ok_or_else(|| {
-        AgentLoopError::RuntimeError(crate::error::RuntimeError::ResolveFailed {
-            message: format!(
-                "agent '{}' is local and should not use non-local endpoint root path",
-                spec.id
-            ),
-        })
-    })?;
-    let factory = registries
-        .backends
-        .get_backend_factory(&endpoint.backend)
-        .ok_or_else(|| {
-            AgentLoopError::RuntimeError(crate::error::RuntimeError::ResolveFailed {
-                message: format!(
-                    "unsupported remote backend '{}' for agent '{}'",
-                    endpoint.backend, spec.id
-                ),
-            })
-        })?;
-    factory.build(endpoint).map_err(|error| {
-        AgentLoopError::RuntimeError(crate::error::RuntimeError::ResolveFailed {
-            message: format!(
-                "invalid remote endpoint config for agent '{}': {error}",
-                spec.id
-            ),
-        })
-    })
-}
-
-#[cfg(feature = "a2a")]
 fn finalize_non_local_delegate_result(
-    result: DelegateRunResult,
+    result: &BackendRunResult,
 ) -> (TerminationReason, String, usize) {
-    let DelegateRunResult {
-        status,
-        response,
-        steps,
-        ..
-    } = result;
-    let response = response.unwrap_or_default();
-    let termination = match status {
-        DelegateRunStatus::Completed => TerminationReason::NaturalEnd,
-        DelegateRunStatus::Cancelled => TerminationReason::Cancelled,
-        DelegateRunStatus::Timeout => TerminationReason::Error("timeout".into()),
-        DelegateRunStatus::Failed(message) => TerminationReason::Error(message),
-    };
-    (termination, response, steps)
+    (
+        termination_from_status(&result.status),
+        result.response.clone().unwrap_or_default(),
+        result.steps,
+    )
 }
 
-#[cfg(feature = "a2a")]
-fn non_local_backend_error_message(error: &AgentBackendError) -> String {
+fn non_local_backend_error_message(error: ExecutionBackendError) -> String {
     match error {
-        AgentBackendError::AgentNotFound(message)
-        | AgentBackendError::ExecutionFailed(message)
-        | AgentBackendError::RemoteError(message) => message.clone(),
+        ExecutionBackendError::AgentNotFound(message)
+        | ExecutionBackendError::ExecutionFailed(message)
+        | ExecutionBackendError::RemoteError(message) => message,
+    }
+}
+
+fn termination_from_status(status: &BackendRunStatus) -> TerminationReason {
+    match status {
+        BackendRunStatus::Completed => TerminationReason::NaturalEnd,
+        BackendRunStatus::Cancelled => TerminationReason::Cancelled,
+        BackendRunStatus::Timeout => TerminationReason::Error("timeout".into()),
+        BackendRunStatus::Failed(message) => TerminationReason::Error(message.clone()),
     }
 }
 
@@ -839,15 +781,10 @@ mod tests {
     impl AgentBackend for StaticRemoteBackend {
         async fn execute(
             &self,
-            agent_id: &str,
-            _messages: Vec<Message>,
-            _event_sink: Arc<dyn EventSink>,
-            _parent_run_id: Option<String>,
-            _parent_thread_id: Option<String>,
-            _parent_tool_call_id: Option<String>,
+            request: crate::backend::BackendRunRequest<'_>,
         ) -> Result<DelegateRunResult, AgentBackendError> {
             Ok(DelegateRunResult {
-                agent_id: agent_id.to_string(),
+                agent_id: request.agent_id.to_string(),
                 status: DelegateRunStatus::Completed,
                 response: Some("remote root response".into()),
                 steps: 1,

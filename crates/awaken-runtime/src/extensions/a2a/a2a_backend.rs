@@ -3,21 +3,19 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::backend::{
+    BackendRunRequest, BackendRunResult, BackendRunStatus, ExecutionBackend, ExecutionBackendError,
+    ExecutionBackendFactory, ExecutionBackendFactoryError,
+};
 use async_trait::async_trait;
 use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::message::{Message, Role};
+use awaken_contract::contract::message::Role;
 use awaken_contract::registry_spec::RemoteEndpoint;
 use awaken_protocol_a2a::{
     Message as A2aMessage, MessageRole, Part, SendMessageConfiguration, SendMessageRequest,
     SendMessageResponse, Task, TaskState,
 };
 use serde_json::Value;
-
-use super::backend::{
-    AgentBackend, AgentBackendError, AgentBackendFactory, AgentBackendFactoryError,
-    DelegateRunResult, DelegateRunStatus,
-};
 
 const A2A_VERSION: &str = "1.0";
 const A2A_BACKEND: &str = "a2a";
@@ -148,7 +146,7 @@ pub struct A2aBackend {
 /// Factory for the built-in A2A remote backend.
 pub struct A2aBackendFactory;
 
-impl AgentBackendFactory for A2aBackendFactory {
+impl ExecutionBackendFactory for A2aBackendFactory {
     fn backend(&self) -> &str {
         A2A_BACKEND
     }
@@ -156,9 +154,9 @@ impl AgentBackendFactory for A2aBackendFactory {
     fn build(
         &self,
         endpoint: &RemoteEndpoint,
-    ) -> Result<Arc<dyn AgentBackend>, AgentBackendFactoryError> {
+    ) -> Result<Arc<dyn ExecutionBackend>, ExecutionBackendFactoryError> {
         let config = A2aConfig::try_from_remote_endpoint(endpoint)
-            .map_err(|error| AgentBackendFactoryError::InvalidConfig(error.to_string()))?;
+            .map_err(|error| ExecutionBackendFactoryError::InvalidConfig(error.to_string()))?;
         Ok(Arc::new(A2aBackend::new(config)))
     }
 }
@@ -194,7 +192,7 @@ impl A2aBackend {
     }
 
     /// Submit a task to the remote A2A endpoint.
-    async fn submit_task(&self, prompt: &str) -> Result<SubmittedTask, AgentBackendError> {
+    async fn submit_task(&self, prompt: &str) -> Result<SubmittedTask, ExecutionBackendError> {
         let url = format!("{}/message:send", self.interface_base_url());
 
         let request = SendMessageRequest {
@@ -222,46 +220,61 @@ impl A2aBackend {
             .send()
             .await
             .map_err(|e| {
-                AgentBackendError::RemoteError(format!("failed to submit A2A task: {e}"))
+                ExecutionBackendError::RemoteError(format!("failed to submit A2A task: {e}"))
             })?;
 
-        let response = response
-            .error_for_status()
-            .map_err(|e| AgentBackendError::RemoteError(format!("A2A submission rejected: {e}")))?;
+        let response = response.error_for_status().map_err(|e| {
+            ExecutionBackendError::RemoteError(format!("A2A submission rejected: {e}"))
+        })?;
 
         let response = response.json::<SendMessageResponse>().await.map_err(|e| {
-            AgentBackendError::RemoteError(format!("failed to decode A2A submission: {e}"))
+            ExecutionBackendError::RemoteError(format!("failed to decode A2A submission: {e}"))
         })?;
 
         SubmittedTask::from_response(response)
     }
 
     /// Fetch the current task snapshot from the remote endpoint.
-    async fn fetch_task(&self, task_id: &str) -> Result<TaskSnapshot, AgentBackendError> {
+    async fn fetch_task(&self, task_id: &str) -> Result<TaskSnapshot, ExecutionBackendError> {
         let url = format!("{}/tasks/{task_id}", self.interface_base_url());
 
         let response = self
             .build_request(reqwest::Method::GET, &url)
             .send()
             .await
-            .map_err(|e| AgentBackendError::RemoteError(format!("failed to query task: {e}")))?;
+            .map_err(|e| {
+                ExecutionBackendError::RemoteError(format!("failed to query task: {e}"))
+            })?;
 
         let response = response
             .error_for_status()
-            .map_err(|e| AgentBackendError::RemoteError(format!("task query rejected: {e}")))?;
+            .map_err(|e| ExecutionBackendError::RemoteError(format!("task query rejected: {e}")))?;
 
         let task = response.json::<Task>().await.map_err(|e| {
-            AgentBackendError::RemoteError(format!("failed to decode task status: {e}"))
+            ExecutionBackendError::RemoteError(format!("failed to decode task status: {e}"))
         })?;
 
         Ok(TaskSnapshot::from_task(task))
     }
 
     /// Poll until the task reaches a terminal state or timeout.
-    async fn poll_to_completion(&self, task_id: &str) -> Result<TaskSnapshot, AgentBackendError> {
+    async fn poll_to_completion(
+        &self,
+        task_id: &str,
+        cancellation_token: Option<&crate::cancellation::CancellationToken>,
+    ) -> Result<TaskSnapshot, ExecutionBackendError> {
         let deadline = tokio::time::Instant::now() + self.config.timeout;
 
         loop {
+            if cancellation_token.is_some_and(crate::cancellation::CancellationToken::is_cancelled)
+            {
+                return Ok(TaskSnapshot {
+                    state: TaskState::Canceled,
+                    output_text: None,
+                    failure_message: Some("cancelled".to_string()),
+                    task_id: task_id.to_string(),
+                });
+            }
             let snapshot = self.fetch_task(task_id).await?;
             if snapshot.is_done() {
                 return Ok(snapshot);
@@ -282,17 +295,13 @@ impl A2aBackend {
 }
 
 #[async_trait]
-impl AgentBackend for A2aBackend {
+impl ExecutionBackend for A2aBackend {
     async fn execute(
         &self,
-        agent_id: &str,
-        messages: Vec<Message>,
-        _event_sink: Arc<dyn EventSink>,
-        _parent_run_id: Option<String>,
-        _parent_thread_id: Option<String>,
-        _parent_tool_call_id: Option<String>,
-    ) -> Result<DelegateRunResult, AgentBackendError> {
-        let prompt = messages
+        request: BackendRunRequest<'_>,
+    ) -> Result<BackendRunResult, ExecutionBackendError> {
+        let prompt = request
+            .messages
             .iter()
             .filter(|message| message.role == Role::User)
             .flat_map(|message| message.content.iter())
@@ -304,7 +313,7 @@ impl AgentBackend for A2aBackend {
             .join("\n");
 
         if prompt.trim().is_empty() {
-            return Err(AgentBackendError::ExecutionFailed(
+            return Err(ExecutionBackendError::ExecutionFailed(
                 "no user message content to send".into(),
             ));
         }
@@ -313,37 +322,40 @@ impl AgentBackend for A2aBackend {
         let snapshot = if submitted.snapshot.is_done() {
             submitted.snapshot
         } else {
-            self.poll_to_completion(&submitted.snapshot.task_id).await?
+            self.poll_to_completion(
+                &submitted.snapshot.task_id,
+                request.control.cancellation_token.as_ref(),
+            )
+            .await?
         };
 
         let status = match snapshot.state {
-            TaskState::Completed => DelegateRunStatus::Completed,
-            TaskState::Canceled => DelegateRunStatus::Cancelled,
-            TaskState::Failed => DelegateRunStatus::Failed(
+            TaskState::Completed => BackendRunStatus::Completed,
+            TaskState::Canceled => BackendRunStatus::Cancelled,
+            TaskState::Failed => BackendRunStatus::Failed(
                 snapshot
                     .failure_message
                     .unwrap_or_else(|| "remote agent run failed".into()),
             ),
-            TaskState::Rejected => DelegateRunStatus::Failed(
+            TaskState::Rejected => BackendRunStatus::Failed(
                 snapshot
                     .failure_message
                     .unwrap_or_else(|| "remote agent rejected the task".into()),
             ),
-            TaskState::InputRequired => DelegateRunStatus::Failed(
+            TaskState::InputRequired => BackendRunStatus::Failed(
                 snapshot
                     .failure_message
                     .unwrap_or_else(|| "remote agent requires additional input".into()),
             ),
-            TaskState::AuthRequired => DelegateRunStatus::Failed(
+            TaskState::AuthRequired => BackendRunStatus::Failed(
                 snapshot
                     .failure_message
                     .unwrap_or_else(|| "remote agent requires authentication".into()),
             ),
-            TaskState::Submitted | TaskState::Working => DelegateRunStatus::Timeout,
+            TaskState::Submitted | TaskState::Working => BackendRunStatus::Timeout,
         };
-
-        Ok(DelegateRunResult {
-            agent_id: agent_id.to_string(),
+        Ok(BackendRunResult {
+            agent_id: request.agent_id.to_string(),
             status,
             response: snapshot.output_text,
             steps: 1,
@@ -359,7 +371,7 @@ struct SubmittedTask {
 }
 
 impl SubmittedTask {
-    fn from_response(response: SendMessageResponse) -> Result<Self, AgentBackendError> {
+    fn from_response(response: SendMessageResponse) -> Result<Self, ExecutionBackendError> {
         if let Some(task) = response.task {
             return Ok(Self {
                 snapshot: TaskSnapshot::from_task(task),
@@ -376,7 +388,7 @@ impl SubmittedTask {
             });
         }
 
-        Err(AgentBackendError::RemoteError(
+        Err(ExecutionBackendError::RemoteError(
             "sendMessage response did not contain a task or message".into(),
         ))
     }
@@ -655,7 +667,7 @@ mod tests {
             })
             .unwrap();
 
-        let _backend: Arc<dyn AgentBackend> = backend;
+        let _backend: Arc<dyn crate::backend::ExecutionBackend> = backend;
     }
 
     #[test]

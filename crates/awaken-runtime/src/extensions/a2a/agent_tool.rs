@@ -5,16 +5,19 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+use crate::backend::{
+    BackendControl, BackendParentContext, BackendRunRequest, ExecutionBackend, LocalBackend,
+};
+use crate::registry::{
+    AgentResolver, ExecutionResolver, LocalExecutionResolver, ResolvedBackendAgent,
+    ResolvedExecution,
+};
 use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
 use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 
-use crate::registry::AgentResolver;
-
 use super::a2a_backend::{A2aBackend, A2aConfig};
-use super::backend::AgentBackend;
-use super::local_backend::LocalBackend;
 use super::progress_sink::ProgressForwardingSink;
 
 /// Unified tool for agent delegation.
@@ -26,8 +29,8 @@ pub struct AgentTool {
     agent_id: String,
     /// Human-readable description for the LLM.
     description: String,
-    /// Backend that performs the actual execution.
-    backend: Arc<dyn AgentBackend>,
+    /// Execution resolver used to build the canonical execution plan at call time.
+    resolver: Arc<dyn ExecutionResolver>,
 }
 
 impl AgentTool {
@@ -37,11 +40,11 @@ impl AgentTool {
         description: impl Into<String>,
         resolver: Arc<dyn AgentResolver>,
     ) -> Self {
-        Self {
-            agent_id: agent_id.into(),
-            description: description.into(),
-            backend: Arc::new(LocalBackend::new(resolver)),
-        }
+        Self::with_execution_resolver(
+            agent_id,
+            description,
+            Arc::new(LocalExecutionResolver::new(resolver)),
+        )
     }
 
     /// Create a tool that delegates to a remote agent via A2A protocol.
@@ -50,23 +53,37 @@ impl AgentTool {
         description: impl Into<String>,
         config: A2aConfig,
     ) -> Self {
-        Self {
-            agent_id: agent_id.into(),
-            description: description.into(),
-            backend: Arc::new(A2aBackend::new(config)),
-        }
+        Self::with_backend(agent_id, description, Arc::new(A2aBackend::new(config)))
     }
 
     /// Create a tool with a custom backend (for testing).
     pub fn with_backend(
         agent_id: impl Into<String>,
         description: impl Into<String>,
-        backend: Arc<dyn AgentBackend>,
+        backend: Arc<dyn ExecutionBackend>,
+    ) -> Self {
+        let agent_id = agent_id.into();
+        let description = description.into();
+        Self {
+            agent_id: agent_id.clone(),
+            description: description.clone(),
+            resolver: Arc::new(StaticExecutionResolver::non_local(
+                &agent_id,
+                &description,
+                backend,
+            )),
+        }
+    }
+
+    pub fn with_execution_resolver(
+        agent_id: impl Into<String>,
+        description: impl Into<String>,
+        resolver: Arc<dyn ExecutionResolver>,
     ) -> Self {
         Self {
             agent_id: agent_id.into(),
             description: description.into(),
-            backend,
+            resolver,
         }
     }
 
@@ -125,18 +142,32 @@ impl Tool for AgentTool {
             None => Arc::new(NullEventSink),
         };
 
-        match self
-            .backend
-            .execute(
-                &self.agent_id,
-                messages,
-                sink,
-                Some(ctx.run_identity.run_id.clone()),
-                Some(ctx.run_identity.thread_id.clone()),
-                Some(ctx.call_id.clone()),
-            )
-            .await
-        {
+        let resolved = self
+            .resolver
+            .resolve_execution(&self.agent_id)
+            .map_err(|error| ToolError::ExecutionFailed(error.to_string()))?;
+
+        let request = BackendRunRequest {
+            agent_id: &self.agent_id,
+            messages,
+            sink,
+            resolver: self.resolver.as_ref(),
+            run_identity: None,
+            parent: Some(BackendParentContext {
+                parent_run_id: Some(ctx.run_identity.run_id.clone()),
+                parent_thread_id: Some(ctx.run_identity.thread_id.clone()),
+                parent_tool_call_id: Some(ctx.call_id.clone()),
+            }),
+            phase_runtime: None,
+            checkpoint_store: None,
+            control: BackendControl::default(),
+            overrides: None,
+            frontend_tools: Vec::new(),
+            inbox: None,
+            is_continuation: false,
+        };
+
+        match execute_resolved(&resolved, request).await {
             Ok(result) => {
                 let status_str = result.status.to_string();
                 let mut tool_result = ToolResult::success(
@@ -157,6 +188,68 @@ impl Tool for AgentTool {
                 Ok(tool_result.into())
             }
             Err(e) => Ok(ToolResult::error(&tool_id, e.to_string()).into()),
+        }
+    }
+}
+
+async fn execute_resolved(
+    resolved: &ResolvedExecution,
+    request: BackendRunRequest<'_>,
+) -> Result<crate::backend::BackendRunResult, crate::backend::ExecutionBackendError> {
+    match resolved {
+        ResolvedExecution::Local(_) => LocalBackend::new().execute(request).await,
+        ResolvedExecution::NonLocal(agent) => agent.backend.execute(request).await,
+    }
+}
+
+struct StaticExecutionResolver {
+    local: Option<crate::registry::ResolvedAgent>,
+    execution: ResolvedExecution,
+}
+
+impl StaticExecutionResolver {
+    fn non_local(agent_id: &str, description: &str, backend: Arc<dyn ExecutionBackend>) -> Self {
+        let spec = Arc::new(awaken_contract::registry_spec::AgentSpec {
+            id: agent_id.to_string(),
+            model: String::new(),
+            system_prompt: description.to_string(),
+            ..Default::default()
+        });
+        Self {
+            local: None,
+            execution: ResolvedExecution::NonLocal(ResolvedBackendAgent { spec, backend }),
+        }
+    }
+}
+
+impl AgentResolver for StaticExecutionResolver {
+    fn resolve(
+        &self,
+        agent_id: &str,
+    ) -> Result<crate::registry::ResolvedAgent, crate::RuntimeError> {
+        if let Some(agent) = &self.local {
+            if agent.id() == agent_id {
+                return Ok(agent.clone());
+            }
+        }
+        Err(crate::RuntimeError::ResolveFailed {
+            message: format!("agent '{agent_id}' cannot be resolved locally"),
+        })
+    }
+
+    fn agent_ids(&self) -> Vec<String> {
+        vec![self.execution.spec().id.clone()]
+    }
+}
+
+impl ExecutionResolver for StaticExecutionResolver {
+    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, crate::RuntimeError> {
+        if self.execution.spec().id == agent_id {
+            Ok(self.execution.clone())
+        } else {
+            Err(crate::RuntimeError::ResolveFailed {
+                message: format!("agent not found: {agent_id}"),
+            })
         }
     }
 }

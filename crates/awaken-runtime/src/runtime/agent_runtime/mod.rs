@@ -16,7 +16,10 @@ use awaken_contract::contract::suspension::ToolCallResume;
 use futures::channel::mpsc;
 
 use crate::cancellation::CancellationToken;
-use crate::registry::{AgentResolver, RegistryHandle, RegistrySet, RegistrySnapshot};
+use crate::registry::{
+    AgentResolver, ExecutionResolver, LocalExecutionResolver, RegistryHandle, RegistrySet,
+    RegistrySnapshot,
+};
 
 pub use run_request::RunRequest;
 
@@ -72,7 +75,7 @@ impl RunHandle {
 /// Provides methods for cancelling and sending decisions
 /// to active agent runs. Enforces one active run per thread.
 pub struct AgentRuntime {
-    pub(crate) resolver: Arc<dyn AgentResolver>,
+    pub(crate) resolver: Arc<dyn ExecutionResolver>,
     pub(crate) storage: Option<Arc<dyn ThreadRunStore>>,
     pub(crate) profile_store:
         Option<Arc<dyn awaken_contract::contract::profile_store::ProfileStore>>,
@@ -84,6 +87,10 @@ pub struct AgentRuntime {
 
 impl AgentRuntime {
     pub fn new(resolver: Arc<dyn AgentResolver>) -> Self {
+        Self::new_with_execution_resolver(Arc::new(LocalExecutionResolver::new(resolver)))
+    }
+
+    pub fn new_with_execution_resolver(resolver: Arc<dyn ExecutionResolver>) -> Self {
         Self {
             resolver,
             storage: None,
@@ -122,7 +129,15 @@ impl AgentRuntime {
 
     /// Return a cloned `Arc` of the agent resolver.
     pub fn resolver_arc(&self) -> Arc<dyn AgentResolver> {
-        Arc::clone(&self.resolver)
+        self.resolver.clone()
+    }
+
+    pub fn execution_resolver(&self) -> &dyn ExecutionResolver {
+        self.resolver.as_ref()
+    }
+
+    pub fn execution_resolver_arc(&self) -> Arc<dyn ExecutionResolver> {
+        self.resolver.clone()
     }
 
     pub fn registry_handle(&self) -> Option<RegistryHandle> {

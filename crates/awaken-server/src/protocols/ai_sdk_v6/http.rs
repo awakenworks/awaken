@@ -142,8 +142,10 @@ async fn ai_sdk_chat_preview_agent(
         .map_err(ApiError::BadRequest)?;
     let candidate = build_preview_registry_set(&st, &agent)?;
     let preview_runtime = Arc::new(
-        AgentRuntime::new(Arc::new(RegistrySetResolver::new(candidate.clone())))
-            .with_registry_handle(RegistryHandle::new(candidate)),
+        AgentRuntime::new_with_execution_resolver(Arc::new(RegistrySetResolver::new(
+            candidate.clone(),
+        )))
+        .with_registry_handle(RegistryHandle::new(candidate)),
     );
 
     let mut request = RunRequest::new(

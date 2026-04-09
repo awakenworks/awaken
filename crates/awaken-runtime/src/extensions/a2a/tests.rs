@@ -4,10 +4,8 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::message::Message;
 use awaken_contract::contract::tool::{Tool, ToolCallContext};
 use awaken_contract::registry_spec::{AgentSpec, RemoteAuth, RemoteEndpoint};
 
@@ -16,7 +14,7 @@ use crate::registry::{AgentResolver, ResolvedAgent};
 
 use super::a2a_backend::A2aConfig;
 use super::agent_tool::AgentTool;
-use super::backend::{AgentBackend, AgentBackendError, DelegateRunResult, DelegateRunStatus};
+use super::{AgentBackend, AgentBackendError, DelegateRunResult, DelegateRunStatus};
 
 // -- Mock Resolver --
 
@@ -91,12 +89,7 @@ struct MockBackend {
 impl AgentBackend for MockBackend {
     async fn execute(
         &self,
-        _agent_id: &str,
-        _messages: Vec<Message>,
-        _event_sink: Arc<dyn EventSink>,
-        _parent_run_id: Option<String>,
-        _parent_thread_id: Option<String>,
-        _parent_tool_call_id: Option<String>,
+        _request: crate::backend::BackendRunRequest<'_>,
     ) -> Result<DelegateRunResult, AgentBackendError> {
         Ok(self.result.clone())
     }
@@ -110,12 +103,7 @@ struct FailingBackend {
 impl AgentBackend for FailingBackend {
     async fn execute(
         &self,
-        _agent_id: &str,
-        _messages: Vec<Message>,
-        _event_sink: Arc<dyn EventSink>,
-        _parent_run_id: Option<String>,
-        _parent_thread_id: Option<String>,
-        _parent_tool_call_id: Option<String>,
+        _request: crate::backend::BackendRunRequest<'_>,
     ) -> Result<DelegateRunResult, AgentBackendError> {
         Err(AgentBackendError::ExecutionFailed(self.error.clone()))
     }
@@ -494,17 +482,18 @@ impl CapturingBackend {
 impl AgentBackend for CapturingBackend {
     async fn execute(
         &self,
-        agent_id: &str,
-        _messages: Vec<Message>,
-        _event_sink: Arc<dyn EventSink>,
-        parent_run_id: Option<String>,
-        _parent_thread_id: Option<String>,
-        parent_tool_call_id: Option<String>,
+        request: crate::backend::BackendRunRequest<'_>,
     ) -> Result<DelegateRunResult, AgentBackendError> {
-        *self.captured_parent_run_id.lock().unwrap() = parent_run_id;
-        *self.captured_parent_tool_call_id.lock().unwrap() = parent_tool_call_id;
+        *self.captured_parent_run_id.lock().unwrap() = request
+            .parent
+            .as_ref()
+            .and_then(|parent| parent.parent_run_id.clone());
+        *self.captured_parent_tool_call_id.lock().unwrap() = request
+            .parent
+            .as_ref()
+            .and_then(|parent| parent.parent_tool_call_id.clone());
         Ok(DelegateRunResult {
-            agent_id: agent_id.to_string(),
+            agent_id: request.agent_id.to_string(),
             status: DelegateRunStatus::Completed,
             response: Some("done".into()),
             steps: 1,

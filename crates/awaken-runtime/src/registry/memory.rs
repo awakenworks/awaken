@@ -3,9 +3,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::backend::ExecutionBackendFactory;
 use crate::builder::BuildError;
 #[cfg(feature = "a2a")]
-use crate::extensions::a2a::{A2aBackendFactory, AgentBackendFactory};
+use crate::extensions::a2a::A2aBackendFactory;
 use crate::plugins::Plugin;
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::tool::Tool;
@@ -79,7 +80,7 @@ pub type MapProviderRegistry = MapRegistry<Arc<dyn LlmExecutor>>;
 pub type MapAgentSpecRegistry = MapRegistry<AgentSpec>;
 pub type MapPluginSource = MapRegistry<Arc<dyn Plugin>>;
 #[cfg(feature = "a2a")]
-pub type MapBackendRegistry = MapRegistry<Arc<dyn AgentBackendFactory>>;
+pub type MapBackendRegistry = MapRegistry<Arc<dyn ExecutionBackendFactory>>;
 
 // ---------------------------------------------------------------------------
 // Convenience register methods (preserve original call-site signatures)
@@ -147,7 +148,7 @@ impl MapPluginSource {
 impl MapBackendRegistry {
     pub fn register_backend_factory(
         &mut self,
-        factory: Arc<dyn AgentBackendFactory>,
+        factory: Arc<dyn ExecutionBackendFactory>,
     ) -> Result<(), BuildError> {
         let backend = factory.backend().to_string();
         self.register(backend, factory, |msg| {
@@ -220,7 +221,7 @@ impl PluginSource for MapPluginSource {
 
 #[cfg(feature = "a2a")]
 impl BackendRegistry for MapBackendRegistry {
-    fn get_backend_factory(&self, backend: &str) -> Option<Arc<dyn AgentBackendFactory>> {
+    fn get_backend_factory(&self, backend: &str) -> Option<Arc<dyn ExecutionBackendFactory>> {
         self.get_cloned(backend)
     }
 

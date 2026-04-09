@@ -22,7 +22,10 @@ pub use memory::{
     MapToolRegistry,
 };
 pub use resolve::ResolveError;
-pub use resolver::{AgentResolver, ResolvedAgent};
+pub use resolver::{
+    AgentResolver, ExecutionResolver, LocalExecutionResolver, ResolvedAgent, ResolvedBackendAgent,
+    ResolvedExecution,
+};
 pub use snapshot::{RegistryHandle, RegistrySnapshot};
 #[cfg(feature = "a2a")]
 pub use traits::BackendRegistry;
