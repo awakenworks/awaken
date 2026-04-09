@@ -21,6 +21,7 @@ use awaken_contract::contract::tool::{
 };
 
 use awaken_runtime::agent::state::{PendingWorkKey, RunLifecycle};
+use awaken_runtime::backend::{BackendControl, BackendParentContext, BackendRunRequest};
 use awaken_runtime::extensions::background::{
     BackgroundTaskManager, BackgroundTaskPlugin, TaskParentContext, TaskResult as BgTaskResult,
 };
@@ -29,7 +30,9 @@ use awaken_runtime::loop_runner::{
 };
 use awaken_runtime::phase::PhaseRuntime;
 use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
-use awaken_runtime::registry::{AgentResolver, ResolvedAgent};
+use awaken_runtime::registry::{
+    AgentResolver, ExecutionResolver, ResolvedAgent, ResolvedExecution,
+};
 use awaken_runtime::state::{StateKeyOptions, StateStore};
 use awaken_runtime::{RuntimeError, inbox};
 
@@ -180,6 +183,42 @@ impl AgentResolver for FixedResolver {
         let mut agent = self.agent.clone();
         agent.env = build_agent_env(&self.plugins, &agent)?;
         Ok(agent)
+    }
+}
+
+impl ExecutionResolver for FixedResolver {
+    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, RuntimeError> {
+        self.resolve(agent_id).map(ResolvedExecution::Local)
+    }
+}
+
+fn local_delegate_request<'a>(
+    resolver: &'a dyn ExecutionResolver,
+    agent_id: &'a str,
+    messages: Vec<Message>,
+    sink: Arc<dyn EventSink>,
+    parent_run_id: Option<String>,
+    parent_thread_id: Option<String>,
+) -> BackendRunRequest<'a> {
+    BackendRunRequest {
+        agent_id,
+        messages,
+        sink,
+        resolver,
+        run_identity: None,
+        parent: Some(BackendParentContext {
+            parent_run_id,
+            parent_thread_id,
+            parent_tool_call_id: None,
+        }),
+        phase_runtime: None,
+        checkpoint_store: None,
+        control: BackendControl::default(),
+        decisions: Vec::new(),
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     }
 }
 
@@ -671,17 +710,17 @@ async fn local_backend_sub_agent_receives_bg_task_events() {
         plugins: vec![],
     });
 
-    let backend = LocalBackend::new(resolver);
+    let backend = LocalBackend::new();
 
     let result = backend
-        .execute(
+        .execute(local_delegate_request(
+            resolver.as_ref(),
             "sub",
             vec![Message::user("do work")],
             Arc::new(NullEventSink),
             Some("parent-run".into()),
             Some("parent-thread".into()),
-            None,
-        )
+        ))
         .await
         .unwrap();
 
@@ -782,17 +821,17 @@ async fn multi_level_bg_task_event_reaches_sub_agent() {
         agent,
         plugins: vec![],
     });
-    let backend = LocalBackend::new(resolver);
+    let backend = LocalBackend::new();
 
     let result = backend
-        .execute(
+        .execute(local_delegate_request(
+            resolver.as_ref(),
             "sub",
             vec![Message::user("spawn a bg task")],
             Arc::new(NullEventSink),
             Some("parent-run".into()),
             Some("parent-thread".into()),
-            None,
-        )
+        ))
         .await
         .unwrap();
 
@@ -1234,17 +1273,17 @@ async fn local_backend_passes_parent_thread_id() {
         agent,
         plugins: vec![],
     });
-    let backend = LocalBackend::new(resolver);
+    let backend = LocalBackend::new();
 
     let result = backend
-        .execute(
+        .execute(local_delegate_request(
+            resolver.as_ref(),
             "sub",
             vec![Message::user("hello")],
             Arc::new(NullEventSink),
             Some("parent-run-id".into()),
-            Some("parent-thread-id".into()), // parent_thread_id
-            None,
-        )
+            Some("parent-thread-id".into()),
+        ))
         .await
         .unwrap();
 
