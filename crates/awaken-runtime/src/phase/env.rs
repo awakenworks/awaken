@@ -13,13 +13,20 @@ use awaken_contract::model::Phase;
 
 use crate::plugins::{KeyRegistration, ProfileKeyRegistration, RequestTransformArc};
 
-use super::{EffectHandlerArc, PhaseHookArc, ScheduledActionHandlerArc};
+use super::{EffectHandlerArc, PhaseHookArc, ScheduledActionHandlerArc, ToolGateHookArc};
 
 /// A phase hook with its owning plugin ID.
 #[derive(Clone)]
 pub(crate) struct TaggedPhaseHook {
     pub(crate) plugin_id: String,
     pub(crate) hook: PhaseHookArc,
+}
+
+/// A tool gate hook with its owning plugin ID.
+#[derive(Clone)]
+pub(crate) struct TaggedToolGateHook {
+    pub(crate) plugin_id: String,
+    pub(crate) hook: ToolGateHookArc,
 }
 
 /// A request transform with its owning plugin ID.
@@ -37,6 +44,7 @@ pub(crate) struct TaggedRequestTransform {
 #[derive(Clone)]
 pub struct ExecutionEnv {
     pub(crate) phase_hooks: HashMap<Phase, Vec<TaggedPhaseHook>>,
+    pub(crate) tool_gate_hooks: Vec<TaggedToolGateHook>,
     pub(crate) scheduled_action_handlers: HashMap<String, ScheduledActionHandlerArc>,
     pub(crate) effect_handlers: HashMap<String, EffectHandlerArc>,
     /// Request transforms applied after message assembly, before LLM call.
@@ -69,6 +77,7 @@ impl ExecutionEnv {
         active_plugin_filter: &HashSet<String>,
     ) -> Result<Self, StateError> {
         let mut all_hooks: HashMap<Phase, Vec<TaggedPhaseHook>> = HashMap::new();
+        let mut all_tool_gate_hooks: Vec<TaggedToolGateHook> = Vec::new();
         let mut all_action_handlers: HashMap<String, ScheduledActionHandlerArc> = HashMap::new();
         let mut all_effect_handlers: HashMap<String, EffectHandlerArc> = HashMap::new();
         let mut all_transforms: Vec<TaggedRequestTransform> = Vec::new();
@@ -115,6 +124,12 @@ impl ExecutionEnv {
                             hook: entry.hook,
                         });
                 }
+                for entry in registrar.tool_gate_hooks {
+                    all_tool_gate_hooks.push(TaggedToolGateHook {
+                        plugin_id: entry.plugin_id,
+                        hook: entry.hook,
+                    });
+                }
             }
 
             // Collect action handlers (check duplicates)
@@ -159,6 +174,7 @@ impl ExecutionEnv {
 
         Ok(Self {
             phase_hooks: all_hooks,
+            tool_gate_hooks: all_tool_gate_hooks,
             scheduled_action_handlers: all_action_handlers,
             effect_handlers: all_effect_handlers,
             request_transforms: all_transforms,
@@ -173,6 +189,7 @@ impl ExecutionEnv {
     pub fn empty() -> Self {
         Self {
             phase_hooks: HashMap::new(),
+            tool_gate_hooks: Vec::new(),
             scheduled_action_handlers: HashMap::new(),
             effect_handlers: HashMap::new(),
             request_transforms: Vec::new(),
@@ -200,6 +217,10 @@ impl ExecutionEnv {
             .get(&phase)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
+    }
+
+    pub(crate) fn tool_gate_hooks(&self) -> &[TaggedToolGateHook] {
+        &self.tool_gate_hooks
     }
 }
 

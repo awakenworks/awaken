@@ -7,10 +7,9 @@ use awaken_contract::contract::suspension::{
     PendingToolCall, SuspendTicket, Suspension, ToolCallResumeMode,
 };
 use awaken_contract::contract::tool::ToolResult;
-use awaken_contract::contract::tool_intercept::{ToolInterceptAction, ToolInterceptPayload};
-use awaken_contract::model::Phase;
+use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
 use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
-use awaken_runtime::{PhaseContext, PhaseHook, StateCommand};
+use awaken_runtime::{PhaseContext, ToolGateHook};
 
 const FRONTEND_TOOLS_PLUGIN_NAME: &str = "frontend_tools";
 
@@ -46,9 +45,8 @@ impl Plugin for FrontendToolPlugin {
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-        registrar.register_phase_hook(
+        registrar.register_tool_gate_hook(
             FRONTEND_TOOLS_PLUGIN_NAME,
-            Phase::BeforeToolExecute,
             FrontendToolInterceptHook {
                 tools: self.tools.clone(),
             },
@@ -62,15 +60,15 @@ struct FrontendToolInterceptHook {
 }
 
 #[async_trait]
-impl PhaseHook for FrontendToolInterceptHook {
-    async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+impl ToolGateHook for FrontendToolInterceptHook {
+    async fn run(&self, ctx: &PhaseContext) -> Result<Option<ToolInterceptPayload>, StateError> {
         let tool_name = match &ctx.tool_name {
             Some(name) => name.as_str(),
-            None => return Ok(StateCommand::new()),
+            None => return Ok(None),
         };
 
         if !self.tools.contains(tool_name) {
-            return Ok(StateCommand::new());
+            return Ok(None);
         }
 
         // If resuming after frontend response, use the decision as tool result
@@ -89,9 +87,7 @@ impl PhaseHook for FrontendToolInterceptHook {
                         .unwrap_or_else(|| "User denied the action".to_string()),
                 ),
             };
-            let mut cmd = StateCommand::new();
-            cmd.schedule_action::<ToolInterceptAction>(ToolInterceptPayload::SetResult(result))?;
-            return Ok(cmd);
+            return Ok(Some(ToolInterceptPayload::SetResult(result)));
         }
 
         // First encounter: suspend for frontend handling
@@ -110,8 +106,6 @@ impl PhaseHook for FrontendToolInterceptHook {
             ToolCallResumeMode::UseDecisionAsToolResult,
         );
 
-        let mut cmd = StateCommand::new();
-        cmd.schedule_action::<ToolInterceptAction>(ToolInterceptPayload::Suspend(ticket))?;
-        Ok(cmd)
+        Ok(Some(ToolInterceptPayload::Suspend(ticket)))
     }
 }

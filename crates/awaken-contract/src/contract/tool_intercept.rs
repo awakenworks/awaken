@@ -1,18 +1,11 @@
-//! Tool interception types for the BeforeToolExecute phase.
-//!
-//! [`ToolInterceptAction`]: scheduled action that controls whether a tool call
-//! proceeds, is blocked, suspended, or short-circuited with a pre-built result.
+//! Tool interception payloads resolved by `ToolGate` hooks.
 
 use serde::{Deserialize, Serialize};
 
 use crate::contract::suspension::SuspendTicket;
 use crate::contract::tool::ToolResult;
-use crate::model::Phase;
 
-/// Payload for the [`ToolInterceptAction`] scheduled action.
-///
-/// BeforeToolExecute phase hooks schedule this to control tool execution flow.
-/// If no intercept is scheduled, the tool executes normally (implicit proceed).
+/// Tool interception decision returned by `ToolGate` hooks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolInterceptPayload {
     /// Block tool execution and terminate the run.
@@ -23,19 +16,6 @@ pub enum ToolInterceptPayload {
     SetResult(ToolResult),
 }
 
-/// Scheduled action spec for tool interception.
-///
-/// Hooks schedule this during `BeforeToolExecute` to intercept tool calls.
-/// Multiple hooks may schedule intercepts; the handler aggregates by priority:
-/// `Block > Suspend > SetResult`.
-pub struct ToolInterceptAction;
-
-impl crate::model::ScheduledActionSpec for ToolInterceptAction {
-    const KEY: &'static str = "tool_intercept";
-    const PHASE: Phase = Phase::BeforeToolExecute;
-    type Payload = ToolInterceptPayload;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -43,7 +23,6 @@ mod tests {
         PendingToolCall, SuspendTicket, Suspension, ToolCallResumeMode,
     };
     use crate::contract::tool::ToolResult;
-    use crate::model::ScheduledActionSpec;
     use serde_json::json;
 
     #[test]
@@ -94,11 +73,5 @@ mod tests {
             }
             other => panic!("expected SetResult, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn tool_intercept_action_spec_constants() {
-        assert_eq!(ToolInterceptAction::KEY, "tool_intercept");
-        assert_eq!(ToolInterceptAction::PHASE, Phase::BeforeToolExecute);
     }
 }

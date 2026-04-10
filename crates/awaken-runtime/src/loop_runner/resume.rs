@@ -15,7 +15,7 @@ use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
 use serde_json::Value;
 
-use super::step::{StepContext, execute_tools_with_interception};
+use super::step::{StepContext, ToolBatchTranscript, execute_tools_with_interception};
 use super::{AgentLoopError, commit_update, now_ms};
 use crate::agent::state::{ToolCallState, ToolCallStates, ToolCallStatesUpdate};
 use crate::context::TruncationState;
@@ -197,7 +197,15 @@ pub(super) async fn detect_and_replay_resume(
             run_created_at,
         };
 
-        let _ = execute_tools_with_interception(&mut step_ctx, std::slice::from_ref(&call)).await?;
+        let mut transcript = ToolBatchTranscript::for_resume();
+        let _ = execute_tools_with_interception(
+            &mut step_ctx,
+            &mut transcript,
+            std::slice::from_ref(&call),
+        )
+        .await?;
+        drop(step_ctx);
+        transcript.commit_into(messages);
     }
 
     Ok(())

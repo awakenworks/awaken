@@ -35,7 +35,7 @@ pub use profile::ProfileAccess;
 
 pub use builder::{AgentRuntimeBuilder, BuildError};
 pub use phase::{
-    DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv, PhaseContext, PhaseHook, PhaseRuntime,
+    DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv, PhaseContext, PhaseHook, PhaseRuntime, ToolGateHook,
     TypedEffectHandler, TypedScheduledActionHandler,
 };
 pub use plugins::{Plugin, PluginDescriptor, PluginRegistrar};

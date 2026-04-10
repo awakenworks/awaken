@@ -1070,9 +1070,10 @@ async fn guarded_tool_before_skill_blocks_same_step_activation_attempt() {
         })
         .collect();
     assert_eq!(tool_dones.get("c1"), Some(&ToolCallOutcome::Failed));
-    assert!(
-        matches!(tool_dones.get("c2"), Some(ToolCallOutcome::Failed)),
-        "later skill call should be backfilled as interrupted instead of being silently dropped"
+    assert_eq!(
+        tool_dones.get("c2"),
+        Some(&ToolCallOutcome::Failed),
+        "later skill call should be backfilled as interrupted, not executed"
     );
 }
 
@@ -1158,9 +1159,10 @@ async fn allowed_prefix_commits_before_later_guarded_tool_blocks() {
         .collect();
     assert_eq!(tool_dones.get("c1"), Some(&ToolCallOutcome::Succeeded));
     assert_eq!(tool_dones.get("c2"), Some(&ToolCallOutcome::Failed));
-    assert!(
-        matches!(tool_dones.get("c3"), Some(ToolCallOutcome::Failed)),
-        "later skill call should be backfilled as interrupted once a prior guarded tool blocks"
+    assert_eq!(
+        tool_dones.get("c3"),
+        Some(&ToolCallOutcome::Failed),
+        "later skill call should be backfilled as interrupted, not executed"
     );
 }
 

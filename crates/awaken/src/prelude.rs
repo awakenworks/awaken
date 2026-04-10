@@ -16,7 +16,7 @@ pub use crate::{AgentSpec, PluginConfigKey};
 // ── Plugin system ──
 pub use crate::CancellationToken;
 pub use crate::{EffectSpec, ScheduledActionSpec, TypedEffect};
-pub use crate::{Phase, PhaseContext, PhaseHook};
+pub use crate::{Phase, PhaseContext, PhaseHook, ToolGateHook};
 pub use crate::{Plugin, PluginDescriptor, PluginRegistrar};
 pub use crate::{TypedEffectHandler, TypedScheduledActionHandler};
 
@@ -34,8 +34,8 @@ pub use awaken_contract::contract::tool_schema::{
     generate_tool_schema, sanitize_for_llm, validate_against_schema,
 };
 
-// ── Tool interception (deferred tools / BeforeToolExecute control) ──
-pub use awaken_contract::contract::tool_intercept::{ToolInterceptAction, ToolInterceptPayload};
+// ── Tool interception (ToolGate decisions) ──
+pub use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
 
 // ── Context messages (system reminders / prompt injection) ──
 pub use awaken_contract::contract::context_message::{ContextMessage, ContextMessageTarget};

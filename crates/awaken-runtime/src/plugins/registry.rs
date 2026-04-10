@@ -3,8 +3,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::phase::{
-    EffectHandlerArc, PhaseHook, PhaseHookArc, ScheduledActionHandlerArc, TypedEffectAdapter,
-    TypedEffectHandler, TypedScheduledActionAdapter, TypedScheduledActionHandler,
+    EffectHandlerArc, PhaseHook, PhaseHookArc, ScheduledActionHandlerArc, ToolGateHook,
+    ToolGateHookArc, TypedEffectAdapter, TypedEffectHandler, TypedScheduledActionAdapter,
+    TypedScheduledActionHandler,
 };
 use crate::state::{KeyScope, MergeStrategy, StateKey, StateKeyOptions, StateMap};
 use awaken_contract::StateError;
@@ -70,6 +71,11 @@ pub(crate) struct PhaseHookRegistration {
     pub(crate) hook: PhaseHookArc,
 }
 
+pub(crate) struct ToolGateHookRegistration {
+    pub(crate) plugin_id: String,
+    pub(crate) hook: ToolGateHookArc,
+}
+
 pub(crate) type RequestTransformArc =
     std::sync::Arc<dyn awaken_contract::contract::transform::InferenceRequestTransform>;
 
@@ -123,6 +129,7 @@ pub struct PluginRegistrar {
     pub(crate) effects: Vec<EffectHandlerRegistration>,
     effect_keys: HashSet<String>,
     pub(crate) phase_hooks: Vec<PhaseHookRegistration>,
+    pub(crate) tool_gate_hooks: Vec<ToolGateHookRegistration>,
     pub(crate) request_transforms: Vec<RequestTransformRegistration>,
     pub(crate) tools: Vec<ToolRegistration>,
     tool_ids: HashSet<String>,
@@ -142,6 +149,7 @@ impl PluginRegistrar {
             effects: Vec::new(),
             effect_keys: HashSet::new(),
             phase_hooks: Vec::new(),
+            tool_gate_hooks: Vec::new(),
             request_transforms: Vec::new(),
             tools: Vec::new(),
             tool_ids: HashSet::new(),
@@ -215,6 +223,21 @@ impl PluginRegistrar {
     {
         self.phase_hooks.push(PhaseHookRegistration {
             phase,
+            plugin_id: plugin_id.into(),
+            hook: Arc::new(hook),
+        });
+        Ok(())
+    }
+
+    pub fn register_tool_gate_hook<H>(
+        &mut self,
+        plugin_id: impl Into<String>,
+        hook: H,
+    ) -> Result<(), StateError>
+    where
+        H: ToolGateHook,
+    {
+        self.tool_gate_hooks.push(ToolGateHookRegistration {
             plugin_id: plugin_id.into(),
             hook: Arc::new(hook),
         });
