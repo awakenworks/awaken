@@ -38,7 +38,7 @@ Every action is:
 - Declared in `ExecutionEnv` at setup time via `PluginRegistrar::register_scheduled_action`.
 - Rejected at `submit_command` if the action key has no registered handler. This catches typos and misconfigurations immediately.
 
-**Consumption**: during the EXECUTE stage of the target phase, the runtime processes actions that have a registered handler — dequeuing them, calling the handler, and committing the resulting `StateCommand`. The orchestrator can also consume actions directly from the `StateCommand` returned by `collect_commands()` (GATHER-only) using `extract_actions`, bypassing the handler/accumulator pattern entirely. Loop actions (`SetInferenceOverride`, `ExcludeTool`, `IncludeOnlyTools`, `ToolInterceptAction`) are consumed this way — extracted from the collected command, with remaining actions (`AddContextMessage`) submitted for handler-based EXECUTE processing. This eliminates write-read-clear accumulator state keys.
+**Consumption**: during the EXECUTE stage of the target phase, the runtime processes actions that have a registered handler — dequeuing them, calling the handler, and committing the resulting `StateCommand`. The orchestrator can also consume actions directly from the `StateCommand` returned by `collect_commands()` (GATHER-only) using `extract_actions`, bypassing the handler/accumulator pattern entirely. Loop actions (`SetInferenceOverride`, `ExcludeTool`, `IncludeOnlyTools`) are consumed this way — extracted from the collected command, with remaining actions (`AddContextMessage`) submitted for handler-based EXECUTE processing. This eliminates write-read-clear accumulator state keys.
 
 Invariants:
 
@@ -140,6 +140,10 @@ Both GATHER and EXECUTE produce effects via `StateCommand`. Effects are dispatch
 
 `ScheduledAction` carries a `phase` field. EXECUTE only dequeues actions matching the current phase (and having handlers); others remain queued. Cross-phase communication prefers state keys over cross-phase action scheduling.
 
+### ToolGate: pure interception outside the scheduled-action queue
+
+Tool interception is no longer modeled as a scheduled action. The runtime runs `ToolGateHook`s directly during the `ToolGate` phase and resolves their `ToolInterceptPayload`s in memory using the same priority rules (`Block > Suspend > SetResult`). This keeps interception replay-safe and avoids reusing `BeforeToolExecute` for both decision making and execution-time side effects.
+
 ### ToolCall parallelism (deferred)
 
 Tool calls involve external resources (files, network, git worktrees) whose conflicts are not captured by `StateKey` merge strategies. Parallelizing tool execution requires a resource/object declaration mechanism beyond `MergeStrategy`. This is out of scope for the current design; tool calls remain governed by the execution mode in ADR-0007.
@@ -149,7 +153,8 @@ Tool calls involve external resources (files, network, git worktrees) whose conf
 - GATHER parallel hooks: implemented
 - GATHER Exclusive auto-fallback: implemented
 - State-driven termination via RunLifecycle: implemented
-- Loop actions (overrides, tool filters, intercept) consumed directly by orchestrator via collect_commands + extract_actions — no accumulator state keys
+- Loop actions (overrides, tool filters) consumed directly by orchestrator via collect_commands + extract_actions — no accumulator state keys
+- Tool interception handled by `ToolGateHook` / `ToolInterceptPayload`, not a scheduled action
 - RuntimeEffect enum: deleted (all variants replaced by State/Action)
 - CancellationToken: implemented
 - EXECUTE parallel actions: not implemented (currently serial)

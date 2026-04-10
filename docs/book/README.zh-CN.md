@@ -14,10 +14,10 @@
 
 1. **Tools** — 类型化函数，JSON Schema 在编译时自动生成
 2. **Agents** — 每个 Agent 拥有系统提示词、模型和允许的工具集；LLM 通过自然语言驱动编排 — 无需预定义流程图
-3. **State** — 类型化，并按 `thread` / `run` 作用域管理，支持合并策略处理并发写入，以及不可变快照
-4. **Plugins** — 8 阶段生命周期钩子，覆盖权限、可观测性、上下文管理、Skills、MCP 等
+3. **State** — 既有 `run` / `thread` 作用域的类型化状态，也有用于跨线程/跨 Agent 协作的持久化 profile/shared state
+4. **Plugins** — 生命周期钩子覆盖权限、可观测性、上下文管理、Skills、MCP 等
 
-Agent 选择工具、调用工具、读写状态，如此循环 — 全部由运行时通过 8 个类型化阶段编排。每次状态变更都在 gather 阶段后原子提交。
+Agent 选择工具、调用工具、读写状态，如此循环 — 全部由运行时通过 9 个类型化阶段编排，其中在真正执行工具前增加了纯判定的 `ToolGate`。每次状态变更都在 gather 阶段后原子提交。
 
 ## 5 分钟上手
 
@@ -27,7 +27,7 @@ Agent 选择工具、调用工具、读写状态，如此循环 — 全部由运
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.1.1" }
+awaken = { package = "awaken-agent", version = "0.1" }
 tokio = { version = "1.51.0", features = ["full"] }
 async-trait = "0.1.89"
 serde_json = "1.0.149"
@@ -188,11 +188,13 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 `awaken-ext-deferred-tools` crate 提供基于概率模型的延迟工具加载，未包含在 `awaken` 门面 crate 中，如需使用请直接添加依赖。
 
+如需自定义工具拦截，应实现 `ToolGateHook` 并通过 `PluginRegistrar::register_tool_gate_hook()` 注册；`BeforeToolExecute` 仅用于真正执行前的一次性钩子。
+
 ## 为什么选择 Awaken
 
 - **一个后端服务所有前端** — 从同一个二进制文件提供 React（AI SDK v6）、Next.js（AG-UI）、其他 Agent（A2A）和工具服务器（MCP）。无需分别部署。
 - **LLM 编排一切，无需 DAG** — 定义 Agent 的身份和工具访问权限；LLM 决定何时委托、委托给谁、如何组合结果。无需手写流程图或状态机。
-- **可组合的插件体系** — 8 个类型化生命周期阶段。权限、上下文注入、可观测性、工具发现，全部声明式配置。`PhaseHook` trait 类型安全，插件注册 API 在构建时捕获配置错误。
+- **可组合的插件体系** — 9 个类型化生命周期阶段，其中包含纯判定的 `ToolGate`。权限、上下文注入、可观测性、工具发现，全部声明式配置。`PhaseHook` / `ToolGateHook` 类型安全，插件注册 API 在构建时捕获配置错误。
 - **类型安全的状态与回放** — State 是带编译时检查的 Rust 结构体。合并策略处理并发写入，无需锁。作用域限定为 thread 或 run，每次变更都是可回放的不可变快照。
 - **内置生产韧性** — 熔断器、指数退避、推理超时、优雅关闭、Prometheus 指标和健康探针，开箱即用。
 - **零 `unsafe` 代码** — 整个工作空间禁止 `unsafe`，内存安全由 Rust 编译器保证。

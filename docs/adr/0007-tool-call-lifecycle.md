@@ -20,7 +20,7 @@ Pending → Running → Succeeded / Failed
 
 Implemented as `StateKey`s with ToolCall scope (namespaced per `call_id`).
 
-**Suspension is first-class**: Not an error path. A tool or `BeforeToolExecute` hook can suspend a call. Run transitions to Waiting; suspended state persists; external decision arrives asynchronously; agent loop replays at next step boundary. Three resume modes: ReplayToolCall (re-execute with decision context), UseDecisionAsResult (decision payload becomes result), PassDecisionToTool (decision as new arguments).
+**Suspension is first-class**: Not an error path. A tool or `ToolGateHook` can suspend a call. Run transitions to Waiting; suspended state persists; external decision arrives asynchronously; agent loop replays at the next step boundary. Three resume modes: ReplayToolCall (re-execute with decision context), UseDecisionAsResult (a `ToolGateHook` converts the decision payload into `SetResult`), PassDecisionToTool (decision as new arguments).
 
 **Three execution modes** (per-agent config):
 
@@ -35,3 +35,4 @@ Implemented as `StateKey`s with ToolCall scope (namespaced per `call_id`).
 - Suspension requires persistent ToolCall-scoped state (ADR-0008)
 - Parallel modes require state merge strategy (ADR-0008)
 - The server/client layer provides external decision transport
+- `BeforeToolExecute` remains available for execution-time side effects, but no longer decides suspend/block/set-result outcomes
