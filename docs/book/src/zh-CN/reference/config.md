@@ -322,3 +322,27 @@ impl PluginConfigKey for RateLimitConfigKey {
 ## 相关
 
 - [构建 Agent](../how-to/build-an-agent.md)
+
+## ConfigStore
+
+`ConfigStore` 是服务端 `/v1/config/*` 路由背后的异步配置持久化契约。适用于需要在运行时创建、列举和更新配置，而不是把配置静态写死在 `AgentSpec` 中的场景。
+
+```rust,ignore
+#[async_trait]
+pub trait ConfigStore: Send + Sync {
+    async fn get(&self, namespace: &str, id: &str) -> Result<Option<Value>, StorageError>;
+    async fn list(
+        &self,
+        namespace: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<(String, Value)>, StorageError>;
+    async fn put(&self, namespace: &str, id: &str, value: &Value) -> Result<(), StorageError>;
+    async fn delete(&self, namespace: &str, id: &str) -> Result<(), StorageError>;
+}
+```
+
+相关类型：
+
+- `ConfigChangeNotifier` / `ConfigChangeSubscriber` —— 可选的原生变更通知接口
+- `AppState::with_config_store(...)` —— 为 `awaken-server` 启用运行时配置路由

@@ -227,29 +227,40 @@ changing the tool itself.
 ```text
 LLM selects tool
   -> validate_args()
-  -> BeforeToolExecute phase (plugins run hooks)
-     Plugins may schedule ToolInterceptAction:
-       Block    -> run terminates with reason
-       Suspend  -> run pauses (HITL), tool not executed
-       SetResult -> tool skipped, pre-built result used
-  -> execute()                (only if not intercepted)
+  -> ToolGate phase          (pure allow/block/suspend/set-result decision)
+  -> BeforeToolExecute phase (execution-time hooks for allowed calls only)
+  -> execute()               (only if ToolGate allows)
   -> AfterToolExecute phase   (plugins run hooks)
      Plugins observe the ToolResult and may modify state
 ```
 
+### ToolGate
+
+Runs after argument validation and before any execution-time hook. Plugins
+implement `ToolGateHook` and return `Option<ToolInterceptPayload>`:
+
+| Variant | Effect |
+|---------|--------|
+| `Block { reason }` | Terminate the call and fail the run with the reason |
+| `Suspend(SuspendTicket)` | Pause the run and wait for an external decision |
+| `SetResult(ToolResult)` | Skip tool execution and use the provided result |
+
+When multiple gate hooks return a decision, priority is:
+**Block > Suspend > SetResult**.
+
+`ToolGate` is pure and may be re-evaluated after earlier allowed tool calls
+commit new state in the same step.
+
 ### BeforeToolExecute
 
-Runs once per tool call, after argument validation. Plugins receive a
-`PhaseContext` containing the tool name, call ID, and validated arguments.
-Hooks return a `StateCommand` that may schedule `ToolInterceptAction` to
-block, suspend, or short-circuit the call.
-
-When multiple intercepts are scheduled, priority is:
-**Block > Suspend > SetResult**.
+Runs once per tool call batch after `ToolGate` has already allowed the call.
+Plugins receive a `PhaseContext` containing the tool name, call ID, and
+validated arguments. Hooks return a `StateCommand` for execution-time work such
+as counters, throttling state, or observability setup.
 
 ### AfterToolExecute
 
-Runs after `execute()` completes (or after an intercept produces a result).
+Runs after `execute()` completes (or after `ToolGate` supplies a result).
 Plugins receive the `PhaseContext` with the `ToolResult` attached. Hooks can
 update state, emit events, or schedule actions for subsequent phases.
 

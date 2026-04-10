@@ -201,22 +201,32 @@ impl Tool for GetPreferences {
 ```text
 LLM 选择 tool
   -> validate_args()
+  -> ToolGate
+     纯判定：Allow / Block / Suspend / SetResult
   -> BeforeToolExecute
-     插件可调度 ToolInterceptAction:
-       Block
-       Suspend
-       SetResult
+     仅对放行的调用执行一次性钩子
   -> execute()
   -> AfterToolExecute
 ```
 
-### BeforeToolExecute
+### ToolGate
 
-参数校验后运行。插件可以在这里阻断、挂起，或直接提供预构造结果。
+参数校验后首先进入 `ToolGate`。插件实现 `ToolGateHook`，返回
+`Option<ToolInterceptPayload>`，用来决定：
+
+- `Block`
+- `Suspend`
+- `SetResult`
 
 拦截优先级：
 
 `Block > Suspend > SetResult`
+
+`ToolGate` 必须保持纯判定，可在同一步内于前序工具提交新状态后被重新评估。
+
+### BeforeToolExecute
+
+只有在 `ToolGate` 放行后才运行。适合做真正执行前的一次性副作用，例如计数、节流状态写入或观测打点。
 
 ### AfterToolExecute
 

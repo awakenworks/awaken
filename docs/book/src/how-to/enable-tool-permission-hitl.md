@@ -46,7 +46,7 @@ let runtime = AgentRuntimeBuilder::new()
     .expect("failed to build runtime");
 ```
 
-The plugin registers a `BeforeToolExecute` phase hook that evaluates permission rules before every tool call.
+The plugin registers a `ToolGateHook` that evaluates permission rules before every tool call.
 
 2. Define permission rules inline.
 
@@ -142,7 +142,7 @@ The pattern syntax supports:
 ## Verify
 
 1. Register a tool that matches a `deny` rule and attempt to invoke it.
-2. The tool call should be blocked and a `ToolInterceptAction` event emitted.
+2. The tool call should be blocked before execution, with the run terminating for deny rules.
 3. Register a tool matching an `ask` rule. The run should suspend, waiting for human approval via the mailbox.
 4. Send approval through the mailbox endpoint and confirm the run resumes.
 
@@ -167,7 +167,7 @@ The pattern syntax supports:
 | `crates/awaken-ext-permission/src/config.rs` | `PermissionRulesConfig` and YAML/JSON loading |
 | `crates/awaken-ext-permission/src/rules.rs` | Pattern syntax, `ToolPermissionBehavior`, rule evaluation |
 | `crates/awaken-ext-permission/src/plugin/plugin.rs` | `PermissionPlugin` registration |
-| `crates/awaken-ext-permission/src/plugin/checker.rs` | `PermissionInterceptHook` (BeforeToolExecute) |
+| `crates/awaken-ext-permission/src/plugin/checker.rs` | `PermissionToolGateHook` (`ToolGate`) |
 | `crates/awaken-tool-pattern/` | Shared glob/regex pattern matching library |
 
 ## Related

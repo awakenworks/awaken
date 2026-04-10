@@ -58,7 +58,7 @@ Key transitions:
 
 ## Phase Enum
 
-The `Phase` enum defines the eight execution phases in order:
+The `Phase` enum defines the nine execution phases in order:
 
 ```rust,ignore
 pub enum Phase {
@@ -66,6 +66,7 @@ pub enum Phase {
     StepStart,
     BeforeInference,
     AfterInference,
+    ToolGate,
     BeforeToolExecute,
     AfterToolExecute,
     StepEnd,
@@ -81,7 +82,9 @@ pub enum Phase {
 
 **AfterInference** -- fires after the LLM response arrives. Plugins can inspect the response, modify tool call lists, or request termination.
 
-**BeforeToolExecute** -- fires before each tool call batch. Permission checks, interception, and suspension happen here.
+**ToolGate** -- fires before each tool call is allowed to execute. It is a pure decision phase used for allow / block / suspend / set-result interception, and the runtime may re-evaluate it after earlier tool calls commit state.
+
+**BeforeToolExecute** -- fires only for tool calls that will actually execute. Use it for execution-time side effects such as metrics, counters, or preflight state updates.
 
 **AfterToolExecute** -- fires after tool results are available. Plugins can inspect results and trigger side effects.
 
@@ -198,21 +201,23 @@ stays in `Waiting` until **all** suspended calls are resolved.
 
 ## Suspension Bridges Run and Tool-Call Layers
 
-### Current execution model (serial phases)
+### Current execution model
 
-Tool execution is split into two serial phases inside
-`execute_tools_with_interception`:
+Tool execution is split into three stages inside the step runner:
 
 ```text
-Phase 1 — Intercept (serial, per-call):
+Stage 1 — ToolGate (serial, per-call):
   for each call:
-    BeforeToolExecute hooks → check for intercept actions
+    ToolGate hooks → resolve allow / block / suspend / set-result
     Suspend?  → mark Suspended, set suspended=true, continue
     Block?    → mark Failed, return immediately
     SetResult → mark with provided result, continue
     None      → add to allowed_calls
 
-Phase 2 — Execute (allowed_calls only):
+Stage 2 — BeforeToolExecute (allowed_calls only):
+  run execution-time hooks once for the calls that will execute
+
+Stage 3 — Execute (allowed_calls only):
   Sequential mode: one by one, break on first suspension
   Parallel mode:   batch execute, collect all results
 ```
@@ -257,7 +262,7 @@ The `arguments` field already reflects the resume mode (set by
 | Resume Mode | Arguments on Replay | Behavior |
 |---|---|---|
 | `ReplayToolCall` | Original arguments | Full re-execution |
-| `UseDecisionAsToolResult` | Decision result | `FrontendToolPlugin` intercepts in `BeforeToolExecute`, returns `SetResult` |
+| `UseDecisionAsToolResult` | Decision result | A `ToolGateHook` returns `ToolInterceptPayload::SetResult` during replay |
 | `PassDecisionToTool` | Decision result | Tool receives decision as arguments |
 
 Already-completed calls (`Succeeded`, `Failed`, `Cancelled`) are skipped.

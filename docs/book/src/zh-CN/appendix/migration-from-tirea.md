@@ -75,6 +75,8 @@ cmd.schedule_action::<AddContextMessage>(
 )?;
 ```
 
+需要拦截工具调用时，不再调度 `ToolInterceptAction`；应实现 `ToolGateHook`，并返回 `ToolInterceptPayload::Block` / `Suspend` / `SetResult`。
+
 ## Plugin Trait
 
 ```rust,ignore
@@ -146,7 +148,7 @@ let runtime = AgentRuntimeBuilder::new()
 - `Global` scope
 - `RuntimeEffect`
 - `EffectLog` / `ScheduledActionLog`
-- `ConfigStore` / `ConfigSlot`
+- `ConfigSlot`
 - `AgentProfile`
 - `ExtensionContext` 的动态激活
 
@@ -154,7 +156,7 @@ let runtime = AgentRuntimeBuilder::new()
 
 - `PluginRegistrar`
 - 带 `StateCommand` 的 `ToolOutput`
-- `ToolInterceptAction`
+- `ToolGateHook`
 - `CircuitBreaker`
 - `Mailbox`
 - `EventReplayBuffer`
@@ -168,6 +170,6 @@ let runtime = AgentRuntimeBuilder::new()
 - [ ] `#[derive(StateSlot)]` 改成 `impl StateKey`
 - [ ] `Extension` 改成 `Plugin`
 - [ ] `TypedTool` 改成 `Tool`
-- [ ] action enum 改成 `cmd.schedule_action::<ActionType>(...)`
+- [ ] action enum 改成 `cmd.schedule_action::<ActionType>(...)`；工具拦截迁到 `ToolGateHook`
 - [ ] `AgentOsBuilder` 改成 `AgentRuntimeBuilder`
 - [ ] store 和 server import 切到 `awaken-stores`、`awaken-server`
