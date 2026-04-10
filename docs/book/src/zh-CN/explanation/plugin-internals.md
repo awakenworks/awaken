@@ -16,6 +16,7 @@
 
 **行为组件** 仅在插件通过激活过滤器时才处于活跃状态：
 
+- 工具闸门钩子（`register_tool_gate_hook()`）
 - 阶段钩子（`register_phase_hook()`）
 - 工具（`register_tool()`）
 - 请求变换（`register_request_transform()`）
@@ -185,9 +186,9 @@ pub fn merge(&mut self, other: InferenceOverride) {
 
 这允许插件覆盖特定参数而不影响其他参数。成本控制插件可以设置 `max_tokens`，而质量插件设置 `temperature`，两者互不干扰。如果两者设置同一字段，最后一次合并胜出。
 
-## 工具拦截优先级
+## ToolGate 决策优先级
 
-在 `BeforeToolExecute` 阶段，插件可以调度 `ToolInterceptAction` 来控制工具执行流。动作载荷是以下三个变体之一：
+在 `ToolGate` 阶段，插件实现 `ToolGateHook`，返回可选的 `ToolInterceptPayload` 来控制工具执行流：
 
 ```rust,ignore
 pub enum ToolInterceptPayload {
@@ -197,7 +198,7 @@ pub enum ToolInterceptPayload {
 }
 ```
 
-当多个拦截被调度给同一个工具调用时，按隐式优先级解决：
+当多个闸门钩子为同一个工具调用返回决策时，按隐式优先级解决：
 
 | 优先级 | 变体 | 行为 |
 |--------|------|------|
@@ -205,13 +206,13 @@ pub enum ToolInterceptPayload {
 | 2 | `Suspend` | 暂停执行，等待外部决策 |
 | 1（最低） | `SetResult` | 以预定义结果短路返回 |
 
-最高优先级的拦截胜出。如果两个拦截具有相同优先级（例如，两个插件都调度了 `Block`），第一个被处理的生效，冲突被记录为错误。
+最高优先级的决策胜出。如果两个决策具有相同优先级（例如，两个插件都返回了 `Block`），第一个被处理的生效，冲突被记录为错误。
 
-如果没有调度拦截，工具正常执行（隐式放行）。
+如果没有 hook 返回决策，工具正常执行。`ToolGate` 必须保持纯判定，可在同一步内于前序已放行工具提交新状态后被重新评估；`BeforeToolExecute` 只会在最终放行后运行一次。
 
 ```mermaid
 flowchart TD
-    BTE[BeforeToolExecute 钩子运行] --> INT{有调度的拦截？}
+    TG[ToolGate 钩子运行] --> INT{有返回的决策？}
     INT -- 否 --> EXEC[正常执行工具]
     INT -- 是 --> PRI[按优先级解决]
     PRI --> B[Block：使调用失败]

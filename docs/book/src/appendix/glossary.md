@@ -4,7 +4,7 @@
 |------|------|-------------|
 | `Thread` | 会话线程 | Persisted conversation + state history. |
 | `Run` | 运行 | One execution attempt over a thread. |
-| `Phase` | 阶段 | Named step in the execution loop (RunStart, StepStart, BeforeInference, AfterInference, BeforeToolExecute, AfterToolExecute, StepEnd, RunEnd). |
+| `Phase` | 阶段 | Named step in the execution loop (RunStart, StepStart, BeforeInference, AfterInference, ToolGate, BeforeToolExecute, AfterToolExecute, StepEnd, RunEnd). |
 | `Snapshot` | 快照 | Immutable state snapshot (`struct Snapshot { revision: u64, ext: Arc<StateMap> }`) seen by phase hooks. |
 | `StateKey` | 状态键 | Typed key with scope, merge strategy, and value type. |
 | `MutationBatch` | 变更批次 | Collected state mutations applied atomically after phase convergence. |
@@ -14,6 +14,7 @@
 | `Plugin` | 插件 | System-level lifecycle hook registered via `PluginRegistrar`. |
 | `PluginRegistrar` | 插件注册器 | Registration API for phase hooks, tools, state keys, handlers. |
 | `PhaseHook` | 阶段钩子 | Async hook executed during a specific phase. |
+| `ToolGateHook` | 工具闸门钩子 | Pure hook that decides whether a tool call is allowed, blocked, suspended, or short-circuited before execution. |
 | `PhaseContext` | 阶段上下文 | Immutable context passed to phase hooks. |
 | `StateCommand` | 状态命令 | Result of a phase hook: mutations + scheduled actions + effects. |
 | `Tool` | 工具 | User-facing capability with descriptor, validation, and execution. |

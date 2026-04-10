@@ -18,7 +18,7 @@ pub trait Tool: Send + Sync {
 
 - 用 ID 注册
 - 对 LLM 可见
-- 在 `BeforeToolExecute` / `AfterToolExecute` 窗口执行
+- 会经过 `ToolGate`、`BeforeToolExecute`、真正执行以及 `AfterToolExecute`
 - 只能访问参数和 `ToolCallContext`
 - 适合文件操作、API 调用、数据库查询等业务能力
 
@@ -49,6 +49,7 @@ pub trait Plugin: Send + Sync + 'static {
 | 注册方法 | 用途 |
 |---------------------|------|
 | `register_key::<K>()` | 注册状态键 |
+| `register_tool_gate_hook()` | 注册纯判定的工具拦截钩子 |
 | `register_phase_hook()` | 在指定 phase 添加 hook |
 | `register_tool()` | 向运行时注入插件提供的工具 |
 | `register_effect_handler()` | 处理 effects |
@@ -79,10 +80,10 @@ pub trait Plugin: Send + Sync + 'static {
 
 插件可以影响 tool 执行，而 tool 自己并不需要感知：
 
-- permission 插件可在 `BeforeToolExecute` 阻断或挂起调用
+- permission 插件在 `ToolGate` 决定放行、阻断或挂起调用
 - observability 插件为 tool 执行包裹 trace
 - reminder 插件在工具完成后注入上下文提示
-- interception pipeline 可改参数、替换结果、甚至跳过执行
+- `ToolGate` 可在真正执行前替换结果、阻断调用或直接跳过执行
 
 ## 插件提供的 Tool 与用户 Tool
 

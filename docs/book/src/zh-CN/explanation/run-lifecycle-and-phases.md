@@ -1,6 +1,6 @@
 # Run 生命周期与 Phases
 
-本页描述 run 和 tool call 的状态机、8 个 phase、终止条件、checkpoint 触发点，以及挂起 / 恢复如何桥接 run 层与 tool-call 层。
+本页描述 run 和 tool call 的状态机、9 个 phase、终止条件、checkpoint 触发点，以及挂起 / 恢复如何桥接 run 层与 tool-call 层。
 
 ## RunStatus
 
@@ -43,7 +43,7 @@ pub enum ToolCallStatus {
 
 ## Phase Enum
 
-Awaken 的执行顺序由 8 个 phase 固定下来：
+Awaken 的执行顺序由 9 个 phase 固定下来：
 
 ```rust,ignore
 pub enum Phase {
@@ -51,6 +51,7 @@ pub enum Phase {
     StepStart,
     BeforeInference,
     AfterInference,
+    ToolGate,
     BeforeToolExecute,
     AfterToolExecute,
     StepEnd,
@@ -62,7 +63,8 @@ pub enum Phase {
 - `StepStart`：每轮推理开始
 - `BeforeInference`：最后修改推理请求
 - `AfterInference`：观察 LLM 返回，修改工具列表或请求终止
-- `BeforeToolExecute`：权限检查、拦截、挂起
+- `ToolGate`：纯判定阶段，用于 allow / block / suspend / set-result，可在前序 tool 提交状态后重判
+- `BeforeToolExecute`：只对真正要执行的 tool 运行一次，用于执行前副作用
 - `AfterToolExecute`：消费工具结果并触发副作用
 - `StepEnd`：checkpoint 和 stop policy
 - `RunEnd`：清理与最终持久化
@@ -145,16 +147,19 @@ t7    Succeeded      Succeeded      Succeeded      Done
 
 ## 挂起如何桥接 run 层与 tool-call 层
 
-### 当前执行模型（串行 phases）
+### 当前执行模型
 
-当前 `execute_tools_with_interception` 基本分两段：
+当前 step runner 基本分三段：
 
 ```text
-Phase 1 - Intercept:
-  BeforeToolExecute hooks
+Stage 1 - ToolGate:
+  ToolGate hooks
   可能得到 Suspend / Block / SetResult
 
-Phase 2 - Execute:
+Stage 2 - BeforeToolExecute:
+  仅对允许执行的调用运行执行前 hook
+
+Stage 3 - Execute:
   对允许执行的调用做串行或并行执行
 ```
 
@@ -185,7 +190,7 @@ loop {
 | Resume Mode | Replay 参数 | 行为 |
 |---|---|---|
 | `ReplayToolCall` | 原始参数 | 完整重跑 |
-| `UseDecisionAsToolResult` | decision 结果 | 直接作为 tool result |
+| `UseDecisionAsToolResult` | decision 结果 | `ToolGateHook` 在回放时返回 `ToolInterceptPayload::SetResult` |
 | `PassDecisionToTool` | decision 结果 | 作为新参数传给 tool |
 
 ### 局限：执行中到达的 decision

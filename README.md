@@ -18,10 +18,10 @@ Docs: [GitHub Pages](https://awakenworks.github.io/awaken/) | [Chinese docs](htt
 
 1. **Tools** — typed functions your agent can call; JSON schema is generated at compile time
 2. **Agents** — each agent has a system prompt, a model, and a set of allowed tools; the LLM drives orchestration through natural language — no predefined graphs
-3. **State** — typed and scoped (`thread` / `run`), with merge strategies for safe concurrent writes and immutable snapshots
+3. **State** — typed run/thread state plus persistent profile/shared state for cross-thread or cross-agent coordination
 4. **Plugins** — lifecycle hooks for permissions, observability, context management, skills, MCP, and more
 
-Your agent picks tools, calls them, reads and updates state, and repeats — all orchestrated by the runtime through 8 typed phases. Every state change is committed atomically after the gather phase.
+Your agent picks tools, calls them, reads and updates state, and repeats — all orchestrated by the runtime through 9 typed phases, including a pure `ToolGate` before tool execution. Every state change is committed atomically after the gather phase.
 
 ## Try it in 5 minutes
 
@@ -29,7 +29,7 @@ Prerequisites:
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.1.1" }
+awaken = { package = "awaken-agent", version = "0.1" }
 tokio = { version = "1.51.0", features = ["full"] }
 async-trait = "0.1.89"
 serde_json = "1.0.149"
@@ -179,6 +179,8 @@ All features are enabled by default via the `full` feature. Use `default-feature
 | **Generative UI** | Streams declarative UI components to frontends via the A2UI protocol. | `generative-ui` |
 
 `awaken-ext-deferred-tools` provides lazy tool loading; add it as a direct dependency if needed — it is not included in the `full` feature.
+
+Custom interception hooks should use `ToolGateHook` via `PluginRegistrar::register_tool_gate_hook()`. `BeforeToolExecute` is reserved for execution-time hooks that run only when a tool is actually about to execute.
 
 ## Why Awaken
 

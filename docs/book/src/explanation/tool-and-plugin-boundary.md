@@ -18,7 +18,7 @@ Key properties:
 
 - **Registered by ID** -- each tool has a unique string identifier from `ToolDescriptor`.
 - **LLM-visible** -- the descriptor (name, description, JSON Schema for parameters) is included in inference requests.
-- **Executed in tool rounds** -- tools run during the `BeforeToolExecute` / `AfterToolExecute` phase window.
+- **Executed in tool rounds** -- tools pass through `ToolGate`, `BeforeToolExecute`, execution, and `AfterToolExecute`.
 - **Isolated** -- a tool receives only its arguments and a `ToolCallContext`. It cannot directly access other tools, the plugin system, or the phase runtime.
 - **User-defined** -- application code creates tools for domain-specific actions (file operations, API calls, database queries).
 
@@ -49,6 +49,7 @@ When `Plugin::register` is called, the plugin uses `PluginRegistrar` to declare 
 | Registration Method | Purpose |
 |---------------------|---------|
 | `register_key::<K>()` | Declare a `StateKey` for the plugin's state |
+| `register_tool_gate_hook()` | Add a pure tool-interception decision hook |
 | `register_phase_hook()` | Add a hook that runs at a specific phase |
 | `register_tool()` | Inject a tool into the runtime (plugin-provided tools) |
 | `register_effect_handler()` | Handle named effects emitted by hooks |
@@ -80,10 +81,10 @@ Use a plugin when:
 
 Plugins can influence tool execution without the tool knowing:
 
-- **Permission plugin** -- intercepts tool calls at `BeforeToolExecute`, blocks or suspends them based on policy rules. The tool itself has no permission logic.
+- **Permission plugin** -- decides at `ToolGate` whether a tool call is allowed, blocked, or suspended. The tool itself has no permission logic.
 - **Observability plugin** -- wraps tool execution with OpenTelemetry spans. The tool does not emit traces.
 - **Reminder plugin** -- injects context messages after specific tools execute. The tool does not know about reminders.
-- **Interception pipeline** -- plugins can modify tool arguments, replace tool results, or skip execution entirely through the tool interception mechanism.
+- **Interception pipeline** -- `ToolGate` hooks can replace tool results or skip execution entirely before any execution-time hooks run.
 
 This separation means tools remain simple and focused on their domain logic. Cross-cutting concerns are handled uniformly by plugins, applied consistently across all tools without per-tool opt-in.
 

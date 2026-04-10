@@ -88,25 +88,11 @@ async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput
 
 把当前步骤的工具集合限制为指定白名单。
 
-### ToolInterceptAction
+### 工具拦截
 
-| | |
-|---|---|
-| Key | `tool_intercept` |
-| Phase | `BeforeToolExecute` |
-| Payload | `ToolInterceptPayload` |
-
-在 tool 真正执行前拦截：
-
-| 变体 | 效果 |
-|------|------|
-| `Block { reason }` | 阻断 tool，run 终止 |
-| `Suspend(SuspendTicket)` | 挂起 tool，等待外部决策 |
-| `SetResult(ToolResult)` | 直接使用预构造结果，跳过执行 |
-
-优先级：
-
-`Block > Suspend > SetResult`
+> 工具拦截**不再**通过 scheduled action 实现。
+> 需要在执行前阻断、挂起或直接返回结果时，应实现 `ToolGateHook`
+> 并通过 `PluginRegistrar::register_tool_gate_hook()` 注册。
 
 ## Deferred Tools Actions（awaken-ext-deferred-tools）
 
@@ -132,15 +118,15 @@ async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput
 
 ## 插件 Action 使用矩阵
 
-| 插件 | AddContext | SetOverride | Exclude | IncludeOnly | Intercept | Defer | Promote |
-|--------|:---------:|:-----------:|:-------:|:-----------:|:---------:|:-----:|:-------:|
-| `permission` | | | X | | X | | |
+| 插件 | AddContext | SetOverride | Exclude | IncludeOnly | Defer | Promote |
+|--------|:---------:|:-----------:|:-------:|:-----------:|:-----:|:-------:|
+| `permission` | | | X | | | |
 | `skills` | X | | | | | | |
 | `reminder` | X | | | | | | |
-| `deferred-tools` | X | | X | | | X | X |
-| `observability` | | | | | | | |
-| `mcp` | | | | | | | |
-| `generative-ui` | | | | | | | |
+| `deferred-tools` | X | | X | | X | X |
+| `observability` | | | | | | |
+| `mcp` | | | | | | |
+| `generative-ui` | | | | | | |
 
 ## 定义自定义 action
 
