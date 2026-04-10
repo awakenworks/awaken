@@ -514,6 +514,22 @@ async fn disconnect_server(slot: &mut McpServerSlot) -> Result<(), McpError> {
     Ok(())
 }
 
+async fn disable_server(slot: &mut McpServerSlot) -> Result<(), McpError> {
+    if slot.lifecycle == McpServerLifecycle::Disabled {
+        slot.health.reconnecting = false;
+        return Ok(());
+    }
+
+    let mut next = slot.clone();
+    next.health.reconnecting = false;
+    disconnect_server(&mut next).await?;
+    next.lifecycle = McpServerLifecycle::Disabled;
+    next.tools_cache.clear();
+    next.published_tools.clear();
+    *slot = next;
+    Ok(())
+}
+
 async fn refresh_server(
     slot: &mut McpServerSlot,
     state_weak: &Weak<McpRegistryState>,
@@ -1195,11 +1211,7 @@ impl McpToolRegistryManager {
 
         let toggle_result = async {
             if !enabled {
-                slot.lifecycle = McpServerLifecycle::Disabled;
-                slot.health.reconnecting = false;
-                disconnect_server(slot).await?;
-                slot.tools_cache.clear();
-                slot.published_tools.clear();
+                disable_server(slot).await?;
                 return Ok::<(), McpError>(());
             }
 
@@ -1892,6 +1904,61 @@ mod tests {
         assert_eq!(slot.lifecycle, McpServerLifecycle::Disabled);
         assert!(slot.runtime.is_none());
         assert!(slot.tools_cache.is_empty());
+    }
+
+    #[tokio::test]
+    async fn manager_toggle_disable_close_failure_preserves_previous_state() {
+        let mgr = make_manager_with(vec![("srv", vec![MockTransport::tool_def("echo")])]).await;
+        let registry = mgr.registry();
+
+        {
+            let mut servers = write_lock(&mgr.state.servers);
+            servers[0].runtime = Some(McpServerRuntime {
+                transport_type: TransportTypeId::Stdio,
+                transport: Arc::new(CloseFailingTransport::new(
+                    "echo",
+                    "scripted disable close failure",
+                )) as Arc<dyn McpToolTransport>,
+                capabilities: None,
+            });
+            servers[0].lifecycle = McpServerLifecycle::Connected;
+            servers[0].health.reconnecting = true;
+        }
+
+        let before = {
+            let servers = read_lock(&mgr.state.servers);
+            servers[0].clone()
+        };
+
+        let err = mgr.toggle("srv", false).await.unwrap_err();
+        assert!(err.to_string().contains("scripted disable close failure"));
+
+        let after = {
+            let servers = read_lock(&mgr.state.servers);
+            servers[0].clone()
+        };
+
+        assert_eq!(after.lifecycle, before.lifecycle);
+        assert_eq!(after.reconnect_attempts, before.reconnect_attempts);
+        assert_eq!(after.health, before.health);
+        assert!(after.runtime.is_some());
+        assert_eq!(
+            after
+                .tools_cache
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            before
+                .tools_cache
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            after.published_tools.keys().collect::<Vec<_>>(),
+            before.published_tools.keys().collect::<Vec<_>>()
+        );
+        assert!(registry.get("mcp__srv__echo").is_some());
     }
 
     #[tokio::test]
