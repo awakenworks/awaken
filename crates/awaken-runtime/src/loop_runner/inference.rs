@@ -309,7 +309,7 @@ mod tests {
 
     fn make_request() -> InferenceRequest {
         InferenceRequest {
-            model: "test-model".into(),
+            upstream_model: "test-model".into(),
             messages: vec![Message::user("hello")],
             tools: vec![],
             system: vec![],

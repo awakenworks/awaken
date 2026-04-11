@@ -81,7 +81,7 @@ mod tests {
 
     fn make_request() -> InferenceRequest {
         InferenceRequest {
-            model: "mock".into(),
+            upstream_model: "mock".into(),
             messages: vec![Message::user("hello")],
             tools: vec![],
             system: vec![],

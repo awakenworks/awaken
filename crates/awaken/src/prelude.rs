@@ -9,7 +9,7 @@
 //! feature flag is active.
 
 // ── Building agents ──
-pub use crate::registry::traits::ModelEntry;
+pub use crate::registry::traits::ModelBinding;
 pub use crate::{AgentRuntime, AgentRuntimeBuilder, BuildError, RunRequest, RuntimeError};
 pub use crate::{AgentSpec, PluginConfigKey};
 

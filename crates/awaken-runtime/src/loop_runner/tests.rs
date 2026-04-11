@@ -612,7 +612,7 @@ fn exclude_nonexistent_tool_is_harmless() {
 #[test]
 fn inference_override_state_merges_correctly() {
     let ovr1 = awaken_contract::contract::inference::InferenceOverride {
-        model: Some("gpt-4".into()),
+        upstream_model: Some("gpt-4".into()),
         temperature: Some(0.7),
         ..Default::default()
     };
@@ -627,7 +627,7 @@ fn inference_override_state_merges_correctly() {
     InferenceOverrideState::apply(&mut val, InferenceOverrideStateAction::Merge(ovr2));
 
     let ovr = val.overrides.expect("should have overrides");
-    assert_eq!(ovr.model.as_deref(), Some("gpt-4"));
+    assert_eq!(ovr.upstream_model.as_deref(), Some("gpt-4"));
     assert_eq!(ovr.temperature, Some(0.9)); // last-wins
     assert_eq!(ovr.max_tokens, Some(1000));
 }
@@ -639,7 +639,7 @@ fn inference_override_state_clear_resets() {
         &mut val,
         InferenceOverrideStateAction::Merge(
             awaken_contract::contract::inference::InferenceOverride {
-                model: Some("gpt-4".into()),
+                upstream_model: Some("gpt-4".into()),
                 ..Default::default()
             },
         ),
@@ -651,7 +651,7 @@ fn inference_override_state_clear_resets() {
 #[test]
 fn inference_override_merge_helper_works() {
     let ovr1 = awaken_contract::contract::inference::InferenceOverride {
-        model: Some("gpt-4".into()),
+        upstream_model: Some("gpt-4".into()),
         temperature: Some(0.7),
         ..Default::default()
     };
@@ -664,7 +664,7 @@ fn inference_override_merge_helper_works() {
     let mut overrides = None;
     merge_override_payloads(&mut overrides, vec![ovr1, ovr2]);
     let ovr = overrides.expect("should have overrides");
-    assert_eq!(ovr.model.as_deref(), Some("gpt-4"));
+    assert_eq!(ovr.upstream_model.as_deref(), Some("gpt-4"));
     assert_eq!(ovr.temperature, Some(0.9)); // last-wins
     assert_eq!(ovr.max_tokens, Some(1000));
 }

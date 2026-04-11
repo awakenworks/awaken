@@ -51,7 +51,7 @@ use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::VecEventSink;
 use awaken::engine::GenaiExecutor;
 use awaken::registry_spec::AgentSpec;
-use awaken::registry::ModelEntry;
+use awaken::registry::ModelBinding;
 use awaken::{AgentRuntimeBuilder, RunRequest};
 
 struct EchoTool;
@@ -76,7 +76,7 @@ impl Tool for EchoTool {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let agent_spec = AgentSpec::new("assistant")
-        .with_model("gpt-4o-mini")
+        .with_model_id("gpt-4o-mini")
         .with_system_prompt("You are a helpful assistant. Use the echo tool when asked.")
         .with_max_rounds(5);
 
@@ -84,9 +84,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_agent_spec(agent_spec)
         .with_tool("echo", Arc::new(EchoTool))
         .with_provider("openai", Arc::new(GenaiExecutor::new()))
-        .with_model("gpt-4o-mini", ModelEntry {
-            provider: "openai".into(),
-            model_name: "gpt-4o-mini".into(),
+        .with_model_binding("gpt-4o-mini", ModelBinding {
+            provider_id: "openai".into(),
+            upstream_model: "gpt-4o-mini".into(),
         })
         .build()?;
 

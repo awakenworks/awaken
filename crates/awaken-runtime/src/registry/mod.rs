@@ -14,7 +14,7 @@ pub mod traits;
 pub use awaken_contract::registry_spec::AgentSpec;
 #[cfg(feature = "a2a")]
 pub use composite::{CompositeAgentSpecRegistry, DiscoveryError, RemoteAgentSource};
-pub use config::{AgentSystemConfig, ModelConfig};
+pub use config::AgentSystemConfig;
 #[cfg(feature = "a2a")]
 pub use memory::MapBackendRegistry;
 pub use memory::{
@@ -27,6 +27,6 @@ pub use snapshot::{RegistryHandle, RegistrySnapshot};
 #[cfg(feature = "a2a")]
 pub use traits::BackendRegistry;
 pub use traits::{
-    AgentSpecRegistry, ModelEntry, ModelRegistry, PluginSource, ProviderRegistry, RegistrySet,
+    AgentSpecRegistry, ModelBinding, ModelRegistry, PluginSource, ProviderRegistry, RegistrySet,
     ToolRegistry,
 };

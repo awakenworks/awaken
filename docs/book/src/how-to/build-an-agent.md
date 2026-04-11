@@ -14,10 +14,11 @@ Use this when you need to assemble an agent with tools, persistence, and a provi
 
 ```rust,ignore
 use awaken::engine::GenaiExecutor;
-use awaken::{AgentSpec, AgentRuntimeBuilder, ModelSpec};
+use awaken::registry::ModelBinding;
+use awaken::{AgentSpec, AgentRuntimeBuilder};
 
 let spec = AgentSpec::new("assistant")
-    .with_model("claude-sonnet")
+    .with_model_id("claude-sonnet")
     .with_system_prompt("You are a helpful assistant.")
     .with_max_rounds(10);
 ```
@@ -38,10 +39,9 @@ let builder = AgentRuntimeBuilder::new()
 ```rust,ignore
 let builder = builder
     .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
-    .with_model("claude-sonnet", ModelSpec {
-        id: "claude-sonnet".into(),
-        provider: "anthropic".into(),
-        model: "claude-sonnet-4-20250514".into(),
+    .with_model_binding("claude-sonnet", ModelBinding {
+        provider_id: "anthropic".into(),
+        upstream_model: "claude-sonnet-4-20250514".into(),
     });
 ```
 

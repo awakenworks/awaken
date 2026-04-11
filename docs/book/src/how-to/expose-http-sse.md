@@ -23,7 +23,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 ```rust,ignore
 use std::sync::Arc;
 use awaken::engine::GenaiExecutor;
-use awaken::{AgentRuntimeBuilder, AgentSpec, ModelSpec};
+use awaken::registry::ModelBinding;
+use awaken::{AgentRuntimeBuilder, AgentSpec};
 use awaken::stores::InMemoryStore;
 
 let store = Arc::new(InMemoryStore::new());
@@ -31,15 +32,14 @@ let store = Arc::new(InMemoryStore::new());
 let runtime = AgentRuntimeBuilder::new()
     .with_agent_spec(
         AgentSpec::new("assistant")
-            .with_model("claude-sonnet")
+            .with_model_id("claude-sonnet")
             .with_system_prompt("You are a helpful assistant."),
     )
     .with_tool("search", Arc::new(SearchTool))
     .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
-    .with_model("claude-sonnet", ModelSpec {
-        id: "claude-sonnet".into(),
-        provider: "anthropic".into(),
-        model: "claude-sonnet-4-20250514".into(),
+    .with_model_binding("claude-sonnet", ModelBinding {
+        provider_id: "anthropic".into(),
+        upstream_model: "claude-sonnet-4-20250514".into(),
     })
     .with_thread_run_store(store.clone())
     .build()?;

@@ -1,7 +1,7 @@
 //! Serializable agent definition — pure data, no trait objects.
 //!
 //! `AgentSpec` is the unified agent configuration: it describes both the
-//! declarative registry references (model, plugins, tools) and the runtime
+//! declarative registry references (model binding, plugins, tools) and the runtime
 //! behavior (active_hook_filter filtering, typed plugin sections, context policy).
 //!
 //! Supersedes the former `AgentProfile` — see ADR-0009.
@@ -57,11 +57,12 @@ pub trait PluginConfigKey: 'static + Send + Sync {
 /// Also serves as the runtime behavior configuration passed to hooks via
 /// `PhaseContext.agent_spec`. Plugins read their typed config via `spec.config::<K>()`.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AgentSpec {
     /// Unique agent identifier.
     pub id: String,
-    /// ModelRegistry ID — resolved to a [`super::traits::ModelEntry`].
-    pub model: String,
+    /// ModelRegistry ID — resolved to a runtime model binding.
+    pub model_id: String,
     /// System prompt sent to the LLM.
     pub system_prompt: String,
     /// Maximum inference rounds before the agent stops.
@@ -250,18 +251,19 @@ impl<'de> Deserialize<'de> for RemoteEndpoint {
 }
 
 // ---------------------------------------------------------------------------
-// ModelSpec
+// ModelBindingSpec
 // ---------------------------------------------------------------------------
 
-/// Serializable model definition mapping a stable ID to a provider and model name.
+/// Serializable model binding from a stable ID to a provider and upstream model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct ModelSpec {
+#[serde(deny_unknown_fields)]
+pub struct ModelBindingSpec {
     /// Unique identifier (for example `"gpt-4o-mini"` or `"research-default"`).
     pub id: String,
-    /// Provider spec ID referenced by this model.
-    pub provider: String,
+    /// Provider spec ID referenced by this binding.
+    pub provider_id: String,
     /// Actual model name sent to the upstream provider.
-    pub model: String,
+    pub upstream_model: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -414,7 +416,7 @@ impl Default for AgentSpec {
     fn default() -> Self {
         Self {
             id: String::new(),
-            model: String::new(),
+            model_id: String::new(),
             system_prompt: String::new(),
             max_rounds: default_max_rounds(),
             max_continuation_retries: default_max_continuation_retries(),
@@ -449,11 +451,11 @@ impl AgentSpec {
     /// use awaken_contract::registry_spec::AgentSpec;
     ///
     /// let spec = AgentSpec::new("assistant")
-    ///     .with_model("gpt-4o-mini")
+    ///     .with_model_id("gpt-4o-mini")
     ///     .with_system_prompt("You are helpful.")
     ///     .with_max_rounds(10);
     /// assert_eq!(spec.id, "assistant");
-    /// assert_eq!(spec.model, "gpt-4o-mini");
+    /// assert_eq!(spec.model_id, "gpt-4o-mini");
     /// assert_eq!(spec.system_prompt, "You are helpful.");
     /// assert_eq!(spec.max_rounds, 10);
     /// ```
@@ -494,8 +496,8 @@ impl AgentSpec {
     // -- Builder methods --
 
     #[must_use]
-    pub fn with_model(mut self, model: impl Into<String>) -> Self {
-        self.model = model.into();
+    pub fn with_model_id(mut self, model_id: impl Into<String>) -> Self {
+        self.model_id = model_id.into();
         self
     }
 
@@ -561,7 +563,7 @@ mod tests {
     fn agent_spec_serde_roundtrip() {
         let spec = AgentSpec {
             id: "coder".into(),
-            model: "claude-opus".into(),
+            model_id: "claude-opus".into(),
             system_prompt: "You are a coding assistant.".into(),
             max_rounds: 8,
             plugin_ids: vec!["permission".into(), "logging".into()],
@@ -579,7 +581,7 @@ mod tests {
         let parsed: AgentSpec = serde_json::from_str(&json_str).unwrap();
 
         assert_eq!(parsed.id, "coder");
-        assert_eq!(parsed.model, "claude-opus");
+        assert_eq!(parsed.model_id, "claude-opus");
         assert_eq!(parsed.system_prompt, "You are a coding assistant.");
         assert_eq!(parsed.max_rounds, 8);
         assert_eq!(parsed.plugin_ids, vec!["permission", "logging"]);
@@ -593,9 +595,10 @@ mod tests {
 
     #[test]
     fn agent_spec_defaults() {
-        let json_str = r#"{"id":"min","model":"m","system_prompt":"sp"}"#;
+        let json_str = r#"{"id":"min","model_id":"m","system_prompt":"sp"}"#;
         let spec: AgentSpec = serde_json::from_str(json_str).unwrap();
 
+        assert_eq!(spec.model_id, "m");
         assert_eq!(spec.max_rounds, 16);
         assert_eq!(spec.max_continuation_retries, 2);
         assert!(spec.context_policy.is_none());
@@ -604,6 +607,35 @@ mod tests {
         assert!(spec.allowed_tools.is_none());
         assert!(spec.excluded_tools.is_none());
         assert!(spec.sections.is_empty());
+    }
+
+    #[test]
+    fn model_binding_spec_uses_canonical_names() {
+        let canonical = ModelBindingSpec {
+            id: "default".into(),
+            provider_id: "openai".into(),
+            upstream_model: "gpt-4o-mini".into(),
+        };
+
+        let encoded = serde_json::to_value(&canonical).unwrap();
+        assert_eq!(encoded["provider_id"], "openai");
+        assert_eq!(encoded["upstream_model"], "gpt-4o-mini");
+        assert!(encoded.get("provider").is_none());
+        assert!(encoded.get("model").is_none());
+    }
+
+    #[test]
+    fn provider_model_legacy_fields_are_rejected() {
+        let agent =
+            serde_json::from_str::<AgentSpec>(r#"{"id":"min","model":"m","system_prompt":"sp"}"#);
+        assert!(agent.is_err());
+
+        let model = serde_json::from_value::<ModelBindingSpec>(json!({
+            "id": "default",
+            "provider": "openai",
+            "model": "gpt-4o-mini"
+        }));
+        assert!(model.is_err());
     }
 
     // -- Typed config tests (merged from AgentProfile) --
@@ -663,7 +695,7 @@ mod tests {
     #[test]
     fn config_serializes_to_json() {
         let spec = AgentSpec::new("coder")
-            .with_model("sonnet")
+            .with_model_id("sonnet")
             .with_config::<ModelNameKey>(ModelNameConfig {
                 name: "custom".into(),
             })
@@ -673,7 +705,7 @@ mod tests {
         let parsed: AgentSpec = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed.id, "coder");
-        assert_eq!(parsed.model, "sonnet");
+        assert_eq!(parsed.model_id, "sonnet");
 
         let model: ModelNameConfig = parsed.config::<ModelNameKey>().unwrap();
         assert_eq!(model.name, "custom");
@@ -777,7 +809,7 @@ mod tests {
     #[test]
     fn builder() {
         let spec = AgentSpec::new("reviewer")
-            .with_model("claude-opus")
+            .with_model_id("claude-opus")
             .with_hook_filter("permission")
             .with_config::<PermKey>(PermConfig {
                 mode: "strict".into(),
@@ -785,7 +817,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(spec.id, "reviewer");
-        assert_eq!(spec.model, "claude-opus");
+        assert_eq!(spec.model_id, "claude-opus");
         assert!(spec.active_hook_filter.contains("permission"));
     }
 }

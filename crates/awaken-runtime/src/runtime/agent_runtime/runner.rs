@@ -760,8 +760,9 @@ mod tests {
             plugins: vec![],
         });
         let runtime = AgentRuntime::new(resolver);
-        let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
+        let sink = Arc::new(VecEventSink::new());
         let override_req = InferenceOverride {
+            upstream_model: Some("override-model".into()),
             temperature: Some(0.3),
             max_tokens: Some(77),
             ..Default::default()
@@ -791,6 +792,17 @@ mod tests {
             seen[0].as_ref().and_then(|o| o.max_tokens),
             override_req.max_tokens
         );
+        assert!(
+            seen[0]
+                .as_ref()
+                .and_then(|o| o.upstream_model.as_ref())
+                .is_none()
+        );
+        let complete_model = sink.events().into_iter().find_map(|event| match event {
+            AgentEvent::InferenceComplete { model, .. } => Some(model),
+            _ => None,
+        });
+        assert_eq!(complete_model.as_deref(), Some("override-model"));
     }
 
     #[tokio::test]
@@ -1415,6 +1427,7 @@ mod tests {
         call_count: AtomicUsize,
         /// Responses to return after the first (truncated) call.
         followup_responses: Mutex<Vec<StreamResult>>,
+        upstream_models_seen: Mutex<Vec<String>>,
     }
 
     impl TruncatingLlm {
@@ -1422,6 +1435,7 @@ mod tests {
             Self {
                 call_count: AtomicUsize::new(0),
                 followup_responses: Mutex::new(followup_responses),
+                upstream_models_seen: Mutex::new(Vec::new()),
             }
         }
     }
@@ -1437,7 +1451,7 @@ mod tests {
 
         fn execute_stream(
             &self,
-            _request: InferenceRequest,
+            request: InferenceRequest,
         ) -> std::pin::Pin<
             Box<
                 dyn std::future::Future<
@@ -1453,6 +1467,10 @@ mod tests {
             use awaken_contract::contract::inference::TokenUsage;
 
             Box::pin(async move {
+                self.upstream_models_seen
+                    .lock()
+                    .expect("lock poisoned")
+                    .push(request.upstream_model.clone());
                 let n = self.call_count.fetch_add(1, Ordering::SeqCst);
                 if n == 0 {
                     // First call: emit a tool call with truncated JSON, then MaxTokens
@@ -1589,6 +1607,49 @@ mod tests {
             })
             .collect();
         assert_eq!(text_deltas, vec!["partial ", "completed"]);
+    }
+
+    #[tokio::test]
+    async fn truncation_recovery_preserves_model_override() {
+        let llm = Arc::new(TruncatingLlm::new(vec![StreamResult {
+            content: vec![ContentBlock::text("completed response")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        }]));
+        let resolver = Arc::new(FixedResolver {
+            agent: ResolvedAgent::new("agent", "base-model", "sys", llm.clone())
+                .with_max_continuation_retries(2),
+            plugins: vec![],
+        });
+        let runtime = AgentRuntime::new(resolver);
+        let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
+
+        let result = runtime
+            .run(
+                RunRequest::new("thread-trunc-override", vec![Message::user("hi")])
+                    .with_agent_id("agent")
+                    .with_overrides(InferenceOverride {
+                        upstream_model: Some("override-model".into()),
+                        ..Default::default()
+                    }),
+                sink,
+            )
+            .await
+            .expect("run should succeed");
+
+        assert_eq!(
+            result.termination,
+            awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd
+        );
+        assert_eq!(
+            llm.upstream_models_seen
+                .lock()
+                .expect("lock poisoned")
+                .clone(),
+            vec!["override-model".to_string(), "override-model".to_string()]
+        );
     }
 
     #[tokio::test]

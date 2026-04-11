@@ -227,6 +227,7 @@ async fn recover_truncation(
     transform_arcs: &[std::sync::Arc<
         dyn awaken_contract::contract::transform::InferenceRequestTransform,
     >],
+    overrides: Option<InferenceOverride>,
 ) -> Result<StreamResult, AgentLoopError> {
     while should_retry(
         &stream_result,
@@ -249,13 +250,14 @@ async fn recover_truncation(
             &ctx.agent.tool_descriptors(),
             transform_arcs,
         );
+        let upstream_model = effective_upstream_model(ctx.agent, overrides.as_ref())?;
 
         let cont_request = InferenceRequest {
-            model: ctx.agent.model.clone(),
+            upstream_model,
             messages: cont_messages,
             tools: ctx.agent.tool_descriptors(),
             system: vec![],
-            overrides: ctx.run_overrides.clone(),
+            overrides: executor_overrides(overrides.clone()),
             enable_prompt_cache: false,
         };
 
@@ -270,6 +272,33 @@ async fn recover_truncation(
         .await?;
     }
     Ok(stream_result)
+}
+
+fn effective_upstream_model(
+    agent: &ResolvedAgent,
+    overrides: Option<&InferenceOverride>,
+) -> Result<String, AgentLoopError> {
+    let Some(upstream_model) = overrides.and_then(|overrides| overrides.upstream_model.as_ref())
+    else {
+        return Ok(agent.upstream_model.clone());
+    };
+    if upstream_model.trim().is_empty() {
+        return Err(AgentLoopError::InferenceFailed(
+            "inference override upstream_model cannot be empty".into(),
+        ));
+    }
+    Ok(upstream_model.clone())
+}
+
+fn executor_overrides(mut overrides: Option<InferenceOverride>) -> Option<InferenceOverride> {
+    if let Some(overrides) = overrides.as_mut() {
+        // The primary upstream model is applied to `InferenceRequest.upstream_model`.
+        // Keeping it in `InferenceRequest.overrides` would give executors two
+        // sources of truth for the same routing decision.
+        overrides.upstream_model = None;
+    }
+
+    overrides.filter(|overrides| !overrides.is_empty())
 }
 
 /// Run the BeforeInference phase via collect_commands, submit all actions to
@@ -360,14 +389,19 @@ async fn run_before_inference(
     ))
 }
 
+struct InferencePhaseOutput {
+    stream_result: StreamResult,
+    duration_ms: u64,
+    upstream_model: String,
+}
+
 /// Run the inference phase: compaction, request building, streaming.
-/// Returns the stream result and wall-clock duration in milliseconds.
 async fn run_inference_phase(
     ctx: &mut StepContext<'_>,
     overrides: Option<InferenceOverride>,
     exclusion_payloads: Vec<String>,
     inclusion_payloads: Vec<Vec<String>>,
-) -> Result<(StreamResult, u64), AgentLoopError> {
+) -> Result<InferencePhaseOutput, AgentLoopError> {
     let store = ctx.runtime.store();
 
     // LLM compaction
@@ -408,12 +442,13 @@ async fn run_inference_phase(
         .agent
         .context_policy()
         .is_some_and(|p| p.enable_prompt_cache);
+    let request_upstream_model = effective_upstream_model(ctx.agent, overrides.as_ref())?;
     let request = InferenceRequest {
-        model: ctx.agent.model.clone(),
+        upstream_model: request_upstream_model.clone(),
         messages: request_messages,
         tools,
         system: vec![],
-        overrides,
+        overrides: executor_overrides(overrides.clone()),
         enable_prompt_cache,
     };
 
@@ -429,18 +464,22 @@ async fn run_inference_phase(
     .await?;
 
     // Truncation recovery (separated from main inference for clarity)
-    let stream_result = recover_truncation(ctx, stream_result, &transform_arcs).await?;
+    let stream_result = recover_truncation(ctx, stream_result, &transform_arcs, overrides).await?;
 
     let duration_ms = start.elapsed().as_millis() as u64;
     tracing::info!(
-        model = %ctx.agent.model,
+        model = %request_upstream_model,
         input_tokens = *ctx.total_input_tokens,
         output_tokens = *ctx.total_output_tokens,
         duration_ms,
         "inference_complete"
     );
 
-    Ok((stream_result, duration_ms))
+    Ok(InferencePhaseOutput {
+        stream_result,
+        duration_ms,
+        upstream_model: request_upstream_model,
+    })
 }
 
 /// Run ToolGate hooks for a tool call and resolve the winning decision.
@@ -1095,14 +1134,19 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
     }
 
     // --- Inference ---
-    let (stream_result, duration_ms) =
+    let inference =
         run_inference_phase(ctx, overrides, exclusion_payloads, inclusion_payloads).await?;
+    let InferencePhaseOutput {
+        stream_result,
+        duration_ms,
+        upstream_model,
+    } = inference;
 
     // --- Post-inference cancellation check ---
     if ctx.cancellation_token.is_some_and(|t| t.is_cancelled()) {
         ctx.sink
             .emit(AgentEvent::InferenceComplete {
-                model: ctx.agent.model.clone(),
+                model: upstream_model.clone(),
                 usage: stream_result.usage.clone(),
                 duration_ms,
             })
@@ -1118,7 +1162,7 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
     }
     ctx.sink
         .emit(AgentEvent::InferenceComplete {
-            model: ctx.agent.model.clone(),
+            model: upstream_model,
             usage: stream_result.usage.clone(),
             duration_ms,
         })

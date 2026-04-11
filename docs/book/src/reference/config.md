@@ -8,7 +8,7 @@ programmatically via builder methods.
 ```rust,ignore
 pub struct AgentSpec {
     pub id: String,
-    pub model: String,
+    pub model_id: String,                            // model registry id
     pub system_prompt: String,
     pub max_rounds: usize,                          // default: 16
     pub max_continuation_retries: usize,            // default: 2
@@ -30,7 +30,7 @@ pub struct AgentSpec {
 
 ```rust,ignore
 AgentSpec::new(id) -> Self
-    .with_model(model) -> Self
+    .with_model_id(model_id) -> Self
     .with_system_prompt(prompt) -> Self
     .with_max_rounds(n) -> Self
     .with_hook_filter(plugin_id) -> Self
@@ -82,11 +82,15 @@ Per-inference parameter override. All fields are `Option`; `None` means "use
 agent-level default". Multiple plugins can emit overrides; fields merge with
 last-wins semantics.
 
+`upstream_model` and `fallback_upstream_models` are upstream model names for the already resolved
+provider. They do not re-resolve `AgentSpec.model_id` and do not switch providers.
+See [Provider and Model Configuration](./provider-model-config.md).
+
 ```rust,no_run
 # pub enum ReasoningEffort { None, Low, Medium, High, Max, Budget(u32) }
 pub struct InferenceOverride {
-    pub model: Option<String>,
-    pub fallback_models: Option<Vec<String>>,
+    pub upstream_model: Option<String>,      // upstream model name
+    pub fallback_upstream_models: Option<Vec<String>>, // upstream model names
     pub temperature: Option<f64>,
     pub max_tokens: Option<u32>,
     pub top_p: Option<f64>,
@@ -219,10 +223,16 @@ Policy for retrying failed LLM inference calls with exponential backoff and
 optional model fallback. Can be set per-agent via the `"retry"` section in
 `AgentSpec`.
 
+Retry is applied during agent resolution. A missing `"retry"` section uses
+`LlmRetryPolicy::default()`. Set `max_retries` to `0` and keep
+`fallback_upstream_models` empty to disable retry wrapping. Providers are not wrapped
+with a separate hidden retry policy during provider construction. For streaming
+inference, retry and fallback only apply while opening the stream.
+
 ```rust,ignore
 pub struct LlmRetryPolicy {
     pub max_retries: u32,              // default: 2
-    pub fallback_models: Vec<String>,  // default: []
+    pub fallback_upstream_models: Vec<String>,  // default: []
     pub backoff_base_ms: u64,          // default: 500
 }
 ```
@@ -232,7 +242,7 @@ pub struct LlmRetryPolicy {
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `max_retries` | `u32` | `2` | Maximum retry attempts after the initial call (0 = no retry) |
-| `fallback_models` | `Vec<String>` | `[]` | Model names to try in order after the primary model exhausts retries |
+| `fallback_upstream_models` | `Vec<String>` | `[]` | Model names to try in order after the primary model exhausts retries |
 | `backoff_base_ms` | `u64` | `500` | Base delay in milliseconds for exponential backoff; actual delay = min(base * 2^attempt, 8000ms). Set to 0 to disable backoff |
 
 ### AgentSpec integration
@@ -245,7 +255,7 @@ use awaken_runtime::engine::retry::RetryConfigKey;
 let spec = AgentSpec::new("my-agent")
     .with_config::<RetryConfigKey>(LlmRetryPolicy {
         max_retries: 3,
-        fallback_models: vec!["claude-sonnet-4-20250514".into()],
+        fallback_upstream_models: vec!["claude-sonnet-4-20250514".into()],
         backoff_base_ms: 1000,
     })?;
 ```

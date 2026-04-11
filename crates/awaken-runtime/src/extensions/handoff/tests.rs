@@ -142,7 +142,7 @@ fn overlay_lookup() {
     overlays.insert(
         "fast".to_string(),
         AgentOverlay {
-            model: Some("claude-haiku".into()),
+            model_id: Some("claude-haiku".into()),
             system_prompt: Some("You are in fast mode.".into()),
             ..Default::default()
         },
@@ -292,7 +292,7 @@ fn action_all_variants_serialization() {
 fn overlay_default_is_all_none() {
     let overlay = AgentOverlay::default();
     assert!(overlay.system_prompt.is_none());
-    assert!(overlay.model.is_none());
+    assert!(overlay.model_id.is_none());
     assert!(overlay.allowed_tools.is_none());
     assert!(overlay.excluded_tools.is_none());
 }
@@ -301,14 +301,14 @@ fn overlay_default_is_all_none() {
 fn overlay_serialization_roundtrip() {
     let overlay = AgentOverlay {
         system_prompt: Some("You are helpful".into()),
-        model: Some("gpt-4".into()),
+        model_id: Some("gpt-4".into()),
         allowed_tools: Some(vec!["search".into(), "read".into()]),
         excluded_tools: Some(vec!["delete".into()]),
     };
     let json = serde_json::to_value(&overlay).unwrap();
     let back: AgentOverlay = serde_json::from_value(json).unwrap();
     assert_eq!(back.system_prompt.as_deref(), Some("You are helpful"));
-    assert_eq!(back.model.as_deref(), Some("gpt-4"));
+    assert_eq!(back.model_id.as_deref(), Some("gpt-4"));
     assert_eq!(back.allowed_tools.as_ref().unwrap().len(), 2);
     assert_eq!(back.excluded_tools.as_ref().unwrap().len(), 1);
 }
@@ -319,24 +319,24 @@ fn plugin_overlay_returns_configured_overlay() {
     overlays.insert(
         "fast".to_string(),
         AgentOverlay {
-            model: Some("haiku".into()),
+            model_id: Some("haiku".into()),
             ..Default::default()
         },
     );
     overlays.insert(
         "deep".to_string(),
         AgentOverlay {
-            model: Some("opus".into()),
+            model_id: Some("opus".into()),
             ..Default::default()
         },
     );
     let plugin = HandoffPlugin::new(overlays);
     assert_eq!(
-        plugin.overlay("fast").unwrap().model.as_deref(),
+        plugin.overlay("fast").unwrap().model_id.as_deref(),
         Some("haiku")
     );
     assert_eq!(
-        plugin.overlay("deep").unwrap().model.as_deref(),
+        plugin.overlay("deep").unwrap().model_id.as_deref(),
         Some("opus")
     );
     assert!(plugin.overlay("nonexistent").is_none());

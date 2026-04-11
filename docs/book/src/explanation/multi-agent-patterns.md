@@ -9,7 +9,7 @@ An agent can declare sub-agents it is allowed to delegate to:
 ```json
 {
   "id": "orchestrator",
-  "model": "gpt-4o",
+  "model_id": "gpt-4o",
   "system_prompt": "You coordinate tasks across specialized agents.",
   "delegates": ["researcher", "writer", "reviewer"]
 }
@@ -29,7 +29,7 @@ Remote agents are declared with an `endpoint` in `AgentSpec`:
 ```json
 {
   "id": "remote-analyst",
-  "model": "unused-for-remote",
+  "model_id": "unused-for-remote",
   "system_prompt": "",
   "endpoint": {
     "backend": "a2a",

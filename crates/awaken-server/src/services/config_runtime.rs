@@ -9,18 +9,18 @@ use awaken_contract::contract::config_store::{ConfigChangeNotifier, ConfigStore}
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::storage::StorageError;
 use awaken_contract::{
-    AgentSpec, McpRestartPolicy, McpServerSpec, McpTransportKind, ModelSpec, PeriodicRefresher,
-    ProviderSpec,
+    AgentSpec, McpRestartPolicy, McpServerSpec, McpTransportKind, ModelBindingSpec,
+    PeriodicRefresher, ProviderSpec,
 };
 use awaken_ext_mcp::{McpServerConnectionConfig, McpToolRegistry, McpToolRegistryManager};
-use awaken_runtime::engine::{GenaiExecutor, LlmRetryPolicy, RetryingExecutor};
+use awaken_runtime::engine::GenaiExecutor;
 use awaken_runtime::registry::BackendRegistry;
 use awaken_runtime::registry::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapProviderRegistry,
 };
 use awaken_runtime::registry::resolve::RegistrySetResolver;
 use awaken_runtime::registry::{
-    AgentSpecRegistry, ModelEntry, PluginSource, RegistrySet, ToolRegistry,
+    AgentSpecRegistry, ModelBinding, PluginSource, RegistrySet, ToolRegistry,
 };
 use awaken_runtime::{AgentResolver, AgentRuntime};
 use genai::Client;
@@ -267,7 +267,7 @@ impl PreparedMcpRegistry {
 
 struct ManagedConfigSnapshot {
     providers: Vec<ProviderSpec>,
-    models: Vec<ModelSpec>,
+    models: Vec<ModelBindingSpec>,
     agents: Vec<AgentSpec>,
     mcp_servers: Vec<McpServerSpec>,
     fingerprint: u64,
@@ -358,7 +358,7 @@ impl ConfigRuntimeManager {
     pub async fn bootstrap_if_empty(
         &self,
         providers: &[ProviderSpec],
-        models: &[ModelSpec],
+        models: &[ModelBindingSpec],
         agents: &[AgentSpec],
         mcp_servers: &[McpServerSpec],
     ) -> Result<bool, ConfigRuntimeError> {
@@ -732,7 +732,7 @@ impl ConfigRuntimeManager {
     fn compile_registry_set(
         &self,
         providers: &[ProviderSpec],
-        models: &[ModelSpec],
+        models: &[ModelBindingSpec],
         agents: &[AgentSpec],
         dynamic_tools: Option<Arc<dyn ToolRegistry>>,
     ) -> Result<RegistrySet, ConfigRuntimeError> {
@@ -746,13 +746,7 @@ impl ConfigRuntimeManager {
         let mut model_registry = MapModelRegistry::new();
         for model in models {
             model_registry
-                .register_model(
-                    model.id.clone(),
-                    ModelEntry {
-                        provider: model.provider.clone(),
-                        model_name: model.model.clone(),
-                    },
-                )
+                .register_model(model.id.clone(), ModelBinding::from(model))
                 .map_err(|error| ConfigRuntimeError::InvalidConfig(error.to_string()))?;
         }
 
@@ -853,10 +847,7 @@ pub fn build_genai_provider_executor(
     let client = builder.build();
     let executor = GenaiExecutor::with_client(client)
         .with_timeout(Duration::from_secs(spec.timeout_secs.max(1)));
-    Ok(Arc::new(RetryingExecutor::new(
-        Arc::new(executor),
-        LlmRetryPolicy::default(),
-    )))
+    Ok(Arc::new(executor))
 }
 
 /// Canonical list of provider adapter identifiers supported by the runtime.

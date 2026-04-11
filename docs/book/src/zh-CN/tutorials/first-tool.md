@@ -145,7 +145,7 @@ use awaken::AgentRuntimeBuilder;
 
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 let agent_spec = AgentSpec::new("assistant")
-    .with_model("gpt-4o-mini")
+    .with_model_id("gpt-4o-mini")
     .with_system_prompt("You are a helpful assistant. Use the greet tool when asked.")
     .with_max_rounds(5);
 
@@ -193,7 +193,7 @@ use awaken::RunRequest;
 # #[tokio::main]
 # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 # let runtime = AgentRuntimeBuilder::new()
-#     .with_agent_spec(AgentSpec::new("assistant").with_model("gpt-4o-mini"))
+#     .with_agent_spec(AgentSpec::new("assistant").with_model_id("gpt-4o-mini"))
 #     .with_tool("greet", Arc::new(GreetTool))
 #     .build()?;
 let request = RunRequest::new(

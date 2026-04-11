@@ -52,7 +52,7 @@ pub(crate) fn resolve_registry_set(
 ) -> Result<ResolvedAgent, ResolveError> {
     // Stage 1: Lookup
     let spec = lookup_spec(registries, agent_id)?;
-    let (executor, model_name) = resolve_model_and_executor(registries, &spec)?;
+    let (executor, upstream_model) = resolve_model_and_executor(registries, &spec)?;
 
     // Stage 2: Plugin pipeline
     let plugins = build_plugin_chain(registries, &spec)?;
@@ -66,7 +66,7 @@ pub(crate) fn resolve_registry_set(
 
     Ok(ResolvedAgent {
         spec: spec_arc,
-        model: model_name,
+        upstream_model,
         tools,
         llm_executor: executor,
         tool_executor: Arc::new(SequentialToolExecutor),
@@ -101,29 +101,41 @@ fn lookup_spec(registries: &RegistrySet, agent_id: &str) -> Result<AgentSpec, Re
     Ok(spec)
 }
 
-/// Resolve model and LLM executor, applying retry decoration if configured.
+/// Resolve model and LLM executor, applying the agent retry policy.
 fn resolve_model_and_executor(
     registries: &RegistrySet,
     spec: &AgentSpec,
 ) -> Result<(Arc<dyn LlmExecutor>, String), ResolveError> {
-    let model = registries
+    let binding = registries
         .models
-        .get_model(&spec.model)
-        .ok_or_else(|| ResolveError::ModelNotFound(spec.model.clone()))?;
+        .get_model(&spec.model_id)
+        .ok_or_else(|| ResolveError::ModelNotFound(spec.model_id.clone()))?;
 
     let executor = registries
         .providers
-        .get_provider(&model.provider)
-        .ok_or_else(|| ResolveError::ProviderNotFound(model.provider.clone()))?;
+        .get_provider(&binding.provider_id)
+        .ok_or_else(|| ResolveError::ProviderNotFound(binding.provider_id.clone()))?;
 
-    let executor = match spec.config::<crate::engine::RetryConfigKey>() {
-        Ok(policy) if policy.max_retries > 0 || !policy.fallback_models.is_empty() => {
-            Arc::new(crate::engine::RetryingExecutor::new(executor, policy)) as Arc<dyn LlmExecutor>
-        }
-        _ => executor,
+    let policy = spec
+        .config::<crate::engine::RetryConfigKey>()
+        .map_err(|error| match error {
+            awaken_contract::StateError::KeyDecode { key, message } => {
+                ResolveError::InvalidPluginConfig {
+                    plugin: "retry".into(),
+                    key,
+                    message,
+                }
+            }
+            other => ResolveError::EnvBuild(other),
+        })?;
+
+    let executor = if policy.max_retries > 0 || !policy.fallback_upstream_models.is_empty() {
+        Arc::new(crate::engine::RetryingExecutor::new(executor, policy)) as Arc<dyn LlmExecutor>
+    } else {
+        executor
     };
 
-    Ok((executor, model.model_name.clone()))
+    Ok((executor, binding.upstream_model.clone()))
 }
 
 // ---------------------------------------------------------------------------
@@ -431,7 +443,7 @@ mod tests {
         MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry,
         MapToolRegistry,
     };
-    use crate::registry::traits::ModelEntry;
+    use crate::registry::traits::ModelBinding;
     use async_trait::async_trait;
     #[cfg(feature = "a2a")]
     use awaken_contract::contract::event_sink::EventSink;
@@ -558,7 +570,7 @@ mod tests {
     fn build_registries(
         tools: Vec<(&str, Arc<dyn Tool>)>,
         model_id: &str,
-        model_entry: ModelEntry,
+        model_binding: ModelBinding,
         provider_id: &str,
         executor: Arc<dyn LlmExecutor>,
         plugins: Vec<(&str, Arc<dyn Plugin>)>,
@@ -573,7 +585,7 @@ mod tests {
 
         let mut model_reg = MapModelRegistry::new();
         model_reg
-            .register_model(model_id, model_entry)
+            .register_model(model_id, model_binding)
             .expect("duplicate model in test");
 
         let mut provider_reg = MapProviderRegistry::new();
@@ -608,7 +620,7 @@ mod tests {
     fn make_spec(id: &str) -> AgentSpec {
         AgentSpec {
             id: id.into(),
-            model: "test-model".into(),
+            model_id: "test-model".into(),
             system_prompt: "You are helpful.".into(),
             ..Default::default()
         }
@@ -629,9 +641,9 @@ mod tests {
                 ("write", Arc::new(MockTool { id: "write".into() })),
             ],
             "test-model",
-            ModelEntry {
-                provider: "anthropic".into(),
-                model_name: "claude-opus-4-20250514".into(),
+            ModelBinding {
+                provider_id: "anthropic".into(),
+                upstream_model: "claude-opus-4-20250514".into(),
             },
             "anthropic",
             Arc::new(MockExecutor),
@@ -641,7 +653,7 @@ mod tests {
 
         let run = resolve(&regs, "agent-1").unwrap();
         assert_eq!(run.id(), "agent-1");
-        assert_eq!(run.model, "claude-opus-4-20250514");
+        assert_eq!(run.upstream_model, "claude-opus-4-20250514");
         assert_eq!(run.tools.len(), 2);
         assert!(run.tools.contains_key("read"));
         assert!(run.tools.contains_key("write"));
@@ -653,9 +665,9 @@ mod tests {
         let regs = build_registries(
             vec![],
             "m",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -684,9 +696,9 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -725,9 +737,9 @@ mod tests {
         model_reg
             .register_model(
                 "test-model",
-                ModelEntry {
-                    provider: "p".into(),
-                    model_name: "n".into(),
+                ModelBinding {
+                    provider_id: "p".into(),
+                    upstream_model: "n".into(),
                 },
             )
             .unwrap();
@@ -782,9 +794,9 @@ mod tests {
         model_reg
             .register_model(
                 "test-model",
-                ModelEntry {
-                    provider: "p".into(),
-                    model_name: "n".into(),
+                ModelBinding {
+                    provider_id: "p".into(),
+                    upstream_model: "n".into(),
                 },
             )
             .unwrap();
@@ -839,14 +851,14 @@ mod tests {
     #[test]
     fn resolve_model_not_found() {
         let mut spec = make_spec("a");
-        spec.model = "nonexistent-model".into();
+        spec.model_id = "nonexistent-model".into();
 
         let regs = build_registries(
             vec![],
             "other-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -863,9 +875,9 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "missing-provider".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "missing-provider".into(),
+                upstream_model: "n".into(),
             },
             "other-provider",
             Arc::new(MockExecutor),
@@ -878,6 +890,44 @@ mod tests {
     }
 
     #[test]
+    fn resolve_invalid_retry_config_fails() {
+        let spec = make_spec("a").with_section(
+            "retry",
+            serde_json::json!({
+                "max_retries": "not-a-number",
+                "fallback_upstream_models": []
+            }),
+        );
+
+        let regs = build_registries(
+            vec![],
+            "test-model",
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![],
+            spec,
+        );
+
+        let err = resolve(&regs, "a").unwrap_err();
+        match err {
+            ResolveError::InvalidPluginConfig {
+                plugin,
+                key,
+                message,
+            } => {
+                assert_eq!(plugin, "retry");
+                assert_eq!(key, "retry");
+                assert!(!message.is_empty(), "expected non-empty error message");
+            }
+            other => panic!("expected InvalidPluginConfig, got: {other:?}"),
+        }
+    }
+
+    #[test]
     fn resolve_plugin_not_found() {
         let spec = AgentSpec {
             plugin_ids: vec!["missing-plugin".into()],
@@ -887,9 +937,9 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -920,9 +970,9 @@ mod tests {
                 ),
             ],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -954,9 +1004,9 @@ mod tests {
                 ),
             ],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -992,9 +1042,9 @@ mod tests {
                 ("exec", Arc::new(MockTool { id: "exec".into() })),
             ],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1015,9 +1065,9 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1079,9 +1129,9 @@ mod tests {
                 ("write", Arc::new(MockTool { id: "write".into() })),
             ],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "claude-test".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "claude-test".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1093,7 +1143,7 @@ mod tests {
         let resolved = resolver.resolve("my-agent").unwrap();
         assert_eq!(resolved.id(), "my-agent");
         assert_eq!(resolved.model_id(), "test-model");
-        assert_eq!(resolved.model, "claude-test");
+        assert_eq!(resolved.upstream_model, "claude-test");
         assert_eq!(resolved.system_prompt(), "You are helpful.");
         assert_eq!(resolved.tools.len(), 2);
         assert!(resolved.tools.contains_key("read"));
@@ -1106,9 +1156,9 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1161,9 +1211,9 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1190,9 +1240,9 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1227,9 +1277,9 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1252,9 +1302,9 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1303,9 +1353,9 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1338,9 +1388,9 @@ mod tests {
                 }),
             )],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1380,9 +1430,9 @@ mod tests {
                 }),
             )],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1417,9 +1467,9 @@ mod tests {
                 }),
             )],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1452,9 +1502,9 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1476,9 +1526,9 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1500,9 +1550,9 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1524,9 +1574,9 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1539,13 +1589,13 @@ mod tests {
     }
 
     #[test]
-    fn resolve_model_name_from_model_entry() {
+    fn resolve_upstream_model_from_model_binding() {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "claude-opus-4-20250514".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "claude-opus-4-20250514".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1554,7 +1604,7 @@ mod tests {
         );
 
         let run = resolve(&regs, "a").unwrap();
-        assert_eq!(run.model, "claude-opus-4-20250514");
+        assert_eq!(run.upstream_model, "claude-opus-4-20250514");
     }
 
     #[test]
@@ -1570,9 +1620,9 @@ mod tests {
                 ("write", Arc::new(MockTool { id: "write".into() })),
             ],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1594,9 +1644,9 @@ mod tests {
         let regs = build_registries(
             vec![("read", Arc::new(MockTool { id: "read".into() }))],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1616,9 +1666,9 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1649,9 +1699,9 @@ mod tests {
         model_reg
             .register_model(
                 "test-model",
-                ModelEntry {
-                    provider: "p".into(),
-                    model_name: "n".into(),
+                ModelBinding {
+                    provider_id: "p".into(),
+                    upstream_model: "n".into(),
                 },
             )
             .unwrap();
@@ -1760,9 +1810,9 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1793,9 +1843,9 @@ mod tests {
         let regs_without = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1815,9 +1865,9 @@ mod tests {
         let regs_with = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1850,9 +1900,9 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1893,9 +1943,9 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1932,9 +1982,9 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
-                provider: "p".into(),
-                model_name: "n".into(),
+            ModelBinding {
+                provider_id: "p".into(),
+                upstream_model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),

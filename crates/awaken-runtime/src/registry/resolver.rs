@@ -19,8 +19,8 @@ use crate::phase::ExecutionEnv;
 pub struct ResolvedAgent {
     /// The source agent specification.
     pub spec: Arc<AgentSpec>,
-    /// Actual model name for API calls (resolved from ModelEntry, may differ from spec.model).
-    pub model: String,
+    /// Actual model name sent to the upstream provider.
+    pub upstream_model: String,
     pub tools: HashMap<String, Arc<dyn Tool>>,
     pub llm_executor: Arc<dyn LlmExecutor>,
     pub tool_executor: Arc<dyn ToolExecutor>,
@@ -35,14 +35,14 @@ impl ResolvedAgent {
     /// Create a minimal ResolvedAgent (for tests).
     pub fn new(
         id: impl Into<String>,
-        model: impl Into<String>,
+        upstream_model: impl Into<String>,
         system_prompt: impl Into<String>,
         llm_executor: Arc<dyn LlmExecutor>,
     ) -> Self {
-        let model = model.into();
+        let upstream_model = upstream_model.into();
         let spec = Arc::new(AgentSpec {
             id: id.into(),
-            model: model.clone(),
+            model_id: upstream_model.clone(),
             system_prompt: system_prompt.into(),
             max_rounds: 16,
             max_continuation_retries: 2,
@@ -59,7 +59,7 @@ impl ResolvedAgent {
         });
         Self {
             spec,
-            model,
+            upstream_model,
             tools: HashMap::new(),
             llm_executor,
             tool_executor: Arc::new(SequentialToolExecutor),
@@ -75,7 +75,7 @@ impl ResolvedAgent {
     }
 
     pub fn model_id(&self) -> &str {
-        &self.spec.model
+        &self.spec.model_id
     }
 
     pub fn system_prompt(&self) -> &str {
@@ -241,7 +241,7 @@ mod tests {
     fn new_defaults() {
         let agent = ResolvedAgent::new("agent-1", "model-1", "system prompt", mock_executor());
         assert_eq!(agent.id(), "agent-1");
-        assert_eq!(agent.model, "model-1");
+        assert_eq!(agent.upstream_model, "model-1");
         assert_eq!(agent.system_prompt(), "system prompt");
         assert_eq!(agent.max_rounds(), 16);
         assert!(agent.tools.is_empty());
@@ -323,7 +323,7 @@ mod tests {
     fn model_id_equals_model_by_default() {
         let agent = ResolvedAgent::new("a", "claude-3", "s", mock_executor());
         assert_eq!(agent.model_id(), "claude-3");
-        assert_eq!(agent.model, "claude-3");
+        assert_eq!(agent.upstream_model, "claude-3");
     }
 
     #[test]
@@ -467,7 +467,7 @@ mod tests {
             .with_tool_executor(Arc::new(crate::execution::SequentialToolExecutor));
 
         assert_eq!(agent.id(), "full-agent");
-        assert_eq!(agent.model, "gpt-4");
+        assert_eq!(agent.upstream_model, "gpt-4");
         assert_eq!(agent.system_prompt(), "Be helpful.");
         assert_eq!(agent.max_rounds(), 32);
         assert_eq!(agent.max_continuation_retries(), 10);
@@ -535,12 +535,12 @@ mod tests {
     }
 
     #[test]
-    fn model_id_and_model_independent_after_creation() {
+    fn model_id_and_upstream_model_independent_after_creation() {
         let mut agent = ResolvedAgent::new("a", "original-model", "s", mock_executor());
-        // Manually change model_name (simulating what resolve pipeline does)
-        agent.model = "resolved-model-name".into();
+        // Manually change upstream_model (simulating what resolve pipeline does)
+        agent.upstream_model = "resolved-model-name".into();
         assert_eq!(agent.model_id(), "original-model");
-        assert_eq!(agent.model, "resolved-model-name");
+        assert_eq!(agent.upstream_model, "resolved-model-name");
     }
 
     #[test]

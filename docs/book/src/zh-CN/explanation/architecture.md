@@ -19,7 +19,7 @@ AgentRuntime
   thread/run 持久化、profile storage
 ```
 
-**契约层** -- `awaken-contract` 定义全系统共用的类型：`AgentSpec`、`ModelSpec`、`ProviderSpec`、`Tool`、`AgentEvent`、transport trait 以及类型化状态模型。这是系统其余部分共同使用的"词汇表"。
+**契约层** -- `awaken-contract` 定义全系统共用的类型：`AgentSpec`、`ModelBindingSpec`、`ProviderSpec`、`Tool`、`AgentEvent`、transport trait 以及类型化状态模型。这是系统其余部分共同使用的"词汇表"。
 
 **运行时核心** -- `awaken-runtime` 是编排层。它将 agent ID 解析为完整配置（`ResolvedAgent`），从插件构建 `ExecutionEnv`，管理活跃 run，并将执行委托给循环运行器和阶段引擎。
 

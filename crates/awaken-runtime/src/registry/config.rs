@@ -10,6 +10,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use awaken_contract::contract::executor::LlmExecutor;
+use awaken_contract::registry_spec::{AgentSpec, ModelBindingSpec};
 
 use crate::builder::BuildError;
 
@@ -20,7 +21,7 @@ use super::memory::MapBackendRegistry;
 use super::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,
 };
-use super::traits::{ModelEntry, RegistrySet};
+use super::traits::{ModelBinding, RegistrySet};
 
 /// Serializable system configuration covering models and agents.
 ///
@@ -28,21 +29,12 @@ use super::traits::{ModelEntry, RegistrySet};
 /// that cannot be deserialized. Pass them to [`AgentSystemConfig::build_registries`] instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSystemConfig {
-    /// Model definitions keyed by model ID.
+    /// Model bindings.
     #[serde(default)]
-    pub models: HashMap<String, ModelConfig>,
+    pub models: Vec<ModelBindingSpec>,
     /// Agent definitions.
     #[serde(default)]
-    pub agents: Vec<awaken_contract::registry_spec::AgentSpec>,
-}
-
-/// Maps a model ID to a provider and the actual model name for API calls.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelConfig {
-    /// Provider ID — must match a key in the `providers` map passed to `build_registries`.
-    pub provider: String,
-    /// Actual model name sent to the LLM API.
-    pub model: String,
+    pub agents: Vec<AgentSpec>,
 }
 
 impl AgentSystemConfig {
@@ -59,14 +51,8 @@ impl AgentSystemConfig {
         providers: HashMap<String, Arc<dyn LlmExecutor>>,
     ) -> Result<RegistrySet, BuildError> {
         let mut model_reg = MapModelRegistry::new();
-        for (id, cfg) in &self.models {
-            model_reg.register_model(
-                id.clone(),
-                ModelEntry {
-                    provider: cfg.provider.clone(),
-                    model_name: cfg.model.clone(),
-                },
-            )?;
+        for binding in &self.models {
+            model_reg.register_model(binding.id.clone(), ModelBinding::from(binding))?;
         }
 
         let mut agent_reg = MapAgentSpecRegistry::new();
@@ -95,52 +81,52 @@ impl AgentSystemConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::registry_spec::AgentSpec;
     use serde_json::json;
 
     #[test]
     fn parse_minimal_config() {
         let json = json!({
-            "models": {
-                "gpt4": {
-                    "provider": "openai",
-                    "model": "gpt-4o"
+            "models": [
+                {
+                    "id": "gpt4",
+                    "provider_id": "openai",
+                    "upstream_model": "gpt-4o"
                 }
-            },
+            ],
             "agents": [{
                 "id": "assistant",
-                "model": "gpt4",
+                "model_id": "gpt4",
                 "system_prompt": "You are helpful."
             }]
         });
 
         let config = AgentSystemConfig::from_json(&json.to_string()).unwrap();
         assert_eq!(config.models.len(), 1);
-        assert_eq!(config.models["gpt4"].provider, "openai");
-        assert_eq!(config.models["gpt4"].model, "gpt-4o");
+        assert_eq!(config.models[0].provider_id, "openai");
+        assert_eq!(config.models[0].upstream_model, "gpt-4o");
         assert_eq!(config.agents.len(), 1);
         assert_eq!(config.agents[0].id, "assistant");
-        assert_eq!(config.agents[0].model, "gpt4");
+        assert_eq!(config.agents[0].model_id, "gpt4");
     }
 
     #[test]
     fn parse_multiple_agents() {
         let json = json!({
-            "models": {
-                "claude": { "provider": "anthropic", "model": "claude-opus-4-0-20250514" },
-                "local": { "provider": "ollama", "model": "llama3" }
-            },
+            "models": [
+                { "id": "claude", "provider_id": "anthropic", "upstream_model": "claude-opus-4-0-20250514" },
+                { "id": "local", "provider_id": "ollama", "upstream_model": "llama3" }
+            ],
             "agents": [
                 {
                     "id": "coder",
-                    "model": "claude",
+                    "model_id": "claude",
                     "system_prompt": "You write code.",
                     "allowed_tools": ["read_file", "write_file"],
                     "excluded_tools": ["delete_file"]
                 },
                 {
                     "id": "reviewer",
-                    "model": "local",
+                    "model_id": "local",
                     "system_prompt": "You review code.",
                     "allowed_tools": ["read_file"]
                 }
@@ -160,7 +146,7 @@ mod tests {
 
         let reviewer = &config.agents[1];
         assert_eq!(reviewer.id, "reviewer");
-        assert_eq!(reviewer.model, "local");
+        assert_eq!(reviewer.model_id, "local");
         assert_eq!(reviewer.allowed_tools, Some(vec!["read_file".to_string()]));
         assert!(reviewer.excluded_tools.is_none());
     }
@@ -192,12 +178,12 @@ mod tests {
 
         let config = AgentSystemConfig::from_json(
             &json!({
-                "models": {
-                    "m1": { "provider": "stub", "model": "test-model" }
-                },
+                "models": [
+                    { "id": "m1", "provider_id": "stub", "upstream_model": "test-model" }
+                ],
                 "agents": [{
                     "id": "a1",
-                    "model": "m1",
+                    "model_id": "m1",
                     "system_prompt": "test"
                 }]
             })
@@ -215,8 +201,8 @@ mod tests {
 
         // Verify model registry
         let model = reg.models.get_model("m1").unwrap();
-        assert_eq!(model.provider, "stub");
-        assert_eq!(model.model_name, "test-model");
+        assert_eq!(model.provider_id, "stub");
+        assert_eq!(model.upstream_model, "test-model");
 
         // Verify agent registry
         let agent = reg.agents.get_agent("a1").unwrap();
@@ -232,20 +218,14 @@ mod tests {
     #[test]
     fn config_serde_roundtrip() {
         let original = AgentSystemConfig {
-            models: {
-                let mut m = HashMap::new();
-                m.insert(
-                    "opus".to_string(),
-                    ModelConfig {
-                        provider: "anthropic".to_string(),
-                        model: "claude-opus-4-0-20250514".to_string(),
-                    },
-                );
-                m
-            },
+            models: vec![ModelBindingSpec {
+                id: "opus".to_string(),
+                provider_id: "anthropic".to_string(),
+                upstream_model: "claude-opus-4-0-20250514".to_string(),
+            }],
             agents: vec![AgentSpec {
                 id: "coder".into(),
-                model: "opus".into(),
+                model_id: "opus".into(),
                 system_prompt: "Code assistant.".into(),
                 max_rounds: 10,
                 plugin_ids: vec!["logging".into()],
@@ -259,8 +239,12 @@ mod tests {
         let restored: AgentSystemConfig = serde_json::from_str(&json_str).unwrap();
 
         assert_eq!(restored.models.len(), 1);
-        assert_eq!(restored.models["opus"].provider, "anthropic");
-        assert_eq!(restored.models["opus"].model, "claude-opus-4-0-20250514");
+        assert_eq!(restored.models[0].id, "opus");
+        assert_eq!(restored.models[0].provider_id, "anthropic");
+        assert_eq!(
+            restored.models[0].upstream_model,
+            "claude-opus-4-0-20250514"
+        );
         assert_eq!(restored.agents.len(), 1);
         assert_eq!(restored.agents[0].id, "coder");
         assert_eq!(restored.agents[0].max_rounds, 10);

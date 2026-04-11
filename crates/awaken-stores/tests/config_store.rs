@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use awaken_contract::contract::config_store::ConfigStore;
-use awaken_contract::{AgentSpec, ModelSpec, ProviderSpec};
+use awaken_contract::{AgentSpec, ModelBindingSpec, ProviderSpec};
 use awaken_stores::InMemoryStore;
 
 #[cfg(feature = "file")]
@@ -15,14 +15,14 @@ async fn exercise_store(store: Arc<dyn ConfigStore>) {
         base_url: Some("https://proxy.example.com/v1".into()),
         timeout_secs: 120,
     };
-    let model = ModelSpec {
+    let model = ModelBindingSpec {
         id: "gpt-4o-mini".into(),
-        provider: "openai".into(),
-        model: "gpt-4o-mini".into(),
+        provider_id: "openai".into(),
+        upstream_model: "gpt-4o-mini".into(),
     };
     let agent = AgentSpec {
         id: "assistant".into(),
-        model: "gpt-4o-mini".into(),
+        model_id: "gpt-4o-mini".into(),
         system_prompt: "You are helpful.".into(),
         ..Default::default()
     };
@@ -47,12 +47,12 @@ async fn exercise_store(store: Arc<dyn ConfigStore>) {
     assert!(store.exists("providers", "openai").await.unwrap());
 
     let model_value = store.get("models", "gpt-4o-mini").await.unwrap().unwrap();
-    let model_read: ModelSpec = serde_json::from_value(model_value).unwrap();
-    assert_eq!(model_read.provider, "openai");
+    let model_read: ModelBindingSpec = serde_json::from_value(model_value).unwrap();
+    assert_eq!(model_read.provider_id, "openai");
 
     let agent_value = store.get("agents", "assistant").await.unwrap().unwrap();
     let agent_read: AgentSpec = serde_json::from_value(agent_value).unwrap();
-    assert_eq!(agent_read.model, "gpt-4o-mini");
+    assert_eq!(agent_read.model_id, "gpt-4o-mini");
 
     let listed = store.list("agents", 0, 10).await.unwrap();
     assert_eq!(listed.len(), 1);

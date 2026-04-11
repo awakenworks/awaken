@@ -19,7 +19,7 @@ use crate::registry::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,
 };
 use crate::registry::snapshot::RegistryHandle;
-use crate::registry::traits::{AgentSpecRegistry, ModelEntry, RegistrySet};
+use crate::registry::traits::{AgentSpecRegistry, ModelBinding, RegistrySet};
 use crate::runtime::AgentRuntime;
 
 /// Error returned when the builder cannot construct the runtime.
@@ -118,9 +118,9 @@ impl AgentRuntimeBuilder {
         self
     }
 
-    /// Register a model entry by ID.
-    pub fn with_model(mut self, id: impl Into<String>, entry: ModelEntry) -> Self {
-        if let Err(e) = self.models.register_model(id, entry) {
+    /// Register a model binding by ID.
+    pub fn with_model_binding(mut self, id: impl Into<String>, binding: ModelBinding) -> Self {
+        if let Err(e) = self.models.register_model(id, binding) {
             self.errors.push(e);
         }
         self
@@ -335,12 +335,12 @@ mod tests {
         }
     }
 
-    fn make_registry_set(agent_id: &str, model_id: &str, model_name: &str) -> RegistrySet {
+    fn make_registry_set(agent_id: &str, model_id: &str, upstream_model: &str) -> RegistrySet {
         let mut agents = MapAgentSpecRegistry::new();
         agents
             .register_spec(AgentSpec {
                 id: agent_id.into(),
-                model: model_id.into(),
+                model_id: model_id.into(),
                 system_prompt: format!("system-{agent_id}"),
                 ..Default::default()
             })
@@ -350,9 +350,9 @@ mod tests {
         models
             .register_model(
                 model_id,
-                ModelEntry {
-                    provider: "mock".into(),
-                    model_name: model_name.into(),
+                ModelBinding {
+                    provider_id: "mock".into(),
+                    upstream_model: upstream_model.into(),
                 },
             )
             .expect("register test model");
@@ -376,7 +376,7 @@ mod tests {
     fn builder_creates_runtime() {
         let spec = AgentSpec {
             id: "test-agent".into(),
-            model: "test-model".into(),
+            model_id: "test-model".into(),
             system_prompt: "You are helpful.".into(),
             ..Default::default()
         };
@@ -384,11 +384,11 @@ mod tests {
         let runtime = AgentRuntimeBuilder::new()
             .with_agent_spec(spec)
             .with_tool("echo", Arc::new(MockTool { id: "echo".into() }))
-            .with_model(
+            .with_model_binding(
                 "test-model",
-                ModelEntry {
-                    provider: "mock".into(),
-                    model_name: "mock-model".into(),
+                ModelBinding {
+                    provider_id: "mock".into(),
+                    upstream_model: "mock-model".into(),
                 },
             )
             .with_provider("mock", Arc::new(MockExecutor))
@@ -409,24 +409,24 @@ mod tests {
     fn builder_with_multiple_agents() {
         let spec1 = AgentSpec {
             id: "agent-1".into(),
-            model: "m".into(),
+            model_id: "m".into(),
             system_prompt: "sys".into(),
             ..Default::default()
         };
         let spec2 = AgentSpec {
             id: "agent-2".into(),
-            model: "m".into(),
+            model_id: "m".into(),
             system_prompt: "sys".into(),
             ..Default::default()
         };
 
         let runtime = AgentRuntimeBuilder::new()
             .with_agent_specs(vec![spec1, spec2])
-            .with_model(
+            .with_model_binding(
                 "m",
-                ModelEntry {
-                    provider: "p".into(),
-                    model_name: "n".into(),
+                ModelBinding {
+                    provider_id: "p".into(),
+                    upstream_model: "n".into(),
                 },
             )
             .with_provider("p", Arc::new(MockExecutor))
@@ -442,7 +442,7 @@ mod tests {
     fn builder_resolver_returns_correct_config() {
         let spec = AgentSpec {
             id: "my-agent".into(),
-            model: "test-model".into(),
+            model_id: "test-model".into(),
             system_prompt: "Be helpful.".into(),
             max_rounds: 10,
             ..Default::default()
@@ -456,11 +456,11 @@ mod tests {
                     id: "search".into(),
                 }),
             )
-            .with_model(
+            .with_model_binding(
                 "test-model",
-                ModelEntry {
-                    provider: "mock".into(),
-                    model_name: "claude-test".into(),
+                ModelBinding {
+                    provider_id: "mock".into(),
+                    upstream_model: "claude-test".into(),
                 },
             )
             .with_provider("mock", Arc::new(MockExecutor))
@@ -469,7 +469,7 @@ mod tests {
 
         let resolved = runtime.resolver().resolve("my-agent").unwrap();
         assert_eq!(resolved.id(), "my-agent");
-        assert_eq!(resolved.model, "claude-test");
+        assert_eq!(resolved.upstream_model, "claude-test");
         assert_eq!(resolved.system_prompt(), "Be helpful.");
         assert_eq!(resolved.max_rounds(), 10);
         assert!(resolved.tools.contains_key("search"));
@@ -478,11 +478,11 @@ mod tests {
     #[test]
     fn builder_missing_agent_errors() {
         let runtime = AgentRuntimeBuilder::new()
-            .with_model(
+            .with_model_binding(
                 "m",
-                ModelEntry {
-                    provider: "p".into(),
-                    model_name: "n".into(),
+                ModelBinding {
+                    provider_id: "p".into(),
+                    upstream_model: "n".into(),
                 },
             )
             .with_provider("p", Arc::new(MockExecutor))
@@ -527,7 +527,7 @@ mod tests {
     fn builder_chained_tools_all_registered() {
         let spec = AgentSpec {
             id: "agent".into(),
-            model: "m".into(),
+            model_id: "m".into(),
             system_prompt: "sys".into(),
             ..Default::default()
         };
@@ -537,11 +537,11 @@ mod tests {
             .with_tool("t1", Arc::new(MockTool { id: "t1".into() }))
             .with_tool("t2", Arc::new(MockTool { id: "t2".into() }))
             .with_tool("t3", Arc::new(MockTool { id: "t3".into() }))
-            .with_model(
+            .with_model_binding(
                 "m",
-                ModelEntry {
-                    provider: "p".into(),
-                    model_name: "n".into(),
+                ModelBinding {
+                    provider_id: "p".into(),
+                    upstream_model: "n".into(),
                 },
             )
             .with_provider("p", Arc::new(MockExecutor))
@@ -558,7 +558,7 @@ mod tests {
     fn build_catches_missing_model() {
         let spec = AgentSpec {
             id: "bad-agent".into(),
-            model: "nonexistent-model".into(),
+            model_id: "nonexistent-model".into(),
             system_prompt: "sys".into(),
             ..Default::default()
         };
@@ -579,18 +579,18 @@ mod tests {
     fn build_succeeds_with_valid_config() {
         let spec = AgentSpec {
             id: "good-agent".into(),
-            model: "m".into(),
+            model_id: "m".into(),
             system_prompt: "sys".into(),
             ..Default::default()
         };
 
         let result = AgentRuntimeBuilder::new()
             .with_agent_spec(spec)
-            .with_model(
+            .with_model_binding(
                 "m",
-                ModelEntry {
-                    provider: "p".into(),
-                    model_name: "n".into(),
+                ModelBinding {
+                    provider_id: "p".into(),
+                    upstream_model: "n".into(),
                 },
             )
             .with_provider("p", Arc::new(MockExecutor))
@@ -604,15 +604,15 @@ mod tests {
         let runtime = AgentRuntimeBuilder::new()
             .with_agent_spec(AgentSpec {
                 id: "versioned-agent".into(),
-                model: "m".into(),
+                model_id: "m".into(),
                 system_prompt: "sys".into(),
                 ..Default::default()
             })
-            .with_model(
+            .with_model_binding(
                 "m",
-                ModelEntry {
-                    provider: "mock".into(),
-                    model_name: "model-v1".into(),
+                ModelBinding {
+                    provider_id: "mock".into(),
+                    upstream_model: "model-v1".into(),
                 },
             )
             .with_provider("mock", Arc::new(MockExecutor))
@@ -628,15 +628,15 @@ mod tests {
         let runtime = AgentRuntimeBuilder::new()
             .with_agent_spec(AgentSpec {
                 id: "agent-v1".into(),
-                model: "m".into(),
+                model_id: "m".into(),
                 system_prompt: "sys".into(),
                 ..Default::default()
             })
-            .with_model(
+            .with_model_binding(
                 "m",
-                ModelEntry {
-                    provider: "mock".into(),
-                    model_name: "model-v1".into(),
+                ModelBinding {
+                    provider_id: "mock".into(),
+                    upstream_model: "model-v1".into(),
                 },
             )
             .with_provider("mock", Arc::new(MockExecutor))
@@ -656,25 +656,25 @@ mod tests {
 
         let resolved = runtime.resolver().resolve("agent-v2").unwrap();
         assert_eq!(resolved.id(), "agent-v2");
-        assert_eq!(resolved.model, "model-v2");
+        assert_eq!(resolved.upstream_model, "model-v2");
     }
 
     #[test]
-    fn builder_model_entry_provider_name() {
+    fn builder_model_binding_provider_name() {
         let spec = AgentSpec {
             id: "agent".into(),
-            model: "gpt-4".into(),
+            model_id: "gpt-4".into(),
             system_prompt: "sys".into(),
             ..Default::default()
         };
 
         let runtime = AgentRuntimeBuilder::new()
             .with_agent_spec(spec)
-            .with_model(
+            .with_model_binding(
                 "gpt-4",
-                ModelEntry {
-                    provider: "openai".into(),
-                    model_name: "gpt-4-turbo".into(),
+                ModelBinding {
+                    provider_id: "openai".into(),
+                    upstream_model: "gpt-4-turbo".into(),
                 },
             )
             .with_provider("openai", Arc::new(MockExecutor))
@@ -682,8 +682,8 @@ mod tests {
             .unwrap();
 
         let resolved = runtime.resolver().resolve("agent").unwrap();
-        // The model should be resolved to the actual model name
-        assert_eq!(resolved.model, "gpt-4-turbo");
+        // The model ID should resolve to the upstream model name
+        assert_eq!(resolved.upstream_model, "gpt-4-turbo");
     }
 
     #[test]
@@ -734,7 +734,7 @@ mod tests {
     fn duplicate_agent_spec_errors_at_build() {
         let spec = AgentSpec {
             id: "dup-agent".into(),
-            model: "m".into(),
+            model_id: "m".into(),
             system_prompt: "sys".into(),
             ..Default::default()
         };
@@ -742,11 +742,11 @@ mod tests {
         let result = AgentRuntimeBuilder::new()
             .with_agent_spec(spec.clone())
             .with_agent_spec(spec)
-            .with_model(
+            .with_model_binding(
                 "m",
-                ModelEntry {
-                    provider: "p".into(),
-                    model_name: "n".into(),
+                ModelBinding {
+                    provider_id: "p".into(),
+                    upstream_model: "n".into(),
                 },
             )
             .with_provider("p", Arc::new(MockExecutor))
@@ -796,18 +796,18 @@ mod tests {
     #[test]
     fn duplicate_model_errors_at_build() {
         let result = AgentRuntimeBuilder::new()
-            .with_model(
+            .with_model_binding(
                 "dup-model",
-                ModelEntry {
-                    provider: "p".into(),
-                    model_name: "n1".into(),
+                ModelBinding {
+                    provider_id: "p".into(),
+                    upstream_model: "n1".into(),
                 },
             )
-            .with_model(
+            .with_model_binding(
                 "dup-model",
-                ModelEntry {
-                    provider: "p".into(),
-                    model_name: "n2".into(),
+                ModelBinding {
+                    provider_id: "p".into(),
+                    upstream_model: "n2".into(),
                 },
             )
             .build();

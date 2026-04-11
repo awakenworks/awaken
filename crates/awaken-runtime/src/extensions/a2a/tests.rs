@@ -31,7 +31,7 @@ impl MockResolver {
             id.to_string(),
             AgentSpec {
                 id: id.into(),
-                model: "test-model".into(),
+                model_id: "test-model".into(),
                 system_prompt: "sys".into(),
                 ..Default::default()
             },
@@ -72,7 +72,7 @@ impl AgentResolver for MockResolver {
             })?;
         let mut agent = ResolvedAgent::new(
             &spec.id,
-            &spec.model,
+            &spec.model_id,
             &spec.system_prompt,
             Arc::new(MockExecutor),
         );
@@ -420,7 +420,7 @@ fn mock_resolver_with_multiple_agents() {
         "writer".to_string(),
         AgentSpec {
             id: "writer".into(),
-            model: "test-model".into(),
+            model_id: "test-model".into(),
             system_prompt: "sys".into(),
             ..Default::default()
         },
@@ -429,7 +429,7 @@ fn mock_resolver_with_multiple_agents() {
         "reviewer".to_string(),
         AgentSpec {
             id: "reviewer".into(),
-            model: "test-model".into(),
+            model_id: "test-model".into(),
             system_prompt: "sys".into(),
             ..Default::default()
         },

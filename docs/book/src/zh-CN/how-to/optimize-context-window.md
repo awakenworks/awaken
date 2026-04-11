@@ -91,7 +91,7 @@ let config = CompactionConfig {
         Be concise but complete.".into(),
     summarizer_user_prompt: "Summarize the following conversation:\n\n{messages}".into(),
     summary_max_tokens: Some(1024),
-    summary_model: Some("claude-3-haiku".into()),
+    summary_upstream_model: Some("claude-3-haiku".into()),
     min_savings_ratio: 0.3,
 };
 ```

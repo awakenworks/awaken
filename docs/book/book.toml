@@ -18,5 +18,5 @@ command = "mdbook-mermaid"
 default-theme = "rust"
 git-repository-url = "https://github.com/AwakenWorks/awaken"
 edit-url-template = "https://github.com/AwakenWorks/awaken/edit/main/docs/book/{path}"
-additional-css = ["language-switcher.css"]
-additional-js = ["mermaid.min.js", "mermaid-init.js", "language-switcher.js"]
+additional-css = ["theme/language-switcher.css"]
+additional-js = ["mermaid.min.js", "mermaid-init.js", "theme/language-switcher.js"]

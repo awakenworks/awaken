@@ -56,6 +56,7 @@
 - [Events](./reference/events.md)
 - [HTTP API](./reference/http-api.md)
 - [Config](./reference/config.md)
+- [Provider and Model Configuration](./reference/provider-model-config.md)
 - [Errors](./reference/errors.md)
 - [AI SDK v6 Protocol](./reference/protocols/ai-sdk-v6.md)
 - [AG-UI Protocol](./reference/protocols/ag-ui.md)

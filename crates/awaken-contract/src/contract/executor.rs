@@ -10,15 +10,16 @@ use thiserror::Error;
 /// A provider-neutral LLM inference request.
 #[derive(Debug, Clone)]
 pub struct InferenceRequest {
-    /// Model identifier.
-    pub model: String,
+    /// Effective upstream model name sent to the resolved provider executor.
+    pub upstream_model: String,
     /// Messages to send.
     pub messages: Vec<Message>,
     /// Available tools.
     pub tools: Vec<ToolDescriptor>,
     /// System prompt content blocks. Empty means no system prompt.
     pub system: Vec<ContentBlock>,
-    /// Per-inference overrides (temperature, max_tokens, etc).
+    /// Per-inference overrides that remain after runtime routing is applied
+    /// (temperature, max_tokens, fallback upstream models, etc).
     pub overrides: Option<InferenceOverride>,
     /// Whether to apply prompt cache hints (e.g. `CacheControl::Ephemeral`) to system messages.
     pub enable_prompt_cache: bool,
@@ -216,7 +217,7 @@ mod tests {
             tool_calls: vec![],
         };
         let request = InferenceRequest {
-            model: "test-model".into(),
+            upstream_model: "test-model".into(),
             messages: vec![Message::user("hi")],
             tools: vec![],
             system: vec![],
@@ -236,7 +237,7 @@ mod tests {
             tool_calls: vec![ToolCall::new("c1", "search", json!({"q": "rust"}))],
         };
         let request = InferenceRequest {
-            model: "test-model".into(),
+            upstream_model: "test-model".into(),
             messages: vec![Message::user("search for rust")],
             tools: vec![ToolDescriptor::new("search", "search", "Web search")],
             system: vec![ContentBlock::text("You are helpful.")],
@@ -257,12 +258,11 @@ mod tests {
             tool_calls: vec![],
         };
         let request = InferenceRequest {
-            model: "base-model".into(),
+            upstream_model: "base-model".into(),
             messages: vec![],
             tools: vec![],
             system: vec![],
             overrides: Some(InferenceOverride {
-                model: Some("override-model".into()),
                 temperature: Some(0.7),
                 ..Default::default()
             }),

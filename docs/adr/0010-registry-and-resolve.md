@@ -18,7 +18,7 @@ Reference: uncarve's `AgentDefinition` + `RegistrySet` + `resolve()` pattern —
 #[derive(Serialize, Deserialize)]
 pub struct AgentSpec {
     pub id: String,
-    pub model: String,                         // ModelRegistry ID
+    pub model_id: String,                      // ModelRegistry ID
     pub system_prompt: String,
     pub max_rounds: usize,
     pub tool_execution_mode: ToolExecutionMode,
@@ -39,7 +39,7 @@ No `Arc<dyn T>`, no trait objects. Pure data. Can be saved to JSON, loaded from 
 | Registry | Key | Value | Purpose |
 |----------|-----|-------|---------|
 | `ToolRegistry` | tool_id | `Arc<dyn Tool>` | Available tools |
-| `ModelRegistry` | model_id | `ModelEntry` | Model name + provider + default options |
+| `ModelRegistry` | model_id | `ModelBinding` | Provider id + upstream model name |
 | `ProviderRegistry` | provider_id | `Arc<dyn LlmExecutor>` | LLM API clients |
 | `AgentRegistry` | agent_id | `AgentSpec` | Agent definitions |
 | `PluginRegistry` | plugin_id | `Arc<dyn Plugin>` | All extensions: hooks, permissions, MCP, skills |
@@ -58,17 +58,16 @@ Each registry is a trait with `get(id) -> Option<&T>` and `ids() -> Vec<String>`
 
 **No separate BehaviorRegistry or ExtensionRegistry.** Behaviors, extensions, MCP bridges, skill runtimes, permission checkers — all are `Plugin`. A Plugin that contributes tools registers them in `ToolRegistry` during build. A Plugin that contributes hooks does so via its `register()` method. The `PluginRegistry` is the single source of all pluggable functionality.
 
-### D3: ModelEntry and provider resolution
+### D3: ModelBinding and provider resolution
 
 ```rust
-pub struct ModelEntry {
-    pub provider: String,           // ProviderRegistry ID
-    pub model_name: String,         // Actual model name for API call
-    pub default_options: ChatOptions,
+pub struct ModelBinding {
+    pub provider_id: String,        // ProviderRegistry ID
+    pub upstream_model: String,     // Actual model name for API call
 }
 ```
 
-Resolution: `model_id → ModelEntry → provider_id → Arc<dyn LlmExecutor>`.
+Resolution: `model_id → ModelBinding → provider_id → Arc<dyn LlmExecutor>`.
 
 ### D4: resolve(agent_id) → ResolvedRun
 
@@ -78,8 +77,8 @@ pub fn resolve(
     agent_id: &str,
 ) -> Result<ResolvedRun, ResolveError> {
     let spec = registries.agents.get(agent_id)?;
-    let model = registries.models.get(&spec.model)?;
-    let executor = registries.providers.get(&model.provider)?;
+    let model = registries.models.get(&spec.model_id)?;
+    let executor = registries.providers.get(&model.provider_id)?;
 
     // Resolve tools: snapshot + allow/exclude filter
     let tools = resolve_tools(registries, spec)?;
@@ -90,8 +89,7 @@ pub fn resolve(
     Ok(ResolvedRun {
         spec: spec.clone(),
         executor: Arc::clone(executor),
-        model_name: model.model_name.clone(),
-        chat_options: model.default_options.clone(),
+        upstream_model: model.upstream_model.clone(),
         tools,
         plugins,
     })
@@ -104,7 +102,7 @@ pub fn resolve(
 pub struct ResolvedRun {
     pub spec: AgentSpec,
     pub executor: Arc<dyn LlmExecutor>,
-    pub model_name: String,
+    pub upstream_model: String,
     pub chat_options: ChatOptions,
     pub tools: HashMap<String, Arc<dyn Tool>>,
     pub plugins: Vec<Arc<dyn Plugin>>,
@@ -174,38 +172,15 @@ A plugin that bridges MCP servers contributes tools to `ToolRegistry` and hooks 
 #[derive(Serialize, Deserialize)]
 pub struct AgentSystemConfig {
     #[serde(default)]
-    pub providers: HashMap<String, ProviderConfig>,
-    #[serde(default)]
-    pub models: HashMap<String, ModelConfig>,
+    pub models: Vec<ModelBindingSpec>,
     #[serde(default)]
     pub agents: Vec<AgentSpec>,
 }
-
-#[derive(Serialize, Deserialize)]
-pub struct ProviderConfig {
-    pub kind: String,                   // "anthropic", "openai", "ollama"
-    pub endpoint: Option<String>,
-    pub auth: Option<AuthConfig>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct AuthConfig {
-    pub env: Option<String>,            // Environment variable name
-    pub token: Option<String>,          // Literal token (dev only)
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct ModelConfig {
-    pub provider: String,               // ProviderConfig key
-    pub model: String,                  // Actual model name
-    #[serde(default)]
-    pub options: ChatOptions,
-}
 ```
 
-Parse flow: `JSON/TOML → AgentSystemConfig → build registries → resolve agents`.
+Parse flow: `JSON/TOML → AgentSystemConfig + provider executors → build registries → resolve agents`.
 
-Plugins are not in the config file — they are registered programmatically (they hold trait object implementations). The config file covers data-only definitions (agents, models, providers).
+Providers and plugins are registered programmatically in this low-level helper because they hold trait object implementations. The managed server config path uses serializable `ProviderSpec`, `ModelBindingSpec`, and `AgentSpec` documents, then compiles them into the same runtime registries before resolution.
 
 ### D8: ~~run_agent_loop accepts ResolvedRun~~ (superseded by ADR-0011 D6)
 
@@ -228,14 +203,10 @@ Handoff is resolved inside the loop at step boundaries via `ActiveAgentKey` chec
 - `MapXxxRegistry` implementations (5): implemented
 - `RegistrySet`: implemented
 - `AgentSpec`: implemented
-- `ModelEntry`: implemented (without ChatOptions)
+- `ModelBinding`: implemented
 - `resolve()` → `ResolvedRun` (internal): implemented
 - `RegistrySet` implements `AgentResolver`: implemented
 - `AgentRuntime::run(RunRequest)`: implemented
-
-### To implement
-- `AgentSystemConfig` (JSON config format)
-- `ChatOptions` on `ModelEntry`
 
 ### Deferred
 - `CompositeXxxRegistry` (merge multiple sources)

@@ -10,7 +10,7 @@ use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequ
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_runtime::registry::traits::ModelEntry;
+use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{AppState, ServerConfig};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
@@ -51,18 +51,18 @@ fn make_app() -> axum::Router {
     let store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
-            .with_model(
+            .with_model_binding(
                 "test-model",
-                ModelEntry {
-                    provider: "mock".into(),
-                    model_name: "mock-model".into(),
+                ModelBinding {
+                    provider_id: "mock".into(),
+                    upstream_model: "mock-model".into(),
                 },
             )
             .with_provider("mock", Arc::new(EchoExecutor))
             .with_thread_run_store(store.clone())
             .with_agent_spec(AgentSpec {
                 id: "default".into(),
-                model: "test-model".into(),
+                model_id: "test-model".into(),
                 system_prompt: "You are a test assistant.".into(),
                 max_rounds: 3,
                 ..Default::default()

@@ -233,7 +233,7 @@ fn agent_card_to_spec(
             .clone()
             .unwrap_or_else(|| slugify_agent_name(&card.name)),
         // Remote agents don't need a local model — they run on the remote server.
-        model: String::new(),
+        model_id: String::new(),
         system_prompt: card.description.clone(),
         endpoint: Some(RemoteEndpoint {
             backend: "a2a".into(),
@@ -302,7 +302,7 @@ mod tests {
         let mut reg = MapAgentSpecRegistry::new();
         reg.register_spec(AgentSpec {
             id: "local-agent".into(),
-            model: "test-model".into(),
+            model_id: "test-model".into(),
             system_prompt: "Local agent.".into(),
             ..Default::default()
         })
@@ -344,7 +344,7 @@ mod tests {
                     "cloud".into(),
                     AgentSpec {
                         id: "remote-coder".into(),
-                        model: String::new(),
+                        model_id: String::new(),
                         system_prompt: "A remote coding agent.".into(),
                         endpoint: Some(RemoteEndpoint {
                             base_url: "https://remote.example.com".into(),
@@ -376,7 +376,7 @@ mod tests {
                     "cloud".into(),
                     AgentSpec {
                         id: "local-agent".into(),
-                        model: String::new(),
+                        model_id: String::new(),
                         system_prompt: "Remote version.".into(),
                         endpoint: Some(RemoteEndpoint {
                             base_url: "https://remote.example.com".into(),

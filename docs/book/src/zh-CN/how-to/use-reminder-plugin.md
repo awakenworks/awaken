@@ -22,7 +22,8 @@ serde_json = "1"
 use std::sync::Arc;
 use awaken::engine::GenaiExecutor;
 use awaken::ext_reminder::{ReminderPlugin, ReminderRulesConfig};
-use awaken::registry_spec::{AgentSpec, ModelSpec};
+use awaken::registry::ModelBinding;
+use awaken::registry_spec::AgentSpec;
 use awaken::{AgentRuntimeBuilder, Plugin};
 
 let json = r#"{
@@ -42,18 +43,17 @@ let config = ReminderRulesConfig::from_str(json, Some("json"))
     .expect("failed to parse reminder config");
 let rules = config.into_rules().expect("invalid rules");
 let agent_spec = AgentSpec::new("my-agent")
-    .with_model("claude-sonnet")
+    .with_model_id("claude-sonnet")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("reminder");
 
 let runtime = AgentRuntimeBuilder::new()
     .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
-    .with_model(
+    .with_model_binding(
         "claude-sonnet",
-        ModelSpec {
-            id: "claude-sonnet".into(),
-            provider: "anthropic".into(),
-            model: "claude-3-7-sonnet-latest".into(),
+        ModelBinding {
+            provider_id: "anthropic".into(),
+            upstream_model: "claude-3-7-sonnet-latest".into(),
         },
     )
     .with_agent_spec(agent_spec)
@@ -122,7 +122,7 @@ let config = ReminderRulesConfig::from_file("reminders.json")
 
 ```rust,ignore
 let agent_spec = AgentSpec::new("my-agent")
-    .with_model("claude-sonnet")
+    .with_model_id("claude-sonnet")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("reminder");
 ```

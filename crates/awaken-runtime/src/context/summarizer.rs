@@ -85,7 +85,7 @@ impl ContextSummarizer for DefaultSummarizer {
         let model = self.config.summary_model.clone().unwrap_or_default();
 
         let request = awaken_contract::contract::executor::InferenceRequest {
-            model,
+            upstream_model: model,
             messages: vec![
                 Message::system(&self.config.summarizer_system_prompt),
                 Message::user(user_prompt),

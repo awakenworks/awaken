@@ -19,7 +19,7 @@ use std::time::Duration;
 use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::engine::executor::GenaiExecutor;
-use awaken_runtime::registry::traits::ModelEntry;
+use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{AppState, ServerConfig};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
@@ -159,7 +159,7 @@ async fn a2a_loopback_orchestrator_delegates_to_worker() {
     // This avoids infinite recursion (worker resolving its own endpoint).
 
     let worker_local = AgentSpec::new("worker")
-        .with_model("default")
+        .with_model_id("default")
         .with_system_prompt(
             "You are a simple worker agent. \
              Always reply with exactly one word: PONG. \
@@ -169,7 +169,7 @@ async fn a2a_loopback_orchestrator_delegates_to_worker() {
 
     let worker_remote = AgentSpec {
         id: "worker-remote".into(),
-        model: "default".into(),
+        model_id: "default".into(),
         system_prompt: "Reply with PONG".into(),
         max_rounds: 1,
         endpoint: Some(RemoteEndpoint {
@@ -187,7 +187,7 @@ async fn a2a_loopback_orchestrator_delegates_to_worker() {
     };
 
     let orchestrator_spec = AgentSpec::new("orchestrator")
-        .with_model("default")
+        .with_model_id("default")
         .with_system_prompt(
             "You are an orchestrator. You MUST delegate every user request to the worker \
              by calling the `agent_run_worker-remote` tool with the user's message as the prompt. \
@@ -204,11 +204,11 @@ async fn a2a_loopback_orchestrator_delegates_to_worker() {
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("default", executor)
-            .with_model(
+            .with_model_binding(
                 "default",
-                ModelEntry {
-                    provider: "default".into(),
-                    model_name,
+                ModelBinding {
+                    provider_id: "default".into(),
+                    upstream_model: model_name,
                 },
             )
             .with_agent_spec(orchestrator_spec)

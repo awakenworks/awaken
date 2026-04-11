@@ -128,9 +128,9 @@ async fn ai_sdk_chat_preview_agent(
         mut agent,
     } = payload;
 
-    if agent.model.trim().is_empty() {
+    if agent.model_id.trim().is_empty() {
         return Err(ApiError::BadRequest(
-            "preview agent model cannot be empty".to_string(),
+            "preview agent model_id cannot be empty".to_string(),
         ));
     }
 

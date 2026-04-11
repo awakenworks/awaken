@@ -124,7 +124,7 @@ Model override, thinking adjustment, temperature change for one inference — th
 
 ```rust
 cmd.effect(RuntimeEffect::InferenceOverride {
-    model: Some("gpt-4o".into()),
+    upstream_model: Some("gpt-4o".into()),
     thinking: Some(ThinkingConfig { enabled: false }),
 })?;
 ```
