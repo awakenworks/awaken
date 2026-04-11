@@ -13,6 +13,7 @@ pub struct AgentSpec {
     pub max_rounds: usize,                          // default: 16
     pub max_continuation_retries: usize,            // default: 2
     pub context_policy: Option<ContextWindowPolicy>,
+    pub reasoning_effort: Option<ReasoningEffort>,
     pub plugin_ids: Vec<String>,
     pub active_hook_filter: HashSet<String>,
     pub allowed_tools: Option<Vec<String>>,
@@ -33,6 +34,7 @@ AgentSpec::new(id) -> Self
     .with_model_id(model_id) -> Self
     .with_system_prompt(prompt) -> Self
     .with_max_rounds(n) -> Self
+    .with_reasoning_effort(effort) -> Self
     .with_hook_filter(plugin_id) -> Self
     .with_config::<K>(config) -> Result<Self, StateError>
     .with_delegate(agent_id) -> Self
@@ -49,6 +51,53 @@ fn config<K: PluginConfigKey>(&self) -> Result<K::Config, StateError>
 /// Set a typed plugin config section.
 fn set_config<K: PluginConfigKey>(&mut self, config: K::Config) -> Result<(), StateError>
 ```
+
+### Runtime-managed plugin config
+
+`AgentSpec.sections` is the source of truth for plugin configuration whether
+the spec is built in Rust, loaded from JSON/YAML, or saved through the runtime
+config API. Plugins declare the same typed section with `PluginConfigKey`, expose
+its JSON Schema from `Plugin::config_schemas()`, and read it during resolution or
+phase hooks with `agent_spec.config::<K>()`.
+
+This is the intended control plane for agent optimization features. Model and
+provider selection, base prompts, reminder rules, generated-UI prompt guidance,
+permissions, context-window behavior, retry policy, and deferred-tool policy are
+data that can be validated and changed at runtime.
+
+| Tuning surface | Implemented config surface |
+|---|---|
+| Base prompt | `AgentSpec.system_prompt` in the `agents` config namespace |
+| Model selection | `AgentSpec.model_id`, resolved through `/v1/config/models` |
+| Provider endpoint and OpenAI-compatible routing | `/v1/config/providers` (`adapter`, `base_url`, auth, timeout) |
+| Context budget and prompt caching | `AgentSpec.context_policy` |
+| Reasoning effort | `AgentSpec.reasoning_effort` |
+| Retry and fallback models | `AgentSpec.sections["retry"]` |
+| System reminders and prompt context injection | `AgentSpec.sections["reminder"]`, read through `ReminderConfigKey` |
+| Generative UI prompt guidance | `AgentSpec.sections["generative-ui"]`, read through `A2uiPromptConfigKey` |
+| Permission policy | `AgentSpec.sections["permission"]` |
+| Deferred tool loading | `AgentSpec.sections["deferred_tools"]` |
+
+Prompt semantic hooks are not a built-in plugin yet. When added, they should use
+the same path: declare a typed config key, expose schema, render in the admin
+console, and read the resolved config from hooks.
+
+When `awaken-server` is constructed with a `ConfigStore` and config runtime
+manager, `/v1/capabilities` returns `plugins[].config_schemas`. The admin
+console renders those schemas on the agent editor page and saves values back
+under `AgentSpec.sections[schema.key]`. A saved section takes effect on new runs
+after the config write validates and publishes a new registry snapshot. If the
+plugin is not listed in `plugin_ids`, the section remains stored but the plugin
+is not loaded, so its hooks, tools, and request transforms do not run.
+
+Current configurable plugin sections exposed by the starter runtime:
+
+| Plugin ID | Section key | Admin editor |
+|---|---|---|
+| `permission` | `permission` | Dedicated permission rules editor |
+| `reminder` | `reminder` | Dedicated reminder rules editor |
+| `generative-ui` | `generative-ui` | Dedicated A2UI prompt/catalog editor |
+| `ext-deferred-tools` | `deferred_tools` | Generic JSON Schema form |
 
 ## ContextWindowPolicy
 
@@ -376,9 +425,51 @@ if cfg.max_calls_per_step > 0 { /* enforce limit */ }
   removed plugin).
 - **Section absent:** allowed; the plugin receives `Config::default()`.
 
-## Related
+## DeferredToolsConfig
 
-- [Build an Agent](../how-to/build-an-agent.md)
+`awaken-ext-deferred-tools` is registered with plugin ID `ext-deferred-tools`.
+Its agent config section key is `deferred_tools`, bound by
+`DeferredToolsConfigKey`. The crate is not included in the `awaken` facade
+`full` feature; add `awaken-ext-deferred-tools` directly and register
+`DeferredToolsPlugin` with seed tool descriptors.
+
+```json
+{
+  "enabled": null,
+  "default_mode": "deferred",
+  "beta_overhead": 1136.0,
+  "rules": [
+    { "tool": "get_weather", "mode": "eager" },
+    { "tool": "debug_*", "mode": "deferred" }
+  ],
+  "agent_priors": {
+    "get_weather": 0.03
+  },
+  "disc_beta": {
+    "omega": 0.95,
+    "n0": 5.0,
+    "defer_after": 5,
+    "thresh_mult": 0.5,
+    "gamma": 2000.0
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | `bool \| null` | `null` | `true` always enables, `false` disables, `null`/missing auto-enables when estimated schema savings exceed `beta_overhead` |
+| `rules` | `DeferralRule[]` | `[]` | Ordered exact/glob tool rules; first match wins |
+| `default_mode` | `"eager" \| "deferred"` | `"deferred"` | Mode for tools that match no rule |
+| `beta_overhead` | `number` | `1136.0` | Estimated per-turn overhead of `ToolSearch` plus the deferred-tool list |
+| `agent_priors` | `object` | `{}` | Optional per-tool prior usage frequencies in `0..1`; missing tools use `0.01` |
+| `disc_beta.omega` | `number` | `0.95` | Per-turn discount factor; effective memory is approximately `1/(1-omega)` turns |
+| `disc_beta.n0` | `number` | `5.0` | Prior strength in equivalent observations |
+| `disc_beta.defer_after` | `integer` | `5` | Minimum idle turns before a promoted tool can be re-deferred |
+| `disc_beta.thresh_mult` | `number` | `0.5` | Multiplier applied to the breakeven frequency threshold |
+| `disc_beta.gamma` | `number` | `2000.0` | Estimated token cost of one `ToolSearch` call |
+
+See [Use Deferred Tools](../how-to/use-deferred-tools.md) for the activation
+heuristic, `ToolSearch` behavior, and the full DiscBeta probability model.
 
 ## ConfigStore
 
@@ -403,3 +494,7 @@ Related types:
 
 - `ConfigChangeNotifier` / `ConfigChangeSubscriber` — optional native change notifications
 - `AppState::with_config_store(...)` — enables runtime config routes in `awaken-server`
+
+## Related
+
+- [Build an Agent](../how-to/build-an-agent.md)

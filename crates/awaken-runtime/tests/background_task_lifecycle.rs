@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::{EventSink, NullEventSink, VecEventSink};
+use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
@@ -20,22 +20,20 @@ use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 
-use awaken_runtime::agent::state::{PendingWorkKey, RunLifecycle};
+use awaken_runtime::agent::state::RunLifecycle;
 use awaken_runtime::backend::{
     BackendControl, BackendDelegatePolicy, BackendDelegateRunRequest, BackendParentContext,
 };
 use awaken_runtime::extensions::background::{
     BackgroundTaskManager, BackgroundTaskPlugin, TaskParentContext, TaskResult as BgTaskResult,
 };
-use awaken_runtime::loop_runner::{
-    AgentLoopParams, AgentRunResult, build_agent_env, run_agent_loop,
-};
+use awaken_runtime::loop_runner::{AgentLoopParams, build_agent_env, run_agent_loop};
 use awaken_runtime::phase::PhaseRuntime;
-use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
+use awaken_runtime::plugins::Plugin;
 use awaken_runtime::registry::{
     AgentResolver, ExecutionResolver, ResolvedAgent, ResolvedExecution,
 };
-use awaken_runtime::state::{StateKeyOptions, StateStore};
+use awaken_runtime::state::StateStore;
 use awaken_runtime::{RuntimeError, inbox};
 
 // ---------------------------------------------------------------------------
@@ -354,14 +352,14 @@ async fn agent_without_tasks_completes_normally() {
 /// Task emits event → inbox drains → LLM sees the event as internal_system message.
 #[tokio::test]
 async fn task_event_injected_into_conversation() {
-    let (runtime, store, manager, bg_plugins) = make_bg_runtime();
+    let (runtime, store, manager, _bg_plugins) = make_bg_runtime();
     let (inbox_tx, inbox_rx) = inbox::inbox_channel();
     // Note: can't call set_owner_inbox on Arc. The make_bg_runtime helper
     // creates the manager without inbox. For this test we create fresh.
     drop((runtime, store, manager));
 
     let store = StateStore::new();
-    let mut mgr = BackgroundTaskManager::new();
+    let mgr = BackgroundTaskManager::new();
     mgr.set_owner_inbox(inbox_tx);
     let manager = Arc::new(mgr);
     manager.set_store(store.clone());
@@ -422,10 +420,10 @@ async fn task_event_injected_into_conversation() {
 /// receives the instruction, completes work, and returns final result.
 #[tokio::test]
 async fn parent_child_message_roundtrip() {
-    use awaken_runtime::extensions::background::{SendError, SpawnError};
+    use awaken_runtime::extensions::background::SendError;
 
     let store = StateStore::new();
-    let mut parent_mgr = BackgroundTaskManager::new();
+    let parent_mgr = BackgroundTaskManager::new();
     let (parent_inbox_tx, mut parent_inbox_rx) = inbox::inbox_channel();
     parent_mgr.set_owner_inbox(parent_inbox_tx);
     let parent_mgr = Arc::new(parent_mgr);
@@ -684,7 +682,7 @@ async fn local_backend_sub_agent_receives_bg_task_events() {
             // If inbox events arrive before NaturalEnd check, the loop continues
             // and calls LLM again — that's what we're testing.
             Ok(StreamResult {
-                content: vec![ContentBlock::text(&format!("response {n}"))],
+                content: vec![ContentBlock::text(format!("response {n}"))],
                 tool_calls: vec![],
                 usage: Some(TokenUsage::default()),
                 stop_reason: Some(StopReason::EndTurn),
@@ -767,7 +765,7 @@ async fn multi_level_bg_task_event_reaches_sub_agent() {
             } else {
                 // Subsequent: just return text
                 Ok(StreamResult {
-                    content: vec![ContentBlock::text(&format!("done (turn {n})"))],
+                    content: vec![ContentBlock::text(format!("done (turn {n})"))],
                     tool_calls: vec![],
                     usage: Some(TokenUsage::default()),
                     stop_reason: Some(StopReason::EndTurn),
@@ -794,7 +792,7 @@ async fn multi_level_bg_task_event_reaches_sub_agent() {
         async fn execute(
             &self,
             _args: Value,
-            ctx: &ToolCallContext,
+            _ctx: &ToolCallContext,
         ) -> Result<ToolOutput, ToolError> {
             // Read the BackgroundTaskManager from state — it was installed
             // by LocalBackend. We can access it via the BackgroundTaskStateKey.
@@ -876,7 +874,7 @@ async fn sub_agent_waits_for_bg_task_completion_before_returning() {
                     has_incomplete_tool_calls: false,
                 }),
                 _ => Ok(StreamResult {
-                    content: vec![ContentBlock::text(&format!("final summary turn {n}"))],
+                    content: vec![ContentBlock::text(format!("final summary turn {n}"))],
                     tool_calls: vec![],
                     usage: Some(TokenUsage::default()),
                     stop_reason: Some(StopReason::EndTurn),
@@ -931,7 +929,7 @@ async fn sub_agent_waits_for_bg_task_completion_before_returning() {
     // Create store + manager with inbox wired
     let store = StateStore::new();
     let (inbox_sender, inbox_receiver) = crate::inbox::inbox_channel();
-    let mut bg_mgr = BackgroundTaskManager::new();
+    let bg_mgr = BackgroundTaskManager::new();
     bg_mgr.set_owner_inbox(inbox_sender);
     let bg_mgr = Arc::new(bg_mgr);
     bg_mgr.set_store(store.clone());
@@ -1007,7 +1005,7 @@ async fn sub_agent_waits_for_bg_task_completion_before_returning() {
 async fn inbox_events_have_structured_kind_field() {
     let store = StateStore::new();
     let (inbox_sender, mut inbox_receiver) = inbox::inbox_channel();
-    let mut bg_mgr = BackgroundTaskManager::new();
+    let bg_mgr = BackgroundTaskManager::new();
     bg_mgr.set_owner_inbox(inbox_sender);
     let bg_mgr = Arc::new(bg_mgr);
     bg_mgr.set_store(store.clone());
@@ -1061,7 +1059,7 @@ async fn inbox_events_have_structured_kind_field() {
 async fn non_blocking_spawn_agent_same_event_format() {
     let store = StateStore::new();
     let (inbox_sender, mut inbox_receiver) = inbox::inbox_channel();
-    let mut bg_mgr = BackgroundTaskManager::new();
+    let bg_mgr = BackgroundTaskManager::new();
     bg_mgr.set_owner_inbox(inbox_sender);
     let bg_mgr = Arc::new(bg_mgr);
     bg_mgr.set_store(store.clone());
@@ -1079,7 +1077,7 @@ async fn non_blocking_spawn_agent_same_event_format() {
             Some("worker"),
             "emitting worker",
             TaskParentContext::default(),
-            |_cancel, child_sender, _rx| async move {
+            |_cancel, _child_sender, _rx| async move {
                 // Child doesn't use child_sender for parent notification.
                 // The manager's owner_inbox handles completion events.
                 BgTaskResult::Success(json!({"done": true}))
@@ -1113,7 +1111,7 @@ async fn non_blocking_spawn_agent_same_event_format() {
 /// from a real NaturalEnd.
 #[tokio::test]
 async fn run_finish_signals_awaiting_tasks_in_result() {
-    let (runtime, store, manager, bg_plugins) = make_bg_runtime();
+    let (runtime, _store, manager, bg_plugins) = make_bg_runtime();
 
     let tool: Arc<dyn Tool> = Arc::new(SpawnTaskTool {
         manager: manager.clone(),
@@ -1222,22 +1220,19 @@ async fn run_finish_normal_end_no_awaiting_flag() {
 #[tokio::test]
 async fn local_backend_passes_parent_thread_id() {
     use awaken_runtime::extensions::a2a::{DelegateRunStatus, LocalBackend};
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let call_count = Arc::new(AtomicUsize::new(0));
-    let captured_identity: Arc<Mutex<Option<RunIdentity>>> = Arc::new(Mutex::new(None));
 
     struct IdentityCapturingLlm {
         counter: Arc<AtomicUsize>,
-        captured: Arc<Mutex<Option<RunIdentity>>>,
     }
 
     #[async_trait]
     impl LlmExecutor for IdentityCapturingLlm {
         async fn execute(
             &self,
-            req: InferenceRequest,
+            _req: InferenceRequest,
         ) -> Result<StreamResult, InferenceExecutionError> {
             let n = self.counter.fetch_add(1, Ordering::SeqCst);
             if n == 0 {
@@ -1261,7 +1256,6 @@ async fn local_backend_passes_parent_thread_id() {
 
     let llm = Arc::new(IdentityCapturingLlm {
         counter: call_count.clone(),
-        captured: captured_identity.clone(),
     });
     let agent = ResolvedAgent::new("sub", "m", "sys", llm);
     let resolver = Arc::new(FixedResolver {

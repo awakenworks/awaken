@@ -24,21 +24,21 @@ Key types:
 
 Each overlay specifies which parts of the base agent configuration to override. Fields left as `None` inherit the base agent's values.
 
-The `model` field uses the same model registry ID that `AgentSpec.model_id` uses.
+The `model_id` field uses the same model registry ID that `AgentSpec.model_id` uses.
 
 ```rust,ignore
 use awaken::extensions::handoff::AgentOverlay;
 
 let researcher = AgentOverlay {
     system_prompt: Some("You are a research specialist. Find and cite sources.".into()),
-    upstream_model: Some("claude-sonnet".into()),
+    model_id: Some("claude-sonnet".into()),
     allowed_tools: Some(vec!["web_search".into(), "read_document".into()]),
     excluded_tools: None,
 };
 
 let writer = AgentOverlay {
     system_prompt: Some("You are a technical writer. Produce clear documentation.".into()),
-    model: None, // inherits base model
+    model_id: None, // inherits base model
     allowed_tools: None, // all tools available
     excluded_tools: Some(vec!["web_search".into()]),
 };
@@ -63,6 +63,9 @@ let handoff = HandoffPlugin::new(overlays);
 ```rust,ignore
 use awaken::AgentRuntimeBuilder;
 
+let mut spec = spec;
+spec.plugin_ids.push("agent_handoff".into());
+
 let runtime = AgentRuntimeBuilder::new()
     .with_plugin("agent_handoff", Arc::new(handoff))
     .with_agent_spec(spec)
@@ -70,7 +73,9 @@ let runtime = AgentRuntimeBuilder::new()
     .build()?;
 ```
 
-The plugin ID must be `"agent_handoff"` (exported as `HANDOFF_PLUGIN_ID`). The plugin registers hooks on `Phase::RunStart` and `Phase::StepEnd` to synchronize handoff state.
+The plugin ID must be `"agent_handoff"` (exported as `HANDOFF_PLUGIN_ID`) and
+must be listed in `AgentSpec.plugin_ids`. The plugin registers hooks on
+`Phase::RunStart` and `Phase::StepEnd` to synchronize handoff state.
 
 4. Request a handoff from within a tool or hook.
 

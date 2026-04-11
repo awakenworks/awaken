@@ -16,36 +16,34 @@ serde_json = "1"
 
 ## 步骤
 
-1. 用规则注册 reminder 插件：
+1. 注册 reminder 插件，并在 agent 配置里注入规则：
 
 ```rust,ignore
 use std::sync::Arc;
+use serde_json::json;
 use awaken::engine::GenaiExecutor;
-use awaken::ext_reminder::{ReminderPlugin, ReminderRulesConfig};
+use awaken::ext_reminder::ReminderPlugin;
 use awaken::registry::ModelBinding;
 use awaken::registry_spec::AgentSpec;
 use awaken::{AgentRuntimeBuilder, Plugin};
 
-let json = r#"{
-    "rules": [
-        {
-            "tool": "Bash(command ~ 'rm *')",
-            "output": { "status": "success" },
-            "message": {
-                "target": "suffix_system",
-                "content": "A deletion command just succeeded. Verify the result."
-            }
-        }
-    ]
-}"#;
-
-let config = ReminderRulesConfig::from_str(json, Some("json"))
-    .expect("failed to parse reminder config");
-let rules = config.into_rules().expect("invalid rules");
-let agent_spec = AgentSpec::new("my-agent")
+let mut agent_spec = AgentSpec::new("my-agent")
     .with_model_id("claude-sonnet")
     .with_system_prompt("You are a helpful assistant.")
-    .with_hook_filter("reminder");
+    .with_hook_filter("reminder")
+    .with_section("reminder", json!({
+        "rules": [
+            {
+                "tool": "Bash(command ~ 'rm *')",
+                "output": { "status": "success" },
+                "message": {
+                    "target": "suffix_system",
+                    "content": "A deletion command just succeeded. Verify the result."
+                }
+            }
+        ]
+    }));
+agent_spec.plugin_ids.push("reminder".into());
 
 let runtime = AgentRuntimeBuilder::new()
     .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
@@ -57,12 +55,15 @@ let runtime = AgentRuntimeBuilder::new()
         },
     )
     .with_agent_spec(agent_spec)
-    .with_plugin("reminder", Arc::new(ReminderPlugin::new(rules)) as Arc<dyn Plugin>)
+    .with_plugin("reminder", Arc::new(ReminderPlugin::new(vec![])) as Arc<dyn Plugin>)
     .build()
     .expect("failed to build runtime");
 ```
 
 该插件会在 `AfterToolExecute` 阶段检查工具名、参数和结果；一旦命中规则，就会调度 `AddContextMessage` 注入提示。
+`plugin_ids` 负责加载插件，`with_hook_filter("reminder")` 只是在加载后过滤启用的
+hook。`reminder` section 通过 `ReminderConfigKey` 校验，会出现在
+`/v1/capabilities` 中，也是 admin console 页面保存的同一份数据。
 
 2. 用工具模式定义规则：
 
@@ -109,23 +110,31 @@ let runtime = AgentRuntimeBuilder::new()
 }
 ```
 
-6. 也可以从文件加载规则：
+6. 也可以从文件加载默认规则：
 
 ```rust,ignore
-use awaken::ext_reminder::ReminderRulesConfig;
+use awaken::ext_reminder::{ReminderPlugin, ReminderRulesConfig};
 
 let config = ReminderRulesConfig::from_file("reminders.json")
     .expect("failed to load reminder config");
+let rules = config.into_rules().expect("invalid rules");
+let plugin = ReminderPlugin::new(rules);
 ```
+
+传给 `ReminderPlugin::new(...)` 的规则是插件默认值。agent 的 `reminder` section
+会在运行时追加进去，因此同一个插件实例可以服务多个不同 reminder 配置的 agent。
 
 7. 在 agent spec 上激活插件：
 
 ```rust,ignore
-let agent_spec = AgentSpec::new("my-agent")
+let mut agent_spec = AgentSpec::new("my-agent")
     .with_model_id("claude-sonnet")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("reminder");
+agent_spec.plugin_ids.push("reminder".into());
 ```
+
+`plugin_ids` 控制插件加载；`with_hook_filter("reminder")` 只在插件加载后过滤 hook。
 
 ## 验证
 
@@ -142,7 +151,7 @@ let agent_spec = AgentSpec::new("my-agent")
 | `InvalidTarget` | 消息目标无效 | 只能用 `system` / `suffix_system` / `session` / `conversation` |
 | `InvalidOutput` | output 结构无效 | 使用 `"any"` 或结构化对象 |
 | `InvalidOp` | 字段匹配操作符未知 | 使用 `glob` / `exact` / `regex` / `not_*` 系列 |
-| 规则从不触发 | 插件没激活 | 在 agent spec 上加 `with_hook_filter("reminder")` |
+| 规则从不触发 | 插件未加载或 hook 被过滤 | 在 `plugin_ids` 中加入 `"reminder"`，使用 hook filter 时再加 `with_hook_filter("reminder")` |
 | 规则触发太频繁 | 没设置 cooldown | 设置正数 `cooldown_turns` |
 
 ## 相关示例

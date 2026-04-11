@@ -44,13 +44,11 @@ The first stage fetches the raw data from registries:
 
 1. **AgentSpec** -- looked up from `AgentSpecRegistry` by `agent_id`. If the spec has an `endpoint` field (remote backend agent), resolution fails with `RemoteAgentNotDirectlyRunnable` -- remote agents can only be used as delegates, not run directly.
 
-2. **ModelBinding** -- the spec's `model_id` field (a model registry ID like `"default"`) is resolved through `ModelRegistry` into a `ModelBinding`, which maps it to a provider ID and an upstream API model name (for example, provider `"openai"`, upstream model `"gpt-4o"`). Serializable `ModelBindingSpec` values from managed config are compiled into these runtime bindings before resolution.
+2. **ModelBinding** -- the spec's `model_id` field (a model registry ID like `"default"`) is resolved through `ModelRegistry` into a runtime `ModelBinding`, which maps it to a provider ID and an upstream API model name (for example, provider `"openai"`, upstream model `"gpt-4o"`). The server-side config API persists serializable `ModelBindingSpec` entries and converts them into `ModelBinding` during registry publication.
 
 3. **LlmExecutor** -- the provider ID from the model binding is resolved through `ProviderRegistry` to get a live `LlmExecutor` instance.
 
-4. **Retry decoration** -- the agent spec is read through `RetryConfigKey`; a missing section uses `LlmRetryPolicy::default()`. If the resulting policy has `max_retries > 0` or non-empty `fallback_upstream_models`, the executor is wrapped in a `RetryingExecutor` decorator.
-
-For the provider/model data flow, see [Provider and Model Configuration](../reference/provider-model-config.md).
+4. **Retry decoration** -- if the agent spec contains a `RetryConfigKey` section with `max_retries > 0` or non-empty `fallback_upstream_models`, the executor is wrapped in a `RetryingExecutor` decorator.
 
 ## Stage 2: Plugin Pipeline
 
@@ -147,7 +145,7 @@ The builder (`AgentRuntimeBuilder`) is the standard way to construct an `AgentRu
 |---|---|---|
 | `MapAgentSpecRegistry` | `with_agent_spec()` / `with_agent_specs()` | Agent definitions |
 | `MapToolRegistry` | `with_tool()` | Global tools |
-| `MapModelRegistry` | `with_model_binding()` | Model ID to provider + upstream model mappings |
+| `MapModelRegistry` | `with_model_binding()` | Model ID to provider + model name mappings |
 | `MapProviderRegistry` | `with_provider()` | LLM executor instances |
 | `MapPluginSource` | `with_plugin()` | Plugin instances |
 

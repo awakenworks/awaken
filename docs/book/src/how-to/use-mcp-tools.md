@@ -63,12 +63,14 @@ use awaken::registry::ModelBinding;
 use awaken::registry_spec::AgentSpec;
 use awaken::{AgentRuntimeBuilder, Plugin};
 
-let agent_spec = AgentSpec::new("mcp-agent")
+let mut agent_spec = AgentSpec::new("mcp-agent")
     .with_model_id("gpt-4o-mini")
     .with_system_prompt("Use MCP tools when they help answer the user.")
     .with_hook_filter("mcp");
+agent_spec.plugin_ids.push("mcp".into());
 
-let mut builder = AgentRuntimeBuilder::new()
+let mcp_registry = manager.registry();
+let runtime = AgentRuntimeBuilder::new()
     .with_provider("openai", Arc::new(GenaiExecutor::new()))
     .with_model_binding(
         "gpt-4o-mini",
@@ -78,15 +80,14 @@ let mut builder = AgentRuntimeBuilder::new()
         },
     )
     .with_agent_spec(agent_spec)
-    .with_plugin("mcp", Arc::new(McpPlugin) as Arc<dyn Plugin>);
-
-let registry = manager.registry();
-for (id, tool) in registry.snapshot() {
-    builder = builder.with_tool(&id, tool);
-}
-
-let runtime = builder.build().expect("failed to build runtime");
+    .with_plugin("mcp", Arc::new(McpPlugin::new(mcp_registry)) as Arc<dyn Plugin>)
+    .build()
+    .expect("failed to build runtime");
 ```
+
+The `mcp` plugin snapshots the current MCP registry during agent resolution and
+registers the discovered tools as plugin tools. `plugin_ids` must contain
+`"mcp"` for those tools to be loaded for the agent.
 
 4. Enable periodic refresh (optional).
 
@@ -97,6 +98,9 @@ use std::time::Duration;
 
 manager.start_periodic_refresh(Duration::from_secs(60));
 ```
+
+Periodic refresh updates the manager registry. New runs resolve the agent again
+and see the latest snapshot; in-flight runs keep the tool set they resolved with.
 
 ## Verify
 
@@ -112,7 +116,7 @@ manager.start_periodic_refresh(Duration::from_secs(60));
 | No tools discovered | Server returned empty tool list | Check the MCP server implements `tools/list` |
 | Tool call timeout | Server too slow to respond | Increase timeout in the transport configuration |
 | Feature not found | Missing cargo feature | Enable `features = ["mcp"]` in `Cargo.toml` |
-| `mcp__server__tool` not found | Tools not registered with builder | Loop over `manager.registry().snapshot()` and call `with_tool` for each |
+| `mcp__server__tool` not found | MCP plugin not loaded for the agent or no tools discovered | Add `"mcp"` to `plugin_ids`, register `McpPlugin::new(manager.registry())`, and verify discovery |
 
 ## Related Example
 

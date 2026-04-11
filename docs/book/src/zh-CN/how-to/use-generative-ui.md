@@ -28,10 +28,11 @@ use awaken::registry_spec::AgentSpec;
 use awaken::{AgentRuntimeBuilder, Plugin};
 
 let plugin = A2uiPlugin::with_catalog_id("my-catalog");
-let agent_spec = AgentSpec::new("ui-agent")
+let mut agent_spec = AgentSpec::new("ui-agent")
     .with_model_id("gpt-4o-mini")
     .with_system_prompt("Render structured UI when visual output helps.")
     .with_hook_filter("generative-ui");
+agent_spec.plugin_ids.push("generative-ui".into());
 
 let runtime = AgentRuntimeBuilder::new()
     .with_provider("openai", Arc::new(GenaiExecutor::new()))
@@ -48,61 +49,106 @@ let runtime = AgentRuntimeBuilder::new()
     .expect("failed to build runtime");
 ```
 
-插件会注册一个 `render_a2ui` 工具，LLM 通过它把 A2UI 消息数组发给前端。
+插件会注册一个 `render_a2ui` 工具，LLM 通过它把 A2UI 消息发给前端。
+`plugin_ids` 负责加载插件，`with_hook_filter("generative-ui")` 在同一 agent
+加载多个插件时保留 A2UI 的 prompt 注入 hook。
 
 2. 理解 A2UI v0.8 消息类型：
 
 | 消息类型 | 作用 |
 |-------------|------|
-| `createSurface` | 创建渲染 surface |
-| `updateComponents` | 定义或更新组件树 |
-| `updateDataModel` | 写入或更新数据模型 |
+| `surfaceUpdate` | 定义或更新组件树 |
+| `dataModelUpdate` | 写入或更新数据模型 |
+| `beginRendering` | 指定根组件并开始渲染 |
 | `deleteSurface` | 删除 surface |
 
-消息顺序通常是：先创建 surface，再定义组件，最后填充数据。
+新 surface 的常见顺序是：先发 `surfaceUpdate`，需要数据时再发
+`dataModelUpdate`，最后用 `beginRendering` 指定 root。
 
-3. 创建 surface：
+3. 定义组件树：
 
 ```rust,ignore
-let messages = serde_json::json!({
-    "messages": [
-        {
-            "version": "v0.8",
-            "createSurface": {
-                "surfaceId": "order-form-1",
-                "catalogId": "my-catalog"
+let message = serde_json::json!({
+    "surfaceUpdate": {
+        "surfaceId": "order-form-1",
+        "components": [
+            {
+                "id": "root",
+                "component": { "Card": { "child": "title" } }
+            },
+            {
+                "id": "title",
+                "component": {
+                    "Text": { "text": { "literalString": "New Order" } }
+                }
             }
-        }
-    ]
+        ]
+    }
 });
 ```
 
-4. 定义组件树：
+组件列表是扁平的。每个组件都要有 `id` 和 `component`；`component` 必须是
+只包含一个 v0.8 组件类型的对象，例如 `{ "Text": {...} }`。父子关系通过组件
+属性里的 `child` 或 `children.explicitList` 指向其他组件 ID。
 
-组件列表是扁平的，通过 `child` / `children` 表示父子关系。必须有一个 `"id": "root"` 作为入口。
+4. 写入数据模型：
 
-5. 用 JSON path 绑定数据：
+```rust,ignore
+let message = serde_json::json!({
+    "dataModelUpdate": {
+        "surfaceId": "order-form-1",
+        "path": "/order",
+        "contents": [
+            { "key": "customer", "valueString": "" },
+            { "key": "quantity", "valueNumber": 1.0 }
+        ]
+    }
+});
+```
 
-组件属性里可以写 `{"path": "/json/pointer"}`，前端会在渲染时从 data model 里解析。
+`contents` 是 key/value 数组，支持 `valueString`、`valueNumber`、
+`valueBoolean` 和 `valueMap`。
+
+5. 开始渲染：
+
+```rust,ignore
+let message = serde_json::json!({
+    "beginRendering": {
+        "surfaceId": "order-form-1",
+        "root": "root"
+    }
+});
+```
 
 6. 删除 surface：
 
 ```rust,ignore
-let messages = serde_json::json!({
-    "messages": [
-        {
-            "version": "v0.8",
-            "deleteSurface": {
-                "surfaceId": "order-form-1"
-            }
-        }
-    ]
+let message = serde_json::json!({
+    "deleteSurface": {
+        "surfaceId": "order-form-1"
+    }
 });
 ```
 
 7. 一次 tool call 可以携带多条消息：
 
-`render_a2ui` 接收的是一个消息数组，所以可以在一次调用中同时创建 surface、更新组件树和写入数据。
+`render_a2ui` 接收 `messages` 数组，因此可以在一次调用中同时更新组件树并开始渲染：
+
+```rust,ignore
+let args = serde_json::json!({
+    "messages": [
+        { "surfaceUpdate": {
+            "surfaceId": "s1",
+            "components": [
+                { "id": "root", "component": { "Text": {
+                    "text": { "literalString": "Hello" }
+                }}}
+            ]
+        }},
+        { "beginRendering": { "surfaceId": "s1", "root": "root" }}
+    ]
+});
+```
 
 8. 自定义插件指令：
 
@@ -115,7 +161,15 @@ let plugin = A2uiPlugin::with_catalog_and_examples(
 let plugin = A2uiPlugin::with_custom_instructions(
     "You can render UI by calling render_a2ui...".to_string()
 );
+
+let agent_spec = agent_spec.with_section("generative-ui", serde_json::json!({
+    "catalog_id": "my-catalog",
+    "examples": "Example: render a compact order summary."
+}));
 ```
+
+`generative-ui` section 与 admin console 页面保存的是同一份配置，可覆盖
+`catalog_id`、追加 `examples`，或用 `instructions` 完整替换默认指令。
 
 ## 验证
 
@@ -128,12 +182,13 @@ let plugin = A2uiPlugin::with_custom_instructions(
 
 | 错误 | 原因 | 修复 |
 |---|---|---|
-| 缺少 `messages` 字段 | tool 调用格式不对 | 传 `{"messages": [...]}` |
+| 缺少 A2UI 消息键 | tool 调用格式不对 | 传 `surfaceUpdate`、`dataModelUpdate`、`beginRendering`、`deleteSurface` 或 `{"messages": [...]}` |
 | `messages array must not be empty` | 消息数组为空 | 至少传一条 A2UI 消息 |
-| `unsupported version` | 版本不是 `v0.8` | 每条消息都设为 `"version": "v0.8"` |
-| 单条消息里混入多个类型键 | 一条消息同时含 `createSurface` 和 `updateComponents` 等 | 一条消息只允许一个类型键 |
-| 组件缺少 `id` 或 `component` | 组件结构不完整 | 补齐必需字段 |
-| LLM 不调用工具 | 插件已注册但未激活或 prompt 指令不足 | 检查 hook filter 和插件指令 |
+| `surfaceUpdate.components is required` | 没有组件列表 | 提供非空 `components` |
+| component payload 数量不为 1 | `component` 不是 `{ "Text": {...} }` 这类结构 | 每个组件只放一个 v0.8 组件类型 |
+| `dataModelUpdate.contents must not be empty` | 数据模型更新为空 | 添加带 `key` 和 value 字段的条目 |
+| `beginRendering.root is required` | 未指定根组件 | 把 `root` 指向已存在的组件 ID |
+| LLM 不调用工具 | 插件未加载或 hook 被过滤 | 在 `plugin_ids` 中加入 `"generative-ui"`，使用 hook filter 时再加 `with_hook_filter("generative-ui")` |
 
 ## 相关示例
 

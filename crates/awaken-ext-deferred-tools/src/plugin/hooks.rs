@@ -93,9 +93,9 @@ pub fn apply_deferral_actions(
 /// Check whether the plugin is effectively enabled.
 /// With `Option<bool>` semantics, `None` means auto-enable was used at
 /// activation time; if DeferralState is populated, the plugin is active.
-fn is_enabled(ctx: &PhaseContext) -> bool {
-    let config = ctx.config::<DeferredToolsConfigKey>().unwrap_or_default();
-    match config.enabled {
+fn is_enabled(ctx: &PhaseContext) -> Result<bool, StateError> {
+    let config = ctx.config::<DeferredToolsConfigKey>()?;
+    Ok(match config.enabled {
         Some(false) => false,
         Some(true) => true,
         None => {
@@ -104,7 +104,7 @@ fn is_enabled(ctx: &PhaseContext) -> bool {
                 .map(|s| !s.modes.is_empty())
                 .unwrap_or(false)
         }
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -118,11 +118,11 @@ impl PhaseHook for DeferredToolsBeforeInferenceHook {
     async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         let mut cmd = StateCommand::new();
 
-        if !is_enabled(ctx) {
+        if !is_enabled(ctx)? {
             return Ok(cmd);
         }
 
-        let config = ctx.config::<DeferredToolsConfigKey>().unwrap_or_default();
+        let config = ctx.config::<DeferredToolsConfigKey>()?;
         let deferral_state = ctx.state::<DeferralState>().cloned().unwrap_or_default();
         let usage_stats = ctx.state::<ToolUsageStats>().cloned().unwrap_or_default();
 
@@ -183,7 +183,7 @@ impl PhaseHook for DeferredToolsAfterToolExecuteHook {
     async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         let mut cmd = StateCommand::new();
 
-        if !is_enabled(ctx) {
+        if !is_enabled(ctx)? {
             return Ok(cmd);
         }
 
@@ -222,11 +222,11 @@ impl PhaseHook for DeferredToolsAfterInferenceHook {
     async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
         let mut cmd = StateCommand::new();
 
-        if !is_enabled(ctx) {
+        if !is_enabled(ctx)? {
             return Ok(cmd);
         }
 
-        let config = ctx.config::<DeferredToolsConfigKey>().unwrap_or_default();
+        let config = ctx.config::<DeferredToolsConfigKey>()?;
 
         // Observe turn for DiscBeta: identify tools called in this turn from
         // ToolUsageStats (those whose last_use_turn matches the current turn).
@@ -312,7 +312,7 @@ impl PhaseHook for LoadPriorsHook {
             return Ok(cmd);
         };
 
-        let config = ctx.config::<DeferredToolsConfigKey>().unwrap_or_default();
+        let config = ctx.config::<DeferredToolsConfigKey>()?;
         let key = ctx.agent_spec.id.as_str();
 
         let priors = match profile_access.read::<AgentToolPriorsKey>(key).await {

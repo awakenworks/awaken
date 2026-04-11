@@ -73,6 +73,8 @@ export function pluginDisplayName(pluginId: string): string {
       return "Reminders";
     case "generative-ui":
       return "Generative UI";
+    case "ext-deferred-tools":
+      return "Deferred Tools";
     case "frontend_tools":
       return "Frontend Tools";
     default:

@@ -208,11 +208,7 @@ impl Plugin for A2uiPlugin {
     }
 
     fn config_schemas(&self) -> Vec<ConfigSchema> {
-        vec![ConfigSchema {
-            key: A2uiPromptConfigKey::KEY,
-            json_schema: serde_json::to_value(schemars::schema_for!(A2uiPromptConfig))
-                .unwrap_or_default(),
-        }]
+        vec![ConfigSchema::for_key::<A2uiPromptConfigKey>()]
     }
 
     fn on_activate(

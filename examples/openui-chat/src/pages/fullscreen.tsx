@@ -1,7 +1,7 @@
 import { FullScreen } from "@openuidev/react-ui";
-import { agUIAdapter } from "@openuidev/react-headless";
 import { openuiChatLibrary } from "@openuidev/react-ui";
 import { AGENT_ID, agUiRunUrl } from "@/lib/config";
+import { awakenAgUiAdapter } from "@/lib/ag-ui-adapter";
 import {
   fetchThreadList,
   loadThread,
@@ -29,7 +29,7 @@ export function FullScreenPage() {
     <div className="h-[calc(100vh-2.5rem)]">
       <FullScreen
         apiUrl={agUiRunUrl(AGENT_ID)}
-        streamProtocol={agUIAdapter()}
+        streamProtocol={awakenAgUiAdapter()}
         componentLibrary={openuiChatLibrary}
         agentName="Awaken Assistant"
         fetchThreadList={fetchThreadList}

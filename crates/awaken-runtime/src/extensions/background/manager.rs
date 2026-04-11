@@ -17,7 +17,7 @@ use super::types::{
     TaskContext, TaskEvent, TaskId, TaskParentContext, TaskResult, TaskStatus, TaskSummary,
 };
 
-/// Errors from [`BackgroundTaskManager::send_message`].
+/// Errors from [`BackgroundTaskManager::send_task_inbox_message`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SendError {
     /// No task with this ID exists.

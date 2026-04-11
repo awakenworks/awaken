@@ -87,9 +87,16 @@ fn normalize_optional_string(value: Option<String>) -> Option<String> {
 
 pub enum ToolCallStatesUpdate {
     /// Replace a tool call's lifecycle state (validates transition).
-    Put(ToolCallState),
+    Put(Box<ToolCallState>),
     /// Clear all tool call states (at step boundary).
     Clear,
+}
+
+impl ToolCallStatesUpdate {
+    #[must_use]
+    pub fn put(state: ToolCallState) -> Self {
+        Self::Put(Box::new(state))
+    }
 }
 
 /// State key for tool call lifecycle tracking within a step.
@@ -123,7 +130,7 @@ impl StateKey for ToolCallStates {
                 let mut state = state;
                 state.suspension_id = normalize_optional_string(state.suspension_id);
                 state.suspension_reason = normalize_optional_string(state.suspension_reason);
-                value.calls.insert(call_id, state);
+                value.calls.insert(call_id, *state);
             }
             ToolCallStatesUpdate::Clear => {
                 value.calls.clear();
@@ -145,7 +152,7 @@ mod tests {
     ) {
         ToolCallStates::apply(
             states,
-            ToolCallStatesUpdate::Put(ToolCallState::new(
+            ToolCallStatesUpdate::put(ToolCallState::new(
                 call_id,
                 tool,
                 serde_json::json!({}),
@@ -317,7 +324,7 @@ mod tests {
         let mut states = ToolCallStateMap::default();
         ToolCallStates::apply(
             &mut states,
-            ToolCallStatesUpdate::Put(ToolCallState::new(
+            ToolCallStatesUpdate::put(ToolCallState::new(
                 "c1",
                 "search",
                 serde_json::json!({"query": "test"}),
@@ -335,7 +342,7 @@ mod tests {
         let mut states = ToolCallStateMap::default();
         ToolCallStates::apply(
             &mut states,
-            ToolCallStatesUpdate::Put(
+            ToolCallStatesUpdate::put(
                 ToolCallState::new(
                     "c1",
                     "dangerous",
@@ -352,7 +359,7 @@ mod tests {
         );
         ToolCallStates::apply(
             &mut states,
-            ToolCallStatesUpdate::Put(
+            ToolCallStatesUpdate::put(
                 ToolCallState::new(
                     "c1",
                     "dangerous",

@@ -6,7 +6,7 @@
 //! threads, time). Runtime crates implement these traits; user code and
 //! extension crates consume them.
 //!
-//! Most items are re-exported from the [`awaken`] facade crate. Import
+//! Most items are re-exported from the `awaken` facade crate. Import
 //! `awaken::prelude::*` for the common subset, or use the sub-modules below
 //! for precise imports.
 

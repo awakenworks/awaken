@@ -66,6 +66,12 @@ with `config management API not enabled`.
 | `GET` | `/v1/agents` | Convenience alias for `/v1/config/agents` |
 | `GET` | `/v1/agents/:id` | Convenience alias for `/v1/config/agents/:id` |
 
+`GET /v1/capabilities` includes each registered plugin's `config_schemas`.
+The admin console uses this field to render agent-level plugin config forms and
+save values into `AgentSpec.sections`. After a successful config mutation, the
+runtime manager publishes a new registry snapshot, so later `/v1/runs` requests
+use the updated agents, models, providers, MCP servers, and plugin sections.
+
 Current built-in namespaces:
 
 - `agents`
@@ -78,6 +84,7 @@ Current built-in namespaces:
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/v1/ai-sdk/chat` | Start a chat run and stream protocol-encoded events |
+| `POST` | `/v1/ai-sdk/agent-previews/runs` | Run a draft `AgentSpec` without saving it; used by the admin console preview |
 | `POST` | `/v1/ai-sdk/threads/:thread_id/runs` | Start a thread-scoped AI SDK run |
 | `POST` | `/v1/ai-sdk/agents/:agent_id/runs` | Start an agent-scoped AI SDK run |
 | `GET` | `/v1/ai-sdk/chat/:thread_id/stream` | Resume an SSE stream by thread ID |

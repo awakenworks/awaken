@@ -22,7 +22,8 @@ pub struct StreamingSubagentResult {
 /// Run a sub-agent that streams its text output to the parent sink in real-time.
 ///
 /// Text deltas from the sub-agent are forwarded as
-/// [`AgentEvent::ToolCallStreamDelta`] events on the parent sink so the caller
+/// [`AgentEvent::ToolCallStreamDelta`](awaken_contract::contract::event::AgentEvent::ToolCallStreamDelta)
+/// events on the parent sink so the caller
 /// can stream preliminary tool output.
 /// The full accumulated text is returned in [`StreamingSubagentResult::content`].
 pub async fn run_streaming_subagent(

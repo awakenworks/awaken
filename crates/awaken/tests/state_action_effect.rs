@@ -2142,7 +2142,7 @@ fn merge_parallel_exclusive_overlap_rejected() {
     let mut b = MutationBatch::new();
     b.update::<Counter>(2);
 
-    let err = store.merge_parallel(a, b).err().expect("should fail");
+    let err = store.merge_parallel(a, b).expect_err("should fail");
     assert!(matches!(err, StateError::ParallelMergeConflict { ref key } if key == "test.counter"));
 }
 
@@ -2202,7 +2202,7 @@ fn merge_parallel_one_exclusive_overlap_blocks_entire_merge() {
     b.update::<Counter>(2); // exclusive — conflicts with a
     b.update::<SharedCounter>(3); // commutative — would be fine alone
 
-    let err = store.merge_parallel(a, b).err().expect("should fail");
+    let err = store.merge_parallel(a, b).expect_err("should fail");
     assert!(matches!(err, StateError::ParallelMergeConflict { .. }));
 }
 
@@ -2256,7 +2256,7 @@ fn merge_parallel_mismatched_base_revision_rejected() {
     let a = MutationBatch::new().with_base_revision(1);
     let b = MutationBatch::new().with_base_revision(2);
 
-    let err = store.merge_parallel(a, b).err().expect("should fail");
+    let err = store.merge_parallel(a, b).expect_err("should fail");
     assert!(matches!(
         err,
         StateError::MutationBaseRevisionMismatch { .. }
@@ -2377,8 +2377,7 @@ fn command_merge_parallel_exclusive_conflict() {
 
     let err = store
         .merge_all_commands(vec![a, b])
-        .err()
-        .expect("should fail");
+        .expect_err("should fail");
     assert!(matches!(err, StateError::ParallelMergeConflict { .. }));
 }
 
@@ -2770,7 +2769,7 @@ fn merge_parallel_exclusive_detects_first_conflicting_key() {
     b.update::<Label>("b".into()); // Label is Exclusive — conflict
     b.update::<Counter>(2); // Counter is also Exclusive — another conflict
 
-    let err = store.merge_parallel(a, b).err().expect("should fail");
+    let err = store.merge_parallel(a, b).expect_err("should fail");
     // Should detect at least one conflict
     assert!(matches!(err, StateError::ParallelMergeConflict { .. }));
 }
@@ -2812,7 +2811,7 @@ fn merge_parallel_unregistered_key_defaults_to_exclusive() {
     let mut b = MutationBatch::new();
     b.update::<Counter>(2);
 
-    let err = store.merge_parallel(a, b).err().expect("should fail");
+    let err = store.merge_parallel(a, b).expect_err("should fail");
     assert!(matches!(err, StateError::ParallelMergeConflict { .. }));
 }
 

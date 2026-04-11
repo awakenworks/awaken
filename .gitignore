@@ -13,6 +13,8 @@ examples/copilotkit-starter/.next/
 examples/copilotkit-starter/sessions/
 examples/copilotkit-starter/tsconfig.tsbuildinfo
 examples/copilotkit-starter/test-results/
+examples/openui-chat/node_modules/
+examples/openui-chat/dist/
 e2e/test-results/
 
 # Python

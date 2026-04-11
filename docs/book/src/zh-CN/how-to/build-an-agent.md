@@ -62,7 +62,37 @@ let runtime = builder.build()?;
 
 `build()` 会在启动时就解析并校验所有注册项，提前发现缺失的 model、provider 或 plugin。
 
-6. 执行一次 run：
+6. 通过配置调优 agent 行为：
+
+`AgentSpec` 就是 agent 的运行时配置对象。下面这些字段和 section 与
+`/v1/config/agents`、admin console 页面编辑的是同一份数据：
+
+```rust,ignore
+use serde_json::json;
+
+let mut spec = AgentSpec::new("assistant")
+    .with_model_id("claude-sonnet")
+    .with_system_prompt("You are a careful coding assistant.")
+    .with_hook_filter("reminder")
+    .with_section("reminder", json!({
+        "rules": [{
+            "tool": "*",
+            "output": "any",
+            "message": {
+                "target": "suffix_system",
+                "content": "Prefer verifying code changes before final answers.",
+                "cooldown_turns": 3
+            }
+        }]
+    }));
+spec.plugin_ids.push("reminder".into());
+```
+
+基础 prompt 使用 `system_prompt`；需要页面可配置、可校验、可运行时生效的行为，
+放到 `reminder`、`generative-ui`、`permission`、`deferred_tools` 等插件
+section 中。后续 prompt 语义 hook 也应沿用同样的类型化 section 模式。
+
+7. 执行一次 run：
 
 ```rust,ignore
 use std::sync::Arc;

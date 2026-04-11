@@ -27,20 +27,20 @@ use awaken::extensions::handoff::AgentOverlay;
 
 let researcher = AgentOverlay {
     system_prompt: Some("You are a research specialist. Find and cite sources.".into()),
-    upstream_model: Some("claude-sonnet".into()),
+    model_id: Some("claude-sonnet".into()),
     allowed_tools: Some(vec!["web_search".into(), "read_document".into()]),
     excluded_tools: None,
 };
 
 let writer = AgentOverlay {
     system_prompt: Some("You are a technical writer. Produce clear documentation.".into()),
-    model: None,
+    model_id: None,
     allowed_tools: None,
     excluded_tools: Some(vec!["web_search".into()]),
 };
 ```
 
-`model` 字段使用的也是模型注册表 ID。
+`model_id` 字段使用的也是模型注册表 ID。
 
 2. 用 overlays 构建 `HandoffPlugin`：
 
@@ -61,12 +61,19 @@ let handoff = HandoffPlugin::new(overlays);
 use std::sync::Arc;
 use awaken::AgentRuntimeBuilder;
 
+let mut spec = spec;
+spec.plugin_ids.push("agent_handoff".into());
+
 let runtime = AgentRuntimeBuilder::new()
     .with_plugin("agent_handoff", Arc::new(handoff))
     .with_agent_spec(spec)
     .with_provider("anthropic", Arc::new(provider))
     .build()?;
 ```
+
+插件 ID 必须是 `"agent_handoff"`（导出为 `HANDOFF_PLUGIN_ID`），并且必须列在
+`AgentSpec.plugin_ids` 中。该插件会在 `Phase::RunStart` 和 `Phase::StepEnd`
+注册 hook，同步 handoff 状态。
 
 4. 在 tool 或 hook 中请求 handoff：
 

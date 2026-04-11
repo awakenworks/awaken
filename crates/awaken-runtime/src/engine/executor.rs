@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use genai::Client;
 use genai::chat::ReasoningEffort as GenaiReasoningEffort;
 use genai::chat::{ChatOptions, ChatStreamEvent};
@@ -47,6 +47,23 @@ fn stream_output_to_llm_event(output: StreamOutput) -> Option<LlmStreamEvent> {
         }
         StreamOutput::None => None,
     }
+}
+
+async fn next_chat_stream_event<S>(
+    stream: &mut S,
+    timeout_dur: Duration,
+) -> Result<Option<Result<ChatStreamEvent, genai::Error>>, InferenceExecutionError>
+where
+    S: Stream<Item = Result<ChatStreamEvent, genai::Error>> + Unpin,
+{
+    tokio::time::timeout(timeout_dur, stream.next())
+        .await
+        .map_err(|_| {
+            InferenceExecutionError::Timeout(format!(
+                "stream idle timeout after {}s",
+                timeout_dur.as_secs()
+            ))
+        })
 }
 
 /// LLM executor backed by the `genai` crate.
@@ -280,7 +297,7 @@ impl LlmExecutor for GenaiExecutor {
 
             let event_stream = futures::stream::unfold(
                 (stream_response.stream, StreamCollector::new()),
-                |(mut stream, mut collector)| async move {
+                move |(mut stream, mut collector)| async move {
                     if let Some(output) = collector.take_pending_output() {
                         let event = stream_output_to_llm_event(output)
                             .expect("pending outputs are never empty");
@@ -298,8 +315,8 @@ impl LlmExecutor for GenaiExecutor {
                         ));
                     }
                     loop {
-                        match stream.next().await {
-                            Some(Ok(event)) => {
+                        match next_chat_stream_event(&mut stream, timeout_dur).await {
+                            Ok(Some(Ok(event))) => {
                                 let is_end = matches!(event, ChatStreamEvent::End(_));
                                 let output = collector.process(event);
                                 if let Some(event) = stream_output_to_llm_event(output) {
@@ -324,13 +341,11 @@ impl LlmExecutor for GenaiExecutor {
                                 }
                                 continue;
                             }
-                            Some(Err(e)) => {
-                                return Some((
-                                    Err(InferenceExecutionError::Provider(e.to_string())),
-                                    (stream, collector),
-                                ));
+                            Ok(Some(Err(e))) => {
+                                return Some((Err(Self::map_error(e)), (stream, collector)));
                             }
-                            None => return None,
+                            Ok(None) => return None,
+                            Err(e) => return Some((Err(e), (stream, collector))),
                         }
                     }
                 },
@@ -738,6 +753,25 @@ mod tests {
         let result = tokio::time::timeout(timeout_dur, fast).await;
         assert!(result.is_ok(), "fast future should not time out");
         assert_eq!(result.unwrap().unwrap(), "done");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stream_next_timeout_maps_to_inference_timeout_error() {
+        let mut stream = futures::stream::pending::<Result<ChatStreamEvent, genai::Error>>();
+        let result = next_chat_stream_event(&mut stream, Duration::from_millis(50)).await;
+
+        assert!(
+            matches!(result, Err(InferenceExecutionError::Timeout(ref msg)) if msg.contains("stream idle timeout")),
+            "expected stream idle timeout, got {result:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stream_next_timeout_does_not_fire_for_closed_stream() {
+        let mut stream = futures::stream::empty::<Result<ChatStreamEvent, genai::Error>>();
+        let result = next_chat_stream_event(&mut stream, Duration::from_secs(120)).await;
+
+        assert!(matches!(result, Ok(None)));
     }
 
     // -----------------------------------------------------------------------

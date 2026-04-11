@@ -69,6 +69,10 @@ The following types are re-exported at the crate root for convenience:
 | `generative-ui` | yes | Generative UI component streaming |
 | `full` | yes | Enables all of the above |
 
+Workspace extension crates can exist outside the facade feature set. The current
+one is `awaken-ext-deferred-tools`; add it as a direct dependency when you need
+deferred tool loading.
+
 ## Related
 
 - [Introduction](../introduction.md)

@@ -1,6 +1,6 @@
 //! MCP Stdio transport: line-delimited JSON-RPC over stdin/stdout.
 //!
-//! Reads JSON-RPC messages from stdin, dispatches them through [`McpServer`],
+//! Reads JSON-RPC messages from stdin, dispatches them through [`mcp::server::McpServer`],
 //! and writes responses to stdout.
 
 use std::sync::Arc;

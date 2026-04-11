@@ -17,7 +17,7 @@ use self::adapter::AgentMcpTool;
 
 /// Build an [`McpServerConfig`] that exposes all known agents as MCP tools.
 ///
-/// Each agent returned by [`AgentResolver::agent_ids()`] becomes one MCP tool
+/// Each agent returned by [`awaken_runtime::AgentResolver::agent_ids`] becomes one MCP tool
 /// whose name is the agent ID and whose single parameter is `message`.
 ///
 /// If `outbound_tx` is provided, each tool will send progress/log notifications

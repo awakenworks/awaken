@@ -3,7 +3,7 @@ export const BACKEND_URL =
 
 export interface AgentSpec {
   id: string;
-  model: string;
+  model_id: string;
   system_prompt: string;
   max_rounds?: number;
   max_continuation_retries?: number;
@@ -15,10 +15,10 @@ export interface AgentSpec {
   reasoning_effort?: string | number | null;
 }
 
-export interface ModelSpec {
+export interface ModelBindingSpec {
   id: string;
-  provider: string;
-  model: string;
+  provider_id: string;
+  upstream_model: string;
 }
 
 export interface ProviderSpec {
@@ -95,7 +95,7 @@ export interface Capabilities {
   tools: ToolInfo[];
   plugins: PluginInfo[];
   skills: SkillInfo[];
-  models: ModelSpec[];
+  models: ModelBindingSpec[];
   providers: Array<{ id: string }>;
   supported_adapters?: string[];
   namespaces: Array<{

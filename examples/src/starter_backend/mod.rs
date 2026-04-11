@@ -26,6 +26,7 @@ use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::{
     AgentSpec, McpServerSpec, McpTransportKind, ModelBindingSpec, ProviderSpec,
 };
+use awaken_ext_deferred_tools::DeferredToolsPlugin;
 use awaken_ext_generative_ui::{
     A2uiPlugin, A2uiPromptConfig, A2uiPromptConfigKey, json_render, openui,
 };
@@ -358,6 +359,7 @@ Tool routing contract for this demo:\n\
 Deterministic compatibility directives:\n\
 - If message contains RUN_WEATHER_TOOL, call get_weather with location=Tokyo.\n\
 - If message contains RUN_STOCK_TOOL, call get_stock_price with symbol=AAPL.\n\
+- If message contains RUN_TOOL_SEARCH_WEATHER, call ToolSearch with query=select:get_weather.\n\
 - If message contains RUN_APPEND_NOTE, call append_note with the remaining sentence as note.\n\
 - If message contains RUN_SERVER_INFO, call serverInfo.\n\
 - If message contains RUN_FAILING_TOOL, call failingTool.\n\
@@ -897,6 +899,11 @@ Deterministic compatibility directives:\n\
         builder = builder.with_tool(*id, Arc::clone(tool));
     }
 
+    let deferred_tool_descriptors = tools
+        .iter()
+        .map(|(_, tool)| tool.descriptor())
+        .collect::<Vec<_>>();
+
     // -- A2A remote agents --
 
     if let Some(ref remote_url) = args.a2a_remote_url {
@@ -910,6 +917,10 @@ Deterministic compatibility directives:\n\
     builder = builder.with_plugin(
         "generative-ui",
         Arc::new(A2uiPlugin::default()) as Arc<dyn Plugin>,
+    );
+    builder = builder.with_plugin(
+        awaken_ext_deferred_tools::DEFERRED_TOOLS_PLUGIN_ID,
+        Arc::new(DeferredToolsPlugin::new(deferred_tool_descriptors)) as Arc<dyn Plugin>,
     );
     builder = builder.with_plugin(
         "frontend_tools",

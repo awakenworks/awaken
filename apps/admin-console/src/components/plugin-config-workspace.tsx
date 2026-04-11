@@ -45,19 +45,20 @@ export function PluginConfigWorkspace({
     );
   }
 
-  const activeEntry =
-    entries.find(
-      (entry) => pluginConfigEntryKey(entry.plugin.id, entry.schema.key) === activeEntryKey,
-    ) ?? entries[0];
-  const activeValue = sections[activeEntry.schema.key];
+  const activeEntry = activeEntryKey
+    ? entries.find(
+        (entry) =>
+          pluginConfigEntryKey(entry.plugin.id, entry.schema.key) === activeEntryKey,
+      )
+    : null;
+  const activeValue = activeEntry ? sections[activeEntry.schema.key] : undefined;
 
   return (
     <div className="mt-4 grid gap-5 xl:grid-cols-[18rem,minmax(0,1fr)]">
       <aside className="space-y-3">
         {entries.map((entry) => {
           const key = pluginConfigEntryKey(entry.plugin.id, entry.schema.key);
-          const isActive =
-            key === pluginConfigEntryKey(activeEntry.plugin.id, activeEntry.schema.key);
+          const isActive = key === activeEntryKey;
           const summaryValue = sections[entry.schema.key];
           const statusLabel = entry.selected
             ? "enabled"
@@ -105,40 +106,48 @@ export function PluginConfigWorkspace({
         })}
       </aside>
 
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="mb-4 border-b border-slate-200 pb-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <h5 className="text-lg font-semibold text-slate-950">
-              {pluginDisplayName(activeEntry.plugin.id)}
-            </h5>
-            <Pill label={activeEntry.schema.key} />
-            {!activeEntry.selected ? <Pill label="plugin disabled" tone="amber" /> : null}
-          </div>
-          <div className="mt-1 text-sm text-slate-500">
-            {schemaTitle(activeEntry.schema.schema) ?? activeEntry.schema.key}
-          </div>
-          {schemaDescription(activeEntry.schema.schema) ? (
-            <p className="mt-2 text-sm leading-6 text-slate-600">
-              {schemaDescription(activeEntry.schema.schema)}
-            </p>
-          ) : null}
-          {!activeEntry.selected ? (
-            <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
-              {activeEntry.hasStoredConfig
-                ? `This section is still stored on the agent, but it only takes effect after re-enabling \`${activeEntry.plugin.id}\`.`
-                : `You can preconfigure this section now. It will only take effect after enabling \`${activeEntry.plugin.id}\`.`}
+      {activeEntry ? (
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="mb-4 border-b border-slate-200 pb-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <h5 className="text-lg font-semibold text-slate-950">
+                {pluginDisplayName(activeEntry.plugin.id)}
+              </h5>
+              <Pill label={activeEntry.schema.key} />
+              {!activeEntry.selected ? (
+                <Pill label="plugin disabled" tone="amber" />
+              ) : null}
             </div>
-          ) : null}
-        </div>
+            <div className="mt-1 text-sm text-slate-500">
+              {schemaTitle(activeEntry.schema.schema) ?? activeEntry.schema.key}
+            </div>
+            {schemaDescription(activeEntry.schema.schema) ? (
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                {schemaDescription(activeEntry.schema.schema)}
+              </p>
+            ) : null}
+            {!activeEntry.selected ? (
+              <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+                {activeEntry.hasStoredConfig
+                  ? `This section is still stored on the agent, but it only takes effect after re-enabling \`${activeEntry.plugin.id}\`.`
+                  : `You can preconfigure this section now. It will only take effect after enabling \`${activeEntry.plugin.id}\`.`}
+              </div>
+            ) : null}
+          </div>
 
-        <PluginConfigEditor
-          pluginId={activeEntry.plugin.id}
-          schemaKey={activeEntry.schema.key}
-          schema={activeEntry.schema.schema}
-          value={activeValue}
-          onChange={(value) => onUpdateSection(activeEntry.schema.key, value)}
-        />
-      </div>
+          <PluginConfigEditor
+            pluginId={activeEntry.plugin.id}
+            schemaKey={activeEntry.schema.key}
+            schema={activeEntry.schema.schema}
+            value={activeValue}
+            onChange={(value) => onUpdateSection(activeEntry.schema.key, value)}
+          />
+        </div>
+      ) : (
+        <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-5 text-sm text-slate-500">
+          Select a plugin configuration section to edit it.
+        </div>
+      )}
     </div>
   );
 }

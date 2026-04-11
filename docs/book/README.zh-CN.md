@@ -7,8 +7,17 @@
 生产级 Rust AI Agent 运行时 — 类型安全状态、多协议服务、插件化扩展。
 
 在 crates.io 上发布名为 `awaken-agent`，Rust 代码中的导入仍然保持为 `awaken`。
+仓库开发工具链由 Rust 1.93.0 固定，crate 的 MSRV 为 1.85。
 
 在线文档：[GitHub Pages（英文）](https://awakenworks.github.io/awaken/) | [GitHub Pages（中文）](https://awakenworks.github.io/awaken/zh-CN/)
+
+## 亮点
+
+- **Rust-first Agent Runtime**：类型化工具、自动生成 JSON Schema、类型化 state key、作用域化 snapshot，以及原子状态提交。
+- **一个 runtime 服务多类客户端**：同一后端同时提供 HTTP/SSE run API、AI SDK v6、AG-UI/CopilotKit、A2A 与 MCP JSON-RPC。
+- **配置优先的优化控制面**：model/provider 选择、prompt、reminder、permission、generative UI 与 deferred tools 都通过 `/v1/config/*`、`/v1/capabilities` 和 admin console 管理。
+- **生产控制路径**：mailbox 后台 run、HITL 决策、取消/中断、SSE replay、重试、fallback model、熔断器、指标和健康检查。
+- **插件能力面**：权限网关、Reminder、OpenTelemetry、MCP tools、Skills、Generative UI，以及带明确概率模型的 deferred tool loading。
 
 ## 30 秒速览
 
@@ -21,7 +30,7 @@ Agent 选择工具、调用工具、读写状态，如此循环 — 全部由运
 
 ## 5 分钟上手
 
-**前置条件：** Rust 工具链 `1.93.0`（由 `rust-toolchain.toml` 固定）以及一个 LLM 提供商 API Key。
+**前置条件：** Rust 1.85 或更新版本。仓库本地开发工具链由 `rust-toolchain.toml` 固定为 `1.93.0`；另需一个 OpenAI 兼容 LLM 提供商 API Key。
 
 在 `Cargo.toml` 中添加：
 
@@ -155,6 +164,26 @@ serve(state).await?;
 | A2A | `POST /v1/a2a/message:send` | 其他 Agent |
 | MCP | `POST /v1/mcp` | JSON-RPC 2.0 |
 
+可选的 admin console 通过 `/v1/capabilities` 与 `/v1/config/*` 在页面中编辑
+agents、models、providers、MCP servers 以及插件配置 section。插件配置通过
+同一套类型化 `PluginConfigKey` 逻辑暴露 JSON Schema，运行时 hook 也从同一
+section 读取，因此保存 `permission`、`reminder`、`generative-ui` 或
+`deferred_tools` 后会发布新的 registry snapshot，并对后续 `/v1/runs` 生效。
+BigModel 等 OpenAI 兼容服务使用 `openai` adapter，并配置对应的 `base_url`。
+
+设计意图是把 agent 优化能力保持为数据驱动：model 选择、provider 端点、基础
+prompt、system reminder、生成式 UI 指令、permission 策略和工具加载策略都应走
+同一套 schema-backed 配置链路，而不是硬编码进 agent loop。
+
+| 调优面 | 配置路径 |
+|---|---|
+| 基础 prompt | agent 条目中的 `AgentSpec.system_prompt` |
+| model/provider 路由 | `AgentSpec.model_id`、`/v1/config/models`、`/v1/config/providers` |
+| system reminder 与 prompt 上下文注入 | `reminder` 插件 section，使用 `system` 或 `suffix_system` target |
+| Generative UI prompt 指令 | `generative-ui` 插件 section（`catalog_id`、`examples` 或完整 `instructions`） |
+| 工具策略与上下文成本 | `permission` 与 `deferred_tools` 插件 section |
+| prompt 语义 hook | 当前还不是内置插件；后续应以类型化 `PluginConfigKey` section 和 schema-backed hook 接入 |
+
 **React + AI SDK v6：**
 
 ```typescript
@@ -185,14 +214,19 @@ import { CopilotKit } from "@copilotkit/react-core";
 | **MCP** | 连接外部 MCP 服务器，自动发现并注册其工具为 Awaken 原生工具。 | `mcp` |
 | **Skills** | 发现技能包，推理前注入技能目录供 LLM 按需激活。 | `skills` |
 | **Generative UI** | 通过 A2UI 协议向前端流式推送声明式 UI 组件。 | `generative-ui` |
+| **Deferred Tools** | 将大型工具 schema 隐藏在 `ToolSearch` 之后，并用折扣 Beta 概率模型把空闲的已提升工具重新延迟。 | 直接依赖：`awaken-ext-deferred-tools` |
 
-`awaken-ext-deferred-tools` crate 提供基于概率模型的延迟工具加载，未包含在 `awaken` 门面 crate 中，如需使用请直接添加依赖。
+`awaken-ext-deferred-tools` 未包含在 `awaken` 门面 crate 的 `full` feature 中。
+注册 `ext-deferred-tools` 插件后，通过 agent 的 `deferred_tools` section 配置。
+设置方式、自动启用启发式以及 DiscBeta 概率模型见
+[使用延迟加载工具](./src/zh-CN/how-to/use-deferred-tools.md)。
 
 如需自定义工具拦截，应实现 `ToolGateHook` 并通过 `PluginRegistrar::register_tool_gate_hook()` 注册；`BeforeToolExecute` 仅用于真正执行前的一次性钩子。
 
 ## 为什么选择 Awaken
 
 - **一个后端服务所有前端** — 从同一个二进制文件提供 React（AI SDK v6）、Next.js（AG-UI）、其他 Agent（A2A）和工具服务器（MCP）。无需分别部署。
+- **配置就是控制面** — model/provider 路由、prompt、reminder、permission 与工具加载策略都是可校验、可页面编辑、可运行时生效的数据。
 - **LLM 编排一切，无需 DAG** — 定义 Agent 的身份和工具访问权限；LLM 决定何时委托、委托给谁、如何组合结果。无需手写流程图或状态机。
 - **可组合的插件体系** — 9 个类型化生命周期阶段，其中包含纯判定的 `ToolGate`。权限、上下文注入、可观测性、工具发现，全部声明式配置。`PhaseHook` / `ToolGateHook` 类型安全，插件注册 API 在构建时捕获配置错误。
 - **类型安全的状态与回放** — State 是带编译时检查的 Rust 结构体。合并策略处理并发写入，无需锁。作用域限定为 thread 或 run，每次变更都是可回放的不可变快照。
@@ -242,6 +276,7 @@ awaken                   门面 crate，管理 feature flags
 | [`tool_call_live`](../../crates/awaken/examples/tool_call_live.rs) | 工具调用（计算器） |
 | [`ai-sdk-starter`](../../examples/ai-sdk-starter/) | React + AI SDK v6 全栈 |
 | [`copilotkit-starter`](../../examples/copilotkit-starter/) | Next.js + CopilotKit 全栈 |
+| [`admin-console`](../../apps/admin-console/) | 管理运行时配置与插件 schema 的浏览器 UI |
 
 ```bash
 export OPENAI_API_KEY=<your-key>
@@ -249,6 +284,13 @@ cargo run --package awaken-agent --example multi_turn
 
 # 全栈演示
 cd examples/ai-sdk-starter && npm install && npm run dev
+
+# 终端 1：admin console 使用的 starter backend
+AWAKEN_STORAGE_DIR=./target/admin-sessions cargo run -p ai-sdk-starter-agent
+
+# 终端 2：admin console
+npm --prefix apps/admin-console install
+npm --prefix apps/admin-console run dev
 ```
 
 | 目标 | 从这里开始 | 然后 |
@@ -265,7 +307,7 @@ cd examples/ai-sdk-starter && npm install && npm run dev
 
 [适合新贡献者的 Issue](https://github.com/AwakenWorks/awaken/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) 是入门的好起点。特别欢迎：
 
-- 新增存储后端（Redis、SQLite）
+- 新增存储后端（Redis、完整 SQLite thread/run store）
 - 内置工具实现（文件读写、Web 搜索）
 - Token 用量追踪和预算控制
 - 模型降级链

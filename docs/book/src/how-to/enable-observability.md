@@ -28,10 +28,11 @@ use awaken::{AgentRuntimeBuilder, Plugin};
 
 let sink = InMemorySink::new();
 let obs_plugin = ObservabilityPlugin::new(sink.clone());
-let agent_spec = AgentSpec::new("observed-agent")
+let mut agent_spec = AgentSpec::new("observed-agent")
     .with_model_id("gpt-4o-mini")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("observability");
+agent_spec.plugin_ids.push("observability".into());
 
 let runtime = AgentRuntimeBuilder::new()
     .with_provider("openai", Arc::new(GenaiExecutor::new()))
@@ -47,6 +48,9 @@ let runtime = AgentRuntimeBuilder::new()
     .build()
     .expect("failed to build runtime");
 ```
+
+`plugin_ids` loads the observability plugin. `with_hook_filter("observability")`
+keeps its phase hooks active when the agent loads multiple plugins.
 
 After a run completes, inspect collected metrics:
 
@@ -87,10 +91,11 @@ let provider = SdkTracerProvider::builder()
 let tracer = provider.tracer("awaken");
 
 let obs_plugin = ObservabilityPlugin::new(OtelMetricsSink::new(tracer));
-let agent_spec = AgentSpec::new("observed-agent")
+let mut agent_spec = AgentSpec::new("observed-agent")
     .with_model_id("gpt-4o-mini")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("observability");
+agent_spec.plugin_ids.push("observability".into());
 
 let runtime = AgentRuntimeBuilder::new()
     .with_provider("openai", Arc::new(GenaiExecutor::new()))

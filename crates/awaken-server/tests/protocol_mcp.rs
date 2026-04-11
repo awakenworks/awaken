@@ -137,8 +137,7 @@ async fn response_json(resp: Response<axum::body::Body>) -> (StatusCode, Value) 
         .expect("body readable");
     let json = if content_type.starts_with("text/event-stream") {
         let text = String::from_utf8(body.to_vec()).expect("valid utf-8 sse body");
-        let parsed = text
-            .split("\n\n")
+        text.split("\n\n")
             .filter_map(|event| {
                 let payload = event
                     .lines()
@@ -155,8 +154,7 @@ async fn response_json(resp: Response<axum::body::Body>) -> (StatusCode, Value) 
                 }
             })
             .find(|value| value.get("id").is_some())
-            .unwrap_or(json!(null));
-        parsed
+            .unwrap_or(json!(null))
     } else {
         serde_json::from_slice(&body).unwrap_or(json!(null))
     };

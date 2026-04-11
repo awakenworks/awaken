@@ -4,14 +4,20 @@ use serde_json::json;
 
 use awaken_contract::contract::context_message::ContextMessage;
 use awaken_contract::contract::tool::ToolResult;
-use awaken_contract::model::Phase;
+use awaken_contract::model::{Phase, ScheduledActionSpec};
+use awaken_contract::registry_spec::AgentSpec;
 use awaken_contract::{Snapshot, StateMap};
+use awaken_runtime::agent::state::AddContextMessage;
 use awaken_runtime::phase::{PhaseContext, PhaseHook};
 use awaken_runtime::plugins::Plugin;
+use awaken_runtime::state::MutationBatch;
 use awaken_tool_pattern::ToolCallPattern;
 
 use super::hook::ReminderHook;
 use super::plugin::{REMINDER_PLUGIN_NAME, ReminderPlugin};
+use crate::config::{
+    MessageEntry, OutputEntry, ReminderConfigKey, ReminderRuleEntry, ReminderRulesConfig,
+};
 use crate::output_matcher::OutputMatcher;
 use crate::rule::ReminderRule;
 
@@ -283,4 +289,60 @@ fn plugin_exposes_reminder_config_schema() {
     assert_eq!(schemas.len(), 1);
     assert_eq!(schemas[0].key, "reminder");
     assert_eq!(schemas[0].json_schema["type"], "object");
+}
+
+#[tokio::test]
+async fn hook_uses_agent_config_rules_when_plugin_rules_empty() {
+    let spec = AgentSpec::new("reminder-agent")
+        .with_config::<ReminderConfigKey>(ReminderRulesConfig {
+            rules: vec![ReminderRuleEntry {
+                name: Some("configured".into()),
+                tool: "Bash".into(),
+                output: OutputEntry::Simple("any".into()),
+                message: MessageEntry {
+                    target: "system".into(),
+                    content: "Configured reminder".into(),
+                    cooldown_turns: 0,
+                },
+            }],
+        })
+        .unwrap();
+
+    let hook = ReminderHook {
+        rules: Arc::from(Vec::<ReminderRule>::new()),
+    };
+    let ctx = after_tool_ctx("Bash", json!({}), ToolResult::success("Bash", json!("ok")))
+        .with_agent_spec(Arc::new(spec));
+
+    let cmd = hook.run(&ctx).await.unwrap();
+
+    assert_eq!(cmd.scheduled_actions().len(), 1);
+    assert_eq!(cmd.scheduled_actions()[0].key, AddContextMessage::KEY);
+    let message =
+        AddContextMessage::decode_payload(cmd.scheduled_actions()[0].payload.clone()).unwrap();
+    assert_eq!(message.key, "reminder.configured");
+}
+
+#[test]
+fn plugin_on_activate_rejects_invalid_agent_config_rule() {
+    let spec = AgentSpec::new("bad-reminder")
+        .with_config::<ReminderConfigKey>(ReminderRulesConfig {
+            rules: vec![ReminderRuleEntry {
+                name: Some("bad-target".into()),
+                tool: "Bash".into(),
+                output: OutputEntry::Simple("any".into()),
+                message: MessageEntry {
+                    target: "invalid_target".into(),
+                    content: "bad".into(),
+                    cooldown_turns: 0,
+                },
+            }],
+        })
+        .unwrap();
+
+    let plugin = ReminderPlugin::new(vec![]);
+    let mut patch = MutationBatch::new();
+    let err = plugin.on_activate(&spec, &mut patch).unwrap_err();
+
+    assert!(err.to_string().contains("invalid_target"));
 }

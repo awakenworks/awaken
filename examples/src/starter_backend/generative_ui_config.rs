@@ -115,4 +115,18 @@ mod tests {
         );
         assert!(val["agents"]["a2ui"].get("catalog").is_none());
     }
+
+    #[test]
+    fn copilotkit_starter_config_matches_override_schema() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("copilotkit-starter/config/agent-config.json");
+        let content = std::fs::read_to_string(path).unwrap();
+
+        let parsed = StarterPromptOverrides::from_str(&content, Some("json")).unwrap();
+
+        assert_eq!(
+            parsed.agent_system_prompt("default"),
+            Some("You are a helpful assistant. Keep answers concise and actionable.")
+        );
+    }
 }

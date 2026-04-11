@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fmt;
 use std::marker::PhantomData;
 
 use crate::StateError;
@@ -80,6 +81,16 @@ pub struct MutationBatch {
     pub base_revision: Option<u64>,
     pub ops: Vec<Box<dyn MutationOp>>,
     pub touched_keys: Vec<String>,
+}
+
+impl fmt::Debug for MutationBatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MutationBatch")
+            .field("base_revision", &self.base_revision)
+            .field("ops_len", &self.ops.len())
+            .field("touched_keys", &self.touched_keys)
+            .finish()
+    }
 }
 
 impl MutationBatch {

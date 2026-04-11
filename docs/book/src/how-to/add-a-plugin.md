@@ -98,21 +98,29 @@ impl Plugin for AuditPlugin {
 
 ```rust,ignore
 use std::sync::Arc;
+use awaken::engine::GenaiExecutor;
+use awaken::registry::ModelBinding;
 use awaken::{AgentSpec, AgentRuntimeBuilder};
 
-let spec = AgentSpec::new("assistant")
-    .with_model_id("anthropic/claude-sonnet")
+let mut spec = AgentSpec::new("assistant")
+    .with_model_id("claude-sonnet")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("audit");
+spec.plugin_ids.push("audit".into());
 
 let runtime = AgentRuntimeBuilder::new()
     .with_plugin("audit", Arc::new(AuditPlugin))
     .with_agent_spec(spec)
-    .with_provider("anthropic", Arc::new(provider))
+    .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
+    .with_model_binding("claude-sonnet", ModelBinding {
+        provider_id: "anthropic".into(),
+        upstream_model: "claude-sonnet-4-20250514".into(),
+    })
     .build()?;
 ```
 
-`with_hook_filter` on the agent spec activates the named plugin for that agent.
+`plugin_ids` loads the plugin for the agent. `with_hook_filter` only filters the
+hooks, tools, and request transforms from plugins that have already been loaded.
 
 ## Verify
 
@@ -124,7 +132,7 @@ Run the agent and inspect the state snapshot. The `audit_log` key should contain
 |---|---|---|
 | `StateError::KeyAlreadyRegistered` | Two plugins register the same `StateKey` | Use a unique `KEY` constant per state key |
 | `StateError::UnknownKey` | Accessing a key that was never registered | Ensure the plugin calling `register_key` is activated on the agent |
-| Hook not firing | Plugin ID not listed in `with_hook_filter` | Add the plugin ID to the agent spec's hook filters |
+| Hook not firing | Plugin not loaded or hook filtered out | Add the plugin ID to `plugin_ids`; include it in `with_hook_filter` when using hook filters |
 
 ## Related Example
 

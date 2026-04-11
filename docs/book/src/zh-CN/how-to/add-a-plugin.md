@@ -102,10 +102,11 @@ use awaken::engine::GenaiExecutor;
 use awaken::registry::ModelBinding;
 use awaken::{AgentSpec, AgentRuntimeBuilder};
 
-let spec = AgentSpec::new("assistant")
+let mut spec = AgentSpec::new("assistant")
     .with_model_id("claude-sonnet")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("audit");
+spec.plugin_ids.push("audit".into());
 
 let runtime = AgentRuntimeBuilder::new()
     .with_plugin("audit", Arc::new(AuditPlugin))
@@ -118,7 +119,8 @@ let runtime = AgentRuntimeBuilder::new()
     .build()?;
 ```
 
-`with_hook_filter` 会为该 agent 激活指定插件的 phase hook。
+`plugin_ids` 负责加载插件；`with_hook_filter` 只过滤已经加载的插件所提供的
+hook、tool 和 request transform。
 
 ## 验证
 
@@ -130,7 +132,7 @@ let runtime = AgentRuntimeBuilder::new()
 |---|---|---|
 | `StateError::KeyAlreadyRegistered` | 多个插件注册了同一个 key | 保证每个 `StateKey::KEY` 全局唯一 |
 | `StateError::UnknownKey` | 读取了未注册的状态键 | 确保注册该 key 的插件已激活 |
-| hook 没有执行 | `with_hook_filter` 中没有对应插件 ID | 把插件 ID 加到 agent spec |
+| hook 没有执行 | 插件未加载或 hook 被过滤 | 把插件 ID 加到 `plugin_ids`；使用 hook filter 时也加入 `with_hook_filter` |
 
 ## 相关示例
 

@@ -61,12 +61,14 @@ use awaken::registry::ModelBinding;
 use awaken::registry_spec::AgentSpec;
 use awaken::{AgentRuntimeBuilder, Plugin};
 
-let agent_spec = AgentSpec::new("mcp-agent")
+let mut agent_spec = AgentSpec::new("mcp-agent")
     .with_model_id("gpt-4o-mini")
     .with_system_prompt("Use MCP tools when they help answer the user.")
     .with_hook_filter("mcp");
+agent_spec.plugin_ids.push("mcp".into());
 
-let mut builder = AgentRuntimeBuilder::new()
+let mcp_registry = manager.registry();
+let runtime = AgentRuntimeBuilder::new()
     .with_provider("openai", Arc::new(GenaiExecutor::new()))
     .with_model_binding(
         "gpt-4o-mini",
@@ -76,14 +78,14 @@ let mut builder = AgentRuntimeBuilder::new()
         },
     )
     .with_agent_spec(agent_spec)
-    .with_plugin("mcp", Arc::new(McpPlugin) as Arc<dyn Plugin>);
-
-for (id, tool) in registry.snapshot() {
-    builder = builder.with_tool(&id, tool);
-}
-
-let runtime = builder.build().expect("failed to build runtime");
+    .with_plugin("mcp", Arc::new(McpPlugin::new(mcp_registry)) as Arc<dyn Plugin>)
+    .build()
+    .expect("failed to build runtime");
 ```
+
+`mcp` 插件会在 agent 解析时 snapshot 当前 MCP registry，并把发现到的工具作为
+plugin tools 注册进去。`plugin_ids` 中必须包含 `"mcp"`，这些工具才会加载到该
+agent。
 
 4. 如有需要，开启周期性刷新：
 
@@ -92,6 +94,9 @@ use std::time::Duration;
 
 manager.start_periodic_refresh(Duration::from_secs(60));
 ```
+
+周期刷新会更新 manager registry。新的 run 会重新解析 agent 并看到最新 snapshot；
+正在运行中的 run 保持其解析时的工具集。
 
 ## 验证
 
@@ -107,7 +112,7 @@ manager.start_periodic_refresh(Duration::from_secs(60));
 | 没发现任何工具 | server 返回空工具列表 | 确认 server 实现了 `tools/list` |
 | 调用超时 | server 响应太慢 | 调大 transport timeout |
 | feature 不存在 | 没开 cargo feature | 启用 `mcp` |
-| 找不到 `mcp__server__tool` | 发现的工具没注册到 builder | 遍历 registry 并逐个 `with_tool` |
+| 找不到 `mcp__server__tool` | agent 未加载 MCP 插件或未发现工具 | 在 `plugin_ids` 中加入 `"mcp"`，注册 `McpPlugin::new(manager.registry())`，并检查 discovery |
 
 ## 相关示例
 

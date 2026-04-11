@@ -92,11 +92,15 @@ use awaken::registry_spec::AgentSpec;
 use awaken::{AgentRuntimeBuilder, Plugin};
 
 let subsystem = SkillSubsystem::new(registry);
-let agent_spec = AgentSpec::new("skills-agent")
+let mut agent_spec = AgentSpec::new("skills-agent")
     .with_model_id("gpt-4o-mini")
     .with_system_prompt("Discover and activate skills when specialized help is useful.")
     .with_hook_filter("skills-discovery")
     .with_hook_filter("skills-active-instructions");
+agent_spec.plugin_ids.extend([
+    "skills-discovery".into(),
+    "skills-active-instructions".into(),
+]);
 
 let runtime = AgentRuntimeBuilder::new()
     .with_provider("openai", Arc::new(GenaiExecutor::new()))
@@ -119,6 +123,9 @@ let runtime = AgentRuntimeBuilder::new()
     .build()
     .expect("failed to build runtime");
 ```
+
+`plugin_ids` 会加载两个 skills 插件；hook filter 让该 agent 启用 discovery
+和 active instruction 注入。
 
 `SkillDiscoveryPlugin` 会把技能目录注入到上下文中，并注册三个工具：
 

@@ -1,6 +1,6 @@
+use awaken_contract::StateError;
 use awaken_contract::model::Phase;
 use awaken_contract::registry_spec::AgentSpec;
-use awaken_contract::{PluginConfigKey, StateError};
 use awaken_runtime::plugins::{ConfigSchema, Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::state::{KeyScope, MutationBatch, StateKeyOptions};
 
@@ -55,11 +55,7 @@ impl Plugin for PermissionPlugin {
     }
 
     fn config_schemas(&self) -> Vec<ConfigSchema> {
-        vec![ConfigSchema {
-            key: PermissionConfigKey::KEY,
-            json_schema: serde_json::to_value(schemars::schema_for!(PermissionRulesConfig))
-                .unwrap_or_default(),
-        }]
+        vec![ConfigSchema::for_key::<PermissionConfigKey>()]
     }
 
     fn on_activate(
