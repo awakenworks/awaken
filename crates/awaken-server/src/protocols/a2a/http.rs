@@ -9,8 +9,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use bytes::Bytes;
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -19,10 +19,11 @@ use awaken_contract::contract::content::{
     AudioSource, ContentBlock, DocumentSource, ImageSource, VideoSource,
 };
 use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::mailbox::MailboxJobStatus;
+use awaken_contract::contract::mailbox::{MailboxJob, MailboxJobStatus};
 use awaken_contract::contract::message::{
     Message as AwakenMessage, Role as AwakenRole, Visibility,
 };
+use awaken_contract::contract::storage::{RunQuery, RunRecord};
 use awaken_contract::thread::Thread;
 pub use awaken_protocol_a2a::{
     AgentCapabilities, AgentCard, AgentInterface, AgentProvider, AgentSkill, Artifact,
@@ -45,8 +46,37 @@ const BLOCKING_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
 const BLOCKING_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SUPPORTED_OUTPUT_MODE: &str = "text/plain";
 const PUSH_CONFIGS_METADATA_KEY: &str = "a2a.pushNotificationConfigs";
+const TASK_BINDINGS_METADATA_KEY: &str = "a2a.taskBindings";
 const A2A_NOTIFICATION_TOKEN_HEADER: &str = "x-a2a-notification-token";
 const EXTENDED_CARD_SECURITY_SCHEME_ID: &str = "awakenExtendedCardBearer";
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct StoredTaskBindings {
+    #[serde(default)]
+    tasks: BTreeMap<String, StoredTaskBinding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredTaskBinding {
+    thread_id: String,
+    #[serde(default)]
+    start_message_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    end_message_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct StoredPushConfigs {
+    #[serde(default)]
+    tasks: BTreeMap<String, Vec<PushNotificationConfig>>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedTask {
+    thread_id: String,
+    run: Option<RunRecord>,
+    job: Option<MailboxJob>,
+}
 
 /// Build A2A routes.
 pub fn a2a_routes() -> Router<AppState> {
@@ -794,17 +824,29 @@ async fn send_message(
 ) -> Result<Json<SendMessageResponse>, A2aError> {
     ensure_supported_version(&headers)?;
     let PreparedRequest {
+        task_id,
         thread_id,
         effective_tenant,
         history_length,
         return_immediately,
         push_notification_config,
+        new_task_start_message_id,
         request,
     } = prepare_send_request(&st, path_tenant, payload).await?;
 
     if let Some(config) = push_notification_config {
-        upsert_push_notification_config(&st, &thread_id, effective_tenant.as_deref(), config)
-            .await?;
+        upsert_push_notification_config_for_thread(
+            &st,
+            &thread_id,
+            &task_id,
+            effective_tenant.as_deref(),
+            config,
+        )
+        .await?;
+    }
+
+    if let Some(start_message_id) = new_task_start_message_id.as_deref() {
+        record_task_binding(&st, &thread_id, &task_id, start_message_id).await?;
     }
 
     st.mailbox
@@ -812,12 +854,11 @@ async fn send_message(
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?;
 
-    for config in
-        load_push_notification_configs(&st, &thread_id, effective_tenant.as_deref()).await?
+    for config in load_push_notification_configs(&st, &task_id, effective_tenant.as_deref()).await?
     {
         spawn_push_notification_driver(
             st.clone(),
-            thread_id.clone(),
+            task_id.clone(),
             effective_tenant.clone(),
             config,
         );
@@ -826,16 +867,16 @@ async fn send_message(
     let task = if return_immediately {
         load_task_snapshot(
             &st,
-            &thread_id,
+            &task_id,
             effective_tenant.as_deref(),
             history_length,
             true,
         )
         .await?
         .map(|snapshot| snapshot.task)
-        .unwrap_or_else(|| submitted_task(&thread_id, effective_tenant.as_deref()))
+        .unwrap_or_else(|| submitted_task(&task_id, &thread_id, effective_tenant.as_deref()))
     } else {
-        wait_for_task(&st, &thread_id, effective_tenant.as_deref(), history_length).await?
+        wait_for_task(&st, &task_id, effective_tenant.as_deref(), history_length).await?
     };
 
     Ok(Json(SendMessageResponse::task(task)))
@@ -850,17 +891,29 @@ async fn stream_message(
 ) -> Result<Response, A2aError> {
     ensure_supported_version(&headers)?;
     let PreparedRequest {
+        task_id,
         thread_id,
         effective_tenant,
         history_length,
         push_notification_config,
+        new_task_start_message_id,
         request,
         ..
     } = prepare_send_request(&st, path_tenant, payload).await?;
 
     if let Some(config) = push_notification_config {
-        upsert_push_notification_config(&st, &thread_id, effective_tenant.as_deref(), config)
-            .await?;
+        upsert_push_notification_config_for_thread(
+            &st,
+            &thread_id,
+            &task_id,
+            effective_tenant.as_deref(),
+            config,
+        )
+        .await?;
+    }
+
+    if let Some(start_message_id) = new_task_start_message_id.as_deref() {
+        record_task_binding(&st, &thread_id, &task_id, start_message_id).await?;
     }
 
     st.mailbox
@@ -868,12 +921,11 @@ async fn stream_message(
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?;
 
-    for config in
-        load_push_notification_configs(&st, &thread_id, effective_tenant.as_deref()).await?
+    for config in load_push_notification_configs(&st, &task_id, effective_tenant.as_deref()).await?
     {
         spawn_push_notification_driver(
             st.clone(),
-            thread_id.clone(),
+            task_id.clone(),
             effective_tenant.clone(),
             config,
         );
@@ -881,7 +933,7 @@ async fn stream_message(
 
     Ok(stream_task_response(
         st,
-        thread_id,
+        task_id,
         effective_tenant,
         history_length,
     ))
@@ -941,7 +993,13 @@ fn stream_task_response(
             {
                 Ok(Some(snapshot)) => snapshot,
                 Ok(None) => TaskSnapshot {
-                    task: submitted_task(&task_id, tenant.as_deref()),
+                    task: submitted_task(
+                        &task_id,
+                        &task_context_id(&st, &task_id)
+                            .await
+                            .unwrap_or_else(|_| task_id.clone()),
+                        tenant.as_deref(),
+                    ),
                     updated_at_ms: 0,
                     current_agent_id: tenant.clone(),
                 },
@@ -1264,17 +1322,25 @@ async fn cancel_task(
     let task = load_task_snapshot(&st, &existing.task.id, tenant.as_deref(), usize::MAX, true)
         .await?
         .map(|snapshot| snapshot.task)
-        .unwrap_or_else(|| canceled_task(&existing.task.id, existing.current_agent_id.as_deref()));
+        .unwrap_or_else(|| {
+            canceled_task(
+                &existing.task.id,
+                &existing.task.context_id,
+                existing.current_agent_id.as_deref(),
+            )
+        });
 
     Ok(Json(task))
 }
 
 struct PreparedRequest {
+    task_id: String,
     thread_id: String,
     effective_tenant: Option<String>,
     history_length: usize,
     return_immediately: bool,
     push_notification_config: Option<PushNotificationConfig>,
+    new_task_start_message_id: Option<String>,
     request: RunRequest,
 }
 
@@ -1343,18 +1409,6 @@ async fn prepare_send_request(
             accepted_output_modes.join(","),
         ));
     }
-    let task_id = trim_to_option(payload.message.task_id.as_deref());
-    let context_id = trim_to_option(payload.message.context_id.as_deref());
-    if let (Some(task_id), Some(context_id)) = (task_id.as_deref(), context_id.as_deref())
-        && task_id != context_id
-    {
-        violations.push(FieldViolation {
-            field: "message.contextId".into(),
-            description:
-                "this adapter maps one task per context, so taskId and contextId must match".into(),
-        });
-    }
-
     if !violations.is_empty() {
         return Err(A2aError::merge_invalid("invalid A2A request", violations));
     }
@@ -1363,9 +1417,27 @@ async fn prepare_send_request(
         ensure_runnable_agent(st, tenant)?;
     }
 
-    let thread_id = task_id
-        .or(context_id)
+    let task_id = trim_to_option(payload.message.task_id.as_deref());
+    let context_id = trim_to_option(payload.message.context_id.as_deref());
+    let existing_task = if let Some(task_id) = task_id.as_deref() {
+        resolve_task(st, task_id).await?
+    } else {
+        None
+    };
+    let thread_id = existing_task
+        .as_ref()
+        .map(|task| task.thread_id.clone())
+        .or_else(|| context_id.clone())
         .unwrap_or_else(|| Uuid::now_v7().to_string());
+    if let Some(context_id) = context_id.as_deref()
+        && context_id != thread_id
+    {
+        return Err(A2aError::invalid(
+            "message.contextId",
+            "contextId must match the task's thread context",
+        ));
+    }
+    let task_id = task_id.unwrap_or_else(|| Uuid::now_v7().to_string());
     let content = payload
         .message
         .parts
@@ -1373,16 +1445,39 @@ async fn prepare_send_request(
         .map(a2a_part_to_content_block)
         .collect::<Result<Vec<_>, _>>()?;
 
-    let awaken_message =
-        AwakenMessage::user_with_content(content).with_id(payload.message.message_id);
+    let message_id = payload.message.message_id.clone();
+    let awaken_message = AwakenMessage::user_with_content(content).with_id(message_id.clone());
     let mut request = RunRequest::new(thread_id.clone(), vec![awaken_message]);
+    let mut new_task_start_message_id = None;
 
     if let Some(ref tenant) = effective_tenant {
         request = request.with_agent_id(tenant.clone());
-    } else if task_exists(st, &thread_id).await? {
+    } else if thread_has_context(st, &thread_id).await? {
         // Keep agent inference on existing threads.
     } else {
         request = request.with_agent_id(public_agent_id(st)?);
+    }
+
+    match existing_task {
+        Some(existing_task) => {
+            let Some(run) = existing_task.run.as_ref() else {
+                return Err(A2aError::invalid(
+                    "message.taskId",
+                    "taskId refers to an in-flight task; wait for completion or use contextId for a new task",
+                ));
+            };
+            if !run_is_a2a_resumable(run) {
+                return Err(A2aError::invalid(
+                    "message.taskId",
+                    "taskId must reference an interrupted task; use contextId to start a new task in the same context",
+                ));
+            }
+            request = request.with_continue_run_id(task_id.clone());
+        }
+        None => {
+            new_task_start_message_id = Some(message_id);
+            request = request.with_job_id_hint(task_id.clone());
+        }
     }
 
     let history_length = payload
@@ -1400,17 +1495,143 @@ async fn prepare_send_request(
         .configuration
         .as_ref()
         .and_then(|cfg| cfg.task_push_notification_config.clone())
-        .map(|config| normalize_push_config(config, effective_tenant.as_deref(), &thread_id))
+        .map(|config| normalize_push_config(config, effective_tenant.as_deref(), &task_id))
         .transpose()?;
 
     Ok(PreparedRequest {
+        task_id,
         thread_id,
         effective_tenant,
         history_length,
         return_immediately,
         push_notification_config,
+        new_task_start_message_id,
         request,
     })
+}
+
+async fn resolve_task(st: &AppState, task_id: &str) -> Result<Option<ResolvedTask>, A2aError> {
+    if let Some(run) = st
+        .store
+        .load_run(task_id)
+        .await
+        .map_err(|e| A2aError::Internal(e.to_string()))?
+    {
+        let job = st
+            .mailbox
+            .load_job(task_id)
+            .await
+            .map_err(|e| A2aError::Internal(e.to_string()))?;
+        return Ok(Some(ResolvedTask {
+            thread_id: run.thread_id.clone(),
+            run: Some(run),
+            job,
+        }));
+    }
+
+    let Some(job) = st
+        .mailbox
+        .load_job(task_id)
+        .await
+        .map_err(|e| A2aError::Internal(e.to_string()))?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(ResolvedTask {
+        thread_id: job.mailbox_id.clone(),
+        run: None,
+        job: Some(job),
+    }))
+}
+
+fn run_is_a2a_resumable(run: &RunRecord) -> bool {
+    run.status == RunStatus::Waiting
+        && !matches!(run.termination_code.as_deref(), Some("awaiting_tasks"))
+}
+
+async fn record_task_binding(
+    st: &AppState,
+    thread_id: &str,
+    task_id: &str,
+    start_message_id: &str,
+) -> Result<(), A2aError> {
+    let existing = st
+        .store
+        .load_thread(thread_id)
+        .await
+        .map_err(|e| A2aError::Internal(e.to_string()))?;
+    let mut thread = existing.unwrap_or_else(|| Thread::with_id(thread_id));
+    let mut bindings = thread
+        .metadata
+        .custom
+        .remove(TASK_BINDINGS_METADATA_KEY)
+        .and_then(|value| serde_json::from_value::<StoredTaskBindings>(value).ok())
+        .unwrap_or_default();
+    bindings.tasks.insert(
+        task_id.to_string(),
+        StoredTaskBinding {
+            thread_id: thread_id.to_string(),
+            start_message_id: start_message_id.to_string(),
+            end_message_id: None,
+        },
+    );
+    for (existing_task_id, binding) in bindings.tasks.iter_mut() {
+        if existing_task_id != task_id && binding.end_message_id.is_none() {
+            binding.end_message_id = Some(start_message_id.to_string());
+        }
+    }
+    thread.metadata.custom.insert(
+        TASK_BINDINGS_METADATA_KEY.to_string(),
+        serde_json::to_value(bindings).map_err(|e| A2aError::Internal(e.to_string()))?,
+    );
+
+    if st
+        .store
+        .load_thread(thread_id)
+        .await
+        .map_err(|e| A2aError::Internal(e.to_string()))?
+        .is_some()
+    {
+        st.store
+            .update_thread_metadata(thread_id, thread.metadata)
+            .await
+            .map_err(|e| A2aError::Internal(e.to_string()))?;
+    } else {
+        st.store
+            .save_thread(&thread)
+            .await
+            .map_err(|e| A2aError::Internal(e.to_string()))?;
+    }
+    Ok(())
+}
+
+async fn load_task_binding(
+    st: &AppState,
+    thread_id: &str,
+    task_id: &str,
+) -> Result<Option<StoredTaskBinding>, A2aError> {
+    let Some(thread) = st
+        .store
+        .load_thread(thread_id)
+        .await
+        .map_err(|e| A2aError::Internal(e.to_string()))?
+    else {
+        return Ok(None);
+    };
+
+    Ok(thread
+        .metadata
+        .custom
+        .get(TASK_BINDINGS_METADATA_KEY)
+        .and_then(|value| serde_json::from_value::<StoredTaskBindings>(value.clone()).ok())
+        .and_then(|bindings| bindings.tasks.get(task_id).cloned()))
+}
+
+async fn task_context_id(st: &AppState, task_id: &str) -> Result<String, A2aError> {
+    Ok(resolve_task(st, task_id)
+        .await?
+        .map(|task| task.thread_id)
+        .unwrap_or_else(|| task_id.to_string()))
 }
 
 async fn wait_for_task(
@@ -1434,7 +1655,8 @@ async fn wait_for_task(
         }
 
         if tokio::time::Instant::now() >= deadline {
-            return Ok(last_seen.unwrap_or_else(|| submitted_task(task_id, tenant)));
+            let context_id = task_context_id(st, task_id).await?;
+            return Ok(last_seen.unwrap_or_else(|| submitted_task(task_id, &context_id, tenant)));
         }
 
         tokio::time::sleep(BLOCKING_POLL_INTERVAL).await;
@@ -1448,28 +1670,70 @@ async fn load_task_snapshot(
     history_length: usize,
     include_artifacts: bool,
 ) -> Result<Option<TaskSnapshot>, A2aError> {
-    let latest_run = st
-        .store
-        .latest_run(task_id)
-        .await
-        .map_err(|e| A2aError::Internal(e.to_string()))?;
-    let jobs = st
-        .mailbox
-        .list_jobs(task_id, None, 100, 0)
-        .await
-        .map_err(|e| A2aError::Internal(e.to_string()))?;
-    let latest_job = jobs.into_iter().max_by_key(|job| job.updated_at);
+    let Some(task) = resolve_task(st, task_id).await? else {
+        return Ok(None);
+    };
+    let thread_id = task.thread_id.clone();
+    let latest_run = task.run.clone();
+    let latest_job = if let Some(job) = task.job.clone() {
+        Some(job)
+    } else {
+        st.mailbox
+            .list_jobs(&thread_id, None, 100, 0)
+            .await
+            .map_err(|e| A2aError::Internal(e.to_string()))?
+            .into_iter()
+            .filter(|job| {
+                let extras = job.request_extras.as_ref();
+                let continue_run_id = extras
+                    .and_then(|value| value.get("continue_run_id"))
+                    .and_then(serde_json::Value::as_str);
+                let job_id_hint = extras
+                    .and_then(|value| value.get("job_id_hint"))
+                    .and_then(serde_json::Value::as_str);
+                continue_run_id == Some(task_id) || job_id_hint == Some(task_id)
+            })
+            .max_by_key(|job| job.updated_at)
+    };
 
     let history = st
         .store
-        .load_messages(task_id)
+        .load_messages(&thread_id)
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?
         .unwrap_or_default();
-    let mut converted_history = history
-        .iter()
-        .filter_map(|message| awaken_message_to_a2a_message(message, task_id))
-        .collect::<Vec<_>>();
+    let binding = load_task_binding(st, &thread_id, task_id).await?;
+    let mut converted_history = if let Some(binding) = binding.as_ref()
+        && !binding.start_message_id.is_empty()
+    {
+        let full_history = history
+            .iter()
+            .filter_map(|message| awaken_message_to_a2a_message(message, task_id, &thread_id))
+            .collect::<Vec<_>>();
+        let start_index = full_history
+            .iter()
+            .position(|message| message.message_id == binding.start_message_id)
+            .unwrap_or(0);
+        let end_index = binding
+            .end_message_id
+            .as_deref()
+            .and_then(|message_id| {
+                full_history
+                    .iter()
+                    .position(|message| message.message_id == message_id)
+            })
+            .unwrap_or(full_history.len());
+        full_history
+            .into_iter()
+            .skip(start_index)
+            .take(end_index.saturating_sub(start_index))
+            .collect::<Vec<_>>()
+    } else {
+        history
+            .iter()
+            .filter_map(|message| awaken_message_to_a2a_message(message, task_id, &thread_id))
+            .collect::<Vec<_>>()
+    };
     let latest_agent_message = converted_history
         .iter()
         .rev()
@@ -1544,7 +1808,7 @@ async fn load_task_snapshot(
     Ok(Some(TaskSnapshot {
         task: Task {
             id: task_id.to_string(),
-            context_id: task_id.to_string(),
+            context_id: thread_id,
             status: TaskStatus {
                 state: source.state,
                 message: status_message,
@@ -1576,7 +1840,11 @@ fn message_to_artifacts(message: &A2aMessage) -> Vec<Artifact> {
 fn run_record_to_task_state(record: &awaken_contract::contract::storage::RunRecord) -> TaskState {
     match record.status {
         RunStatus::Running => TaskState::Working,
-        RunStatus::Waiting => TaskState::InputRequired,
+        RunStatus::Waiting => match record.termination_code.as_deref() {
+            Some("auth_required") => TaskState::AuthRequired,
+            Some("awaiting_tasks") => TaskState::Working,
+            _ => TaskState::InputRequired,
+        },
         RunStatus::Done => match record.termination_code.as_deref() {
             Some("cancelled") => TaskState::Canceled,
             Some(code) if code.starts_with("blocked:") => TaskState::Rejected,
@@ -1595,10 +1863,10 @@ fn mailbox_job_to_task_state(status: MailboxJobStatus) -> TaskState {
     }
 }
 
-fn submitted_task(task_id: &str, tenant: Option<&str>) -> Task {
+fn submitted_task(task_id: &str, context_id: &str, tenant: Option<&str>) -> Task {
     Task {
         id: task_id.to_string(),
-        context_id: task_id.to_string(),
+        context_id: context_id.to_string(),
         status: TaskStatus {
             state: TaskState::Submitted,
             message: None,
@@ -1610,10 +1878,10 @@ fn submitted_task(task_id: &str, tenant: Option<&str>) -> Task {
     }
 }
 
-fn canceled_task(task_id: &str, tenant: Option<&str>) -> Task {
+fn canceled_task(task_id: &str, context_id: &str, tenant: Option<&str>) -> Task {
     Task {
         id: task_id.to_string(),
-        context_id: task_id.to_string(),
+        context_id: context_id.to_string(),
         status: TaskStatus {
             state: TaskState::Canceled,
             message: None,
@@ -1790,10 +2058,30 @@ fn ensure_runnable_agent(st: &AppState, agent_id: &str) -> Result<(), A2aError> 
         .map_err(|_| A2aError::NotFound(format!("agent not found: {agent_id}")))
 }
 
-async fn task_exists(st: &AppState, task_id: &str) -> Result<bool, A2aError> {
+async fn thread_has_context(st: &AppState, thread_id: &str) -> Result<bool, A2aError> {
     if st
         .store
-        .latest_run(task_id)
+        .load_thread(thread_id)
+        .await
+        .map_err(|e| A2aError::Internal(e.to_string()))?
+        .is_some()
+    {
+        return Ok(true);
+    }
+
+    if st
+        .store
+        .load_messages(thread_id)
+        .await
+        .map_err(|e| A2aError::Internal(e.to_string()))?
+        .is_some()
+    {
+        return Ok(true);
+    }
+
+    if st
+        .store
+        .latest_run(thread_id)
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?
         .is_some()
@@ -1803,7 +2091,7 @@ async fn task_exists(st: &AppState, task_id: &str) -> Result<bool, A2aError> {
 
     Ok(!st
         .mailbox
-        .list_jobs(task_id, None, 1, 0)
+        .list_jobs(thread_id, None, 1, 0)
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?
         .is_empty())
@@ -1811,6 +2099,27 @@ async fn task_exists(st: &AppState, task_id: &str) -> Result<bool, A2aError> {
 
 async fn collect_task_ids(st: &AppState) -> Result<Vec<String>, A2aError> {
     let mut ids = BTreeSet::new();
+    let mut run_offset = 0;
+    loop {
+        let page = st
+            .store
+            .list_runs(&RunQuery {
+                offset: run_offset,
+                limit: 100,
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| A2aError::Internal(e.to_string()))?;
+        if page.items.is_empty() {
+            break;
+        }
+        run_offset += page.items.len();
+        ids.extend(page.items.into_iter().map(|run| run.run_id));
+        if !page.has_more {
+            break;
+        }
+    }
+
     let mut offset = 0;
     loop {
         let batch = st
@@ -1822,14 +2131,20 @@ async fn collect_task_ids(st: &AppState) -> Result<Vec<String>, A2aError> {
             break;
         }
         offset += batch.len();
-        ids.extend(batch);
+        for thread_id in batch {
+            let jobs = st
+                .mailbox
+                .list_jobs(
+                    &thread_id,
+                    Some(&[MailboxJobStatus::Queued, MailboxJobStatus::Claimed]),
+                    100,
+                    0,
+                )
+                .await
+                .map_err(|e| A2aError::Internal(e.to_string()))?;
+            ids.extend(jobs.into_iter().map(|job| job.job_id));
+        }
     }
-    ids.extend(
-        st.mailbox
-            .queued_mailbox_ids()
-            .await
-            .map_err(|e| A2aError::Internal(e.to_string()))?,
-    );
     Ok(ids.into_iter().collect())
 }
 
@@ -1894,7 +2209,7 @@ async fn ensure_task_visible(
         return Ok(());
     }
 
-    if task_exists(st, task_id).await? {
+    if resolve_task(st, task_id).await?.is_some() {
         Ok(())
     } else {
         Err(A2aError::task_not_found(task_id.to_string()))
@@ -1906,21 +2221,19 @@ async fn load_push_notification_configs(
     task_id: &str,
     tenant: Option<&str>,
 ) -> Result<Vec<PushNotificationConfig>, A2aError> {
+    let Some(task) = resolve_task(st, task_id).await? else {
+        return Ok(Vec::new());
+    };
     let Some(thread) = st
         .store
-        .load_thread(task_id)
+        .load_thread(&task.thread_id)
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?
     else {
         return Ok(Vec::new());
     };
 
-    let Some(value) = thread.metadata.custom.get(PUSH_CONFIGS_METADATA_KEY) else {
-        return Ok(Vec::new());
-    };
-
-    let mut configs: Vec<PushNotificationConfig> =
-        serde_json::from_value(value.clone()).map_err(|err| A2aError::Internal(err.to_string()))?;
+    let mut configs = load_thread_push_notification_configs(&thread, task_id)?;
     if let Some(tenant) = tenant {
         configs.retain(|config| config.tenant.as_deref() == Some(tenant));
     }
@@ -1945,41 +2258,18 @@ async fn save_push_notification_configs(
     task_id: &str,
     configs: Vec<PushNotificationConfig>,
 ) -> Result<(), A2aError> {
+    let Some(task) = resolve_task(st, task_id).await? else {
+        return Err(A2aError::task_not_found(task_id.to_string()));
+    };
+    let thread_id = task.thread_id;
     let existing = st
         .store
-        .load_thread(task_id)
+        .load_thread(&thread_id)
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?;
 
-    let mut thread = existing.unwrap_or_else(|| Thread::with_id(task_id));
-    if configs.is_empty() {
-        thread.metadata.custom.remove(PUSH_CONFIGS_METADATA_KEY);
-    } else {
-        thread
-            .metadata
-            .custom
-            .insert(PUSH_CONFIGS_METADATA_KEY.to_string(), json!(configs));
-    }
-
-    if st
-        .store
-        .load_thread(task_id)
-        .await
-        .map_err(|e| A2aError::Internal(e.to_string()))?
-        .is_some()
-    {
-        st.store
-            .update_thread_metadata(task_id, thread.metadata)
-            .await
-            .map_err(|e| A2aError::Internal(e.to_string()))?;
-    } else {
-        st.store
-            .save_thread(&thread)
-            .await
-            .map_err(|e| A2aError::Internal(e.to_string()))?;
-    }
-
-    Ok(())
+    let thread = existing.unwrap_or_else(|| Thread::with_id(&thread_id));
+    save_thread_push_notification_configs(st, &thread_id, thread, task_id, configs).await
 }
 
 async fn upsert_push_notification_config(
@@ -1995,6 +2285,94 @@ async fn upsert_push_notification_config(
         configs.push(config);
     }
     save_push_notification_configs(st, task_id, configs).await
+}
+
+async fn upsert_push_notification_config_for_thread(
+    st: &AppState,
+    thread_id: &str,
+    task_id: &str,
+    tenant: Option<&str>,
+    config: PushNotificationConfig,
+) -> Result<(), A2aError> {
+    let existing = st
+        .store
+        .load_thread(thread_id)
+        .await
+        .map_err(|e| A2aError::Internal(e.to_string()))?;
+    let thread = existing.unwrap_or_else(|| Thread::with_id(thread_id));
+    let mut configs = load_thread_push_notification_configs(&thread, task_id)?;
+    if let Some(tenant) = tenant {
+        configs.retain(|existing| existing.tenant.as_deref() == Some(tenant));
+    }
+    if let Some(position) = configs.iter().position(|existing| existing.id == config.id) {
+        configs[position] = config;
+    } else {
+        configs.push(config);
+    }
+    save_thread_push_notification_configs(st, thread_id, thread, task_id, configs).await
+}
+
+fn load_thread_push_notification_configs(
+    thread: &Thread,
+    task_id: &str,
+) -> Result<Vec<PushNotificationConfig>, A2aError> {
+    let Some(value) = thread.metadata.custom.get(PUSH_CONFIGS_METADATA_KEY) else {
+        return Ok(Vec::new());
+    };
+
+    if let Ok(stored) = serde_json::from_value::<StoredPushConfigs>(value.clone()) {
+        Ok(stored.tasks.get(task_id).cloned().unwrap_or_default())
+    } else {
+        serde_json::from_value(value.clone()).map_err(|err| A2aError::Internal(err.to_string()))
+    }
+}
+
+async fn save_thread_push_notification_configs(
+    st: &AppState,
+    thread_id: &str,
+    mut thread: Thread,
+    task_id: &str,
+    configs: Vec<PushNotificationConfig>,
+) -> Result<(), A2aError> {
+    let mut stored = thread
+        .metadata
+        .custom
+        .remove(PUSH_CONFIGS_METADATA_KEY)
+        .and_then(|value| serde_json::from_value::<StoredPushConfigs>(value).ok())
+        .unwrap_or_default();
+    if configs.is_empty() {
+        stored.tasks.remove(task_id);
+    } else {
+        stored.tasks.insert(task_id.to_string(), configs);
+    }
+    if stored.tasks.is_empty() {
+        thread.metadata.custom.remove(PUSH_CONFIGS_METADATA_KEY);
+    } else {
+        thread.metadata.custom.insert(
+            PUSH_CONFIGS_METADATA_KEY.to_string(),
+            serde_json::to_value(stored).map_err(|e| A2aError::Internal(e.to_string()))?,
+        );
+    }
+
+    if st
+        .store
+        .load_thread(thread_id)
+        .await
+        .map_err(|e| A2aError::Internal(e.to_string()))?
+        .is_some()
+    {
+        st.store
+            .update_thread_metadata(thread_id, thread.metadata)
+            .await
+            .map_err(|e| A2aError::Internal(e.to_string()))?;
+    } else {
+        st.store
+            .save_thread(&thread)
+            .await
+            .map_err(|e| A2aError::Internal(e.to_string()))?;
+    }
+
+    Ok(())
 }
 
 fn spawn_push_notification_driver(
@@ -2033,7 +2411,13 @@ async fn drive_push_notification(
         let snapshot = load_task_snapshot(&st, &task_id, tenant.as_deref(), usize::MAX, true)
             .await?
             .unwrap_or(TaskSnapshot {
-                task: submitted_task(&task_id, tenant.as_deref()),
+                task: submitted_task(
+                    &task_id,
+                    &task_context_id(&st, &task_id)
+                        .await
+                        .unwrap_or_else(|_| task_id.clone()),
+                    tenant.as_deref(),
+                ),
                 updated_at_ms: 0,
                 current_agent_id: tenant.clone(),
             });
@@ -2368,7 +2752,11 @@ fn infer_media_type_from_url(url: &str) -> String {
     }
 }
 
-fn awaken_message_to_a2a_message(message: &AwakenMessage, task_id: &str) -> Option<A2aMessage> {
+fn awaken_message_to_a2a_message(
+    message: &AwakenMessage,
+    task_id: &str,
+    context_id: &str,
+) -> Option<A2aMessage> {
     if message.visibility == Visibility::Internal {
         return None;
     }
@@ -2390,7 +2778,7 @@ fn awaken_message_to_a2a_message(message: &AwakenMessage, task_id: &str) -> Opti
 
     Some(A2aMessage {
         task_id: Some(task_id.to_string()),
-        context_id: Some(task_id.to_string()),
+        context_id: Some(context_id.to_string()),
         message_id: message
             .id
             .clone()
@@ -2491,6 +2879,8 @@ fn content_block_to_a2a_part(block: &ContentBlock) -> Option<Part> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_contract::contract::lifecycle::RunStatus;
+    use awaken_contract::contract::storage::RunRecord;
 
     #[test]
     fn parse_task_state_filter_accepts_enum_and_lowercase() {
@@ -2526,9 +2916,10 @@ mod tests {
     #[test]
     fn message_conversion_keeps_text_and_binary_parts() {
         let message = AwakenMessage::assistant("hello").with_id("msg-1".into());
-        let converted = awaken_message_to_a2a_message(&message, "task-1").unwrap();
+        let converted = awaken_message_to_a2a_message(&message, "task-1", "thread-1").unwrap();
         assert_eq!(converted.role, MessageRole::Agent);
         assert_eq!(converted.task_id.as_deref(), Some("task-1"));
+        assert_eq!(converted.context_id.as_deref(), Some("thread-1"));
         assert_eq!(converted.text(), "hello");
     }
 
@@ -2555,5 +2946,54 @@ mod tests {
     #[test]
     fn a2a_routes_build_without_conflicts() {
         let _ = a2a_routes();
+    }
+
+    #[test]
+    fn waiting_run_records_map_to_interrupted_task_states_by_reason() {
+        let input_required = RunRecord {
+            run_id: "run-1".into(),
+            thread_id: "thread-1".into(),
+            agent_id: "agent".into(),
+            parent_run_id: None,
+            status: RunStatus::Waiting,
+            termination_code: Some("input_required".into()),
+            created_at: 0,
+            updated_at: 0,
+            steps: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            state: None,
+        };
+        assert_eq!(
+            run_record_to_task_state(&input_required),
+            TaskState::InputRequired
+        );
+
+        let auth_required = RunRecord {
+            termination_code: Some("auth_required".into()),
+            ..input_required.clone()
+        };
+        assert_eq!(
+            run_record_to_task_state(&auth_required),
+            TaskState::AuthRequired
+        );
+
+        let awaiting_tasks = RunRecord {
+            termination_code: Some("awaiting_tasks".into()),
+            ..input_required.clone()
+        };
+        assert_eq!(
+            run_record_to_task_state(&awaiting_tasks),
+            TaskState::Working
+        );
+
+        let generic_waiting = RunRecord {
+            termination_code: None,
+            ..input_required
+        };
+        assert_eq!(
+            run_record_to_task_state(&generic_waiting),
+            TaskState::InputRequired
+        );
     }
 }

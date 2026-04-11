@@ -15,9 +15,12 @@ use async_trait::async_trait;
 use awaken_contract::contract::content::{
     AudioSource, ContentBlock, DocumentSource, ImageSource, VideoSource,
 };
+use awaken_contract::contract::event::AgentEvent;
+use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::lifecycle::TerminationReason;
+use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_contract::contract::message::{Message, Role, Visibility};
+use awaken_contract::contract::storage::RunRecord;
 use awaken_contract::now_ms;
 use awaken_contract::registry_spec::RemoteEndpoint;
 use awaken_contract::state::PersistedState;
@@ -29,16 +32,18 @@ use awaken_protocol_a2a::{
 use futures::StreamExt;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 const A2A_VERSION: &str = "1.0";
 const A2A_BACKEND: &str = "a2a";
+const A2A_TASK_PROGRESS_ACTIVITY_TYPE: &str = "a2a-task-progress";
 const HISTORY_LENGTH_OPTION_KEY: &str = "history_length";
 const POLL_INTERVAL_OPTION_KEY: &str = "poll_interval_ms";
 const REMOTE_STATE_KEY: &str = "__runtime_remote_backend";
 const RETURN_IMMEDIATELY_OPTION_KEY: &str = "return_immediately";
 const WAIT_REASON_AUTH_REQUIRED: &str = "auth_required";
 const WAIT_REASON_INPUT_REQUIRED: &str = "input_required";
+const WAIT_REASON_TIMEOUT: &str = "timeout";
 
 /// Configuration for a remote A2A agent endpoint.
 #[derive(Debug, Clone)]
@@ -295,6 +300,13 @@ impl<'a> A2aExecutionRequest<'a> {
         }
     }
 
+    fn sink(&self) -> Arc<dyn EventSink> {
+        match self {
+            Self::Root(request) => request.sink.clone(),
+            Self::Delegate(request) => request.sink.clone(),
+        }
+    }
+
     fn turn_messages(&self) -> &[Message] {
         let (messages, new_messages) = match self {
             Self::Root(request) => (&request.messages, &request.new_messages),
@@ -365,6 +377,19 @@ impl A2aBackend {
             return Ok(None);
         };
 
+        if request.is_continuation() {
+            return Ok(storage
+                .load_run(&run_identity.run_id)
+                .await
+                .map_err(|error| {
+                    ExecutionBackendError::ExecutionFailed(format!(
+                        "failed to load continuation state for run '{}': {error}",
+                        run_identity.run_id
+                    ))
+                })?
+                .and_then(|run| run.state));
+        }
+
         Ok(storage
             .latest_run(&run_identity.thread_id)
             .await
@@ -401,7 +426,7 @@ impl A2aBackend {
         let root_identity = request.run_identity();
         let task_id = prior_state
             .as_ref()
-            .and_then(|state| reusable_prior_task_id(state, request.is_continuation()))
+            .and_then(reusable_prior_task_id)
             .or_else(|| root_identity.map(|identity| identity.run_id.clone()));
         let context_id = prior_state
             .as_ref()
@@ -509,6 +534,7 @@ impl A2aBackend {
     async fn subscribe_to_completion(
         &self,
         snapshot: TaskSnapshot,
+        sink: &Arc<dyn EventSink>,
     ) -> Result<Option<PollCompletion>, ExecutionBackendError> {
         let url = format!(
             "{}/tasks/{}:subscribe",
@@ -559,6 +585,7 @@ impl A2aBackend {
                     })?;
                     for event in decoder.push(chunk) {
                         latest.apply_stream_response(parse_stream_response(&event)?);
+                        emit_task_progress(sink, &latest).await;
                         if latest.is_done() {
                             return Ok(Some(PollCompletion::Finished(latest)));
                         }
@@ -575,6 +602,7 @@ impl A2aBackend {
                 Ok(None) => {
                     if let Some(event) = decoder.finish() {
                         latest.apply_stream_response(parse_stream_response(&event)?);
+                        emit_task_progress(sink, &latest).await;
                         if latest.is_done() {
                             return Ok(Some(PollCompletion::Finished(latest)));
                         }
@@ -588,27 +616,30 @@ impl A2aBackend {
     async fn observe_to_completion(
         &self,
         snapshot: TaskSnapshot,
+        sink: &Arc<dyn EventSink>,
     ) -> Result<PollCompletion, ExecutionBackendError> {
         if snapshot.is_done() {
             return Ok(PollCompletion::Finished(snapshot));
         }
 
-        if let Some(completion) = self.subscribe_to_completion(snapshot.clone()).await? {
+        if let Some(completion) = self.subscribe_to_completion(snapshot.clone(), sink).await? {
             return Ok(completion);
         }
 
-        self.poll_to_completion(&snapshot.task_id).await
+        self.poll_to_completion(&snapshot.task_id, sink).await
     }
 
     /// Poll until the task reaches a terminal state or timeout.
     async fn poll_to_completion(
         &self,
         task_id: &str,
+        sink: &Arc<dyn EventSink>,
     ) -> Result<PollCompletion, ExecutionBackendError> {
         let deadline = tokio::time::Instant::now() + self.config.timeout;
 
         loop {
             let snapshot = self.fetch_task(task_id).await?;
+            emit_task_progress(sink, &snapshot).await;
             if snapshot.is_done() {
                 return Ok(PollCompletion::Finished(snapshot));
             }
@@ -650,6 +681,7 @@ impl ExecutionBackend for A2aBackend {
             .lock()
             .get(&request.run_identity.run_id)
             .cloned()
+            .or_else(|| persisted_abort_task_id(&request, &self.remote_target_key()))
         else {
             return Ok(());
         };
@@ -685,6 +717,7 @@ impl A2aBackend {
     ) -> Result<BackendRunResult, ExecutionBackendError> {
         let persisted_state = self.load_persisted_state(&request).await?;
         let turn_message = self.build_turn_message(&request, persisted_state.as_ref())?;
+        let sink = request.sink();
         let submitted_task_id = turn_message.task_id.clone();
         let submitted_context_id = turn_message.context_id.clone();
         let run_id = request.run_identity().map(|run| run.run_id.clone());
@@ -730,7 +763,14 @@ impl A2aBackend {
                         .insert(run_id.clone(), submitted_snapshot.task_id.clone());
                 }
 
-                let completion = self.observe_to_completion(submitted_snapshot).await;
+                let accepted_state = update_persisted_state(
+                    persisted_state,
+                    &self.remote_target_key(),
+                    &submitted_snapshot,
+                );
+                persist_accepted_checkpoint(&request, accepted_state.clone()).await?;
+                emit_task_progress(&sink, &submitted_snapshot).await;
+                let completion = self.observe_to_completion(submitted_snapshot, &sink).await;
 
                 if let Some(run_id) = &run_id {
                     self.in_flight_tasks.lock().remove(run_id);
@@ -750,7 +790,7 @@ impl A2aBackend {
                     run_id: None,
                     inbox: None,
                     state: update_persisted_state(
-                        persisted_state,
+                        accepted_state,
                         &self.remote_target_key(),
                         &snapshot,
                     ),
@@ -777,8 +817,8 @@ fn map_completion_result(completion: PollCompletion, root_run: bool) -> Completi
         PollCompletion::TimedOut(snapshot) => CompletionResult {
             snapshot,
             status: BackendRunStatus::Timeout,
-            termination: TerminationReason::Error("polling timeout exceeded".into()),
-            status_reason: None,
+            termination: TerminationReason::stopped(WAIT_REASON_TIMEOUT),
+            status_reason: Some(WAIT_REASON_TIMEOUT.to_string()),
         },
         PollCompletion::Finished(snapshot) => {
             let (status, termination, status_reason) = match snapshot.state {
@@ -853,29 +893,20 @@ fn interrupted_completion(
         )
     };
 
-    if root_run {
-        let message = failure_message.clone();
-        (
-            if auth_required {
-                BackendRunStatus::WaitingAuth(message)
-            } else {
-                BackendRunStatus::WaitingInput(message)
-            },
-            TerminationReason::Suspended,
-            Some(wait_reason.to_string()),
-        )
+    let message = if root_run {
+        failure_message
     } else {
-        let message = failure_message.unwrap_or_else(|| default_message.into());
-        (
-            if auth_required {
-                BackendRunStatus::WaitingAuth(Some(message.clone()))
-            } else {
-                BackendRunStatus::WaitingInput(Some(message.clone()))
-            },
-            TerminationReason::Error(message),
-            None,
-        )
-    }
+        Some(failure_message.unwrap_or_else(|| default_message.into()))
+    };
+    (
+        if auth_required {
+            BackendRunStatus::WaitingAuth(message)
+        } else {
+            BackendRunStatus::WaitingInput(message)
+        },
+        TerminationReason::Suspended,
+        Some(wait_reason.to_string()),
+    )
 }
 
 impl SubmissionOutcome {
@@ -905,12 +936,13 @@ struct DirectMessageSnapshot {
 impl DirectMessageSnapshot {
     fn from_message(message: A2aMessage) -> Self {
         let raw = serde_json::to_value(&message).ok();
+        let artifacts = direct_message_artifacts(&message);
         Self {
             task_id: message.task_id,
             context_id: message.context_id,
             output: BackendRunOutput {
                 text: extract_text_from_parts(&message.parts),
-                artifacts: Vec::new(),
+                artifacts,
                 raw,
             },
         }
@@ -1128,6 +1160,70 @@ fn default_failure_message(state: TaskState) -> Option<String> {
     }
 }
 
+async fn emit_task_progress(sink: &Arc<dyn EventSink>, snapshot: &TaskSnapshot) {
+    sink.emit(AgentEvent::ActivitySnapshot {
+        message_id: snapshot.task_id.clone(),
+        activity_type: A2A_TASK_PROGRESS_ACTIVITY_TYPE.to_string(),
+        content: task_progress_content(snapshot),
+        replace: Some(true),
+    })
+    .await;
+}
+
+fn task_progress_content(snapshot: &TaskSnapshot) -> Value {
+    json!({
+        "schema": "a2a-task-progress.v1",
+        "task_id": snapshot.task_id.clone(),
+        "context_id": snapshot.context_id.clone(),
+        "state": task_state_name(snapshot.state),
+        "text": snapshot.output_text.clone(),
+        "artifacts": snapshot.output.artifacts.clone(),
+        "failure_message": snapshot.failure_message.clone(),
+    })
+}
+
+async fn persist_accepted_checkpoint(
+    request: &A2aExecutionRequest<'_>,
+    state: Option<PersistedState>,
+) -> Result<(), ExecutionBackendError> {
+    let (root, storage, state) = match request {
+        A2aExecutionRequest::Root(root) => {
+            let Some(storage) = root.checkpoint_store else {
+                return Ok(());
+            };
+            let Some(state) = state else {
+                return Ok(());
+            };
+            (root, storage, state)
+        }
+        A2aExecutionRequest::Delegate(_) => return Ok(()),
+    };
+    let now = now_ms() / 1000;
+    let record = RunRecord {
+        run_id: root.run_identity.run_id.clone(),
+        thread_id: root.run_identity.thread_id.clone(),
+        agent_id: root.agent_id.to_string(),
+        parent_run_id: root.run_identity.parent_run_id.clone(),
+        status: RunStatus::Running,
+        termination_code: None,
+        created_at: now,
+        updated_at: now,
+        steps: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        state: Some(state),
+    };
+    storage
+        .checkpoint(&root.run_identity.thread_id, &root.messages, &record)
+        .await
+        .map_err(|error| {
+            ExecutionBackendError::ExecutionFailed(format!(
+                "failed to persist accepted A2A task handle for run '{}': {error}",
+                root.run_identity.run_id
+            ))
+        })
+}
+
 fn update_persisted_state(
     state: Option<PersistedState>,
     target_key: &str,
@@ -1217,15 +1313,18 @@ fn read_remote_state_entry(
         .and_then(|state| state.targets.get(target_key).cloned())
 }
 
-fn reusable_prior_task_id(
-    state: &PersistedA2aThreadState,
-    explicit_continuation: bool,
-) -> Option<String> {
+fn persisted_abort_task_id(request: &BackendAbortRequest<'_>, target_key: &str) -> Option<String> {
+    request
+        .persisted_state
+        .and_then(|state| read_remote_state_entry(state, target_key))
+        .and_then(|state| reusable_prior_task_id(&state))
+}
+
+fn reusable_prior_task_id(state: &PersistedA2aThreadState) -> Option<String> {
     if state
         .last_state
         .as_deref()
         .is_some_and(is_interrupted_remote_state)
-        || (explicit_continuation && state.last_state.is_none())
     {
         state.task_id.clone()
     } else {
@@ -1273,6 +1372,21 @@ fn extract_backend_output(task: &Task, text: Option<String>) -> BackendRunOutput
         artifacts,
         raw: serde_json::to_value(task).ok(),
     }
+}
+
+fn direct_message_artifacts(message: &A2aMessage) -> Vec<BackendOutputArtifact> {
+    message
+        .parts
+        .iter()
+        .enumerate()
+        .filter(|(_, part)| part.raw.is_some() || part.url.is_some() || part.data.is_some())
+        .map(|(index, part)| BackendOutputArtifact {
+            id: Some(format!("{}:{index}", message.message_id)),
+            name: part.filename.clone(),
+            media_type: part.media_type.clone(),
+            content: serde_json::to_value(part).unwrap_or(Value::Null),
+        })
+        .collect()
 }
 
 fn extract_text_from_message(message: &A2aMessage) -> Option<String> {
@@ -1431,8 +1545,38 @@ fn task_state_name(state: TaskState) -> &'static str {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
+    use awaken_contract::contract::event_sink::NullEventSink;
+    use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
+    use awaken_contract::contract::lifecycle::RunStatus;
+    use awaken_contract::contract::storage::{RunRecord, ThreadRunStore};
+    use awaken_stores::memory::InMemoryStore;
     use serde_json::json;
+
+    struct NoopResolver;
+
+    impl crate::registry::AgentResolver for NoopResolver {
+        fn resolve(
+            &self,
+            agent_id: &str,
+        ) -> Result<crate::registry::ResolvedAgent, crate::RuntimeError> {
+            Err(crate::RuntimeError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })
+        }
+    }
+
+    impl crate::registry::ExecutionResolver for NoopResolver {
+        fn resolve_execution(
+            &self,
+            agent_id: &str,
+        ) -> Result<crate::registry::ResolvedExecution, crate::RuntimeError> {
+            Err(crate::RuntimeError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })
+        }
+    }
 
     fn make_task(state: TaskState) -> Task {
         Task {
@@ -1672,9 +1816,9 @@ mod tests {
         assert_eq!(result.snapshot.output_text, timed_out_snapshot.output_text);
         assert!(matches!(
             result.termination,
-            TerminationReason::Error(message) if message == "polling timeout exceeded"
+            TerminationReason::Stopped(ref reason) if reason.code == WAIT_REASON_TIMEOUT
         ));
-        assert!(result.status_reason.is_none());
+        assert_eq!(result.status_reason.as_deref(), Some(WAIT_REASON_TIMEOUT));
     }
 
     #[test]
@@ -1720,7 +1864,7 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_delegate_poll_completion_remains_failure() {
+    fn interrupted_delegate_poll_completion_maps_to_suspended_waiting_reason() {
         let snapshot = TaskSnapshot {
             task_id: "task-1".into(),
             context_id: Some("ctx-1".into()),
@@ -1735,11 +1879,52 @@ mod tests {
             result.status,
             BackendRunStatus::WaitingInput(Some(ref message)) if message == "Need more details"
         ));
-        assert!(matches!(
-            result.termination,
-            TerminationReason::Error(ref message) if message == "Need more details"
-        ));
-        assert!(result.status_reason.is_none());
+        assert_eq!(result.termination, TerminationReason::Suspended);
+        assert_eq!(
+            result.status_reason.as_deref(),
+            Some(WAIT_REASON_INPUT_REQUIRED)
+        );
+    }
+
+    #[test]
+    fn direct_message_snapshot_preserves_artifacts() {
+        let snapshot = DirectMessageSnapshot::from_message(A2aMessage {
+            task_id: Some("task-direct".into()),
+            context_id: Some("ctx-direct".into()),
+            message_id: "msg-direct".into(),
+            role: MessageRole::Agent,
+            parts: vec![
+                Part::text("summary"),
+                Part {
+                    text: None,
+                    raw: None,
+                    url: None,
+                    data: Some(json!({"answer": 42})),
+                    media_type: Some("application/json".into()),
+                    filename: Some("answer.json".into()),
+                    metadata: None,
+                },
+            ],
+            metadata: None,
+        });
+
+        assert_eq!(
+            snapshot.output.text.as_deref(),
+            Some("summary\n\n{\"answer\":42}")
+        );
+        assert_eq!(snapshot.output.artifacts.len(), 1);
+        assert_eq!(
+            snapshot.output.artifacts[0].id.as_deref(),
+            Some("msg-direct:1")
+        );
+        assert_eq!(
+            snapshot.output.artifacts[0].media_type.as_deref(),
+            Some("application/json")
+        );
+        assert_eq!(
+            snapshot.output.artifacts[0].content["data"],
+            json!({"answer": 42})
+        );
     }
 
     #[test]
@@ -1794,7 +1979,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(reusable_prior_task_id(&state, false), None);
+        assert_eq!(reusable_prior_task_id(&state), None);
     }
 
     #[test]
@@ -1807,25 +1992,94 @@ mod tests {
         };
 
         assert_eq!(
-            reusable_prior_task_id(&state, false).as_deref(),
+            reusable_prior_task_id(&state).as_deref(),
             Some("waiting-task")
         );
     }
 
     #[test]
-    fn legacy_state_without_last_state_reuses_task_only_for_explicit_continuation() {
+    fn state_without_last_state_never_reuses_task() {
         let state = PersistedA2aThreadState {
-            task_id: Some("legacy-task".into()),
+            task_id: Some("unknown-task".into()),
             context_id: Some("ctx-1".into()),
             last_state: None,
             ..Default::default()
         };
 
-        assert_eq!(reusable_prior_task_id(&state, false), None);
-        assert_eq!(
-            reusable_prior_task_id(&state, true).as_deref(),
-            Some("legacy-task")
+        assert_eq!(reusable_prior_task_id(&state), None);
+    }
+
+    #[test]
+    fn abort_task_id_falls_back_to_persisted_interrupted_state() {
+        let target_key = "a2a:https://gateway.example.com/v1/a2a/worker";
+        let persisted = update_persisted_state(
+            None,
+            target_key,
+            &TaskSnapshot {
+                task_id: "waiting-task".into(),
+                context_id: Some("ctx-1".into()),
+                state: TaskState::InputRequired,
+                output_text: None,
+                output: BackendRunOutput::default(),
+                failure_message: None,
+            },
+        )
+        .expect("persisted remote state");
+        let run_identity = RunIdentity::new(
+            "thread-1".into(),
+            None,
+            "run-1".into(),
+            None,
+            "remote-agent".into(),
+            RunOrigin::User,
         );
+        let request = BackendAbortRequest {
+            agent_id: "remote-agent",
+            run_identity: &run_identity,
+            parent: None,
+            persisted_state: Some(&persisted),
+            is_continuation: false,
+        };
+
+        assert_eq!(
+            persisted_abort_task_id(&request, target_key).as_deref(),
+            Some("waiting-task")
+        );
+    }
+
+    #[test]
+    fn abort_task_id_does_not_reuse_completed_prior_state() {
+        let target_key = "a2a:https://gateway.example.com/v1/a2a/worker";
+        let persisted = update_persisted_state(
+            None,
+            target_key,
+            &TaskSnapshot {
+                task_id: "completed-task".into(),
+                context_id: Some("ctx-1".into()),
+                state: TaskState::Completed,
+                output_text: None,
+                output: BackendRunOutput::default(),
+                failure_message: None,
+            },
+        )
+        .expect("persisted remote state");
+        let run_identity = RunIdentity::new(
+            "thread-1".into(),
+            None,
+            "run-1".into(),
+            None,
+            "remote-agent".into(),
+            RunOrigin::User,
+        );
+        let request = BackendAbortRequest {
+            agent_id: "remote-agent",
+            run_identity: &run_identity,
+            parent: None,
+            persisted_state: Some(&persisted),
+            is_continuation: false,
+        };
+
+        assert_eq!(persisted_abort_task_id(&request, target_key), None);
     }
 
     #[test]
@@ -1868,6 +2122,118 @@ mod tests {
         .expect("state should pass through");
 
         assert_eq!(persisted, original);
+    }
+
+    #[tokio::test]
+    async fn continuation_loads_state_from_continue_run_id_not_latest_thread_run() {
+        let backend = A2aBackend::new(
+            A2aConfig::new("https://gateway.example.com/v1/a2a").with_target_agent_id("worker"),
+        );
+        let target_key = backend.remote_target_key();
+        let continued_state = update_persisted_state(
+            None,
+            &target_key,
+            &TaskSnapshot {
+                task_id: "continued-task".into(),
+                context_id: Some("continued-context".into()),
+                state: TaskState::InputRequired,
+                output_text: None,
+                output: BackendRunOutput::default(),
+                failure_message: None,
+            },
+        )
+        .expect("continued state");
+        let newer_state = update_persisted_state(
+            None,
+            &target_key,
+            &TaskSnapshot {
+                task_id: "newer-task".into(),
+                context_id: Some("newer-context".into()),
+                state: TaskState::Completed,
+                output_text: None,
+                output: BackendRunOutput::default(),
+                failure_message: None,
+            },
+        )
+        .expect("newer state");
+
+        let store = InMemoryStore::new();
+        store
+            .checkpoint(
+                "thread-1",
+                &[Message::user("old turn")],
+                &RunRecord {
+                    run_id: "continued-run".into(),
+                    thread_id: "thread-1".into(),
+                    agent_id: "remote-agent".into(),
+                    parent_run_id: None,
+                    status: RunStatus::Waiting,
+                    termination_code: Some(WAIT_REASON_INPUT_REQUIRED.into()),
+                    created_at: 1,
+                    updated_at: 1,
+                    steps: 1,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    state: Some(continued_state),
+                },
+            )
+            .await
+            .expect("checkpoint continued run");
+        store
+            .checkpoint(
+                "thread-1",
+                &[Message::user("newer turn")],
+                &RunRecord {
+                    run_id: "newer-run".into(),
+                    thread_id: "thread-1".into(),
+                    agent_id: "remote-agent".into(),
+                    parent_run_id: None,
+                    status: RunStatus::Done,
+                    termination_code: Some("natural".into()),
+                    created_at: 2,
+                    updated_at: 2,
+                    steps: 1,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    state: Some(newer_state),
+                },
+            )
+            .await
+            .expect("checkpoint newer run");
+
+        let resolver = NoopResolver;
+        let request = BackendRootRunRequest {
+            agent_id: "remote-agent",
+            messages: vec![Message::user("resume")],
+            new_messages: vec![Message::user("resume")],
+            sink: Arc::new(NullEventSink),
+            resolver: &resolver,
+            run_identity: RunIdentity::new(
+                "thread-1".into(),
+                None,
+                "continued-run".into(),
+                None,
+                "remote-agent".into(),
+                RunOrigin::User,
+            ),
+            checkpoint_store: Some(&store),
+            control: crate::backend::BackendControl::default(),
+            decisions: Vec::new(),
+            overrides: None,
+            frontend_tools: Vec::new(),
+            local: None,
+            inbox: None,
+            is_continuation: true,
+        };
+
+        let state = backend
+            .load_persisted_state(&A2aExecutionRequest::Root(Box::new(request)))
+            .await
+            .expect("load state")
+            .expect("state");
+        let remote = read_remote_state_entry(&state, &target_key).expect("remote state");
+        assert_eq!(remote.task_id.as_deref(), Some("continued-task"));
+        assert_eq!(remote.context_id.as_deref(), Some("continued-context"));
     }
 
     #[test]
@@ -1958,5 +2324,35 @@ mod tests {
         });
 
         assert_eq!(snapshot.output_text.as_deref(), Some("hello\n\nworld"));
+    }
+
+    #[test]
+    fn task_progress_content_preserves_state_text_and_artifacts() {
+        let mut snapshot = TaskSnapshot::from_task(make_task(TaskState::Working));
+        snapshot.apply_stream_response(StreamResponse {
+            artifact_update: Some(TaskArtifactUpdateEvent {
+                task_id: "task-1".into(),
+                context_id: "ctx-1".into(),
+                artifact: awaken_protocol_a2a::Artifact {
+                    artifact_id: "response".into(),
+                    name: Some("answer".into()),
+                    description: None,
+                    parts: vec![Part::text("hello")],
+                    metadata: None,
+                },
+                append: Some(false),
+                last_chunk: Some(true),
+                metadata: None,
+            }),
+            ..Default::default()
+        });
+
+        let content = task_progress_content(&snapshot);
+        assert_eq!(content["schema"], "a2a-task-progress.v1");
+        assert_eq!(content["task_id"], "task-1");
+        assert_eq!(content["context_id"], "ctx-1");
+        assert_eq!(content["state"], "TASK_STATE_WORKING");
+        assert_eq!(content["text"], "hello");
+        assert_eq!(content["artifacts"].as_array().map(Vec::len), Some(1));
     }
 }

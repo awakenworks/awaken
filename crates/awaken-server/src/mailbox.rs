@@ -54,6 +54,8 @@ struct RunRequestExtras {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     continue_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    job_id_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     parent_thread_id: Option<String>,
 }
 
@@ -63,7 +65,8 @@ impl RunRequestExtras {
             overrides: request.overrides.clone(),
             decisions: request.decisions.clone(),
             frontend_tools: request.frontend_tools.clone(),
-            continue_run_id: None, // populated by wake job, not by user requests
+            continue_run_id: request.continue_run_id.clone(),
+            job_id_hint: request.job_id_hint.clone(),
             parent_thread_id: request.parent_thread_id.clone(),
         }
     }
@@ -73,6 +76,7 @@ impl RunRequestExtras {
             && self.decisions.is_empty()
             && self.frontend_tools.is_empty()
             && self.continue_run_id.is_none()
+            && self.job_id_hint.is_none()
             && self.parent_thread_id.is_none()
         {
             Ok(None)
@@ -97,6 +101,9 @@ impl RunRequestExtras {
         }
         if let Some(crid) = self.continue_run_id {
             request = request.with_continue_run_id(crid);
+        }
+        if let Some(job_id_hint) = self.job_id_hint {
+            request = request.with_job_id_hint(job_id_hint);
         }
         if let Some(parent_thread_id) = self.parent_thread_id {
             request = request.with_parent_thread_id(parent_thread_id);
@@ -144,6 +151,7 @@ impl awaken_runtime::inbox::OnInboxClosed for TaskDoneMailboxNotify {
                 decisions: Vec::new(),
                 frontend_tools: Vec::new(),
                 continue_run_id,
+                job_id_hint: None,
                 parent_thread_id: None,
             };
             let request_extras = extras.to_value().ok().flatten();
@@ -607,6 +615,10 @@ impl Mailbox {
         Ok(self.store.queued_mailbox_ids().await?)
     }
 
+    pub async fn load_job(&self, job_id: &str) -> Result<Option<MailboxJob>, MailboxError> {
+        Ok(self.store.load_job(job_id).await?)
+    }
+
     // ── Lifecycle ────────────────────────────────────────────────────
 
     /// Recover on startup: reload Queued jobs, buffer, dispatch idle threads.
@@ -661,6 +673,7 @@ impl Mailbox {
                                 decisions: Vec::new(),
                                 frontend_tools: Vec::new(),
                                 continue_run_id: Some(run.run_id.clone()),
+                                job_id_hint: None,
                                 parent_thread_id: None,
                             };
                             extras.to_value().ok().flatten()
@@ -1048,7 +1061,10 @@ impl Mailbox {
 
         let now = now_ms();
         Ok(MailboxJob {
-            job_id: uuid::Uuid::now_v7().to_string(),
+            job_id: request
+                .job_id_hint
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
             mailbox_id: thread_id.to_string(),
             agent_id: request.agent_id.as_deref().unwrap_or_default().to_string(),
             messages,
@@ -1858,6 +1874,7 @@ mod tests {
             decisions: vec![],
             frontend_tools: vec![ToolDescriptor::new("ft1", "FT1", "desc")],
             continue_run_id: None,
+            job_id_hint: None,
             parent_thread_id: None,
         };
         let value = extras.to_value().unwrap().unwrap();
@@ -1875,6 +1892,7 @@ mod tests {
             decisions: vec![],
             frontend_tools: vec![],
             continue_run_id: None,
+            job_id_hint: None,
             parent_thread_id: None,
         };
         assert!(extras.to_value().unwrap().is_none());
@@ -1888,11 +1906,13 @@ mod tests {
             decisions: vec![],
             frontend_tools: vec![ToolDescriptor::new("ft1", "FT1", "desc")],
             continue_run_id: None,
+            job_id_hint: Some("job-1".into()),
             parent_thread_id: Some("parent-thread".into()),
         };
         let request = RunRequest::new("t1", vec![Message::user("hi")]);
         let applied = extras.apply_to(request);
         assert_eq!(applied.frontend_tools.len(), 1);
+        assert_eq!(applied.job_id_hint.as_deref(), Some("job-1"));
         assert_eq!(applied.parent_thread_id.as_deref(), Some("parent-thread"));
     }
 

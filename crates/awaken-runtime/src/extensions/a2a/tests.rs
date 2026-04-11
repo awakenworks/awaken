@@ -13,7 +13,8 @@ use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::progress::{
     ProgressStatus, TOOL_CALL_PROGRESS_ACTIVITY_TYPE, ToolCallProgressState,
 };
-use awaken_contract::contract::tool::{Tool, ToolCallContext};
+use awaken_contract::contract::suspension::ToolCallResumeMode;
+use awaken_contract::contract::tool::{Tool, ToolCallContext, ToolStatus};
 use awaken_contract::registry_spec::{AgentSpec, RemoteAuth, RemoteEndpoint};
 
 use crate::loop_runner::build_agent_env;
@@ -346,7 +347,7 @@ async fn agent_tool_with_mock_backend_failure() {
         .await
         .unwrap();
 
-    assert!(output.result.is_success()); // ToolResult is success but status shows failure
+    assert!(!output.result.is_success());
     assert!(
         output.result.data["status"]
             .as_str()
@@ -760,7 +761,7 @@ async fn agent_tool_with_mock_backend_cancelled() {
         .await
         .unwrap();
 
-    assert!(output.result.is_success());
+    assert!(!output.result.is_success());
     assert_eq!(output.result.data["status"], "cancelled");
     assert_eq!(output.result.data["agent_id"], "helper");
     assert_eq!(output.result.data["steps"], 2);
@@ -793,11 +794,60 @@ async fn agent_tool_with_mock_backend_timeout() {
         .await
         .unwrap();
 
-    assert!(output.result.is_success());
+    assert!(!output.result.is_success());
     assert_eq!(output.result.data["status"], "timeout");
     assert_eq!(output.result.data["agent_id"], "helper");
     assert_eq!(output.result.data["response"], "partial");
     assert_eq!(output.result.data["steps"], 5);
+}
+
+#[tokio::test]
+async fn agent_tool_with_mock_backend_waiting_input_is_pending() {
+    let backend = Arc::new(MockBackend {
+        result: DelegateRunResult {
+            agent_id: "helper".into(),
+            status: DelegateRunStatus::WaitingInput(Some("Need details".into())),
+            termination: TerminationReason::Suspended,
+            status_reason: Some("input_required".into()),
+            response: Some("Need details".into()),
+            output: crate::backend::BackendRunOutput::from_text(Some("Need details".into())),
+            steps: 1,
+            run_id: None,
+            inbox: None,
+            state: None,
+        },
+    });
+    let tool = AgentTool::with_backend("helper", "desc", backend);
+    let sink = Arc::new(VecEventSink::new());
+    let mut ctx = ToolCallContext::test_default();
+    ctx.call_id = "tool-call-waiting".into();
+    ctx.tool_name = "agent_run_helper".into();
+    ctx.activity_sink = Some(sink.clone() as Arc<dyn EventSink>);
+
+    let output = tool
+        .execute(json!({"prompt": "help me"}), &ctx)
+        .await
+        .unwrap();
+
+    assert_eq!(output.result.status, ToolStatus::Pending);
+    assert_eq!(output.result.data["status"], "waiting_input: Need details");
+    let ticket = output
+        .result
+        .suspension
+        .as_ref()
+        .expect("pending delegate should carry a suspension ticket");
+    assert_eq!(ticket.suspension.id, "delegate_tool:tool-call-waiting");
+    assert_eq!(ticket.suspension.action, "agent_delegate:input_required");
+    assert_eq!(ticket.suspension.message, "Need details");
+    assert_eq!(ticket.pending.id, "tool-call-waiting");
+    assert_eq!(ticket.pending.name, "agent_run_helper");
+    assert_eq!(
+        ticket.resume_mode,
+        ToolCallResumeMode::UseDecisionAsToolResult
+    );
+    let progress = tool_progress_states(&sink.events());
+    assert_eq!(progress[0].status, ProgressStatus::Running);
+    assert_eq!(progress[1].status, ProgressStatus::Pending);
 }
 
 // -- Failed status contains error info --
@@ -827,6 +877,7 @@ async fn agent_tool_failed_status_contains_error_info() {
         .unwrap();
 
     let status = output.result.data["status"].as_str().unwrap();
+    assert!(!output.result.is_success());
     assert!(status.contains("failed"));
     assert!(status.contains("rate limit exceeded"));
 }
