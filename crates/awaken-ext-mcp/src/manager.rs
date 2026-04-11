@@ -1,6 +1,7 @@
 //! MCP tool registry manager: server lifecycle, tool discovery, periodic refresh.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::sync::{Arc, RwLock, Weak};
 use std::time::{Duration, SystemTime};
 
@@ -10,6 +11,7 @@ use awaken_contract::contract::progress::ProgressStatus;
 use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
+use futures::future::join_all;
 use mcp::McpToolDefinition;
 use mcp::transport::{McpTransportError, ServerCapabilities, TransportTypeId};
 use serde_json::Value;
@@ -50,6 +52,35 @@ pub struct McpRefreshHealth {
     pub consecutive_failures: u64,
     pub reconnecting: bool,
     pub permanently_failed: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct McpHealthBudget {
+    last_attempt_at: Option<SystemTime>,
+    last_success_at: Option<SystemTime>,
+    last_error: Option<String>,
+    consecutive_failures: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpRuntimeOpKind {
+    Discovery,
+    Rpc,
+}
+
+#[derive(Debug)]
+enum RuntimeOperationError {
+    Mcp(McpError),
+    Transport(McpTransportError),
+}
+
+impl From<RuntimeOperationError> for McpError {
+    fn from(err: RuntimeOperationError) -> Self {
+        match err {
+            RuntimeOperationError::Mcp(err) => err,
+            RuntimeOperationError::Transport(err) => err.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,49 +159,53 @@ impl Tool for McpTool {
     }
 
     async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
-        let runtime = resolve_live_runtime(&self.state, &self.server_name)
-            .map_err(|err| ToolError::ExecutionFailed(err.to_string()))?;
-        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
-        let mut call = Box::pin(runtime.transport.call_tool(
-            &self.tool_name,
-            args,
-            Some(progress_tx),
-        ));
-        let mut gate = ProgressEmitGate::default();
+        let Some(state) = self.state.upgrade() else {
+            return Err(ToolError::ExecutionFailed(
+                McpError::RuntimeUnavailable.to_string(),
+            ));
+        };
+        let tool_name = self.tool_name.clone();
+        let res = match with_runtime_lease(
+            &state,
+            &self.server_name,
+            McpRuntimeOpKind::Rpc,
+            |_| Ok(()),
+            move |runtime| async move {
+                let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
+                let mut call = Box::pin(runtime.transport.call_tool(
+                    &tool_name,
+                    args,
+                    Some(progress_tx),
+                ));
+                let mut gate = ProgressEmitGate::default();
 
-        let res = loop {
-            tokio::select! {
-                result = &mut call => break result,
-                maybe_update = progress_rx.recv() => {
-                    let Some(update) = maybe_update else {
-                        continue;
-                    };
+                let res = loop {
+                    tokio::select! {
+                        result = &mut call => break result,
+                        maybe_update = progress_rx.recv() => {
+                            let Some(update) = maybe_update else {
+                                continue;
+                            };
+                            emit_mcp_progress(ctx, &mut gate, update).await;
+                        }
+                    }
+                };
+
+                while let Ok(update) = progress_rx.try_recv() {
                     emit_mcp_progress(ctx, &mut gate, update).await;
                 }
+
+                res
+            },
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(RuntimeOperationError::Transport(err)) => return Err(map_mcp_error(err)),
+            Err(RuntimeOperationError::Mcp(err)) => {
+                return Err(ToolError::ExecutionFailed(err.to_string()));
             }
         };
-
-        let res = match res {
-            Ok(result) => {
-                record_tool_transport_success(&self.state, &self.server_name, runtime.generation)
-                    .await;
-                result
-            }
-            Err(err) => {
-                record_tool_transport_failure(
-                    &self.state,
-                    &self.server_name,
-                    runtime.generation,
-                    &err,
-                )
-                .await;
-                return Err(map_mcp_error(err));
-            }
-        };
-
-        while let Ok(update) = progress_rx.try_recv() {
-            emit_mcp_progress(ctx, &mut gate, update).await;
-        }
 
         let data = call_result_to_tool_data(&res);
         let mut result = ToolResult::success(self.descriptor.id.clone(), data);
@@ -198,7 +233,7 @@ impl Tool for McpTool {
         }
 
         if let Some(ref uri) = self.ui_resource_uri
-            && let Some(content) = fetch_ui_resource(&runtime.transport, uri).await
+            && let Some(content) = fetch_ui_resource(&state, &self.server_name, uri).await
         {
             result.metadata.insert(
                 MCP_META_UI_RESOURCE_URI.to_string(),
@@ -223,10 +258,19 @@ struct UiResourceContent {
 }
 
 async fn fetch_ui_resource(
-    transport: &Arc<dyn McpToolTransport>,
+    state: &Arc<McpRegistryState>,
+    server_name: &str,
     uri: &str,
 ) -> Option<UiResourceContent> {
-    let value = transport.read_resource(uri).await.ok()?;
+    let value = with_runtime_lease(
+        state,
+        server_name,
+        McpRuntimeOpKind::Rpc,
+        |_| Ok(()),
+        |runtime| async move { runtime.transport.read_resource(uri).await },
+    )
+    .await
+    .ok()?;
     let contents = value.get("contents")?.as_array()?;
     let first = contents.first()?;
     let text = first.get("text")?.as_str()?.to_string();
@@ -326,8 +370,11 @@ fn should_track_transport_failure(err: &McpTransportError) -> bool {
         err,
         McpTransportError::ConnectionClosed
             | McpTransportError::Timeout(_)
-            | McpTransportError::TransportError(_)
             | McpTransportError::ProtocolError(_)
+    ) || matches!(
+        err,
+        McpTransportError::TransportError(message)
+            if !message.contains("not supported")
     )
 }
 
@@ -378,9 +425,12 @@ struct McpServerSlot {
     lifecycle: McpServerLifecycle,
     runtime: Option<McpServerRuntime>,
     health: McpRefreshHealth,
+    discovery_health: McpHealthBudget,
+    rpc_health: McpHealthBudget,
     reconnect_attempts: u32,
     next_generation: u64,
     published_snapshot: Option<McpPublishedSnapshot>,
+    lifecycle_lock: Arc<AsyncMutex<()>>,
 }
 
 // ── Registry snapshot ──
@@ -396,7 +446,6 @@ struct McpRegistryState {
     snapshot: RwLock<McpRegistrySnapshot>,
     periodic_refresh: PeriodicRefresher,
     sampling_handler: Option<Arc<dyn SamplingHandler>>,
-    lifecycle_lock: AsyncMutex<()>,
 }
 
 fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
@@ -424,12 +473,80 @@ fn is_unsupported_transport_message(message: &str, operation: &str) -> bool {
     message.contains(operation) && message.contains("not supported")
 }
 
+fn unsupported_capability(server_name: impl Into<String>, capability: &'static str) -> McpError {
+    McpError::UnsupportedCapability {
+        server_name: server_name.into(),
+        capability,
+    }
+}
+
+fn transport_operation_not_supported(err: &McpTransportError, operation: &str) -> bool {
+    matches!(
+        err,
+        McpTransportError::TransportError(message)
+            if is_unsupported_transport_message(message, operation)
+    )
+}
+
+fn transient_lifecycle_mcp_error(err: &McpError) -> bool {
+    matches!(
+        err,
+        McpError::UnknownServer(_)
+            | McpError::ServerDisabled(_)
+            | McpError::ServerPermanentlyFailed(_)
+            | McpError::RuntimeUnavailable
+    ) || matches!(
+        err,
+        McpError::Transport(message) if message.contains("connection closed")
+    )
+}
+
+fn aggregate_list_should_skip(err: &RuntimeOperationError, operation: &str) -> bool {
+    match err {
+        RuntimeOperationError::Mcp(McpError::UnsupportedCapability { .. }) => true,
+        RuntimeOperationError::Mcp(err) if transient_lifecycle_mcp_error(err) => true,
+        RuntimeOperationError::Transport(McpTransportError::ConnectionClosed) => true,
+        RuntimeOperationError::Transport(err) => transport_operation_not_supported(err, operation),
+        RuntimeOperationError::Mcp(_) => false,
+    }
+}
+
+fn map_capability_operation_error(
+    server_name: &str,
+    capability: &'static str,
+    operation: &str,
+    err: RuntimeOperationError,
+) -> McpError {
+    match err {
+        RuntimeOperationError::Transport(err)
+            if transport_operation_not_supported(&err, operation) =>
+        {
+            unsupported_capability(server_name, capability)
+        }
+        other => other.into(),
+    }
+}
+
 fn server_supports_prompts(capabilities: Option<&ServerCapabilities>) -> bool {
     capabilities.is_none_or(|capabilities| capabilities.prompts.is_some())
 }
 
 fn server_supports_resources(capabilities: Option<&ServerCapabilities>) -> bool {
     capabilities.is_none_or(|capabilities| capabilities.resources.is_some())
+}
+
+fn require_prompts(runtime: &McpRuntimeLease) -> Result<(), McpError> {
+    if server_supports_prompts(runtime.capabilities.as_ref()) {
+        return Ok(());
+    }
+    Err(unsupported_capability(&runtime.server_name, "prompts"))
+}
+
+fn require_resources(runtime: &McpRuntimeLease) -> Result<(), McpError> {
+    if server_supports_resources(runtime.capabilities.as_ref()) {
+        return Ok(());
+    }
+    Err(unsupported_capability(&runtime.server_name, "resources"))
 }
 
 fn discover_tools(servers: &[McpServerSlot]) -> Result<HashMap<String, Arc<dyn Tool>>, McpError> {
@@ -520,6 +637,24 @@ fn server_is_active(slot: &McpServerSlot) -> bool {
     slot.lifecycle == McpServerLifecycle::Connected && slot.runtime.is_some()
 }
 
+fn server_lifecycle_lock(
+    state: &McpRegistryState,
+    server_name: &str,
+) -> Result<Arc<AsyncMutex<()>>, McpError> {
+    let servers = read_lock(&state.servers);
+    let index = find_server_index(&servers, server_name)?;
+    Ok(servers[index].lifecycle_lock.clone())
+}
+
+fn active_server_names(state: &McpRegistryState) -> Vec<String> {
+    let servers = read_lock(&state.servers);
+    servers
+        .iter()
+        .filter(|slot| server_is_active(slot))
+        .map(|slot| slot.meta.name.clone())
+        .collect()
+}
+
 fn reconnect_backoff(attempt: u32) -> Duration {
     const MAX_SHIFT: u32 = 4;
     let shift = attempt.min(MAX_SHIFT);
@@ -530,24 +665,138 @@ fn reconnect_backoff(attempt: u32) -> Duration {
     }
 }
 
-fn reset_server_health_on_success(slot: &mut McpServerSlot, attempted_at: SystemTime) {
-    slot.health.last_attempt_at = Some(attempted_at);
-    slot.health.last_success_at = Some(attempted_at);
-    slot.health.last_error = None;
-    slot.health.consecutive_failures = 0;
+fn latest_time(left: Option<SystemTime>, right: Option<SystemTime>) -> Option<SystemTime> {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            if right.duration_since(left).is_ok() {
+                Some(right)
+            } else {
+                Some(left)
+            }
+        }
+        (Some(time), None) | (None, Some(time)) => Some(time),
+        (None, None) => None,
+    }
+}
+
+fn health_budget_mut(slot: &mut McpServerSlot, op_kind: McpRuntimeOpKind) -> &mut McpHealthBudget {
+    match op_kind {
+        McpRuntimeOpKind::Discovery => &mut slot.discovery_health,
+        McpRuntimeOpKind::Rpc => &mut slot.rpc_health,
+    }
+}
+
+fn health_budget(slot: &McpServerSlot, op_kind: McpRuntimeOpKind) -> &McpHealthBudget {
+    match op_kind {
+        McpRuntimeOpKind::Discovery => &slot.discovery_health,
+        McpRuntimeOpKind::Rpc => &slot.rpc_health,
+    }
+}
+
+fn budget_error(budget: &McpHealthBudget) -> Option<(Option<SystemTime>, String)> {
+    if budget.consecutive_failures == 0 {
+        return None;
+    }
+    budget
+        .last_error
+        .clone()
+        .map(|error| (budget.last_attempt_at, error))
+}
+
+fn latest_budget_error(left: &McpHealthBudget, right: &McpHealthBudget) -> Option<String> {
+    match (budget_error(left), budget_error(right)) {
+        (Some((left_time, left_error)), Some((right_time, right_error))) => {
+            if latest_time(left_time, right_time) == right_time {
+                Some(right_error)
+            } else {
+                Some(left_error)
+            }
+        }
+        (Some((_, error)), None) | (None, Some((_, error))) => Some(error),
+        (None, None) => None,
+    }
+}
+
+fn sync_server_health(slot: &mut McpServerSlot) {
+    let reconnecting = slot.health.reconnecting;
+    let permanently_failed = slot.health.permanently_failed;
+    slot.health = McpRefreshHealth {
+        last_attempt_at: latest_time(
+            slot.discovery_health.last_attempt_at,
+            slot.rpc_health.last_attempt_at,
+        ),
+        last_success_at: latest_time(
+            slot.discovery_health.last_success_at,
+            slot.rpc_health.last_success_at,
+        ),
+        last_error: latest_budget_error(&slot.discovery_health, &slot.rpc_health),
+        consecutive_failures: slot
+            .discovery_health
+            .consecutive_failures
+            .max(slot.rpc_health.consecutive_failures),
+        reconnecting,
+        permanently_failed,
+    };
+}
+
+fn record_budget_success(budget: &mut McpHealthBudget, attempted_at: SystemTime) {
+    budget.last_attempt_at = Some(attempted_at);
+    budget.last_success_at = Some(attempted_at);
+    budget.last_error = None;
+    budget.consecutive_failures = 0;
+}
+
+fn record_budget_failure(budget: &mut McpHealthBudget, attempted_at: SystemTime, err: &McpError) {
+    budget.last_attempt_at = Some(attempted_at);
+    budget.last_error = Some(err.to_string());
+    budget.consecutive_failures = budget.consecutive_failures.saturating_add(1);
+}
+
+fn reset_all_server_health_on_success(slot: &mut McpServerSlot, attempted_at: SystemTime) {
+    record_budget_success(&mut slot.discovery_health, attempted_at);
+    record_budget_success(&mut slot.rpc_health, attempted_at);
     slot.health.reconnecting = false;
     slot.health.permanently_failed = false;
-
+    sync_server_health(slot);
     slot.reconnect_attempts = 0;
     slot.lifecycle = McpServerLifecycle::Connected;
 }
 
-fn mark_server_failure(slot: &mut McpServerSlot, attempted_at: SystemTime, err: &McpError) {
-    slot.health.last_attempt_at = Some(attempted_at);
-    slot.health.last_error = Some(err.to_string());
-    slot.health.consecutive_failures = slot.health.consecutive_failures.saturating_add(1);
+fn mark_server_success(
+    slot: &mut McpServerSlot,
+    op_kind: McpRuntimeOpKind,
+    attempted_at: SystemTime,
+) {
+    record_budget_success(health_budget_mut(slot, op_kind), attempted_at);
+    slot.health.reconnecting = false;
+    slot.health.permanently_failed = false;
+    if op_kind == McpRuntimeOpKind::Discovery {
+        slot.reconnect_attempts = 0;
+        slot.lifecycle = McpServerLifecycle::Connected;
+    }
+    sync_server_health(slot);
+}
+
+fn mark_server_failure(
+    slot: &mut McpServerSlot,
+    op_kind: McpRuntimeOpKind,
+    attempted_at: SystemTime,
+    err: &McpError,
+) {
+    record_budget_failure(health_budget_mut(slot, op_kind), attempted_at, err);
     slot.health.reconnecting = false;
     slot.health.permanently_failed = slot.lifecycle == McpServerLifecycle::PermanentlyFailed;
+    sync_server_health(slot);
+}
+
+fn server_failure_count(slot: &McpServerSlot, op_kind: McpRuntimeOpKind) -> u64 {
+    health_budget(slot, op_kind).consecutive_failures
+}
+
+fn clear_health_budgets(slot: &mut McpServerSlot) {
+    slot.discovery_health = McpHealthBudget::default();
+    slot.rpc_health = McpHealthBudget::default();
+    sync_server_health(slot);
 }
 
 fn mark_server_permanent_failure(slot: &mut McpServerSlot) {
@@ -640,14 +889,15 @@ fn apply_catalog_if_current(
         generation,
         catalog,
     });
-    reset_server_health_on_success(slot, attempted_at);
+    mark_server_success(slot, McpRuntimeOpKind::Discovery, attempted_at);
     Ok(true)
 }
 
-fn mark_tool_result_if_current(
+fn mark_runtime_operation_result_if_current(
     state: &McpRegistryState,
     server_name: &str,
     generation: u64,
+    op_kind: McpRuntimeOpKind,
     attempted_at: SystemTime,
     result: Result<(), &McpError>,
 ) -> bool {
@@ -663,8 +913,8 @@ fn mark_tool_result_if_current(
         return false;
     }
     match result {
-        Ok(()) => reset_server_health_on_success(slot, attempted_at),
-        Err(err) => mark_server_failure(slot, attempted_at, err),
+        Ok(()) => mark_server_success(slot, op_kind, attempted_at),
+        Err(err) => mark_server_failure(slot, op_kind, attempted_at, err),
     }
     true
 }
@@ -726,7 +976,7 @@ fn finish_reconnect_success(
         generation,
         catalog,
     });
-    reset_server_health_on_success(slot, attempted_at);
+    reset_all_server_health_on_success(slot, attempted_at);
     Ok(())
 }
 
@@ -782,12 +1032,13 @@ fn finish_disable_transition(
     slot.published_snapshot = None;
     slot.health.reconnecting = false;
     slot.health.permanently_failed = false;
+    clear_health_budgets(slot);
     slot.health.last_attempt_at = Some(SystemTime::now());
     slot.health.last_error = close_error.map(ToString::to_string);
     Ok(())
 }
 
-async fn reconnect_server(
+async fn reconnect_server_locked(
     state: &Arc<McpRegistryState>,
     server_name: &str,
 ) -> Result<(), McpError> {
@@ -837,6 +1088,15 @@ async fn reconnect_server(
     Ok(())
 }
 
+async fn reconnect_server(
+    state: &Arc<McpRegistryState>,
+    server_name: &str,
+) -> Result<(), McpError> {
+    let lifecycle_lock = server_lifecycle_lock(state.as_ref(), server_name)?;
+    let _lifecycle_guard = lifecycle_lock.lock().await;
+    reconnect_server_locked(state, server_name).await
+}
+
 async fn disable_server(state: &Arc<McpRegistryState>, server_name: &str) -> Result<(), McpError> {
     let detached_runtime = begin_disable_transition(state.as_ref(), server_name)?;
     let _ = rebuild_snapshot(state.as_ref()).await;
@@ -853,28 +1113,31 @@ async fn disable_server(state: &Arc<McpRegistryState>, server_name: &str) -> Res
     Ok(())
 }
 
-async fn record_tool_transport_success(
+async fn record_runtime_operation_success(
     state: &Weak<McpRegistryState>,
     server_name: &str,
     generation: u64,
+    op_kind: McpRuntimeOpKind,
 ) {
     let Some(state) = state.upgrade() else {
         return;
     };
 
-    let _ = mark_tool_result_if_current(
+    let _ = mark_runtime_operation_result_if_current(
         state.as_ref(),
         server_name,
         generation,
+        op_kind,
         SystemTime::now(),
         Ok(()),
     );
 }
 
-async fn record_tool_transport_failure(
+async fn record_runtime_operation_failure(
     state: &Weak<McpRegistryState>,
     server_name: &str,
     generation: u64,
+    op_kind: McpRuntimeOpKind,
     err: &McpTransportError,
 ) {
     if !should_track_transport_failure(err) {
@@ -885,12 +1148,16 @@ async fn record_tool_transport_failure(
         return;
     };
 
-    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    let Ok(lifecycle_lock) = server_lifecycle_lock(state.as_ref(), server_name) else {
+        return;
+    };
+    let _lifecycle_guard = lifecycle_lock.lock().await;
     let err = McpError::Transport(err.to_string());
-    if !mark_tool_result_if_current(
+    if !mark_runtime_operation_result_if_current(
         state.as_ref(),
         server_name,
         generation,
+        op_kind,
         SystemTime::now(),
         Err(&err),
     ) {
@@ -902,103 +1169,170 @@ async fn record_tool_transport_failure(
         let Ok(index) = find_server_index(&servers, server_name) else {
             return;
         };
-        servers[index].health.consecutive_failures >= FAILURE_THRESHOLD
+        server_failure_count(&servers[index], op_kind) >= FAILURE_THRESHOLD
     };
 
     if should_reconnect {
-        if let Err(reconnect_err) = reconnect_server(&state, server_name).await {
+        if let Err(reconnect_err) = reconnect_server_locked(&state, server_name).await {
             tracing::warn!(
                 error = %reconnect_err,
                 server = %server_name,
-                "MCP tool-call reconnect failed"
+                "MCP runtime operation reconnect failed"
             );
         }
         let _ = rebuild_snapshot(state.as_ref()).await;
     }
 }
 
-async fn refresh_state(state: Arc<McpRegistryState>) -> Result<u64, McpError> {
-    let _lifecycle_guard = state.lifecycle_lock.lock().await;
-    let server_names: Vec<String> = {
+async fn with_runtime_lease<T, Fut, F, P>(
+    state: &Arc<McpRegistryState>,
+    server_name: &str,
+    op_kind: McpRuntimeOpKind,
+    preflight: P,
+    operation: F,
+) -> Result<T, RuntimeOperationError>
+where
+    F: FnOnce(McpRuntimeLease) -> Fut,
+    Fut: Future<Output = Result<T, McpTransportError>>,
+    P: FnOnce(&McpRuntimeLease) -> Result<(), McpError>,
+{
+    let runtime = {
         let servers = read_lock(&state.servers);
-        servers.iter().map(|slot| slot.meta.name.clone()).collect()
+        let index = find_server_index(&servers, server_name).map_err(RuntimeOperationError::Mcp)?;
+        runtime_lease(&servers[index]).map_err(RuntimeOperationError::Mcp)?
+    };
+    preflight(&runtime).map_err(RuntimeOperationError::Mcp)?;
+
+    let generation = runtime.generation;
+    match operation(runtime).await {
+        Ok(value) => {
+            record_runtime_operation_success(
+                &Arc::downgrade(state),
+                server_name,
+                generation,
+                op_kind,
+            )
+            .await;
+            Ok(value)
+        }
+        Err(err) => {
+            record_runtime_operation_failure(
+                &Arc::downgrade(state),
+                server_name,
+                generation,
+                op_kind,
+                &err,
+            )
+            .await;
+            Err(RuntimeOperationError::Transport(err))
+        }
+    }
+}
+
+async fn refresh_server(state: Arc<McpRegistryState>, server_name: String) -> Result<(), McpError> {
+    let lifecycle_lock = server_lifecycle_lock(state.as_ref(), &server_name)?;
+    let Ok(_lifecycle_guard) = lifecycle_lock.try_lock() else {
+        tracing::trace!(
+            server = %server_name,
+            "skipping MCP refresh because server lifecycle is already active"
+        );
+        return Ok(());
     };
 
-    for server_name in server_names {
-        let slot_state = {
-            let servers = read_lock(&state.servers);
-            let index = find_server_index(&servers, &server_name)?;
-            servers[index].lifecycle
-        };
+    let slot_state = {
+        let servers = read_lock(&state.servers);
+        let index = find_server_index(&servers, &server_name)?;
+        servers[index].lifecycle
+    };
 
-        if matches!(
-            slot_state,
-            McpServerLifecycle::Disabled
-                | McpServerLifecycle::Disabling
-                | McpServerLifecycle::Connecting
-                | McpServerLifecycle::Reconnecting
-                | McpServerLifecycle::PermanentlyFailed
-        ) {
-            continue;
+    if matches!(
+        slot_state,
+        McpServerLifecycle::Disabled
+            | McpServerLifecycle::Disabling
+            | McpServerLifecycle::Connecting
+            | McpServerLifecycle::Reconnecting
+            | McpServerLifecycle::PermanentlyFailed
+    ) {
+        return Ok(());
+    }
+
+    if slot_state == McpServerLifecycle::Disconnected {
+        if let Err(reconnect_err) = reconnect_server_locked(&state, &server_name).await {
+            tracing::warn!(
+                error = %reconnect_err,
+                server = %server_name,
+                "MCP server reconnect failed"
+            );
         }
+        return Ok(());
+    }
 
-        if slot_state == McpServerLifecycle::Disconnected {
-            if let Err(reconnect_err) = reconnect_server(&state, &server_name).await {
+    let attempted_at = SystemTime::now();
+    let runtime = match resolve_live_runtime(&Arc::downgrade(&state), &server_name) {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            tracing::warn!(error = %err, server = %server_name, "MCP server refresh failed");
+            return Ok(());
+        }
+    };
+
+    match discover_catalog_from_lease(Arc::downgrade(&state), &runtime).await {
+        Ok(catalog) => {
+            let _ = apply_catalog_if_current(
+                state.as_ref(),
+                &server_name,
+                runtime.generation,
+                attempted_at,
+                catalog,
+            )?;
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, server = %server_name, "MCP server refresh failed");
+            let _ = mark_runtime_operation_result_if_current(
+                state.as_ref(),
+                &server_name,
+                runtime.generation,
+                McpRuntimeOpKind::Discovery,
+                attempted_at,
+                Err(&err),
+            );
+
+            let should_reconnect = {
+                let servers = read_lock(&state.servers);
+                let index = find_server_index(&servers, &server_name)?;
+                server_failure_count(&servers[index], McpRuntimeOpKind::Discovery)
+                    >= FAILURE_THRESHOLD
+            };
+
+            if should_reconnect
+                && let Err(reconnect_err) = reconnect_server_locked(&state, &server_name).await
+            {
                 tracing::warn!(
                     error = %reconnect_err,
                     server = %server_name,
                     "MCP server reconnect failed"
                 );
             }
-            continue;
         }
+    }
 
-        let attempted_at = SystemTime::now();
-        let runtime = match resolve_live_runtime(&Arc::downgrade(&state), &server_name) {
-            Ok(runtime) => runtime,
-            Err(err) => {
-                tracing::warn!(error = %err, server = %server_name, "MCP server refresh failed");
-                continue;
-            }
-        };
+    Ok(())
+}
 
-        match discover_catalog_from_lease(Arc::downgrade(&state), &runtime).await {
-            Ok(catalog) => {
-                let _ = apply_catalog_if_current(
-                    state.as_ref(),
-                    &server_name,
-                    runtime.generation,
-                    attempted_at,
-                    catalog,
-                )?;
-            }
-            Err(err) => {
-                tracing::warn!(error = %err, server = %server_name, "MCP server refresh failed");
-                let _ = mark_tool_result_if_current(
-                    state.as_ref(),
-                    &server_name,
-                    runtime.generation,
-                    attempted_at,
-                    Err(&err),
-                );
+async fn refresh_state(state: Arc<McpRegistryState>) -> Result<u64, McpError> {
+    let server_names: Vec<String> = {
+        let servers = read_lock(&state.servers);
+        servers.iter().map(|slot| slot.meta.name.clone()).collect()
+    };
 
-                let should_reconnect = {
-                    let servers = read_lock(&state.servers);
-                    let index = find_server_index(&servers, &server_name)?;
-                    servers[index].health.consecutive_failures >= FAILURE_THRESHOLD
-                };
-
-                if should_reconnect
-                    && let Err(reconnect_err) = reconnect_server(&state, &server_name).await
-                {
-                    tracing::warn!(
-                        error = %reconnect_err,
-                        server = %server_name,
-                        "MCP server reconnect failed"
-                    );
-                }
-            }
-        }
+    let results = join_all(
+        server_names
+            .into_iter()
+            .map(|server_name| refresh_server(state.clone(), server_name)),
+    )
+    .await;
+    for result in results {
+        result?;
     }
 
     rebuild_snapshot(state.as_ref()).await
@@ -1066,7 +1400,6 @@ impl McpToolRegistryManager {
             snapshot: RwLock::new(McpRegistrySnapshot::default()),
             periodic_refresh: PeriodicRefresher::new(),
             sampling_handler,
-            lifecycle_lock: AsyncMutex::new(()),
         });
 
         let server_names: Vec<String> = {
@@ -1123,9 +1456,17 @@ impl McpToolRegistryManager {
                     reconnecting: false,
                     permanently_failed: false,
                 },
+                discovery_health: McpHealthBudget {
+                    last_attempt_at: Some(connected_at),
+                    last_success_at: Some(connected_at),
+                    last_error: None,
+                    consecutive_failures: 0,
+                },
+                rpc_health: McpHealthBudget::default(),
                 reconnect_attempts: 0,
                 next_generation: 2,
                 published_snapshot: None,
+                lifecycle_lock: Arc::new(AsyncMutex::new(())),
             });
         }
 
@@ -1202,40 +1543,22 @@ impl McpToolRegistryManager {
 
     pub async fn list_prompts(&self) -> Result<Vec<McpPromptEntry>, McpError> {
         let mut prompts = Vec::new();
-
-        let servers: Vec<(
-            String,
-            TransportTypeId,
-            Arc<dyn McpToolTransport>,
-            Option<ServerCapabilities>,
-        )> = {
-            let guard = read_lock(&self.state.servers);
-
-            guard
-                .iter()
-                .filter(|slot| server_is_active(slot))
-                .filter_map(|slot| {
-                    let runtime = slot.runtime.as_ref()?;
-                    Some((
-                        slot.meta.name.clone(),
-                        runtime.transport_type,
-                        runtime.transport.clone(),
-                        runtime.capabilities.clone(),
-                    ))
-                })
-                .collect()
-        };
-
-        for (server_name, transport_type, transport, capabilities) in servers {
-            if !server_supports_prompts(capabilities.as_ref()) {
-                continue;
-            }
-
-            let mut defs = match transport.list_prompts().await {
+        for server_name in active_server_names(self.state.as_ref()) {
+            let (transport_type, mut defs) = match with_runtime_lease(
+                &self.state,
+                &server_name,
+                McpRuntimeOpKind::Rpc,
+                require_prompts,
+                |runtime| async move {
+                    let transport_type = runtime.transport_type;
+                    let defs = runtime.transport.list_prompts().await?;
+                    Ok((transport_type, defs))
+                },
+            )
+            .await
+            {
                 Ok(defs) => defs,
-                Err(McpTransportError::TransportError(message))
-                    if is_unsupported_transport_message(&message, "list_prompts") =>
-                {
+                Err(err) if aggregate_list_should_skip(&err, "list_prompts") => {
                     continue;
                 }
                 Err(err) => return Err(err.into()),
@@ -1264,67 +1587,41 @@ impl McpToolRegistryManager {
         prompt_name: &str,
         arguments: Option<HashMap<String, String>>,
     ) -> Result<McpPromptResult, McpError> {
-        let (transport, capabilities, resolved_server_name) = {
-            let servers = read_lock(&self.state.servers);
-            let index = find_server_index(&servers, server_name)?;
-            let runtime = runtime_lease(&servers[index])?;
-
-            (
-                runtime.transport.clone(),
-                runtime.capabilities.clone(),
-                runtime.server_name,
-            )
-        };
-
-        if !server_supports_prompts(capabilities.as_ref()) {
-            return Err(McpError::UnsupportedCapability {
-                server_name: resolved_server_name,
-                capability: "prompts",
-            });
-        }
-
-        transport
-            .get_prompt(prompt_name, arguments)
-            .await
-            .map_err(Into::into)
+        let prompt_name = prompt_name.to_string();
+        with_runtime_lease(
+            &self.state,
+            server_name,
+            McpRuntimeOpKind::Rpc,
+            require_prompts,
+            move |runtime| async move {
+                runtime
+                    .transport
+                    .get_prompt(&prompt_name, arguments)
+                    .await
+            },
+        )
+        .await
+        .map_err(|err| map_capability_operation_error(server_name, "prompts", "get_prompt", err))
     }
 
     pub async fn list_resources(&self) -> Result<Vec<McpResourceEntry>, McpError> {
         let mut resources = Vec::new();
-
-        let servers: Vec<(
-            String,
-            TransportTypeId,
-            Arc<dyn McpToolTransport>,
-            Option<ServerCapabilities>,
-        )> = {
-            let guard = read_lock(&self.state.servers);
-
-            guard
-                .iter()
-                .filter(|slot| server_is_active(slot))
-                .filter_map(|slot| {
-                    let runtime = slot.runtime.as_ref()?;
-                    Some((
-                        slot.meta.name.clone(),
-                        runtime.transport_type,
-                        runtime.transport.clone(),
-                        runtime.capabilities.clone(),
-                    ))
-                })
-                .collect()
-        };
-
-        for (server_name, transport_type, transport, capabilities) in servers {
-            if !server_supports_resources(capabilities.as_ref()) {
-                continue;
-            }
-
-            let mut defs = match transport.list_resources().await {
+        for server_name in active_server_names(self.state.as_ref()) {
+            let (transport_type, mut defs) = match with_runtime_lease(
+                &self.state,
+                &server_name,
+                McpRuntimeOpKind::Rpc,
+                require_resources,
+                |runtime| async move {
+                    let transport_type = runtime.transport_type;
+                    let defs = runtime.transport.list_resources().await?;
+                    Ok((transport_type, defs))
+                },
+            )
+            .await
+            {
                 Ok(defs) => defs,
-                Err(McpTransportError::TransportError(message))
-                    if is_unsupported_transport_message(&message, "list_resources") =>
-                {
+                Err(err) if aggregate_list_should_skip(&err, "list_resources") => {
                     continue;
                 }
                 Err(err) => return Err(err.into()),
@@ -1348,40 +1645,29 @@ impl McpToolRegistryManager {
     }
 
     pub async fn read_resource(&self, server_name: &str, uri: &str) -> Result<Value, McpError> {
-        let (transport, capabilities, resolved_server_name) = {
-            let servers = read_lock(&self.state.servers);
-            let index = find_server_index(&servers, server_name)?;
-            let runtime = runtime_lease(&servers[index])?;
-
-            (
-                runtime.transport.clone(),
-                runtime.capabilities.clone(),
-                runtime.server_name,
-            )
-        };
-
-        if !server_supports_resources(capabilities.as_ref()) {
-            return Err(McpError::UnsupportedCapability {
-                server_name: resolved_server_name,
-                capability: "resources",
-            });
-        }
-
-        transport.read_resource(uri).await.map_err(Into::into)
+        with_runtime_lease(
+            &self.state,
+            server_name,
+            McpRuntimeOpKind::Rpc,
+            require_resources,
+            |runtime| async move { runtime.transport.read_resource(uri).await },
+        )
+        .await
+        .map_err(|err| {
+            map_capability_operation_error(server_name, "resources", "read_resource", err)
+        })
     }
     pub async fn reconnect(&self, server_name: &str) -> Result<(), McpError> {
-        let _lifecycle_guard = self.state.lifecycle_lock.lock().await;
         reconnect_server(&self.state, server_name).await?;
         rebuild_snapshot(self.state.as_ref()).await?;
         Ok(())
     }
 
     pub async fn toggle(&self, server_name: &str, enabled: bool) -> Result<(), McpError> {
-        let _lifecycle_guard = self.state.lifecycle_lock.lock().await;
+        let lifecycle_lock = server_lifecycle_lock(self.state.as_ref(), server_name)?;
+        let _lifecycle_guard = lifecycle_lock.lock().await;
         if !enabled {
-            let result = disable_server(&self.state, server_name).await;
-            rebuild_snapshot(self.state.as_ref()).await?;
-            return result;
+            return disable_server(&self.state, server_name).await;
         }
 
         {
@@ -1390,13 +1676,12 @@ impl McpToolRegistryManager {
             let slot = &mut servers[index];
             slot.lifecycle = McpServerLifecycle::Disconnected;
             slot.reconnect_attempts = 0;
-            slot.health.consecutive_failures = 0;
-            slot.health.last_error = None;
             slot.health.reconnecting = false;
             slot.health.permanently_failed = false;
+            clear_health_budgets(slot);
         }
 
-        reconnect_server(&self.state, server_name).await?;
+        reconnect_server_locked(&self.state, server_name).await?;
         rebuild_snapshot(self.state.as_ref()).await?;
         Ok(())
     }
@@ -1556,6 +1841,78 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct BlockingCloseTransport {
+        tools: Vec<McpToolDefinition>,
+        entered: Arc<Semaphore>,
+        release: Arc<Notify>,
+    }
+
+    impl BlockingCloseTransport {
+        fn new(tool_name: &str) -> Self {
+            Self {
+                tools: vec![MockTransport::tool_def(tool_name)],
+                entered: Arc::new(Semaphore::new(0)),
+                release: Arc::new(Notify::new()),
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct FailingCatalogRpcTransport {
+        tools: Vec<McpToolDefinition>,
+    }
+
+    impl FailingCatalogRpcTransport {
+        fn new(tool_name: &str) -> Self {
+            Self {
+                tools: vec![MockTransport::tool_def(tool_name)],
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct StaticCatalogTransport {
+        prompts: Vec<McpPromptDefinition>,
+        resources: Vec<McpResourceDefinition>,
+    }
+
+    impl StaticCatalogTransport {
+        fn with_catalog(
+            prompts: Vec<McpPromptDefinition>,
+            resources: Vec<McpResourceDefinition>,
+        ) -> Self {
+            Self { prompts, resources }
+        }
+    }
+
+    #[derive(Debug)]
+    struct BlockingCatalogLifecycleTransport {
+        prompts: Vec<McpPromptDefinition>,
+        resources: Vec<McpResourceDefinition>,
+        entered: Arc<Semaphore>,
+        release: Arc<Notify>,
+        closed: Arc<Mutex<bool>>,
+    }
+
+    impl BlockingCatalogLifecycleTransport {
+        fn with_catalog(
+            prompts: Vec<McpPromptDefinition>,
+            resources: Vec<McpResourceDefinition>,
+        ) -> Self {
+            Self {
+                prompts,
+                resources,
+                entered: Arc::new(Semaphore::new(0)),
+                release: Arc::new(Notify::new()),
+                closed: Arc::new(Mutex::new(false)),
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct UnsupportedCatalogOperationTransport;
+
     #[async_trait]
     impl McpToolTransport for FailingRefreshTransport {
         async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
@@ -1622,6 +1979,211 @@ mod tests {
             Err(McpTransportError::TransportError(
                 self.close_error.to_string(),
             ))
+        }
+    }
+
+    #[async_trait]
+    impl McpToolTransport for BlockingCloseTransport {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            Ok(self.tools.clone())
+        }
+
+        async fn call_tool(
+            &self,
+            name: &str,
+            _args: Value,
+            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        ) -> Result<CallToolResult, McpTransportError> {
+            Ok(CallToolResult {
+                content: vec![mcp::ToolContent::Text {
+                    text: format!("called {name}"),
+                    annotations: None,
+                    meta: None,
+                }],
+                structured_content: None,
+                is_error: None,
+            })
+        }
+
+        fn transport_type(&self) -> TransportTypeId {
+            TransportTypeId::Stdio
+        }
+
+        async fn close(&self) -> Result<(), McpTransportError> {
+            self.entered.add_permits(1);
+            self.release.notified().await;
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl McpToolTransport for FailingCatalogRpcTransport {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            Ok(self.tools.clone())
+        }
+
+        async fn call_tool(
+            &self,
+            name: &str,
+            _args: Value,
+            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        ) -> Result<CallToolResult, McpTransportError> {
+            Ok(CallToolResult {
+                content: vec![mcp::ToolContent::Text {
+                    text: format!("called {name}"),
+                    annotations: None,
+                    meta: None,
+                }],
+                structured_content: None,
+                is_error: None,
+            })
+        }
+
+        async fn get_prompt(
+            &self,
+            _name: &str,
+            _arguments: Option<HashMap<String, String>>,
+        ) -> Result<McpPromptResult, McpTransportError> {
+            Err(McpTransportError::ConnectionClosed)
+        }
+
+        async fn read_resource(&self, _uri: &str) -> Result<Value, McpTransportError> {
+            Err(McpTransportError::ConnectionClosed)
+        }
+
+        fn transport_type(&self) -> TransportTypeId {
+            TransportTypeId::Stdio
+        }
+    }
+
+    #[async_trait]
+    impl McpToolTransport for StaticCatalogTransport {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            Ok(Vec::new())
+        }
+
+        async fn list_prompts(&self) -> Result<Vec<McpPromptDefinition>, McpTransportError> {
+            Ok(self.prompts.clone())
+        }
+
+        async fn list_resources(&self) -> Result<Vec<McpResourceDefinition>, McpTransportError> {
+            Ok(self.resources.clone())
+        }
+
+        async fn call_tool(
+            &self,
+            name: &str,
+            _args: Value,
+            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        ) -> Result<CallToolResult, McpTransportError> {
+            Ok(CallToolResult {
+                content: vec![mcp::ToolContent::Text {
+                    text: format!("called {name}"),
+                    annotations: None,
+                    meta: None,
+                }],
+                structured_content: None,
+                is_error: None,
+            })
+        }
+
+        fn transport_type(&self) -> TransportTypeId {
+            TransportTypeId::Stdio
+        }
+    }
+
+    #[async_trait]
+    impl McpToolTransport for BlockingCatalogLifecycleTransport {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            Ok(Vec::new())
+        }
+
+        async fn list_prompts(&self) -> Result<Vec<McpPromptDefinition>, McpTransportError> {
+            self.entered.add_permits(1);
+            self.release.notified().await;
+            if *self.closed.lock().unwrap() {
+                return Err(McpTransportError::ConnectionClosed);
+            }
+            Ok(self.prompts.clone())
+        }
+
+        async fn list_resources(&self) -> Result<Vec<McpResourceDefinition>, McpTransportError> {
+            self.entered.add_permits(1);
+            self.release.notified().await;
+            if *self.closed.lock().unwrap() {
+                return Err(McpTransportError::ConnectionClosed);
+            }
+            Ok(self.resources.clone())
+        }
+
+        async fn call_tool(
+            &self,
+            name: &str,
+            _args: Value,
+            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        ) -> Result<CallToolResult, McpTransportError> {
+            Ok(CallToolResult {
+                content: vec![mcp::ToolContent::Text {
+                    text: format!("called {name}"),
+                    annotations: None,
+                    meta: None,
+                }],
+                structured_content: None,
+                is_error: None,
+            })
+        }
+
+        fn transport_type(&self) -> TransportTypeId {
+            TransportTypeId::Stdio
+        }
+
+        async fn close(&self) -> Result<(), McpTransportError> {
+            *self.closed.lock().unwrap() = true;
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl McpToolTransport for UnsupportedCatalogOperationTransport {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            Ok(Vec::new())
+        }
+
+        async fn get_prompt(
+            &self,
+            _name: &str,
+            _arguments: Option<HashMap<String, String>>,
+        ) -> Result<McpPromptResult, McpTransportError> {
+            Err(McpTransportError::TransportError(
+                "get_prompt not supported by this server".to_string(),
+            ))
+        }
+
+        async fn read_resource(&self, _uri: &str) -> Result<Value, McpTransportError> {
+            Err(McpTransportError::TransportError(
+                "read_resource not supported by this server".to_string(),
+            ))
+        }
+
+        async fn call_tool(
+            &self,
+            name: &str,
+            _args: Value,
+            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        ) -> Result<CallToolResult, McpTransportError> {
+            Ok(CallToolResult {
+                content: vec![mcp::ToolContent::Text {
+                    text: format!("called {name}"),
+                    annotations: None,
+                    meta: None,
+                }],
+                structured_content: None,
+                is_error: None,
+            })
+        }
+
+        fn transport_type(&self) -> TransportTypeId {
+            TransportTypeId::Stdio
         }
     }
 
@@ -1799,6 +2361,26 @@ mod tests {
         McpServerConnectionConfig::stdio(name, "echo", vec!["ok".to_string()])
     }
 
+    fn prompt_def(name: &str) -> McpPromptDefinition {
+        McpPromptDefinition {
+            name: name.to_string(),
+            title: None,
+            description: None,
+            arguments: Vec::new(),
+        }
+    }
+
+    fn resource_def(uri: &str) -> McpResourceDefinition {
+        McpResourceDefinition {
+            uri: uri.to_string(),
+            name: uri.to_string(),
+            title: None,
+            description: None,
+            mime_type: None,
+            size: None,
+        }
+    }
+
     async fn make_manager_with(
         entries: Vec<(&str, Vec<McpToolDefinition>)>,
     ) -> McpToolRegistryManager {
@@ -1830,6 +2412,8 @@ mod tests {
                 capabilities: None,
             }),
             health: McpRefreshHealth::default(),
+            discovery_health: McpHealthBudget::default(),
+            rpc_health: McpHealthBudget::default(),
             reconnect_attempts: 0,
             next_generation: 2,
             published_snapshot: Some(McpPublishedSnapshot {
@@ -1839,6 +2423,7 @@ mod tests {
                     tools: HashMap::new(),
                 },
             }),
+            lifecycle_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
@@ -2034,10 +2619,12 @@ mod tests {
         let mgr = make_manager_with(vec![("srv", vec![MockTransport::tool_def("echo")])]).await;
         let registry = mgr.registry();
         assert!(registry.get("mcp__srv__echo").is_some());
+        assert_eq!(mgr.version(), 1);
 
         mgr.toggle("srv", false).await.unwrap();
 
         let registry = mgr.registry();
+        assert_eq!(mgr.version(), 2);
         assert!(registry.get("mcp__srv__echo").is_none());
         assert!(registry.ids().is_empty());
 
@@ -2139,13 +2726,13 @@ mod tests {
         mgr.refresh().await.unwrap();
         mgr.refresh().await.unwrap();
 
-        let servers = read_lock(&mgr.state.servers);
-        assert_eq!(servers[0].health.consecutive_failures, 2);
-        assert_eq!(servers[0].reconnect_attempts, 0);
-        assert!(servers[0].runtime.is_some());
-        assert!(!servers[0].health.reconnecting);
-
-        drop(servers);
+        {
+            let servers = read_lock(&mgr.state.servers);
+            assert_eq!(servers[0].health.consecutive_failures, 2);
+            assert_eq!(servers[0].reconnect_attempts, 0);
+            assert!(servers[0].runtime.is_some());
+            assert!(!servers[0].health.reconnecting);
+        }
 
         mgr.refresh().await.unwrap();
 
@@ -2166,6 +2753,52 @@ mod tests {
             servers[0].published_snapshot.as_ref().map(|s| s.generation),
             Some(1)
         );
+    }
+
+    #[tokio::test]
+    async fn tool_success_does_not_clear_discovery_failure_budget() {
+        let transport = Arc::new(FailingRefreshTransport::new(vec![MockTransport::tool_def(
+            "echo",
+        )]));
+        let mgr = McpToolRegistryManager::from_transports(vec![(
+            cfg("srv"),
+            transport.clone() as Arc<dyn McpToolTransport>,
+        )])
+        .await
+        .unwrap();
+        let tool = mgr.registry().get("mcp__srv__echo").unwrap();
+        let ctx = awaken_contract::contract::tool::ToolCallContext::test_default();
+        transport.fail_next_refreshes(3);
+
+        {
+            let mut servers = write_lock(&mgr.state.servers);
+            servers[0].meta.config.command = Some("__missing_mcp_command__".to_string());
+            servers[0].meta.config.args.clear();
+            servers[0].meta.config.timeout_secs = 1;
+        }
+
+        mgr.refresh().await.unwrap();
+        tool.execute(json!({}), &ctx).await.unwrap();
+        mgr.refresh().await.unwrap();
+        tool.execute(json!({}), &ctx).await.unwrap();
+
+        {
+            let servers = read_lock(&mgr.state.servers);
+            assert_eq!(servers[0].discovery_health.consecutive_failures, 2);
+            assert_eq!(servers[0].rpc_health.consecutive_failures, 0);
+            assert_eq!(servers[0].reconnect_attempts, 0);
+        }
+
+        mgr.refresh().await.unwrap();
+
+        let servers = read_lock(&mgr.state.servers);
+        assert_eq!(
+            servers[0].discovery_health.consecutive_failures,
+            FAILURE_THRESHOLD
+        );
+        assert_eq!(servers[0].rpc_health.consecutive_failures, 0);
+        assert_eq!(servers[0].reconnect_attempts, 1);
+        assert_eq!(servers[0].lifecycle, McpServerLifecycle::Disconnected);
     }
 
     #[tokio::test]
@@ -2202,7 +2835,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_server_health_on_success_clears_reconnect_state() {
+    fn reset_all_server_health_on_success_clears_reconnect_state() {
         let transport = Arc::new(MockTransport::with_tools(vec![MockTransport::tool_def(
             "echo",
         )])) as Arc<dyn McpToolTransport>;
@@ -2215,8 +2848,12 @@ mod tests {
         slot.health.consecutive_failures = FAILURE_THRESHOLD;
         slot.health.reconnecting = true;
         slot.health.permanently_failed = true;
+        slot.discovery_health.consecutive_failures = FAILURE_THRESHOLD;
+        slot.discovery_health.last_error = Some("discovery boom".to_string());
+        slot.rpc_health.consecutive_failures = FAILURE_THRESHOLD;
+        slot.rpc_health.last_error = Some("rpc boom".to_string());
 
-        reset_server_health_on_success(&mut slot, attempted_at);
+        reset_all_server_health_on_success(&mut slot, attempted_at);
 
         assert_eq!(slot.lifecycle, McpServerLifecycle::Connected);
         assert_eq!(slot.reconnect_attempts, 0);
@@ -2324,6 +2961,114 @@ mod tests {
         let registry = mgr.registry();
         assert!(registry.get("mcp__good__sum").is_some());
         assert!(registry.get("mcp__bad__echo").is_some());
+    }
+
+    #[tokio::test]
+    async fn busy_bad_server_lifecycle_does_not_block_good_refresh_or_toggle() {
+        let bad = Arc::new(BlockingCloseTransport::new("echo"));
+        let entered = bad.entered.clone();
+        let release = bad.release.clone();
+        let good = Arc::new(MockTransport::with_tools(vec![MockTransport::tool_def(
+            "sum",
+        )])) as Arc<dyn McpToolTransport>;
+        let mgr = McpToolRegistryManager::from_transports(vec![
+            (cfg("bad"), bad as Arc<dyn McpToolTransport>),
+            (cfg("good"), good),
+        ])
+        .await
+        .unwrap();
+
+        {
+            let mut servers = write_lock(&mgr.state.servers);
+            let bad_index = find_server_index(&servers, "bad").unwrap();
+            servers[bad_index].meta.config.command = Some("__missing_mcp_command__".to_string());
+            servers[bad_index].meta.config.args.clear();
+            servers[bad_index].meta.config.timeout_secs = 1;
+        }
+
+        let mgr_for_reconnect = mgr.clone();
+        let reconnect_task = tokio::spawn(async move { mgr_for_reconnect.reconnect("bad").await });
+        entered.acquire().await.unwrap().forget();
+
+        tokio::time::timeout(Duration::from_millis(100), mgr.refresh())
+            .await
+            .expect("good refresh should not wait for bad reconnect")
+            .unwrap();
+        tokio::time::timeout(Duration::from_millis(100), mgr.toggle("good", false))
+            .await
+            .expect("good toggle should not wait for bad reconnect")
+            .unwrap();
+
+        release.notify_waiters();
+        let _ = reconnect_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_prompts_skips_server_closed_during_aggregate_listing() {
+        let bad = Arc::new(BlockingCatalogLifecycleTransport::with_catalog(
+            vec![prompt_def("bad")],
+            Vec::new(),
+        ));
+        let entered = bad.entered.clone();
+        let release = bad.release.clone();
+        let good = Arc::new(StaticCatalogTransport::with_catalog(
+            vec![prompt_def("good")],
+            Vec::new(),
+        )) as Arc<dyn McpToolTransport>;
+        let mgr = McpToolRegistryManager::from_transports(vec![
+            (cfg("bad"), bad as Arc<dyn McpToolTransport>),
+            (cfg("good"), good),
+        ])
+        .await
+        .unwrap();
+
+        let mgr_for_list = mgr.clone();
+        let list_task = tokio::spawn(async move { mgr_for_list.list_prompts().await.unwrap() });
+        entered.acquire().await.unwrap().forget();
+
+        mgr.toggle("bad", false).await.unwrap();
+        release.notify_waiters();
+
+        let prompts = list_task.await.unwrap();
+        let names: Vec<&str> = prompts
+            .iter()
+            .map(|entry| entry.prompt.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["good"]);
+    }
+
+    #[tokio::test]
+    async fn list_resources_skips_server_closed_during_aggregate_listing() {
+        let bad = Arc::new(BlockingCatalogLifecycleTransport::with_catalog(
+            Vec::new(),
+            vec![resource_def("file://bad.md")],
+        ));
+        let entered = bad.entered.clone();
+        let release = bad.release.clone();
+        let good = Arc::new(StaticCatalogTransport::with_catalog(
+            Vec::new(),
+            vec![resource_def("file://good.md")],
+        )) as Arc<dyn McpToolTransport>;
+        let mgr = McpToolRegistryManager::from_transports(vec![
+            (cfg("bad"), bad as Arc<dyn McpToolTransport>),
+            (cfg("good"), good),
+        ])
+        .await
+        .unwrap();
+
+        let mgr_for_list = mgr.clone();
+        let list_task = tokio::spawn(async move { mgr_for_list.list_resources().await.unwrap() });
+        entered.acquire().await.unwrap().forget();
+
+        mgr.toggle("bad", false).await.unwrap();
+        release.notify_waiters();
+
+        let resources = list_task.await.unwrap();
+        let uris: Vec<&str> = resources
+            .iter()
+            .map(|entry| entry.resource.uri.as_str())
+            .collect();
+        assert_eq!(uris, vec!["file://good.md"]);
     }
 
     #[tokio::test]
@@ -2453,8 +3198,76 @@ mod tests {
         let health = mgr.server_health("srv").unwrap();
         assert!(health.consecutive_failures >= FAILURE_THRESHOLD);
         let servers = read_lock(&mgr.state.servers);
+        assert_eq!(servers[0].discovery_health.consecutive_failures, 0);
+        assert_eq!(
+            servers[0].rpc_health.consecutive_failures,
+            FAILURE_THRESHOLD
+        );
         assert_eq!(servers[0].lifecycle, McpServerLifecycle::Disconnected);
         assert_eq!(servers[0].reconnect_attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn prompt_and_resource_failures_share_rpc_reconnect_budget() {
+        let transport =
+            Arc::new(FailingCatalogRpcTransport::new("echo")) as Arc<dyn McpToolTransport>;
+        let mgr = McpToolRegistryManager::from_transports(vec![(cfg("srv"), transport)])
+            .await
+            .unwrap();
+        {
+            let mut servers = write_lock(&mgr.state.servers);
+            servers[0].meta.config.command = Some("__missing_mcp_command__".to_string());
+            servers[0].meta.config.args.clear();
+            servers[0].meta.config.timeout_secs = 1;
+        }
+
+        for _ in 0..2 {
+            let err = mgr.get_prompt("srv", "review", None).await.unwrap_err();
+            assert!(matches!(err, McpError::Transport(_)));
+        }
+        let err = mgr
+            .read_resource("srv", "file://guide.md")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, McpError::Transport(_)));
+
+        let servers = read_lock(&mgr.state.servers);
+        assert_eq!(servers[0].discovery_health.consecutive_failures, 0);
+        assert_eq!(
+            servers[0].rpc_health.consecutive_failures,
+            FAILURE_THRESHOLD
+        );
+        assert_eq!(servers[0].lifecycle, McpServerLifecycle::Disconnected);
+        assert_eq!(servers[0].reconnect_attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn prompt_and_resource_not_supported_errors_are_capability_errors() {
+        let transport = Arc::new(UnsupportedCatalogOperationTransport) as Arc<dyn McpToolTransport>;
+        let mgr = McpToolRegistryManager::from_transports(vec![(cfg("srv"), transport)])
+            .await
+            .unwrap();
+
+        let prompt_err = mgr.get_prompt("srv", "review", None).await.unwrap_err();
+        assert!(matches!(
+            prompt_err,
+            McpError::UnsupportedCapability {
+                server_name,
+                capability: "prompts",
+            } if server_name == "srv"
+        ));
+
+        let resource_err = mgr
+            .read_resource("srv", "file://guide.md")
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            resource_err,
+            McpError::UnsupportedCapability {
+                server_name,
+                capability: "resources",
+            } if server_name == "srv"
+        ));
     }
 
     #[tokio::test]
@@ -2478,12 +3291,15 @@ mod tests {
             servers[0].next_generation = old_generation + 2;
             servers[0].lifecycle = McpServerLifecycle::Connected;
             servers[0].health = McpRefreshHealth::default();
+            servers[0].discovery_health = McpHealthBudget::default();
+            servers[0].rpc_health = McpHealthBudget::default();
         }
 
-        record_tool_transport_failure(
+        record_runtime_operation_failure(
             &Arc::downgrade(&mgr.state),
             "srv",
             old_generation,
+            McpRuntimeOpKind::Rpc,
             &McpTransportError::ConnectionClosed,
         )
         .await;
