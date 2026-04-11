@@ -1539,6 +1539,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn text_truncation_recovery_continues_on_max_tokens() {
+        let llm = Arc::new(ScriptedLlm::new(vec![
+            StreamResult {
+                content: vec![ContentBlock::text("partial ")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::MaxTokens),
+                has_incomplete_tool_calls: false,
+            },
+            StreamResult {
+                content: vec![ContentBlock::text("completed")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            },
+        ]));
+        let resolver = Arc::new(FixedResolver {
+            agent: ResolvedAgent::new("agent", "m", "sys", llm.clone())
+                .with_max_continuation_retries(2),
+            plugins: vec![],
+        });
+        let runtime = AgentRuntime::new(resolver);
+        let sink = Arc::new(VecEventSink::new());
+
+        let result = runtime
+            .run(
+                RunRequest::new("thread-text-trunc", vec![Message::user("hi")])
+                    .with_agent_id("agent"),
+                sink.clone(),
+            )
+            .await
+            .expect("run should succeed");
+
+        assert_eq!(
+            result.termination,
+            awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd
+        );
+        assert_eq!(result.response, "completed");
+        assert_eq!(llm.seen_overrides.lock().expect("lock poisoned").len(), 2);
+
+        let text_deltas: Vec<String> = sink
+            .events()
+            .into_iter()
+            .filter_map(|event| match event {
+                AgentEvent::TextDelta { delta } => Some(delta),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text_deltas, vec!["partial ", "completed"]);
+    }
+
+    #[tokio::test]
     async fn truncation_recovery_gives_up_after_max_retries() {
         // All calls return MaxTokens with truncated tool calls
         // (the TruncatingLlm always returns truncated on first call,
