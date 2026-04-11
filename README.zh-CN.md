@@ -34,13 +34,13 @@ Agent 选择工具、调用工具、读写状态，如此循环 — 全部由运
 
 ## 5 分钟上手
 
-**前置条件：** Rust 1.85 或更新版本。仓库本地开发工具链由 `rust-toolchain.toml` 固定为 `1.93.0`；另需一个 OpenAI 兼容 LLM 提供商 API Key。
+**前置条件：** 使用发布 crate 时需要 Rust `1.85+`；从本仓库运行示例时使用 `rust-toolchain.toml` 固定的 `1.93.0`；还需要一个 LLM 提供商 API Key。
 
 在 `Cargo.toml` 中添加：
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.1" }
+awaken = { package = "awaken-agent", version = "0.2" }
 tokio = { version = "1.51.0", features = ["full"] }
 async-trait = "0.1.89"
 serde_json = "1.0.149"
@@ -150,6 +150,7 @@ let runtime = Arc::new(runtime);
 let mailbox = Arc::new(Mailbox::new(
     runtime.clone(),
     Arc::new(InMemoryMailboxStore::new()),
+    store.clone(),
     "default-consumer".into(),
     MailboxConfig::default(),
 ));
@@ -226,7 +227,7 @@ import { CopilotKit } from "@copilotkit/react-core";
 | **Observability** | 符合 GenAI 语义规范的 OpenTelemetry 遥测，支持 OTLP、文件和内存导出。 | `observability` |
 | **MCP** | 连接外部 MCP 服务器，自动发现并注册其工具为 Awaken 原生工具。 | `mcp` |
 | **Skills** | 发现技能包，推理前注入技能目录供 LLM 按需激活。 | `skills` |
-| **Generative UI** | 通过 A2UI 协议向前端流式推送声明式 UI 组件。 | `generative-ui` |
+| **Generative UI** | 通过 A2UI、JSON Render 和 OpenUI Lang 集成向前端流式推送声明式 UI 组件。 | `generative-ui` |
 | **Deferred Tools** | 将大型工具 schema 隐藏在 `ToolSearch` 之后，并用折扣 Beta 概率模型把空闲的已提升工具重新延迟。 | 直接依赖：`awaken-ext-deferred-tools` |
 
 `awaken-ext-deferred-tools` 未包含在 `awaken` 门面 crate 的 `full` feature 中。
@@ -267,16 +268,16 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 ## 架构
 
-Awaken 由三层运行时组成。`awaken-contract` 定义共享契约：Agent 规格、model/provider 规格、工具、事件、传输 trait，以及类型化状态模型。`awaken-runtime` 负责把 `AgentSpec` 解析成 `ResolvedAgent`，从插件构建 `ExecutionEnv`，执行 phase loop，并管理运行中的 run 及其取消、HITL 决策等控制路径。`awaken-server` 则把同一个 runtime 暴露成 HTTP 路由、SSE 回放、mailbox 后台执行，以及 AI SDK v6、AG-UI、A2A、MCP 协议适配器。
+Awaken 由三层运行时组成。`awaken-contract` 定义共享契约：Agent 规格、model/provider 规格、工具、事件、传输 trait，以及类型化状态模型。`awaken-runtime` 负责把 `AgentSpec` 解析成 `ResolvedExecution`：本地 agent 会成为带插件 `ExecutionEnv` 的 `ResolvedAgent`，endpoint-backed agent 则通过 `ExecutionBackend` 执行。它还负责执行 phase loop，并管理运行中的 run 及其取消、HITL 决策等控制路径。`awaken-server` 则把同一个 runtime 暴露成 HTTP 路由、SSE 回放、mailbox 后台执行，以及 AI SDK v6、AG-UI、A2A、MCP 协议适配器。
 
-围绕这三层的是存储和扩展。`awaken-stores` 提供线程与 run 的内存、文件、PostgreSQL 后端。`awaken-ext-*` crates 在 phase 和 tool 边界扩展运行时能力，包括权限、可观测性、MCP 工具发现、Skills、Reminder、Generative UI 和 deferred tools。
+围绕这三层的是存储和扩展。`awaken-stores` 为 thread/run 提供内存、文件、PostgreSQL 持久化，为 config 提供内存、文件、PostgreSQL 后端，为 mailbox 提供内存和 SQLite 后端，并为 profile state 提供内存和文件后端。`awaken-ext-*` crates 在 phase 和 tool 边界扩展运行时能力，包括权限、可观测性、MCP 工具发现、Skills、Reminder、Generative UI 和 deferred tools。
 
 ```text
 awaken                   门面 crate，管理 feature flags
 ├─ awaken-contract       契约：spec、tool、event、transport、state model
 ├─ awaken-runtime        resolver、phase engine、loop runner、runtime control
 ├─ awaken-server         route、mailbox、SSE transport、protocol adapter
-├─ awaken-stores         内存、文件、PostgreSQL 持久化
+├─ awaken-stores         内存、文件、PostgreSQL 与 SQLite-backed 存储
 ├─ awaken-tool-pattern   扩展使用的 glob/regex 匹配
 └─ awaken-ext-*          可选运行时扩展
 ```
@@ -290,7 +291,8 @@ awaken                   门面 crate，管理 feature flags
 | [`tool_call_live`](./crates/awaken/examples/tool_call_live.rs) | 工具调用（计算器） |
 | [`ai-sdk-starter`](./examples/ai-sdk-starter/) | React + AI SDK v6 全栈 |
 | [`copilotkit-starter`](./examples/copilotkit-starter/) | Next.js + CopilotKit 全栈 |
-| [`admin-console`](./apps/admin-console/) | 管理运行时配置与插件 schema 的浏览器 UI |
+| [`openui-chat`](./examples/openui-chat/) | OpenUI Lang chat 前端 |
+| [`admin-console`](./apps/admin-console/) | Config API 管理界面 |
 
 ```bash
 export OPENAI_API_KEY=<your-key>
@@ -322,7 +324,7 @@ npm --prefix apps/admin-console run dev
 
 [适合新贡献者的 Issue](https://github.com/AwakenWorks/awaken/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) 是入门的好起点。特别欢迎：
 
-- 新增存储后端（Redis、完整 SQLite thread/run store）
+- 新增内置 memory/file/PostgreSQL/SQLite 之外的 mailbox、config 与 storage 后端
 - 内置工具实现（文件读写、Web 搜索）
 - Token 用量追踪和预算控制
 - 模型降级链

@@ -4,7 +4,7 @@
 
 ## 流水线概览
 
-解析是一个纯函数：`(RegistrySet, agent_id) -> ResolvedAgent`。它按顺序经过三个阶段：
+本地解析是一个纯函数：`(RegistrySet, agent_id) -> ResolvedAgent`。它按顺序经过三个阶段：
 
 ```mermaid
 flowchart LR
@@ -49,6 +49,10 @@ flowchart LR
 3. **LlmExecutor** -- model binding 中的 provider ID 通过 `ProviderRegistry` 解析为一个活的 `LlmExecutor` 实例。
 
 4. **重试装饰** -- 如果智能体规格包含 `RetryConfigKey` 配置段，且 `max_retries > 0` 或 `fallback_upstream_models` 非空，则执行器会被包装在 `RetryingExecutor` 装饰器中。
+
+### 非本地执行
+
+对于 endpoint-backed agent，`resolve_execution()` 会校验 `RemoteEndpoint`，构建 `ResolvedBackendAgent`，并把执行交给选中的 `ExecutionBackend`。这类 root run 会跳过本地 model/provider/plugin/tool 流水线，因为这些决策由远端 backend 拥有。
 
 ## 阶段 2：插件流水线
 
@@ -105,7 +109,7 @@ flowchart LR
 
 1. **全局工具** -- 所有通过构建器在 `ToolRegistry` 中注册的工具（例如 `builder.with_tool("search", search_tool)`）。
 
-2. **委托智能体工具** -- 对于 `AgentSpec.delegates` 中的每个智能体 ID，流水线创建一个 `AgentTool`。如果委托有 `endpoint`（远程），流水线会选择配置的远程 backend。目前内置的远程委托 backend 是 A2A；本地委托仍然创建由解析器支持的本地工具。委托工具需要 `a2a` 功能标志；没有该标志时，委托会被静默忽略并记录警告。
+2. **委托智能体工具** -- 对于 `AgentSpec.delegates` 中的每个智能体 ID，流水线创建一个 `AgentTool`。如果委托有 `endpoint`（远程），流水线会选择配置的 `ExecutionBackend`。当前内置远程 backend 是 A2A；本地委托仍然使用 resolver-backed 本地执行。委托工具需要 `a2a` feature flag；没有该 flag 时，委托会被静默忽略并记录 warning。
 
 3. **插件注册的工具** -- 插件在 `register()` 期间声明的工具，存储在 `ExecutionEnv.tools` 中。
 

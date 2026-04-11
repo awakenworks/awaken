@@ -1,6 +1,6 @@
 # Provider and Model Configuration
 
-Awaken keeps provider wiring and model selection separate. The runtime always resolves an agent through this chain:
+Awaken keeps provider wiring and model selection separate. Local agent execution resolves provider and model selection through this chain:
 
 ```text
 AgentSpec.model_id
@@ -10,6 +10,8 @@ AgentSpec.model_id
   -> Arc<dyn LlmExecutor>
   -> InferenceRequest.upstream_model = upstream_model
 ```
+
+Endpoint-backed agents skip this local provider/model chain. They are resolved as non-local `ResolvedExecution` values and executed by the configured `ExecutionBackend`.
 
 ## Terms
 

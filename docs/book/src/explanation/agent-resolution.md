@@ -4,7 +4,7 @@ When `AgentRuntime` runs a request through `run_to_completion(request)` or `run(
 
 ## Pipeline Overview
 
-Resolution is a pure function: `(RegistrySet, agent_id) -> ResolvedAgent`. It proceeds through three sequential stages:
+Local resolution is a pure function: `(RegistrySet, agent_id) -> ResolvedAgent`. It proceeds through three sequential stages:
 
 ```mermaid
 flowchart LR
@@ -49,6 +49,13 @@ The first stage fetches the raw data from registries:
 3. **LlmExecutor** -- the provider ID from the model binding is resolved through `ProviderRegistry` to get a live `LlmExecutor` instance.
 
 4. **Retry decoration** -- if the agent spec contains a `RetryConfigKey` section with `max_retries > 0` or non-empty `fallback_upstream_models`, the executor is wrapped in a `RetryingExecutor` decorator.
+
+### Non-local execution
+
+For endpoint-backed agents, `resolve_execution()` validates the configured
+`RemoteEndpoint`, builds a `ResolvedBackendAgent`, and leaves execution to the
+selected `ExecutionBackend`. The local model/provider/plugin/tool pipeline is
+skipped for that root run because the remote backend owns those decisions.
 
 ## Stage 2: Plugin Pipeline
 
@@ -105,7 +112,7 @@ Tools are merged in this order:
 
 1. **Global tools** -- all tools registered in `ToolRegistry` via the builder (e.g., `builder.with_tool("search", search_tool)`).
 
-2. **Delegate agent tools** -- for each agent ID in `AgentSpec.delegates`, the pipeline creates an `AgentTool`. If the delegate has an `endpoint` (remote), the pipeline selects the configured remote backend. Today the built-in remote delegate backend is A2A; local delegates still use a resolver-backed local tool. Delegate tools require the `a2a` feature flag; without it, delegates are silently ignored with a warning.
+2. **Delegate agent tools** -- for each agent ID in `AgentSpec.delegates`, the pipeline creates an `AgentTool`. If the delegate has an `endpoint` (remote), the pipeline selects the configured `ExecutionBackend`. Today the built-in remote backend is A2A; local delegates still use a resolver-backed local execution. Delegate tools require the `a2a` feature flag; without it, delegates are silently ignored with a warning.
 
 3. **Plugin-registered tools** -- tools declared by plugins during `register()`, stored in `ExecutionEnv.tools`.
 

@@ -84,6 +84,7 @@ section。
 | `POST` | `/v1/ai-sdk/agent-previews/runs` | 使用未保存的草稿 `AgentSpec` 运行；admin console 预览功能使用 |
 | `POST` | `/v1/ai-sdk/threads/:thread_id/runs` | 在指定 thread 上启动 run |
 | `POST` | `/v1/ai-sdk/agents/:agent_id/runs` | 在指定 agent 上启动 run |
+| `POST` | `/v1/ai-sdk/agent-previews/runs` | 使用当前 registries 运行草稿 `AgentSpec`，不会持久化该 agent |
 | `GET` | `/v1/ai-sdk/chat/:thread_id/stream` | 按 thread ID 续接 SSE |
 | `GET` | `/v1/ai-sdk/threads/:thread_id/stream` | 同上别名 |
 | `GET` | `/v1/ai-sdk/threads/:thread_id/messages` | 列出 thread 消息 |
@@ -122,14 +123,21 @@ section。
 | `GET` | `/v1/a2a/:tenant/tasks/:task_id` | 查询 tenant 作用域任务状态 |
 | `POST` | `/v1/a2a/:tenant/tasks/:task_id:cancel` | 取消 tenant 作用域任务 |
 | `POST` | `/v1/a2a/:tenant/tasks/:task_id:subscribe` | 订阅 tenant 作用域任务更新 |
+| `POST` | `/v1/a2a/:tenant/tasks/:task_id/pushNotificationConfigs` | 创建 tenant 作用域推送通知配置 |
+| `GET` | `/v1/a2a/:tenant/tasks/:task_id/pushNotificationConfigs` | 列出 tenant 作用域推送通知配置 |
+| `GET` | `/v1/a2a/:tenant/tasks/:task_id/pushNotificationConfigs/:config_id` | 获取 tenant 作用域推送通知配置 |
+| `DELETE` | `/v1/a2a/:tenant/tasks/:task_id/pushNotificationConfigs/:config_id` | 删除 tenant 作用域推送通知配置 |
 | `GET` | `/v1/a2a/:tenant/extendedAgentCard` | 获取 tenant 作用域扩展 agent card |
 
 ## MCP HTTP 路由
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `POST` | `/v1/mcp` | MCP JSON-RPC 请求/响应入口 |
+| `POST` | `/v1/mcp` | MCP JSON-RPC 请求/响应入口。`initialize` 会创建 session 并返回 `MCP-Session-Id`；后续 request、notification 和 response 都必须带该 header |
 | `GET` | `/v1/mcp` | 为 MCP 服务端主动 SSE 预留；当前返回 `405` |
+| `DELETE` | `/v1/mcp` | 根据 `MCP-Session-Id` 终止已知 MCP HTTP session；返回 `204` 或 `404` |
+
+`initialize` 请求不能携带 `MCP-Session-Id`。`tools/call` 可能返回流式响应。所有 MCP HTTP 路由都会在存在 `Origin` header 时进行校验。
 
 ## 常见查询参数
 

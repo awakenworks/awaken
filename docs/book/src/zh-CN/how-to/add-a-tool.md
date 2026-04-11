@@ -63,12 +63,18 @@ fn validate_args(&self, args: &Value) -> Result<(), ToolError> {
 
 ```rust,ignore
 use std::sync::Arc;
+use awaken::engine::GenaiExecutor;
+use awaken::registry::ModelBinding;
 use awaken::AgentRuntimeBuilder;
 
 let runtime = AgentRuntimeBuilder::new()
     .with_tool("get_weather", Arc::new(WeatherTool))
     .with_agent_spec(spec)
-    .with_provider("anthropic", Arc::new(provider))
+    .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
+    .with_model_binding("claude-sonnet", ModelBinding {
+        provider_id: "anthropic".into(),
+        upstream_model: "claude-sonnet-4-20250514".into(),
+    })
     .build()?;
 ```
 

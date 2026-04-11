@@ -187,6 +187,9 @@ pub struct RemoteAuth {
 }
 ```
 
+对于 A2A，`base_url` 指向 A2A interface root，例如
+`https://agent.example.com/v1/a2a`；`target` 在远端 backend 暴露多个 agent 时选择目标 agent。旧 A2A 字段（`bearer_token`、`agent_id`、`poll_interval_ms`）只有在没有 canonical 字段时才会被反序列化。新配置应使用 `auth`、`target` 和 `options`。
+
 ## ServerConfig
 
 HTTP server 配置。需启用 `server` feature。

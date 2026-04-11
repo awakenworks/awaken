@@ -1,16 +1,21 @@
-# 使用 Generative UI（A2UI）
+# 使用 Generative UI
 
 当你希望 agent 把声明式 UI 组件发送给前端，而不是只返回文本时，使用本页。
+
+Awaken 当前支持两种集成方式：
+
+- 通过 `A2uiPlugin` 和 `render_a2ui` 工具发送 A2UI 消息，本页下方主要覆盖这条路径。
+- 通过 `run_streaming_subagent()` 流式输出子 agent 结果；`awaken-ext-generative-ui` 的 `json-render` 与 `openui` features 提供 JSON Render 和 OpenUI Lang 预设。
 
 ## 前置条件
 
 - 已有可运行的 runtime
-- 前端能够消费 A2UI 消息（例如 CopilotKit 或 AI SDK 集成）
-- 前端已经注册了组件目录（catalog）
+- 对 A2UI：前端能够消费 A2UI 消息，并已注册组件目录（catalog）
+- 对 JSON Render 或 OpenUI Lang：前端能够消费流式 tool output，例如 `ai-sdk-starter` 或 `openui-chat` 示例
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.1" }
+awaken = { package = "awaken-agent", version = "0.2" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```
@@ -192,6 +197,7 @@ let agent_spec = agent_spec.with_section("generative-ui", serde_json::json!({
 
 ## 相关示例
 
+- `examples/examples/generative_ui.rs` -- 使用 OpenUI Lang 输出的流式子 agent 管线
 - `crates/awaken-ext-generative-ui/src/a2ui/tests.rs`
 
 ## 关键文件
@@ -201,6 +207,8 @@ let agent_spec = agent_spec.with_section("generative-ui", serde_json::json!({
 - `crates/awaken-ext-generative-ui/src/a2ui/tool.rs`
 - `crates/awaken-ext-generative-ui/src/a2ui/types.rs`
 - `crates/awaken-ext-generative-ui/src/a2ui/validation.rs`
+- `crates/awaken-ext-generative-ui/src/json_render.rs`
+- `crates/awaken-ext-generative-ui/src/openui.rs`
 
 ## 相关
 

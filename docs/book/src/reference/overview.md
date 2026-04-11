@@ -22,9 +22,9 @@ so that downstream code only needs a single dependency.
 | `awaken::phase` | `awaken-runtime` | PhaseRuntime, PhaseHook |
 | `awaken::plugins` | `awaken-runtime` | Plugin, PluginDescriptor, PluginRegistrar |
 | `awaken::policies` | `awaken-runtime` | Context window and retry policies |
-| `awaken::registry` | `awaken-runtime` | AgentResolver, ResolvedAgent |
+| `awaken::registry` | `awaken-runtime` | AgentResolver, ExecutionResolver, ResolvedAgent, ResolvedExecution |
 | `awaken::runtime` | `awaken-runtime` | AgentRuntime |
-| `awaken::stores` | `awaken-stores` | File and Postgres store implementations |
+| `awaken::stores` | `awaken-stores` | Memory, file, PostgreSQL, and SQLite-backed store implementations |
 
 ## Feature-gated modules
 
@@ -53,8 +53,8 @@ The following types are re-exported at the crate root for convenience:
 `CancellationToken`, `CommitEvent`, `CommitHook`, `DEFAULT_MAX_PHASE_ROUNDS`,
 `ExecutionEnv`, `MutationBatch`, `PhaseContext`, `PhaseHook`, `PhaseRuntime`,
 `Plugin`, `PluginDescriptor`, `PluginRegistrar`, `ResolvedAgent`, `RunRequest`,
-`RuntimeError`, `StateCommand`, `StateStore`, `TypedEffectHandler`,
-`TypedScheduledActionHandler`
+`RuntimeError`, `StateCommand`, `StateStore`, `ToolGateHook`,
+`TypedEffectHandler`, `TypedScheduledActionHandler`
 
 ## Feature flags
 

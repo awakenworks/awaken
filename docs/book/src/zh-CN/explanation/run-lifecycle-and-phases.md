@@ -130,7 +130,9 @@ fn derive_run_status(calls: &HashMap<String, ToolCallState>) -> RunStatus {
 }
 ```
 
-### 并行 tool call 时间线
+### Tool call 状态时间线
+
+当 LLM 一次返回多个 tool call（例如 `[tool_A, tool_B, tool_C]`）时，每个 call 都有自己的状态。挂起调用可以等待外部 decision，允许执行的调用则继续通过当前配置的 executor 运行。
 
 ```text
 Time  tool_A(需审批)  tool_B(需审批)  tool_C(正常)   → Run Status
@@ -149,21 +151,26 @@ t7    Succeeded      Succeeded      Succeeded      Done
 
 ### 当前执行模型
 
-当前 step runner 基本分三段：
+step runner 中的工具执行分三段：
 
 ```text
-Stage 1 - ToolGate:
-  ToolGate hooks
-  可能得到 Suspend / Block / SetResult
+Stage 1 - ToolGate（串行，逐 call）:
+  对每个 call:
+    ToolGate hooks -> 允许 / 阻断 / 挂起 / 设置结果
+    Suspend?  -> 标记 Suspended，继续检查后续 call
+    Block?    -> 标记 Failed，立即返回
+    SetResult -> 写入提供的结果，继续
+    None      -> 加入 allowed_calls
 
-Stage 2 - BeforeToolExecute:
-  仅对允许执行的调用运行执行前 hook
+Stage 2 - BeforeToolExecute（仅 allowed_calls）:
+  对将要执行的调用运行执行前 hook
 
-Stage 3 - Execute:
-  对允许执行的调用做串行或并行执行
+Stage 3 - Execute（仅 allowed_calls）:
+  Sequential mode: 逐个执行，遇到首次挂起就停止
+  Parallel mode:   批量执行，收集所有结果
 ```
 
-如果任一调用挂起，step 会返回 `StepOutcome::Suspended`，然后：
+如果任一调用挂起，step 会返回 `StepOutcome::Suspended`。orchestrator 随后：
 
 1. checkpoint 持久化
 2. 发出 `RunFinish(Suspended)`
@@ -183,6 +190,12 @@ loop {
 }
 ```
 
+关键属性：
+
+- 循环支持部分恢复：如果只收到 tool_A 的 decision，而 tool_B 仍挂起，tool_A 会先回放，循环继续等待 tool_B。
+- decision 可以批量到达，也可以逐个到达。
+- 返回 `WaitOutcome::Resumed` 后，orchestrator 会回到 step loop，进入下一轮 LLM 推理。
+
 ### Resume replay
 
 恢复时会扫描 `status == Resuming` 的 tool call，并按 `ToolCallResumeMode` 回放：
@@ -193,34 +206,13 @@ loop {
 | `UseDecisionAsToolResult` | decision 结果 | `ToolGateHook` 在回放时返回 `ToolInterceptPayload::SetResult` |
 | `PassDecisionToTool` | decision 结果 | 作为新参数传给 tool |
 
-### 局限：执行中到达的 decision
+已完成调用（`Succeeded`、`Failed`、`Cancelled`）会被跳过。
 
-在当前串行模型里，decision 即使更早到达，也要等当前 Phase 2 工具执行结束后才会被消费，因此恢复存在额外延迟。
+### 工具执行期间到达的 decision
 
-## 并发执行模型（未来方向）
+内置 resolver 默认安装 `SequentialToolExecutor`，因此允许执行的 tool call 会逐个运行。若 decision 在某个工具仍在执行时到达，它会留在 decision channel 中，直到 step 进入 `wait_for_resume_or_cancel` 后才被消费。
 
-理想模型会让“等待 decision”和“执行允许的工具”并发进行，使某个工具一旦得到决策就能立刻恢复。
-
-### 架构
-
-```text
-Phase 1 - Intercept
-
-Phase 2 - Concurrent execution:
-  execute(tool_C)
-  execute(tool_D)
-  wait_decision(tool_A) -> replay(tool_A)
-  wait_decision(tool_B) -> replay(tool_B)
-  barrier: 所有 task 进入终态
-```
-
-### 按调用分发 decision
-
-共享 `decision_rx` 需要先 demux 到每个 call 自己的等待通道。
-
-### 状态转移时机
-
-并发模型下，状态会随着事件实时前进，而不是整批推进。
+如果通过自定义 resolver 或 `ResolvedAgent::with_tool_executor(...)` 安装 `ParallelToolExecutor`，allowed batch 可以并发执行。即便如此，内置 resume loop 仍会在 step 挂起后消费 decision，准备 resume state，并通过标准的 `ToolGate` -> `BeforeToolExecute` -> tool -> `AfterToolExecute` 流水线回放挂起调用。契约层的 `DecisionReplayPolicy` 用于描述自定义并行 HITL 集成里的协同行为；它不是 `AgentSpec` 字段。
 
 ## 协议适配器：SSE 重连
 

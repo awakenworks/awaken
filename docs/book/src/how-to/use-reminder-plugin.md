@@ -9,7 +9,7 @@ Use this when you want the agent to receive automatic context messages after too
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.1", features = ["reminder"] }
+awaken = { package = "awaken-agent", version = "0.2", features = ["reminder"] }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```
@@ -22,10 +22,10 @@ serde_json = "1"
 use std::sync::Arc;
 use serde_json::json;
 use awaken::engine::GenaiExecutor;
-use awaken::{AgentRuntimeBuilder, Plugin};
 use awaken::ext_reminder::ReminderPlugin;
 use awaken::registry::ModelBinding;
 use awaken::registry_spec::AgentSpec;
+use awaken::{AgentRuntimeBuilder, Plugin};
 
 let mut agent_spec = AgentSpec::new("my-agent")
     .with_model_id("claude-sonnet")
@@ -209,7 +209,7 @@ instance can serve many agents with different system reminders.
 use awaken::registry_spec::AgentSpec;
 
 let mut agent_spec = AgentSpec::new("my-agent")
-    .with_model_id("anthropic/claude-sonnet")
+    .with_model_id("claude-sonnet")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("reminder");
 agent_spec.plugin_ids.push("reminder".into());

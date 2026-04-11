@@ -142,7 +142,7 @@ An optional convenience builder for common key string patterns. Constructors: `g
 | Shared State | `ProfileKey` + `StateScope` | Async | Persistent | Cross-boundary sharing |
 | Profile State | `ProfileKey` + `key: &str` | Async | Persistent | User/agent preferences |
 
-Choose shared state when you need **dynamic scoping** or **cross-boundary access**. Choose `StateKey` when you need **sync access** or **transactional merge** during parallel tool execution.
+Choose shared state when you need **dynamic scoping** or **cross-boundary access**. Choose `StateKey` when you need **sync access** or **transactional merge** during parallel phase hooks or custom parallel executor integrations.
 
 ## See Also
 

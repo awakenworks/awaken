@@ -14,7 +14,7 @@
 
 ```toml
 [dependencies]
-awaken-stores = { version = "...", features = ["postgres"] }
+awaken-stores = { version = "0.2", features = ["postgres"] }
 ```
 
 2. 创建连接池：
@@ -49,12 +49,19 @@ let store = Arc::new(PostgresStore::with_prefix(pool, "myapp"));
 5. 接入 runtime：
 
 ```rust,ignore
+use std::sync::Arc;
 use awaken::AgentRuntimeBuilder;
+use awaken::engine::GenaiExecutor;
+use awaken::registry::ModelBinding;
 
 let runtime = AgentRuntimeBuilder::new()
     .with_thread_run_store(store)
     .with_agent_spec(spec)
-    .with_provider("anthropic", Arc::new(provider))
+    .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
+    .with_model_binding("claude-sonnet", ModelBinding {
+        provider_id: "anthropic".into(),
+        upstream_model: "claude-sonnet-4-20250514".into(),
+    })
     .build()?;
 ```
 

@@ -12,15 +12,15 @@ Use this when you need file-based persistence for threads, runs, and messages wi
 
 ```toml
 [dependencies]
-awaken-stores = { version = "...", features = ["file"] }
+awaken-stores = { version = "0.2", features = ["file"] }
 ```
 
 Or, if using the `awaken` facade crate (which re-exports `awaken-stores`), add `awaken-stores` directly for the feature flag:
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "..." }
-awaken-stores = { version = "...", features = ["file"] }
+awaken = { package = "awaken-agent", version = "0.2" }
+awaken-stores = { version = "0.2", features = ["file"] }
 ```
 
 2. Create a FileStore.
@@ -44,12 +44,19 @@ The directory is created automatically on first write. The layout is:
 3. Wire it into the runtime.
 
 ```rust,ignore
+use std::sync::Arc;
 use awaken::AgentRuntimeBuilder;
+use awaken::engine::GenaiExecutor;
+use awaken::registry::ModelBinding;
 
 let runtime = AgentRuntimeBuilder::new()
     .with_thread_run_store(store)
     .with_agent_spec(spec)
-    .with_provider("anthropic", Arc::new(provider))
+    .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
+    .with_model_binding("claude-sonnet", ModelBinding {
+        provider_id: "anthropic".into(),
+        upstream_model: "claude-sonnet-4-20250514".into(),
+    })
     .build()?;
 ```
 

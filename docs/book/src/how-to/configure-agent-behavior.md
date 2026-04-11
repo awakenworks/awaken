@@ -124,6 +124,22 @@ consumer that reads that key.
         { "tool": "delete_*", "behavior": "deny" }
       ]
     },
+    "reminder": {
+      "rules": [
+        {
+          "tool": "Edit(file_path ~ '*.toml')",
+          "output": "any",
+          "message": {
+            "target": "suffix_system",
+            "content": "You edited a TOML file. Run cargo check before finishing."
+          }
+        }
+      ]
+    },
+    "generative-ui": {
+      "catalog_id": "https://a2ui.org/specification/v0_8/standard_catalog_definition.json",
+      "examples": "Use compact components for status summaries and forms."
+    },
     "deferred_tools": {
       "enabled": true,
       "default_mode": "deferred",
@@ -149,6 +165,8 @@ Common keys:
 |---|---|---|
 | `retry` | Resolver | Retry and same-provider fallback upstream models. |
 | `permission` | Permission plugin | Default allow/ask/deny behavior plus ordered tool rules. |
+| `reminder` | Reminder plugin | Tool/output matching rules that inject system or conversation context. |
+| `generative-ui` | Generative UI plugin | A2UI catalog id, examples, or full prompt instructions. |
 | `deferred_tools` | Deferred tools plugin | Decide which tool schemas stay eager and which are loaded on demand. |
 | `compaction` | Context compaction plugin | Summarizer prompts, summary model, and accepted savings threshold. |
 
@@ -163,11 +181,11 @@ For plugin sections, make sure the corresponding plugin id is present in
 `plugin_ids`. `retry` is read by the resolver, and `compaction` is available
 when `context_policy` enables the built-in context compaction plugins.
 
-Some extensions are configured when the plugin is constructed rather than
-through `AgentSpec.sections`. Reminder rules, for example, are parsed into
-`ReminderRulesConfig` and passed to `ReminderPlugin::new(rules)` before the
-plugin is registered. The agent still uses `plugin_ids` to load that registered
-plugin.
+Some plugins also accept constructor defaults. For example,
+`ReminderPlugin::new(rules)` installs fleet-wide default reminder rules, while a
+per-agent `reminder` section is validated through `ReminderConfigKey` and
+appended at runtime. Use constructor defaults for baseline behavior and
+`AgentSpec.sections` for agent-specific tuning.
 
 Leave `active_hook_filter` empty for normal agents. A non-empty filter disables
 hooks, plugin tools, and request transforms from plugins whose descriptor names
@@ -185,9 +203,8 @@ for a specific agent.
 4. Restrict visible tools with `allowed_tools` and `excluded_tools`.
 5. Add `permission` rules for runtime allow/ask/deny decisions.
 6. Add `retry` fallback upstream models for same-provider resilience.
-7. Add `deferred_tools` and `compaction` sections only when the corresponding
-   plugin behavior is needed. Configure reminder rules when registering the
-   reminder plugin.
+7. Add `reminder`, `generative-ui`, `deferred_tools`, and `compaction` sections
+   only when the corresponding plugin behavior is needed.
 8. Publish the config through `/v1/config/*`, then start a new run to use the
    new snapshot.
 

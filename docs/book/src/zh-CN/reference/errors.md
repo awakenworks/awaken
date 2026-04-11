@@ -109,11 +109,15 @@ pub enum ResolveError {
     ProviderNotFound(String),
     PluginNotFound(String),
     InvalidPluginConfig { plugin: String, key: String, message: String },
+    UnsupportedRemoteBackend { agent_id: String, backend: String },
+    InvalidRemoteEndpointConfig { agent_id: String, backend: String, message: String },
     RemoteAgentNotDirectlyRunnable(String),
     ToolIdConflict { tool_id: String, source_a: String, source_b: String },
     EnvBuild(StateError),
 }
 ```
+
+`RemoteAgentNotDirectlyRunnable` 只适用于通过 `AgentResolver::resolve()` 进行的直接本地解析。runtime root execution 使用 `ExecutionResolver`，只要注册了匹配的 backend factory，就可以运行 endpoint-backed agent。
 
 ## UnknownKeyPolicy
 

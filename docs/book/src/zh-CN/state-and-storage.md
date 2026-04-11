@@ -5,6 +5,7 @@
 ## 你可以在这里决定
 
 - thread / run 数据放在哪里
+- runtime config、mailbox job 与 profile/shared state 放在哪里
 - 状态键和合并策略怎么组织
 - 每一轮究竟把多少上下文送给模型
 
@@ -13,6 +14,8 @@
 1. 从 [使用文件存储](./how-to/use-file-store.md) 或 [使用 Postgres 存储](./how-to/use-postgres-store.md) 开始，先确定持久化后端。
 2. 阅读 [状态键](./reference/state-keys.md) 和 [线程模型](./reference/thread-model.md)，理解状态布局和生命周期。
 3. 当上下文规模开始成为问题时，再阅读 [优化上下文窗口](./how-to/optimize-context-window.md)。
+
+当前内置 store 覆盖：thread/run 的内存、文件、PostgreSQL；config 的内存、文件、PostgreSQL；profile/shared state 的内存和文件；以及 mailbox job 的内存或 SQLite。
 
 ## 相关内部机制
 

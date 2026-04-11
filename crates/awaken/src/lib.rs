@@ -48,7 +48,7 @@
 
 pub mod prelude;
 
-/// Storage backend implementations (in-memory, file, PostgreSQL).
+/// Storage backend implementations (in-memory, file, PostgreSQL, SQLite mailbox).
 pub use awaken_stores as stores;
 
 /// Generative-UI extension (feature `generative-ui`).

@@ -31,6 +31,7 @@
 | `RunStatus` | 运行状态 | Coarse run status: Running, Waiting, Done. |
 | `ToolCallStatus` | 工具调用状态 | Per-call status: New, Running, Suspended, Resuming, Succeeded, Failed, Cancelled. |
 | `ResolvedAgent` | 已解析智能体 | Agent fully resolved from registries with config, tools, plugins, and executor. |
+| `ResolvedExecution` | 已解析执行 | Runtime resolution result: either a local `ResolvedAgent` or a backend-backed remote agent. |
 | `AgentResolver` | 智能体解析器 | Trait that resolves an agent spec ID into a ResolvedAgent. |
 | `ExecutionResolver` | 执行解析器 | Resolver used by `AgentRuntime` root runs to select local or backend-backed execution. |
 | `ExecutionBackend` | 执行后端 | Extension point for non-local root execution and delegation, including A2A. |

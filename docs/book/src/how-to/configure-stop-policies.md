@@ -42,7 +42,10 @@ let policies: Vec<Arc<dyn StopPolicy>> = vec![
 2. Register a `StopConditionPlugin` with the runtime builder.
 
 ```rust,ignore
+use std::sync::Arc;
 use awaken::policies::StopConditionPlugin;
+use awaken::engine::GenaiExecutor;
+use awaken::registry::ModelBinding;
 use awaken::AgentRuntimeBuilder;
 
 let mut spec = spec;
@@ -51,14 +54,22 @@ spec.plugin_ids.push("stop-condition".into());
 let runtime = AgentRuntimeBuilder::new()
     .with_plugin("stop-condition", Arc::new(StopConditionPlugin::new(policies)))
     .with_agent_spec(spec)
-    .with_provider("anthropic", Arc::new(provider))
+    .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
+    .with_model_binding("claude-sonnet", ModelBinding {
+        provider_id: "anthropic".into(),
+        upstream_model: "claude-sonnet-4-20250514".into(),
+    })
     .build()?;
 ```
 
 For the common case of limiting rounds only, use the convenience wrapper:
 
 ```rust,ignore
+use std::sync::Arc;
 use awaken::policies::MaxRoundsPlugin;
+use awaken::engine::GenaiExecutor;
+use awaken::registry::ModelBinding;
+use awaken::AgentRuntimeBuilder;
 
 let mut spec = spec;
 spec.plugin_ids.push("stop-condition:max-rounds".into());
@@ -66,7 +77,11 @@ spec.plugin_ids.push("stop-condition:max-rounds".into());
 let runtime = AgentRuntimeBuilder::new()
     .with_plugin("stop-condition:max-rounds", Arc::new(MaxRoundsPlugin::new(10)))
     .with_agent_spec(spec)
-    .with_provider("anthropic", Arc::new(provider))
+    .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
+    .with_model_binding("claude-sonnet", ModelBinding {
+        provider_id: "anthropic".into(),
+        upstream_model: "claude-sonnet-4-20250514".into(),
+    })
     .build()?;
 ```
 

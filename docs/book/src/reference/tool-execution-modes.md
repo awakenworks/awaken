@@ -1,9 +1,20 @@
 # Tool Execution Modes
 
-`ToolExecutionMode` controls how the runtime executes tool calls that the LLM
-requests in a single inference step.
+Awaken separates the serializable contract enum from the runtime executor.
+`ToolExecutionMode` is the contract-level enum. The loop actually executes
+tools through `ResolvedAgent.tool_executor`, a `ToolExecutor` implementation.
 
 **Crate path:** `awaken::contract::executor::ToolExecutionMode`
+
+Current wiring:
+
+- The built-in resolver installs `SequentialToolExecutor` by default.
+- `AgentSpec` does not contain a `tool_execution_mode` field.
+- Use `ResolvedAgent::with_tool_executor(...)` or a custom resolver to install
+  `ParallelToolExecutor`.
+- The contract enum is available for protocol or config surfaces that want to
+  carry an execution-mode intent, but it is not automatically applied by
+  `AgentRuntimeBuilder`.
 
 ## ToolExecutionMode
 
@@ -19,9 +30,9 @@ pub enum ToolExecutionMode {
 
 The default is `Sequential`.
 
-## Modes
+## Executors
 
-### Sequential
+### SequentialToolExecutor
 
 Executes tool calls one at a time in the order the LLM returned them.
 
@@ -38,16 +49,16 @@ let executor = SequentialToolExecutor;
 let results = executor.execute(&tools, &calls, &ctx).await?;
 ```
 
-### ParallelBatchApproval
+### ParallelToolExecutor::batch_approval()
 
 Executes all tool calls concurrently. All tools see the same frozen state
 snapshot.
 
-- Suspension decisions are replayed using `DecisionReplayPolicy::BatchAllSuspended`:
-  the runtime waits until every suspended call has a decision before replaying
-  any of them.
-- Enforces parallel patch conflict checks (`requires_conflict_check` returns
-  `true`).
+- Exposes `DecisionReplayPolicy::BatchAllSuspended` for callers that need to
+  coordinate suspended-call replay.
+- Exposes `requires_conflict_check() == true`. The default loop commits returned
+  tool results in result order; custom executor integrations that merge parallel
+  state batches should use the parallel merge helpers.
 - Does not stop on suspension or failure; all calls run to completion.
 - Use when tool calls are independent and you want an all-or-nothing approval
   gate for HITL workflows.
@@ -57,14 +68,13 @@ let executor = ParallelToolExecutor::batch_approval();
 // decision_replay_policy() == DecisionReplayPolicy::BatchAllSuspended
 ```
 
-### ParallelStreaming
+### ParallelToolExecutor::streaming()
 
 Executes all tool calls concurrently with the same frozen state snapshot.
 
-- Suspension decisions are replayed using `DecisionReplayPolicy::Immediate`:
-  each decision is replayed as soon as it arrives, without waiting for the
-  others.
-- Enforces parallel patch conflict checks.
+- Exposes `DecisionReplayPolicy::Immediate` for callers that coordinate replay
+  outside the default sequential wait loop.
+- Exposes `requires_conflict_check() == true`.
 - Does not stop on suspension or failure; all calls run to completion.
 - Use when tool calls are independent and you want the fastest end-to-end
   completion without batching approval.
@@ -82,8 +92,8 @@ let executor = ParallelToolExecutor::streaming();
 | State freshness | Refreshed between calls | Frozen snapshot | Frozen snapshot |
 | Stops on suspension | Yes (first suspension) | No | No |
 | Stops on failure | No | No | No |
-| Decision replay | N/A | Batch (all at once) | Immediate (one by one) |
-| Conflict checks | No | Yes | Yes |
+| Exposed decision policy | N/A | Batch (all at once) | Immediate (one by one) |
+| Requires conflict checks for custom parallel merges | No | Yes | Yes |
 
 ## Executor trait
 
@@ -114,8 +124,10 @@ The `name()` values are `"sequential"`, `"parallel_batch_approval"`, and
 
 ## DecisionReplayPolicy
 
-Controls when resume decisions for suspended tool calls are replayed into the
-execution pipeline. Only relevant for parallel modes.
+Describes when resume decisions for suspended tool calls should be replayed by
+a caller that coordinates parallel HITL. The default loop waits for decisions
+after a step suspends, prepares resume state, and replays through the standard
+tool pipeline.
 
 ```rust,ignore
 pub enum DecisionReplayPolicy {

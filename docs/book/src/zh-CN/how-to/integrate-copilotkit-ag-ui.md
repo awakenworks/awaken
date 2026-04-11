@@ -10,7 +10,7 @@
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.1", features = ["server"] }
+awaken = { package = "awaken-agent", version = "0.2", features = ["server"] }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde_json = "1"
@@ -67,6 +67,7 @@ async fn main() {
     let mailbox = Arc::new(Mailbox::new(
         runtime.clone(),
         mailbox_store as Arc<dyn awaken::contract::MailboxStore>,
+        store.clone() as Arc<dyn ThreadRunStore>,
         format!("copilotkit:{}", std::process::id()),
         MailboxConfig::default(),
     ));

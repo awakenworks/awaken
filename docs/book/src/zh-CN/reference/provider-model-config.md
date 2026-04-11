@@ -1,6 +1,6 @@
 # Provider 与 Model 配置
 
-Awaken 把 provider 连接和 model 选择分开处理。运行时总是通过下面这条链路解析 agent：
+Awaken 把 provider 连接和 model 选择分开处理。本地 agent 执行会通过下面这条链路解析 provider 和 model：
 
 ```text
 AgentSpec.model_id
@@ -10,6 +10,8 @@ AgentSpec.model_id
   -> Arc<dyn LlmExecutor>
   -> InferenceRequest.upstream_model = upstream_model
 ```
+
+Endpoint-backed agent 会跳过这条本地 provider/model 链路。它们会被解析成非本地 `ResolvedExecution`，并交给配置的 `ExecutionBackend` 执行。
 
 ## 术语
 

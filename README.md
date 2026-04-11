@@ -34,14 +34,15 @@ Your agent picks tools, calls them, reads and updates state, and repeats — all
 
 ## Try it in 5 minutes
 
-Prerequisites:
+Prerequisites: Rust 1.85+ for the published crate, or the pinned `rust-toolchain.toml`
+toolchain when working from this repository, plus an LLM provider API key.
 
 - Rust 1.85 or newer. This repository pins Rust 1.93.0 for local development.
 - An OpenAI-compatible API key.
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.1" }
+awaken = { package = "awaken-agent", version = "0.2" }
 tokio = { version = "1.51.0", features = ["full"] }
 async-trait = "0.1.89"
 serde_json = "1.0.149"
@@ -142,6 +143,7 @@ let runtime = Arc::new(runtime);
 let mailbox = Arc::new(Mailbox::new(
     runtime.clone(),
     Arc::new(InMemoryMailboxStore::new()),
+    store.clone(),
     "default-consumer".into(),
     MailboxConfig::default(),
 ));
@@ -226,7 +228,7 @@ dependencies.
 | **Observability** | OpenTelemetry telemetry aligned with GenAI Semantic Conventions; supports OTLP, file, and in-memory export. | `observability` |
 | **MCP** | Connects to external MCP servers and registers their tools as native Awaken tools. | `mcp` |
 | **Skills** | Discovers skill packages and injects a catalog before inference so the LLM can activate skills on demand. | `skills` |
-| **Generative UI** | Streams declarative UI components to frontends via the A2UI protocol. | `generative-ui` |
+| **Generative UI** | Streams declarative UI components to frontends via A2UI, JSON Render, and OpenUI Lang integrations. | `generative-ui` |
 | **Deferred Tools** | Hides large tool schemas behind `ToolSearch`, then uses a discounted Beta probability model to re-defer idle promoted tools. | direct crate: `awaken-ext-deferred-tools` |
 
 Deferred tools are configured through the `deferred_tools` agent section when
@@ -265,16 +267,16 @@ Custom interception hooks should use `ToolGateHook` via `PluginRegistrar::regist
 
 ## Architecture
 
-Awaken is split into three runtime layers. `awaken-contract` defines the shared contracts: agent specs, model/provider specs, tools, events, transport traits, and the typed state model. `awaken-runtime` resolves an `AgentSpec` into a `ResolvedAgent`, builds an `ExecutionEnv` from plugins, executes the phase loop, and manages active runs plus external control such as cancellation and HITL decisions. `awaken-server` exposes that same runtime through HTTP routes, SSE replay, mailbox-backed background execution, and protocol adapters for AI SDK v6, AG-UI, A2A, and MCP.
+Awaken is split into three runtime layers. `awaken-contract` defines the shared contracts: agent specs, model/provider specs, tools, events, transport traits, and the typed state model. `awaken-runtime` resolves an `AgentSpec` into `ResolvedExecution`: local agents become a `ResolvedAgent` with an `ExecutionEnv` built from plugins, while endpoint-backed agents run through an `ExecutionBackend`. It also executes the phase loop and manages active runs plus external control such as cancellation and HITL decisions. `awaken-server` exposes that same runtime through HTTP routes, SSE replay, mailbox-backed background execution, and protocol adapters for AI SDK v6, AG-UI, A2A, and MCP.
 
-Around those layers sit storage and extensions. `awaken-stores` provides memory, file, and PostgreSQL backends for threads and runs. `awaken-ext-*` crates extend the runtime at phase and tool boundaries.
+Around those layers sit storage and extensions. `awaken-stores` provides memory, file, and PostgreSQL persistence for threads and runs; memory, file, and PostgreSQL config stores; memory and SQLite mailbox stores; and memory/file profile stores. `awaken-ext-*` crates extend the runtime at phase and tool boundaries.
 
 ```text
 awaken                   Facade crate with feature flags
 ├─ awaken-contract       Contracts: specs, tools, events, transport, state model
 ├─ awaken-runtime        Resolver, phase engine, loop runner, runtime control
 ├─ awaken-server         Routes, mailbox, SSE transport, protocol adapters
-├─ awaken-stores         Memory, file, and PostgreSQL persistence
+├─ awaken-stores         Memory, file, PostgreSQL, and SQLite-backed stores
 ├─ awaken-tool-pattern   Glob/regex matching used by extensions
 └─ awaken-ext-*          Optional runtime extensions
 ```
@@ -288,7 +290,8 @@ awaken                   Facade crate with feature flags
 | [`tool_call_live`](./crates/awaken/examples/tool_call_live.rs) | Tool calling with calculator |
 | [`ai-sdk-starter`](./examples/ai-sdk-starter/) | React + AI SDK v6 full-stack |
 | [`copilotkit-starter`](./examples/copilotkit-starter/) | Next.js + CopilotKit full-stack |
-| [`admin-console`](./apps/admin-console/) | Browser UI for runtime config and plugin schemas |
+| [`openui-chat`](./examples/openui-chat/) | OpenUI Lang chat frontend |
+| [`admin-console`](./apps/admin-console/) | Config API management UI |
 
 ```bash
 export OPENAI_API_KEY=<your-key>
@@ -321,7 +324,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) and [DEVELOPMENT.md](./DEVELOPMENT.md) 
 
 Areas where contributions are especially welcome:
 
-- Additional storage backends (Redis, full SQLite thread/run store)
+- Additional mailbox, config, and storage backends beyond the built-in memory/file/PostgreSQL/SQLite options
 - Built-in tool implementations (file read/write, web search)
 - Token cost tracking and budget enforcement
 - Model fallback/degradation chains

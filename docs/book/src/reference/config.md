@@ -203,6 +203,12 @@ pub struct RemoteAuth {
 }
 ```
 
+For A2A, `base_url` points at the A2A interface root, for example
+`https://agent.example.com/v1/a2a`; `target` selects the remote agent when the
+backend exposes more than one agent. Legacy A2A fields (`bearer_token`,
+`agent_id`, `poll_interval_ms`) deserialize only when no canonical fields are
+present. New config should use `auth`, `target`, and `options`.
+
 ## ServerConfig
 
 HTTP server configuration. Used when the `server` feature is enabled.

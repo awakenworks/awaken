@@ -177,10 +177,11 @@ Decision table:
 | No | Yes | **Waiting** | All execution done, awaiting external decisions |
 | No | No | **Done** | All calls terminal → proceed to next step |
 
-### Parallel tool call state timeline
+### Tool-call state timeline
 
-When an LLM returns multiple tool calls (e.g. `[tool_A, tool_B, tool_C]`), their
-states evolve independently:
+When an LLM returns multiple tool calls (for example, `[tool_A, tool_B,
+tool_C]`), each call has its own state. Suspended calls can wait for decisions
+while allowed calls continue through the configured executor:
 
 ```text
 Time  tool_A(approval-req)  tool_B(approval-req)  tool_C(normal)   → Run Status
@@ -267,85 +268,19 @@ The `arguments` field already reflects the resume mode (set by
 
 Already-completed calls (`Succeeded`, `Failed`, `Cancelled`) are skipped.
 
-### Limitation: decisions during execution
+### Decisions during tool execution
 
-In the current serial model, decisions that arrive while Phase 2 tools are
-still executing sit in the channel buffer. They are only consumed when the step
-finishes and the orchestrator enters `wait_for_resume_or_cancel`.
+The default resolver installs `SequentialToolExecutor`, so allowed tool calls
+run one at a time and decisions that arrive while a tool is still executing sit
+in the decision channel until the step enters `wait_for_resume_or_cancel`.
 
-This means:
-- tool_A's approval arrives at t2 (while tool_C is executing)
-- tool_A is not replayed until t3 (after tool_C finishes)
-- The delay equals the remaining execution time of Phase 2 tools
-
-## Concurrent Execution Model (future)
-
-The ideal model executes suspended-tool waits and allowed-tool execution in
-parallel, so a decision for tool_A can trigger immediate replay even while
-tool_C is still running.
-
-### Architecture
-
-```text
-Phase 1 — Intercept (same as current)
-
-Phase 2 — Concurrent execution:
-  ┌─ task: execute(tool_C) ──────────────────────────┐
-  │                                                   │
-  ├─ task: execute(tool_D) ────────────┐              │
-  │                                    │              │
-  ├─ task: wait_decision(tool_A) → replay(tool_A) ──┐│
-  │                                                  ││
-  ├─ task: wait_decision(tool_B) ──────────→ replay(tool_B)
-  │                                                  │
-  └─ barrier: all tasks reach terminal state ────────┘
-```
-
-### Per-call decision routing
-
-The shared `decision_rx` channel carries batches of decisions for multiple
-tool calls. A dispatcher task demuxes decisions to per-call notification
-channels:
-
-```rust,ignore
-struct ToolCallWaiter {
-    waiters: HashMap<String, oneshot::Sender<ToolCallResume>>,
-}
-
-impl ToolCallWaiter {
-    async fn dispatch_loop(&mut self, decision_rx: &mut UnboundedReceiver<DecisionBatch>) {
-        while let Some(batch) = decision_rx.next().await {
-            for (call_id, resume) in batch {
-                if let Some(tx) = self.waiters.remove(&call_id) {
-                    let _ = tx.send(resume);
-                }
-            }
-            if self.waiters.is_empty() { break; }
-        }
-    }
-}
-```
-
-Each suspended tool call gets a `oneshot::Receiver`. When its decision arrives,
-the receiver wakes the task, which runs the replay immediately — concurrently
-with any still-executing allowed tools.
-
-### State transition timing
-
-With the concurrent model, state transitions happen as events occur rather
-than in batches:
-
-```text
-t0: tool_C starts executing          → RunStatus: Running
-t1: tool_A decision arrives, replay  → RunStatus: Running (tool_A Resuming)
-t2: tool_A replay completes          → RunStatus: Running (tool_C still Running)
-t3: tool_C completes                 → RunStatus: Waiting (tool_B still Suspended)
-t4: tool_B decision arrives, replay  → RunStatus: Running (tool_B Resuming)
-t5: tool_B replay completes          → RunStatus: Done (all terminal)
-```
-
-No artificial delay — each tool call progresses as fast as its external
-dependency allows.
+`ParallelToolExecutor` can execute an allowed batch concurrently when installed
+through a custom resolver or `ResolvedAgent::with_tool_executor(...)`. Even in
+that mode, the built-in resume loop consumes decisions after a step suspends,
+prepares resume state, and replays suspended calls through the standard
+`ToolGate` -> `BeforeToolExecute` -> tool -> `AfterToolExecute` pipeline. The
+contract-level `DecisionReplayPolicy` values describe coordination behavior for
+custom parallel HITL integrations; they are not an `AgentSpec` field.
 
 ## Protocol Adapter: SSE Reconnection
 

@@ -127,7 +127,7 @@ pub enum StorageError {
 ## ResolveError
 
 Errors from the agent resolution pipeline (resolving `AgentSpec` to a runnable
-`ResolvedAgent`).
+`ResolvedAgent` or `ResolvedExecution`).
 
 ```rust,no_run
 # use awaken::StateError;
@@ -137,6 +137,8 @@ pub enum ResolveError {
     ProviderNotFound(String),
     PluginNotFound(String),
     InvalidPluginConfig { plugin: String, key: String, message: String },
+    UnsupportedRemoteBackend { agent_id: String, backend: String },
+    InvalidRemoteEndpointConfig { agent_id: String, backend: String, message: String },
     RemoteAgentNotDirectlyRunnable(String),
     ToolIdConflict { tool_id: String, source_a: String, source_b: String },
     EnvBuild(StateError),
@@ -144,6 +146,10 @@ pub enum ResolveError {
 ```
 
 **Crate path:** `awaken::registry::resolve::ResolveError`
+
+`RemoteAgentNotDirectlyRunnable` applies to direct local resolution through
+`AgentResolver::resolve()`. Runtime root execution uses `ExecutionResolver` and
+can run endpoint-backed agents when a matching backend factory is registered.
 
 ## UnknownKeyPolicy
 

@@ -106,6 +106,22 @@ curl -sS -X PUT http://localhost:3000/v1/config/agents/research-assistant \
         { "tool": "delete_*", "behavior": "deny" }
       ]
     },
+    "reminder": {
+      "rules": [
+        {
+          "tool": "Edit(file_path ~ '*.toml')",
+          "output": "any",
+          "message": {
+            "target": "suffix_system",
+            "content": "You edited a TOML file. Run cargo check before finishing."
+          }
+        }
+      ]
+    },
+    "generative-ui": {
+      "catalog_id": "https://a2ui.org/specification/v0_8/standard_catalog_definition.json",
+      "examples": "Use compact components for status summaries and forms."
+    },
     "deferred_tools": {
       "enabled": true,
       "default_mode": "deferred",
@@ -131,6 +147,8 @@ curl -sS -X PUT http://localhost:3000/v1/config/agents/research-assistant \
 |---|---|---|
 | `retry` | Resolver | 重试和同 provider 内的 fallback upstream models。 |
 | `permission` | Permission plugin | 默认 allow/ask/deny 行为和有序工具规则。 |
+| `reminder` | Reminder plugin | 按工具和输出匹配并注入 system 或 conversation context 的规则。 |
+| `generative-ui` | Generative UI plugin | A2UI catalog id、examples 或完整 prompt instructions。 |
 | `deferred_tools` | Deferred tools plugin | 决定哪些工具 schema 保持 eager，哪些按需加载。 |
 | `compaction` | Context compaction plugin | 摘要 prompt、摘要模型和可接受的节省阈值。 |
 
@@ -140,7 +158,7 @@ curl -sS -X PUT http://localhost:3000/v1/config/agents/research-assistant \
 使用插件 section 时，需要保证对应插件 id 已经写入 `plugin_ids`。`retry` 由 resolver 读取；当
 `context_policy` 启用内置上下文压缩插件时，`compaction` 可用。
 
-有些扩展是在构造插件时配置，而不是通过 `AgentSpec.sections` 配置。例如 reminder 规则需要先解析成 `ReminderRulesConfig`，再传给 `ReminderPlugin::new(rules)`，然后注册插件。Agent 仍然通过 `plugin_ids` 加载这个已注册插件。
+有些插件也接受构造期默认值。例如 `ReminderPlugin::new(rules)` 会安装全局默认 reminder 规则；每个 Agent 的 `reminder` section 则通过 `ReminderConfigKey` 校验，并在运行时追加到默认规则之后。全局基线用构造期默认值，单个 Agent 的调优用 `AgentSpec.sections`。
 
 常规 Agent 应保持 `active_hook_filter` 为空。非空 filter 会禁用未列入 descriptor 名称的插件 hooks、插件工具和 request transforms；它主要用于有意收窄某个 Agent 的活跃行为。
 
@@ -152,7 +170,7 @@ curl -sS -X PUT http://localhost:3000/v1/config/agents/research-assistant \
 4. 用 `allowed_tools` 和 `excluded_tools` 限制可见工具。
 5. 用 `permission` 规则处理运行时 allow/ask/deny 决策。
 6. 用 `retry` fallback upstream models 增强同 provider 内的韧性。
-7. 只有需要对应行为时，才添加 `deferred_tools` 和 `compaction` section。Reminder 规则在注册 reminder 插件时配置。
+7. 只有需要对应行为时，才添加 `reminder`、`generative-ui`、`deferred_tools` 和 `compaction` section。
 8. 通过 `/v1/config/*` 发布配置；写入成功后，新建 run 才会使用新的 snapshot。
 
 ## 兼容性规则

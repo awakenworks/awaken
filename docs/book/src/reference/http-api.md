@@ -87,6 +87,7 @@ Current built-in namespaces:
 | `POST` | `/v1/ai-sdk/agent-previews/runs` | Run a draft `AgentSpec` without saving it; used by the admin console preview |
 | `POST` | `/v1/ai-sdk/threads/:thread_id/runs` | Start a thread-scoped AI SDK run |
 | `POST` | `/v1/ai-sdk/agents/:agent_id/runs` | Start an agent-scoped AI SDK run |
+| `POST` | `/v1/ai-sdk/agent-previews/runs` | Run a draft `AgentSpec` against the current registries without persisting it |
 | `GET` | `/v1/ai-sdk/chat/:thread_id/stream` | Resume an SSE stream by thread ID |
 | `GET` | `/v1/ai-sdk/threads/:thread_id/stream` | Alias for stream resume by thread ID |
 | `GET` | `/v1/ai-sdk/threads/:thread_id/messages` | List thread messages |
@@ -125,14 +126,22 @@ Current built-in namespaces:
 | `GET` | `/v1/a2a/:tenant/tasks/:task_id` | Get tenant-scoped task status |
 | `POST` | `/v1/a2a/:tenant/tasks/:task_id:cancel` | Cancel a tenant-scoped task |
 | `POST` | `/v1/a2a/:tenant/tasks/:task_id:subscribe` | Subscribe to tenant-scoped task updates |
+| `POST` | `/v1/a2a/:tenant/tasks/:task_id/pushNotificationConfigs` | Create a tenant-scoped push notification config |
+| `GET` | `/v1/a2a/:tenant/tasks/:task_id/pushNotificationConfigs` | List tenant-scoped push notification configs |
+| `GET` | `/v1/a2a/:tenant/tasks/:task_id/pushNotificationConfigs/:config_id` | Get a tenant-scoped push notification config |
+| `DELETE` | `/v1/a2a/:tenant/tasks/:task_id/pushNotificationConfigs/:config_id` | Delete a tenant-scoped push notification config |
 | `GET` | `/v1/a2a/:tenant/extendedAgentCard` | Get the tenant-scoped extended agent card |
 
 ## MCP HTTP routes
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/v1/mcp` | MCP JSON-RPC request/response endpoint |
+| `POST` | `/v1/mcp` | MCP JSON-RPC request/response endpoint. `initialize` creates a session and returns `MCP-Session-Id`; later requests, notifications, and responses require that header. |
 | `GET` | `/v1/mcp` | Reserved for MCP server-initiated SSE; currently returns `405` |
+| `DELETE` | `/v1/mcp` | Terminate a known MCP HTTP session identified by `MCP-Session-Id`; returns `204` or `404` |
+
+`initialize` requests must not include `MCP-Session-Id`. `tools/call` may stream
+responses. All MCP HTTP routes validate `Origin` when present.
 
 ## Common query parameters
 
