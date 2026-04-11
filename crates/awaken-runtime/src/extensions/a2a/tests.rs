@@ -4,10 +4,15 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::event_sink::EventSink;
+use awaken_contract::contract::event::AgentEvent;
+use awaken_contract::contract::event_sink::{EventSink, VecEventSink};
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
+use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::message::Message;
+use awaken_contract::contract::lifecycle::TerminationReason;
+use awaken_contract::contract::progress::{
+    ProgressStatus, TOOL_CALL_PROGRESS_ACTIVITY_TYPE, ToolCallProgressState,
+};
 use awaken_contract::contract::tool::{Tool, ToolCallContext};
 use awaken_contract::registry_spec::{AgentSpec, RemoteAuth, RemoteEndpoint};
 
@@ -16,7 +21,7 @@ use crate::registry::{AgentResolver, ResolvedAgent};
 
 use super::a2a_backend::A2aConfig;
 use super::agent_tool::AgentTool;
-use super::backend::{AgentBackend, AgentBackendError, DelegateRunResult, DelegateRunStatus};
+use super::{AgentBackend, AgentBackendError, DelegateRunResult, DelegateRunStatus};
 
 // -- Mock Resolver --
 
@@ -81,6 +86,22 @@ impl AgentResolver for MockResolver {
     }
 }
 
+fn tool_progress_states(events: &[AgentEvent]) -> Vec<ToolCallProgressState> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::ActivitySnapshot {
+                activity_type,
+                content,
+                ..
+            } if activity_type == TOOL_CALL_PROGRESS_ACTIVITY_TYPE => {
+                Some(serde_json::from_value::<ToolCallProgressState>(content.clone()).unwrap())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 // -- Mock Backend --
 
 struct MockBackend {
@@ -89,14 +110,9 @@ struct MockBackend {
 
 #[async_trait]
 impl AgentBackend for MockBackend {
-    async fn execute(
+    async fn execute_delegate(
         &self,
-        _agent_id: &str,
-        _messages: Vec<Message>,
-        _event_sink: Arc<dyn EventSink>,
-        _parent_run_id: Option<String>,
-        _parent_thread_id: Option<String>,
-        _parent_tool_call_id: Option<String>,
+        _request: crate::backend::BackendDelegateRunRequest<'_>,
     ) -> Result<DelegateRunResult, AgentBackendError> {
         Ok(self.result.clone())
     }
@@ -108,14 +124,9 @@ struct FailingBackend {
 
 #[async_trait]
 impl AgentBackend for FailingBackend {
-    async fn execute(
+    async fn execute_delegate(
         &self,
-        _agent_id: &str,
-        _messages: Vec<Message>,
-        _event_sink: Arc<dyn EventSink>,
-        _parent_run_id: Option<String>,
-        _parent_thread_id: Option<String>,
-        _parent_tool_call_id: Option<String>,
+        _request: crate::backend::BackendDelegateRunRequest<'_>,
     ) -> Result<DelegateRunResult, AgentBackendError> {
         Err(AgentBackendError::ExecutionFailed(self.error.clone()))
     }
@@ -167,12 +178,11 @@ async fn agent_tool_execute_fails_for_missing_agent() {
     let tool = AgentTool::local("missing", "desc", resolver);
     let ctx = ToolCallContext::test_default();
 
-    // Backend error is returned as ToolResult::error (not ToolError)
-    let output = tool
+    let err = tool
         .execute(json!({"prompt": "do work"}), &ctx)
         .await
-        .unwrap();
-    assert!(!output.result.is_success());
+        .expect_err("missing local agent should fail before backend execution");
+    assert!(err.to_string().contains("agent not found: missing"));
 }
 
 #[tokio::test]
@@ -200,10 +210,14 @@ async fn agent_tool_with_mock_backend_success() {
         result: DelegateRunResult {
             agent_id: "helper".into(),
             status: DelegateRunStatus::Completed,
+            termination: TerminationReason::NaturalEnd,
+            status_reason: None,
             response: Some("done!".into()),
+            output: crate::backend::BackendRunOutput::from_text(Some("done!".into())),
             steps: 3,
             run_id: None,
             inbox: None,
+            state: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "A helper agent", backend);
@@ -222,15 +236,106 @@ async fn agent_tool_with_mock_backend_success() {
 }
 
 #[tokio::test]
+async fn agent_tool_reports_progress_for_successful_delegate() {
+    let backend = Arc::new(MockBackend {
+        result: DelegateRunResult {
+            agent_id: "helper".into(),
+            status: DelegateRunStatus::Completed,
+            termination: TerminationReason::NaturalEnd,
+            status_reason: None,
+            response: Some("done".into()),
+            output: crate::backend::BackendRunOutput::from_text(Some("done".into())),
+            steps: 1,
+            run_id: None,
+            inbox: None,
+            state: None,
+        },
+    });
+    let tool = AgentTool::with_backend("helper", "desc", backend);
+    let sink = Arc::new(VecEventSink::new());
+    let mut ctx = ToolCallContext::test_default();
+    ctx.call_id = "tool-call-1".into();
+    ctx.tool_name = "agent_run_helper".into();
+    ctx.run_identity = RunIdentity::new(
+        "thread-1".into(),
+        None,
+        "run-1".into(),
+        None,
+        "parent-agent".into(),
+        RunOrigin::User,
+    );
+    ctx.activity_sink = Some(sink.clone() as Arc<dyn EventSink>);
+
+    let output = tool
+        .execute(json!({"prompt": "help me"}), &ctx)
+        .await
+        .unwrap();
+
+    assert!(output.result.is_success());
+    let progress = tool_progress_states(&sink.events());
+    assert_eq!(
+        progress.len(),
+        2,
+        "expected start and finish progress events"
+    );
+    assert_eq!(progress[0].status, ProgressStatus::Running);
+    assert_eq!(progress[0].call_id, "tool-call-1");
+    assert_eq!(progress[0].tool_name, "agent_run_helper");
+    assert_eq!(progress[1].status, ProgressStatus::Done);
+    assert_eq!(progress[1].call_id, "tool-call-1");
+}
+
+#[tokio::test]
+async fn agent_tool_reports_failed_progress_when_backend_errors() {
+    let backend = Arc::new(FailingBackend {
+        error: "network down".into(),
+    });
+    let tool = AgentTool::with_backend("helper", "desc", backend);
+    let sink = Arc::new(VecEventSink::new());
+    let mut ctx = ToolCallContext::test_default();
+    ctx.call_id = "tool-call-2".into();
+    ctx.tool_name = "agent_run_helper".into();
+    ctx.run_identity = RunIdentity::new(
+        "thread-2".into(),
+        None,
+        "run-2".into(),
+        None,
+        "parent-agent".into(),
+        RunOrigin::User,
+    );
+    ctx.activity_sink = Some(sink.clone() as Arc<dyn EventSink>);
+
+    let output = tool
+        .execute(json!({"prompt": "help me"}), &ctx)
+        .await
+        .unwrap();
+
+    assert!(!output.result.is_success());
+    let progress = tool_progress_states(&sink.events());
+    assert_eq!(
+        progress.len(),
+        2,
+        "expected start and failure progress events"
+    );
+    assert_eq!(progress[0].status, ProgressStatus::Running);
+    assert_eq!(progress[1].status, ProgressStatus::Failed);
+    assert_eq!(progress[1].call_id, "tool-call-2");
+}
+
+#[tokio::test]
 async fn agent_tool_with_mock_backend_failure() {
     let backend = Arc::new(MockBackend {
         result: DelegateRunResult {
             agent_id: "helper".into(),
             status: DelegateRunStatus::Failed("out of memory".into()),
+            termination: TerminationReason::Error("out of memory".into()),
+            status_reason: None,
             response: None,
+            output: crate::backend::BackendRunOutput::default(),
             steps: 0,
             run_id: None,
             inbox: None,
+            state: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -492,24 +597,24 @@ impl CapturingBackend {
 
 #[async_trait]
 impl AgentBackend for CapturingBackend {
-    async fn execute(
+    async fn execute_delegate(
         &self,
-        agent_id: &str,
-        _messages: Vec<Message>,
-        _event_sink: Arc<dyn EventSink>,
-        parent_run_id: Option<String>,
-        _parent_thread_id: Option<String>,
-        parent_tool_call_id: Option<String>,
+        request: crate::backend::BackendDelegateRunRequest<'_>,
     ) -> Result<DelegateRunResult, AgentBackendError> {
-        *self.captured_parent_run_id.lock().unwrap() = parent_run_id;
-        *self.captured_parent_tool_call_id.lock().unwrap() = parent_tool_call_id;
+        *self.captured_parent_run_id.lock().unwrap() = request.parent.parent_run_id.clone();
+        *self.captured_parent_tool_call_id.lock().unwrap() =
+            request.parent.parent_tool_call_id.clone();
         Ok(DelegateRunResult {
-            agent_id: agent_id.to_string(),
+            agent_id: request.agent_id.to_string(),
             status: DelegateRunStatus::Completed,
+            termination: TerminationReason::NaturalEnd,
+            status_reason: None,
             response: Some("done".into()),
+            output: crate::backend::BackendRunOutput::from_text(Some("done".into())),
             steps: 1,
             run_id: None,
             inbox: None,
+            state: None,
         })
     }
 }
@@ -600,10 +705,14 @@ async fn agent_tool_propagates_child_run_id_in_metadata() {
         result: DelegateRunResult {
             agent_id: "helper".into(),
             status: DelegateRunStatus::Completed,
+            termination: TerminationReason::NaturalEnd,
+            status_reason: None,
             response: Some("done".into()),
+            output: crate::backend::BackendRunOutput::from_text(Some("done".into())),
             steps: 1,
             run_id: Some("child-run-123".into()),
             inbox: None,
+            state: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -633,10 +742,14 @@ async fn agent_tool_with_mock_backend_cancelled() {
         result: DelegateRunResult {
             agent_id: "helper".into(),
             status: DelegateRunStatus::Cancelled,
+            termination: TerminationReason::Cancelled,
+            status_reason: None,
             response: None,
+            output: crate::backend::BackendRunOutput::default(),
             steps: 2,
             run_id: None,
             inbox: None,
+            state: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -662,10 +775,14 @@ async fn agent_tool_with_mock_backend_timeout() {
         result: DelegateRunResult {
             agent_id: "helper".into(),
             status: DelegateRunStatus::Timeout,
+            termination: TerminationReason::Error("timeout".into()),
+            status_reason: None,
             response: Some("partial".into()),
+            output: crate::backend::BackendRunOutput::from_text(Some("partial".into())),
             steps: 5,
             run_id: None,
             inbox: None,
+            state: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -691,10 +808,14 @@ async fn agent_tool_failed_status_contains_error_info() {
         result: DelegateRunResult {
             agent_id: "helper".into(),
             status: DelegateRunStatus::Failed("rate limit exceeded".into()),
+            termination: TerminationReason::Error("rate limit exceeded".into()),
+            status_reason: None,
             response: None,
+            output: crate::backend::BackendRunOutput::default(),
             steps: 1,
             run_id: None,
             inbox: None,
+            state: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -755,10 +876,14 @@ async fn agent_tool_command_is_empty() {
         result: DelegateRunResult {
             agent_id: "helper".into(),
             status: DelegateRunStatus::Completed,
+            termination: TerminationReason::NaturalEnd,
+            status_reason: None,
             response: Some("done".into()),
+            output: crate::backend::BackendRunOutput::from_text(Some("done".into())),
             steps: 1,
             run_id: None,
             inbox: None,
+            state: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -802,10 +927,14 @@ async fn agent_tool_result_data_has_all_fields() {
         result: DelegateRunResult {
             agent_id: "analyst".into(),
             status: DelegateRunStatus::Completed,
+            termination: TerminationReason::NaturalEnd,
+            status_reason: None,
             response: Some("analysis complete".into()),
+            output: crate::backend::BackendRunOutput::from_text(Some("analysis complete".into())),
             steps: 7,
             run_id: Some("child-456".into()),
             inbox: None,
+            state: None,
         },
     });
     let tool = AgentTool::with_backend("analyst", "Data analyst", backend);
@@ -840,10 +969,14 @@ fn agent_tool_descriptor_tool_id_follows_pattern() {
         result: DelegateRunResult {
             agent_id: "my-special-agent".into(),
             status: DelegateRunStatus::Completed,
+            termination: TerminationReason::NaturalEnd,
+            status_reason: None,
             response: None,
+            output: crate::backend::BackendRunOutput::default(),
             steps: 0,
             run_id: None,
             inbox: None,
+            state: None,
         },
     });
     let tool = AgentTool::with_backend("my-special-agent", "desc", backend);
@@ -889,10 +1022,14 @@ async fn agent_tool_omits_child_run_id_when_none() {
         result: DelegateRunResult {
             agent_id: "helper".into(),
             status: DelegateRunStatus::Completed,
+            termination: TerminationReason::NaturalEnd,
+            status_reason: None,
             response: Some("done".into()),
+            output: crate::backend::BackendRunOutput::from_text(Some("done".into())),
             steps: 1,
             run_id: None,
             inbox: None,
+            state: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);

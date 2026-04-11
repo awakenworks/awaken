@@ -11,10 +11,15 @@ use async_trait::async_trait;
 use awaken_contract::contract::content::extract_text;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::lifecycle::RunStatus;
+use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_contract::contract::storage::{RunRecord, RunStore, ThreadStore};
 use awaken_contract::registry_spec::AgentSpec;
+use awaken_contract::registry_spec::RemoteEndpoint;
 use awaken_runtime::builder::AgentRuntimeBuilder;
+use awaken_runtime::extensions::a2a::{
+    AgentBackend, AgentBackendError, AgentBackendFactory, AgentBackendFactoryError,
+    DelegateRunResult, DelegateRunStatus,
+};
 use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{AppState, ServerConfig};
 use awaken_server::routes::build_router;
@@ -113,11 +118,94 @@ impl awaken_contract::contract::executor::LlmExecutor for PreviewInspectorExecut
     }
 }
 
+struct StaticRemoteBackend;
+
+#[async_trait]
+impl AgentBackend for StaticRemoteBackend {
+    fn capabilities(&self) -> awaken_runtime::BackendCapabilities {
+        awaken_runtime::BackendCapabilities {
+            cancellation: awaken_runtime::BackendCancellationCapability::RemoteAbort,
+            decisions: false,
+            overrides: false,
+            frontend_tools: false,
+            continuation: awaken_runtime::BackendContinuationCapability::None,
+            waits: awaken_runtime::BackendWaitCapability::None,
+            transcript: awaken_runtime::BackendTranscriptCapability::SinglePrompt,
+            output: awaken_runtime::BackendOutputCapability::Text,
+        }
+    }
+
+    async fn execute_root(
+        &self,
+        request: awaken_runtime::BackendRootRunRequest<'_>,
+    ) -> Result<DelegateRunResult, AgentBackendError> {
+        Ok(DelegateRunResult {
+            agent_id: request.agent_id.to_string(),
+            status: DelegateRunStatus::Completed,
+            termination: TerminationReason::NaturalEnd,
+            status_reason: None,
+            response: Some("hello from remote root".into()),
+            output: awaken_runtime::BackendRunOutput::from_text(Some(
+                "hello from remote root".into(),
+            )),
+            steps: 1,
+            run_id: Some("remote-child-run".into()),
+            inbox: None,
+            state: None,
+        })
+    }
+}
+
+struct StaticRemoteBackendFactory;
+
+impl AgentBackendFactory for StaticRemoteBackendFactory {
+    fn backend(&self) -> &str {
+        "test-remote"
+    }
+
+    fn build(
+        &self,
+        endpoint: &RemoteEndpoint,
+    ) -> Result<Arc<dyn AgentBackend>, AgentBackendFactoryError> {
+        if endpoint.backend != "test-remote" {
+            return Err(AgentBackendFactoryError::InvalidConfig(format!(
+                "unexpected backend '{}'",
+                endpoint.backend
+            )));
+        }
+        Ok(Arc::new(StaticRemoteBackend))
+    }
+}
+
 // ── Shared helpers ──
 
 struct TestApp {
     router: axum::Router,
     store: Arc<InMemoryStore>,
+}
+
+fn make_test_app_with_runtime(
+    runtime: Arc<awaken_runtime::AgentRuntime>,
+    store: Arc<InMemoryStore>,
+) -> TestApp {
+    let mailbox_store = std::sync::Arc::new(awaken_stores::InMemoryMailboxStore::new());
+    let mailbox = std::sync::Arc::new(awaken_server::mailbox::Mailbox::new(
+        runtime.clone(),
+        mailbox_store,
+        "test".to_string(),
+        awaken_server::mailbox::MailboxConfig::default(),
+    ));
+    let state = AppState::new(
+        runtime.clone(),
+        mailbox,
+        store.clone(),
+        runtime.resolver_arc(),
+        ServerConfig::default(),
+    );
+    TestApp {
+        router: build_router().with_state(state),
+        store,
+    }
 }
 
 fn make_test_app() -> TestApp {
@@ -149,24 +237,38 @@ fn make_test_app_with_executor(
             .build()
             .expect("build runtime"),
     );
-    let mailbox_store = std::sync::Arc::new(awaken_stores::InMemoryMailboxStore::new());
-    let mailbox = std::sync::Arc::new(awaken_server::mailbox::Mailbox::new(
-        runtime.clone(),
-        mailbox_store,
-        "test".to_string(),
-        awaken_server::mailbox::MailboxConfig::default(),
-    ));
-    let state = AppState::new(
-        runtime.clone(),
-        mailbox,
-        store.clone(),
-        runtime.resolver_arc(),
-        ServerConfig::default(),
+    make_test_app_with_runtime(runtime, store)
+}
+
+fn make_test_app_with_remote_root_agent() -> TestApp {
+    let store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(
+        AgentRuntimeBuilder::new()
+            .with_model_binding(
+                "test-model",
+                ModelBinding {
+                    provider_id: "mock".into(),
+                    upstream_model: "mock-model".into(),
+                },
+            )
+            .with_provider("mock", Arc::new(ImmediateExecutor))
+            .with_agent_spec(AgentSpec {
+                id: "remote-agent".into(),
+                model_id: "test-model".into(),
+                system_prompt: "remote".into(),
+                endpoint: Some(RemoteEndpoint {
+                    backend: "test-remote".into(),
+                    base_url: "https://remote.example.com".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .with_agent_backend_factory(Arc::new(StaticRemoteBackendFactory))
+            .with_thread_run_store(store.clone())
+            .build()
+            .expect("build runtime with remote root agent"),
     );
-    TestApp {
-        router: build_router().with_state(state),
-        store,
-    }
+    make_test_app_with_runtime(runtime, store)
 }
 
 async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, String) {
@@ -443,6 +545,117 @@ async fn ai_sdk_agent_run_creates_thread_record() {
         .expect("messages lookup should succeed")
         .expect("messages should be persisted");
     assert!(!messages.is_empty());
+}
+
+#[tokio::test]
+async fn start_run_supports_remote_root_agents() {
+    let test = make_test_app_with_remote_root_agent();
+    let (status, body) = post_json(
+        test.router.clone(),
+        "/v1/runs",
+        json!({
+            "agentId": "remote-agent",
+            "threadId": "thread-remote-start-run",
+            "messages": [{"role": "user", "content": "hello remote"}]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+
+    let events = extract_sse_events(&body);
+    assert!(
+        find_event(&events, "run_start").is_some(),
+        "missing run_start in: {body}"
+    );
+    assert!(events.iter().any(|event| {
+        event.get("event_type").and_then(Value::as_str) == Some("text_delta")
+            && event.get("delta").and_then(Value::as_str) == Some("hello from remote root")
+    }));
+    let run_finish = find_event(&events, "run_finish").expect("run_finish missing");
+    assert_eq!(
+        run_finish["termination"]["type"].as_str(),
+        Some("natural_end"),
+        "unexpected run_finish: {body}"
+    );
+}
+
+#[tokio::test]
+async fn ai_sdk_agent_run_supports_remote_root_agents() {
+    let test = make_test_app_with_remote_root_agent();
+    let thread_id = "thread-remote-root";
+    let (status, body) = post_json(
+        test.router.clone(),
+        "/v1/ai-sdk/agents/remote-agent/runs",
+        json!({
+            "threadId": thread_id,
+            "messages": [
+                {
+                    "role": "user",
+                    "parts": [{ "type": "text", "text": "hello remote" }]
+                }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+    assert!(
+        body.contains("\"type\":\"text-delta\""),
+        "missing text-delta event: {body}"
+    );
+    assert!(
+        body.contains("hello from remote root"),
+        "remote response should be streamed through AI SDK: {body}"
+    );
+
+    let messages = test
+        .store
+        .load_messages(thread_id)
+        .await
+        .expect("messages lookup should succeed")
+        .expect("messages should be persisted");
+    assert!(
+        messages.iter().any(|message| {
+            message.role == awaken_contract::contract::message::Role::Assistant
+                && message.text().contains("hello from remote root")
+        }),
+        "assistant reply should be persisted for remote root runs"
+    );
+
+    let run = test
+        .store
+        .latest_run(thread_id)
+        .await
+        .expect("latest run lookup should succeed")
+        .expect("run record should exist");
+    assert_eq!(run.agent_id, "remote-agent");
+    assert_eq!(run.status, RunStatus::Done);
+}
+
+#[tokio::test]
+async fn ag_ui_agent_run_supports_remote_root_agents() {
+    let test = make_test_app_with_remote_root_agent();
+    let (status, body) = post_json(
+        test.router,
+        "/v1/ag-ui/agents/remote-agent/runs",
+        json!({
+            "threadId": "thread-remote-agui",
+            "messages": [{"role": "user", "content": "hello remote"}]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+    assert!(
+        body.contains("\"type\":\"RUN_STARTED\""),
+        "missing RUN_STARTED: {body}"
+    );
+    assert!(
+        body.contains("hello from remote root"),
+        "remote response should be streamed through AG-UI: {body}"
+    );
+    assert!(
+        body.contains("\"type\":\"RUN_FINISHED\""),
+        "missing RUN_FINISHED: {body}"
+    );
 }
 
 #[tokio::test]

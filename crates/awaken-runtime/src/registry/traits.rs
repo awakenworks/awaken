@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 #[cfg(feature = "a2a")]
-use crate::extensions::a2a::AgentBackendFactory;
+use crate::backend::ExecutionBackendFactory;
 use crate::plugins::Plugin;
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::tool::Tool;
@@ -99,7 +99,7 @@ pub trait PluginSource: Send + Sync {
 #[cfg(feature = "a2a")]
 pub trait BackendRegistry: Send + Sync {
     /// Get a backend factory by backend kind.
-    fn get_backend_factory(&self, backend: &str) -> Option<Arc<dyn AgentBackendFactory>>;
+    fn get_backend_factory(&self, backend: &str) -> Option<Arc<dyn ExecutionBackendFactory>>;
     /// List all registered backend kinds.
     fn backend_ids(&self) -> Vec<String>;
 }

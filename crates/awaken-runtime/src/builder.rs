@@ -8,6 +8,7 @@ use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::AgentSpec;
 
+use crate::backend::ExecutionBackendFactory;
 use crate::plugins::Plugin;
 #[cfg(feature = "a2a")]
 use crate::registry::BackendRegistry;
@@ -172,10 +173,7 @@ impl AgentRuntimeBuilder {
 
     /// Register a remote delegate backend factory by its backend kind.
     #[cfg(feature = "a2a")]
-    pub fn with_agent_backend_factory(
-        mut self,
-        factory: Arc<dyn crate::extensions::a2a::AgentBackendFactory>,
-    ) -> Self {
+    pub fn with_agent_backend_factory(mut self, factory: Arc<dyn ExecutionBackendFactory>) -> Self {
         if let Err(e) = self.backends.register_backend_factory(factory) {
             self.errors.push(e);
         }
@@ -191,8 +189,34 @@ impl AgentRuntimeBuilder {
     pub fn build(self) -> Result<AgentRuntime, BuildError> {
         let runtime = self.build_unchecked()?;
         let resolver = runtime.resolver();
+        #[cfg(feature = "a2a")]
+        let registries = runtime.registry_set();
         let mut errors = Vec::new();
         for agent_id in resolver.agent_ids() {
+            #[cfg(feature = "a2a")]
+            {
+                if let Some(spec) = registries
+                    .as_ref()
+                    .and_then(|set| set.agents.get_agent(&agent_id))
+                    && let Some(endpoint) = &spec.endpoint
+                {
+                    let Some(factory) = registries
+                        .as_ref()
+                        .and_then(|set| set.backends.get_backend_factory(&endpoint.backend))
+                    else {
+                        errors.push(format!(
+                            "{agent_id}: unsupported remote backend '{}'",
+                            endpoint.backend
+                        ));
+                        continue;
+                    };
+                    if let Err(error) = factory.validate(endpoint) {
+                        errors.push(format!("{agent_id}: {error}"));
+                    }
+                    continue;
+                }
+            }
+
             if let Err(e) = resolver.resolve(&agent_id) {
                 errors.push(format!("{agent_id}: {e}"));
             }
@@ -239,11 +263,12 @@ impl AgentRuntimeBuilder {
         };
 
         let registry_handle = RegistryHandle::new(registry_set.clone());
-        let resolver: Arc<dyn crate::registry::AgentResolver> = Arc::new(
+        let resolver: Arc<dyn crate::registry::ExecutionResolver> = Arc::new(
             crate::registry::resolve::DynamicRegistryResolver::new(registry_handle.clone()),
         );
 
-        let mut runtime = AgentRuntime::new(resolver).with_registry_handle(registry_handle);
+        let mut runtime = AgentRuntime::new_with_execution_resolver(resolver)
+            .with_registry_handle(registry_handle);
 
         #[cfg(feature = "a2a")]
         if let Some(composite) = composite_registry {
@@ -284,10 +309,16 @@ mod tests {
     use async_trait::async_trait;
     use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
     use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+    #[cfg(feature = "a2a")]
+    use awaken_contract::contract::lifecycle::TerminationReason;
     use awaken_contract::contract::tool::{
         ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
     };
+    #[cfg(feature = "a2a")]
+    use awaken_contract::registry_spec::RemoteEndpoint;
     use serde_json::Value;
+    #[cfg(feature = "a2a")]
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crate::registry::memory::{
         MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry,
@@ -332,6 +363,74 @@ mod tests {
 
         fn name(&self) -> &str {
             "mock"
+        }
+    }
+
+    #[cfg(feature = "a2a")]
+    struct NoopRemoteBackend;
+
+    #[cfg(feature = "a2a")]
+    #[async_trait]
+    impl crate::backend::ExecutionBackend for NoopRemoteBackend {
+        async fn execute_root(
+            &self,
+            request: crate::backend::BackendRootRunRequest<'_>,
+        ) -> Result<crate::backend::BackendRunResult, crate::backend::ExecutionBackendError>
+        {
+            Ok(crate::backend::BackendRunResult {
+                agent_id: request.agent_id.to_string(),
+                status: crate::backend::BackendRunStatus::Completed,
+                termination: TerminationReason::NaturalEnd,
+                status_reason: None,
+                response: None,
+                output: crate::backend::BackendRunOutput::default(),
+                steps: 0,
+                run_id: None,
+                inbox: None,
+                state: None,
+            })
+        }
+    }
+
+    #[cfg(feature = "a2a")]
+    struct CountingValidationBackendFactory {
+        validate_count: Arc<AtomicUsize>,
+        build_count: Arc<AtomicUsize>,
+    }
+
+    #[cfg(feature = "a2a")]
+    impl crate::backend::ExecutionBackendFactory for CountingValidationBackendFactory {
+        fn backend(&self) -> &str {
+            "counting-remote"
+        }
+
+        fn validate(
+            &self,
+            endpoint: &RemoteEndpoint,
+        ) -> Result<(), crate::backend::ExecutionBackendFactoryError> {
+            self.validate_count.fetch_add(1, Ordering::SeqCst);
+            if endpoint.base_url.trim().is_empty() {
+                return Err(crate::backend::ExecutionBackendFactoryError::InvalidConfig(
+                    "empty base_url".into(),
+                ));
+            }
+            Ok(())
+        }
+
+        fn build(
+            &self,
+            endpoint: &RemoteEndpoint,
+        ) -> Result<
+            Arc<dyn crate::backend::ExecutionBackend>,
+            crate::backend::ExecutionBackendFactoryError,
+        > {
+            self.build_count.fetch_add(1, Ordering::SeqCst);
+            if endpoint.backend != self.backend() {
+                return Err(crate::backend::ExecutionBackendFactoryError::InvalidConfig(
+                    format!("unexpected backend '{}'", endpoint.backend),
+                ));
+            }
+            Ok(Arc::new(NoopRemoteBackend))
         }
     }
 
@@ -728,6 +827,38 @@ mod tests {
             .build()
             .unwrap();
         assert!(runtime.profile_store.is_some());
+    }
+
+    #[cfg(feature = "a2a")]
+    #[test]
+    fn build_allows_endpoint_agents_when_backend_factory_exists() {
+        let validate_count = Arc::new(AtomicUsize::new(0));
+        let build_count = Arc::new(AtomicUsize::new(0));
+        let runtime = AgentRuntimeBuilder::new()
+            .with_agent_spec(
+                AgentSpec::new("remote-agent")
+                    .with_model_id("remote-model")
+                    .with_system_prompt("remote")
+                    .with_endpoint(RemoteEndpoint {
+                        backend: "counting-remote".into(),
+                        base_url: "https://remote.example.com".into(),
+                        ..Default::default()
+                    }),
+            )
+            .with_agent_backend_factory(Arc::new(CountingValidationBackendFactory {
+                validate_count: validate_count.clone(),
+                build_count: build_count.clone(),
+            }))
+            .build()
+            .expect("endpoint agents should validate through backend factory");
+
+        let spec = runtime
+            .registry_set()
+            .and_then(|set| set.agents.get_agent("remote-agent"))
+            .expect("remote agent should remain registered");
+        assert!(spec.endpoint.is_some());
+        assert_eq!(validate_count.load(Ordering::SeqCst), 1);
+        assert_eq!(build_count.load(Ordering::SeqCst), 0);
     }
 
     #[test]

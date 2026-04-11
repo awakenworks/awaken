@@ -36,6 +36,8 @@ pub struct RunRequest {
     pub parent_thread_id: Option<String>,
     /// Continue a previous run instead of creating a new one.
     pub continue_run_id: Option<String>,
+    /// Optional job ID hint used by mailbox-based transports before a run record exists.
+    pub job_id_hint: Option<String>,
     /// Optional in-process inbox pair for background-task notifications.
     pub run_inbox: Option<RunInbox>,
 }
@@ -54,6 +56,7 @@ impl RunRequest {
             parent_run_id: None,
             parent_thread_id: None,
             continue_run_id: None,
+            job_id_hint: None,
             run_inbox: None,
         }
     }
@@ -103,6 +106,12 @@ impl RunRequest {
     #[must_use]
     pub fn with_continue_run_id(mut self, continue_run_id: impl Into<String>) -> Self {
         self.continue_run_id = Some(continue_run_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_job_id_hint(mut self, job_id_hint: impl Into<String>) -> Self {
+        self.job_id_hint = Some(job_id_hint.into());
         self
     }
 
