@@ -183,7 +183,7 @@ mod tests {
 
     fn make_request(text: &str) -> InferenceRequest {
         InferenceRequest {
-            model: "scripted".into(),
+            upstream_model: "scripted".into(),
             messages: vec![Message::user(text)],
             tools: vec![],
             system: vec![],

@@ -22,22 +22,22 @@ serde_json = "1"
 use std::sync::Arc;
 use awaken::engine::GenaiExecutor;
 use awaken::ext_permission::PermissionPlugin;
-use awaken::registry_spec::{AgentSpec, ModelSpec};
+use awaken::registry::ModelBinding;
+use awaken::registry_spec::AgentSpec;
 use awaken::{AgentRuntimeBuilder, Plugin};
 
 let agent_spec = AgentSpec::new("my-agent")
-    .with_model("gpt-4o-mini")
+    .with_model_id("gpt-4o-mini")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("permission");
 
 let runtime = AgentRuntimeBuilder::new()
     .with_provider("openai", Arc::new(GenaiExecutor::new()))
-    .with_model(
+    .with_model_binding(
         "gpt-4o-mini",
-        ModelSpec {
-            id: "gpt-4o-mini".into(),
-            provider: "openai".into(),
-            model: "gpt-4o-mini".into(),
+        ModelBinding {
+            provider_id: "openai".into(),
+            upstream_model: "gpt-4o-mini".into(),
         },
     )
     .with_agent_spec(agent_spec)
@@ -94,7 +94,7 @@ rules:
 
 ```rust,ignore
 let agent_spec = AgentSpec::new("my-agent")
-    .with_model("gpt-4o-mini")
+    .with_model_id("gpt-4o-mini")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("permission");
 ```

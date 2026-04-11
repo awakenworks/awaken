@@ -13,7 +13,7 @@ use awaken_contract::contract::tool::{
 };
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_runtime::registry::traits::ModelEntry;
+use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{AppState, ServerConfig};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
@@ -178,17 +178,17 @@ struct TestApp {
 fn make_ag_ui_app(llm: Arc<dyn LlmExecutor>, tools: Vec<(String, Arc<dyn Tool>)>) -> TestApp {
     let store = Arc::new(InMemoryStore::new());
     let mut builder = AgentRuntimeBuilder::new()
-        .with_model(
+        .with_model_binding(
             "test-model",
-            ModelEntry {
-                provider: "mock".into(),
-                model_name: "mock-model".into(),
+            ModelBinding {
+                provider_id: "mock".into(),
+                upstream_model: "mock-model".into(),
             },
         )
         .with_provider("mock", llm)
         .with_agent_spec(AgentSpec {
             id: "test-agent".into(),
-            model: "test-model".into(),
+            model_id: "test-model".into(),
             system_prompt: "You are a test assistant.".into(),
             max_rounds: 5,
             ..Default::default()
@@ -980,17 +980,17 @@ async fn multiple_sequential_runs_on_same_thread() {
     let store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
-            .with_model(
+            .with_model_binding(
                 "test-model",
-                ModelEntry {
-                    provider: "mock".into(),
-                    model_name: "mock-model".into(),
+                ModelBinding {
+                    provider_id: "mock".into(),
+                    upstream_model: "mock-model".into(),
                 },
             )
             .with_provider("mock", llm)
             .with_agent_spec(AgentSpec {
                 id: "test-agent".into(),
-                model: "test-model".into(),
+                model_id: "test-model".into(),
                 system_prompt: "test".into(),
                 max_rounds: 5,
                 ..Default::default()

@@ -24,14 +24,14 @@ Key types:
 
 Each overlay specifies which parts of the base agent configuration to override. Fields left as `None` inherit the base agent's values.
 
-The `model` field uses the same model registry ID that `AgentSpec.model` uses.
+The `model` field uses the same model registry ID that `AgentSpec.model_id` uses.
 
 ```rust,ignore
 use awaken::extensions::handoff::AgentOverlay;
 
 let researcher = AgentOverlay {
     system_prompt: Some("You are a research specialist. Find and cite sources.".into()),
-    model: Some("claude-sonnet".into()),
+    upstream_model: Some("claude-sonnet".into()),
     allowed_tools: Some(vec!["web_search".into(), "read_document".into()]),
     excluded_tools: None,
 };

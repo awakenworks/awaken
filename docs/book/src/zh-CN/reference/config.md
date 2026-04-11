@@ -7,7 +7,7 @@
 ```rust,ignore
 pub struct AgentSpec {
     pub id: String,
-    pub model: String,
+    pub model_id: String,                            // model registry id
     pub system_prompt: String,
     pub max_rounds: usize,
     pub max_continuation_retries: usize,
@@ -30,7 +30,7 @@ pub struct AgentSpec {
 
 ```rust,ignore
 AgentSpec::new(id) -> Self
-    .with_model(model) -> Self
+    .with_model_id(model_id) -> Self
     .with_system_prompt(prompt) -> Self
     .with_max_rounds(n) -> Self
     .with_reasoning_effort(effort) -> Self
@@ -77,10 +77,13 @@ pub enum ContextCompactionMode {
 
 用于单次推理的参数覆盖。所有字段都是 `Option`，多插件同时写时按字段 last-wins 合并。
 
+`upstream_model` 和 `fallback_upstream_models` 是当前已解析 provider 的上游模型名。它们不会重新解析
+`AgentSpec.model_id`，也不会切换 provider。详见 [Provider 与 Model 配置](./provider-model-config.md)。
+
 ```rust,ignore
 pub struct InferenceOverride {
-    pub model: Option<String>,
-    pub fallback_models: Option<Vec<String>>,
+    pub upstream_model: Option<String>,      // 上游模型名
+    pub fallback_upstream_models: Option<Vec<String>>, // 上游模型名列表
     pub temperature: Option<f64>,
     pub max_tokens: Option<u32>,
     pub top_p: Option<f64>,
@@ -204,12 +207,17 @@ pub struct MailboxConfig {
 
 ## LlmRetryPolicy
 
-LLM 推理失败后的重试与 fallback model 策略，支持指数退避。可通过 `AgentSpec` 的 `"retry"` section 按 agent 配置。
+LLM 推理失败后的重试与 fallback upstream model 策略，支持指数退避。可通过 `AgentSpec` 的 `"retry"` section 按 agent 配置。
+
+Retry 在 agent 解析阶段生效。缺失 `"retry"` section 时使用 `LlmRetryPolicy::default()`。
+将 `max_retries` 设为 `0` 且保持 `fallback_upstream_models` 为空可以禁用 retry 包装。Provider
+构造阶段不会额外隐藏一层 retry 策略。对于流式推理，retry 与 fallback 只作用于打开
+stream 的阶段。
 
 ```rust,ignore
 pub struct LlmRetryPolicy {
     pub max_retries: u32,              // default: 2
-    pub fallback_models: Vec<String>,  // default: []
+    pub fallback_upstream_models: Vec<String>,  // default: []
     pub backoff_base_ms: u64,          // default: 500
 }
 ```
@@ -219,7 +227,7 @@ pub struct LlmRetryPolicy {
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `max_retries` | `u32` | `2` | 初次调用后的最大重试次数（0 表示不重试） |
-| `fallback_models` | `Vec<String>` | `[]` | 主模型耗尽重试后依次尝试的备用模型列表 |
+| `fallback_upstream_models` | `Vec<String>` | `[]` | 主模型耗尽重试后依次尝试的备用模型列表 |
 | `backoff_base_ms` | `u64` | `500` | 指数退避的基础延迟（毫秒）；实际延迟 = min(base × 2^attempt, 8000ms)。设为 0 可禁用退避 |
 
 ### AgentSpec 集成
@@ -232,7 +240,7 @@ use awaken_runtime::engine::retry::RetryConfigKey;
 let spec = AgentSpec::new("my-agent")
     .with_config::<RetryConfigKey>(LlmRetryPolicy {
         max_retries: 3,
-        fallback_models: vec!["claude-sonnet-4-20250514".into()],
+        fallback_upstream_models: vec!["claude-sonnet-4-20250514".into()],
         backoff_base_ms: 1000,
     })?;
 ```

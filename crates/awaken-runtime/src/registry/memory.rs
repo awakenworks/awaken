@@ -13,7 +13,7 @@ use awaken_contract::contract::tool::Tool;
 #[cfg(feature = "a2a")]
 use super::traits::BackendRegistry;
 use super::traits::{
-    AgentSpecRegistry, ModelEntry, ModelRegistry, PluginSource, ProviderRegistry, ToolRegistry,
+    AgentSpecRegistry, ModelBinding, ModelRegistry, PluginSource, ProviderRegistry, ToolRegistry,
 };
 use awaken_contract::registry_spec::AgentSpec;
 
@@ -74,7 +74,7 @@ impl<V: Clone> MapRegistry<V> {
 // ---------------------------------------------------------------------------
 
 pub type MapToolRegistry = MapRegistry<Arc<dyn Tool>>;
-pub type MapModelRegistry = MapRegistry<ModelEntry>;
+pub type MapModelRegistry = MapRegistry<ModelBinding>;
 pub type MapProviderRegistry = MapRegistry<Arc<dyn LlmExecutor>>;
 pub type MapAgentSpecRegistry = MapRegistry<AgentSpec>;
 pub type MapPluginSource = MapRegistry<Arc<dyn Plugin>>;
@@ -101,9 +101,9 @@ impl MapModelRegistry {
     pub fn register_model(
         &mut self,
         id: impl Into<String>,
-        entry: ModelEntry,
+        binding: ModelBinding,
     ) -> Result<(), BuildError> {
-        self.register(id, entry, |msg| {
+        self.register(id, binding, |msg| {
             BuildError::ModelRegistryConflict(format!("model {msg}"))
         })
     }
@@ -179,7 +179,7 @@ impl ToolRegistry for MapToolRegistry {
 }
 
 impl ModelRegistry for MapModelRegistry {
-    fn get_model(&self, id: &str) -> Option<ModelEntry> {
+    fn get_model(&self, id: &str) -> Option<ModelBinding> {
         self.get_cloned(id)
     }
 

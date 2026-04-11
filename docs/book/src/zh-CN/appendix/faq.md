@@ -2,7 +2,7 @@
 
 ## 支持哪些 LLM provider？
 
-任何兼容 `genai` 的 provider 都可以，包括 OpenAI、Anthropic、DeepSeek、Google Gemini、Ollama 等。当前做法不是在 `AgentSpec` 里直接写 provider 名，而是把 `AgentSpec.model` 写成模型注册表里的 ID，再由 `ModelSpec` 解析到 provider 和真实模型名。
+任何兼容 `genai` 的 provider 都可以，包括 OpenAI、Anthropic、DeepSeek、Google Gemini、Ollama 等。当前做法不是在 `AgentSpec` 里直接写 provider 名，而是把 `AgentSpec.model_id` 写成模型注册表里的 ID，再由 `ModelBindingSpec` 解析到 provider 和真实模型名。
 
 ## 如何添加新的存储后端？
 

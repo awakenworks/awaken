@@ -161,14 +161,18 @@ Multiple plugins can influence inference parameters by scheduling `SetInferenceO
 
 ```rust,ignore
 pub struct InferenceOverride {
-    pub model: Option<String>,
-    pub fallback_models: Option<Vec<String>>,
+    pub upstream_model: Option<String>,
+    pub fallback_upstream_models: Option<Vec<String>>,
     pub temperature: Option<f64>,
     pub max_tokens: Option<u32>,
     pub top_p: Option<f64>,
     pub reasoning_effort: Option<ReasoningEffort>,
 }
 ```
+
+`upstream_model` and `fallback_upstream_models` are upstream model names for the already
+resolved provider; they do not switch provider executors. See
+[Provider and Model Configuration](../reference/provider-model-config.md).
 
 When two overrides are merged, each field independently takes the last non-`None` value:
 

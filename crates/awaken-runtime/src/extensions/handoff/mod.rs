@@ -4,7 +4,7 @@
 //!
 //! 1. `HandoffState` tracks active and requested agent variants.
 //! 2. `HandoffPlugin` reads state and applies agent overlays dynamically.
-//! 3. `AgentOverlay` defines per-variant overrides (system prompt, model, tools).
+//! 3. `AgentOverlay` defines per-variant overrides (system prompt, model ID, tools).
 //!
 //! No run termination or re-resolution occurs — handoff is instant.
 

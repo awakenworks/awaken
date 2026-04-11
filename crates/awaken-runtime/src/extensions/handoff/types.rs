@@ -4,13 +4,14 @@ use serde::{Deserialize, Serialize};
 ///
 /// Each field, when `Some`, overrides the base agent configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentOverlay {
     /// Override the system prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-    /// Override the model ID.
+    /// Override the model registry ID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
+    pub model_id: Option<String>,
     /// Whitelist of allowed tool IDs (None = all tools allowed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,

@@ -481,7 +481,7 @@ mod tests {
     use awaken_contract::contract::message::ToolCall as RuntimeToolCall;
     use awaken_contract::contract::tool::{FrontEndTool, ToolDescriptor};
     use awaken_runtime::builder::AgentRuntimeBuilder;
-    use awaken_runtime::registry::traits::ModelEntry;
+    use awaken_runtime::registry::traits::ModelBinding;
     use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, split};
     use tokio::time::{Duration, timeout};
 
@@ -545,11 +545,11 @@ mod tests {
         let frontend_tool = ToolDescriptor::new("ask_user", "ask_user", "Ask the user a question");
 
         let builder = AgentRuntimeBuilder::new()
-            .with_model(
+            .with_model_binding(
                 "test-model",
-                ModelEntry {
-                    provider: "mock".into(),
-                    model_name: "mock-model".into(),
+                ModelBinding {
+                    provider_id: "mock".into(),
+                    upstream_model: "mock-model".into(),
                 },
             )
             .with_provider(
@@ -561,7 +561,7 @@ mod tests {
             .with_tool("ask_user", Arc::new(FrontEndTool::new(frontend_tool)))
             .with_agent_spec(awaken_contract::registry_spec::AgentSpec {
                 id: "frontend".into(),
-                model: "test-model".into(),
+                model_id: "test-model".into(),
                 system_prompt: "You delegate to a frontend tool".into(),
                 max_rounds: 2,
                 ..Default::default()

@@ -18,7 +18,7 @@ use awaken_contract::contract::tool::{
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_ext_permission::PermissionPlugin;
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_runtime::registry::traits::ModelEntry;
+use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::protocols::acp::stdio::serve_stdio_io;
 use serde_json::{Value, json};
 use tokio::io::{BufReader, split};
@@ -153,17 +153,17 @@ impl Tool for GetWeatherTool {
 
 fn echo_runtime() -> Arc<awaken_runtime::AgentRuntime> {
     let builder = AgentRuntimeBuilder::new()
-        .with_model(
+        .with_model_binding(
             "test-model",
-            ModelEntry {
-                provider: "mock".into(),
-                model_name: "mock-model".into(),
+            ModelBinding {
+                provider_id: "mock".into(),
+                upstream_model: "mock-model".into(),
             },
         )
         .with_provider("mock", Arc::new(EchoExecutor))
         .with_agent_spec(AgentSpec {
             id: "echo".into(),
-            model: "test-model".into(),
+            model_id: "test-model".into(),
             system_prompt: "You are an echo bot".into(),
             max_rounds: 2,
             ..Default::default()
@@ -176,11 +176,11 @@ fn permission_runtime() -> Arc<awaken_runtime::AgentRuntime> {
     sections.insert("permission".to_string(), json!({"default_behavior": "ask"}));
 
     let builder = AgentRuntimeBuilder::new()
-        .with_model(
+        .with_model_binding(
             "test-model",
-            ModelEntry {
-                provider: "mock".into(),
-                model_name: "mock-model".into(),
+            ModelBinding {
+                provider_id: "mock".into(),
+                upstream_model: "mock-model".into(),
             },
         )
         .with_provider(
@@ -193,7 +193,7 @@ fn permission_runtime() -> Arc<awaken_runtime::AgentRuntime> {
         .with_plugin("permission", Arc::new(PermissionPlugin))
         .with_agent_spec(AgentSpec {
             id: "weather".into(),
-            model: "test-model".into(),
+            model_id: "test-model".into(),
             system_prompt: "You are a weather bot".into(),
             max_rounds: 2,
             plugin_ids: vec!["permission".into()],

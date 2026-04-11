@@ -200,12 +200,12 @@ mod tests {
     fn phase_context_with_agent_spec() {
         let spec = Arc::new(
             AgentSpec::new("reviewer")
-                .with_model("opus")
+                .with_model_id("opus")
                 .with_hook_filter("perm"),
         );
         let ctx = PhaseContext::new(Phase::RunStart, empty_snapshot()).with_agent_spec(spec);
         assert_eq!(ctx.agent_spec.id, "reviewer");
-        assert_eq!(ctx.agent_spec.model, "opus");
+        assert_eq!(ctx.agent_spec.model_id, "opus");
         assert!(ctx.agent_spec.active_hook_filter.contains("perm"));
     }
 

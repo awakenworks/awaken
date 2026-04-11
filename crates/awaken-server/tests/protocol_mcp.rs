@@ -9,7 +9,7 @@ use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequ
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_runtime::registry::traits::ModelEntry;
+use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{AppState, ServerConfig};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
@@ -62,17 +62,17 @@ impl awaken_contract::contract::executor::LlmExecutor for EchoExecutor {
 fn make_mcp_app() -> axum::Router {
     let runtime = {
         let builder = AgentRuntimeBuilder::new()
-            .with_model(
+            .with_model_binding(
                 "test-model",
-                ModelEntry {
-                    provider: "mock".into(),
-                    model_name: "mock-model".into(),
+                ModelBinding {
+                    provider_id: "mock".into(),
+                    upstream_model: "mock-model".into(),
                 },
             )
             .with_provider("mock", Arc::new(EchoExecutor))
             .with_agent_spec(AgentSpec {
                 id: "echo".into(),
-                model: "test-model".into(),
+                model_id: "test-model".into(),
                 system_prompt: "You are an echo bot".into(),
                 max_rounds: 2,
                 ..Default::default()
@@ -420,17 +420,17 @@ async fn mcp_unknown_method_returns_error() {
 async fn stdio_e2e_full_flow() {
     let runtime = {
         let builder = AgentRuntimeBuilder::new()
-            .with_model(
+            .with_model_binding(
                 "test-model",
-                ModelEntry {
-                    provider: "mock".into(),
-                    model_name: "mock-model".into(),
+                ModelBinding {
+                    provider_id: "mock".into(),
+                    upstream_model: "mock-model".into(),
                 },
             )
             .with_provider("mock", Arc::new(EchoExecutor))
             .with_agent_spec(AgentSpec {
                 id: "echo".into(),
-                model: "test-model".into(),
+                model_id: "test-model".into(),
                 system_prompt: "You are an echo bot".into(),
                 max_rounds: 2,
                 ..Default::default()

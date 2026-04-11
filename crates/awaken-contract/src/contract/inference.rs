@@ -164,15 +164,6 @@ pub enum ContextCompactionMode {
     CompactToSafeFrontier,
 }
 
-/// Override for model selection during inference.
-#[derive(Debug, Clone)]
-pub struct InferenceModelOverride {
-    /// Primary model identifier.
-    pub model: String,
-    /// Fallback model identifiers.
-    pub fallback_models: Vec<String>,
-}
-
 /// Reasoning effort hint, independent of any LLM provider SDK.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -191,11 +182,16 @@ pub enum ReasoningEffort {
 /// All fields are `Option` — `None` means "use the agent-level default".
 /// Multiple plugins can emit overrides; fields are merged with last-wins semantics.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InferenceOverride {
-    /// Primary model identifier.
-    pub model: Option<String>,
-    /// Fallback model identifiers.
-    pub fallback_models: Option<Vec<String>>,
+    /// Upstream model name to send to the already resolved provider.
+    ///
+    /// This does not re-resolve `AgentSpec.model_id` and therefore does not switch
+    /// providers. Use a different `AgentSpec.model_id` or agent handoff when a run
+    /// must move to another provider.
+    pub upstream_model: Option<String>,
+    /// Upstream fallback model names for the same resolved provider.
+    pub fallback_upstream_models: Option<Vec<String>>,
     /// Sampling temperature.
     pub temperature: Option<f64>,
     /// Maximum output tokens.
@@ -209,8 +205,8 @@ pub struct InferenceOverride {
 impl InferenceOverride {
     /// Returns true if all fields are `None` (no override set).
     pub fn is_empty(&self) -> bool {
-        self.model.is_none()
-            && self.fallback_models.is_none()
+        self.upstream_model.is_none()
+            && self.fallback_upstream_models.is_none()
             && self.temperature.is_none()
             && self.max_tokens.is_none()
             && self.top_p.is_none()
@@ -219,11 +215,11 @@ impl InferenceOverride {
 
     /// Merge `other` into `self` with last-wins semantics per field.
     pub fn merge(&mut self, other: InferenceOverride) {
-        if other.model.is_some() {
-            self.model = other.model;
+        if other.upstream_model.is_some() {
+            self.upstream_model = other.upstream_model;
         }
-        if other.fallback_models.is_some() {
-            self.fallback_models = other.fallback_models;
+        if other.fallback_upstream_models.is_some() {
+            self.fallback_upstream_models = other.fallback_upstream_models;
         }
         if other.temperature.is_some() {
             self.temperature = other.temperature;
@@ -236,20 +232,6 @@ impl InferenceOverride {
         }
         if other.reasoning_effort.is_some() {
             self.reasoning_effort = other.reasoning_effort;
-        }
-    }
-}
-
-impl From<InferenceModelOverride> for InferenceOverride {
-    fn from(m: InferenceModelOverride) -> Self {
-        Self {
-            model: Some(m.model),
-            fallback_models: if m.fallback_models.is_empty() {
-                None
-            } else {
-                Some(m.fallback_models)
-            },
-            ..Default::default()
         }
     }
 }
@@ -314,16 +296,16 @@ mod tests {
     #[test]
     fn inference_override_merge_last_wins() {
         let mut base = InferenceOverride {
-            model: Some("model-a".into()),
+            upstream_model: Some("model-a".into()),
             temperature: Some(0.5),
             ..Default::default()
         };
         base.merge(InferenceOverride {
-            model: Some("model-b".into()),
+            upstream_model: Some("model-b".into()),
             reasoning_effort: Some(ReasoningEffort::High),
             ..Default::default()
         });
-        assert_eq!(base.model.as_deref(), Some("model-b"));
+        assert_eq!(base.upstream_model.as_deref(), Some("model-b"));
         assert_eq!(base.temperature, Some(0.5));
         assert_eq!(base.reasoning_effort, Some(ReasoningEffort::High));
     }
@@ -341,25 +323,25 @@ mod tests {
     }
 
     #[test]
-    fn from_model_override_converts_correctly() {
-        let model_ovr = InferenceModelOverride {
-            model: "claude-sonnet".into(),
-            fallback_models: vec!["claude-haiku".into()],
+    fn inference_override_uses_canonical_names() {
+        let canonical = InferenceOverride {
+            upstream_model: Some("gpt-4o".into()),
+            fallback_upstream_models: Some(vec!["gpt-4o-mini".into()]),
+            ..Default::default()
         };
-        let ovr: InferenceOverride = model_ovr.into();
-        assert_eq!(ovr.model.as_deref(), Some("claude-sonnet"));
-        assert_eq!(ovr.fallback_models, Some(vec!["claude-haiku".into()]));
-        assert!(ovr.temperature.is_none());
+
+        let encoded = serde_json::to_value(&canonical).unwrap();
+        assert_eq!(encoded["upstream_model"], "gpt-4o");
+        assert_eq!(encoded["fallback_upstream_models"][0], "gpt-4o-mini");
     }
 
     #[test]
-    fn from_model_override_empty_fallbacks() {
-        let model_ovr = InferenceModelOverride {
-            model: "gpt-4o".into(),
-            fallback_models: vec![],
-        };
-        let ovr: InferenceOverride = model_ovr.into();
-        assert!(ovr.fallback_models.is_none());
+    fn inference_override_rejects_legacy_model_fields() {
+        let legacy = serde_json::from_value::<InferenceOverride>(json!({
+            "model": "gpt-4o",
+            "fallback_models": ["gpt-4o-mini"]
+        }));
+        assert!(legacy.is_err());
     }
 
     #[test]
@@ -560,9 +542,9 @@ mod tests {
     }
 
     #[test]
-    fn inference_override_not_empty_with_model() {
+    fn inference_override_not_empty_with_upstream_model() {
         let ovr = InferenceOverride {
-            model: Some("model-a".into()),
+            upstream_model: Some("model-a".into()),
             ..Default::default()
         };
         assert!(!ovr.is_empty());
@@ -605,9 +587,9 @@ mod tests {
     }
 
     #[test]
-    fn inference_override_not_empty_with_fallback_models() {
+    fn inference_override_not_empty_with_fallback_upstream_models() {
         let ovr = InferenceOverride {
-            fallback_models: Some(vec!["m1".into()]),
+            fallback_upstream_models: Some(vec!["m1".into()]),
             ..Default::default()
         };
         assert!(!ovr.is_empty());
@@ -761,14 +743,14 @@ mod tests {
     // ── InferenceOverride merge tests (migrated from uncarve) ──
 
     #[test]
-    fn inference_override_merge_fallback_models() {
+    fn inference_override_merge_fallback_upstream_models() {
         let mut base = InferenceOverride::default();
         base.merge(InferenceOverride {
-            fallback_models: Some(vec!["model-a".into(), "model-b".into()]),
+            fallback_upstream_models: Some(vec!["model-a".into(), "model-b".into()]),
             ..Default::default()
         });
         assert_eq!(
-            base.fallback_models,
+            base.fallback_upstream_models,
             Some(vec!["model-a".into(), "model-b".into()])
         );
     }

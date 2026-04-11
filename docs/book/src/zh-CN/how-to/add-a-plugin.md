@@ -99,10 +99,11 @@ impl Plugin for AuditPlugin {
 ```rust,ignore
 use std::sync::Arc;
 use awaken::engine::GenaiExecutor;
-use awaken::{AgentSpec, AgentRuntimeBuilder, ModelSpec};
+use awaken::registry::ModelBinding;
+use awaken::{AgentSpec, AgentRuntimeBuilder};
 
 let spec = AgentSpec::new("assistant")
-    .with_model("claude-sonnet")
+    .with_model_id("claude-sonnet")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("audit");
 
@@ -110,10 +111,9 @@ let runtime = AgentRuntimeBuilder::new()
     .with_plugin("audit", Arc::new(AuditPlugin))
     .with_agent_spec(spec)
     .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
-    .with_model("claude-sonnet", ModelSpec {
-        id: "claude-sonnet".into(),
-        provider: "anthropic".into(),
-        model: "claude-sonnet-4-20250514".into(),
+    .with_model_binding("claude-sonnet", ModelBinding {
+        provider_id: "anthropic".into(),
+        upstream_model: "claude-sonnet-4-20250514".into(),
     })
     .build()?;
 ```

@@ -161,14 +161,17 @@ pub trait EffectSpec: 'static + Send + Sync {
 
 ```rust,ignore
 pub struct InferenceOverride {
-    pub model: Option<String>,
-    pub fallback_models: Option<Vec<String>>,
+    pub upstream_model: Option<String>,
+    pub fallback_upstream_models: Option<Vec<String>>,
     pub temperature: Option<f64>,
     pub max_tokens: Option<u32>,
     pub top_p: Option<f64>,
     pub reasoning_effort: Option<ReasoningEffort>,
 }
 ```
+
+`upstream_model` 和 `fallback_upstream_models` 是当前已解析 provider 的上游模型名；
+它们不会切换 provider executor。详见 [Provider 与 Model 配置](../reference/provider-model-config.md)。
 
 当两个覆盖被合并时，每个字段独立取最后一个非 `None` 的值：
 

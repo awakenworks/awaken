@@ -1218,7 +1218,7 @@ async fn before_inference_hook_override_reaches_request() {
 
     // LLM that captures the InferenceRequest
     struct CapturingLlm {
-        captured: Mutex<Vec<Option<InferenceOverride>>>,
+        captured: Mutex<Vec<(String, Option<InferenceOverride>)>>,
     }
 
     #[async_trait]
@@ -1227,7 +1227,10 @@ async fn before_inference_hook_override_reaches_request() {
             &self,
             req: InferenceRequest,
         ) -> Result<StreamResult, InferenceExecutionError> {
-            self.captured.lock().unwrap().push(req.overrides);
+            self.captured
+                .lock()
+                .unwrap()
+                .push((req.upstream_model, req.overrides));
             Ok(StreamResult {
                 content: vec![ContentBlock::text("done")],
                 tool_calls: vec![],
@@ -1297,10 +1300,12 @@ async fn before_inference_hook_override_reaches_request() {
 
     let captured = llm.captured.lock().unwrap();
     assert_eq!(captured.len(), 1);
-    let overrides = captured[0].as_ref().expect("overrides should be set");
+    let (upstream_model, overrides) = &captured[0];
+    assert_eq!(upstream_model, "m");
+    let overrides = overrides.as_ref().expect("overrides should be set");
     assert_eq!(overrides.temperature, Some(0.0));
     assert_eq!(overrides.max_tokens, Some(256));
-    assert!(overrides.model.is_none());
+    assert!(overrides.upstream_model.is_none());
 }
 
 #[tokio::test]
@@ -1308,7 +1313,7 @@ async fn multiple_hooks_merge_inference_overrides_last_wins() {
     use awaken::contract::inference::InferenceOverride;
 
     struct CapturingLlm {
-        captured: Mutex<Vec<Option<InferenceOverride>>>,
+        captured: Mutex<Vec<(String, Option<InferenceOverride>)>>,
     }
 
     #[async_trait]
@@ -1317,7 +1322,10 @@ async fn multiple_hooks_merge_inference_overrides_last_wins() {
             &self,
             req: InferenceRequest,
         ) -> Result<StreamResult, InferenceExecutionError> {
-            self.captured.lock().unwrap().push(req.overrides);
+            self.captured
+                .lock()
+                .unwrap()
+                .push((req.upstream_model, req.overrides));
             Ok(StreamResult {
                 content: vec![ContentBlock::text("done")],
                 tool_calls: vec![],
@@ -1331,7 +1339,7 @@ async fn multiple_hooks_merge_inference_overrides_last_wins() {
         }
     }
 
-    // Plugin A sets temperature=0.5, model="model-a"
+    // Plugin A sets temperature=0.5, upstream_model="model-a"
     struct OverridePluginA;
     impl Plugin for OverridePluginA {
         fn descriptor(&self) -> PluginDescriptor {
@@ -1345,7 +1353,7 @@ async fn multiple_hooks_merge_inference_overrides_last_wins() {
                     let mut cmd = StateCommand::new();
                     cmd.schedule_action::<SetInferenceOverride>(InferenceOverride {
                         temperature: Some(0.5),
-                        model: Some("model-a".into()),
+                        upstream_model: Some("model-a".into()),
                         ..Default::default()
                     })?;
                     Ok(cmd)
@@ -1356,7 +1364,7 @@ async fn multiple_hooks_merge_inference_overrides_last_wins() {
         }
     }
 
-    // Plugin B sets temperature=0.9, max_tokens=512 (overwrites A's temperature, A's model preserved)
+    // Plugin B sets temperature=0.9, max_tokens=512 (overwrites A's temperature).
     struct OverridePluginB;
     impl Plugin for OverridePluginB {
         fn descriptor(&self) -> PluginDescriptor {
@@ -1411,13 +1419,15 @@ async fn multiple_hooks_merge_inference_overrides_last_wins() {
 
     let captured = llm.captured.lock().unwrap();
     assert_eq!(captured.len(), 1);
-    let overrides = captured[0].as_ref().expect("overrides should be set");
+    let (upstream_model, overrides) = &captured[0];
+    assert_eq!(upstream_model, "model-a");
+    let overrides = overrides.as_ref().expect("overrides should be set");
     // B's temperature wins (last-wins)
     assert_eq!(overrides.temperature, Some(0.9));
     // B's max_tokens set
     assert_eq!(overrides.max_tokens, Some(512));
-    // A's model preserved (B didn't set it)
-    assert_eq!(overrides.model.as_deref(), Some("model-a"));
+    // Primary upstream selection has a single source of truth on InferenceRequest.
+    assert!(overrides.upstream_model.is_none());
 }
 
 #[tokio::test]

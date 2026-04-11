@@ -29,17 +29,17 @@ pub trait SamplingHandler: Send + Sync {
 /// the response back to MCP format.
 pub struct DefaultSamplingHandler {
     executor: Arc<dyn LlmExecutor>,
-    model: String,
+    upstream_model: String,
 }
 
 impl DefaultSamplingHandler {
     /// Create a new handler backed by the given LLM executor.
     ///
-    /// `model` is the default model identifier used for inference requests.
-    pub fn new(executor: Arc<dyn LlmExecutor>, model: impl Into<String>) -> Self {
+    /// `upstream_model` is the model name sent to the configured executor.
+    pub fn new(executor: Arc<dyn LlmExecutor>, upstream_model: impl Into<String>) -> Self {
         Self {
             executor,
-            model: model.into(),
+            upstream_model: upstream_model.into(),
         }
     }
 
@@ -135,7 +135,7 @@ impl SamplingHandler for DefaultSamplingHandler {
         };
 
         let request = InferenceRequest {
-            model: self.model.clone(),
+            upstream_model: self.upstream_model.clone(),
             messages,
             tools: vec![],
             system,
@@ -148,7 +148,7 @@ impl SamplingHandler for DefaultSamplingHandler {
                 McpTransportError::TransportError(format!("LLM execution failed: {e}"))
             })?;
 
-        Ok(Self::convert_result(&result, &self.model))
+        Ok(Self::convert_result(&result, &self.upstream_model))
     }
 }
 

@@ -101,7 +101,7 @@ use std::sync::Arc;
 use awaken::{AgentSpec, AgentRuntimeBuilder};
 
 let spec = AgentSpec::new("assistant")
-    .with_model("anthropic/claude-sonnet")
+    .with_model_id("anthropic/claude-sonnet")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("audit");
 

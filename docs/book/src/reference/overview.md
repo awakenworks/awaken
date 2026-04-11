@@ -10,7 +10,7 @@ so that downstream code only needs a single dependency.
 |---|---|---|
 | `awaken::contract` | `awaken-contract` | Tool trait, events, messages, suspension, lifecycle |
 | `awaken::model` | `awaken-contract` | Phase, EffectSpec, ScheduledActionSpec, JsonValue |
-| `awaken::registry_spec` | `awaken-contract` | AgentSpec, ModelSpec, ProviderSpec, McpServerSpec, PluginConfigKey |
+| `awaken::registry_spec` | `awaken-contract` | AgentSpec, ModelBindingSpec, ProviderSpec, McpServerSpec, PluginConfigKey |
 | `awaken::state` | `awaken-contract` + `awaken-runtime` | StateKey, StateMap, Snapshot, StateStore, MutationBatch |
 | `awaken::agent` | `awaken-runtime` | Agent configuration and state |
 | `awaken::builder` | `awaken-runtime` | AgentRuntimeBuilder, BuildError |

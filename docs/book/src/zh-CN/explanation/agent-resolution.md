@@ -9,7 +9,7 @@
 ```mermaid
 flowchart LR
     subgraph Stage1["Stage 1: Lookup"]
-        A1[Fetch AgentSpec] --> A2[Resolve ModelSpec]
+        A1[Fetch AgentSpec] --> A2[Resolve ModelBinding]
         A2 --> A3[Get LlmExecutor]
         A3 --> A4{Retry config?}
         A4 -- yes --> A5[Wrap in RetryingExecutor]
@@ -44,11 +44,13 @@ flowchart LR
 
 1. **AgentSpec** -- 通过 `agent_id` 从 `AgentSpecRegistry` 中查找。如果规格包含 `endpoint` 字段（远程 backend 智能体），解析会以 `RemoteAgentNotDirectlyRunnable` 失败 -- 远程智能体只能作为委托使用，不能直接运行。
 
-2. **ModelSpec** -- 规格的 `model` 字段（一个字符串 ID，如 `"gpt-4"`）通过 `ModelRegistry` 解析为 `ModelSpec`，将其映射到一个 provider ID 和实际 API 模型名（例如，provider `"openai"`，模型 `"gpt-4o"`）。
+2. **ModelBinding** -- 规格的 `model_id` 字段（模型注册表 ID，如 `"default"`）通过 `ModelRegistry` 解析为 `ModelBinding`，将其映射到一个 provider ID 和上游 API 模型名（例如，provider `"openai"`，上游模型 `"gpt-4o"`）。托管配置中的可序列化 `ModelBindingSpec` 会先编译成这些运行时绑定。
 
-3. **LlmExecutor** -- 模型条目中的提供者 ID 通过 `ProviderRegistry` 解析为一个活的 `LlmExecutor` 实例。
+3. **LlmExecutor** -- model binding 中的 provider ID 通过 `ProviderRegistry` 解析为一个活的 `LlmExecutor` 实例。
 
-4. **重试装饰** -- 如果智能体规格包含 `RetryConfigKey` 配置段，且 `max_retries > 0` 或 `fallback_models` 非空，则执行器会被包装在 `RetryingExecutor` 装饰器中。
+4. **重试装饰** -- 通过 `RetryConfigKey` 读取 agent 配置；缺失 section 时使用 `LlmRetryPolicy::default()`。如果最终 policy 的 `max_retries > 0` 或 `fallback_upstream_models` 非空，则执行器会被包装在 `RetryingExecutor` 装饰器中。
+
+Provider/model 的完整数据流见 [Provider 与 Model 配置](../reference/provider-model-config.md)。
 
 ## 阶段 2：插件流水线
 
@@ -145,7 +147,7 @@ flowchart LR
 |---|---|---|
 | `MapAgentSpecRegistry` | `with_agent_spec()` / `with_agent_specs()` | 智能体定义 |
 | `MapToolRegistry` | `with_tool()` | 全局工具 |
-| `MapModelRegistry` | `with_model()` | 模型 ID 到提供者 + 模型名称的映射 |
+| `MapModelRegistry` | `with_model_binding()` | 模型 ID 到 provider + 上游模型名的映射 |
 | `MapProviderRegistry` | `with_provider()` | LLM 执行器实例 |
 | `MapPluginSource` | `with_plugin()` | 插件实例 |
 

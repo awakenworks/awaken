@@ -13,12 +13,12 @@ use awaken_contract::contract::storage::StorageError;
 use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
-use awaken_contract::{AgentSpec, McpServerSpec, ModelSpec, ProviderSpec};
+use awaken_contract::{AgentSpec, McpServerSpec, ModelBindingSpec, ProviderSpec};
 use awaken_runtime::AgentRuntime;
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::registry::ToolRegistry;
 use awaken_runtime::registry::memory::MapToolRegistry;
-use awaken_runtime::registry::traits::ModelEntry;
+use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{
     AppState, ServerConfig, SkillCatalogArgument, SkillCatalogContext, SkillCatalogEntry,
     SkillCatalogProvider,
@@ -385,10 +385,10 @@ impl SkillCatalogProvider for StaticSkillCatalogProvider {
     }
 }
 
-fn agent_spec(id: &str, model: &str) -> AgentSpec {
+fn agent_spec(id: &str, model_id: &str) -> AgentSpec {
     AgentSpec {
         id: id.into(),
-        model: model.into(),
+        model_id: model_id.into(),
         system_prompt: format!("agent {id}"),
         max_rounds: 1,
         ..Default::default()
@@ -420,21 +420,21 @@ async fn make_runtime_manager_with_options(
         adapter: "stub".into(),
         ..Default::default()
     };
-    let bootstrap_model = ModelSpec {
+    let bootstrap_model = ModelBindingSpec {
         id: "bootstrap".into(),
-        provider: "bootstrap".into(),
-        model: "bootstrap-model".into(),
+        provider_id: "bootstrap".into(),
+        upstream_model: "bootstrap-model".into(),
     };
     let bootstrap_agent = agent_spec("bootstrap", "bootstrap");
 
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_model(
+            .with_model_binding(
                 "bootstrap",
-                ModelEntry {
-                    provider: "bootstrap".into(),
-                    model_name: "bootstrap-model".into(),
+                ModelBinding {
+                    provider_id: "bootstrap".into(),
+                    upstream_model: "bootstrap-model".into(),
                 },
             )
             .with_agent_spec(bootstrap_agent.clone())
@@ -716,8 +716,8 @@ async fn published_config_updates_live_capabilities_and_resolver() {
         "/v1/config/models",
         Some(json!({
             "id": "model-1",
-            "provider": "provider-1",
-            "model": "test-model"
+            "provider_id": "provider-1",
+            "upstream_model": "test-model"
         })),
     )
     .await;
@@ -729,7 +729,7 @@ async fn published_config_updates_live_capabilities_and_resolver() {
         "/v1/config/agents",
         Some(json!({
             "id": "agent-1",
-            "model": "model-1",
+            "model_id": "model-1",
             "system_prompt": "hello",
             "max_rounds": 2
         })),
@@ -1110,7 +1110,7 @@ async fn put_rejects_path_and_body_id_mismatch() {
         "/v1/config/agents/left",
         Some(json!({
             "id": "right",
-            "model": "bootstrap",
+            "model_id": "bootstrap",
             "system_prompt": "mismatch"
         })),
     )

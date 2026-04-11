@@ -186,7 +186,7 @@ impl LlmExecutor for GenaiExecutor {
         &self,
         request: InferenceRequest,
     ) -> Result<StreamResult, InferenceExecutionError> {
-        let model = request.model.clone();
+        let model = request.upstream_model.clone();
         let tools: Vec<_> = request.tools.clone();
         let chat_req = build_chat_request(
             &request.system,
@@ -253,7 +253,7 @@ impl LlmExecutor for GenaiExecutor {
         >,
     > {
         Box::pin(async move {
-            let model = request.model.clone();
+            let model = request.upstream_model.clone();
             let tools: Vec<_> = request.tools.clone();
             let chat_req = build_chat_request(
                 &request.system,
@@ -355,7 +355,7 @@ mod tests {
     /// Helper to build a minimal `InferenceRequest` with the given overrides.
     fn make_request(overrides: Option<InferenceOverride>) -> InferenceRequest {
         InferenceRequest {
-            model: "test-model".into(),
+            upstream_model: "test-model".into(),
             messages: vec![Message::user("hello")],
             tools: vec![],
             system: vec![],

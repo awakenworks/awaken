@@ -194,7 +194,7 @@ mod tests {
                 id.to_string(),
                 AgentSpec {
                     id: id.into(),
-                    model: "test-model".into(),
+                    model_id: "test-model".into(),
                     system_prompt: "system".into(),
                     ..Default::default()
                 },
@@ -219,7 +219,7 @@ mod tests {
                 })?;
             let mut agent = ResolvedAgent::new(
                 &spec.id,
-                &spec.model,
+                &spec.model_id,
                 &spec.system_prompt,
                 Arc::new(MockExecutor),
             );

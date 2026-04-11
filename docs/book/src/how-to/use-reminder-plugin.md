@@ -186,7 +186,7 @@ let rules = config.into_rules().expect("invalid rules");
 use awaken::registry_spec::AgentSpec;
 
 let agent_spec = AgentSpec::new("my-agent")
-    .with_model("anthropic/claude-sonnet")
+    .with_model_id("anthropic/claude-sonnet")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("reminder");
 ```

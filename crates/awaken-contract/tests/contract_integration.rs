@@ -3,8 +3,8 @@
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::inference::{
-    ContextCompactionMode, ContextWindowPolicy, InferenceError, InferenceModelOverride,
-    InferenceOverride, LLMResponse, ReasoningEffort, StopReason, StreamResult, TokenUsage,
+    ContextCompactionMode, ContextWindowPolicy, InferenceError, InferenceOverride, LLMResponse,
+    ReasoningEffort, StopReason, StreamResult, TokenUsage,
 };
 use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::message::{Message, MessageMetadata, Role, ToolCall, Visibility};
@@ -390,15 +390,14 @@ fn stream_result_to_message_to_event_pipeline() {
 // ── InferenceOverride cross-module compatibility ───────────────────
 
 #[test]
-fn inference_override_from_model_override_merges_with_params() {
-    let model = InferenceModelOverride {
-        model: "claude-opus".into(),
-        fallback_models: vec!["claude-sonnet".into()],
+fn inference_override_merges_upstream_model_and_params() {
+    let mut combined = InferenceOverride {
+        upstream_model: Some("claude-opus".into()),
+        fallback_upstream_models: Some(vec!["claude-sonnet".into()]),
+        ..Default::default()
     };
-
-    let mut combined = InferenceOverride::from(model);
     assert!(!combined.is_empty());
-    assert_eq!(combined.model.as_deref(), Some("claude-opus"));
+    assert_eq!(combined.upstream_model.as_deref(), Some("claude-opus"));
 
     // Merge with parameter overrides
     combined.merge(InferenceOverride {
@@ -408,11 +407,14 @@ fn inference_override_from_model_override_merges_with_params() {
         ..Default::default()
     });
 
-    assert_eq!(combined.model.as_deref(), Some("claude-opus"));
+    assert_eq!(combined.upstream_model.as_deref(), Some("claude-opus"));
     assert_eq!(combined.temperature, Some(0.7));
     assert_eq!(combined.max_tokens, Some(4096));
     assert_eq!(combined.reasoning_effort, Some(ReasoningEffort::High));
-    assert_eq!(combined.fallback_models, Some(vec!["claude-sonnet".into()]));
+    assert_eq!(
+        combined.fallback_upstream_models,
+        Some(vec!["claude-sonnet".into()])
+    );
 }
 
 #[test]

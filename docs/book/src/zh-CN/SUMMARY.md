@@ -55,6 +55,7 @@
 - [事件](./reference/events.md)
 - [HTTP API](./reference/http-api.md)
 - [配置](./reference/config.md)
+- [Provider 与 Model 配置](./reference/provider-model-config.md)
 - [错误](./reference/errors.md)
 - [AI SDK v6 协议](./reference/protocols/ai-sdk-v6.md)
 - [AG-UI 协议](./reference/protocols/ag-ui.md)

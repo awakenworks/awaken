@@ -24,7 +24,7 @@ use awaken_contract::contract::inference::ContextWindowPolicy;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::{
-    AgentSpec, McpServerSpec, McpTransportKind, ModelSpec, ProviderSpec,
+    AgentSpec, McpServerSpec, McpTransportKind, ModelBindingSpec, ProviderSpec,
 };
 use awaken_ext_generative_ui::{
     A2uiPlugin, A2uiPromptConfig, A2uiPromptConfigKey, json_render, openui,
@@ -40,12 +40,11 @@ use awaken_ext_skills::{
     InMemorySkillRegistry, SkillDiscoveryPlugin, SkillRegistry,
 };
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_runtime::engine::{LlmRetryPolicy, RetryingExecutor};
 use awaken_runtime::plugins::Plugin;
 use awaken_runtime::policies::{
     ConsecutiveErrorsPolicy, StopConditionPlugin, StopPolicy, TimeoutPolicy, TokenBudgetPolicy,
 };
-use awaken_runtime::registry::traits::ModelEntry;
+use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{
     AppState, ServerConfig, SkillCatalogArgument, SkillCatalogContext, SkillCatalogEntry,
     SkillCatalogProvider,
@@ -139,10 +138,8 @@ struct StarterProviderFactory;
 impl ProviderExecutorFactory for StarterProviderFactory {
     fn build(&self, spec: &ProviderSpec) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
         if spec.adapter.eq_ignore_ascii_case(SCRIPTED_PROVIDER_ADAPTER) {
-            let executor: Arc<dyn LlmExecutor> = Arc::new(RetryingExecutor::new(
-                Arc::new(scripted_executor::ScriptedLlmExecutor::new()),
-                LlmRetryPolicy::default(),
-            ));
+            let executor: Arc<dyn LlmExecutor> =
+                Arc::new(scripted_executor::ScriptedLlmExecutor::new());
             return Ok(executor);
         }
 
@@ -422,7 +419,7 @@ Deterministic compatibility directives:\n\
     let default_agent = apply_agent_prompt_override(
         AgentSpec {
             id: default_id.clone(),
-            model: "default".into(),
+            model_id: "default".into(),
             system_prompt: base_prompt.clone(),
             max_rounds: 3,
             reasoning_effort: reasoning_effort.clone(),
@@ -433,7 +430,7 @@ Deterministic compatibility directives:\n\
     );
     let permission_agent = AgentSpec {
         id: "permission".into(),
-        model: "default".into(),
+        model_id: "default".into(),
         system_prompt: base_prompt.clone(),
         max_rounds: args.max_rounds,
         plugin_ids: vec!["permission".into(), "frontend_tools".into()],
@@ -474,7 +471,7 @@ Deterministic compatibility directives:\n\
     let travel_agent = apply_agent_prompt_override(
         AgentSpec {
             id: "travel".into(),
-            model: "default".into(),
+            model_id: "default".into(),
             system_prompt: concat!(
                 "You are a travel planning assistant. Help users plan trips by adding, ",
                 "updating, and searching for places of interest. Use the provided tools ",
@@ -493,7 +490,7 @@ Deterministic compatibility directives:\n\
     let research_agent = apply_agent_prompt_override(
         AgentSpec {
             id: "research".into(),
-            model: "default".into(),
+            model_id: "default".into(),
             system_prompt: concat!(
                 "You are a research assistant. Help users research topics by searching ",
                 "the web, extracting resources, and writing comprehensive reports.\n\n",
@@ -515,7 +512,7 @@ Deterministic compatibility directives:\n\
     let skills_agent = apply_agent_prompt_override(
         AgentSpec {
             id: "skills".into(),
-            model: "default".into(),
+            model_id: "default".into(),
             system_prompt: base_prompt.clone(),
             max_rounds: args.max_rounds,
             plugin_ids: vec!["skills-discovery".into(), "frontend_tools".into()],
@@ -526,7 +523,7 @@ Deterministic compatibility directives:\n\
     let limited_agent = apply_agent_prompt_override(
         AgentSpec {
             id: "limited".into(),
-            model: "default".into(),
+            model_id: "default".into(),
             system_prompt: "You are a test assistant. Respond briefly to every message.".into(),
             max_rounds: 1,
             plugin_ids: vec!["permission".into()],
@@ -538,7 +535,7 @@ Deterministic compatibility directives:\n\
     let thinking_agent = apply_agent_prompt_override(
         AgentSpec {
             id: "thinking".into(),
-            model: "default".into(),
+            model_id: "default".into(),
             system_prompt: "You are a helpful assistant. Be concise.".into(),
             max_rounds: 1,
             reasoning_effort: reasoning_effort.clone(),
@@ -549,7 +546,7 @@ Deterministic compatibility directives:\n\
     let a2a_agent = apply_agent_prompt_override(
         AgentSpec {
             id: "a2a".into(),
-            model: "default".into(),
+            model_id: "default".into(),
             system_prompt: base_prompt.clone(),
             max_rounds: args.max_rounds,
             plugin_ids: vec!["frontend_tools".into()],
@@ -560,7 +557,7 @@ Deterministic compatibility directives:\n\
     let phases_agent = apply_agent_prompt_override(
         AgentSpec {
             id: "phases".into(),
-            model: "default".into(),
+            model_id: "default".into(),
             system_prompt: "You are a test assistant demonstrating phase hooks. Respond briefly."
                 .into(),
             max_rounds: 2,
@@ -571,7 +568,7 @@ Deterministic compatibility directives:\n\
     );
     let genui_agent = apply_agent_prompt_override(AgentSpec {
         id: "genui".into(),
-        model: "default".into(),
+        model_id: "default".into(),
         system_prompt: concat!(
             "You are a generative UI assistant that outputs JSON Render documents.\n\n",
             "When users ask for forms or interfaces, respond with ONLY a JSON object in this format:\n",
@@ -599,7 +596,7 @@ Deterministic compatibility directives:\n\
 
     let a2ui_agent = AgentSpec {
         id: "a2ui".into(),
-        model: "default".into(),
+        model_id: "default".into(),
         system_prompt: A2UI_AGENT_PROMPT.into(),
         max_rounds: 8,
         plugin_ids: vec!["generative-ui".into()],
@@ -616,7 +613,7 @@ Deterministic compatibility directives:\n\
     let json_render_agent = apply_agent_prompt_override(
         AgentSpec {
             id: "json-render".into(),
-            model: "default".into(),
+            model_id: "default".into(),
             system_prompt: JSON_RENDER_AGENT_PROMPT.into(),
             max_rounds: 4,
             allowed_tools: Some(vec!["render_json_ui".into()]),
@@ -627,7 +624,7 @@ Deterministic compatibility directives:\n\
     let openui_agent = apply_agent_prompt_override(
         AgentSpec {
             id: "openui".into(),
-            model: "default".into(),
+            model_id: "default".into(),
             system_prompt: OPENUI_AGENT_PROMPT.into(),
             max_rounds: 4,
             allowed_tools: Some(vec!["render_openui_ui".into()]),
@@ -638,7 +635,7 @@ Deterministic compatibility directives:\n\
     let json_render_ui_agent = apply_agent_prompt_override(
         AgentSpec {
             id: "json-render-ui".into(),
-            model: "default".into(),
+            model_id: "default".into(),
             system_prompt: json_render_ui_prompt,
             max_rounds: 1,
             // Sub-agents generate pure text (UI markup); no tools needed.
@@ -652,7 +649,7 @@ Deterministic compatibility directives:\n\
     let openui_ui_agent = apply_agent_prompt_override(
         AgentSpec {
             id: "openui-ui".into(),
-            model: "default".into(),
+            model_id: "default".into(),
             system_prompt: openui_ui_prompt,
             max_rounds: 1,
             allowed_tools: Some(vec![]),
@@ -667,7 +664,7 @@ Deterministic compatibility directives:\n\
     let profile_agent = apply_agent_prompt_override(
         AgentSpec {
             id: "profile".into(),
-            model: "default".into(),
+            model_id: "default".into(),
             system_prompt: "You are a stateful assistant that remembers user preferences \
             across runs using profile storage. When the user sets a preference, \
             acknowledge it. When asked to recall, retrieve it from the profile store."
@@ -686,7 +683,7 @@ Deterministic compatibility directives:\n\
     let creative_agent = apply_agent_prompt_override(
         AgentSpec {
             id: "creative".into(),
-            model: "default".into(),
+            model_id: "default".into(),
             system_prompt: "You are a creative writing assistant. Produce vivid, \
             imaginative prose. Use metaphors and varied sentence structures."
                 .into(),
@@ -708,7 +705,7 @@ Deterministic compatibility directives:\n\
     let compact_agent = apply_agent_prompt_override(
         AgentSpec {
             id: "compact".into(),
-            model: "default".into(),
+            model_id: "default".into(),
             system_prompt: "You are a context-aware assistant. Your context window is managed \
             with auto-compaction so long conversations stay within token limits."
                 .into(),
@@ -732,7 +729,7 @@ Deterministic compatibility directives:\n\
     let budget_agent = apply_agent_prompt_override(
         AgentSpec {
             id: "budget".into(),
-            model: "default".into(),
+            model_id: "default".into(),
             system_prompt: "You are a budget-constrained assistant with token limits and timeout. \
             The run will stop if you exceed 50k tokens, 60 seconds, or 3 consecutive errors."
                 .into(),
@@ -843,10 +840,10 @@ Deterministic compatibility directives:\n\
 
     let provider_factory = Arc::new(StarterProviderFactory) as Arc<dyn ProviderExecutorFactory>;
     let default_provider = build_default_provider_spec(&args.model);
-    let default_model = ModelSpec {
+    let default_model = ModelBindingSpec {
         id: DEFAULT_MODEL_ID.into(),
-        provider: DEFAULT_PROVIDER_ID.into(),
-        model: args.model.clone(),
+        provider_id: DEFAULT_PROVIDER_ID.into(),
+        upstream_model: args.model.clone(),
     };
     let executor = provider_factory
         .build(&default_provider)
@@ -880,11 +877,11 @@ Deterministic compatibility directives:\n\
 
     let mut builder = AgentRuntimeBuilder::new()
         .with_provider(DEFAULT_PROVIDER_ID, executor)
-        .with_model(
+        .with_model_binding(
             DEFAULT_MODEL_ID,
-            ModelEntry {
-                provider: default_model.provider.clone(),
-                model_name: default_model.model.clone(),
+            ModelBinding {
+                provider_id: default_model.provider_id.clone(),
+                upstream_model: default_model.upstream_model.clone(),
             },
         )
         .with_thread_run_store(file_store.clone() as Arc<dyn ThreadRunStore>)

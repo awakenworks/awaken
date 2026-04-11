@@ -8,7 +8,7 @@
 |---|---|---|
 | `awaken::contract` | `awaken-contract` | tool、event、message、suspension、lifecycle 等契约 |
 | `awaken::model` | `awaken-contract` | `Phase`、`EffectSpec`、`ScheduledActionSpec`、`JsonValue` |
-| `awaken::registry_spec` | `awaken-contract` | `AgentSpec`、`ModelSpec`、`ProviderSpec`、`McpServerSpec`、`PluginConfigKey` |
+| `awaken::registry_spec` | `awaken-contract` | `AgentSpec`、`ModelBindingSpec`、`ProviderSpec`、`McpServerSpec`、`PluginConfigKey` |
 | `awaken::state` | `awaken-contract` + `awaken-runtime` | `StateKey`、`StateMap`、`Snapshot`、`StateStore`、`MutationBatch` |
 | `awaken::agent` | `awaken-runtime` | agent 配置与状态 |
 | `awaken::builder` | `awaken-runtime` | `AgentRuntimeBuilder`、`BuildError` |

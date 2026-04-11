@@ -37,8 +37,8 @@ pub use model::{
 
 // ── registry spec (AgentSpec, PluginConfigKey) ──
 pub use registry_spec::{
-    AgentSpec, McpRestartPolicy, McpServerSpec, McpTransportKind, ModelSpec, PluginConfigKey,
-    ProviderSpec,
+    AgentSpec, McpRestartPolicy, McpServerSpec, McpTransportKind, ModelBindingSpec,
+    PluginConfigKey, ProviderSpec,
 };
 
 // ── state ──

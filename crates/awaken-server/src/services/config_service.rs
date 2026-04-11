@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::storage::StorageError;
-use awaken_contract::{AgentSpec, McpServerSpec, ModelSpec, ProviderSpec};
+use awaken_contract::{AgentSpec, McpServerSpec, ModelBindingSpec, ProviderSpec};
 use serde_json::{Map, Value, json};
 
 use crate::app::AppState;
@@ -40,7 +40,7 @@ impl ConfigNamespace {
     pub fn schema_json(self) -> Result<Value, ConfigServiceError> {
         let schema = match self {
             Self::Agents => schemars::schema_for!(AgentSpec),
-            Self::Models => schemars::schema_for!(ModelSpec),
+            Self::Models => schemars::schema_for!(ModelBindingSpec),
             Self::Providers => schemars::schema_for!(ProviderSpec),
             Self::McpServers => schemars::schema_for!(McpServerSpec),
         };
@@ -137,8 +137,8 @@ impl<'a> ConfigService<'a> {
                 registries.models.get_model(&id).map(|model| {
                     json!({
                         "id": id,
-                        "provider": model.provider,
-                        "model": model.model_name,
+                        "provider_id": model.provider_id,
+                        "upstream_model": model.upstream_model,
                     })
                 })
             })
@@ -390,7 +390,7 @@ impl<'a> ConfigService<'a> {
                 let _: AgentSpec = from_value(body)?;
             }
             ConfigNamespace::Models => {
-                let _: ModelSpec = from_value(body)?;
+                let _: ModelBindingSpec = from_value(body)?;
             }
             ConfigNamespace::Providers => {
                 let spec: ProviderSpec = from_value(body)?;
@@ -552,9 +552,9 @@ mod tests {
         InferenceExecutionError, InferenceRequest, LlmExecutor,
     };
     use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-    use awaken_contract::{AgentSpec, ModelSpec, ProviderSpec};
+    use awaken_contract::{AgentSpec, ModelBindingSpec, ProviderSpec};
     use awaken_runtime::builder::AgentRuntimeBuilder;
-    use awaken_runtime::registry::traits::ModelEntry;
+    use awaken_runtime::registry::traits::ModelBinding;
     use serde_json::{Value, json};
     use tokio::sync::Notify;
 
@@ -684,7 +684,7 @@ mod tests {
     fn bootstrap_agent() -> AgentSpec {
         AgentSpec {
             id: "bootstrap".into(),
-            model: "bootstrap".into(),
+            model_id: "bootstrap".into(),
             system_prompt: "bootstrap".into(),
             max_rounds: 1,
             ..Default::default()
@@ -698,11 +698,11 @@ mod tests {
         let runtime = Arc::new(
             AgentRuntimeBuilder::new()
                 .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-                .with_model(
+                .with_model_binding(
                     "bootstrap",
-                    ModelEntry {
-                        provider: "bootstrap".into(),
-                        model_name: "bootstrap-model".into(),
+                    ModelBinding {
+                        provider_id: "bootstrap".into(),
+                        upstream_model: "bootstrap-model".into(),
                     },
                 )
                 .with_agent_spec(bootstrap_agent())
@@ -724,10 +724,10 @@ mod tests {
                     adapter: "stub".into(),
                     ..Default::default()
                 }],
-                &[ModelSpec {
+                &[ModelBindingSpec {
                     id: "bootstrap".into(),
-                    provider: "bootstrap".into(),
-                    model: "bootstrap-model".into(),
+                    provider_id: "bootstrap".into(),
+                    upstream_model: "bootstrap-model".into(),
                 }],
                 &[bootstrap_agent()],
                 &[],
@@ -855,11 +855,11 @@ mod tests {
         let runtime = Arc::new(
             AgentRuntimeBuilder::new()
                 .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-                .with_model(
+                .with_model_binding(
                     "bootstrap",
-                    ModelEntry {
-                        provider: "bootstrap".into(),
-                        model_name: "bootstrap-model".into(),
+                    ModelBinding {
+                        provider_id: "bootstrap".into(),
+                        upstream_model: "bootstrap-model".into(),
                     },
                 )
                 .with_agent_spec(bootstrap_agent())

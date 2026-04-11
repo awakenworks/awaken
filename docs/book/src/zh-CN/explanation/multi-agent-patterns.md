@@ -9,7 +9,7 @@ agent 可以通过 `delegates` 声明它允许委托的子 agent：
 ```json
 {
   "id": "orchestrator",
-  "model": "gpt-4o",
+  "model_id": "gpt-4o",
   "system_prompt": "You coordinate tasks across specialized agents.",
   "delegates": ["researcher", "writer", "reviewer"]
 }
@@ -24,7 +24,7 @@ agent 可以通过 `delegates` 声明它允许委托的子 agent：
 ```json
 {
   "id": "remote-analyst",
-  "model": "unused-for-remote",
+  "model_id": "unused-for-remote",
   "system_prompt": "",
   "endpoint": {
     "backend": "a2a",

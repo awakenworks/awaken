@@ -23,23 +23,23 @@ serde_json = "1"
 use std::sync::Arc;
 use awaken::engine::GenaiExecutor;
 use awaken::ext_generative_ui::A2uiPlugin;
-use awaken::registry_spec::{AgentSpec, ModelSpec};
+use awaken::registry::ModelBinding;
+use awaken::registry_spec::AgentSpec;
 use awaken::{AgentRuntimeBuilder, Plugin};
 
 let plugin = A2uiPlugin::with_catalog_id("my-catalog");
 let agent_spec = AgentSpec::new("ui-agent")
-    .with_model("gpt-4o-mini")
+    .with_model_id("gpt-4o-mini")
     .with_system_prompt("Render structured UI when visual output helps.")
     .with_hook_filter("generative-ui");
 
 let runtime = AgentRuntimeBuilder::new()
     .with_provider("openai", Arc::new(GenaiExecutor::new()))
-    .with_model(
+    .with_model_binding(
         "gpt-4o-mini",
-        ModelSpec {
-            id: "gpt-4o-mini".into(),
-            provider: "openai".into(),
-            model: "gpt-4o-mini".into(),
+        ModelBinding {
+            provider_id: "openai".into(),
+            upstream_model: "gpt-4o-mini".into(),
         },
     )
     .with_agent_spec(agent_spec)

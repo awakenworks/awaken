@@ -9,7 +9,7 @@ use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::{NullEventSink, VecEventSink};
 use awaken::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken::contract::identity::{RunIdentity, RunOrigin};
-use awaken::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken::contract::inference::{InferenceOverride, StopReason, StreamResult, TokenUsage};
 use awaken::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken::contract::message::{Message, Role, ToolCall};
 use awaken::contract::suspension::{
@@ -253,6 +253,72 @@ async fn single_step_natural_end() {
     assert_eq!(lifecycle.status_reason.as_deref(), Some("natural"));
     assert_eq!(lifecycle.step_count, 1);
     assert_eq!(lifecycle.run_id, "run-1");
+}
+
+#[tokio::test]
+async fn run_level_model_override_selects_upstream_model() {
+    struct CapturingUpstreamModelLlm {
+        upstream_models_seen: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for CapturingUpstreamModelLlm {
+        async fn execute(
+            &self,
+            req: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            self.upstream_models_seen
+                .lock()
+                .unwrap()
+                .push(req.upstream_model);
+            Ok(StreamResult {
+                content: vec![ContentBlock::text("ok")],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+
+        fn name(&self) -> &str {
+            "capturing-upstream-model"
+        }
+    }
+
+    let llm = Arc::new(CapturingUpstreamModelLlm {
+        upstream_models_seen: Mutex::new(Vec::new()),
+    });
+    let agent = ResolvedAgent::new("test", "base-upstream-model", "sys", llm.clone());
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink: Arc::new(NullEventSink),
+        checkpoint_store: None,
+        messages: vec![Message::user("go")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: Some(InferenceOverride {
+            upstream_model: Some("override-upstream-model".into()),
+            ..Default::default()
+        }),
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    let upstream_models_seen = llm.upstream_models_seen.lock().unwrap().clone();
+    assert_eq!(
+        upstream_models_seen,
+        vec!["override-upstream-model".to_string()]
+    );
 }
 
 #[tokio::test]
@@ -4015,22 +4081,22 @@ impl LlmExecutor for CountingLlm {
     }
 }
 
-/// An LLM that records the model field from each request.
+/// An LLM that records the upstream_model field from each request.
 struct ModelRecordingLlm {
-    models_seen: Mutex<Vec<String>>,
+    upstream_models_seen: Mutex<Vec<String>>,
     responses: Mutex<Vec<StreamResult>>,
 }
 
 impl ModelRecordingLlm {
     fn new(responses: Vec<StreamResult>) -> Self {
         Self {
-            models_seen: Mutex::new(Vec::new()),
+            upstream_models_seen: Mutex::new(Vec::new()),
             responses: Mutex::new(responses),
         }
     }
 
-    fn models(&self) -> Vec<String> {
-        self.models_seen.lock().unwrap().clone()
+    fn upstream_models(&self) -> Vec<String> {
+        self.upstream_models_seen.lock().unwrap().clone()
     }
 }
 
@@ -4040,7 +4106,10 @@ impl LlmExecutor for ModelRecordingLlm {
         &self,
         req: InferenceRequest,
     ) -> Result<StreamResult, InferenceExecutionError> {
-        self.models_seen.lock().unwrap().push(req.model.clone());
+        self.upstream_models_seen
+            .lock()
+            .unwrap()
+            .push(req.upstream_model.clone());
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             Ok(StreamResult {
@@ -4097,9 +4166,9 @@ async fn retry_startup_error_propagates() {
     );
 }
 
-/// 2. Model name in inference request matches ResolvedAgent.model.
+/// 2. Upstream model in inference request matches ResolvedAgent.upstream_model.
 #[tokio::test]
-async fn inference_request_uses_configured_model_name() {
+async fn inference_request_uses_configured_upstream_model() {
     let llm = Arc::new(ModelRecordingLlm::new(vec![StreamResult {
         content: vec![ContentBlock::text("ok")],
         tool_calls: vec![],
@@ -4132,11 +4201,15 @@ async fn inference_request_uses_configured_model_name() {
     .await
     .unwrap();
 
-    let models = llm_clone.models();
-    assert_eq!(models.len(), 1, "should have exactly one inference call");
+    let upstream_models = llm_clone.upstream_models();
     assert_eq!(
-        models[0], "claude-3-opus",
-        "inference request should use the configured model name"
+        upstream_models.len(),
+        1,
+        "should have exactly one inference call"
+    );
+    assert_eq!(
+        upstream_models[0], "claude-3-opus",
+        "inference request should use the configured upstream model"
     );
 }
 
@@ -5272,7 +5345,7 @@ async fn agent_config_builder_chain() {
         .with_tool(Arc::new(EchoTool))
         .with_tool(Arc::new(CalcTool));
 
-    assert_eq!(config.model, "gpt-4");
+    assert_eq!(config.upstream_model, "gpt-4");
     assert_eq!(config.max_rounds(), 5);
     assert_eq!(config.system_prompt(), "You are helpful.");
     assert_eq!(config.tools.len(), 2);

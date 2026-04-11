@@ -75,7 +75,7 @@ mod tests {
         agents
             .register_spec(AgentSpec {
                 id: agent_id.into(),
-                model: "default".into(),
+                model_id: "default".into(),
                 system_prompt: "test".into(),
                 ..Default::default()
             })
@@ -85,9 +85,9 @@ mod tests {
         models
             .register_model(
                 "default",
-                crate::registry::ModelEntry {
-                    provider: "provider".into(),
-                    model_name: "gpt-test".into(),
+                crate::registry::ModelBinding {
+                    provider_id: "provider".into(),
+                    upstream_model: "gpt-test".into(),
                 },
             )
             .expect("register test model");

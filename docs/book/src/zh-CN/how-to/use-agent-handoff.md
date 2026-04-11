@@ -27,7 +27,7 @@ use awaken::extensions::handoff::AgentOverlay;
 
 let researcher = AgentOverlay {
     system_prompt: Some("You are a research specialist. Find and cite sources.".into()),
-    model: Some("claude-sonnet".into()),
+    upstream_model: Some("claude-sonnet".into()),
     allowed_tools: Some(vec!["web_search".into(), "read_document".into()]),
     excluded_tools: None,
 };

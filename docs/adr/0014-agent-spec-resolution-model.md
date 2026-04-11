@@ -25,7 +25,7 @@ Re-resolution occurs at step boundaries only when `ActiveAgentIdKey` indicates t
 
 ### D4: No per-phase live config resolution
 
-A persisted `ConfigStore` may exist to hold serializable `AgentSpec` / `ModelSpec` / `ProviderSpec` / `McpServerSpec` documents, but runtime execution does not query it directly at every boundary. Config changes are compiled into versioned registry snapshots; new runs see the latest published snapshot, while active runs and in-flight steps keep their pinned snapshot. Dynamic config changes still require either a handoff (agent switch) or a new run to observe different agent specs.
+A persisted `ConfigStore` may exist to hold serializable `AgentSpec` / `ModelBindingSpec` / `ProviderSpec` / `McpServerSpec` documents, but runtime execution does not query it directly at every boundary. Config changes are compiled into versioned registry snapshots; new runs see the latest published snapshot, while active runs and in-flight steps keep their pinned snapshot. Dynamic config changes still require either a handoff (agent switch) or a new run to observe different agent specs.
 
 ## Consequences
 

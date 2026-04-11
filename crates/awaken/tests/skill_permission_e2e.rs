@@ -284,7 +284,7 @@ fn make_agent_spec_deny_all_with_extra_allowed_tools(extra_allowed_tools: &[&str
 
     AgentSpec {
         id: "test".into(),
-        model: "m".into(),
+        model_id: "m".into(),
         system_prompt: "sys".into(),
         max_rounds: 16,
         max_continuation_retries: 2,
