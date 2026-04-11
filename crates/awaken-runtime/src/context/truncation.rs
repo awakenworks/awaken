@@ -1,8 +1,8 @@
 //! Truncation recovery logic for the agent loop.
 //!
-//! When the LLM stops due to `MaxTokens` without emitting complete tool
-//! calls, this module provides helpers to inject a continuation prompt and
-//! re-enter inference.
+//! When the LLM stops due to `MaxTokens` before finishing text output or
+//! complete tool calls, this module provides helpers to inject a continuation
+//! prompt and re-enter inference.
 
 use awaken_contract::contract::inference::StreamResult;
 use awaken_contract::contract::message::{Message, Visibility};
@@ -27,7 +27,7 @@ impl TruncationState {
 ///
 /// Returns `true` (and increments the retry counter) when all three
 /// conditions are met:
-/// 1. The result needs truncation recovery (MaxTokens + incomplete tool calls)
+/// 1. The result needs truncation recovery (MaxTokens + text or incomplete tool calls)
 /// 2. Haven't exceeded the configured max retries
 /// 3. Configured retries > 0
 pub fn should_retry(
@@ -43,7 +43,7 @@ pub fn should_retry(
         tracing::info!(
             retry = state.truncation_retries,
             max = max_retries,
-            "truncation recovery: retrying after MaxTokens with incomplete tool calls"
+            "truncation recovery: retrying after MaxTokens with recoverable output"
         );
         true
     } else {
@@ -61,6 +61,7 @@ pub fn continuation_message() -> Message {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_contract::contract::content::ContentBlock;
     use awaken_contract::contract::inference::{StopReason, TokenUsage};
     use awaken_contract::contract::message::ToolCall;
     use serde_json::json;
@@ -122,9 +123,22 @@ mod tests {
         }
     }
 
-    fn max_tokens_no_incomplete() -> StreamResult {
+    fn max_tokens_without_recoverable_output() -> StreamResult {
         StreamResult {
             content: vec![],
+            tool_calls: vec![],
+            usage: Some(TokenUsage {
+                completion_tokens: Some(4096),
+                ..Default::default()
+            }),
+            stop_reason: Some(StopReason::MaxTokens),
+            has_incomplete_tool_calls: false,
+        }
+    }
+
+    fn max_tokens_with_text() -> StreamResult {
+        StreamResult {
+            content: vec![ContentBlock::text("partial answer")],
             tool_calls: vec![],
             usage: Some(TokenUsage {
                 completion_tokens: Some(4096),
@@ -143,6 +157,13 @@ mod tests {
     fn triggers_retry_on_max_tokens_with_incomplete_tools() {
         let mut state = TruncationState::new();
         assert!(should_retry(&max_tokens_with_incomplete(), &mut state, 3));
+        assert_eq!(state.truncation_retries, 1);
+    }
+
+    #[test]
+    fn triggers_retry_on_max_tokens_with_text_output() {
+        let mut state = TruncationState::new();
+        assert!(should_retry(&max_tokens_with_text(), &mut state, 3));
         assert_eq!(state.truncation_retries, 1);
     }
 
@@ -179,9 +200,13 @@ mod tests {
     }
 
     #[test]
-    fn no_retry_when_max_tokens_but_no_incomplete_tools() {
+    fn no_retry_when_max_tokens_but_no_recoverable_output() {
         let mut state = TruncationState::new();
-        assert!(!should_retry(&max_tokens_no_incomplete(), &mut state, 3));
+        assert!(!should_retry(
+            &max_tokens_without_recoverable_output(),
+            &mut state,
+            3
+        ));
         assert_eq!(state.truncation_retries, 0);
     }
 
@@ -247,7 +272,7 @@ mod tests {
         assert_eq!(state.truncation_retries, 1);
 
         // Another retry
-        should_retry(&max_tokens_with_incomplete(), &mut state, 3);
+        should_retry(&max_tokens_with_text(), &mut state, 3);
         assert_eq!(state.truncation_retries, 2);
     }
 
@@ -267,7 +292,7 @@ mod tests {
     #[test]
     fn truncation_then_tool_use() {
         let mut state = TruncationState::new();
-        assert!(should_retry(&max_tokens_with_incomplete(), &mut state, 3));
+        assert!(should_retry(&max_tokens_with_text(), &mut state, 3));
         assert!(!should_retry(&tool_use_result(), &mut state, 3));
         assert_eq!(state.truncation_retries, 1);
     }

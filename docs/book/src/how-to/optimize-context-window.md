@@ -126,7 +126,7 @@ Compaction boundaries are tracked durably via `CompactionState`, recording the s
 
 ## Truncation recovery
 
-When the LLM stops due to `MaxTokens` with incomplete tool calls (argument JSON was truncated mid-generation), the runtime can automatically retry by injecting a continuation prompt asking the model to break its work into smaller pieces and continue. The retry count is tracked by `TruncationState` and bounded by a configurable maximum.
+When the LLM stops due to `MaxTokens` after producing partial text or incomplete tool calls (argument JSON was truncated mid-generation), the runtime can automatically retry by injecting a continuation prompt asking the model to break its work into smaller pieces and continue. The retry count is tracked by `TruncationState` and bounded by a configurable maximum.
 
 ## Key Files
 

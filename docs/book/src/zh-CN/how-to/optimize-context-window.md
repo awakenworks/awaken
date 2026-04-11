@@ -114,7 +114,7 @@ let config = CompactionConfig {
 
 ## 截断恢复
 
-如果 LLM 因 `MaxTokens` 截断，而且生成到一半的 tool call 参数不完整，运行时可以自动注入 continuation prompt 并重试，直到达到最大重试次数。
+如果 LLM 因 `MaxTokens` 截断，而且已经产生部分文本或生成到一半的 tool call 参数不完整，运行时可以自动注入 continuation prompt 并重试，直到达到最大重试次数。
 
 ## 关键文件
 
