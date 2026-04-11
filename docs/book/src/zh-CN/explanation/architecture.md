@@ -49,6 +49,7 @@ sequenceDiagram
         LLM-->>Runtime: Response (text + tool_calls)
         Runtime->>Runtime: AfterInference phase
         opt Tool calls present
+            Runtime->>Runtime: ToolGate phase
             Runtime->>Runtime: BeforeToolExecute phase
             Runtime->>Tool: execute(args, ctx)
             Tool-->>Runtime: ToolResult
@@ -67,7 +68,7 @@ sequenceDiagram
 
 ```text
 RunStart -> [StepStart -> BeforeInference -> AfterInference
-             -> BeforeToolExecute -> AfterToolExecute -> StepEnd]* -> RunEnd
+             -> ToolGate -> BeforeToolExecute -> AfterToolExecute -> StepEnd]* -> RunEnd
 ```
 
 步骤循环持续执行，直到以下任一条件触发：

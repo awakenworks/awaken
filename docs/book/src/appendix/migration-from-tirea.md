@@ -98,8 +98,8 @@ cmd.schedule_action::<AddContextMessage>(
 | `BeforeInferenceAction::AddContextMessage` | `AddContextMessage` | Same semantics |
 | `BeforeInferenceAction::SetInferenceOverride` | `SetInferenceOverride` | Same semantics |
 | `BeforeInferenceAction::ExcludeTool` | `ExcludeTool` | Same semantics |
-| `BeforeToolExecuteAction::Block` | `ToolInterceptAction` with `Block` payload | Unified intercept |
-| `BeforeToolExecuteAction::Suspend` | `ToolInterceptAction` with `Suspend` payload | Unified intercept |
+| `BeforeToolExecuteAction::Block` | `ToolGateHook` returning `ToolInterceptPayload::Block` | Interception moved to `ToolGate` |
+| `BeforeToolExecuteAction::Suspend` | `ToolGateHook` returning `ToolInterceptPayload::Suspend` | Interception moved to `ToolGate` |
 | `AfterToolExecuteAction::AddMessage` | `AddContextMessage` | Generalized |
 
 See [Scheduled Actions](../reference/scheduled-actions.md) for the full list.
@@ -202,7 +202,7 @@ The following tirea concepts have no awaken equivalent:
 | `Global` scope | Thread scope + `ProfileStore` covers this |
 | `RuntimeEffect` | Replaced by `StateCommand` effects |
 | `EffectLog` / `ScheduledActionLog` | Replaced by tracing |
-| `ConfigStore` / `ConfigSlot` | Replaced by `AgentSpec` sections |
+| `ConfigSlot` | Replaced by typed `AgentSpec` sections for static config, plus `ConfigStore` for runtime-managed config |
 | `AgentProfile` | Merged into `AgentSpec` |
 | `ExtensionContext` live activation | Replaced by static `plugin_ids` on `AgentSpec` |
 
@@ -212,7 +212,7 @@ The following tirea concepts have no awaken equivalent:
 |----------------|-------------|
 | `PluginRegistrar` | Structured registration (keys, tools, hooks, actions) |
 | `ToolOutput` with `StateCommand` | Tools can schedule actions as side-effects |
-| `ToolInterceptAction` | Unified Block/Suspend/SetResult pipeline |
+| `ToolGateHook` | Pure interception hook for Block / Suspend / SetResult decisions |
 | `CircuitBreaker` | Per-model LLM failure protection |
 | `Mailbox` | Durable job queue with lease-based claim |
 | `EventReplayBuffer` | SSE reconnection with frame replay |
@@ -226,7 +226,7 @@ The following tirea concepts have no awaken equivalent:
 - [ ] Convert `#[derive(StateSlot)]` to `impl StateKey for ...`
 - [ ] Convert `Extension` impls to `Plugin` impls with `PluginRegistrar`
 - [ ] Convert `TypedTool` impls to `Tool` impls
-- [ ] Replace action enum variants with `cmd.schedule_action::<ActionType>(...)`
+- [ ] Replace action enum variants with `cmd.schedule_action::<ActionType>(...)` or `ToolGateHook` for tool interception
 - [ ] Replace `AgentOsBuilder` with `AgentRuntimeBuilder`
 - [ ] Update store imports: `tirea_store_adapters` → `awaken_stores`
 - [ ] Update server imports: protocol crates → `awaken_server::protocols::*`

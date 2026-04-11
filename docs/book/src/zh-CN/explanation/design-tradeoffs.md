@@ -64,7 +64,7 @@
 | 复杂度 | 注册动作较多 | 心智模型简单 |
 | 横切关注点 | 天然契合——每个插件处理一个关注点 | 每个 middleware 处理一个关注点，但会看到全部流量 |
 
-**为什么选 Plugin System**：Awaken 的扩展点并不只在单一调用链上，而是散落在 phase、tool 拦截、state、effects、actions 等多个边界。
+**为什么选 Plugin System**：Awaken 的扩展点并不只在单一调用链上，而是散落在 `ToolGate`、phase、state、effects、actions 等多个边界。
 
 ## Multi-Protocol Server vs Single Protocol
 

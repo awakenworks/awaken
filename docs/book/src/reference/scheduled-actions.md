@@ -135,34 +135,10 @@ the include-only filter.
 cmd.schedule_action::<IncludeOnlyTools>(vec!["search".into(), "calculator".into()])?;
 ```
 
-### ToolInterceptAction
-
-| | |
-|---|---|
-| **Key** | `tool_intercept` |
-| **Phase** | `BeforeToolExecute` |
-| **Payload** | `ToolInterceptPayload` |
-| **Import** | `awaken_contract::contract::tool_intercept::ToolInterceptAction` |
-
-Intercepts a tool call before execution.  Three outcomes:
-
-| Variant | Effect |
-|---------|--------|
-| `Block { reason }` | Tool execution blocked, run terminates with the reason. |
-| `Suspend(SuspendTicket)` | Tool execution deferred; run pauses awaiting external decision (HITL). |
-| `SetResult(ToolResult)` | Tool execution short-circuited with a pre-built result. |
-
-When multiple intercepts are scheduled, priority is: **Block > Suspend > SetResult**.
-
-**Used by:** permission plugin (ask/deny policies).
-
-```rust,ignore
-use awaken_contract::contract::tool_intercept::{ToolInterceptAction, ToolInterceptPayload};
-
-cmd.schedule_action::<ToolInterceptAction>(
-    ToolInterceptPayload::Block { reason: "Tool is disabled".into() },
-)?;
-```
+> Tool interception is **not** modeled as a scheduled action anymore.
+> Implement `ToolGateHook` and register it with
+> `PluginRegistrar::register_tool_gate_hook()` when you need to block, suspend,
+> or short-circuit tool calls before execution.
 
 ---
 
@@ -216,15 +192,15 @@ cmd.schedule_action::<PromoteToolAction>(vec!["needed_tool".into()])?;
 
 Which plugins **schedule** which actions:
 
-| Plugin | AddContext | SetOverride | Exclude | IncludeOnly | Intercept | Defer | Promote |
-|--------|:---------:|:-----------:|:-------:|:-----------:|:---------:|:-----:|:-------:|
-| **permission** | | | X | | X | | |
+| Plugin | AddContext | SetOverride | Exclude | IncludeOnly | Defer | Promote |
+|--------|:---------:|:-----------:|:-------:|:-----------:|:-----:|:-------:|
+| **permission** | | | X | | | |
 | **skills** | X | | | | | | |
 | **reminder** | X | | | | | | |
-| **deferred-tools** | X | | X | | | X | X |
-| **observability** | | | | | | | |
-| **mcp** | | | | | | | |
-| **generative-ui** | | | | | | | |
+| **deferred-tools** | X | | X | | X | X |
+| **observability** | | | | | | |
+| **mcp** | | | | | | |
+| **generative-ui** | | | | | | |
 
 ---
 

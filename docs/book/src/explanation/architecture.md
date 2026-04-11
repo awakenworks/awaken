@@ -49,6 +49,7 @@ sequenceDiagram
         LLM-->>Runtime: Response (text + tool_calls)
         Runtime->>Runtime: AfterInference phase
         opt Tool calls present
+            Runtime->>Runtime: ToolGate phase
             Runtime->>Runtime: BeforeToolExecute phase
             Runtime->>Tool: execute(args, ctx)
             Tool-->>Runtime: ToolResult
@@ -67,7 +68,7 @@ Every run proceeds through a fixed sequence of phases. Plugins register hooks th
 
 ```text
 RunStart -> [StepStart -> BeforeInference -> AfterInference
-             -> BeforeToolExecute -> AfterToolExecute -> StepEnd]* -> RunEnd
+             -> ToolGate -> BeforeToolExecute -> AfterToolExecute -> StepEnd]* -> RunEnd
 ```
 
 The step loop repeats until one of these conditions fires:

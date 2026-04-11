@@ -343,7 +343,7 @@ impl PluginConfigKey for RateLimitConfigKey {
 
 // In plugin register():
 fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
-    r.register_hook(Phase::BeforeToolExecute, RateLimitHook);
+    r.register_phase_hook("rate_limit", Phase::BeforeToolExecute, RateLimitHook)?;
     Ok(())
 }
 
@@ -369,3 +369,27 @@ if cfg.max_calls_per_step > 0 { /* enforce limit */ }
 ## Related
 
 - [Build an Agent](../how-to/build-an-agent.md)
+
+## ConfigStore
+
+`ConfigStore` is the async persistence contract behind the server-side `/v1/config/*` APIs. Use it when configuration must be created, listed, or updated at runtime instead of being baked into `AgentSpec`.
+
+```rust,ignore
+#[async_trait]
+pub trait ConfigStore: Send + Sync {
+    async fn get(&self, namespace: &str, id: &str) -> Result<Option<Value>, StorageError>;
+    async fn list(
+        &self,
+        namespace: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<(String, Value)>, StorageError>;
+    async fn put(&self, namespace: &str, id: &str, value: &Value) -> Result<(), StorageError>;
+    async fn delete(&self, namespace: &str, id: &str) -> Result<(), StorageError>;
+}
+```
+
+Related types:
+
+- `ConfigChangeNotifier` / `ConfigChangeSubscriber` — optional native change notifications
+- `AppState::with_config_store(...)` — enables runtime config routes in `awaken-server`

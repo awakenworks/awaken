@@ -4,7 +4,7 @@
 |------|------|------|
 | `Thread` | 会话线程 | 持久化的对话与状态历史。 |
 | `Run` | 运行 | 针对某个 thread 的一次执行尝试。 |
-| `Phase` | 阶段 | 执行循环中的命名阶段。 |
+| `Phase` | 阶段 | 执行循环中的命名阶段（`RunStart`、`StepStart`、`BeforeInference`、`AfterInference`、`ToolGate`、`BeforeToolExecute`、`AfterToolExecute`、`StepEnd`、`RunEnd`）。 |
 | `Snapshot` | 快照 | 传给 hook / tool 的不可变状态视图（`struct Snapshot { revision: u64, ext: Arc<StateMap> }`）。 |
 | `StateKey` | 状态键 | 带作用域、合并策略和值类型的类型化键。 |
 | `MutationBatch` | 变更批次 | 在提交前收集的一组状态变更。 |
@@ -14,6 +14,7 @@
 | `Plugin` | 插件 | 通过 `PluginRegistrar` 注册的系统级扩展。 |
 | `PluginRegistrar` | 插件注册器 | 注册 phase hook、tool、state key、handler 的入口。 |
 | `PhaseHook` | 阶段钩子 | 绑定到某个 phase 的异步 hook。 |
+| `ToolGateHook` | 工具闸门钩子 | 在工具真正执行前做纯判定的 hook，可返回放行、阻断、挂起或直接给结果。 |
 | `PhaseContext` | 阶段上下文 | hook 执行时拿到的只读上下文。 |
 | `StateCommand` | 状态命令 | hook 返回值，包含变更、action、effect。 |
 | `Tool` | 工具 | 暴露给 agent 的能力接口。 |

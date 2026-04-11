@@ -61,10 +61,18 @@ impl StreamResult {
         extract_text(&self.content)
     }
 
-    /// Whether this result was truncated mid-generation and has incomplete tool
-    /// calls that should be recovered via a continuation prompt.
+    /// Whether this result was truncated mid-generation and should be recovered
+    /// via a continuation prompt.
     pub fn needs_truncation_recovery(&self) -> bool {
-        self.stop_reason == Some(StopReason::MaxTokens) && self.has_incomplete_tool_calls
+        self.stop_reason == Some(StopReason::MaxTokens)
+            && (self.has_incomplete_tool_calls
+                || (self.tool_calls.is_empty() && self.has_text_output()))
+    }
+
+    fn has_text_output(&self) -> bool {
+        self.content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Text { text } if !text.is_empty()))
     }
 }
 
@@ -473,6 +481,18 @@ mod tests {
     }
 
     #[test]
+    fn stream_result_needs_truncation_recovery_for_text_max_tokens() {
+        let result = StreamResult {
+            content: vec![ContentBlock::text("partial answer")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::MaxTokens),
+            has_incomplete_tool_calls: false,
+        };
+        assert!(result.needs_truncation_recovery());
+    }
+
+    #[test]
     fn stream_result_no_truncation_recovery_end_turn() {
         let result = StreamResult {
             content: vec![],
@@ -489,6 +509,18 @@ mod tests {
         let result = StreamResult {
             content: vec![],
             tool_calls: vec![ToolCall::new("c1", "search", json!({}))],
+            usage: None,
+            stop_reason: Some(StopReason::MaxTokens),
+            has_incomplete_tool_calls: false,
+        };
+        assert!(!result.needs_truncation_recovery());
+    }
+
+    #[test]
+    fn stream_result_no_truncation_recovery_empty_max_tokens() {
+        let result = StreamResult {
+            content: vec![],
+            tool_calls: vec![],
             usage: None,
             stop_reason: Some(StopReason::MaxTokens),
             has_incomplete_tool_calls: false,

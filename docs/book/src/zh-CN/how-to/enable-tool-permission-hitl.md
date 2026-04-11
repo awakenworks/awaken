@@ -46,6 +46,8 @@ let runtime = AgentRuntimeBuilder::new()
     .expect("failed to build runtime");
 ```
 
+permission 插件会注册一个 `ToolGateHook`，在每次工具真正执行前评估规则。
+
 2. 以内联方式定义规则：
 
 ```rust,ignore
@@ -117,7 +119,7 @@ let agent_spec = AgentSpec::new("my-agent")
 
 ## 验证
 
-1. 用一个命中 `deny` 的工具测试，调用应被拦截
+1. 用一个命中 `deny` 的工具测试，调用应在执行前被阻断
 2. 用一个命中 `ask` 的工具测试，run 应进入等待审批状态
 3. 通过 mailbox 接口提交审批
 4. 确认 run 恢复执行
@@ -141,7 +143,7 @@ let agent_spec = AgentSpec::new("my-agent")
 - `crates/awaken-ext-permission/src/config.rs`
 - `crates/awaken-ext-permission/src/rules.rs`
 - `crates/awaken-ext-permission/src/plugin/plugin.rs`
-- `crates/awaken-ext-permission/src/plugin/checker.rs`
+- `crates/awaken-ext-permission/src/plugin/checker.rs`（`PermissionToolGateHook`）
 - `crates/awaken-tool-pattern/`
 
 ## 相关

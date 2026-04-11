@@ -64,7 +64,7 @@ This page documents key architectural decisions in Awaken and the tradeoffs they
 | Complexity | More registration ceremony | Simpler mental model (wrap and delegate) |
 | Cross-cutting concerns | Natural fit -- each plugin handles one concern | Each middleware handles one concern but sees all traffic |
 
-**Why plugin system**: Agent execution has many extension points that don't nest cleanly. A permission check happens at `BeforeToolExecute`, observability spans wrap tool execution, reminders inject messages at `AfterToolExecute`. These are independent concerns at different phases. A middleware chain would require each middleware to understand the full lifecycle and decide when to act. The plugin system lets each plugin declare exactly which phases it cares about.
+**Why plugin system**: Agent execution has many extension points that don't nest cleanly. A permission decision happens at `ToolGate`, observability spans wrap tool execution, reminders inject messages at `AfterToolExecute`. These are independent concerns at different phases. A middleware chain would require each middleware to understand the full lifecycle and decide when to act. The plugin system lets each plugin declare exactly which phases it cares about.
 
 ## Multi-Protocol Server vs Single Protocol
 

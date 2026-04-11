@@ -16,6 +16,7 @@ When a plugin is loaded, its `register()` method is called with a `PluginRegistr
 
 **Behavioral components** are only active when the plugin passes the activation filter:
 
+- Tool gate hooks (`register_tool_gate_hook()`)
 - Phase hooks (`register_phase_hook()`)
 - Tools (`register_tool()`)
 - Request transforms (`register_request_transform()`)
@@ -185,9 +186,9 @@ pub fn merge(&mut self, other: InferenceOverride) {
 
 This allows plugins to override specific parameters without affecting others. A cost-control plugin can set `max_tokens` while a quality plugin sets `temperature`, and neither interferes with the other. If both set the same field, the last merge wins.
 
-## Tool Intercept Priority
+## ToolGate Decision Priority
 
-During `BeforeToolExecute`, plugins can schedule `ToolInterceptAction` to control tool execution flow. The action payload is one of three variants:
+During `ToolGate`, plugins implement `ToolGateHook` and return an optional `ToolInterceptPayload` to control tool execution flow:
 
 ```rust,ignore
 pub enum ToolInterceptPayload {
@@ -197,7 +198,7 @@ pub enum ToolInterceptPayload {
 }
 ```
 
-When multiple intercepts are scheduled for the same tool call, they are resolved by implicit priority:
+When multiple gate hooks return a decision for the same tool call, they are resolved by implicit priority:
 
 | Priority | Variant | Behavior |
 |----------|---------|----------|
@@ -205,13 +206,13 @@ When multiple intercepts are scheduled for the same tool call, they are resolved
 | 2 | `Suspend` | Pause execution, wait for external decision |
 | 1 (lowest) | `SetResult` | Short-circuit with a predefined result |
 
-The highest-priority intercept wins. If two intercepts have the same priority (e.g., two plugins both schedule `Block`), the first one processed takes effect and the conflict is logged as an error.
+The highest-priority decision wins. If two decisions have the same priority (e.g., two plugins both return `Block`), the first one processed takes effect and the conflict is logged as an error.
 
-If no intercept is scheduled, the tool executes normally (implicit proceed).
+If no hook returns a decision, the tool executes normally. `ToolGate` is pure and may be re-evaluated after earlier allowed tool calls commit new state in the same step; `BeforeToolExecute` runs only once a call is finally allowed.
 
 ```mermaid
 flowchart TD
-    BTE[BeforeToolExecute hooks run] --> INT{Any intercepts scheduled?}
+    TG[ToolGate hooks run] --> INT{Any decision returned?}
     INT -- No --> EXEC[Execute tool normally]
     INT -- Yes --> PRI[Resolve by priority]
     PRI --> B[Block: fail the call]
