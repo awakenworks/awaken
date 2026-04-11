@@ -177,3 +177,9 @@ let overrides = InferenceOverride {
 Provider factory 只返回 provider executor；retry 由解析流水线添加，不隐藏在 provider 构造里。
 
 非流式执行中，retry 与 fallback 作用于完整推理调用。流式执行中，retry 与 fallback 只作用于打开 stream 的阶段。stream 已经开始后，如果后续 stream item 报错，会直接向上返回，因为重试会导致已经发出的 delta 重复。
+
+## 相关
+
+- [通过配置调优 Agent 行为](../how-to/configure-agent-behavior.md)
+- [配置](./config.md)
+- [智能体解析](../explanation/agent-resolution.md)

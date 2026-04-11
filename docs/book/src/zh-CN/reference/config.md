@@ -440,7 +440,18 @@ pub trait ConfigStore: Send + Sync {
 
 - `ConfigChangeNotifier` / `ConfigChangeSubscriber` —— 可选的原生变更通知接口
 - `AppState::with_config_store(...)` —— 为 `awaken-server` 启用运行时配置路由
+- `ConfigRuntimeManager` —— 写入配置前编译并校验候选 registry snapshot，校验通过后发布
+- `ConfigService` —— `/v1/config/*`、`/v1/agents` 和 `/v1/capabilities` 使用的服务层
+
+内置实现：
+
+- `InMemoryStore` 实现 `ThreadRunStore`、`ProfileStore` 和 `ConfigStore`
+- `FileStore` 实现 `ThreadRunStore`、`ProfileStore` 和 `ConfigStore`
+- `PostgresStore` 实现 `ThreadRunStore` 和 `ConfigStore`
 
 ## 相关
 
 - [构建 Agent](../how-to/build-an-agent.md)
+- [通过配置调优 Agent 行为](../how-to/configure-agent-behavior.md)
+- [HTTP API](./http-api.md)
+- [Provider 与 Model 配置](./provider-model-config.md)

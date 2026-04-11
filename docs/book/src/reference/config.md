@@ -494,7 +494,18 @@ Related types:
 
 - `ConfigChangeNotifier` / `ConfigChangeSubscriber` — optional native change notifications
 - `AppState::with_config_store(...)` — enables runtime config routes in `awaken-server`
+- `ConfigRuntimeManager` — validates config writes by compiling a candidate registry snapshot before publishing it
+- `ConfigService` — service layer used by `/v1/config/*`, `/v1/agents`, and `/v1/capabilities`
+
+Built-in implementations:
+
+- `InMemoryStore` implements `ThreadRunStore`, `ProfileStore`, and `ConfigStore`
+- `FileStore` implements `ThreadRunStore`, `ProfileStore`, and `ConfigStore`
+- `PostgresStore` implements `ThreadRunStore` and `ConfigStore`
 
 ## Related
 
 - [Build an Agent](../how-to/build-an-agent.md)
+- [Configure Agent Behavior](../how-to/configure-agent-behavior.md)
+- [HTTP API](./http-api.md)
+- [Provider and Model Configuration](./provider-model-config.md)

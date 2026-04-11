@@ -12,6 +12,7 @@
 
 - [Build Agents](./build-agents.md)
 - [Build an Agent](./how-to/build-an-agent.md)
+- [Configure Agent Behavior](./how-to/configure-agent-behavior.md)
 - [Add a Tool](./how-to/add-a-tool.md)
 - [Add a Plugin](./how-to/add-a-plugin.md)
 - [Use Skills Subsystem](./how-to/use-skills-subsystem.md)

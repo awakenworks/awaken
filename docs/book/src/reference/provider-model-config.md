@@ -178,3 +178,9 @@ Per-agent retry is read through the `"retry"` section via `RetryConfigKey`. When
 Provider factories return provider executors; retry is added by the resolve pipeline, not hidden inside provider construction.
 
 For collected execution, retry and fallback apply to the full inference call. For streaming execution, retry and fallback apply while opening the stream. Once a stream has started, later stream-item errors are surfaced directly because retrying would duplicate already emitted deltas.
+
+## Related
+
+- [Configure Agent Behavior](../how-to/configure-agent-behavior.md)
+- [Config](./config.md)
+- [Agent Resolution](../explanation/agent-resolution.md)

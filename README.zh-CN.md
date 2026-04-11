@@ -213,6 +213,10 @@ import { CopilotKit } from "@copilotkit/react-core";
 </CopilotKit>
 ```
 
+#### 托管配置
+
+把 `ConfigStore` 接入 `AppState` 后，可通过 `/v1/config/*` 管理 agents、models、providers 和 MCP servers。参考 [通过配置调优 Agent 行为](https://awakenworks.github.io/awaken/zh-CN/how-to/configure-agent-behavior.html) 调优 provider、model binding、工具和插件 section。[`apps/admin-console`](./apps/admin-console/) 使用同一套 API，并通过 `VITE_BACKEND_URL` 读取服务端地址。
+
 ## 内置插件
 
 | Plugin | 说明 | Feature Flag |
@@ -307,6 +311,7 @@ npm --prefix apps/admin-console run dev
 |---|---|---|
 | 构建第一个 Agent | [快速上手](https://awakenworks.github.io/awaken/zh-CN/get-started.html) | [构建 Agent 路径](https://awakenworks.github.io/awaken/zh-CN/build-agents.html) |
 | 查看全栈应用 | [AI SDK starter](./examples/ai-sdk-starter/) | [CopilotKit starter](./examples/copilotkit-starter/) |
+| 管理运行时配置 | [Admin Console](./apps/admin-console/) | [通过配置调优 Agent 行为](https://awakenworks.github.io/awaken/zh-CN/how-to/configure-agent-behavior.html) |
 | 探索 API | [参考文档](https://awakenworks.github.io/awaken/zh-CN/reference/overview.html) | `cargo doc --workspace --no-deps --open` |
 | 理解运行时 | [架构](https://awakenworks.github.io/awaken/zh-CN/explanation/architecture.html) | [Run 生命周期与 Phases](https://awakenworks.github.io/awaken/zh-CN/explanation/run-lifecycle-and-phases.html) |
 | 从 tirea 迁移 | [迁移指南](https://awakenworks.github.io/awaken/zh-CN/appendix/migration-from-tirea.html) | |

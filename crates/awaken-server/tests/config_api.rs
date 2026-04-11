@@ -8,14 +8,22 @@ use awaken_contract::contract::config_store::{
     ConfigChangeEvent, ConfigChangeKind, ConfigChangeNotifier, ConfigChangeSubscriber, ConfigStore,
 };
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
+#[cfg(feature = "permission")]
+use awaken_contract::contract::inference::ReasoningEffort;
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::contract::storage::StorageError;
 use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 use awaken_contract::{AgentSpec, McpServerSpec, ModelBindingSpec, ProviderSpec};
+#[cfg(feature = "permission")]
+use awaken_ext_permission::{PermissionConfigKey, PermissionPlugin, ToolPermissionBehavior};
 use awaken_runtime::AgentRuntime;
 use awaken_runtime::builder::AgentRuntimeBuilder;
+#[cfg(feature = "permission")]
+use awaken_runtime::context::CompactionConfigKey;
+#[cfg(feature = "permission")]
+use awaken_runtime::engine::RetryConfigKey;
 use awaken_runtime::registry::ToolRegistry;
 use awaken_runtime::registry::memory::MapToolRegistry;
 use awaken_runtime::registry::traits::ModelBinding;
@@ -64,6 +72,64 @@ impl ProviderExecutorFactory for TestProviderFactory {
     fn build(&self, spec: &ProviderSpec) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
         if spec.adapter.eq_ignore_ascii_case("stub") {
             return Ok(Arc::new(ImmediateExecutor));
+        }
+
+        Err(ConfigRuntimeError::UnsupportedProviderAdapter(
+            spec.adapter.clone(),
+        ))
+    }
+}
+
+#[cfg(feature = "permission")]
+struct RecordingFallbackExecutor {
+    attempts: Arc<Mutex<Vec<String>>>,
+    retryable_model: String,
+}
+
+#[cfg(feature = "permission")]
+#[async_trait]
+impl LlmExecutor for RecordingFallbackExecutor {
+    async fn execute(
+        &self,
+        request: InferenceRequest,
+    ) -> Result<StreamResult, InferenceExecutionError> {
+        self.attempts
+            .lock()
+            .expect("attempt log lock poisoned")
+            .push(request.upstream_model.clone());
+
+        if request.upstream_model == self.retryable_model {
+            return Err(InferenceExecutionError::RateLimited("test retry".into()));
+        }
+
+        Ok(StreamResult {
+            content: vec![],
+            tool_calls: vec![],
+            usage: Some(TokenUsage::default()),
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        })
+    }
+
+    fn name(&self) -> &str {
+        "recording-fallback"
+    }
+}
+
+#[cfg(feature = "permission")]
+struct RecordingProviderFactory {
+    attempts: Arc<Mutex<Vec<String>>>,
+    retryable_model: String,
+}
+
+#[cfg(feature = "permission")]
+impl ProviderExecutorFactory for RecordingProviderFactory {
+    fn build(&self, spec: &ProviderSpec) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
+        if spec.adapter.eq_ignore_ascii_case("stub") {
+            return Ok(Arc::new(RecordingFallbackExecutor {
+                attempts: self.attempts.clone(),
+                retryable_model: self.retryable_model.clone(),
+            }));
         }
 
         Err(ConfigRuntimeError::UnsupportedProviderAdapter(
@@ -414,6 +480,27 @@ async fn make_runtime_manager_with_options(
     Arc<InMemoryStore>,
     Arc<ConfigRuntimeManager>,
 ) {
+    make_runtime_manager_custom(
+        change_notifier,
+        mcp_registry_factory,
+        mcp_refresh_interval,
+        Arc::new(TestProviderFactory),
+        false,
+    )
+    .await
+}
+
+async fn make_runtime_manager_custom(
+    change_notifier: Option<Arc<dyn ConfigChangeNotifier>>,
+    mcp_registry_factory: Arc<dyn McpRegistryFactory>,
+    mcp_refresh_interval: Option<Duration>,
+    provider_factory: Arc<dyn ProviderExecutorFactory>,
+    register_permission_plugin: bool,
+) -> (
+    Arc<AgentRuntime>,
+    Arc<InMemoryStore>,
+    Arc<ConfigRuntimeManager>,
+) {
     let store = Arc::new(InMemoryStore::new());
     let bootstrap_provider = ProviderSpec {
         id: "bootstrap".into(),
@@ -427,26 +514,32 @@ async fn make_runtime_manager_with_options(
     };
     let bootstrap_agent = agent_spec("bootstrap", "bootstrap");
 
-    let runtime = Arc::new(
-        AgentRuntimeBuilder::new()
-            .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_model_binding(
-                "bootstrap",
-                ModelBinding {
-                    provider_id: "bootstrap".into(),
-                    upstream_model: "bootstrap-model".into(),
-                },
-            )
-            .with_agent_spec(bootstrap_agent.clone())
-            .with_thread_run_store(store.clone())
-            .build()
-            .expect("build runtime"),
-    );
+    let builder = AgentRuntimeBuilder::new()
+        .with_provider("bootstrap", Arc::new(ImmediateExecutor))
+        .with_model_binding(
+            "bootstrap",
+            ModelBinding {
+                provider_id: "bootstrap".into(),
+                upstream_model: "bootstrap-model".into(),
+            },
+        )
+        .with_agent_spec(bootstrap_agent.clone())
+        .with_thread_run_store(store.clone());
+    #[cfg(feature = "permission")]
+    let builder = if register_permission_plugin {
+        builder.with_plugin("permission", Arc::new(PermissionPlugin))
+    } else {
+        builder
+    };
+    #[cfg(not(feature = "permission"))]
+    let _ = register_permission_plugin;
+
+    let runtime = Arc::new(builder.build().expect("build runtime"));
 
     let config_store = store.clone() as Arc<dyn ConfigStore>;
     let mut manager = ConfigRuntimeManager::new(runtime.clone(), config_store.clone())
         .expect("config runtime manager")
-        .with_provider_factory(Arc::new(TestProviderFactory))
+        .with_provider_factory(provider_factory)
         .with_mcp_registry_factory(mcp_registry_factory);
     if let Some(notifier) = change_notifier {
         manager = manager.with_change_notifier(notifier);
@@ -765,6 +858,221 @@ async fn published_config_updates_live_capabilities_and_resolver() {
         .expect("resolver should see published config");
     assert_eq!(resolved.id(), "agent-1");
     assert_eq!(resolved.model_id(), "model-1");
+}
+
+#[cfg(feature = "permission")]
+#[tokio::test]
+async fn documented_config_driven_agent_tuning_publishes_sections_and_retry() {
+    let attempts = Arc::new(Mutex::new(Vec::new()));
+    let notifier = Arc::new(TestConfigChangeNotifier::new());
+    let (runtime, store, manager) = make_runtime_manager_custom(
+        Some(notifier.clone() as Arc<dyn ConfigChangeNotifier>),
+        Arc::new(TestMcpRegistryFactory),
+        None,
+        Arc::new(RecordingProviderFactory {
+            attempts: attempts.clone(),
+            retryable_model: "doc-primary".into(),
+        }),
+        true,
+    )
+    .await;
+    let config_store = store.clone() as Arc<dyn ConfigStore>;
+    let mailbox = Arc::new(Mailbox::new(
+        runtime.clone(),
+        Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+        store.clone(),
+        "config-doc-scenario-test".into(),
+        MailboxConfig::default(),
+    ));
+    let state = AppState::new(
+        runtime.clone(),
+        mailbox,
+        store,
+        runtime.resolver_arc(),
+        ServerConfig::default(),
+    )
+    .with_config_store(config_store)
+    .with_config_runtime_manager(manager);
+    let router = build_router().with_state(state);
+
+    let (status, _) = request_json(
+        &router,
+        Method::POST,
+        "/v1/config/providers",
+        Some(json!({
+            "id": "doc-provider",
+            "adapter": "stub",
+            "base_url": null,
+            "timeout_secs": 300
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = request_json(
+        &router,
+        Method::POST,
+        "/v1/config/models",
+        Some(json!({
+            "id": "research-default",
+            "provider_id": "doc-provider",
+            "upstream_model": "doc-primary"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, agent) = request_json(
+        &router,
+        Method::POST,
+        "/v1/config/agents",
+        Some(json!({
+            "id": "research-assistant",
+            "model_id": "research-default",
+            "system_prompt": "You help with source-grounded research.",
+            "max_rounds": 12,
+            "max_continuation_retries": 3,
+            "reasoning_effort": "medium",
+            "plugin_ids": ["permission"],
+            "allowed_tools": ["read_document", "web_search", "summarize"],
+            "excluded_tools": ["delete_file"],
+            "context_policy": {
+                "max_context_tokens": 120000,
+                "max_output_tokens": 8192,
+                "min_recent_messages": 8,
+                "enable_prompt_cache": true,
+                "autocompact_threshold": 90000,
+                "compaction_mode": "keep_recent_raw_suffix",
+                "compaction_raw_suffix_messages": 2
+            },
+            "sections": {
+                "retry": {
+                    "max_retries": 1,
+                    "fallback_upstream_models": ["doc-fallback"],
+                    "backoff_base_ms": 0
+                },
+                "permission": {
+                    "default_behavior": "ask",
+                    "rules": [
+                        { "tool": "read_document", "behavior": "allow" },
+                        { "tool": "web_search", "behavior": "ask" },
+                        { "tool": "delete_*", "behavior": "deny" }
+                    ]
+                },
+                "compaction": {
+                    "summarizer_system_prompt": "Preserve decisions, facts, tool results, and unresolved tasks.",
+                    "summarizer_user_prompt": "Summarize the following conversation:\n\n{messages}",
+                    "summary_max_tokens": 1024,
+                    "summary_model": "doc-summary",
+                    "min_savings_ratio": 0.3
+                }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(agent["id"], "research-assistant");
+
+    let (status, capabilities) = request_json(&router, Method::GET, "/v1/capabilities", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let permission_plugin = capabilities["plugins"]
+        .as_array()
+        .expect("plugins should be an array")
+        .iter()
+        .find(|plugin| plugin["id"] == "permission")
+        .expect("permission plugin should be advertised");
+    assert!(
+        permission_plugin["config_schemas"]
+            .as_array()
+            .expect("config_schemas should be an array")
+            .iter()
+            .any(|schema| schema["key"] == "permission")
+    );
+
+    let resolved = runtime
+        .resolver()
+        .resolve("research-assistant")
+        .expect("documented config-driven agent should resolve");
+    assert_eq!(resolved.id(), "research-assistant");
+    assert_eq!(resolved.model_id(), "research-default");
+    assert_eq!(resolved.upstream_model, "doc-primary");
+    assert_eq!(resolved.max_rounds(), 12);
+    assert_eq!(resolved.max_continuation_retries(), 3);
+    assert_eq!(
+        resolved.spec.reasoning_effort.as_ref(),
+        Some(&ReasoningEffort::Medium)
+    );
+    assert_eq!(
+        resolved.spec.allowed_tools.as_ref().expect("allowed tools"),
+        &vec![
+            "read_document".to_string(),
+            "web_search".to_string(),
+            "summarize".to_string()
+        ]
+    );
+    assert_eq!(
+        resolved
+            .spec
+            .excluded_tools
+            .as_ref()
+            .expect("excluded tools"),
+        &vec!["delete_file".to_string()]
+    );
+
+    let retry = resolved
+        .spec
+        .config::<RetryConfigKey>()
+        .expect("retry section should decode");
+    assert_eq!(retry.max_retries, 1);
+    assert_eq!(
+        retry.fallback_upstream_models,
+        vec!["doc-fallback".to_string()]
+    );
+    assert_eq!(retry.backoff_base_ms, 0);
+
+    let permission = resolved
+        .spec
+        .config::<PermissionConfigKey>()
+        .expect("permission section should decode");
+    assert_eq!(permission.default_behavior, ToolPermissionBehavior::Ask);
+    assert_eq!(permission.rules.len(), 3);
+    assert_eq!(permission.rules[0].tool, "read_document");
+
+    let context_policy = resolved
+        .context_policy()
+        .expect("context policy should be configured");
+    assert_eq!(context_policy.max_context_tokens, 120000);
+    assert_eq!(context_policy.autocompact_threshold, Some(90000));
+
+    let compaction = resolved
+        .spec
+        .config::<CompactionConfigKey>()
+        .expect("compaction section should decode");
+    assert_eq!(compaction.summary_max_tokens, Some(1024));
+    assert_eq!(compaction.summary_model.as_deref(), Some("doc-summary"));
+    assert!((compaction.min_savings_ratio - 0.3).abs() < f64::EPSILON);
+
+    attempts.lock().expect("attempt log lock poisoned").clear();
+    resolved
+        .llm_executor
+        .execute(InferenceRequest {
+            upstream_model: resolved.upstream_model.clone(),
+            messages: vec![],
+            tools: vec![],
+            system: vec![],
+            overrides: None,
+            enable_prompt_cache: context_policy.enable_prompt_cache,
+        })
+        .await
+        .expect("fallback upstream model should recover retryable primary failure");
+    assert_eq!(
+        *attempts.lock().expect("attempt log lock poisoned"),
+        vec![
+            "doc-primary".to_string(),
+            "doc-primary".to_string(),
+            "doc-fallback".to_string()
+        ]
+    );
 }
 
 #[tokio::test]

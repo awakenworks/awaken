@@ -12,6 +12,7 @@
 
 - [构建 Agent 路径](./build-agents.md)
 - [构建 Agent](./how-to/build-an-agent.md)
+- [通过配置调优 Agent 行为](./how-to/configure-agent-behavior.md)
 - [添加 Tool](./how-to/add-a-tool.md)
 - [添加 Plugin](./how-to/add-a-plugin.md)
 - [使用 Skills 子系统](./how-to/use-skills-subsystem.md)
