@@ -108,7 +108,7 @@ pub trait BackendRegistry: Send + Sync {
 // RegistrySet
 // ---------------------------------------------------------------------------
 
-/// Aggregation of all registries — passed to [`super::resolve::resolve`].
+/// Aggregation of all registries passed to the registry resolution pipeline.
 #[derive(Clone)]
 pub struct RegistrySet {
     pub agents: Arc<dyn AgentSpecRegistry>,

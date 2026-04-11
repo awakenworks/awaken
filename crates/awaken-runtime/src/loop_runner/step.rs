@@ -181,7 +181,7 @@ fn apply_tool_resume_context(
 /// Build a `StateCommand` that upserts a `ToolCallStates` entry for a given call and status.
 fn tool_call_state_cmd(call: &ToolCall, status: ToolCallStatus) -> StateCommand {
     let mut cmd = StateCommand::new();
-    cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Put(ToolCallState::new(
+    cmd.update::<ToolCallStates>(ToolCallStatesUpdate::put(ToolCallState::new(
         call.id.clone(),
         call.name.clone(),
         call.arguments.clone(),
@@ -642,7 +642,7 @@ async fn build_tool_state_command(
             Some(ticket.suspension.action.clone()),
         );
     }
-    cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Put(next_state));
+    cmd.update::<ToolCallStates>(ToolCallStatesUpdate::put(next_state));
 
     // Merge tool's own side-effects (same mechanism as plugin hooks)
     if !tool_command.is_empty() {
@@ -724,7 +724,7 @@ async fn complete_tool_call(
 /// Build a suspend-only StateCommand (no AfterToolExecute — runs on resume).
 fn build_suspend_state_command(call: &ToolCall, ticket: &SuspendTicket) -> StateCommand {
     let mut cmd = StateCommand::new();
-    cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Put(
+    cmd.update::<ToolCallStates>(ToolCallStatesUpdate::put(
         ToolCallState::new(
             call.id.clone(),
             call.name.clone(),
@@ -786,7 +786,7 @@ async fn complete_interrupted_tool_call(
     let result =
         awaken_contract::contract::tool::ToolResult::error(&call.name, INTERRUPTED_TOOL_MESSAGE);
     let mut cmd = StateCommand::new();
-    cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Put(ToolCallState::new(
+    cmd.update::<ToolCallStates>(ToolCallStatesUpdate::put(ToolCallState::new(
         call.id.clone(),
         call.name.clone(),
         call.arguments.clone(),

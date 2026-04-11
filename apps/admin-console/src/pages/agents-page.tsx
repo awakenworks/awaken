@@ -105,7 +105,7 @@ export function AgentsPage() {
                   onClick={() => navigate(adminRoutes.agent(agent.id))}
                 >
                   <td className="px-5 py-4 font-mono text-slate-950">{agent.id}</td>
-                  <td className="px-5 py-4">{agent.model}</td>
+                  <td className="px-5 py-4">{agent.model_id}</td>
                   <td className="px-5 py-4 text-slate-500">
                     {(agent.plugin_ids ?? []).join(", ") || "None"}
                   </td>

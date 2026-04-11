@@ -7,7 +7,7 @@ use awaken_contract::contract::tool::ToolDescriptor;
 use awaken_contract::model::Phase;
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_contract::state::StateKeyOptions;
-use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
+use awaken_runtime::plugins::{ConfigSchema, Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::state::MutationBatch;
 
 use crate::config::{DeferredToolsConfigKey, ToolLoadMode};
@@ -96,14 +96,16 @@ impl Plugin for DeferredToolsPlugin {
         Ok(())
     }
 
+    fn config_schemas(&self) -> Vec<ConfigSchema> {
+        vec![ConfigSchema::for_key::<DeferredToolsConfigKey>()]
+    }
+
     fn on_activate(
         &self,
         agent_spec: &AgentSpec,
         patch: &mut MutationBatch,
     ) -> Result<(), StateError> {
-        let config = agent_spec
-            .config::<DeferredToolsConfigKey>()
-            .unwrap_or_default();
+        let config = agent_spec.config::<DeferredToolsConfigKey>()?;
 
         let mut state_entries = Vec::new();
         let mut registry_entries = Vec::new();

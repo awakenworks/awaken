@@ -654,7 +654,7 @@ async fn events_have_correct_sequence_for_single_step() {
     let resolver = FixedResolver::new(agent);
 
     let sink = Arc::new(VecEventSink::new());
-    let result = run_agent_loop(AgentLoopParams {
+    let _result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
@@ -730,7 +730,7 @@ async fn events_have_correct_sequence_with_tool_call() {
     let resolver = FixedResolver::new(agent);
 
     let sink = Arc::new(VecEventSink::new());
-    let result = run_agent_loop(AgentLoopParams {
+    let _result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
@@ -2914,7 +2914,7 @@ async fn intercept_set_result_emits_tool_call_done_event() {
                 outcome,
                 result,
                 ..
-            } => Some((id.clone(), outcome.clone(), result.clone())),
+            } => Some((id.clone(), *outcome, result.clone())),
             _ => None,
         })
         .collect();
@@ -3562,7 +3562,7 @@ async fn parallel_tools_one_fails_other_succeeds() {
     let tool_done_events: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
-            AgentEvent::ToolCallDone { id, outcome, .. } => Some((id.clone(), outcome.clone())),
+            AgentEvent::ToolCallDone { id, outcome, .. } => Some((id.clone(), *outcome)),
             _ => None,
         })
         .collect();
@@ -7398,7 +7398,7 @@ async fn lifecycle_transitions_running_to_waiting() {
 async fn lifecycle_transitions_running_to_done_on_cancel() {
     use awaken::CancellationToken;
 
-    let llm = Arc::new(SlowStreamingLlm::new(vec!["tok "; 10].to_vec(), 50));
+    let llm = Arc::new(SlowStreamingLlm::new(["tok "; 10].to_vec(), 50));
     let agent = ResolvedAgent::new("test", "m", "sys", llm);
     let runtime = make_runtime();
     let resolver = FixedResolver::new(agent);
@@ -7895,7 +7895,7 @@ async fn state_snapshot_contains_extensions_with_lifecycle() {
             AgentEvent::StateSnapshot { snapshot } => Some(snapshot),
             _ => None,
         })
-        .last()
+        .next_back()
         .expect("should have at least one snapshot");
 
     let extensions = last_snapshot
@@ -8012,7 +8012,7 @@ async fn state_snapshot_at_suspension_includes_waiting_status() {
             AgentEvent::StateSnapshot { snapshot } => Some(snapshot),
             _ => None,
         })
-        .last()
+        .next_back()
         .expect("should have at least one snapshot");
 
     // The snapshot should contain the lifecycle with Waiting status
@@ -11045,7 +11045,7 @@ async fn inbox_messages_injected_before_natural_end() {
     let (inbox_tx, inbox_rx) = awaken_runtime::inbox::inbox_channel();
     let tool_inbox_tx = inbox_tx.clone();
 
-    let mut manager = BackgroundTaskManager::new();
+    let manager = BackgroundTaskManager::new();
     manager.set_owner_inbox(inbox_tx);
     let manager = Arc::new(manager);
     manager.set_store(store.clone());
@@ -11143,27 +11143,29 @@ async fn inbox_messages_injected_before_natural_end() {
     // The inbox message was injected after step 1 (tool call) and before
     // step 2 (LLM call). Verify the 2nd LLM request contains an
     // internal_system message with the inbox payload.
-    let requests = captured_requests.lock().unwrap();
-    assert_eq!(
-        requests.len(),
-        2,
-        "expected 2 LLM calls, got {}",
-        requests.len()
-    );
+    {
+        let requests = captured_requests.lock().unwrap();
+        assert_eq!(
+            requests.len(),
+            2,
+            "expected 2 LLM calls, got {}",
+            requests.len()
+        );
 
-    // The 2nd request should contain the inbox message (User + Internal).
-    // Inbox events are injected as User role with Internal visibility
-    // and wrapped in <background-task-event> tags.
-    use awaken::contract::message::{Role, Visibility};
-    let second_req = &requests[1];
-    let has_inbox_msg = second_req
-        .messages
-        .iter()
-        .any(|m| m.role == Role::User && m.visibility == Visibility::Internal);
-    assert!(
-        has_inbox_msg,
-        "expected an internal User message from inbox drain in the 2nd LLM request"
-    );
+        // The 2nd request should contain the inbox message (User + Internal).
+        // Inbox events are injected as User role with Internal visibility
+        // and wrapped in <background-task-event> tags.
+        use awaken::contract::message::{Role, Visibility};
+        let second_req = &requests[1];
+        let has_inbox_msg = second_req
+            .messages
+            .iter()
+            .any(|m| m.role == Role::User && m.visibility == Visibility::Internal);
+        assert!(
+            has_inbox_msg,
+            "expected an internal User message from inbox drain in the 2nd LLM request"
+        );
+    }
 
     // Clean up
     manager.cancel_all("thread-1").await;

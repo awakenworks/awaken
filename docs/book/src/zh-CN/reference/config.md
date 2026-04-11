@@ -48,6 +48,50 @@ fn config<K: PluginConfigKey>(&self) -> Result<K::Config, StateError>
 fn set_config<K: PluginConfigKey>(&mut self, config: K::Config) -> Result<(), StateError>
 ```
 
+### 运行时管理的插件配置
+
+无论 agent spec 是在 Rust 中构造、从 JSON/YAML 加载，还是通过运行时配置 API
+保存，插件配置的唯一来源都是 `AgentSpec.sections`。插件通过同一个
+`PluginConfigKey` 声明类型化 section，通过 `Plugin::config_schemas()` 暴露
+JSON Schema，并在解析或 phase hook 中通过 `agent_spec.config::<K>()` 读取。
+
+这是 agent 优化能力的统一控制面。model 与 provider 选择、基础 prompt、
+reminder 规则、生成式 UI prompt 指令、permission、上下文窗口、重试策略以及
+deferred-tool 策略都应是可校验、可运行时变更的数据。
+
+| 调优面 | 已实现的配置入口 |
+|---|---|
+| 基础 prompt | `agents` 配置命名空间中的 `AgentSpec.system_prompt` |
+| model 选择 | `AgentSpec.model_id`，通过 `/v1/config/models` 解析 |
+| provider 端点与 OpenAI 兼容路由 | `/v1/config/providers`（`adapter`、`base_url`、认证、超时） |
+| 上下文预算与 prompt cache | `AgentSpec.context_policy` |
+| reasoning effort | `AgentSpec.reasoning_effort` |
+| 重试与 fallback models | `AgentSpec.sections["retry"]` |
+| system reminder 与 prompt 上下文注入 | `AgentSpec.sections["reminder"]`，通过 `ReminderConfigKey` 读取 |
+| Generative UI prompt 指令 | `AgentSpec.sections["generative-ui"]`，通过 `A2uiPromptConfigKey` 读取 |
+| permission 策略 | `AgentSpec.sections["permission"]` |
+| deferred tool loading | `AgentSpec.sections["deferred_tools"]` |
+
+prompt 语义 hook 当前还不是内置插件。后续加入时应沿用同一路径：声明类型化
+config key、暴露 schema、在 admin console 中渲染，并在 hook 中读取 resolved
+config。
+
+当 `awaken-server` 挂接 `ConfigStore` 与 config runtime manager 后，
+`/v1/capabilities` 会返回 `plugins[].config_schemas`。admin console 在 agent
+编辑页渲染这些 schema，并把值保存回 `AgentSpec.sections[schema.key]`。
+写入通过校验并发布新的 registry snapshot 后，会对新的 run 生效。如果插件
+未列在 `plugin_ids` 中，section 会继续保存，但插件不会被加载，因此对应 hook、
+tool 和 request transform 都不会运行。
+
+starter runtime 当前暴露的可配置插件 section：
+
+| Plugin ID | Section key | Admin editor |
+|---|---|---|
+| `permission` | `permission` | 专用权限规则编辑器 |
+| `reminder` | `reminder` | 专用 reminder 规则编辑器 |
+| `generative-ui` | `generative-ui` | 专用 A2UI prompt/catalog 编辑器 |
+| `ext-deferred-tools` | `deferred_tools` | 通用 JSON Schema 表单 |
+
 ## ContextWindowPolicy
 
 控制上下文窗口和自动压缩行为。
@@ -327,9 +371,51 @@ impl PluginConfigKey for RateLimitConfigKey {
 - section 存在但没有插件声明：记录 warning
 - section 缺失：返回 `Config::default()`
 
-## 相关
+## DeferredToolsConfig
 
-- [构建 Agent](../how-to/build-an-agent.md)
+`awaken-ext-deferred-tools` 的插件 ID 是 `ext-deferred-tools`。agent 配置
+section key 是 `deferred_tools`，由 `DeferredToolsConfigKey` 绑定。该 crate
+未包含在 `awaken` 门面 crate 的 `full` feature 中；使用时需要直接添加
+`awaken-ext-deferred-tools` 依赖，并用 seed tool descriptors 注册
+`DeferredToolsPlugin`。
+
+```json
+{
+  "enabled": null,
+  "default_mode": "deferred",
+  "beta_overhead": 1136.0,
+  "rules": [
+    { "tool": "get_weather", "mode": "eager" },
+    { "tool": "debug_*", "mode": "deferred" }
+  ],
+  "agent_priors": {
+    "get_weather": 0.03
+  },
+  "disc_beta": {
+    "omega": 0.95,
+    "n0": 5.0,
+    "defer_after": 5,
+    "thresh_mult": 0.5,
+    "gamma": 2000.0
+  }
+}
+```
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `enabled` | `bool \| null` | `null` | `true` 始终启用，`false` 禁用，`null`/缺失时在估算 schema 节省量超过 `beta_overhead` 后自动启用 |
+| `rules` | `DeferralRule[]` | `[]` | 有序精确/glob 工具规则，首次匹配生效 |
+| `default_mode` | `"eager" \| "deferred"` | `"deferred"` | 未匹配规则的工具模式 |
+| `beta_overhead` | `number` | `1136.0` | `ToolSearch` 与 deferred-tool 列表的估算每轮开销 |
+| `agent_priors` | `object` | `{}` | 可选的每工具先验使用频率，范围 `0..1`；缺失工具使用 `0.01` |
+| `disc_beta.omega` | `number` | `0.95` | 每轮折扣因子；有效记忆约为 `1/(1-omega)` 轮 |
+| `disc_beta.n0` | `number` | `5.0` | 先验强度，以等价观测数表示 |
+| `disc_beta.defer_after` | `integer` | `5` | 已提升工具至少空闲多少轮后才考虑重新延迟 |
+| `disc_beta.thresh_mult` | `number` | `0.5` | 应用于盈亏平衡频率的阈值乘数 |
+| `disc_beta.gamma` | `number` | `2000.0` | 一次 `ToolSearch` 调用的估算 token 成本 |
+
+自动启用启发式、`ToolSearch` 行为以及完整 DiscBeta 概率模型见
+[使用延迟加载工具](../how-to/use-deferred-tools.md)。
 
 ## ConfigStore
 
@@ -354,3 +440,7 @@ pub trait ConfigStore: Send + Sync {
 
 - `ConfigChangeNotifier` / `ConfigChangeSubscriber` —— 可选的原生变更通知接口
 - `AppState::with_config_store(...)` —— 为 `awaken-server` 启用运行时配置路由
+
+## 相关
+
+- [构建 Agent](../how-to/build-an-agent.md)

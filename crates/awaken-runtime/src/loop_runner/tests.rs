@@ -941,7 +941,7 @@ async fn resumed_calls_do_not_serialize_neighboring_fresh_batches() {
     let (runtime, _env) = test_runtime();
     let store = runtime.store();
     let mut patch = crate::state::MutationBatch::new();
-    patch.update::<ToolCallStates>(crate::agent::state::ToolCallStatesUpdate::Put(
+    patch.update::<ToolCallStates>(crate::agent::state::ToolCallStatesUpdate::put(
         crate::agent::state::ToolCallState::new(
             "c3",
             "gamma",
@@ -1047,7 +1047,7 @@ async fn cancelled_resume_is_emitted_once_even_when_other_calls_replay() {
     let (runtime, _env) = test_runtime();
     let store = runtime.store();
     let mut patch = crate::state::MutationBatch::new();
-    patch.update::<ToolCallStates>(crate::agent::state::ToolCallStatesUpdate::Put(
+    patch.update::<ToolCallStates>(crate::agent::state::ToolCallStatesUpdate::put(
         crate::agent::state::ToolCallState::new(
             "cancel_a",
             "alpha",
@@ -1070,7 +1070,7 @@ async fn cancelled_resume_is_emitted_once_even_when_other_calls_replay() {
             },
         )),
     ));
-    patch.update::<ToolCallStates>(crate::agent::state::ToolCallStatesUpdate::Put(
+    patch.update::<ToolCallStates>(crate::agent::state::ToolCallStatesUpdate::put(
         crate::agent::state::ToolCallState::new(
             "resume_b",
             "beta",

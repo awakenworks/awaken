@@ -1,13 +1,15 @@
 use std::sync::Arc;
 
+use awaken_contract::StateError;
 use awaken_contract::model::Phase;
-use awaken_contract::{PluginConfigKey, StateError};
+use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::plugins::{ConfigSchema, Plugin, PluginDescriptor, PluginRegistrar};
+use awaken_runtime::state::MutationBatch;
 
-use crate::config::{ReminderConfigKey, ReminderRulesConfig};
+use crate::config::ReminderConfigKey;
 use crate::rule::ReminderRule;
 
-use super::hook::ReminderHook;
+use super::hook::{ReminderHook, rules_from_config};
 
 /// Stable plugin name for the reminder extension.
 pub const REMINDER_PLUGIN_NAME: &str = "reminder";
@@ -50,10 +52,16 @@ impl Plugin for ReminderPlugin {
     }
 
     fn config_schemas(&self) -> Vec<ConfigSchema> {
-        vec![ConfigSchema {
-            key: ReminderConfigKey::KEY,
-            json_schema: serde_json::to_value(schemars::schema_for!(ReminderRulesConfig))
-                .unwrap_or_default(),
-        }]
+        vec![ConfigSchema::for_key::<ReminderConfigKey>()]
+    }
+
+    fn on_activate(
+        &self,
+        agent_spec: &AgentSpec,
+        _patch: &mut MutationBatch,
+    ) -> Result<(), StateError> {
+        // Fail fast on rule DSL or target errors that JSON Schema cannot express.
+        let config = agent_spec.config::<ReminderConfigKey>()?;
+        rules_from_config(config).map(|_| ())
     }
 }

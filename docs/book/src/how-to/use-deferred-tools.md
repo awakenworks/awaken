@@ -36,10 +36,11 @@ let seed_tools = vec![
     debug_tool.descriptor(),
     // ... all tool descriptors
 ];
-let agent_spec = AgentSpec::new("deferred-agent")
+let mut agent_spec = AgentSpec::new("deferred-agent")
     .with_model_id("gpt-4o-mini")
     .with_system_prompt("Search for tools only when needed.")
     .with_hook_filter("ext-deferred-tools");
+agent_spec.plugin_ids.push("ext-deferred-tools".into());
 
 let runtime = AgentRuntimeBuilder::new()
     .with_provider("openai", Arc::new(GenaiExecutor::new()))
@@ -65,8 +66,9 @@ Set rules on the agent spec via the `deferred_tools` config key. Rules are evalu
 
 ```rust,ignore
 use awaken_ext_deferred_tools::{
-    DeferredToolsConfig, DeferralRule, ToolLoadMode,
+    DeferredToolsConfig, DeferredToolsConfigKey, ToolLoadMode,
 };
+use awaken_ext_deferred_tools::config::DeferralRule;
 
 let config = DeferredToolsConfig {
     rules: vec![
@@ -76,7 +78,12 @@ let config = DeferredToolsConfig {
     default_mode: ToolLoadMode::Deferred,
     ..Default::default()
 };
+agent_spec.set_config::<DeferredToolsConfigKey>(config)?;
 ```
+
+Apply this before passing `agent_spec` into `AgentRuntimeBuilder`. The admin
+console writes the same `deferred_tools` section. New runs pick up the saved
+section after the config runtime publishes the next registry snapshot.
 
 The `tool` field supports exact names and glob patterns (via `wildcard_match`). Common patterns:
 
@@ -96,7 +103,17 @@ The `enabled` field on `DeferredToolsConfig` controls activation:
 | `Some(false)` | Always disable |
 | `None` (default) | Auto-enable when total token savings across deferred tools exceeds `beta_overhead` (default 1136 tokens) |
 
-With auto-enable, the plugin estimates per-tool schema cost as `len(parameters_json) / 4` tokens and sums the savings for all deferrable tools. If the total exceeds the overhead of maintaining the `ToolSearch` tool and deferred tool list in context, deferral activates automatically.
+With auto-enable, the plugin uses the same token heuristic it stores in
+`DiscBetaEntry`:
+
+- Full schema cost: `c_i = max(len(parameters_json) / 4, 10)`
+- Name-only cost: `c_bar_i = max(len(tool_name) / 4, 1)`
+- Total savings: `sum(max(c_i - c_bar_i, 0))` across tools resolved to `Deferred`
+
+If total savings is greater than `beta_overhead`, the plugin seeds
+`DeferralState`, the deferred registry, and the DiscBeta state. If savings does
+not clear the threshold, no deferral state is seeded and hooks are effectively
+inactive for that agent. Set `enabled: Some(true)` to bypass the heuristic.
 
 4. Understand how ToolSearch works.
 
@@ -108,7 +125,11 @@ The plugin automatically registers a `ToolSearch` tool. The LLM calls it with a 
 | `"+required rest terms"` | Require a keyword, rank by remaining terms |
 | `"plain keywords"` | General keyword search across id, name, description |
 
-When `ToolSearch` returns results, matched tools are promoted to Eager for the remainder of the session. The tool returns up to `max_results` (default 5) matching tool schemas in a `<functions>` block.
+When `ToolSearch` returns results, matched tools are promoted to Eager so their
+schemas are included in later inference turns. They stay Eager until the
+DiscBeta re-deferral policy observes enough idle evidence to hide them again.
+The tool returns up to `max_results` (default 5) matching tool schemas in a
+`<functions>` block.
 
 ```text
 LLM: I need to check the weather. Let me search for relevant tools.
@@ -118,17 +139,76 @@ ToolSearch returns matching schemas, promotes get_weather to Eager.
 Next inference: get_weather schema is included in the tool list.
 ```
 
-5. Configure automatic re-deferral (DiscBeta).
+5. Understand the theory and DiscBeta re-deferral model.
 
-The plugin tracks per-tool usage statistics using a discounted Beta distribution. Tools that were promoted via `ToolSearch` but stop being used get automatically re-deferred. This is adaptive and requires no manual tuning.
+Deferred tools optimize expected context cost. The model separates two
+questions:
 
-Re-deferral triggers when all of the following are true:
+- **Initial placement:** should a tool's full schema be sent eagerly, or should
+  only its name appear in the deferred-tool list?
+- **Runtime retention:** after `ToolSearch` promotes a tool, is its observed
+  usage frequent enough to keep paying the per-turn schema cost?
+
+Promotion is always reactive: the plugin does not proactively promote tools
+from probability estimates. The probability model only decides when an already
+promoted tool should be moved back to Deferred.
+
+For each seed tool, the plugin initializes a discounted Beta posterior:
+
+```text
+alpha_0 = max(p_i * n0, 0.01)
+beta_0  = max((1 - p_i) * n0, 0.01)
+```
+
+`p_i` comes from `agent_priors[tool_id]` when present and defaults to `0.01`.
+`n0` is the prior strength in equivalent observations.
+
+After each inference turn, every tracked tool is discounted and then updated
+with a Bernoulli observation for whether it appeared in that turn's tool calls:
+
+```text
+alpha_t = omega * alpha_{t-1} + 1   if the tool was called this turn
+alpha_t = omega * alpha_{t-1}       otherwise
+
+beta_t  = omega * beta_{t-1}        if the tool was called this turn
+beta_t  = omega * beta_{t-1} + 1    otherwise
+```
+
+This makes old evidence decay. With the default `omega = 0.95`, the effective
+memory is approximately `1 / (1 - omega) = 20` turns.
+
+The posterior mean and normal-approximation variance are:
+
+```text
+p_hat = alpha / (alpha + beta)
+var   = alpha * beta / ((alpha + beta)^2 * (alpha + beta + 1))
+```
+
+The implementation uses a 90% upper credible bound:
+
+```text
+upper_90 = min(1, p_hat + 1.282 * sqrt(var))
+```
+
+A promoted tool is re-deferred only when all of the following are true:
+
 - The tool is currently Eager (was promoted from Deferred)
 - The tool is not configured as always-Eager in rules
 - The tool has been idle for at least `defer_after` turns
-- The posterior upper credible interval (90%) falls below `breakeven_p * thresh_mult`
+- `upper_90 < breakeven_p * thresh_mult`
 
-The breakeven frequency is `(c - c_bar) / gamma`, where `c` is the full schema cost and `c_bar` is the name-only cost. A tool is worth keeping eager only if it is used often enough that the savings from avoiding `ToolSearch` calls exceed the per-turn overhead.
+The breakeven frequency is:
+
+```text
+breakeven_p = (c - c_bar) / gamma
+```
+
+`c` is the full schema cost, `c_bar` is the name-only cost, and `gamma` is the
+estimated token cost of a `ToolSearch` call. Intuitively, a tool should stay
+Eager only when its likely near-term use is high enough that avoiding future
+`ToolSearch` calls outweighs carrying the full schema in every turn. Using the
+upper credible bound makes the policy conservative: it waits until even an
+optimistic estimate falls below the threshold.
 
 Key parameters in `DiscBetaParams`:
 

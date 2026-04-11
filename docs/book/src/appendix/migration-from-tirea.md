@@ -177,10 +177,15 @@ let runtime = AgentOsBuilder::new()
     .build()?;
 
 // awaken
+let rules_config = PermissionRulesConfig::from_file("permissions.yaml")?;
+let mut agent_spec = agent_spec;
+agent_spec.plugin_ids.push("permission".into());
+agent_spec.set_config::<PermissionConfigKey>(rules_config)?;
+
 let runtime = AgentRuntimeBuilder::new()
     .with_agent_spec(agent_spec)
     .with_tool("search", Arc::new(SearchTool))
-    .with_plugin("permissions", Arc::new(PermissionPlugin::new(rules)))
+    .with_plugin("permission", Arc::new(PermissionPlugin))
     .build()?;
 ```
 

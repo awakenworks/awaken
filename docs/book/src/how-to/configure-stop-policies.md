@@ -45,6 +45,9 @@ let policies: Vec<Arc<dyn StopPolicy>> = vec![
 use awaken::policies::StopConditionPlugin;
 use awaken::AgentRuntimeBuilder;
 
+let mut spec = spec;
+spec.plugin_ids.push("stop-condition".into());
+
 let runtime = AgentRuntimeBuilder::new()
     .with_plugin("stop-condition", Arc::new(StopConditionPlugin::new(policies)))
     .with_agent_spec(spec)
@@ -57,12 +60,19 @@ For the common case of limiting rounds only, use the convenience wrapper:
 ```rust,ignore
 use awaken::policies::MaxRoundsPlugin;
 
+let mut spec = spec;
+spec.plugin_ids.push("stop-condition:max-rounds".into());
+
 let runtime = AgentRuntimeBuilder::new()
     .with_plugin("stop-condition:max-rounds", Arc::new(MaxRoundsPlugin::new(10)))
     .with_agent_spec(spec)
     .with_provider("anthropic", Arc::new(provider))
     .build()?;
 ```
+
+Custom stop-condition plugins must be listed in `AgentSpec.plugin_ids`. The
+built-in `AgentSpec.max_rounds` guard is still injected automatically; use these
+plugins when you need additional policy types.
 
 3. Use declarative `StopConditionSpec` values.
 

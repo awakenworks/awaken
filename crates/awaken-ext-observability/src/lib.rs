@@ -762,26 +762,33 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_tracing_span_inference() {
+    #[test]
+    fn test_tracing_span_inference() {
         let captured = Arc::new(std::sync::Mutex::new(Vec::<CapturedSpan>::new()));
         let layer = SpanCaptureLayer {
             captured: captured.clone(),
         };
         let subscriber = tracing_subscriber::registry::Registry::default().with(layer);
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
 
-        let sink = InMemorySink::new();
-        let plugin = ObservabilityPlugin::new(sink.clone())
-            .with_model("test-model")
-            .with_provider("test-provider");
+        tracing::subscriber::with_default(subscriber, || {
+            runtime.block_on(async {
+                let sink = InMemorySink::new();
+                let plugin = ObservabilityPlugin::new(sink.clone())
+                    .with_model("test-model")
+                    .with_provider("test-provider");
 
-        let ctx = PhaseContext::new(Phase::BeforeInference, empty_snapshot());
-        run_phase(&plugin, &ctx).await;
+                let ctx = PhaseContext::new(Phase::BeforeInference, empty_snapshot());
+                run_phase(&plugin, &ctx).await;
 
-        let ctx = PhaseContext::new(Phase::AfterInference, empty_snapshot())
-            .with_llm_response(success_response(Some(usage(10, 20, 30))));
-        run_phase(&plugin, &ctx).await;
+                let ctx = PhaseContext::new(Phase::AfterInference, empty_snapshot())
+                    .with_llm_response(success_response(Some(usage(10, 20, 30))));
+                run_phase(&plugin, &ctx).await;
+            });
+        });
 
         let spans = captured.lock().unwrap();
         let inference_span = spans.iter().find(|s| s.name == "gen_ai");
@@ -789,32 +796,36 @@ mod tests {
         assert!(inference_span.unwrap().was_closed, "span should be closed");
     }
 
-    #[tokio::test]
-    async fn test_tracing_span_tool() {
+    #[test]
+    fn test_tracing_span_tool() {
         let captured = Arc::new(std::sync::Mutex::new(Vec::<CapturedSpan>::new()));
         let layer = SpanCaptureLayer {
             captured: captured.clone(),
         };
         let subscriber = tracing_subscriber::registry::Registry::default().with(layer);
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
 
-        let sink = InMemorySink::new();
-        let plugin = ObservabilityPlugin::new(sink.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            runtime.block_on(async {
+                let sink = InMemorySink::new();
+                let plugin = ObservabilityPlugin::new(sink.clone());
 
-        let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot()).with_tool_info(
-            "search",
-            "c1",
-            Some(serde_json::json!({})),
-        );
-        run_phase(&plugin, &ctx).await;
+                let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot())
+                    .with_tool_info("search", "c1", Some(serde_json::json!({})));
+                run_phase(&plugin, &ctx).await;
 
-        let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
-            .with_tool_info("search", "c1", Some(serde_json::json!({})))
-            .with_tool_result(ToolResult::success(
-                "search",
-                serde_json::json!({"found": true}),
-            ));
-        run_phase(&plugin, &ctx).await;
+                let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+                    .with_tool_info("search", "c1", Some(serde_json::json!({})))
+                    .with_tool_result(ToolResult::success(
+                        "search",
+                        serde_json::json!({"found": true}),
+                    ));
+                run_phase(&plugin, &ctx).await;
+            });
+        });
 
         let spans = captured.lock().unwrap();
         let tool_span = spans.iter().find(|s| s.name == "gen_ai");

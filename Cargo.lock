@@ -291,6 +291,7 @@ version = "0.1.2-dev"
 dependencies = [
  "async-trait",
  "awaken-contract",
+ "awaken-ext-deferred-tools",
  "awaken-ext-generative-ui",
  "awaken-ext-mcp",
  "awaken-ext-observability",

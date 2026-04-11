@@ -63,6 +63,12 @@
 | `GET` | `/v1/agents` | `/v1/config/agents` 的便捷别名 |
 | `GET` | `/v1/agents/:id` | `/v1/config/agents/:id` 的便捷别名 |
 
+`GET /v1/capabilities` 会包含每个已注册插件的 `config_schemas`。admin console
+使用该字段渲染 agent 级插件配置表单，并把值保存到 `AgentSpec.sections`。
+配置写入成功后，runtime manager 会发布新的 registry snapshot，因此后续
+`/v1/runs` 会使用更新后的 agents、models、providers、MCP servers 和插件
+section。
+
 当前内置 namespace：
 
 - `agents`
@@ -75,6 +81,7 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `POST` | `/v1/ai-sdk/chat` | 启动 chat run，并流式返回 AI SDK 编码事件 |
+| `POST` | `/v1/ai-sdk/agent-previews/runs` | 使用未保存的草稿 `AgentSpec` 运行；admin console 预览功能使用 |
 | `POST` | `/v1/ai-sdk/threads/:thread_id/runs` | 在指定 thread 上启动 run |
 | `POST` | `/v1/ai-sdk/agents/:agent_id/runs` | 在指定 agent 上启动 run |
 | `GET` | `/v1/ai-sdk/chat/:thread_id/stream` | 按 thread ID 续接 SSE |

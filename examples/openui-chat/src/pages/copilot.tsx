@@ -1,5 +1,5 @@
 import { Copilot } from "@openuidev/react-ui";
-import { agUIAdapter } from "@openuidev/react-headless";
+import { awakenAgUiAdapter } from "@/lib/ag-ui-adapter";
 import { AGENT_ID, agUiRunUrl } from "@/lib/config";
 import {
   fetchThreadList,
@@ -31,7 +31,7 @@ export function CopilotPage() {
       </main>
       <Copilot
         apiUrl={agUiRunUrl(AGENT_ID)}
-        streamProtocol={agUIAdapter()}
+        streamProtocol={awakenAgUiAdapter()}
         agentName="Awaken Assistant"
         fetchThreadList={fetchThreadList}
         loadThread={loadThread}

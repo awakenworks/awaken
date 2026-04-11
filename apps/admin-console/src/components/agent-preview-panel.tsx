@@ -37,7 +37,7 @@ export function AgentPreviewPanel({ draft }: AgentPreviewPanelProps) {
     transport,
   });
 
-  const blockedReason = previewDraft.model.trim()
+  const blockedReason = previewDraft.model_id.trim()
     ? null
     : "Select a model before starting a preview conversation.";
   const busy = status === "submitted" || status === "streaming";
@@ -89,7 +89,7 @@ export function AgentPreviewPanel({ draft }: AgentPreviewPanelProps) {
           </span>
         </div>
         <div className="mt-2 break-all text-slate-100">
-          model={previewDraft.model || "unassigned"}
+          model={previewDraft.model_id || "unassigned"}
         </div>
       </div>
 
@@ -184,7 +184,7 @@ function normalizePreviewAgent(draft: AgentSpec): AgentSpec {
   return {
     ...draft,
     id: draft.id.trim() || "draft-preview",
-    model: String(draft.model ?? "").trim(),
+    model_id: String(draft.model_id ?? "").trim(),
     system_prompt: String(draft.system_prompt ?? ""),
     plugin_ids: [...(draft.plugin_ids ?? [])],
     delegates: [...(draft.delegates ?? [])],

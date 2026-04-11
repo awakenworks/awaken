@@ -3,7 +3,7 @@
 //! Implements the execution loop, phase pipeline, plugin system, state store,
 //! and agent registry. Extension crates hook into this crate via the [`phase`],
 //! [`plugins`], and [`extensions`] traits. Most users interact with this crate
-//! indirectly through the [`awaken`] facade and [`awaken::prelude`].
+//! indirectly through the `awaken` facade and `awaken::prelude`.
 
 #![allow(missing_docs)]
 

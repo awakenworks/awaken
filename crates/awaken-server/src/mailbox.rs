@@ -116,7 +116,7 @@ impl RunRequestExtras {
 
 /// Fallback for inbox delivery when the agent's run has ended.
 ///
-/// Implements [`OnInboxClosed`] — when an `InboxSender::send()` fails
+/// Implements [`OnInboxClosed`](awaken_runtime::inbox::OnInboxClosed) — when an `InboxSender::send()` fails
 /// because the receiver was dropped (agent run returned with AwaitingTasks),
 /// this enqueues a mailbox wake job so the thread gets a continuation run.
 ///

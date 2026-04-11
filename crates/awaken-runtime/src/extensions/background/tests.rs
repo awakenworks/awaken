@@ -39,7 +39,7 @@ fn manager_with_store_and_inbox() -> (
 ) {
     let store = StateStore::new();
     let (inbox_tx, inbox_rx) = inbox_channel();
-    let mut manager = BackgroundTaskManager::new();
+    let manager = BackgroundTaskManager::new();
     manager.set_owner_inbox(inbox_tx);
     let manager = Arc::new(manager);
     manager.set_store(store.clone());
@@ -1309,7 +1309,7 @@ async fn on_closed_fires_when_inbox_receiver_dropped() {
     let store = StateStore::new();
     let counter = Arc::new(Counter(AtomicUsize::new(0)));
     let (inbox_tx, inbox_rx) = inbox_channel_with_fallback(counter.clone());
-    let mut manager = BackgroundTaskManager::new();
+    let manager = BackgroundTaskManager::new();
     manager.set_owner_inbox(inbox_tx);
     let manager = Arc::new(manager);
     manager.set_store(store.clone());
@@ -1768,7 +1768,7 @@ async fn full_lifecycle_sub_agent_with_child_tasks() {
             },
             |_cancel, child_inbox_sender, mut child_inbox_receiver| async move {
                 // Sub-agent creates its own background task manager
-                let mut child_manager = BackgroundTaskManager::new();
+                let child_manager = BackgroundTaskManager::new();
                 child_manager.set_owner_inbox(child_inbox_sender);
                 let child_manager = Arc::new(child_manager);
 
@@ -2178,7 +2178,7 @@ async fn on_closed_fires_for_late_task_completion() {
     let counter = Arc::new(ClosedCounter(AtomicUsize::new(0)));
     let (tx, rx) = inbox_channel_with_fallback(counter.clone());
 
-    let mut mgr = BackgroundTaskManager::new();
+    let mgr = BackgroundTaskManager::new();
     mgr.set_owner_inbox(tx);
     let manager = Arc::new(mgr);
     manager.set_store(store.clone());
@@ -2676,7 +2676,12 @@ async fn multiple_children_route_correctly() {
         true,
         "agent-a should have received the message"
     );
-    // agent-b may or may not have completed (depends on timing), but it should not have received
+    if let Some(result) = task_b.result.as_ref() {
+        assert_eq!(
+            result["got"], false,
+            "agent-b should not have received agent-a's message"
+        );
+    }
 }
 
 /// Terminal event contains correct task_id and result.
@@ -2690,7 +2695,7 @@ async fn terminal_event_contains_correct_data() {
             None,
             "calc",
             TaskParentContext::default(),
-            |_ctx| async move { TaskResult::Success(serde_json::json!({"pi": 3.14})) },
+            |_ctx| async move { TaskResult::Success(serde_json::json!({"score": 3.125})) },
         )
         .await
         .unwrap();
@@ -2703,7 +2708,7 @@ async fn terminal_event_contains_correct_data() {
     assert!(completed.is_some(), "must have Completed event");
     let c = completed.unwrap();
     assert_eq!(c["task_id"], id);
-    assert_eq!(c["result"]["pi"], 3.14);
+    assert_eq!(c["result"]["score"], 3.125);
 }
 
 /// Failed task terminal event contains error.
@@ -2809,7 +2814,7 @@ async fn nested_spawn_agent_events_flow() {
             Some("outer"),
             "outer agent",
             TaskParentContext::default(),
-            |_cancel, child_inbox, mut child_rx| async move {
+            |_cancel, child_inbox, _child_rx| async move {
                 // Outer agent creates its own manager for grandchild
                 let inner_manager = Arc::new(BackgroundTaskManager::new());
                 inner_manager.set_store(crate::state::StateStore::new());

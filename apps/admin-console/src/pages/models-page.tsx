@@ -1,12 +1,16 @@
 import { useMemo } from "react";
-import { type ModelSpec, type ProviderRecord, configApi } from "@/lib/config-api";
+import {
+  type ModelBindingSpec,
+  type ProviderRecord,
+  configApi,
+} from "@/lib/config-api";
 import { useCrudPage } from "@/lib/use-crud-page";
 import { Field } from "@/components/form-components";
 
-const EMPTY_MODEL: ModelSpec = {
+const EMPTY_MODEL: ModelBindingSpec = {
   id: "",
-  provider: "",
-  model: "",
+  provider_id: "",
+  upstream_model: "",
 };
 
 const auxiliaryLoaders = () =>
@@ -15,7 +19,7 @@ const auxiliaryLoaders = () =>
     .then((response) => response.items.map((provider) => provider.id));
 
 export function ModelsPage() {
-  const crud = useCrudPage<ModelSpec>({
+  const crud = useCrudPage<ModelBindingSpec>({
     namespace: "models",
     entityLabel: "model",
     auxiliaryLoaders,
@@ -24,11 +28,11 @@ export function ModelsPage() {
   const providerIds = crud.auxiliaryData as string[];
   const providerOptions = useMemo(() => {
     const options = new Set(providerIds);
-    if (crud.draft?.provider) {
-      options.add(crud.draft.provider);
+    if (crud.draft?.provider_id) {
+      options.add(crud.draft.provider_id);
     }
     return Array.from(options).sort((left, right) => left.localeCompare(right));
-  }, [crud.draft?.provider, providerIds]);
+  }, [crud.draft?.provider_id, providerIds]);
 
   return (
     <div className="mx-auto max-w-5xl p-6 md:p-8">
@@ -74,11 +78,11 @@ export function ModelsPage() {
             </Field>
             <Field label="Provider ID">
               <select
-                value={crud.draft.provider}
+                value={crud.draft.provider_id}
                 onChange={(event) =>
                   crud.setDraft((current) =>
                     current
-                      ? { ...current, provider: event.target.value }
+                      ? { ...current, provider_id: event.target.value }
                       : current,
                   )
                 }
@@ -94,10 +98,12 @@ export function ModelsPage() {
             </Field>
             <Field label="Upstream Model">
               <input
-                value={crud.draft.model}
+                value={crud.draft.upstream_model}
                 onChange={(event) =>
                   crud.setDraft((current) =>
-                    current ? { ...current, model: event.target.value } : current,
+                    current
+                      ? { ...current, upstream_model: event.target.value }
+                      : current,
                   )
                 }
                 className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
@@ -149,8 +155,10 @@ export function ModelsPage() {
                   className="border-t border-slate-200 text-sm text-slate-700"
                 >
                   <td className="px-5 py-4 font-mono text-slate-950">{model.id}</td>
-                  <td className="px-5 py-4">{model.provider}</td>
-                  <td className="px-5 py-4 text-slate-500">{model.model}</td>
+                  <td className="px-5 py-4">{model.provider_id}</td>
+                  <td className="px-5 py-4 text-slate-500">
+                    {model.upstream_model}
+                  </td>
                   <td className="px-5 py-4">
                     <div className="flex gap-4">
                       <button

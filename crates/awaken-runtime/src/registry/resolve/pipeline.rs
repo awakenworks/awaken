@@ -502,7 +502,7 @@ mod tests {
         AgentBackend, AgentBackendError, AgentBackendFactory, AgentBackendFactoryError,
         DelegateRunResult, DelegateRunStatus,
     };
-    use crate::plugins::{PluginDescriptor, PluginRegistrar};
+    use crate::plugins::{ConfigSchema, PluginDescriptor, PluginRegistrar};
     #[cfg(feature = "a2a")]
     use crate::registry::BackendRegistry;
     #[cfg(feature = "a2a")]
@@ -1281,16 +1281,19 @@ mod tests {
         pub threshold: u32,
     }
 
+    struct ValidatedConfigKey;
+    impl awaken_contract::PluginConfigKey for ValidatedConfigKey {
+        const KEY: &'static str = "validated";
+        type Config = ValidatedConfig;
+    }
+
     impl Plugin for ValidatedPlugin {
         fn descriptor(&self) -> PluginDescriptor {
             PluginDescriptor { name: self.name }
         }
 
-        fn config_schemas(&self) -> Vec<crate::plugins::ConfigSchema> {
-            vec![crate::plugins::ConfigSchema {
-                key: "validated",
-                json_schema: serde_json::to_value(schemars::schema_for!(ValidatedConfig)).unwrap(),
-            }]
+        fn config_schemas(&self) -> Vec<ConfigSchema> {
+            vec![ConfigSchema::for_key::<ValidatedConfigKey>()]
         }
     }
 
@@ -1872,12 +1875,8 @@ mod tests {
             PluginDescriptor { name: self.name }
         }
 
-        fn config_schemas(&self) -> Vec<crate::plugins::ConfigSchema> {
-            vec![crate::plugins::ConfigSchema {
-                key: "stateful",
-                json_schema: serde_json::to_value(schemars::schema_for!(StatefulPluginConfig))
-                    .unwrap(),
-            }]
+        fn config_schemas(&self) -> Vec<ConfigSchema> {
+            vec![ConfigSchema::for_key::<StatefulPluginConfigKey>()]
         }
 
         fn on_activate(

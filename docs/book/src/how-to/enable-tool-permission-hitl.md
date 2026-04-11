@@ -26,10 +26,11 @@ use awaken::registry::ModelBinding;
 use awaken::registry_spec::AgentSpec;
 use awaken::{AgentRuntimeBuilder, Plugin};
 
-let agent_spec = AgentSpec::new("my-agent")
+let mut agent_spec = AgentSpec::new("my-agent")
     .with_model_id("gpt-4o-mini")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("permission");
+agent_spec.plugin_ids.push("permission".into());
 
 let runtime = AgentRuntimeBuilder::new()
     .with_provider("openai", Arc::new(GenaiExecutor::new()))
@@ -47,6 +48,8 @@ let runtime = AgentRuntimeBuilder::new()
 ```
 
 The plugin registers a `ToolGateHook` that evaluates permission rules before every tool call.
+`plugin_ids` loads the plugin; `with_hook_filter("permission")` keeps its hooks
+active when the agent loads multiple plugins.
 
 2. Define permission rules inline.
 
@@ -112,11 +115,26 @@ let ruleset = config.into_ruleset().expect("invalid rules");
 
 ```rust,ignore
 use awaken::registry_spec::AgentSpec;
+use awaken::ext_permission::{
+    PermissionConfigKey, PermissionRulesConfig, PermissionRuleEntry, ToolPermissionBehavior,
+};
 
-let agent_spec = AgentSpec::new("my-agent")
+let mut agent_spec = AgentSpec::new("my-agent")
     .with_model_id("gpt-4o-mini")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("permission");
+agent_spec.plugin_ids.push("permission".into());
+
+agent_spec.set_config::<PermissionConfigKey>(PermissionRulesConfig {
+    default_behavior: ToolPermissionBehavior::Ask,
+    rules: vec![
+        PermissionRuleEntry {
+            tool: "read_file".into(),
+            behavior: ToolPermissionBehavior::Allow,
+            scope: Default::default(),
+        },
+    ],
+})?;
 ```
 
 5. Understand rule evaluation.
@@ -151,7 +169,7 @@ The pattern syntax supports:
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | All tools blocked | `default_behavior: deny` with no `allow` rules | Add explicit `allow` rules for safe tools |
-| Rules not evaluated | Plugin not registered | Register `PermissionPlugin` and add `"permission"` to `plugin_ids` in agent spec |
+| Rules not evaluated | Plugin not loaded or hook filtered out | Register `PermissionPlugin`, add `"permission"` to `plugin_ids`, and include `with_hook_filter("permission")` when using hook filters |
 | Invalid pattern error | Malformed glob or regex | Check syntax against the pattern table above |
 | Ask rule never resolves | No mailbox consumer | Wire up a frontend or API client to respond to mailbox items |
 

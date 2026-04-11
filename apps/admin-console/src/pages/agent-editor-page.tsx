@@ -10,7 +10,7 @@ import { adminRoutes } from "@/lib/routes";
 
 const EMPTY_AGENT: AgentSpec = {
   id: "",
-  model: "",
+  model_id: "",
   system_prompt: "",
   max_rounds: 16,
   max_continuation_retries: 2,
@@ -212,19 +212,26 @@ export function AgentEditorPage() {
       return;
     }
 
-    if (
-      !activePluginConfig ||
-      !visiblePluginSchemas.some(
+    const activeEntryExists =
+      activePluginConfig &&
+      visiblePluginSchemas.some(
         (entry) =>
           pluginConfigEntryKey(entry.plugin.id, entry.schema.key) === activePluginConfig,
-      )
-    ) {
-      setActivePluginConfig(
-        pluginConfigEntryKey(
-          visiblePluginSchemas[0].plugin.id,
-          visiblePluginSchemas[0].schema.key,
-        ),
       );
+
+    if (activeEntryExists) {
+      return;
+    }
+
+    const preferredEntry = visiblePluginSchemas.find(
+      (entry) => entry.selected || entry.hasStoredConfig,
+    );
+    if (preferredEntry) {
+      setActivePluginConfig(
+        pluginConfigEntryKey(preferredEntry.plugin.id, preferredEntry.schema.key),
+      );
+    } else {
+      setActivePluginConfig(null);
     }
   }, [activePluginConfig, visiblePluginSchemas]);
 
@@ -290,14 +297,14 @@ export function AgentEditorPage() {
           </Field>
           <Field label="Model">
             <select
-              value={String(spec.model ?? "")}
-              onChange={(event) => updateField("model", event.target.value)}
+              value={String(spec.model_id ?? "")}
+              onChange={(event) => updateField("model_id", event.target.value)}
               className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500"
             >
               <option value="">Select a model</option>
               {(capabilities?.models ?? []).map((model) => (
                 <option key={model.id} value={model.id}>
-                  {model.id} ({model.model})
+                  {model.id} ({model.upstream_model})
                 </option>
               ))}
             </select>

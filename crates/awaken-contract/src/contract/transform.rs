@@ -91,7 +91,7 @@ pub fn estimate_tool_tokens(tools: &[ToolDescriptor]) -> usize {
 /// Ensure every tool call in an assistant message has a matching tool result.
 ///
 /// If an assistant message has tool_calls but some don't have corresponding
-/// Tool role messages, synthetic "[interrupted]" results are inserted.
+/// Tool role messages, synthetic `"[interrupted]"` results are inserted.
 pub fn patch_dangling_tool_calls(messages: &mut Vec<Message>) {
     use super::message::Role;
     use std::collections::HashSet;

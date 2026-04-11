@@ -2,17 +2,27 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use awaken_contract::StateError;
+use awaken_contract::{PluginConfigKey, StateError};
 use awaken_runtime::agent::state::AddContextMessage;
 use awaken_runtime::phase::{PhaseContext, PhaseHook};
 use awaken_runtime::state::StateCommand;
 use awaken_tool_pattern::pattern_matches;
 
+use crate::config::{ReminderConfigKey, ReminderRulesConfig};
 use crate::output_matcher::output_matches;
 use crate::rule::ReminderRule;
 
 pub(crate) struct ReminderHook {
     pub(crate) rules: Arc<[ReminderRule]>,
+}
+
+pub(crate) fn rules_from_config(
+    config: ReminderRulesConfig,
+) -> Result<Vec<ReminderRule>, StateError> {
+    config.into_rules().map_err(|e| StateError::KeyDecode {
+        key: ReminderConfigKey::KEY.into(),
+        message: e.to_string(),
+    })
 }
 
 #[async_trait]
@@ -30,7 +40,9 @@ impl PhaseHook for ReminderHook {
             None => return Ok(cmd),
         };
 
-        for rule in self.rules.iter() {
+        let configured_rules = rules_from_config(ctx.config::<ReminderConfigKey>()?)?;
+
+        for rule in self.rules.iter().chain(configured_rules.iter()) {
             // 1. Match tool name + args
             if !pattern_matches(&rule.pattern, tool_name, &tool_args).is_match() {
                 continue;

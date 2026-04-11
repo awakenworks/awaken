@@ -62,7 +62,38 @@ let runtime = builder.build()?;
 
 `build` resolves every registered agent and catches missing models, providers, or plugins at startup rather than at request time.
 
-6. Execute a run.
+6. Tune agent behavior through config.
+
+`AgentSpec` is the runtime config object for an agent. The fields and sections
+below are the same data edited by `/v1/config/agents` and the admin console:
+
+```rust,ignore
+use serde_json::json;
+
+let mut spec = AgentSpec::new("assistant")
+    .with_model_id("claude-sonnet")
+    .with_system_prompt("You are a careful coding assistant.")
+    .with_hook_filter("reminder")
+    .with_section("reminder", json!({
+        "rules": [{
+            "tool": "*",
+            "output": "any",
+            "message": {
+                "target": "suffix_system",
+                "content": "Prefer verifying code changes before final answers.",
+                "cooldown_turns": 3
+            }
+        }]
+    }));
+spec.plugin_ids.push("reminder".into());
+```
+
+Use `system_prompt` for the base prompt. Use plugin sections such as
+`reminder`, `generative-ui`, `permission`, and `deferred_tools` for behavior
+that should be validated, saved, edited in the page, and applied to later runs.
+Future prompt semantic hooks should follow the same typed section pattern.
+
+7. Execute a run.
 
 ```rust,ignore
 use std::sync::Arc;

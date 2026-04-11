@@ -28,10 +28,11 @@ use awaken::{AgentRuntimeBuilder, Plugin};
 
 let sink = InMemorySink::new();
 let obs_plugin = ObservabilityPlugin::new(sink.clone());
-let agent_spec = AgentSpec::new("observed-agent")
+let mut agent_spec = AgentSpec::new("observed-agent")
     .with_model_id("gpt-4o-mini")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("observability");
+agent_spec.plugin_ids.push("observability".into());
 
 let runtime = AgentRuntimeBuilder::new()
     .with_provider("openai", Arc::new(GenaiExecutor::new()))
@@ -47,6 +48,9 @@ let runtime = AgentRuntimeBuilder::new()
     .build()
     .expect("failed to build runtime");
 ```
+
+`plugin_ids` 负责加载 observability 插件；`with_hook_filter("observability")`
+在同一个 agent 加载多个插件时保留它的 phase hook。
 
 run 结束后，可以直接读取 `sink.metrics()`。
 

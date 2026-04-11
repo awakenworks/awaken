@@ -16,38 +16,56 @@ serde_json = "1"
 
 ## Steps
 
-1. Register the reminder plugin with rules.
+1. Register the reminder plugin and configure agent-specific rules.
 
 ```rust,ignore
 use std::sync::Arc;
+use serde_json::json;
+use awaken::engine::GenaiExecutor;
 use awaken::{AgentRuntimeBuilder, Plugin};
-use awaken::ext_reminder::{ReminderPlugin, ReminderRulesConfig};
+use awaken::ext_reminder::ReminderPlugin;
+use awaken::registry::ModelBinding;
+use awaken::registry_spec::AgentSpec;
 
-let json = r#"{
-    "rules": [
-        {
-            "tool": "Bash(command ~ 'rm *')",
-            "output": { "status": "success" },
-            "message": {
-                "target": "suffix_system",
-                "content": "A deletion command just succeeded. Verify the result."
+let mut agent_spec = AgentSpec::new("my-agent")
+    .with_model_id("claude-sonnet")
+    .with_system_prompt("You are a helpful assistant.")
+    .with_hook_filter("reminder")
+    .with_section("reminder", json!({
+        "rules": [
+            {
+                "tool": "Bash(command ~ 'rm *')",
+                "output": { "status": "success" },
+                "message": {
+                    "target": "suffix_system",
+                    "content": "A deletion command just succeeded. Verify the result."
+                }
             }
-        }
-    ]
-}"#;
-
-let config = ReminderRulesConfig::from_str(json, Some("json"))
-    .expect("failed to parse reminder config");
-let rules = config.into_rules().expect("invalid rules");
+        ]
+    }));
+agent_spec.plugin_ids.push("reminder".into());
 
 let runtime = AgentRuntimeBuilder::new()
+    .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
+    .with_model_binding(
+        "claude-sonnet",
+        ModelBinding {
+            provider_id: "anthropic".into(),
+            upstream_model: "claude-3-7-sonnet-latest".into(),
+        },
+    )
     .with_agent_spec(agent_spec)
-    .with_plugin("reminder", Arc::new(ReminderPlugin::new(rules)) as Arc<dyn Plugin>)
+    .with_plugin("reminder", Arc::new(ReminderPlugin::new(vec![])) as Arc<dyn Plugin>)
     .build()
     .expect("failed to build runtime");
 ```
 
 The plugin registers an `AfterToolExecute` phase hook. After every tool call, it evaluates each rule against the tool name, arguments, and result. When a rule matches, it schedules an `AddContextMessage` action that injects the configured message into the prompt.
+
+`plugin_ids` loads the plugin for the agent. `with_hook_filter("reminder")`
+keeps only the reminder plugin's hooks active when multiple plugins are loaded.
+The `reminder` section is validated through `ReminderConfigKey`, exposed in
+`/v1/capabilities`, and saved by the admin console.
 
 2. Define rules with tool patterns.
 
@@ -170,28 +188,35 @@ let json = r#"{
 
 When `cooldown_turns` is `0` (default), the message is injected on every match.
 
-6. Load rules from a file.
+6. Load default rules from a file.
 
 ```rust,ignore
-use awaken::ext_reminder::ReminderRulesConfig;
+use awaken::ext_reminder::{ReminderPlugin, ReminderRulesConfig};
 
 let config = ReminderRulesConfig::from_file("reminders.json")
     .expect("failed to load reminder config");
 let rules = config.into_rules().expect("invalid rules");
+let plugin = ReminderPlugin::new(rules);
 ```
+
+Rules passed to `ReminderPlugin::new(...)` are plugin defaults. Rules in the
+agent's `reminder` config section are appended at runtime, so one plugin
+instance can serve many agents with different system reminders.
 
 7. Activate the plugin on an agent spec.
 
 ```rust,ignore
 use awaken::registry_spec::AgentSpec;
 
-let agent_spec = AgentSpec::new("my-agent")
+let mut agent_spec = AgentSpec::new("my-agent")
     .with_model_id("anthropic/claude-sonnet")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("reminder");
+agent_spec.plugin_ids.push("reminder".into());
 ```
 
-The `with_hook_filter("reminder")` call activates the reminder plugin's phase hook for this agent.
+`plugin_ids` controls plugin loading. `with_hook_filter("reminder")` only filters
+hooks after the plugin has been loaded.
 
 ## Verify
 
@@ -211,7 +236,7 @@ The `with_hook_filter("reminder")` call activates the reminder plugin's phase ho
 | `InvalidTarget` on startup | Unknown message target | Use one of: `system`, `suffix_system`, `session`, `conversation` |
 | `InvalidOutput` on startup | Unrecognized output matcher string | Use `"any"` or a structured `{ "status": ..., "content": ... }` object |
 | `InvalidOp` on startup | Unknown field match operation | Use one of: `glob`, `exact`, `regex`, `not_glob`, `not_exact`, `not_regex` |
-| Rule never fires | Plugin not activated on agent | Add `with_hook_filter("reminder")` to the agent spec |
+| Rule never fires | Plugin not loaded or hook filtered out | Add `"reminder"` to `plugin_ids` and include `with_hook_filter("reminder")` when using hook filters |
 | Rule fires too often | No cooldown configured | Set `cooldown_turns` to a positive value |
 
 ## Related Example

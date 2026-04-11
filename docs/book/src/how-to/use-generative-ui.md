@@ -28,10 +28,11 @@ use awaken::registry_spec::AgentSpec;
 use awaken::{AgentRuntimeBuilder, Plugin};
 
 let plugin = A2uiPlugin::with_catalog_id("my-catalog");
-let agent_spec = AgentSpec::new("ui-agent")
+let mut agent_spec = AgentSpec::new("ui-agent")
     .with_model_id("gpt-4o-mini")
     .with_system_prompt("Render structured UI when visual output helps.")
     .with_hook_filter("generative-ui");
+agent_spec.plugin_ids.push("generative-ui".into());
 
 let runtime = AgentRuntimeBuilder::new()
     .with_provider("openai", Arc::new(GenaiExecutor::new()))
@@ -48,172 +49,124 @@ let runtime = AgentRuntimeBuilder::new()
     .expect("failed to build runtime");
 ```
 
-The plugin registers a tool called `render_a2ui` that the LLM can invoke. When the LLM calls this tool with an array of A2UI messages, the tool validates the message structure and returns the validated payload, which flows through the event stream to the frontend.
+The plugin registers a tool called `render_a2ui` that the LLM can invoke. When the LLM calls this tool with A2UI messages, the tool validates the message structure and returns the validated payload, which flows through the event stream to the frontend.
+
+`plugin_ids` loads the plugin for the agent. `with_hook_filter("generative-ui")`
+keeps the A2UI prompt-injection hook active when the agent also loads other
+plugins.
 
 2. Understand the A2UI protocol.
 
-   A2UI v0.8 defines four message types. Each message is a JSON object with `"version": "v0.8"` and exactly one of the following keys:
+   Awaken's A2UI tool uses the v0.8 server-to-client message keys directly. A
+   tool call can pass exactly one message object or a legacy `messages` array.
 
 | Message Type | Purpose |
 |-------------|---------|
-| `createSurface` | Initialize a new rendering surface |
-| `updateComponents` | Define or update the component tree |
-| `updateDataModel` | Populate or change data values |
+| `surfaceUpdate` | Define or update the component tree |
+| `dataModelUpdate` | Populate or change data values |
+| `beginRendering` | Select the root component and start rendering |
 | `deleteSurface` | Remove a surface |
 
-Messages must be sent in order: create the surface first, then define components, then populate data.
+For a new surface, send `surfaceUpdate`, then `dataModelUpdate` when data is
+needed, then `beginRendering`. Use `deleteSurface` when the workflow is complete.
 
-3. Create a surface.
+3. Define the component tree.
 
-   Every UI starts by creating a surface with a unique ID and a reference to the frontend's component catalog:
+   Components are a flat list. Each component has an `id` and a v0.8 component
+   payload object with exactly one component type:
 
 ```rust,ignore
 // The LLM sends this via the render_a2ui tool:
-let messages = serde_json::json!({
-    "messages": [
-        {
-            "version": "v0.8",
-            "createSurface": {
-                "surfaceId": "order-form-1",
-                "catalogId": "my-catalog"
-            }
-        }
-    ]
-});
-```
-
-The `catalogId` tells the frontend which set of component definitions to use for rendering.
-
-4. Define the component tree.
-
-   Components are specified as a flat list with adjacency references. Each component has a unique `id` and a `component` type name from the catalog. Parent-child relationships are expressed via `child` (single child) or `children` (multiple children):
-
-```rust,ignore
-let messages = serde_json::json!({
-    "messages": [
-        {
-            "version": "v0.8",
-            "updateComponents": {
-                "surfaceId": "order-form-1",
-                "components": [
-                    {
-                        "id": "root",
-                        "component": "Card",
-                        "child": "layout"
-                    },
-                    {
-                        "id": "layout",
-                        "component": "Column",
-                        "children": ["title", "name-field", "submit-btn"]
-                    },
-                    {
-                        "id": "title",
-                        "component": "Text",
-                        "text": "New Order"
-                    },
-                    {
-                        "id": "name-field",
-                        "component": "TextField",
-                        "label": "Customer Name",
-                        "value": { "path": "/customer/name" }
-                    },
-                    {
-                        "id": "submit-btn",
-                        "component": "Button",
-                        "label": "Submit",
-                        "action": {
-                            "event": {
-                                "name": "submit-order",
-                                "context": { "formId": "order-form-1" }
-                            }
-                        }
-                    }
-                ]
-            }
-        }
-    ]
-});
-```
-
-Rules for the component list:
-- One component must have `"id": "root"` -- this is the tree's entry point.
-- Every component requires `"id"` and `"component"` fields.
-- Use `"child"` for a single child reference or `"children"` for multiple.
-- Additional properties (`text`, `label`, `action`, and any extra fields) are passed through to the frontend renderer.
-
-5. Bind data with JSON paths.
-
-   Use `{"path": "/json/pointer"}` in component properties to bind values to the surface's data model. The frontend resolves these paths against the data model at render time:
-
-```rust,ignore
-let messages = serde_json::json!({
-    "messages": [
-        {
-            "version": "v0.8",
-            "updateDataModel": {
-                "surfaceId": "order-form-1",
-                "path": "/",
-                "value": {
-                    "customer": {
-                        "name": "",
-                        "email": ""
-                    },
-                    "items": []
+let message = serde_json::json!({
+    "surfaceUpdate": {
+        "surfaceId": "order-form-1",
+        "components": [
+            {
+                "id": "root",
+                "component": { "Card": { "child": "title" } }
+            },
+            {
+                "id": "title",
+                "component": {
+                    "Text": { "text": { "literalString": "New Order" } }
                 }
             }
-        }
-    ]
+        ]
+    }
 });
 ```
 
-The `path` field specifies which part of the data model to update. Use `"/"` to set the entire model, or a nested path like `"/customer/name"` to update a specific value.
+Rules for component lists:
+
+- Every component requires `id` and `component`.
+- `component` must be an object with one key, such as `{ "Text": {...} }`.
+- Relationships are expressed by component IDs inside component props, such as
+  `child` or `children.explicitList`.
+
+4. Bind data with data model entries.
+
+   `dataModelUpdate.contents` is an array of key/value entries. Supported value
+   fields are `valueString`, `valueNumber`, `valueBoolean`, and `valueMap`.
+
+```rust,ignore
+let message = serde_json::json!({
+    "dataModelUpdate": {
+        "surfaceId": "order-form-1",
+        "path": "/order",
+        "contents": [
+            { "key": "customer", "valueString": "" },
+            { "key": "quantity", "valueNumber": 1.0 }
+        ]
+    }
+});
+```
+
+5. Start rendering.
+
+```rust,ignore
+let message = serde_json::json!({
+    "beginRendering": {
+        "surfaceId": "order-form-1",
+        "root": "root"
+    }
+});
+```
 
 6. Delete a surface.
 
 ```rust,ignore
-let messages = serde_json::json!({
-    "messages": [
-        {
-            "version": "v0.8",
-            "deleteSurface": {
-                "surfaceId": "order-form-1"
-            }
-        }
-    ]
+let message = serde_json::json!({
+    "deleteSurface": {
+        "surfaceId": "order-form-1"
+    }
 });
 ```
 
 7. Send multiple messages in one tool call.
 
-   The `render_a2ui` tool accepts an array of messages, so you can create a surface, define components, and populate data in a single call:
+   The `render_a2ui` tool accepts a `messages` array for multi-message calls:
 
 ```rust,ignore
-let messages = serde_json::json!({
+let args = serde_json::json!({
     "messages": [
-        {
-            "version": "v0.8",
-            "createSurface": { "surfaceId": "s1", "catalogId": "my-catalog" }
-        },
-        {
-            "version": "v0.8",
-            "updateComponents": {
-                "surfaceId": "s1",
-                "components": [
-                    { "id": "root", "component": "Text", "text": "Hello" }
-                ]
-            }
-        },
-        {
-            "version": "v0.8",
-            "updateDataModel": { "surfaceId": "s1", "path": "/", "value": {} }
-        }
+        { "surfaceUpdate": {
+            "surfaceId": "s1",
+            "components": [
+                { "id": "root", "component": { "Text": {
+                    "text": { "literalString": "Hello" }
+                }}}
+            ]
+        }},
+        { "beginRendering": { "surfaceId": "s1", "root": "root" }}
     ]
 });
 ```
 
 8. Customize plugin instructions.
 
-   The plugin injects prompt instructions that teach the LLM how to use the `render_a2ui` tool. You can customize these in several ways:
+   The plugin injects prompt instructions that teach the LLM how to use the
+   `render_a2ui` tool. Defaults can be set on the plugin, and per-agent
+   overrides can be saved in the `generative-ui` config section.
 
 ```rust,ignore
 // With catalog ID and custom examples appended to the default instructions
@@ -226,6 +179,12 @@ let plugin = A2uiPlugin::with_catalog_and_examples(
 let plugin = A2uiPlugin::with_custom_instructions(
     "You can render UI by calling render_a2ui...".to_string()
 );
+
+// Per-agent config, equivalent to editing the generative-ui section in the admin console
+let agent_spec = agent_spec.with_section("generative-ui", serde_json::json!({
+    "catalog_id": "my-catalog",
+    "examples": "Example: render a compact order summary."
+}));
 ```
 
 ## Verify
@@ -239,13 +198,13 @@ let plugin = A2uiPlugin::with_custom_instructions(
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `missing required field "messages"` | Tool called without a `messages` array | Ensure the LLM sends `{"messages": [...]}` |
-| `messages array must not be empty` | Empty messages array | Include at least one A2UI message |
-| `unsupported version` | Version field is not `"v0.8"` | Set `"version": "v0.8"` on every message |
-| `multiple message types in one object` | A single message contains more than one type key | Each message object must have exactly one of `createSurface`, `updateComponents`, `updateDataModel`, or `deleteSurface` |
-| `components[N].id is required` | A component in `updateComponents` is missing `id` | Add `"id"` to every component object |
-| `components[N].component is required` | A component is missing the type name | Add `"component"` with a valid catalog type |
-| LLM does not call the tool | Plugin registered but instructions not reaching the LLM | Verify the plugin is activated on the agent spec |
+| `expected at least one A2UI message key` | Tool called without a direct message key or `messages` array | Send one of `surfaceUpdate`, `dataModelUpdate`, `beginRendering`, `deleteSurface`, or `{"messages": [...]}` |
+| `messages array must not be empty` | Empty `messages` array | Include at least one A2UI message |
+| `surfaceUpdate.components is required` | Component update has no component list | Add a non-empty `components` array |
+| `component must contain exactly one component payload` | `component` is not shaped like `{ "Text": {...} }` | Use one v0.8 component type per component |
+| `dataModelUpdate.contents must not be empty` | Data model update has no entries | Add `contents` entries with `key` and `valueString`/`valueNumber`/`valueBoolean`/`valueMap` |
+| `beginRendering.root is required` | Render start did not specify the root component | Set `root` to an existing component ID |
+| LLM does not call the tool | Plugin not loaded or hook filtered out | Add `"generative-ui"` to `plugin_ids` and include `with_hook_filter("generative-ui")` when using hook filters |
 
 ## Related Example
 

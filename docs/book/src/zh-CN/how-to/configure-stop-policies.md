@@ -43,6 +43,9 @@ let policies: Vec<Arc<dyn StopPolicy>> = vec![
 use awaken::policies::StopConditionPlugin;
 use awaken::AgentRuntimeBuilder;
 
+let mut spec = spec;
+spec.plugin_ids.push("stop-condition".into());
+
 let runtime = AgentRuntimeBuilder::new()
     .with_plugin("stop-condition", Arc::new(StopConditionPlugin::new(policies)))
     .with_agent_spec(spec)
@@ -55,12 +58,19 @@ let runtime = AgentRuntimeBuilder::new()
 ```rust,ignore
 use awaken::policies::MaxRoundsPlugin;
 
+let mut spec = spec;
+spec.plugin_ids.push("stop-condition:max-rounds".into());
+
 let runtime = AgentRuntimeBuilder::new()
     .with_plugin("stop-condition:max-rounds", Arc::new(MaxRoundsPlugin::new(10)))
     .with_agent_spec(spec)
     .with_provider("anthropic", Arc::new(provider))
     .build()?;
 ```
+
+自定义 stop-condition 插件必须列在 `AgentSpec.plugin_ids` 中。内置
+`AgentSpec.max_rounds` 保护仍会自动注入；只有需要额外 policy 类型时才使用这些
+插件。
 
 3. 用声明式 `StopConditionSpec`：
 

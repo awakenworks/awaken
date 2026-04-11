@@ -2,7 +2,7 @@
 //!
 //! This module is responsible only for routing, SSE stream management, and
 //! replay-buffer lifecycle. All AI SDK–specific request parsing (message
-//! conversion, deduplication, decision extraction) lives in [`super::request`].
+//! conversion, deduplication, decision extraction) lives in `super::request`.
 
 use std::convert::Infallible;
 use std::sync::Arc;

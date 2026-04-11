@@ -11,6 +11,7 @@ use super::{MergeStrategy, MutationBatch};
 /// side-effects. Plugins return `StateCommand` from phase hooks; tools return
 /// it alongside `ToolResult` to declare their side-effects using the same
 /// machinery.
+#[derive(Debug)]
 pub struct StateCommand {
     pub patch: MutationBatch,
     pub scheduled_actions: Vec<ScheduledAction>,

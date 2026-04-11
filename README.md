@@ -7,12 +7,21 @@
 Production AI agent runtime for Rust — type-safe state, multi-protocol serving, plugin extensibility.
 
 Published on crates.io as `awaken-agent`; keep importing it in Rust as `awaken`.
+The workspace uses Rust 1.93.0 for development; the crate MSRV is 1.85.
 
 Docs: [GitHub Pages](https://awakenworks.github.io/awaken/) | [Chinese docs](https://awakenworks.github.io/awaken/zh-CN/)
 
 <p align="center">
   <img src="./docs/assets/demo.svg" alt="Awaken demo — tool call + LLM streaming" width="800">
 </p>
+
+## Highlights
+
+- **Rust-first agent runtime**: typed tools, generated JSON Schema, typed state keys, scoped snapshots, and atomic state commits.
+- **One runtime, many clients**: HTTP/SSE run API, AI SDK v6, AG-UI/CopilotKit, A2A, and MCP JSON-RPC from the same backend.
+- **Configuration-first optimization**: choose models/providers, tune prompts, reminders, permissions, generative UI, and deferred tools through `/v1/config/*`, `/v1/capabilities`, and the admin console.
+- **Production control paths**: mailbox-backed background runs, HITL decisions, cancellation/interrupt, SSE replay, retries, fallback models, circuit breakers, metrics, and health probes.
+- **Plugin surface**: permission gates, reminders, OpenTelemetry, MCP tools, skills, generative UI, and deferred tool loading with an explicit probability model.
 
 ## 30-second mental model
 
@@ -26,6 +35,9 @@ Your agent picks tools, calls them, reads and updates state, and repeats — all
 ## Try it in 5 minutes
 
 Prerequisites:
+
+- Rust 1.85 or newer. This repository pins Rust 1.93.0 for local development.
+- An OpenAI-compatible API key.
 
 ```toml
 [dependencies]
@@ -144,6 +156,30 @@ serve(state).await?;
 | AI SDK v6 | `POST /v1/ai-sdk/chat` | React `useChat()` |
 | AG-UI | `POST /v1/ag-ui/run` | CopilotKit `<CopilotKit>` |
 | A2A | `POST /v1/a2a/message:send` | Other agents |
+| MCP | `POST /v1/mcp` | JSON-RPC 2.0 |
+
+The optional admin console uses `/v1/capabilities` and `/v1/config/*` to edit
+agents, models, providers, MCP servers, and plugin config sections in the
+browser. Plugins expose JSON Schema through the same typed `PluginConfigKey`
+path used by runtime hooks, so saving an agent section such as `permission`,
+`reminder`, `generative-ui`, or `deferred_tools` publishes a new registry
+snapshot and applies to subsequent `/v1/runs` requests. OpenAI-compatible
+providers, including BigModel, use the `openai` adapter with a provider-specific
+`base_url`.
+
+The design intent is that agent optimization stays data-driven: model choice,
+provider endpoints, base prompts, system reminders, generated-UI instructions,
+permission policy, and tool-loading policy should be configured through the
+same schema-backed path rather than hard-coded into the agent loop.
+
+| Tuning surface | Configuration path |
+|---|---|
+| Base prompt | `AgentSpec.system_prompt` on the agent entry |
+| Model and provider routing | `AgentSpec.model_id`, `/v1/config/models`, `/v1/config/providers` |
+| System reminders and prompt context injection | `reminder` plugin section, using `system` or `suffix_system` targets |
+| Generative UI prompt guidance | `generative-ui` plugin section (`catalog_id`, `examples`, or full `instructions`) |
+| Tool policy and context cost | `permission` and `deferred_tools` plugin sections |
+| Prompt semantic hooks | Not a built-in plugin yet; add them as typed `PluginConfigKey` sections with schema-backed hooks |
 
 **React + AI SDK v6:**
 
@@ -167,7 +203,10 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 ## Built-in plugins
 
-All features are enabled by default via the `full` feature. Use `default-features = false` to opt out.
+Facade features are enabled by default via the `full` feature. Use
+`default-features = false` to opt out. Workspace extension crates that are not
+re-exported by the facade, such as deferred tools, are added as direct
+dependencies.
 
 | Plugin | What it does | Feature flag |
 |---|---|---|
@@ -177,14 +216,19 @@ All features are enabled by default via the `full` feature. Use `default-feature
 | **MCP** | Connects to external MCP servers and registers their tools as native Awaken tools. | `mcp` |
 | **Skills** | Discovers skill packages and injects a catalog before inference so the LLM can activate skills on demand. | `skills` |
 | **Generative UI** | Streams declarative UI components to frontends via the A2UI protocol. | `generative-ui` |
+| **Deferred Tools** | Hides large tool schemas behind `ToolSearch`, then uses a discounted Beta probability model to re-defer idle promoted tools. | direct crate: `awaken-ext-deferred-tools` |
 
-`awaken-ext-deferred-tools` provides lazy tool loading; add it as a direct dependency if needed — it is not included in the `full` feature.
+Deferred tools are configured through the `deferred_tools` agent section when
+the `ext-deferred-tools` plugin is registered. See
+[Use Deferred Tools](./docs/book/src/how-to/use-deferred-tools.md) for setup,
+the activation heuristic, and the DiscBeta probability model.
 
 Custom interception hooks should use `ToolGateHook` via `PluginRegistrar::register_tool_gate_hook()`. `BeforeToolExecute` is reserved for execution-time hooks that run only when a tool is actually about to execute.
 
 ## Why Awaken
 
 - One backend serves every frontend protocol — React (AI SDK v6), Next.js (AG-UI), other agents (A2A), and tool servers (MCP) from the same binary.
+- Configuration is the control plane — model/provider routing, prompts, reminders, permissions, and tool-loading policy are data that can be validated, edited, and applied at runtime.
 - The LLM orchestrates — define each agent's identity and tool access; no hand-coded DAGs or state machines.
 - Type-safe state with compile-time checks, scoped lifetimes, and merge strategies for safe concurrent writes.
 - Production-ready: circuit breaker, exponential backoff, graceful shutdown, Prometheus metrics, and health probes included.
@@ -231,12 +275,20 @@ awaken                   Facade crate with feature flags
 | [`tool_call_live`](./crates/awaken/examples/tool_call_live.rs) | Tool calling with calculator |
 | [`ai-sdk-starter`](./examples/ai-sdk-starter/) | React + AI SDK v6 full-stack |
 | [`copilotkit-starter`](./examples/copilotkit-starter/) | Next.js + CopilotKit full-stack |
+| [`admin-console`](./apps/admin-console/) | Browser UI for runtime config and plugin schemas |
 
 ```bash
 export OPENAI_API_KEY=<your-key>
 cargo run --package awaken-agent --example multi_turn
 
 cd examples/ai-sdk-starter && npm install && npm run dev
+
+# Terminal 1: starter backend for admin console
+AWAKEN_STORAGE_DIR=./target/admin-sessions cargo run -p ai-sdk-starter-agent
+
+# Terminal 2: admin console
+npm --prefix apps/admin-console install
+npm --prefix apps/admin-console run dev
 ```
 
 | Goal | Start with | Then |
@@ -255,7 +307,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) and [DEVELOPMENT.md](./DEVELOPMENT.md) 
 
 Areas where contributions are especially welcome:
 
-- Additional storage backends (Redis, SQLite)
+- Additional storage backends (Redis, full SQLite thread/run store)
 - Built-in tool implementations (file read/write, web search)
 - Token cost tracking and budget enforcement
 - Model fallback/degradation chains

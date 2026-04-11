@@ -1,8 +1,10 @@
 //! Storage backend implementations for the awaken framework.
 //!
 //! Provides concrete implementations of the storage traits defined in
-//! `awaken-contract`: [`ThreadStore`], [`RunStore`], [`ThreadRunStore`],
-//! and [`MailboxStore`](awaken_contract::MailboxStore).
+//! `awaken-contract`: [`ThreadStore`](awaken_contract::contract::storage::ThreadStore),
+//! [`RunStore`](awaken_contract::contract::storage::RunStore),
+//! [`ThreadRunStore`](awaken_contract::contract::storage::ThreadRunStore),
+//! and [`MailboxStore`](awaken_contract::contract::mailbox::MailboxStore).
 
 pub mod memory;
 pub mod memory_mailbox;

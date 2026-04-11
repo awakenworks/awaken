@@ -224,7 +224,7 @@ impl TypedScheduledActionHandler<AddContextMessage> for ContextMessageHandler {
 ///
 /// Installed automatically by `inject_default_plugins` for the main runtime.
 /// External crates that build sub-runtimes (e.g. generative-ui) should also
-/// install this plugin alongside [`LoopStatePlugin`].
+/// install this plugin alongside [`super::LoopStatePlugin`].
 pub struct LoopActionHandlersPlugin;
 
 impl crate::plugins::Plugin for LoopActionHandlersPlugin {

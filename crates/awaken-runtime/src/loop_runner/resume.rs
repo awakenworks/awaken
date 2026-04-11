@@ -73,7 +73,7 @@ pub fn prepare_resume(
 
         commit_update::<ToolCallStates>(
             store,
-            ToolCallStatesUpdate::Put(
+            ToolCallStatesUpdate::put(
                 ToolCallState::new(
                     call_id.clone(),
                     call_state.tool_name.clone(),
@@ -130,7 +130,7 @@ async fn emit_cancelled_resumes(
 
         commit_update::<ToolCallStates>(
             store,
-            ToolCallStatesUpdate::Put(
+            ToolCallStatesUpdate::put(
                 ToolCallState::new(
                     call_state.call_id,
                     call_state.tool_name,
@@ -274,11 +274,8 @@ pub(super) async fn wait_for_resume_or_cancel(
         };
 
         let mut decisions = first_batch;
-        loop {
-            match rx.try_recv() {
-                Ok(batch) => decisions.extend(batch),
-                Err(_) => break,
-            }
+        while let Ok(batch) = rx.try_recv() {
+            decisions.extend(batch);
         }
 
         if decisions.is_empty() {
@@ -316,7 +313,7 @@ mod tests {
             .expect("install loop state plugin");
 
         let mut patch = MutationBatch::new();
-        patch.update::<ToolCallStates>(ToolCallStatesUpdate::Put(
+        patch.update::<ToolCallStates>(ToolCallStatesUpdate::put(
             ToolCallState::new(
                 "c1",
                 "dangerous",

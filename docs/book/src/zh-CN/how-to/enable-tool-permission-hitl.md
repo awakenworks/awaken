@@ -26,10 +26,11 @@ use awaken::registry::ModelBinding;
 use awaken::registry_spec::AgentSpec;
 use awaken::{AgentRuntimeBuilder, Plugin};
 
-let agent_spec = AgentSpec::new("my-agent")
+let mut agent_spec = AgentSpec::new("my-agent")
     .with_model_id("gpt-4o-mini")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("permission");
+agent_spec.plugin_ids.push("permission".into());
 
 let runtime = AgentRuntimeBuilder::new()
     .with_provider("openai", Arc::new(GenaiExecutor::new()))
@@ -47,6 +48,8 @@ let runtime = AgentRuntimeBuilder::new()
 ```
 
 permission 插件会注册一个 `ToolGateHook`，在每次工具真正执行前评估规则。
+`plugin_ids` 负责加载插件；`with_hook_filter("permission")` 在同一个 agent
+加载多个插件时保留 permission hook。
 
 2. 以内联方式定义规则：
 
@@ -93,10 +96,26 @@ rules:
 4. 通过 agent spec 激活：
 
 ```rust,ignore
-let agent_spec = AgentSpec::new("my-agent")
+use awaken::ext_permission::{
+    PermissionConfigKey, PermissionRulesConfig, PermissionRuleEntry, ToolPermissionBehavior,
+};
+
+let mut agent_spec = AgentSpec::new("my-agent")
     .with_model_id("gpt-4o-mini")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("permission");
+agent_spec.plugin_ids.push("permission".into());
+
+agent_spec.set_config::<PermissionConfigKey>(PermissionRulesConfig {
+    default_behavior: ToolPermissionBehavior::Ask,
+    rules: vec![
+        PermissionRuleEntry {
+            tool: "read_file".into(),
+            behavior: ToolPermissionBehavior::Allow,
+            scope: Default::default(),
+        },
+    ],
+})?;
 ```
 
 5. 理解规则优先级：
@@ -129,7 +148,7 @@ let agent_spec = AgentSpec::new("my-agent")
 | 错误 | 原因 | 修复 |
 |---|---|---|
 | 所有工具都被拦住 | `default_behavior: deny` 且无 allow 规则 | 显式给安全工具加 allow |
-| 规则没有生效 | 插件没注册 | 注册 `PermissionPlugin` 并激活 |
+| 规则没有生效 | 插件未加载或 hook 被过滤 | 注册 `PermissionPlugin`，在 `plugin_ids` 中加入 `"permission"`，使用 hook filter 时再加 `with_hook_filter("permission")` |
 | pattern 无效 | glob / regex 语法错 | 对照 DSL 语法检查 |
 | ask 一直不恢复 | 没有 mailbox consumer | 让前端或 API 客户端消费审批请求 |
 
