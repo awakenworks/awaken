@@ -131,7 +131,7 @@ impl AgentBackend for StaticRemoteBackend {
             continuation: awaken_runtime::BackendContinuationCapability::None,
             waits: awaken_runtime::BackendWaitCapability::None,
             transcript: awaken_runtime::BackendTranscriptCapability::SinglePrompt,
-            output: awaken_runtime::BackendOutputCapability::Text,
+            output: awaken_runtime::BackendOutputCapability::TextAndArtifacts,
         }
     }
 
@@ -145,9 +145,16 @@ impl AgentBackend for StaticRemoteBackend {
             termination: TerminationReason::NaturalEnd,
             status_reason: None,
             response: Some("hello from remote root".into()),
-            output: awaken_runtime::BackendRunOutput::from_text(Some(
-                "hello from remote root".into(),
-            )),
+            output: awaken_runtime::BackendRunOutput {
+                text: Some("hello from remote root".into()),
+                artifacts: vec![awaken_runtime::BackendOutputArtifact {
+                    id: Some("artifact-1".into()),
+                    name: Some("result.json".into()),
+                    media_type: Some("application/json".into()),
+                    content: json!({"answer": 42}),
+                }],
+                raw: Some(json!({"transport": "test-remote"})),
+            },
             steps: 1,
             run_id: Some("remote-child-run".into()),
             inbox: None,
@@ -576,6 +583,29 @@ async fn start_run_supports_remote_root_agents() {
         run_finish["termination"]["type"].as_str(),
         Some("natural_end"),
         "unexpected run_finish: {body}"
+    );
+    assert_eq!(
+        run_finish["result"]["output"]["artifacts"][0]["content"],
+        json!({"answer": 42}),
+        "remote root output artifacts should survive runtime run_finish: {body}"
+    );
+
+    let latest_run = test
+        .store
+        .latest_run("thread-remote-start-run")
+        .await
+        .expect("latest run lookup")
+        .expect("persisted run");
+    assert_eq!(
+        latest_run
+            .state
+            .as_ref()
+            .and_then(|state| state.extensions.get("__runtime_backend_output"))
+            .and_then(|output| output.get("artifacts"))
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(1),
+        "remote root output artifacts should survive run state persistence"
     );
 }
 

@@ -15,8 +15,11 @@ use crate::registry::{
 };
 use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
 use awaken_contract::contract::progress::ProgressStatus;
+use awaken_contract::contract::suspension::{
+    PendingToolCall, SuspendTicket, Suspension, ToolCallResumeMode,
+};
 use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult, ToolStatus,
 };
 
 use super::a2a_backend::{A2aBackend, A2aConfig};
@@ -190,8 +193,8 @@ impl Tool for AgentTool {
                     crate::backend::BackendRunStatus::Cancelled => ProgressStatus::Cancelled,
                     crate::backend::BackendRunStatus::WaitingInput(_)
                     | crate::backend::BackendRunStatus::WaitingAuth(_)
-                    | crate::backend::BackendRunStatus::Suspended(_)
-                    | crate::backend::BackendRunStatus::Timeout
+                    | crate::backend::BackendRunStatus::Suspended(_) => ProgressStatus::Pending,
+                    crate::backend::BackendRunStatus::Timeout
                     | crate::backend::BackendRunStatus::Failed(_) => ProgressStatus::Failed,
                 };
                 let progress_message = match &result.status {
@@ -232,18 +235,10 @@ impl Tool for AgentTool {
                 ctx.report_progress(progress_status, Some(&progress_message), None)
                     .await;
 
-                let status_str = result.status.to_string();
-                let mut tool_result = ToolResult::success(
-                    &tool_id,
-                    json!({
-                        "agent_id": result.agent_id,
-                        "status": status_str,
-                        "response": result.response,
-                        "output": result.output,
-                        "steps": result.steps,
-                    }),
-                );
-                if let Some(ref child_run_id) = result.run_id {
+                let child_run_id = result.run_id.clone();
+                let mut tool_result =
+                    tool_result_from_backend(&tool_id, result, progress_message, &args, ctx);
+                if let Some(ref child_run_id) = child_run_id {
                     tool_result = tool_result.with_metadata(
                         "child_run_id",
                         serde_json::Value::String(child_run_id.clone()),
@@ -261,6 +256,105 @@ impl Tool for AgentTool {
                 Ok(ToolResult::error(&tool_id, error.to_string()).into())
             }
         }
+    }
+}
+
+fn tool_result_from_backend(
+    tool_id: &str,
+    result: crate::backend::BackendRunResult,
+    message: String,
+    args: &Value,
+    ctx: &ToolCallContext,
+) -> ToolResult {
+    let status = result.status.clone();
+    let payload = json!({
+        "agent_id": result.agent_id.clone(),
+        "status": status.to_string(),
+        "response": result.response.clone(),
+        "output": result.output.clone(),
+        "steps": result.steps,
+    });
+
+    match status {
+        crate::backend::BackendRunStatus::Completed => ToolResult::success(tool_id, payload),
+        crate::backend::BackendRunStatus::WaitingInput(_)
+        | crate::backend::BackendRunStatus::WaitingAuth(_)
+        | crate::backend::BackendRunStatus::Suspended(_) => ToolResult {
+            tool_name: tool_id.to_string(),
+            status: ToolStatus::Pending,
+            data: payload,
+            message: Some(message),
+            suspension: Some(Box::new(delegate_suspend_ticket(
+                tool_id, &status, &result, args, ctx,
+            ))),
+            metadata: Default::default(),
+        },
+        crate::backend::BackendRunStatus::Cancelled
+        | crate::backend::BackendRunStatus::Timeout
+        | crate::backend::BackendRunStatus::Failed(_) => ToolResult {
+            tool_name: tool_id.to_string(),
+            status: ToolStatus::Error,
+            data: payload,
+            message: Some(message),
+            suspension: None,
+            metadata: Default::default(),
+        },
+    }
+}
+
+fn delegate_suspend_ticket(
+    tool_id: &str,
+    status: &crate::backend::BackendRunStatus,
+    result: &crate::backend::BackendRunResult,
+    args: &Value,
+    ctx: &ToolCallContext,
+) -> SuspendTicket {
+    let (action, fallback_message) = match status {
+        crate::backend::BackendRunStatus::WaitingInput(_) => {
+            ("agent_delegate:input_required", "input required")
+        }
+        crate::backend::BackendRunStatus::WaitingAuth(_) => {
+            ("agent_delegate:auth_required", "auth required")
+        }
+        crate::backend::BackendRunStatus::Suspended(_) => ("agent_delegate:suspended", "suspended"),
+        _ => ("agent_delegate:pending", "pending"),
+    };
+    let reason = status_message(status).unwrap_or(fallback_message);
+    let pending_id = if ctx.call_id.trim().is_empty() {
+        tool_id.to_string()
+    } else {
+        ctx.call_id.clone()
+    };
+    let suspension_id = result
+        .run_id
+        .as_ref()
+        .filter(|run_id| !run_id.trim().is_empty())
+        .map(|run_id| format!("delegate_run:{run_id}"))
+        .unwrap_or_else(|| format!("delegate_tool:{pending_id}"));
+    SuspendTicket::new(
+        Suspension {
+            id: suspension_id,
+            action: action.to_string(),
+            message: reason.to_string(),
+            parameters: json!({
+                "agent_id": result.agent_id.clone(),
+                "backend_status": status.to_string(),
+                "child_run_id": result.run_id.clone(),
+                "tool_call_id": pending_id.clone(),
+            }),
+            response_schema: None,
+        },
+        PendingToolCall::new(pending_id, tool_id, args.clone()),
+        ToolCallResumeMode::UseDecisionAsToolResult,
+    )
+}
+
+fn status_message(status: &crate::backend::BackendRunStatus) -> Option<&str> {
+    match status {
+        crate::backend::BackendRunStatus::WaitingInput(message)
+        | crate::backend::BackendRunStatus::WaitingAuth(message)
+        | crate::backend::BackendRunStatus::Suspended(message) => message.as_deref(),
+        _ => None,
     }
 }
 

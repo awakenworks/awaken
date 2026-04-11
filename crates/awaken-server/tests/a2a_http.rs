@@ -3,7 +3,11 @@
 use async_trait::async_trait;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_contract::contract::lifecycle::RunStatus;
+use awaken_contract::contract::message::Message;
+use awaken_contract::contract::storage::{RunRecord, RunStore, ThreadRunStore, ThreadStore};
 use awaken_contract::registry_spec::AgentSpec;
+use awaken_contract::thread::Thread;
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{AppState, ServerConfig};
@@ -61,7 +65,11 @@ impl LlmExecutor for DelayedExecutor {
     }
 }
 
-fn build_test_app<E>(agent_ids: &[&str], executor: Arc<E>, config: ServerConfig) -> axum::Router
+fn build_test_fixture<E>(
+    agent_ids: &[&str],
+    executor: Arc<E>,
+    config: ServerConfig,
+) -> (axum::Router, Arc<InMemoryStore>)
 where
     E: LlmExecutor + 'static,
 {
@@ -102,7 +110,14 @@ where
         runtime.resolver_arc(),
         config,
     );
-    build_router().with_state(state)
+    (build_router().with_state(state), store)
+}
+
+fn build_test_app<E>(agent_ids: &[&str], executor: Arc<E>, config: ServerConfig) -> axum::Router
+where
+    E: LlmExecutor + 'static,
+{
+    build_test_fixture(agent_ids, executor, config).0
 }
 
 fn make_test_app(agent_ids: &[&str]) -> axum::Router {
@@ -192,16 +207,26 @@ async fn request_text(
     )
 }
 
-fn send_message_payload(task_id: &str, message_id: &str, text: &str) -> Value {
+fn send_message_payload(task_id: &str, context_id: &str, message_id: &str, text: &str) -> Value {
     json!({
         "message": {
             "taskId": task_id,
-            "contextId": task_id,
+            "contextId": context_id,
             "messageId": message_id,
             "role": "ROLE_USER",
             "parts": [{"text": text}]
         }
     })
+}
+
+fn user_message_ids(task: &Value) -> Vec<&str> {
+    task["history"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|message| message["role"].as_str() == Some("ROLE_USER"))
+        .filter_map(|message| message["messageId"].as_str())
+        .collect()
 }
 
 #[tokio::test]
@@ -236,7 +261,7 @@ async fn well_known_agent_card_returns_latest_shape() {
     );
     assert!(
         body.get("url").is_none(),
-        "legacy top-level url must not be present"
+        "top-level url must not be present"
     );
 }
 
@@ -244,19 +269,20 @@ async fn well_known_agent_card_returns_latest_shape() {
 async fn message_send_returns_task_wrapper_and_task_is_retrievable() {
     let app = make_test_app(&["alpha"]);
     let task_id = "task-latest-a2a";
+    let context_id = "thread-latest-a2a";
 
     let (status, body) = request_json(
         &app,
         "POST",
         "/v1/a2a/message:send",
         &[("content-type", "application/json")],
-        Some(send_message_payload(task_id, "msg-1", "hello")),
+        Some(send_message_payload(task_id, context_id, "msg-1", "hello")),
     )
     .await;
 
     assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
     assert_eq!(body["task"]["id"].as_str(), Some(task_id));
-    assert_eq!(body["task"]["contextId"].as_str(), Some(task_id));
+    assert_eq!(body["task"]["contextId"].as_str(), Some(context_id));
     assert_eq!(
         body["task"]["status"]["state"].as_str(),
         Some("TASK_STATE_COMPLETED")
@@ -287,6 +313,7 @@ async fn message_send_returns_task_wrapper_and_task_is_retrievable() {
 async fn tenant_message_send_is_visible_in_tenant_task_list() {
     let app = make_test_app(&["alpha"]);
     let task_id = "tenant-task-1";
+    let context_id = "tenant-thread-1";
 
     let (status, body) = request_json(
         &app,
@@ -295,6 +322,7 @@ async fn tenant_message_send_is_visible_in_tenant_task_list() {
         &[("content-type", "application/json")],
         Some(send_message_payload(
             task_id,
+            context_id,
             "msg-tenant-1",
             "hello tenant",
         )),
@@ -303,12 +331,197 @@ async fn tenant_message_send_is_visible_in_tenant_task_list() {
 
     assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
     assert_eq!(body["task"]["id"].as_str(), Some(task_id));
+    assert_eq!(body["task"]["contextId"].as_str(), Some(context_id));
 
     let (status, body) = request_json(&app, "GET", "/v1/a2a/alpha/tasks", &[], None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["tasks"].as_array().map(Vec::len), Some(1));
     assert_eq!(body["tasks"][0]["id"].as_str(), Some(task_id));
-    assert_eq!(body["tasks"][0]["contextId"].as_str(), Some(task_id));
+    assert_eq!(body["tasks"][0]["contextId"].as_str(), Some(context_id));
+}
+
+#[tokio::test]
+async fn shared_context_keeps_task_ids_distinct_and_histories_scoped() {
+    let (app, store) = build_test_fixture(
+        &["alpha"],
+        Arc::new(ImmediateExecutor),
+        ServerConfig::default(),
+    );
+    let context_id = "thread-shared-context";
+
+    let (status, first) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        &[("content-type", "application/json")],
+        Some(send_message_payload(
+            "task-shared-1",
+            context_id,
+            "msg-shared-1",
+            "first",
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {first}");
+
+    let (status, second) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        &[("content-type", "application/json")],
+        Some(send_message_payload(
+            "task-shared-2",
+            context_id,
+            "msg-shared-2",
+            "second",
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {second}");
+
+    let thread = store
+        .load_thread(context_id)
+        .await
+        .expect("load thread")
+        .expect("thread");
+    let bindings = thread
+        .metadata
+        .custom
+        .get("a2a.taskBindings")
+        .expect("task bindings metadata");
+    assert_eq!(
+        bindings["tasks"]["task-shared-1"]["start_message_id"].as_str(),
+        Some("msg-shared-1")
+    );
+    assert_eq!(
+        bindings["tasks"]["task-shared-1"]["end_message_id"].as_str(),
+        Some("msg-shared-2")
+    );
+    assert!(
+        bindings["tasks"]["task-shared-1"]
+            .get("history_start")
+            .is_none(),
+        "task binding should use message id cursor only"
+    );
+    assert!(
+        bindings["tasks"]["task-shared-1"]
+            .get("history_end")
+            .is_none(),
+        "task binding should use message id cursor only"
+    );
+
+    let (status, first_task) = request_json(
+        &app,
+        "GET",
+        "/v1/a2a/tasks/task-shared-1?historyLength=10",
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(first_task["contextId"].as_str(), Some(context_id));
+    assert_eq!(user_message_ids(&first_task), vec!["msg-shared-1"]);
+
+    let (status, second_task) = request_json(
+        &app,
+        "GET",
+        "/v1/a2a/tasks/task-shared-2?historyLength=10",
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(second_task["contextId"].as_str(), Some(context_id));
+    assert_eq!(user_message_ids(&second_task), vec!["msg-shared-2"]);
+
+    let (status, tasks) = request_json(
+        &app,
+        "GET",
+        &format!("/v1/a2a/tasks?contextId={context_id}"),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let task_ids = tasks["tasks"]
+        .as_array()
+        .expect("tasks array")
+        .iter()
+        .filter_map(|task| task["id"].as_str())
+        .collect::<Vec<_>>();
+    assert!(task_ids.contains(&"task-shared-1"));
+    assert!(task_ids.contains(&"task-shared-2"));
+}
+
+#[tokio::test]
+async fn waiting_task_id_resumes_the_same_task() {
+    let (app, store) = build_test_fixture(
+        &["alpha"],
+        Arc::new(ImmediateExecutor),
+        ServerConfig::default(),
+    );
+    let task_id = "task-resume";
+    let context_id = "thread-resume";
+    let existing_messages = vec![Message::user("first turn").with_id("msg-initial".to_string())];
+    let waiting_run = RunRecord {
+        run_id: task_id.to_string(),
+        thread_id: context_id.to_string(),
+        agent_id: "alpha".to_string(),
+        parent_run_id: None,
+        status: RunStatus::Waiting,
+        termination_code: Some("input_required".to_string()),
+        created_at: 1,
+        updated_at: 1,
+        steps: 1,
+        input_tokens: 0,
+        output_tokens: 0,
+        state: None,
+    };
+    store
+        .save_thread(&Thread::with_id(context_id))
+        .await
+        .expect("save thread");
+    store
+        .checkpoint(context_id, &existing_messages, &waiting_run)
+        .await
+        .expect("seed waiting run");
+
+    let (status, body) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        &[("content-type", "application/json")],
+        Some(send_message_payload(
+            task_id,
+            context_id,
+            "msg-resume",
+            "resumed input",
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+    assert_eq!(body["task"]["id"].as_str(), Some(task_id));
+    assert_eq!(body["task"]["contextId"].as_str(), Some(context_id));
+
+    let resumed_run = store
+        .load_run(task_id)
+        .await
+        .expect("load resumed run")
+        .expect("resumed run present");
+    assert_eq!(resumed_run.run_id, task_id);
+    assert_eq!(resumed_run.thread_id, context_id);
+    assert_eq!(resumed_run.status, RunStatus::Done);
+
+    let (status, task) = request_json(
+        &app,
+        "GET",
+        &format!("/v1/a2a/tasks/{task_id}?historyLength=10"),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(user_message_ids(&task), vec!["msg-initial", "msg-resume"]);
 }
 
 #[tokio::test]
@@ -319,7 +532,12 @@ async fn message_stream_returns_sse_updates() {
         "POST",
         "/v1/a2a/message:stream",
         &[("content-type", "application/a2a+json")],
-        Some(send_message_payload("task-stream", "msg-stream", "hello")),
+        Some(send_message_payload(
+            "task-stream",
+            "thread-stream",
+            "msg-stream",
+            "hello",
+        )),
     )
     .await;
 
@@ -343,6 +561,7 @@ async fn subscribe_stream_returns_updates_for_existing_task() {
         ServerConfig::default(),
     );
     let task_id = "task-subscribe";
+    let context_id = "thread-subscribe";
 
     let (status, body) = request_json(
         &app,
@@ -352,7 +571,7 @@ async fn subscribe_stream_returns_updates_for_existing_task() {
         Some(json!({
             "message": {
                 "taskId": task_id,
-                "contextId": task_id,
+                "contextId": context_id,
                 "messageId": "msg-subscribe",
                 "role": "ROLE_USER",
                 "parts": [{"text": "hello"}]
@@ -420,6 +639,7 @@ async fn push_notification_configs_roundtrip_and_inline_delivery_work() {
 
     let app = make_test_app(&["alpha"]);
     let task_id = "task-push";
+    let context_id = "thread-push";
 
     let (status, body) = request_json(
         &app,
@@ -429,7 +649,7 @@ async fn push_notification_configs_roundtrip_and_inline_delivery_work() {
         Some(json!({
             "message": {
                 "taskId": task_id,
-                "contextId": task_id,
+                "contextId": context_id,
                 "messageId": "msg-push",
                 "role": "ROLE_USER",
                 "parts": [{"text": "hello"}]
