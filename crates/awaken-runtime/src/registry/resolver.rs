@@ -1,9 +1,10 @@
 //! Agent resolution: dynamic lookup of agent config + execution environment.
 
+use crate::backend::{ExecutionBackend, ExecutionBackendError, ExecutionBackendFactory};
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::inference::ContextWindowPolicy;
 use awaken_contract::contract::tool::Tool;
-use awaken_contract::registry_spec::AgentSpec;
+use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -166,6 +167,130 @@ impl std::fmt::Debug for ResolvedAgent {
     }
 }
 
+/// A resolved non-local execution target backed by a runtime backend.
+#[derive(Clone)]
+pub struct ResolvedBackendAgent {
+    pub spec: Arc<AgentSpec>,
+    target: ResolvedBackendTarget,
+    backend_cache: Arc<std::sync::Mutex<Option<Arc<dyn ExecutionBackend>>>>,
+}
+
+#[derive(Clone)]
+enum ResolvedBackendTarget {
+    Ready(Arc<dyn ExecutionBackend>),
+    Factory {
+        factory: Arc<dyn ExecutionBackendFactory>,
+        endpoint: RemoteEndpoint,
+    },
+}
+
+impl ResolvedBackendAgent {
+    #[must_use]
+    pub fn with_backend(spec: Arc<AgentSpec>, backend: Arc<dyn ExecutionBackend>) -> Self {
+        Self {
+            spec,
+            target: ResolvedBackendTarget::Ready(backend),
+            backend_cache: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    #[must_use]
+    pub fn with_factory(
+        spec: Arc<AgentSpec>,
+        factory: Arc<dyn ExecutionBackendFactory>,
+        endpoint: RemoteEndpoint,
+    ) -> Self {
+        Self {
+            spec,
+            target: ResolvedBackendTarget::Factory { factory, endpoint },
+            backend_cache: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    pub fn backend(&self) -> Result<Arc<dyn ExecutionBackend>, ExecutionBackendError> {
+        match &self.target {
+            ResolvedBackendTarget::Ready(backend) => Ok(backend.clone()),
+            ResolvedBackendTarget::Factory { factory, endpoint } => {
+                if let Some(backend) = self
+                    .backend_cache
+                    .lock()
+                    .map_err(|_| {
+                        ExecutionBackendError::ExecutionFailed("backend cache lock poisoned".into())
+                    })?
+                    .clone()
+                {
+                    return Ok(backend);
+                }
+
+                let backend = factory.build(endpoint).map_err(|error| {
+                    ExecutionBackendError::ExecutionFailed(format!(
+                        "failed to build backend '{}': {error}",
+                        factory.backend()
+                    ))
+                })?;
+                *self.backend_cache.lock().map_err(|_| {
+                    ExecutionBackendError::ExecutionFailed("backend cache lock poisoned".into())
+                })? = Some(backend.clone());
+                Ok(backend)
+            }
+        }
+    }
+}
+
+/// Unified resolved execution plan for local and non-local agents.
+#[derive(Clone)]
+pub enum ResolvedExecution {
+    Local(Box<ResolvedAgent>),
+    NonLocal(ResolvedBackendAgent),
+}
+
+impl ResolvedExecution {
+    pub fn local(agent: ResolvedAgent) -> Self {
+        Self::Local(Box::new(agent))
+    }
+
+    pub fn spec(&self) -> &AgentSpec {
+        match self {
+            Self::Local(agent) => agent.spec.as_ref(),
+            Self::NonLocal(agent) => agent.spec.as_ref(),
+        }
+    }
+
+    pub fn as_local(&self) -> Option<&ResolvedAgent> {
+        match self {
+            Self::Local(agent) => Some(agent),
+            Self::NonLocal(_) => None,
+        }
+    }
+
+    pub fn into_local(self) -> Result<ResolvedAgent, RuntimeError> {
+        match self {
+            Self::Local(agent) => Ok(*agent),
+            Self::NonLocal(agent) => Err(RuntimeError::ResolveFailed {
+                message: format!(
+                    "agent '{}' is endpoint-backed and cannot be resolved locally",
+                    agent.spec.id
+                ),
+            }),
+        }
+    }
+}
+
+impl std::fmt::Debug for ResolvedExecution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local(agent) => f
+                .debug_tuple("ResolvedExecution::Local")
+                .field(agent)
+                .finish(),
+            Self::NonLocal(agent) => f
+                .debug_struct("ResolvedExecution::NonLocal")
+                .field("agent_id", &agent.spec.id)
+                .finish_non_exhaustive(),
+        }
+    }
+}
+
 /// Resolves an agent by ID, producing a ready-to-execute config + environment.
 ///
 /// Implementations look up `AgentSpec` from a registry, resolve the model → provider
@@ -180,6 +305,39 @@ pub trait AgentResolver: Send + Sync {
     /// Implementations that cannot enumerate agents may return an empty list.
     fn agent_ids(&self) -> Vec<String> {
         Vec::new()
+    }
+}
+
+/// Resolves an agent into a local or non-local execution plan.
+pub trait ExecutionResolver: AgentResolver {
+    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, RuntimeError>;
+}
+
+/// Compatibility wrapper that upgrades a local-only `AgentResolver` into an
+/// `ExecutionResolver` by treating every resolution as `ResolvedExecution::Local`.
+pub struct LocalExecutionResolver {
+    resolver: Arc<dyn AgentResolver>,
+}
+
+impl LocalExecutionResolver {
+    pub fn new(resolver: Arc<dyn AgentResolver>) -> Self {
+        Self { resolver }
+    }
+}
+
+impl AgentResolver for LocalExecutionResolver {
+    fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, RuntimeError> {
+        self.resolver.resolve(agent_id)
+    }
+
+    fn agent_ids(&self) -> Vec<String> {
+        self.resolver.agent_ids()
+    }
+}
+
+impl ExecutionResolver for LocalExecutionResolver {
+    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, RuntimeError> {
+        self.resolve(agent_id).map(ResolvedExecution::local)
     }
 }
 

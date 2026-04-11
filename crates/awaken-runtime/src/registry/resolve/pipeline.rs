@@ -1,4 +1,5 @@
-//! Resolution pipeline: `agent_id` + `RegistrySet` -> `ResolvedAgent`.
+//! Resolution pipeline: `agent_id` + `RegistrySet` -> `ResolvedAgent` /
+//! `ResolvedExecution`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -7,7 +8,9 @@ use crate::error::RuntimeError;
 use crate::execution::SequentialToolExecutor;
 use crate::phase::ExecutionEnv;
 use crate::plugins::Plugin;
-use crate::registry::{AgentResolver, ResolvedAgent};
+use crate::registry::{
+    AgentResolver, ExecutionResolver, ResolvedAgent, ResolvedBackendAgent, ResolvedExecution,
+};
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::tool::Tool;
 
@@ -40,7 +43,7 @@ pub(crate) fn inject_default_plugins(
 // resolve()
 // ---------------------------------------------------------------------------
 
-/// Resolve an agent by ID from registries into a fully wired [`ResolvedAgent`].
+/// Resolve an agent by ID from registries into a fully wired local [`ResolvedAgent`].
 ///
 /// Three-stage pipeline:
 /// 1. **Lookup** — fetch spec, model, executor from registries.
@@ -52,6 +55,12 @@ pub(crate) fn resolve_registry_set(
 ) -> Result<ResolvedAgent, ResolveError> {
     // Stage 1: Lookup
     let spec = lookup_spec(registries, agent_id)?;
+    #[cfg(feature = "a2a")]
+    if spec.endpoint.is_some() {
+        return Err(ResolveError::RemoteAgentNotDirectlyRunnable(
+            spec.id.clone(),
+        ));
+    }
     let (executor, upstream_model) = resolve_model_and_executor(registries, &spec)?;
 
     // Stage 2: Plugin pipeline
@@ -75,6 +84,37 @@ pub(crate) fn resolve_registry_set(
     })
 }
 
+/// Resolve an agent into a local or non-local execution plan.
+pub(crate) fn resolve_execution_registry_set(
+    registries: &RegistrySet,
+    agent_id: &str,
+) -> Result<ResolvedExecution, ResolveError> {
+    let spec = lookup_spec(registries, agent_id)?;
+
+    #[cfg(feature = "a2a")]
+    if let Some(endpoint) = spec.endpoint.clone() {
+        let factory = registries
+            .backends
+            .get_backend_factory(&endpoint.backend)
+            .ok_or_else(|| ResolveError::UnsupportedRemoteBackend {
+                agent_id: spec.id.clone(),
+                backend: endpoint.backend.clone(),
+            })?;
+        factory
+            .validate(&endpoint)
+            .map_err(|error| ResolveError::InvalidRemoteEndpointConfig {
+                agent_id: spec.id.clone(),
+                backend: endpoint.backend.clone(),
+                message: error.to_string(),
+            })?;
+        return Ok(ResolvedExecution::NonLocal(
+            ResolvedBackendAgent::with_factory(Arc::new(spec), factory, endpoint),
+        ));
+    }
+
+    resolve_local_spec(registries, spec).map(ResolvedExecution::local)
+}
+
 #[cfg(test)]
 fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedAgent, ResolveError> {
     resolve_registry_set(registries, agent_id)
@@ -86,19 +126,31 @@ fn resolve(registries: &RegistrySet, agent_id: &str) -> Result<ResolvedAgent, Re
 
 /// Fetch and validate the agent spec from registry.
 fn lookup_spec(registries: &RegistrySet, agent_id: &str) -> Result<AgentSpec, ResolveError> {
-    let spec = registries
+    registries
         .agents
         .get_agent(agent_id)
-        .ok_or_else(|| ResolveError::AgentNotFound(agent_id.into()))?;
+        .ok_or_else(|| ResolveError::AgentNotFound(agent_id.into()))
+}
 
-    #[cfg(feature = "a2a")]
-    if spec.endpoint.is_some() {
-        return Err(ResolveError::RemoteAgentNotDirectlyRunnable(
-            spec.id.clone(),
-        ));
-    }
+fn resolve_local_spec(
+    registries: &RegistrySet,
+    spec: AgentSpec,
+) -> Result<ResolvedAgent, ResolveError> {
+    let (executor, upstream_model) = resolve_model_and_executor(registries, &spec)?;
+    let plugins = build_plugin_chain(registries, &spec)?;
+    let env = ExecutionEnv::from_plugins(&plugins, &spec.active_hook_filter)?;
+    let tools = build_tool_set(registries, &spec, &env)?;
+    let spec_arc = Arc::new(spec);
 
-    Ok(spec)
+    Ok(ResolvedAgent {
+        spec: spec_arc,
+        upstream_model,
+        tools,
+        llm_executor: executor,
+        tool_executor: Arc::new(SequentialToolExecutor),
+        context_summarizer: None,
+        env,
+    })
 }
 
 /// Resolve model and LLM executor, applying the agent retry policy.
@@ -221,6 +273,8 @@ fn resolve_delegate_tools(
 ) -> Result<(), ResolveError> {
     #[cfg(feature = "a2a")]
     if !spec.delegates.is_empty() {
+        let resolver: Arc<dyn crate::registry::ExecutionResolver> =
+            Arc::new(RegistrySetResolver::new(registries.clone()));
         for delegate_id in &spec.delegates {
             let delegate_spec = registries
                 .agents
@@ -228,8 +282,7 @@ fn resolve_delegate_tools(
                 .ok_or_else(|| ResolveError::AgentNotFound(delegate_id.clone()))?;
 
             let description: String = delegate_spec.system_prompt.chars().take(100).collect();
-
-            let tool: Arc<dyn Tool> = if let Some(endpoint) = &delegate_spec.endpoint {
+            if let Some(endpoint) = &delegate_spec.endpoint {
                 let factory = registries
                     .backends
                     .get_backend_factory(&endpoint.backend)
@@ -237,27 +290,21 @@ fn resolve_delegate_tools(
                         agent_id: delegate_id.clone(),
                         backend: endpoint.backend.clone(),
                     })?;
-                let backend = factory.build(endpoint).map_err(|error| {
+                factory.validate(endpoint).map_err(|error| {
                     ResolveError::InvalidRemoteEndpointConfig {
                         agent_id: delegate_id.clone(),
                         backend: endpoint.backend.clone(),
                         message: error.to_string(),
                     }
                 })?;
-                Arc::new(crate::extensions::a2a::AgentTool::with_backend(
+            }
+
+            let tool: Arc<dyn Tool> =
+                Arc::new(crate::extensions::a2a::AgentTool::with_execution_resolver(
                     delegate_id,
                     &description,
-                    backend,
-                ))
-            } else {
-                let resolver: Arc<dyn crate::registry::AgentResolver> =
-                    Arc::new(RegistrySetResolver::new(registries.clone()));
-                Arc::new(crate::extensions::a2a::AgentTool::local(
-                    delegate_id,
-                    &description,
-                    resolver,
-                ))
-            };
+                    resolver.clone(),
+                ));
             let tool_id = tool.descriptor().id;
             tools.insert(tool_id, tool);
         }
@@ -303,6 +350,16 @@ impl AgentResolver for RegistrySetResolver {
     }
 }
 
+impl ExecutionResolver for RegistrySetResolver {
+    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, RuntimeError> {
+        resolve_execution_registry_set(&self.registries, agent_id).map_err(|error| {
+            RuntimeError::ResolveFailed {
+                message: error.to_string(),
+            }
+        })
+    }
+}
+
 /// Resolver backed by a versioned registry handle.
 ///
 /// Each call resolves against the current published registry snapshot,
@@ -329,6 +386,17 @@ impl AgentResolver for DynamicRegistryResolver {
 
     fn agent_ids(&self) -> Vec<String> {
         self.handle.snapshot().registries().agents.agent_ids()
+    }
+}
+
+impl ExecutionResolver for DynamicRegistryResolver {
+    fn resolve_execution(&self, agent_id: &str) -> Result<ResolvedExecution, RuntimeError> {
+        let snapshot = self.handle.snapshot();
+        resolve_execution_registry_set(snapshot.registries(), agent_id).map_err(|error| {
+            RuntimeError::ResolveFailed {
+                message: error.to_string(),
+            }
+        })
     }
 }
 
@@ -445,18 +513,17 @@ mod tests {
     };
     use crate::registry::traits::ModelBinding;
     use async_trait::async_trait;
-    #[cfg(feature = "a2a")]
-    use awaken_contract::contract::event_sink::EventSink;
     use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
     use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-    #[cfg(feature = "a2a")]
-    use awaken_contract::contract::message::Message;
+    use awaken_contract::contract::lifecycle::TerminationReason;
     use awaken_contract::contract::tool::{
         ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
     };
     #[cfg(feature = "a2a")]
     use awaken_contract::registry_spec::RemoteEndpoint;
     use serde_json::Value;
+    #[cfg(feature = "a2a")]
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // -- Mock Tool --
 
@@ -511,14 +578,16 @@ mod tests {
     #[cfg(feature = "a2a")]
     #[async_trait]
     impl AgentBackend for StaticBackend {
-        async fn execute(
+        async fn execute_root(
             &self,
-            _agent_id: &str,
-            _messages: Vec<Message>,
-            _event_sink: Arc<dyn EventSink>,
-            _parent_run_id: Option<String>,
-            _parent_thread_id: Option<String>,
-            _parent_tool_call_id: Option<String>,
+            _request: crate::backend::BackendRootRunRequest<'_>,
+        ) -> Result<DelegateRunResult, AgentBackendError> {
+            Ok(self.result.clone())
+        }
+
+        async fn execute_delegate(
+            &self,
+            _request: crate::backend::BackendDelegateRunRequest<'_>,
         ) -> Result<DelegateRunResult, AgentBackendError> {
             Ok(self.result.clone())
         }
@@ -528,6 +597,8 @@ mod tests {
     struct StaticBackendFactory {
         backend: &'static str,
         result: DelegateRunResult,
+        validate_count: Arc<AtomicUsize>,
+        build_count: Arc<AtomicUsize>,
     }
 
     #[cfg(feature = "a2a")]
@@ -536,10 +607,22 @@ mod tests {
             self.backend
         }
 
+        fn validate(&self, endpoint: &RemoteEndpoint) -> Result<(), AgentBackendFactoryError> {
+            self.validate_count.fetch_add(1, Ordering::SeqCst);
+            if endpoint.backend != self.backend {
+                return Err(AgentBackendFactoryError::InvalidConfig(format!(
+                    "unexpected backend {}",
+                    endpoint.backend
+                )));
+            }
+            Ok(())
+        }
+
         fn build(
             &self,
             endpoint: &RemoteEndpoint,
         ) -> Result<Arc<dyn AgentBackend>, AgentBackendFactoryError> {
+            self.build_count.fetch_add(1, Ordering::SeqCst);
             if endpoint.backend != self.backend {
                 return Err(AgentBackendFactoryError::InvalidConfig(format!(
                     "unexpected backend {}",
@@ -776,6 +859,8 @@ mod tests {
     #[cfg(feature = "a2a")]
     #[tokio::test]
     async fn resolve_delegate_uses_registered_backend_factory() {
+        let validate_count = Arc::new(AtomicUsize::new(0));
+        let build_count = Arc::new(AtomicUsize::new(0));
         let root = AgentSpec {
             delegates: vec!["remote-worker".into()],
             ..make_spec("root")
@@ -817,11 +902,19 @@ mod tests {
                 result: DelegateRunResult {
                     agent_id: "remote-worker".into(),
                     status: DelegateRunStatus::Completed,
+                    termination: TerminationReason::NaturalEnd,
+                    status_reason: None,
                     response: Some("from custom backend".into()),
+                    output: crate::backend::BackendRunOutput::from_text(Some(
+                        "from custom backend".into(),
+                    )),
                     steps: 1,
                     run_id: None,
                     inbox: None,
+                    state: None,
                 },
+                validate_count: validate_count.clone(),
+                build_count: build_count.clone(),
             }))
             .unwrap();
 
@@ -835,6 +928,8 @@ mod tests {
         };
 
         let run = resolve(&regs, "root").unwrap();
+        assert_eq!(validate_count.load(Ordering::SeqCst), 1);
+        assert_eq!(build_count.load(Ordering::SeqCst), 0);
         let tool = run.tools.get("agent_run_remote-worker").unwrap();
         let output = tool
             .execute(
@@ -846,6 +941,8 @@ mod tests {
 
         assert!(output.result.is_success());
         assert_eq!(output.result.data["response"], "from custom backend");
+        assert_eq!(validate_count.load(Ordering::SeqCst), 2);
+        assert_eq!(build_count.load(Ordering::SeqCst), 1);
     }
 
     #[test]
