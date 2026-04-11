@@ -96,15 +96,13 @@ Future prompt semantic hooks should follow the same typed section pattern.
 7. Execute a run.
 
 ```rust,ignore
-use std::sync::Arc;
 use awaken::RunRequest;
-use awaken::contract::event_sink::VecEventSink;
 
 let request = RunRequest::new("thread-1", vec![user_message])
     .with_agent_id("assistant");
 
-let sink = Arc::new(VecEventSink::new());
-let handle = runtime.run(request, sink.clone()).await?;
+// Use runtime.run(..., sink) when callers need streaming events.
+let result = runtime.run_to_completion(request).await?;
 ```
 
 ## Verify

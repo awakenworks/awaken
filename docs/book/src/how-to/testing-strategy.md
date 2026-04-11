@@ -364,6 +364,8 @@ async fn tool_call_flow_end_to_end() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -448,58 +450,22 @@ assert_eq!(*types.last().unwrap(), "run_finish");
 
 ## 6. Testing with a real LLM (live tests)
 
-For end-to-end validation against a real provider, use the `GenaiExecutor` with environment variables for credentials. Mark these tests with `#[ignore]` so they only run when explicitly requested.
+Keep normal CI offline. Use scripted providers for deterministic e2e coverage, and put real-provider checks behind `#[ignore]`.
 
-```rust,ignore
-use awaken::engine::GenaiExecutor;
-
-#[tokio::test]
-#[ignore] // Run with: cargo test -- --ignored
-async fn live_llm_responds() {
-    // Requires: OPENAI_API_KEY or (LLM_BASE_URL + LLM_API_KEY)
-    let model = std::env::var("LLM_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
-    let llm = Arc::new(GenaiExecutor::new());
-
-    let agent = ResolvedAgent::new(
-        "live-test",
-        &model,
-        "You are a test assistant. Answer in one word.",
-        llm,
-    );
-
-    // ... set up resolver, store, runtime, sink as in section 4 ...
-
-    let result = run_agent_loop(AgentLoopParams {
-        resolver: &resolver,
-        agent_id: "live-test",
-        runtime: &runtime,
-        sink: sink.clone(),
-        checkpoint_store: None,
-        messages: vec![Message::user("What is 2+2? Answer in one word.")],
-        run_identity: test_identity(),
-        cancellation_token: None,
-        decision_rx: None,
-        overrides: None,
-        frontend_tools: Vec::new(),
-    })
-    .await
-    .unwrap();
-
-    assert!(!result.response.is_empty());
-}
-```
+The README quickstart path is covered without network access by `crates/awaken/tests/readme_quickstart.rs`. The live provider smoke test is `crates/awaken/tests/readme_live_provider.rs`; it exercises `GenaiExecutor`, `AgentRuntimeBuilder`, model binding, and `run_to_completion` against a real provider.
 
 Run live tests with:
 
 ```bash
 # OpenAI-compatible provider
-OPENAI_API_KEY=<your-key> LLM_MODEL=gpt-4o-mini cargo test -- --ignored
+OPENAI_API_KEY=<your-key> LLM_MODEL=gpt-4o-mini \
+  cargo test -p awaken-agent --test readme_live_provider -- --ignored
 
 # Custom endpoint (e.g. BigModel)
 LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4/ \
   LLM_API_KEY=<key> \
   LLM_MODEL=GLM-4.7-Flash \
-  cargo test -- --ignored
+  cargo test -p awaken-agent --test readme_live_provider -- --ignored
 ```
 
 See `examples/live_test.rs` and `examples/tool_call_live.rs` for complete working examples with console output.

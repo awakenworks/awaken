@@ -32,6 +32,8 @@
 | `ToolCallStatus` | 工具调用状态 | 单个 tool call 的状态。 |
 | `ResolvedAgent` | 已解析智能体 | 从 registries 解析完成、可直接运行的 agent。 |
 | `AgentResolver` | 智能体解析器 | 把 agent ID 解析成 `ResolvedAgent` 的组件。 |
+| `ExecutionResolver` | 执行解析器 | `AgentRuntime` root run 使用的解析器，用来选择本地执行或 backend-backed 执行。 |
+| `ExecutionBackend` | 执行后端 | 非本地 root execution 和 delegation 的扩展点，包括 A2A。 |
 | `BuildError` | 构建错误 | `AgentRuntimeBuilder::build()` 阶段的错误。 |
 | `RuntimeError` | 运行时错误 | agent loop 执行中的错误。 |
 | `InferenceOverride` | 推理覆盖 | 针对单次推理的 model / temperature 等覆盖。 |

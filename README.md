@@ -25,7 +25,7 @@ Docs: [GitHub Pages](https://awakenworks.github.io/awaken/) | [Chinese docs](htt
 
 ## 30-second mental model
 
-1. **Tools** — typed functions your agent can call; JSON schema is generated at compile time
+1. **Tools** — implement `Tool` directly or `TypedTool` with `schemars`-generated JSON Schema
 2. **Agents** — each agent has a system prompt, a model, and a set of allowed tools; the LLM drives orchestration through natural language — no predefined graphs
 3. **State** — typed run/thread state plus persistent profile/shared state for cross-thread or cross-agent coordination
 4. **Plugins** — lifecycle hooks for permissions, observability, context management, skills, MCP, and more
@@ -59,8 +59,6 @@ use serde_json::{json, Value};
 use async_trait::async_trait;
 use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
 use awaken::contract::message::Message;
-use awaken::contract::event::AgentEvent;
-use awaken::contract::event_sink::VecEventSink;
 use awaken::engine::GenaiExecutor;
 use awaken::registry_spec::AgentSpec;
 use awaken::registry::ModelBinding;
@@ -108,17 +106,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_agent_id("assistant");
 
-    let sink = Arc::new(VecEventSink::new());
-    runtime.run(request, sink.clone()).await?;
-
-    let events = sink.take();
-    println!("events: {}", events.len());
-
-    let finished = events.iter().any(|e| matches!(e, AgentEvent::RunFinish { .. }));
-    println!("run_finish_seen: {}", finished);
+    // The quickstart only needs the final result. Use run(..., sink) when
+    // streaming events to SSE, WebSocket, protocol adapters, or tests.
+    let result = runtime.run_to_completion(request).await?;
+    println!("response: {}", result.response);
+    println!("termination: {:?}", result.termination);
 
     Ok(())
 }
+```
+
+The quickstart path is covered without network access:
+
+```bash
+cargo test -p awaken-agent --test readme_quickstart
+```
+
+Live provider validation is opt-in so CI does not depend on external model services:
+
+```bash
+OPENAI_API_KEY=<your-key> cargo test -p awaken-agent --test readme_live_provider -- --ignored
 ```
 
 ## Serve over any protocol
@@ -227,11 +234,13 @@ Custom interception hooks should use `ToolGateHook` via `PluginRegistrar::regist
 
 ## Why Awaken
 
-- One backend serves every frontend protocol — React (AI SDK v6), Next.js (AG-UI), other agents (A2A), and tool servers (MCP) from the same binary.
-- Configuration is the control plane — model/provider routing, prompts, reminders, permissions, and tool-loading policy are data that can be validated, edited, and applied at runtime.
-- The LLM orchestrates — define each agent's identity and tool access; no hand-coded DAGs or state machines.
-- Type-safe state with compile-time checks, scoped lifetimes, and merge strategies for safe concurrent writes.
-- Production-ready: circuit breaker, exponential backoff, graceful shutdown, Prometheus metrics, and health probes included.
+- One backend serves multiple protocols: AI SDK v6, AG-UI, A2A, MCP, plus native HTTP/SSE routes.
+- Configuration is the control plane: model/provider routing, prompts, reminders, permissions, and tool-loading policy use schema-backed config that can be validated and applied at runtime.
+- The LLM orchestrates: define the agent identity, model binding, and tool access; no hand-coded DAG is required.
+- Runtime-managed configuration updates agents, model bindings, providers, and MCP servers through the Config API or Admin Console.
+- Plugin extension points are typed: 9 lifecycle phases, `PhaseHook`, `ToolGateHook`, scheduled actions, effects, request transforms, and plugin-provided tools.
+- State is type-safe: `StateKey` binds each key to Rust value/update types, scopes it to run/thread/profile, and applies declared merge strategies before commit.
+- Operational surfaces are built in: LLM retry/backoff, per-model circuit breaker, request timeout, graceful shutdown, Prometheus metrics, health probes, and mailbox retry/backoff.
 - Zero `unsafe` — the entire workspace forbids `unsafe` and relies on the Rust compiler for memory safety.
 
 ## When to use Awaken

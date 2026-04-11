@@ -10,7 +10,7 @@ use crate::backend::{
 use crate::loop_runner::{AgentLoopError, AgentRunResult};
 use crate::registry::{ExecutionResolver, ResolvedExecution};
 use awaken_contract::contract::active_agent::ActiveAgentIdKey;
-use awaken_contract::contract::event_sink::EventSink;
+use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::message::{Message, Role, Visibility};
 use awaken_contract::contract::storage::RunRecord;
@@ -43,6 +43,19 @@ struct PreparedLocalRootExecution {
 }
 
 impl AgentRuntime {
+    /// Run an agent loop until it returns an [`AgentRunResult`].
+    ///
+    /// This is a convenience wrapper for one-shot CLI programs and examples
+    /// that only need the final [`AgentRunResult`]. Use [`Self::run`] with an
+    /// [`EventSink`] when streaming events to SSE, WebSocket, protocol adapters,
+    /// or tests.
+    pub async fn run_to_completion(
+        &self,
+        request: RunRequest,
+    ) -> Result<AgentRunResult, AgentLoopError> {
+        self.run(request, Arc::new(NullEventSink)).await
+    }
+
     /// Run an agent loop.
     ///
     /// This is the single production entry point. It:
@@ -2045,6 +2058,36 @@ mod tests {
             output_tokens: 0,
             state,
         }
+    }
+
+    #[tokio::test]
+    async fn run_to_completion_returns_final_result() {
+        let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+            content: vec![ContentBlock::text("ok")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        }]));
+        let resolver = Arc::new(FixedResolver {
+            agent: ResolvedAgent::new("agent", "m", "sys", llm),
+            plugins: vec![],
+        });
+        let runtime = AgentRuntime::new(resolver);
+
+        let result = runtime
+            .run_to_completion(
+                RunRequest::new("thread-completion", vec![Message::user("hi")])
+                    .with_agent_id("agent"),
+            )
+            .await
+            .expect("run should succeed");
+
+        assert_eq!(result.response, "ok");
+        assert_eq!(
+            result.termination,
+            awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd
+        );
     }
 
     #[tokio::test]

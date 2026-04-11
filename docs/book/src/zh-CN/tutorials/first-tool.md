@@ -202,6 +202,8 @@ let request = RunRequest::new(
 )
 .with_agent_id("assistant");
 
+// 本教程捕获事件，是因为下一步要验证工具确实被调用。
+// 如果只需要最终结果，使用 runtime.run_to_completion(request)。
 let sink = Arc::new(VecEventSink::new());
 runtime.run(request, sink.clone()).await?;
 # Ok(())

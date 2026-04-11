@@ -73,7 +73,10 @@ impl EventSink for SharedEventSink {
     }
 }
 
-/// Discards all events (useful in tests where events are not needed).
+/// Discards all events.
+///
+/// Use this when the caller only needs the final run result and does not need
+/// to stream or assert on intermediate events.
 pub struct NullEventSink;
 
 #[async_trait]

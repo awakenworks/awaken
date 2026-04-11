@@ -21,7 +21,7 @@
 
 ## 30 秒速览
 
-1. **Tools** — 类型化函数，JSON Schema 在编译时自动生成
+1. **Tools** — 可直接实现 `Tool`，也可用 `TypedTool` 通过 `schemars` 生成 JSON Schema
 2. **Agents** — 每个 Agent 拥有系统提示词、模型和允许的工具集；LLM 通过自然语言驱动编排 — 无需预定义流程图
 3. **State** — 既有 `run` / `thread` 作用域的类型化状态，也有用于跨线程/跨 Agent 协作的持久化 profile/shared state
 4. **Plugins** — 生命周期钩子覆盖权限、可观测性、上下文管理、Skills、MCP 等
@@ -50,8 +50,6 @@ use serde_json::{json, Value};
 use async_trait::async_trait;
 use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
 use awaken::contract::message::Message;
-use awaken::contract::event::AgentEvent;
-use awaken::contract::event_sink::VecEventSink;
 use awaken::engine::GenaiExecutor;
 use awaken::registry_spec::AgentSpec;
 use awaken::registry::ModelBinding;
@@ -103,16 +101,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_agent_id("assistant");
 
-    let sink = Arc::new(VecEventSink::new());
-    runtime.run(request, sink.clone()).await?;
-
-    let events = sink.take();
-    println!("events: {}", events.len());
-
-    let finished = events
-        .iter()
-        .any(|e| matches!(e, AgentEvent::RunFinish { .. }));
-    println!("run_finish_seen: {}", finished);
+    // 快速开始只需要最终结果；需要 SSE、WebSocket、协议适配器或测试事件流时，
+    // 使用 run(..., sink)。
+    let result = runtime.run_to_completion(request).await?;
+    println!("response: {}", result.response);
+    println!("termination: {:?}", result.termination);
 
     Ok(())
 }
@@ -125,7 +118,19 @@ export OPENAI_API_KEY=<your-key>
 cargo run
 ```
 
-预期输出包含 `run_finish_seen: true`。
+预期输出包含 `response: ...` 和 `termination: NaturalEnd`。
+
+快速开始路径已有无网络测试覆盖：
+
+```bash
+cargo test -p awaken-agent --test readme_quickstart
+```
+
+真实 provider 验证是显式 opt-in，不让默认 CI 依赖外部模型服务：
+
+```bash
+OPENAI_API_KEY=<your-key> cargo test -p awaken-agent --test readme_live_provider -- --ignored
+```
 
 ## 通过任意协议提供服务
 
@@ -225,12 +230,13 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 ## 为什么选择 Awaken
 
-- **一个后端服务所有前端** — 从同一个二进制文件提供 React（AI SDK v6）、Next.js（AG-UI）、其他 Agent（A2A）和工具服务器（MCP）。无需分别部署。
-- **配置就是控制面** — model/provider 路由、prompt、reminder、permission 与工具加载策略都是可校验、可页面编辑、可运行时生效的数据。
-- **LLM 编排一切，无需 DAG** — 定义 Agent 的身份和工具访问权限；LLM 决定何时委托、委托给谁、如何组合结果。无需手写流程图或状态机。
-- **可组合的插件体系** — 9 个类型化生命周期阶段，其中包含纯判定的 `ToolGate`。权限、上下文注入、可观测性、工具发现，全部声明式配置。`PhaseHook` / `ToolGateHook` 类型安全，插件注册 API 在构建时捕获配置错误。
-- **类型安全的状态与回放** — State 是带编译时检查的 Rust 结构体。合并策略处理并发写入，无需锁。作用域限定为 thread 或 run，每次变更都是可回放的不可变快照。
-- **内置生产韧性** — 熔断器、指数退避、推理超时、优雅关闭、Prometheus 指标和健康探针，开箱即用。
+- **一个后端服务多种协议** — 同一个二进制可提供 AI SDK v6、AG-UI、A2A、MCP，以及原生 HTTP/SSE 路由。
+- **配置就是控制面** — model/provider 路由、prompt、reminder、permission 与工具加载策略使用 schema-backed 配置，可校验并在运行时应用。
+- **LLM 编排，无需 DAG** — 定义 Agent 身份、模型绑定和工具访问权限；无需手写流程图。
+- **运行时托管配置** — 通过 Config API 或 Admin Console 更新 agents、model bindings、providers 与 MCP servers。
+- **类型化插件扩展点** — 9 个生命周期阶段、`PhaseHook`、`ToolGateHook`、scheduled actions、effects、request transforms 和插件注册工具都由代码契约约束。
+- **类型安全的状态与回放** — `StateKey` 把每个 key 绑定到 Rust value/update 类型，限定 run/thread/profile 作用域，并在提交前按声明的 merge strategy 合并。
+- **内置运维面** — LLM retry/backoff、按 model 维度的熔断器、请求超时、优雅关闭、Prometheus 指标、健康探针和 mailbox retry/backoff。
 - **零 `unsafe` 代码** — 整个工作空间禁止 `unsafe`，内存安全由 Rust 编译器保证。
 
 ## 适用场景 / 不适用场景

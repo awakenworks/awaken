@@ -1,6 +1,6 @@
 # 智能体解析
 
-当调用 `runtime.run(request)` 时，请求中的 `agent_id` 必须被解析为一个完全装配好的 `ResolvedAgent` -- 一个持有 LLM 执行器、工具、插件和执行环境的活引用的结构体。每次调用 `resolve()` 都会重新执行解析；不会在运行之间缓存或共享任何内容。本文描述三阶段解析流水线及其输入构建器。
+当 `AgentRuntime` 通过 `run_to_completion(request)` 或 `run(request, sink)` 执行请求时，请求中的 `agent_id` 会通过 `ExecutionResolver` 解析为 `ResolvedExecution`：要么是 `Local(ResolvedAgent)`，要么是 `NonLocal(ResolvedBackendAgent)`。本地 `ResolvedAgent` 持有 LLM 执行器、工具、插件和执行环境的活引用；非本地执行则由 `ExecutionBackend` 承载，例如内置 A2A backend。每次调用都会重新解析；本地 agent 环境不会在 run 之间共享。
 
 ## 流水线概览
 
@@ -42,7 +42,7 @@ flowchart LR
 
 第一阶段从注册表中获取原始数据：
 
-1. **AgentSpec** -- 通过 `agent_id` 从 `AgentSpecRegistry` 中查找。如果规格包含 `endpoint` 字段（远程 backend 智能体），解析会以 `RemoteAgentNotDirectlyRunnable` 失败 -- 远程智能体只能作为委托使用，不能直接运行。
+1. **AgentSpec** -- 通过 `agent_id` 从 `AgentSpecRegistry` 中查找。如果对带 `endpoint` 的规格请求直接本地解析，会以 `RemoteAgentNotDirectlyRunnable` 失败。`AgentRuntime` 的 root run 使用 `resolve_execution()`，因此在存在 backend factory 时，endpoint-backed agent 会被解析为 `ResolvedExecution::NonLocal`。
 
 2. **ModelBinding** -- 规格的 `model_id` 字段（模型注册表 ID，如 `"default"`）通过 `ModelRegistry` 解析为运行时 `ModelBinding`，将其映射到一个 provider ID 和上游 API 模型名（例如，provider `"openai"`，上游模型 `"gpt-4o"`）。服务端配置 API 持久化的是可序列化的 `ModelBindingSpec`，发布 registry 时会转换成 `ModelBinding`。
 

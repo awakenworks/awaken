@@ -32,6 +32,8 @@
 | `ToolCallStatus` | 工具调用状态 | Per-call status: New, Running, Suspended, Resuming, Succeeded, Failed, Cancelled. |
 | `ResolvedAgent` | 已解析智能体 | Agent fully resolved from registries with config, tools, plugins, and executor. |
 | `AgentResolver` | 智能体解析器 | Trait that resolves an agent spec ID into a ResolvedAgent. |
+| `ExecutionResolver` | 执行解析器 | Resolver used by `AgentRuntime` root runs to select local or backend-backed execution. |
+| `ExecutionBackend` | 执行后端 | Extension point for non-local root execution and delegation, including A2A. |
 | `BuildError` | 构建错误 | Error from AgentRuntimeBuilder when validation or wiring fails. |
 | `RuntimeError` | 运行时错误 | Error during agent loop execution. |
 | `InferenceOverride` | 推理覆盖 | Per-request override for model, temperature, max_tokens, reasoning_effort. |

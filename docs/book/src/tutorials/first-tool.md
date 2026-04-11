@@ -202,6 +202,8 @@ let request = RunRequest::new(
 )
 .with_agent_id("assistant");
 
+// This tutorial captures events because the next step verifies that the tool ran.
+// Use runtime.run_to_completion(request) when you only need the final result.
 let sink = Arc::new(VecEventSink::new());
 runtime.run(request, sink.clone()).await?;
 # Ok(())

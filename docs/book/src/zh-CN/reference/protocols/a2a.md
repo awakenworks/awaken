@@ -127,7 +127,9 @@ Awaken 当前默认启用以下 A2A 能力：
 
 ## 远程 Agent 委托
 
-Awaken agent 可以通过 `AgentTool::remote()` 委托到远程 A2A agent。`A2aBackend` 会向远端发送 `message:send` 请求，读取返回的 `task.id`，再轮询 `/tasks/:task_id` 直到完成。从 LLM 视角看，这仍然只是一次普通工具调用。
+Awaken agent 可以通过内置 `A2aBackend` 运行或委托到远程 A2A agent；它是一个 `ExecutionBackend` 实现。委托时，父 agent 的 LLM 看到的是普通工具调用。root execution 时，`AgentRuntime` 会把 endpoint-backed agent 解析为 `ResolvedExecution::NonLocal`。
+
+backend 会向远端发送 `message:send` 请求，读取返回的 `task.id`，再通过 stream 或轮询 `/tasks/:task_id` 直到任务进入终态或中断态。它会保留远端生命周期状态，用于 continuation、等待输入/认证、取消和 artifact 输出。
 
 远程 agent 配置写在 `AgentSpec` 中。`RemoteEndpoint` 是通用结构，A2A 通过 `backend: "a2a"` 指定：
 
