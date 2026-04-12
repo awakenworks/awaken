@@ -47,7 +47,11 @@ pub use backend::{
 pub use builder::{AgentRuntimeBuilder, BuildError};
 pub use phase::{
     DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv, PhaseContext, PhaseHook, PhaseRuntime, ToolGateHook,
+<<<<<<< HEAD
     ToolPolicyHook, TypedEffectHandler, TypedScheduledActionHandler,
+=======
+    TypedEffectHandler, TypedScheduledActionHandler,
+>>>>>>> 0081d8eb4 (✨ feat(builtin_tools): add web_search built-in tool)
 };
 pub use plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 pub use registry::{AgentResolver, ExecutionResolver, ResolvedAgent, ResolvedExecution};
