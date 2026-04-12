@@ -1199,14 +1199,41 @@ async fn persist_accepted_checkpoint(
         A2aExecutionRequest::Delegate(_) => return Ok(()),
     };
     let now = now_ms() / 1000;
+    let previous = storage
+        .load_run(&root.run_identity.run_id)
+        .await
+        .map_err(|error| {
+            ExecutionBackendError::ExecutionFailed(format!(
+                "failed to load run '{}' before A2A checkpoint: {error}",
+                root.run_identity.run_id
+            ))
+        })?;
     let record = RunRecord {
         run_id: root.run_identity.run_id.clone(),
         thread_id: root.run_identity.thread_id.clone(),
         agent_id: root.agent_id.to_string(),
         parent_run_id: root.run_identity.parent_run_id.clone(),
+        request: previous.as_ref().and_then(|record| record.request.clone()),
+        input: previous.as_ref().and_then(|record| record.input.clone()),
+        output: previous.as_ref().and_then(|record| record.output.clone()),
         status: RunStatus::Running,
-        termination_code: None,
-        created_at: now,
+        termination_reason: None,
+        final_output: None,
+        error_payload: None,
+        dispatch_id: root.run_identity.trace.dispatch_id.clone(),
+        session_id: root.run_identity.trace.session_id.clone(),
+        transport_request_id: root.run_identity.trace.transport_request_id.clone(),
+        waiting: None,
+        outcome: None,
+        created_at: previous
+            .as_ref()
+            .map(|record| record.created_at)
+            .unwrap_or(now),
+        started_at: previous
+            .as_ref()
+            .and_then(|record| record.started_at)
+            .or(Some(now)),
+        finished_at: None,
         updated_at: now,
         steps: 0,
         input_tokens: 0,
@@ -2167,9 +2194,21 @@ mod tests {
                     thread_id: "thread-1".into(),
                     agent_id: "remote-agent".into(),
                     parent_run_id: None,
+                    request: None,
+                    input: None,
+                    output: None,
                     status: RunStatus::Waiting,
-                    termination_code: Some(WAIT_REASON_INPUT_REQUIRED.into()),
+                    termination_reason: None,
+                    final_output: None,
+                    error_payload: None,
+                    dispatch_id: None,
+                    session_id: None,
+                    transport_request_id: None,
+                    waiting: None,
+                    outcome: None,
                     created_at: 1,
+                    started_at: None,
+                    finished_at: None,
                     updated_at: 1,
                     steps: 1,
                     input_tokens: 0,
@@ -2188,9 +2227,21 @@ mod tests {
                     thread_id: "thread-1".into(),
                     agent_id: "remote-agent".into(),
                     parent_run_id: None,
+                    request: None,
+                    input: None,
+                    output: None,
                     status: RunStatus::Done,
-                    termination_code: Some("natural".into()),
+                    termination_reason: None,
+                    final_output: None,
+                    error_payload: None,
+                    dispatch_id: None,
+                    session_id: None,
+                    transport_request_id: None,
+                    waiting: None,
+                    outcome: None,
                     created_at: 2,
+                    started_at: None,
+                    finished_at: None,
                     updated_at: 2,
                     steps: 1,
                     input_tokens: 0,

@@ -234,13 +234,13 @@ async fn interrupt_thread(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    if interrupted.active_job.is_some() || interrupted.superseded_count > 0 {
+    if interrupted.active_dispatch.is_some() || interrupted.superseded_count > 0 {
         return Ok((
             axum::http::StatusCode::ACCEPTED,
             Json(serde_json::json!({
                 "status": "interrupt_requested",
                 "thread_id": thread_id,
-                "superseded_jobs": interrupted.superseded_count,
+                "superseded_dispatches": interrupted.superseded_count,
             })),
         )
             .into_response());
@@ -301,7 +301,8 @@ async fn ag_ui_run_inner(st: AppState, payload: AgUiRunRequest) -> Result<Respon
         })
         .collect();
 
-    let mut request = RunRequest::new(thread_id, messages);
+    let mut request = RunRequest::new(thread_id, messages)
+        .with_adapter(awaken_contract::contract::tool_intercept::AdapterKind::AgUi);
     if let Some(id) = agent_id {
         request = request.with_agent_id(id);
     }

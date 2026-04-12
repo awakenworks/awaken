@@ -1,12 +1,13 @@
 //! Mailbox service: unified persistent run queue.
 //!
 //! Every run request (streaming, background, A2A, internal) enters as a
-//! [`MailboxJob`] keyed by `thread_id`. The Mailbox orchestrates persistent
-//! enqueue, lease-based claim, execution via [`AgentRuntime`], and lifecycle
+//! [`RunDispatch`] keyed by `thread_id`. The Mailbox orchestrates persistent
+//! enqueue, lease-based claim, execution via [`RunDispatchExecutor`], and lifecycle
 //! management (lease renewal, sweep, GC).
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -17,29 +18,35 @@ use tokio::task::JoinHandle;
 
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
+use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::mailbox::{
-    MailboxInterrupt, MailboxJob, MailboxJobStatus, MailboxStore,
+    MailboxInterrupt, MailboxStore, RunDispatch, RunDispatchResult, RunDispatchStatus,
 };
 use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::StorageError;
+use awaken_contract::contract::storage::{
+    MessageSeqRange, RunMessageInput, RunRecord, RunRequestSnapshot, RunResumeDecision,
+    StorageError, ThreadRunStore,
+};
 use awaken_contract::contract::suspension::{ToolCallOutcome, ToolCallResume};
+use awaken_contract::contract::tool_intercept::{AdapterKind, RunMode};
 use awaken_contract::now_ms;
+use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult};
 use awaken_runtime::{AgentRuntime, RunRequest};
 
 use crate::transport::channel_sink::ReconnectableEventSink;
 
-/// Guard window for inline-claimed jobs: if the process crashes between
-/// enqueue and cancel, the sweep will reclaim the job after this period.
+/// Guard window for inline-claimed dispatches: if the process crashes between
+/// enqueue and claim, the sweep will reclaim the dispatch after this period.
 const INLINE_CLAIM_GUARD_MS: u64 = 60_000;
 
 /// Validation message returned when an inline submit loses the active-run race.
 pub(crate) const ACTIVE_RUN_CONFLICT_MESSAGE: &str =
     "thread has an active run; cannot claim inline";
 
-// ── RunRequest ↔ MailboxJob conversion ───────────────────────────────
+// ── RunRequest ↔ RunDispatch conversion ───────────────────────────────
 
 /// Typed envelope for RunRequest fields that Mailbox stores opaquely.
-/// Centralizes the RunRequest → MailboxJob → RunRequest round-trip.
+/// Centralizes the RunRequest → RunDispatch → RunRequest round-trip.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct RunRequestExtras {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -54,9 +61,17 @@ struct RunRequestExtras {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     continue_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    job_id_hint: Option<String>,
+    run_id_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dispatch_id_hint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     parent_thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transport_request_id: Option<String>,
+    #[serde(default)]
+    run_mode: RunMode,
+    #[serde(default)]
+    adapter: AdapterKind,
 }
 
 impl RunRequestExtras {
@@ -66,8 +81,12 @@ impl RunRequestExtras {
             decisions: request.decisions.clone(),
             frontend_tools: request.frontend_tools.clone(),
             continue_run_id: request.continue_run_id.clone(),
-            job_id_hint: request.job_id_hint.clone(),
+            run_id_hint: request.run_id_hint.clone(),
+            dispatch_id_hint: request.dispatch_id_hint.clone(),
             parent_thread_id: request.parent_thread_id.clone(),
+            transport_request_id: request.transport_request_id.clone(),
+            run_mode: request.run_mode,
+            adapter: request.adapter,
         }
     }
 
@@ -76,8 +95,12 @@ impl RunRequestExtras {
             && self.decisions.is_empty()
             && self.frontend_tools.is_empty()
             && self.continue_run_id.is_none()
-            && self.job_id_hint.is_none()
+            && self.run_id_hint.is_none()
+            && self.dispatch_id_hint.is_none()
             && self.parent_thread_id.is_none()
+            && self.transport_request_id.is_none()
+            && self.run_mode == RunMode::Foreground
+            && self.adapter == AdapterKind::Internal
         {
             Ok(None)
         } else {
@@ -102,13 +125,21 @@ impl RunRequestExtras {
         if let Some(crid) = self.continue_run_id {
             request = request.with_continue_run_id(crid);
         }
-        if let Some(job_id_hint) = self.job_id_hint {
-            request = request.with_job_id_hint(job_id_hint);
+        if let Some(run_id_hint) = self.run_id_hint {
+            request = request.with_run_id_hint(run_id_hint);
+        }
+        if let Some(dispatch_id_hint) = self.dispatch_id_hint {
+            request = request.with_dispatch_id_hint(dispatch_id_hint);
         }
         if let Some(parent_thread_id) = self.parent_thread_id {
             request = request.with_parent_thread_id(parent_thread_id);
         }
+        if let Some(transport_request_id) = self.transport_request_id {
+            request = request.with_transport_request_id(transport_request_id);
+        }
         request
+            .with_run_mode(self.run_mode)
+            .with_adapter(self.adapter)
     }
 }
 
@@ -118,9 +149,9 @@ impl RunRequestExtras {
 ///
 /// Implements [`OnInboxClosed`](awaken_runtime::inbox::OnInboxClosed) — when an `InboxSender::send()` fails
 /// because the receiver was dropped (agent run returned with AwaitingTasks),
-/// this enqueues a mailbox wake job so the thread gets a continuation run.
+/// this enqueues a mailbox wake dispatch so the thread gets a continuation run.
 ///
-/// Uses `dedupe_key` to coalesce multiple task completions into one wake job.
+/// Uses `dedupe_key` to coalesce multiple task completions into one wake dispatch.
 pub struct TaskDoneMailboxNotify {
     mailbox: Arc<Mailbox>,
     thread_id: String,
@@ -146,47 +177,16 @@ impl awaken_runtime::inbox::OnInboxClosed for TaskDoneMailboxNotify {
 
         // Spawn because OnInboxClosed::closed is sync but enqueue+dispatch is async
         tokio::spawn(async move {
-            let extras = RunRequestExtras {
-                overrides: None,
-                decisions: Vec::new(),
-                frontend_tools: Vec::new(),
-                continue_run_id,
-                job_id_hint: None,
-                parent_thread_id: None,
-            };
-            let request_extras = extras.to_value().ok().flatten();
-
-            let now = now_ms();
-            let job = MailboxJob {
-                job_id: uuid::Uuid::now_v7().to_string(),
-                mailbox_id: thread_id.clone(),
-                agent_id: String::new(),
-                messages: vec![wake_message],
-                origin: awaken_contract::contract::mailbox::MailboxJobOrigin::Internal,
-                sender_id: None,
-                parent_run_id: None,
-                request_extras,
-                priority: 200,
-                dedupe_key: None,
-                generation: 0,
-                status: MailboxJobStatus::Queued,
-                available_at: now,
-                attempt_count: 0,
-                max_attempts: 3,
-                last_error: None,
-                claim_token: None,
-                claimed_by: None,
-                lease_until: None,
-                created_at: now,
-                updated_at: now,
-            };
-            if let Err(e) = mailbox.store.enqueue(&job).await {
-                tracing::warn!(thread_id, error = %e, "failed to enqueue background task wake job");
-                return;
+            let mut request = RunRequest::new(thread_id.clone(), vec![wake_message])
+                .with_origin(awaken_contract::contract::storage::RunRequestOrigin::Internal)
+                .with_run_mode(RunMode::InternalWake)
+                .with_adapter(AdapterKind::Internal);
+            if let Some(run_id) = continue_run_id {
+                request = request.with_continue_run_id(run_id);
             }
-            // Dispatch immediately so idle workers pick up the wake job.
-            mailbox.get_or_create_worker(&thread_id).await;
-            mailbox.try_dispatch_next(&thread_id).await;
+            if let Err(e) = mailbox.submit_background(request).await {
+                tracing::warn!(thread_id, error = %e, "failed to enqueue background task wake dispatch");
+            }
         });
     }
 }
@@ -196,12 +196,13 @@ impl awaken_runtime::inbox::OnInboxClosed for TaskDoneMailboxNotify {
 /// Result returned by submit/submit_background.
 #[derive(Debug, Clone)]
 pub struct MailboxSubmitResult {
-    pub job_id: String,
+    pub dispatch_id: String,
+    pub run_id: String,
     pub thread_id: String,
     pub status: MailboxDispatchStatus,
 }
 
-/// Dispatch status for a submitted job.
+/// Dispatch status for a submitted run activation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MailboxDispatchStatus {
     /// Job was claimed and is executing now.
@@ -232,6 +233,54 @@ pub enum MailboxRunOutcome {
     PermanentError(String),
 }
 
+/// Execution boundary used by mailbox dispatch.
+///
+/// Mailbox owns delivery, leasing, retry, and recovery. The executor behind
+/// this trait owns actual run execution and live-run control. It intentionally
+/// does not expose storage so mailbox scheduling stays orthogonal to the main
+/// runtime implementation.
+#[async_trait]
+pub trait RunDispatchExecutor: Send + Sync {
+    /// Execute a run request and stream events into the provided sink.
+    async fn run(
+        &self,
+        request: RunRequest,
+        sink: Arc<dyn EventSink>,
+    ) -> Result<AgentRunResult, AgentLoopError>;
+
+    /// Cancel an active run by run id or thread id.
+    fn cancel(&self, id: &str) -> bool;
+
+    /// Cancel an active run by thread id and wait for it to unregister.
+    async fn cancel_and_wait_by_thread(&self, thread_id: &str) -> bool;
+
+    /// Forward one human/tool decision to an active run.
+    fn send_decision(&self, id: &str, tool_call_id: String, resume: ToolCallResume) -> bool;
+}
+
+#[async_trait]
+impl RunDispatchExecutor for AgentRuntime {
+    async fn run(
+        &self,
+        request: RunRequest,
+        sink: Arc<dyn EventSink>,
+    ) -> Result<AgentRunResult, AgentLoopError> {
+        AgentRuntime::run(self, request, sink).await
+    }
+
+    fn cancel(&self, id: &str) -> bool {
+        AgentRuntime::cancel(self, id)
+    }
+
+    async fn cancel_and_wait_by_thread(&self, thread_id: &str) -> bool {
+        AgentRuntime::cancel_and_wait_by_thread(self, thread_id).await
+    }
+
+    fn send_decision(&self, id: &str, tool_call_id: String, resume: ToolCallResume) -> bool {
+        AgentRuntime::send_decision(self, id, tool_call_id, resume)
+    }
+}
+
 /// Configuration for the Mailbox service.
 #[derive(Debug, Clone)]
 pub struct MailboxConfig {
@@ -244,9 +293,9 @@ pub struct MailboxConfig {
     pub lease_renewal_interval: Duration,
     /// How often to sweep for expired leases (default 30s).
     pub sweep_interval: Duration,
-    /// How often to run GC for terminal jobs (default 60s).
+    /// How often to run GC for terminal dispatches (default 60s).
     pub gc_interval: Duration,
-    /// How long to keep terminal jobs before purging (default 24h).
+    /// How long to keep terminal dispatches before purging (default 24h).
     pub gc_ttl: Duration,
     /// Default max attempts before dead-lettering (default 5).
     pub default_max_attempts: u32,
@@ -272,6 +321,122 @@ impl Default for MailboxConfig {
     }
 }
 
+/// Callback invoked during mailbox maintenance GC ticks.
+pub type MailboxMaintenanceCallback = Arc<dyn Fn() + Send + Sync + 'static>;
+
+/// Startup recovery retry settings used by lifecycle startup.
+#[derive(Clone)]
+pub struct MailboxStartupRecoveryConfig {
+    /// Maximum recovery attempts before giving up. Values below 1 are treated
+    /// as one attempt.
+    pub max_attempts: u32,
+    /// Delay between failed recovery attempts.
+    pub retry_delay: Duration,
+}
+
+impl Default for MailboxStartupRecoveryConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: 1,
+            retry_delay: Duration::from_millis(250),
+        }
+    }
+}
+
+/// Configuration for framework-managed mailbox lifecycle tasks.
+#[derive(Clone)]
+pub struct MailboxLifecycleConfig {
+    /// Delay before startup recovery and maintenance begin.
+    pub startup_delay: Duration,
+    /// Retry policy for startup recovery.
+    pub startup_recovery: MailboxStartupRecoveryConfig,
+    /// Optional cleanup hook for application-owned resources.
+    pub maintenance_callback: Option<MailboxMaintenanceCallback>,
+}
+
+impl Default for MailboxLifecycleConfig {
+    fn default() -> Self {
+        Self {
+            startup_delay: Duration::ZERO,
+            startup_recovery: MailboxStartupRecoveryConfig::default(),
+            maintenance_callback: None,
+        }
+    }
+}
+
+/// Handle for framework-managed mailbox lifecycle tasks.
+///
+/// Dropping the handle does not stop lifecycle tasks. Call [`shutdown`](Self::shutdown)
+/// for quiescent shutdown or [`abort`](Self::abort) for fire-and-forget stop.
+#[derive(Clone)]
+pub struct MailboxLifecycleHandle {
+    tasks: Arc<StdMutex<Option<MailboxLifecycleTasks>>>,
+    transition_lock: Arc<Mutex<()>>,
+}
+
+impl MailboxLifecycleHandle {
+    /// Abort lifecycle tasks. This is idempotent.
+    pub fn abort(&self) {
+        if let Some(tasks) = self.tasks.lock().expect("lifecycle lock poisoned").take() {
+            tasks.abort();
+        }
+    }
+
+    /// Abort lifecycle tasks and wait until they have fully exited.
+    ///
+    /// This is the quiescent shutdown path. Use it when a caller needs a hard
+    /// guarantee that a subsequent lifecycle start cannot overlap old recovery
+    /// or maintenance tasks.
+    pub async fn shutdown(&self) -> Result<(), MailboxError> {
+        let _transition_guard = self.transition_lock.lock().await;
+        let tasks = self.tasks.lock().expect("lifecycle lock poisoned").take();
+        if let Some(tasks) = tasks {
+            tasks.shutdown().await?;
+        }
+        Ok(())
+    }
+
+    /// Returns true while lifecycle tasks are registered for this mailbox.
+    pub fn is_running(&self) -> bool {
+        self.tasks
+            .lock()
+            .expect("lifecycle lock poisoned")
+            .is_some()
+    }
+}
+
+struct MailboxLifecycleTasks {
+    recover_task: Option<JoinHandle<()>>,
+    maintenance_task: JoinHandle<()>,
+}
+
+impl MailboxLifecycleTasks {
+    fn abort(self) {
+        if let Some(task) = self.recover_task {
+            task.abort();
+        }
+        self.maintenance_task.abort();
+    }
+
+    async fn shutdown(self) -> Result<(), MailboxError> {
+        if let Some(task) = self.recover_task {
+            task.abort();
+            await_lifecycle_task("mailbox startup recovery", task).await?;
+        }
+        self.maintenance_task.abort();
+        await_lifecycle_task("mailbox maintenance", self.maintenance_task).await
+    }
+}
+
+async fn await_lifecycle_task(name: &str, task: JoinHandle<()>) -> Result<(), MailboxError> {
+    match task.await {
+        Ok(()) => Ok(()),
+        Err(error) if error.is_cancelled() => Ok(()),
+        Err(error) if error.is_panic() => Err(MailboxError::Internal(format!("{name} panicked"))),
+        Err(error) => Err(MailboxError::Internal(format!("{name} failed: {error}"))),
+    }
+}
+
 // ── Internal types ───────────────────────────────────────────────────
 
 /// Per-thread worker status.
@@ -281,7 +446,7 @@ enum MailboxWorkerStatus {
     /// concurrent dispatches both see Idle and both try to claim.
     Claiming,
     Running {
-        job_id: String,
+        dispatch_id: String,
         lease_handle: JoinHandle<()>,
         sink: Arc<ReconnectableEventSink>,
     },
@@ -347,31 +512,53 @@ impl Drop for ActiveRunGuard {
 
 /// Unified persistent run queue.
 ///
-/// Orchestrates `MailboxStore` (persistence) + `AgentRuntime` (execution)
+/// Orchestrates `MailboxStore` (dispatch persistence) + `ThreadRunStore`
+/// (run/message truth) + `RunDispatchExecutor` (execution)
 /// with lease-based distributed claim, per-thread serialization, sweep,
 /// and garbage collection.
 pub struct Mailbox {
-    runtime: Arc<AgentRuntime>,
+    executor: Arc<dyn RunDispatchExecutor>,
     store: Arc<dyn MailboxStore>,
+    run_store: Arc<dyn ThreadRunStore>,
     consumer_id: String,
     workers: RwLock<HashMap<String, Arc<Mutex<MailboxWorker>>>>,
     config: MailboxConfig,
+    lifecycle_tasks: Arc<StdMutex<Option<MailboxLifecycleTasks>>>,
+    lifecycle_start_lock: Arc<Mutex<()>>,
 }
 
 impl Mailbox {
     /// Create a new Mailbox service.
-    pub fn new(
-        runtime: Arc<AgentRuntime>,
+    pub fn new<R>(
+        executor: Arc<R>,
         store: Arc<dyn MailboxStore>,
+        run_store: Arc<dyn ThreadRunStore>,
+        consumer_id: String,
+        config: MailboxConfig,
+    ) -> Self
+    where
+        R: RunDispatchExecutor + 'static,
+    {
+        Self::new_with_executor(executor, store, run_store, consumer_id, config)
+    }
+
+    /// Create a Mailbox service from an already-erased execution boundary.
+    pub fn new_with_executor(
+        executor: Arc<dyn RunDispatchExecutor>,
+        store: Arc<dyn MailboxStore>,
+        run_store: Arc<dyn ThreadRunStore>,
         consumer_id: String,
         config: MailboxConfig,
     ) -> Self {
         Self {
-            runtime,
+            executor,
             store,
+            run_store,
             consumer_id,
             workers: RwLock::new(HashMap::new()),
             config,
+            lifecycle_tasks: Arc::new(StdMutex::new(None)),
+            lifecycle_start_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -382,23 +569,27 @@ impl Mailbox {
 
     /// Submit a run for streaming. Returns event receiver immediately.
     ///
-    /// The job is persisted (WAL), then claimed inline by this process.
+    /// The dispatch is persisted (WAL), then claimed inline by this process.
     /// The caller wires `event_rx` to their transport (SSE, WebSocket, etc).
     #[tracing::instrument(skip(self, request), fields(thread_id = %request.thread_id))]
     pub async fn submit(
         self: &Arc<Self>,
-        request: RunRequest,
+        mut request: RunRequest,
     ) -> Result<(MailboxSubmitResult, mpsc::Receiver<AgentEvent>), MailboxError> {
-        let (thread_id, messages) =
-            validate_run_inputs(request.thread_id.clone(), request.messages.clone())?;
+        normalize_mailbox_run_mode(&mut request, false);
+        let (thread_id, messages) = validate_run_inputs(
+            request.thread_id.clone(),
+            request.messages.clone(),
+            !request.decisions.is_empty(),
+        )?;
 
-        // Step 1: Interrupt — bump generation, supersede stale queued jobs.
+        // Step 1: Interrupt — bump dispatch epoch, supersede stale queued dispatches.
         let now = now_ms();
         match self.store.interrupt(&thread_id, now).await {
             Ok(interrupt) => {
                 // Step 2: Cancel active runtime run if the interrupt found one.
-                if interrupt.active_job.is_some()
-                    && self.runtime.cancel_and_wait_by_thread(&thread_id).await
+                if interrupt.active_dispatch.is_some()
+                    && self.executor.cancel_and_wait_by_thread(&thread_id).await
                 {
                     tracing::info!(
                         thread_id = %thread_id,
@@ -409,42 +600,45 @@ impl Mailbox {
             }
             Err(e) => {
                 tracing::warn!(thread_id = %thread_id, error = %e, "interrupt failed, falling back to cancel");
-                self.runtime.cancel_and_wait_by_thread(&thread_id).await;
+                self.executor.cancel_and_wait_by_thread(&thread_id).await;
             }
         }
 
-        let job = self.build_job(&request, &thread_id, messages)?;
-        let job_id = job.job_id.clone();
-        let mailbox_id = job.mailbox_id.clone();
+        let run_id = self
+            .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
+            .await?;
+        let dispatch = self.build_dispatch(&request, &thread_id)?;
+        let dispatch_id = dispatch.dispatch_id.clone();
+        let thread_id = dispatch.thread_id.clone();
 
         // WAL: persist before anything else.
         // Set available_at slightly in the future to prevent sweep from grabbing
-        // the job during the inline claim window. If the process crashes before
-        // the claim completes, sweep will reclaim the job after the guard period.
-        let mut wal_job = job;
-        wal_job.available_at = now_ms() + INLINE_CLAIM_GUARD_MS;
-        self.store.enqueue(&wal_job).await?;
+        // the dispatch during the inline claim window. If the process crashes before
+        // the claim completes, sweep will reclaim the dispatch after the guard period.
+        let mut wal_dispatch = dispatch;
+        wal_dispatch.available_at = now_ms() + INLINE_CLAIM_GUARD_MS;
+        self.store.enqueue(&wal_dispatch).await?;
 
         // Inline claim.
         let now = now_ms();
         let claimed = self
             .store
-            .claim_job(&job_id, &self.consumer_id, self.config.lease_ms, now)
+            .claim_dispatch(&dispatch_id, &self.consumer_id, self.config.lease_ms, now)
             .await?;
 
         let (event_tx, event_rx) = mpsc::channel(Self::EVENT_CHANNEL_CAPACITY);
 
-        if let Some(claimed_job) = claimed {
-            let claim_token = claimed_job.claim_token.clone().unwrap_or_default();
+        if let Some(claimed_dispatch) = claimed {
+            let claim_token = claimed_dispatch.claim_token.clone().unwrap_or_default();
 
             // Shared flag: set by the event sink when a tool call is suspended.
             let suspended = Arc::new(AtomicBool::new(false));
 
             // Start lease renewal.
             let lease_handle = self.spawn_lease_renewal(
-                job_id.clone(),
+                dispatch_id.clone(),
                 claim_token.clone(),
-                mailbox_id.clone(),
+                thread_id.clone(),
                 Arc::clone(&suspended),
             );
 
@@ -452,11 +646,11 @@ impl Mailbox {
             let reconnectable_sink = Arc::new(ReconnectableEventSink::new(event_tx.clone()));
 
             // Update worker state.
-            let worker = self.get_or_create_worker(&mailbox_id).await;
+            let worker = self.get_or_create_worker(&thread_id).await;
             {
                 let mut w = worker.lock().await;
                 w.status = MailboxWorkerStatus::Running {
-                    job_id: job_id.clone(),
+                    dispatch_id: dispatch_id.clone(),
                     lease_handle,
                     sink: Arc::clone(&reconnectable_sink),
                 };
@@ -464,29 +658,30 @@ impl Mailbox {
 
             // Spawn execution.
             self.spawn_execution(
-                claimed_job,
+                claimed_dispatch,
                 event_tx.clone(),
                 reconnectable_sink,
                 claim_token,
-                mailbox_id,
+                thread_id.clone(),
                 suspended,
             );
 
             Ok((
                 MailboxSubmitResult {
-                    job_id,
+                    dispatch_id,
+                    run_id,
                     thread_id,
                     status: MailboxDispatchStatus::Running,
                 },
                 event_rx,
             ))
         } else {
-            // Inline claim failed (another claimed job exists for this
-            // mailbox). Cancel the orphaned job to prevent it from
+            // Inline claim failed (another claimed dispatch exists for this
+            // thread). Cancel the orphaned dispatch to prevent it from
             // lingering with the guard available_at.
             let now_fix = now_ms();
-            if let Err(e) = self.store.cancel(&job_id, now_fix).await {
-                tracing::warn!(job_id, error = %e, "failed to cancel unclaimed inline job");
+            if let Err(e) = self.store.cancel(&dispatch_id, now_fix).await {
+                tracing::warn!(dispatch_id, error = %e, "failed to cancel unclaimed inline dispatch");
             }
             Err(MailboxError::Validation(ACTIVE_RUN_CONFLICT_MESSAGE.into()))
         }
@@ -494,36 +689,44 @@ impl Mailbox {
 
     /// Submit a run in the background (fire-and-forget).
     ///
-    /// Job is persisted with `available_at = now`, dispatch is event-driven.
-    /// Returns job_id + thread_id for status polling.
+    /// Dispatch is persisted with `available_at = now`, then execution is event-driven.
+    /// Returns dispatch_id + thread_id for status polling.
     #[tracing::instrument(skip(self, request), fields(thread_id = %request.thread_id))]
     pub async fn submit_background(
         self: &Arc<Self>,
-        request: RunRequest,
+        mut request: RunRequest,
     ) -> Result<MailboxSubmitResult, MailboxError> {
-        let (thread_id, messages) =
-            validate_run_inputs(request.thread_id.clone(), request.messages.clone())?;
+        normalize_mailbox_run_mode(&mut request, true);
+        let (thread_id, messages) = validate_run_inputs(
+            request.thread_id.clone(),
+            request.messages.clone(),
+            !request.decisions.is_empty(),
+        )?;
 
-        let job = self.build_job(&request, &thread_id, messages)?;
-        let job_id = job.job_id.clone();
-        let mailbox_id = job.mailbox_id.clone();
+        let run_id = self
+            .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
+            .await?;
+        let dispatch = self.build_dispatch(&request, &thread_id)?;
+        let dispatch_id = dispatch.dispatch_id.clone();
+        let thread_id = dispatch.thread_id.clone();
 
         // WAL: persist with available_at = now.
-        self.store.enqueue(&job).await?;
+        self.store.enqueue(&dispatch).await?;
 
         // Dispatch via try_dispatch_next which handles Idle → Claiming atomically.
-        self.get_or_create_worker(&mailbox_id).await;
-        self.try_dispatch_next(&mailbox_id).await;
+        self.get_or_create_worker(&thread_id).await;
+        self.try_dispatch_next(&thread_id).await;
 
-        // Check if THIS job was claimed (Running) or still Queued.
+        // Check if this dispatch was claimed (Running) or is still Queued.
         let status = {
             let workers = self.workers.read().await;
-            if let Some(worker) = workers.get(&mailbox_id) {
+            if let Some(worker) = workers.get(&thread_id) {
                 let w = worker.lock().await;
                 match &w.status {
                     MailboxWorkerStatus::Running {
-                        job_id: running_id, ..
-                    } if *running_id == job_id => MailboxDispatchStatus::Running,
+                        dispatch_id: running_id,
+                        ..
+                    } if *running_id == dispatch_id => MailboxDispatchStatus::Running,
                     _ => MailboxDispatchStatus::Queued,
                 }
             } else {
@@ -532,7 +735,8 @@ impl Mailbox {
         };
 
         Ok(MailboxSubmitResult {
-            job_id,
+            dispatch_id,
+            run_id,
             thread_id,
             status,
         })
@@ -540,31 +744,31 @@ impl Mailbox {
 
     // ── Control ──────────────────────────────────────────────────────
 
-    /// Cancel a run by job_id or thread_id.
+    /// Cancel a run by dispatch_id or thread_id.
     ///
     /// If Queued: transitions to Cancelled via store.
     /// If Claimed/Running: cancels runtime run via dual-index lookup.
     pub async fn cancel(&self, id: &str) -> Result<bool, MailboxError> {
-        // Try store cancel first (works for Queued jobs).
+        // Try store cancel first (works for Queued dispatches).
         let now = now_ms();
         let cancelled = self.store.cancel(id, now).await?;
         if cancelled.is_some() {
             return Ok(true);
         }
 
-        // Try runtime cancel (for Claimed/Running jobs).
-        Ok(self.runtime.cancel(id))
+        // Try runtime cancel (for Claimed/Running dispatches).
+        Ok(self.executor.cancel(id))
     }
 
-    /// Interrupt a thread: bump generation, supersede all pending,
+    /// Interrupt a thread: bump dispatch epoch, supersede all pending,
     /// cancel active run. Clean slate for the thread.
     pub async fn interrupt(&self, thread_id: &str) -> Result<MailboxInterrupt, MailboxError> {
         let now = now_ms();
         let result = self.store.interrupt(thread_id, now).await?;
 
         // Cancel active runtime run if any.
-        if result.active_job.is_some() {
-            self.runtime.cancel(thread_id);
+        if result.active_dispatch.is_some() {
+            self.executor.cancel(thread_id);
         }
 
         Ok(result)
@@ -572,7 +776,7 @@ impl Mailbox {
 
     /// Forward a tool-call decision to an active run.
     pub fn send_decision(&self, id: &str, tool_call_id: String, resume: ToolCallResume) -> bool {
-        self.runtime.send_decision(id, tool_call_id, resume)
+        self.executor.send_decision(id, tool_call_id, resume)
     }
 
     /// Reconnect the event sink for an active (suspended) run.
@@ -594,34 +798,205 @@ impl Mailbox {
         }
     }
 
+    async fn reusable_waiting_run_id(&self, thread_id: &str) -> Option<String> {
+        if let Some(thread) = self.run_store.load_thread(thread_id).await.ok().flatten()
+            && let Some(open_run_id) = thread.open_run_id.as_deref()
+            && let Some(run) = self.run_store.load_run(open_run_id).await.ok().flatten()
+            && run.thread_id == thread_id
+            && run.is_resumable_waiting()
+        {
+            return Some(run.run_id);
+        }
+        let run = self.run_store.latest_run(thread_id).await.ok().flatten()?;
+        run.is_resumable_waiting().then_some(run.run_id)
+    }
+
     // ── Query ────────────────────────────────────────────────────────
 
-    /// List mailbox jobs for a thread (with optional status filter).
-    pub async fn list_jobs(
+    /// List mailbox dispatches for a thread (with optional status filter).
+    pub async fn list_dispatches(
         &self,
         thread_id: &str,
-        status_filter: Option<&[MailboxJobStatus]>,
+        status_filter: Option<&[RunDispatchStatus]>,
         limit: usize,
         offset: usize,
-    ) -> Result<Vec<MailboxJob>, MailboxError> {
+    ) -> Result<Vec<RunDispatch>, MailboxError> {
         Ok(self
             .store
-            .list_jobs(thread_id, status_filter, limit, offset)
+            .list_dispatches(thread_id, status_filter, limit, offset)
             .await?)
     }
 
-    /// List mailbox IDs that currently have queued jobs.
-    pub async fn queued_mailbox_ids(&self) -> Result<Vec<String>, MailboxError> {
-        Ok(self.store.queued_mailbox_ids().await?)
+    /// List thread IDs that currently have queued dispatches.
+    pub async fn queued_thread_ids(&self) -> Result<Vec<String>, MailboxError> {
+        Ok(self.store.queued_thread_ids().await?)
     }
 
-    pub async fn load_job(&self, job_id: &str) -> Result<Option<MailboxJob>, MailboxError> {
-        Ok(self.store.load_job(job_id).await?)
+    pub async fn load_dispatch(
+        &self,
+        dispatch_id: &str,
+    ) -> Result<Option<RunDispatch>, MailboxError> {
+        Ok(self.store.load_dispatch(dispatch_id).await?)
     }
 
     // ── Lifecycle ────────────────────────────────────────────────────
 
-    /// Recover on startup: reload Queued jobs, buffer, dispatch idle threads.
+    /// Start framework-managed startup recovery plus sweep/GC maintenance.
+    ///
+    /// This method is idempotent: repeated calls return a handle to the
+    /// already-running lifecycle instead of spawning duplicate recovery or
+    /// maintenance loops. Dropping the returned handle does not stop the
+    /// lifecycle; call `MailboxLifecycleHandle::shutdown().await` for
+    /// quiescent shutdown or `MailboxLifecycleHandle::abort()` for
+    /// fire-and-forget stop.
+    ///
+    /// If an async lifecycle transition is already in progress, this method
+    /// returns an error instead of racing that transition. Use
+    /// [`start_lifecycle_ready`](Self::start_lifecycle_ready) when the caller
+    /// needs to wait for startup readiness.
+    pub fn start_lifecycle(
+        self: &Arc<Self>,
+        config: MailboxLifecycleConfig,
+    ) -> Result<MailboxLifecycleHandle, MailboxError> {
+        let handle = MailboxLifecycleHandle {
+            tasks: Arc::clone(&self.lifecycle_tasks),
+            transition_lock: Arc::clone(&self.lifecycle_start_lock),
+        };
+        for _ in 0..16 {
+            match self.lifecycle_start_lock.try_lock() {
+                Ok(_transition_guard) => return self.start_lifecycle_internal(config, true),
+                Err(_) if self.lifecycle_is_running()? => return Ok(handle),
+                Err(_) => std::thread::yield_now(),
+            }
+        }
+        Err(MailboxError::Internal(
+            "mailbox lifecycle transition is already running".to_string(),
+        ))
+    }
+
+    /// Run startup recovery to readiness, then start framework-managed
+    /// maintenance.
+    ///
+    /// Unlike [`start_lifecycle`](Self::start_lifecycle), this method waits for
+    /// startup recovery and returns an error when recovery exhausts its retry
+    /// policy. Repeated calls remain idempotent: if lifecycle tasks are already
+    /// running, the existing handle is returned.
+    pub async fn start_lifecycle_ready(
+        self: &Arc<Self>,
+        mut config: MailboxLifecycleConfig,
+    ) -> Result<MailboxLifecycleHandle, MailboxError> {
+        let _start_guard = self.lifecycle_start_lock.lock().await;
+        let handle = MailboxLifecycleHandle {
+            tasks: Arc::clone(&self.lifecycle_tasks),
+            transition_lock: Arc::clone(&self.lifecycle_start_lock),
+        };
+        if self.lifecycle_is_running()? {
+            return Ok(handle);
+        }
+
+        if !config.startup_delay.is_zero() {
+            tokio::time::sleep(config.startup_delay).await;
+            config.startup_delay = Duration::ZERO;
+        }
+
+        self.run_startup_recovery_with_retry(config.startup_recovery.clone())
+            .await?;
+        self.start_lifecycle_internal(config, false)
+    }
+
+    fn lifecycle_is_running(&self) -> Result<bool, MailboxError> {
+        Ok(self
+            .lifecycle_tasks
+            .lock()
+            .map_err(|_| MailboxError::Internal("mailbox lifecycle lock poisoned".to_string()))?
+            .is_some())
+    }
+
+    fn start_lifecycle_internal(
+        self: &Arc<Self>,
+        config: MailboxLifecycleConfig,
+        run_startup_recovery: bool,
+    ) -> Result<MailboxLifecycleHandle, MailboxError> {
+        let handle = MailboxLifecycleHandle {
+            tasks: Arc::clone(&self.lifecycle_tasks),
+            transition_lock: Arc::clone(&self.lifecycle_start_lock),
+        };
+        let mut lifecycle = self
+            .lifecycle_tasks
+            .lock()
+            .map_err(|_| MailboxError::Internal("mailbox lifecycle lock poisoned".to_string()))?;
+
+        if lifecycle.is_some() {
+            return Ok(handle);
+        }
+
+        let startup_delay = config.startup_delay;
+        let startup_recovery = config.startup_recovery.clone();
+        let recover_mailbox = Arc::clone(self);
+        let recover_task = run_startup_recovery.then(|| {
+            tokio::spawn(async move {
+                if !startup_delay.is_zero() {
+                    tokio::time::sleep(startup_delay).await;
+                }
+                match recover_mailbox
+                    .run_startup_recovery_with_retry(startup_recovery)
+                    .await
+                {
+                    Ok(recovered) => {
+                        tracing::info!(recovered, "mailbox startup recovery completed");
+                    }
+                    Err(error) => {
+                        tracing::error!(error = %error, "mailbox startup recovery failed");
+                    }
+                }
+            })
+        });
+
+        let maintenance_mailbox = Arc::clone(self);
+        let maintenance_callback = config.maintenance_callback;
+        let maintenance_task = tokio::spawn(async move {
+            if !startup_delay.is_zero() {
+                tokio::time::sleep(startup_delay).await;
+            }
+            maintenance_mailbox
+                .run_maintenance_loop(maintenance_callback)
+                .await;
+        });
+
+        *lifecycle = Some(MailboxLifecycleTasks {
+            recover_task,
+            maintenance_task,
+        });
+        Ok(handle)
+    }
+
+    async fn run_startup_recovery_with_retry(
+        self: &Arc<Self>,
+        config: MailboxStartupRecoveryConfig,
+    ) -> Result<usize, MailboxError> {
+        let max_attempts = config.max_attempts.max(1);
+        for attempt in 1..=max_attempts {
+            match self.recover().await {
+                Ok(recovered) => return Ok(recovered),
+                Err(error) if attempt < max_attempts => {
+                    tracing::warn!(
+                        attempt,
+                        max_attempts,
+                        retry_delay_ms = config.retry_delay.as_millis(),
+                        error = %error,
+                        "mailbox startup recovery failed; retrying"
+                    );
+                    if !config.retry_delay.is_zero() {
+                        tokio::time::sleep(config.retry_delay).await;
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("max_attempts is normalized to at least one")
+    }
+
+    /// Recover on startup: reload queued dispatches and dispatch idle threads.
     #[tracing::instrument(skip(self))]
     pub async fn recover(self: &Arc<Self>) -> Result<usize, MailboxError> {
         let now = now_ms();
@@ -632,75 +1007,47 @@ impl Mailbox {
         total += reclaimed.len();
 
         // Reload all queued mailbox IDs and try to dispatch.
-        let mailbox_ids = self.store.queued_mailbox_ids().await?;
-        for mailbox_id in &mailbox_ids {
-            // Ensure worker exists for each mailbox with queued jobs.
-            self.get_or_create_worker(mailbox_id).await;
-            self.try_dispatch_next(mailbox_id).await;
+        let thread_ids = self.store.queued_thread_ids().await?;
+        for thread_id in &thread_ids {
+            // Ensure worker exists for each thread with queued dispatches.
+            self.get_or_create_worker(thread_id).await;
+            self.try_dispatch_next(thread_id).await;
         }
 
-        // Recover threads stuck in awaiting_tasks with no queued wake job.
-        if let Some(run_store) = self.runtime.thread_run_store() {
+        // Recover orphaned background-task waits with no queued wake dispatch.
+        {
             let query = awaken_contract::contract::storage::RunQuery {
                 status: Some(awaken_contract::contract::lifecycle::RunStatus::Waiting),
                 limit: 200,
                 ..Default::default()
             };
-            if let Ok(page) = run_store.list_runs(&query).await {
+            if let Ok(page) = self.run_store.list_runs(&query).await {
                 let queued_set: std::collections::HashSet<String> =
-                    mailbox_ids.iter().cloned().collect();
+                    thread_ids.iter().cloned().collect();
                 for run in &page.items {
-                    if run.termination_code.as_deref() != Some("awaiting_tasks") {
+                    if !run.is_background_task_waiting() {
                         continue;
                     }
-                    // Skip if this thread already has a queued job
+                    // Skip if this thread already has a queued dispatch.
                     if queued_set.contains(&run.thread_id) {
                         continue;
                     }
-                    // Enqueue a wake job for this orphaned awaiting_tasks thread
-                    let now_val = now_ms();
-                    let job = MailboxJob {
-                        job_id: uuid::Uuid::now_v7().to_string(),
-                        mailbox_id: run.thread_id.clone(),
-                        agent_id: run.agent_id.clone(),
-                        messages: vec![Message::internal_user("<background-tasks-updated />")],
-                        origin: awaken_contract::contract::mailbox::MailboxJobOrigin::Internal,
-                        sender_id: None,
-                        parent_run_id: None,
-                        request_extras: {
-                            let extras = RunRequestExtras {
-                                overrides: None,
-                                decisions: Vec::new(),
-                                frontend_tools: Vec::new(),
-                                continue_run_id: Some(run.run_id.clone()),
-                                job_id_hint: None,
-                                parent_thread_id: None,
-                            };
-                            extras.to_value().ok().flatten()
-                        },
-                        priority: 200,
-                        dedupe_key: Some(format!("bg-wake:{}", run.thread_id)),
-                        generation: 0,
-                        status: MailboxJobStatus::Queued,
-                        available_at: now_val,
-                        attempt_count: 0,
-                        max_attempts: 3,
-                        last_error: None,
-                        claim_token: None,
-                        claimed_by: None,
-                        lease_until: None,
-                        created_at: now_val,
-                        updated_at: now_val,
-                    };
-                    if let Ok(()) = self.store.enqueue(&job).await {
+                    let request = RunRequest::new(
+                        run.thread_id.clone(),
+                        vec![Message::internal_user("<background-tasks-updated />")],
+                    )
+                    .with_agent_id(run.agent_id.clone())
+                    .with_continue_run_id(run.run_id.clone())
+                    .with_origin(awaken_contract::contract::storage::RunRequestOrigin::Internal)
+                    .with_run_mode(RunMode::InternalWake)
+                    .with_adapter(AdapterKind::Internal);
+                    if self.submit_background(request).await.is_ok() {
                         total += 1;
                         tracing::info!(
                             thread_id = %run.thread_id,
                             run_id = %run.run_id,
-                            "recover: enqueued wake job for orphaned awaiting_tasks thread"
+                            "recover: enqueued wake dispatch for orphaned background-task thread"
                         );
-                        self.get_or_create_worker(&run.thread_id).await;
-                        self.try_dispatch_next(&run.thread_id).await;
                     }
                 }
             }
@@ -711,9 +1058,12 @@ impl Mailbox {
 
     /// Run sweep + GC loop forever. Call from `tokio::spawn`.
     ///
-    /// When `app_state` is provided, also purges stale replay buffers on
-    /// each GC cycle to prevent unbounded growth.
-    pub async fn run_maintenance_loop(self: Arc<Self>, app_state: Option<crate::app::AppState>) {
+    /// When `maintenance_callback` is provided, it runs on each GC tick so
+    /// applications can clean up resources they own.
+    pub async fn run_maintenance_loop(
+        self: Arc<Self>,
+        maintenance_callback: Option<MailboxMaintenanceCallback>,
+    ) {
         let mut sweep_interval = tokio::time::interval(self.config.sweep_interval);
         let mut gc_interval = tokio::time::interval(self.config.gc_interval);
 
@@ -728,9 +1078,8 @@ impl Mailbox {
                 }
                 _ = gc_interval.tick() => {
                     self.run_gc().await;
-                    // Purge stale replay buffers (5 min TTL).
-                    if let Some(ref st) = app_state {
-                        st.purge_stale_replay_buffers(Duration::from_secs(300));
+                    if let Some(cleanup) = &maintenance_callback {
+                        cleanup();
                     }
                 }
             }
@@ -739,40 +1088,40 @@ impl Mailbox {
 
     // ── Internal: dispatch ───────────────────────────────────────────
 
-    /// Claim a job from the store and start execution.
-    #[tracing::instrument(skip(self), fields(mailbox_id = %mailbox_id))]
-    async fn dispatch_job(self: &Arc<Self>, mailbox_id: &str) {
+    /// Claim a dispatch from the store and start execution.
+    #[tracing::instrument(skip(self), fields(thread_id = %thread_id))]
+    async fn dispatch_next_claim(self: &Arc<Self>, thread_id: &str) {
         let now = now_ms();
         let claimed = match self
             .store
-            .claim(mailbox_id, &self.consumer_id, self.config.lease_ms, now, 1)
+            .claim(thread_id, &self.consumer_id, self.config.lease_ms, now, 1)
             .await
         {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!(error = %e, mailbox_id, "failed to claim job");
-                revert_claiming_to_idle(&self.workers, mailbox_id).await;
+                tracing::warn!(error = %e, thread_id, "failed to claim dispatch");
+                revert_claiming_to_idle(&self.workers, thread_id).await;
                 return;
             }
         };
 
-        let Some(job) = claimed.into_iter().next() else {
-            // No jobs to claim.
-            revert_claiming_to_idle(&self.workers, mailbox_id).await;
+        let Some(dispatch) = claimed.into_iter().next() else {
+            // No dispatches to claim.
+            revert_claiming_to_idle(&self.workers, thread_id).await;
             return;
         };
 
-        let job_id = job.job_id.clone();
-        let claim_token = job.claim_token.clone().unwrap_or_default();
+        let dispatch_id = dispatch.dispatch_id.clone();
+        let claim_token = dispatch.claim_token.clone().unwrap_or_default();
 
         // Shared flag: set by the event sink when a tool call is suspended.
         let suspended = Arc::new(AtomicBool::new(false));
 
         // Start lease renewal.
         let lease_handle = self.spawn_lease_renewal(
-            job_id.clone(),
+            dispatch_id.clone(),
             claim_token.clone(),
-            mailbox_id.to_string(),
+            thread_id.to_string(),
             Arc::clone(&suspended),
         );
 
@@ -781,32 +1130,32 @@ impl Mailbox {
         let reconnectable_sink = Arc::new(ReconnectableEventSink::new(event_tx.clone()));
 
         // Update worker state.
-        let worker = self.get_or_create_worker(mailbox_id).await;
+        let worker = self.get_or_create_worker(thread_id).await;
         {
             let mut w = worker.lock().await;
             w.status = MailboxWorkerStatus::Running {
-                job_id: job_id.clone(),
+                dispatch_id: dispatch_id.clone(),
                 lease_handle,
                 sink: Arc::clone(&reconnectable_sink),
             };
         }
 
         self.spawn_execution(
-            job,
+            dispatch,
             event_tx,
             reconnectable_sink,
             claim_token,
-            mailbox_id.to_string(),
+            thread_id.to_string(),
             suspended,
         );
     }
 
-    /// Claim from store and dispatch the next job for this mailbox.
-    #[tracing::instrument(skip(self), fields(mailbox_id = %mailbox_id))]
-    async fn try_dispatch_next(self: &Arc<Self>, mailbox_id: &str) {
+    /// Claim from store and execute the next dispatch for this thread.
+    #[tracing::instrument(skip(self), fields(thread_id = %thread_id))]
+    async fn try_dispatch_next(self: &Arc<Self>, thread_id: &str) {
         let worker = {
             let workers = self.workers.read().await;
-            match workers.get(mailbox_id) {
+            match workers.get(thread_id) {
                 Some(w) => Arc::clone(w),
                 None => return,
             }
@@ -821,7 +1170,7 @@ impl Mailbox {
             w.status = MailboxWorkerStatus::Claiming;
         }
 
-        self.dispatch_job(mailbox_id).await;
+        self.dispatch_next_claim(thread_id).await;
     }
 
     /// Spawn a lease renewal task that periodically extends the lease.
@@ -831,13 +1180,13 @@ impl Mailbox {
     /// to prevent premature lease expiration during HITL scenarios.
     fn spawn_lease_renewal(
         &self,
-        job_id: String,
+        dispatch_id: String,
         claim_token: String,
-        mailbox_id: String,
+        thread_id: String,
         suspended: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
         let store = Arc::clone(&self.store);
-        let runtime = Arc::clone(&self.runtime);
+        let runtime = Arc::clone(&self.executor);
         let lease_ms = self.config.lease_ms;
         let suspended_lease_ms = self.config.suspended_lease_ms;
         let interval = self.config.lease_renewal_interval;
@@ -855,18 +1204,18 @@ impl Mailbox {
                     lease_ms
                 };
                 match store
-                    .extend_lease(&job_id, &claim_token, effective_lease_ms, now)
+                    .extend_lease(&dispatch_id, &claim_token, effective_lease_ms, now)
                     .await
                 {
                     Ok(true) => {} // Lease extended successfully.
                     Ok(false) => {
                         // Lease lost -- another process reclaimed.
-                        tracing::warn!(job_id, mailbox_id, "lease lost, cancelling run");
-                        runtime.cancel(&mailbox_id);
+                        tracing::warn!(dispatch_id, thread_id, "lease lost, cancelling run");
+                        runtime.cancel(&thread_id);
                         break;
                     }
                     Err(e) => {
-                        tracing::warn!(job_id, error = %e, "lease extension failed");
+                        tracing::warn!(dispatch_id, error = %e, "lease extension failed");
                         break;
                     }
                 }
@@ -874,19 +1223,19 @@ impl Mailbox {
         })
     }
 
-    /// Spawn the actual execution task for a claimed job.
-    #[tracing::instrument(skip(self, event_tx, reconnectable_sink, suspended), fields(job_id = %job.job_id, mailbox_id = %mailbox_id))]
+    /// Spawn the actual execution task for a claimed dispatch.
+    #[tracing::instrument(skip(self, event_tx, reconnectable_sink, suspended), fields(dispatch_id = %dispatch.dispatch_id, thread_id = %thread_id))]
     fn spawn_execution(
         self: &Arc<Self>,
-        job: MailboxJob,
+        dispatch: RunDispatch,
         event_tx: mpsc::Sender<AgentEvent>,
         reconnectable_sink: Arc<ReconnectableEventSink>,
         claim_token: String,
-        mailbox_id: String,
+        thread_id: String,
         suspended: Arc<AtomicBool>,
     ) {
         let this = Arc::clone(self);
-        let job_id = job.job_id.clone();
+        let dispatch_id = dispatch.dispatch_id.clone();
 
         tokio::spawn(async move {
             crate::metrics::inc_active_runs();
@@ -897,71 +1246,107 @@ impl Mailbox {
                 suspended,
             };
 
-            // Generation check: if this job was superseded between claim and
+            // Dispatch epoch check: if this dispatch was superseded between claim and
             // execution start, abort without entering the runtime.
-            if let Ok(Some(current_job)) = this.store.load_job(&job_id).await
-                && current_job.status != MailboxJobStatus::Claimed
+            if let Ok(Some(current_dispatch)) = this.store.load_dispatch(&dispatch_id).await
+                && current_dispatch.status != RunDispatchStatus::Claimed
             {
-                tracing::info!(job_id, status = ?current_job.status, "job no longer claimed, skipping execution");
+                tracing::info!(dispatch_id, status = ?current_dispatch.status, "dispatch no longer claimed, skipping execution");
                 return;
             }
 
-            let mut request =
-                awaken_runtime::RunRequest::new(job.mailbox_id.clone(), job.messages.clone());
-            if !job.agent_id.is_empty() {
-                request = request.with_agent_id(job.agent_id.clone());
-            }
-            // Restore origin metadata.
-            request = request.with_origin(job.origin);
-            if let Some(ref prid) = job.parent_run_id {
-                request = request.with_parent_run_id(prid.clone());
-            }
-            // Reconstruct RunRequest extras from opaque payload.
-            if let Some(ref extras_value) = job.request_extras {
-                match RunRequestExtras::from_value(extras_value) {
-                    Ok(extras) => {
-                        request = extras.apply_to(request);
-                    }
-                    Err(e) => {
-                        tracing::error!(job_id, error = %e, "failed to deserialize RunRequestExtras");
-                        // Permanent failure — extras are corrupt, dead-letter.
-                        let now = now_ms();
-                        let msg = format!("corrupt request_extras: {e}");
-                        let _ = this
-                            .store
-                            .dead_letter(&job_id, &claim_token, &msg, now)
-                            .await;
-                        return;
-                    }
+            let dispatch_instance_id = uuid::Uuid::now_v7().to_string();
+            let mut request = match this.reconstruct_run_request(&dispatch).await {
+                Ok(request) => request,
+                Err(error) => {
+                    tracing::error!(dispatch_id, error = %error, "failed to reconstruct run request from durable run record");
+                    let now = now_ms();
+                    let msg = error.to_string();
+                    let run_result = RunDispatchResult {
+                        run_id: dispatch.run_id.clone(),
+                        dispatch_instance_id: dispatch_instance_id.clone(),
+                        status: awaken_contract::contract::lifecycle::RunStatus::Done,
+                        termination: Some(
+                            awaken_contract::contract::lifecycle::TerminationReason::Error(
+                                msg.clone(),
+                            ),
+                        ),
+                        response: None,
+                        error: Some(msg.clone()),
+                    };
+                    let _ = this
+                        .store
+                        .record_dispatch_start(
+                            &dispatch_id,
+                            &claim_token,
+                            &dispatch_instance_id,
+                            now,
+                        )
+                        .await;
+                    let _ = this
+                        .store
+                        .record_run_result(&dispatch_id, &claim_token, &run_result, now)
+                        .await;
+                    let _ = this
+                        .store
+                        .dead_letter(&dispatch_id, &claim_token, &msg, now)
+                        .await;
+                    return;
                 }
+            };
+            normalize_mailbox_run_mode(&mut request, false);
+            let run_id = dispatch.run_id.clone();
+            request = request
+                .with_dispatch_id(dispatch_id.clone())
+                .with_session_id(dispatch_instance_id.clone());
+            let start_now = now_ms();
+            if let Err(e) = this
+                .store
+                .record_dispatch_start(&dispatch_id, &claim_token, &dispatch_instance_id, start_now)
+                .await
+            {
+                tracing::warn!(dispatch_id, run_id, error = %e, "failed to record mailbox dispatch start");
             }
             let continue_run_id = request.continue_run_id.clone();
             let (inbox_sender, inbox_receiver) = awaken_runtime::inbox::inbox_channel_with_fallback(
                 Arc::new(TaskDoneMailboxNotify::new(
                     this.clone(),
-                    job.mailbox_id.clone(),
+                    dispatch.thread_id.clone(),
                     continue_run_id,
                 )),
             );
             request = request.with_inbox(inbox_sender, inbox_receiver);
 
-            let result = this.runtime.run(request, Arc::new(sink)).await;
+            let result = this.executor.run(request, Arc::new(sink)).await;
             let now = now_ms();
+            let run_result = mailbox_run_result(&run_id, &dispatch_instance_id, &result);
+            if let Err(e) = this
+                .store
+                .record_run_result(&dispatch_id, &claim_token, &run_result, now)
+                .await
+            {
+                tracing::warn!(dispatch_id, run_id, error = %e, "failed to record mailbox run result");
+            }
 
             match classify_error(&result) {
                 MailboxRunOutcome::Completed => {
-                    if let Err(e) = this.store.ack(&job_id, &claim_token, now).await {
-                        tracing::warn!(job_id, error = %e, "ack failed");
+                    if let Err(e) = this.store.ack(&dispatch_id, &claim_token, now).await {
+                        tracing::warn!(dispatch_id, error = %e, "ack failed");
                     }
                 }
                 MailboxRunOutcome::TransientError(msg) => {
-                    tracing::warn!(job_id, error = %msg, "run failed (transient), nacking");
+                    tracing::warn!(dispatch_id, error = %msg, "run failed (transient), nacking");
                     // Emit error event so the SSE stream terminates with a
                     // proper RUN_ERROR instead of silently closing.
                     let _ = event_tx
                         .send(AgentEvent::RunFinish {
-                            thread_id: job.mailbox_id.clone(),
-                            run_id: job_id.clone(),
+                            thread_id: dispatch.thread_id.clone(),
+                            run_id: run_id.clone(),
+                            identity: Some(mailbox_run_identity(
+                                &dispatch,
+                                &run_id,
+                                &dispatch_instance_id,
+                            )),
                             result: None,
                             termination:
                                 awaken_contract::contract::lifecycle::TerminationReason::Error(
@@ -969,27 +1354,32 @@ impl Mailbox {
                                 ),
                         })
                         .await;
-                    let backoff_factor = 2u64.pow(job.attempt_count.saturating_sub(1).min(6));
+                    let backoff_factor = 2u64.pow(dispatch.attempt_count.saturating_sub(1).min(6));
                     let retry_at = now
                         + (this.config.default_retry_delay_ms * backoff_factor)
                             .min(this.config.max_retry_delay_ms);
                     if let Err(e) = this
                         .store
-                        .nack(&job_id, &claim_token, retry_at, &msg, now)
+                        .nack(&dispatch_id, &claim_token, retry_at, &msg, now)
                         .await
                     {
-                        tracing::warn!(job_id, error = %e, "nack failed");
+                        tracing::warn!(dispatch_id, error = %e, "nack failed");
                     }
                 }
                 MailboxRunOutcome::PermanentError(msg) => {
-                    tracing::warn!(job_id, error = %msg, "run failed (permanent), dead-lettering");
+                    tracing::warn!(dispatch_id, error = %msg, "run failed (permanent), dead-lettering");
                     // Emit error event so the SSE stream terminates with a
                     // proper RUN_ERROR. The runtime did not reach the loop,
                     // so no RunFinish was emitted — we must do it here.
                     let _ = event_tx
                         .send(AgentEvent::RunFinish {
-                            thread_id: job.mailbox_id.clone(),
-                            run_id: job_id.clone(),
+                            thread_id: dispatch.thread_id.clone(),
+                            run_id: run_id.clone(),
+                            identity: Some(mailbox_run_identity(
+                                &dispatch,
+                                &run_id,
+                                &dispatch_instance_id,
+                            )),
                             result: None,
                             termination:
                                 awaken_contract::contract::lifecycle::TerminationReason::Error(
@@ -999,21 +1389,21 @@ impl Mailbox {
                         .await;
                     if let Err(e) = this
                         .store
-                        .dead_letter(&job_id, &claim_token, &msg, now)
+                        .dead_letter(&dispatch_id, &claim_token, &msg, now)
                         .await
                     {
-                        tracing::warn!(job_id, error = %e, "dead_letter failed");
+                        tracing::warn!(dispatch_id, error = %e, "dead_letter failed");
                     }
                 }
             }
 
             // Abort lease renewal.
-            let worker = this.get_or_create_worker(&mailbox_id).await;
+            let worker = this.get_or_create_worker(&thread_id).await;
             {
                 let mut w = worker.lock().await;
                 let should_transition = matches!(
                     &w.status,
-                    MailboxWorkerStatus::Running { job_id: cid, .. } if *cid == job_id
+                    MailboxWorkerStatus::Running { dispatch_id: cid, .. } if *cid == dispatch_id
                 );
                 if should_transition {
                     // Take ownership of the old status to abort the lease handle.
@@ -1024,17 +1414,17 @@ impl Mailbox {
                 }
             }
 
-            // Try to dispatch next job for this mailbox.
-            this.try_dispatch_next(&mailbox_id).await;
+            // Try to execute the next queued dispatch for this thread.
+            this.try_dispatch_next(&thread_id).await;
         });
     }
 
     /// Get or create a per-thread worker.
-    async fn get_or_create_worker(&self, mailbox_id: &str) -> Arc<Mutex<MailboxWorker>> {
+    async fn get_or_create_worker(&self, thread_id: &str) -> Arc<Mutex<MailboxWorker>> {
         // Fast path: read lock.
         {
             let workers = self.workers.read().await;
-            if let Some(w) = workers.get(mailbox_id) {
+            if let Some(w) = workers.get(thread_id) {
                 return Arc::clone(w);
             }
         }
@@ -1042,40 +1432,171 @@ impl Mailbox {
         let mut workers = self.workers.write().await;
         Arc::clone(
             workers
-                .entry(mailbox_id.to_string())
+                .entry(thread_id.to_string())
                 .or_insert_with(|| Arc::new(Mutex::new(MailboxWorker::default()))),
         )
     }
 
-    /// Build a MailboxJob from validated run inputs.
-    fn build_job(
+    /// Create or update the durable run truth before enqueuing a dispatch.
+    async fn prepare_run_for_dispatch(
+        &self,
+        request: &mut RunRequest,
+        thread_id: &str,
+        messages: &[Message],
+    ) -> Result<String, MailboxError> {
+        if request.continue_run_id.is_none()
+            && request.run_id_hint.is_none()
+            && let Some(waiting_run_id) = self.reusable_waiting_run_id(thread_id).await
+        {
+            request.continue_run_id = Some(waiting_run_id);
+        }
+
+        let run_id = request
+            .continue_run_id
+            .clone()
+            .or_else(|| request.run_id_hint.clone())
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+        if request.continue_run_id.is_none() {
+            request.run_id_hint = Some(run_id.clone());
+        }
+
+        let normalized_messages = normalize_message_ids(messages);
+        let existing_messages = self
+            .run_store
+            .load_messages(thread_id)
+            .await?
+            .unwrap_or_default();
+        let previous_run = self.run_store.latest_run(thread_id).await?;
+        let mut appended_messages = existing_messages;
+        appended_messages.extend(normalized_messages.iter().cloned());
+        let input_message_ids = normalized_messages
+            .iter()
+            .filter_map(|message| message.id.clone())
+            .collect::<Vec<_>>();
+        let request_extras = RunRequestExtras::from_request(request)
+            .to_value()
+            .map_err(|e| {
+                MailboxError::Internal(format!("failed to serialize request extras: {e}"))
+            })?;
+        let request_snapshot = RunRequestSnapshot {
+            origin: request.origin,
+            sender_id: None,
+            input_message_ids: input_message_ids.clone(),
+            input_message_count: normalized_messages.len() as u64,
+            request_extras,
+            decisions: request
+                .decisions
+                .iter()
+                .map(|(call_id, resume)| RunResumeDecision {
+                    call_id: call_id.clone(),
+                    resume: resume.clone(),
+                })
+                .collect(),
+            frontend_tools: request.frontend_tools.clone(),
+            parent_thread_id: request.parent_thread_id.clone(),
+            transport_request_id: request.transport_request_id.clone(),
+        };
+        let input = Some(RunMessageInput {
+            thread_id: thread_id.to_string(),
+            range: MessageSeqRange::new(1, appended_messages.len() as u64),
+            trigger_message_ids: input_message_ids,
+            selected_message_ids: Vec::new(),
+            context_policy: None,
+            compacted_snapshot_id: None,
+        });
+
+        if let Some(mut existing) = self.run_store.load_run(&run_id).await? {
+            if existing.thread_id != thread_id {
+                return Err(MailboxError::Validation(format!(
+                    "run_id '{run_id}' belongs to thread '{}', not '{thread_id}'",
+                    existing.thread_id
+                )));
+            }
+            if existing.status != RunStatus::Created && !existing.is_resumable_waiting() {
+                return Err(MailboxError::Validation(format!(
+                    "run_id '{run_id}' is not open for dispatch"
+                )));
+            }
+            existing.request = Some(request_snapshot);
+            existing.input = input;
+            existing.updated_at = now_ms() / 1000;
+            self.run_store
+                .checkpoint(thread_id, &appended_messages, &existing)
+                .await?;
+            return Ok(run_id);
+        }
+
+        let inferred_agent_id = request
+            .agent_id
+            .clone()
+            .or_else(|| {
+                previous_run.as_ref().and_then(|run| {
+                    (run.status != RunStatus::Created && !run.agent_id.trim().is_empty())
+                        .then(|| run.agent_id.clone())
+                })
+            })
+            .unwrap_or_else(|| "default".to_string());
+        let inherited_state = previous_run
+            .as_ref()
+            .filter(|run| run.status != RunStatus::Created)
+            .and_then(|run| run.state.clone());
+        let now = now_ms() / 1000;
+        let record = RunRecord {
+            run_id: run_id.clone(),
+            thread_id: thread_id.to_string(),
+            agent_id: inferred_agent_id,
+            parent_run_id: request.parent_run_id.clone(),
+            request: Some(request_snapshot),
+            input,
+            output: None,
+            status: RunStatus::Created,
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: request.transport_request_id.clone(),
+            waiting: None,
+            outcome: None,
+            created_at: now,
+            started_at: None,
+            finished_at: None,
+            updated_at: now,
+            steps: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            state: inherited_state,
+        };
+        self.run_store
+            .checkpoint(thread_id, &appended_messages, &record)
+            .await?;
+        Ok(run_id)
+    }
+
+    /// Build a RunDispatch from the durable run prepared above.
+    fn build_dispatch(
         &self,
         request: &RunRequest,
         thread_id: &str,
-        messages: Vec<Message>,
-    ) -> Result<MailboxJob, MailboxError> {
-        let extras = RunRequestExtras::from_request(request);
-        let request_extras = extras.to_value().map_err(|e| {
-            MailboxError::Internal(format!("failed to serialize request extras: {e}"))
-        })?;
-
+    ) -> Result<RunDispatch, MailboxError> {
+        let run_id = request
+            .continue_run_id
+            .clone()
+            .or_else(|| request.run_id_hint.clone())
+            .ok_or_else(|| MailboxError::Internal("run_id missing after preparation".into()))?;
         let now = now_ms();
-        Ok(MailboxJob {
-            job_id: request
-                .job_id_hint
+        Ok(RunDispatch {
+            dispatch_id: request
+                .dispatch_id_hint
                 .clone()
                 .unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
-            mailbox_id: thread_id.to_string(),
-            agent_id: request.agent_id.as_deref().unwrap_or_default().to_string(),
-            messages,
-            origin: request.origin,
-            sender_id: None,
-            parent_run_id: request.parent_run_id.clone(),
-            request_extras,
+            thread_id: thread_id.to_string(),
+            run_id,
             priority: 128,
             dedupe_key: None,
-            generation: 0,
-            status: MailboxJobStatus::Queued,
+            dispatch_epoch: 0,
+            status: RunDispatchStatus::Queued,
             available_at: now,
             attempt_count: 0,
             max_attempts: self.config.default_max_attempts,
@@ -1083,9 +1604,133 @@ impl Mailbox {
             claim_token: None,
             claimed_by: None,
             lease_until: None,
+            dispatch_instance_id: None,
+            run_status: None,
+            termination: None,
+            run_response: None,
+            run_error: None,
+            completed_at: None,
             created_at: now,
             updated_at: now,
         })
+    }
+
+    async fn reconstruct_run_request(
+        &self,
+        dispatch: &RunDispatch,
+    ) -> Result<RunRequest, MailboxError> {
+        let run = self
+            .run_store
+            .load_run(&dispatch.run_id)
+            .await?
+            .ok_or_else(|| {
+                MailboxError::Validation(format!(
+                    "run '{}' not found for dispatch '{}'",
+                    dispatch.run_id, dispatch.dispatch_id
+                ))
+            })?;
+        if run.thread_id != dispatch.thread_id {
+            return Err(MailboxError::Validation(format!(
+                "run '{}' belongs to thread '{}', not dispatch thread '{}'",
+                run.run_id, run.thread_id, dispatch.thread_id
+            )));
+        }
+        let snapshot = run.request.clone().ok_or_else(|| {
+            MailboxError::Validation(format!("run '{}' has no request snapshot", run.run_id))
+        })?;
+        let activation_messages = self.activation_messages_for_run(&run, &snapshot).await?;
+        let mut request = RunRequest::new(run.thread_id.clone(), activation_messages)
+            .with_messages_already_persisted(true)
+            .with_origin(snapshot.origin)
+            .with_run_mode(RunMode::Resume)
+            .with_adapter(AdapterKind::Internal);
+        if !run.agent_id.trim().is_empty() {
+            request = request.with_agent_id(run.agent_id.clone());
+        }
+        if let Some(parent_run_id) = run.parent_run_id.clone() {
+            request = request.with_parent_run_id(parent_run_id);
+        }
+        if let Some(parent_thread_id) = snapshot.parent_thread_id.clone() {
+            request = request.with_parent_thread_id(parent_thread_id);
+        }
+        if let Some(transport_request_id) = snapshot.transport_request_id.clone() {
+            request = request.with_transport_request_id(transport_request_id);
+        }
+        if !snapshot.decisions.is_empty() {
+            request = request.with_decisions(
+                snapshot
+                    .decisions
+                    .iter()
+                    .map(|decision| (decision.call_id.clone(), decision.resume.clone()))
+                    .collect(),
+            );
+        }
+        if !snapshot.frontend_tools.is_empty() {
+            request = request.with_frontend_tools(snapshot.frontend_tools.clone());
+        }
+        if let Some(extras_value) = snapshot.request_extras.as_ref() {
+            let extras = RunRequestExtras::from_value(extras_value).map_err(|error| {
+                MailboxError::Validation(format!("corrupt request_extras: {error}"))
+            })?;
+            request = extras.apply_to(request);
+        }
+        request = if run.is_resumable_waiting() {
+            request.with_continue_run_id(run.run_id.clone())
+        } else {
+            request.with_run_id_hint(run.run_id.clone())
+        };
+        Ok(request.with_trace_dispatch_id(dispatch.dispatch_id.clone()))
+    }
+
+    async fn activation_messages_for_run(
+        &self,
+        run: &RunRecord,
+        snapshot: &RunRequestSnapshot,
+    ) -> Result<Vec<Message>, MailboxError> {
+        if snapshot.input_message_ids.is_empty() {
+            return self.activation_messages_from_range(run, snapshot).await;
+        }
+        let mut messages = Vec::with_capacity(snapshot.input_message_ids.len());
+        for message_id in &snapshot.input_message_ids {
+            let record = self
+                .run_store
+                .load_message_record(&run.thread_id, message_id)
+                .await?
+                .ok_or_else(|| {
+                    MailboxError::Validation(format!(
+                        "message '{message_id}' not found for run '{}'",
+                        run.run_id
+                    ))
+                })?;
+            messages.push(record.message);
+        }
+        Ok(messages)
+    }
+
+    async fn activation_messages_from_range(
+        &self,
+        run: &RunRecord,
+        snapshot: &RunRequestSnapshot,
+    ) -> Result<Vec<Message>, MailboxError> {
+        let Some(input) = run.input.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let Some(range) = input.range else {
+            return Ok(Vec::new());
+        };
+        let count = snapshot.input_message_count;
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        let from_seq = range.to_seq.saturating_sub(count).saturating_add(1);
+        let Some(range) = MessageSeqRange::new(from_seq.max(range.from_seq), range.to_seq) else {
+            return Ok(Vec::new());
+        };
+        let records = self
+            .run_store
+            .load_message_records_range(&run.thread_id, range)
+            .await?;
+        Ok(records.into_iter().map(|record| record.message).collect())
     }
 
     // ── Maintenance ──────────────────────────────────────────────────
@@ -1096,11 +1741,11 @@ impl Mailbox {
             Ok(reclaimed) => {
                 if !reclaimed.is_empty() {
                     tracing::info!(count = reclaimed.len(), "sweep reclaimed expired leases");
-                    for job in reclaimed {
-                        if job.status == MailboxJobStatus::Queued {
-                            let mailbox_id = job.mailbox_id.clone();
-                            self.get_or_create_worker(&mailbox_id).await;
-                            self.try_dispatch_next(&mailbox_id).await;
+                    for dispatch in reclaimed {
+                        if dispatch.status == RunDispatchStatus::Queued {
+                            let thread_id = dispatch.thread_id.clone();
+                            self.get_or_create_worker(&thread_id).await;
+                            self.try_dispatch_next(&thread_id).await;
                         }
                     }
                 }
@@ -1118,7 +1763,7 @@ impl Mailbox {
         match self.store.purge_terminal(older_than).await {
             Ok(purged) => {
                 if purged > 0 {
-                    tracing::info!(purged, "GC purged terminal jobs");
+                    tracing::info!(purged, "GC purged terminal dispatches");
                 }
             }
             Err(e) => {
@@ -1126,11 +1771,11 @@ impl Mailbox {
             }
         }
 
-        // Clean up idle workers with no queued jobs.
+        // Clean up idle workers with no queued dispatches.
         self.gc_idle_workers().await;
     }
 
-    /// Remove workers in `Idle` state that have no queued jobs in the store.
+    /// Remove workers in `Idle` state that have no queued dispatches in the store.
     ///
     /// This prevents the `workers` HashMap from growing unbounded as new
     /// threads are created and their runs complete.
@@ -1138,10 +1783,10 @@ impl Mailbox {
         let idle_keys: Vec<String> = {
             let workers = self.workers.read().await;
             let mut keys = Vec::new();
-            for (mailbox_id, worker) in workers.iter() {
+            for (thread_id, worker) in workers.iter() {
                 let w = worker.lock().await;
                 if matches!(w.status, MailboxWorkerStatus::Idle) {
-                    keys.push(mailbox_id.clone());
+                    keys.push(thread_id.clone());
                 }
             }
             keys
@@ -1151,12 +1796,12 @@ impl Mailbox {
             return;
         }
 
-        // Check store for queued jobs before removing.
+        // Check store for queued dispatches before removing.
         let mut removed = 0usize;
         let mut workers = self.workers.write().await;
-        for mailbox_id in &idle_keys {
+        for thread_id in &idle_keys {
             // Re-check under write lock: status might have changed.
-            let still_idle = if let Some(worker) = workers.get(mailbox_id) {
+            let still_idle = if let Some(worker) = workers.get(thread_id) {
                 let w = worker.lock().await;
                 matches!(w.status, MailboxWorkerStatus::Idle)
             } else {
@@ -1166,21 +1811,21 @@ impl Mailbox {
                 continue;
             }
 
-            // Only remove if the store has no queued jobs for this mailbox.
+            // Only remove if the store has no queued dispatches for this thread.
             let has_queued = self
                 .store
-                .list_jobs(
-                    mailbox_id,
-                    Some(&[MailboxJobStatus::Queued, MailboxJobStatus::Claimed]),
+                .list_dispatches(
+                    thread_id,
+                    Some(&[RunDispatchStatus::Queued, RunDispatchStatus::Claimed]),
                     1,
                     0,
                 )
                 .await
-                .map(|jobs| !jobs.is_empty())
+                .map(|dispatches| !dispatches.is_empty())
                 .unwrap_or(true); // Err → keep worker to be safe
 
             if !has_queued {
-                workers.remove(mailbox_id);
+                workers.remove(thread_id);
                 removed += 1;
             }
         }
@@ -1195,10 +1840,10 @@ impl Mailbox {
 /// Prevents overwriting a Running state set by a concurrent dispatch.
 async fn revert_claiming_to_idle(
     workers: &tokio::sync::RwLock<HashMap<String, Arc<tokio::sync::Mutex<MailboxWorker>>>>,
-    mailbox_id: &str,
+    thread_id: &str,
 ) {
     let workers = workers.read().await;
-    if let Some(worker) = workers.get(mailbox_id) {
+    if let Some(worker) = workers.get(thread_id) {
         let mut w = worker.lock().await;
         if matches!(w.status, MailboxWorkerStatus::Claiming) {
             w.status = MailboxWorkerStatus::Idle;
@@ -1208,6 +1853,25 @@ async fn revert_claiming_to_idle(
 
 // ── Free functions ───────────────────────────────────────────────────
 
+fn normalize_mailbox_run_mode(request: &mut RunRequest, background: bool) {
+    if request.run_mode != RunMode::Foreground {
+        return;
+    }
+
+    request.run_mode = if !request.decisions.is_empty() || request.continue_run_id.is_some() {
+        RunMode::Resume
+    } else if matches!(
+        request.origin,
+        awaken_contract::contract::storage::RunRequestOrigin::Internal
+    ) {
+        RunMode::InternalWake
+    } else if background {
+        RunMode::Scheduled
+    } else {
+        RunMode::Foreground
+    };
+}
+
 /// Validate and normalize run request inputs.
 ///
 /// Checks that messages are non-empty, trims/generates thread_id.
@@ -1216,8 +1880,9 @@ async fn revert_claiming_to_idle(
 fn validate_run_inputs(
     thread_id: String,
     messages: Vec<Message>,
+    allow_empty_messages: bool,
 ) -> Result<(String, Vec<Message>), MailboxError> {
-    if messages.is_empty() {
+    if messages.is_empty() && !allow_empty_messages {
         return Err(MailboxError::Validation(
             "at least one message is required".to_string(),
         ));
@@ -1231,6 +1896,72 @@ fn validate_run_inputs(
         }
     };
     Ok((thread_id, messages))
+}
+
+fn normalize_message_ids(messages: &[Message]) -> Vec<Message> {
+    messages
+        .iter()
+        .cloned()
+        .map(|mut message| {
+            if message.id.as_deref().map(str::is_empty).unwrap_or(true) {
+                message.id = Some(awaken_contract::contract::message::gen_message_id());
+            }
+            message
+        })
+        .collect()
+}
+
+fn mailbox_run_result(
+    run_id: &str,
+    dispatch_instance_id: &str,
+    result: &Result<
+        awaken_runtime::loop_runner::AgentRunResult,
+        awaken_runtime::loop_runner::AgentLoopError,
+    >,
+) -> RunDispatchResult {
+    use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
+
+    match result {
+        Ok(run) => {
+            let (status, _) = run.termination.to_run_status();
+            RunDispatchResult {
+                run_id: run.run_id.clone(),
+                dispatch_instance_id: dispatch_instance_id.to_string(),
+                status,
+                termination: Some(run.termination.clone()),
+                response: (!run.response.is_empty()).then(|| run.response.clone()),
+                error: match &run.termination {
+                    TerminationReason::Error(message) => Some(message.clone()),
+                    _ => None,
+                },
+            }
+        }
+        Err(error) => RunDispatchResult {
+            run_id: run_id.to_string(),
+            dispatch_instance_id: dispatch_instance_id.to_string(),
+            status: RunStatus::Done,
+            termination: Some(TerminationReason::Error(error.to_string())),
+            response: None,
+            error: Some(error.to_string()),
+        },
+    }
+}
+
+fn mailbox_run_identity(
+    dispatch: &RunDispatch,
+    run_id: &str,
+    dispatch_instance_id: &str,
+) -> awaken_contract::contract::identity::RunIdentity {
+    awaken_contract::contract::identity::RunIdentity::new(
+        dispatch.thread_id.clone(),
+        None,
+        run_id.to_string(),
+        None,
+        String::new(),
+        awaken_contract::contract::identity::RunOrigin::Internal,
+    )
+    .with_dispatch_id(dispatch.dispatch_id.clone())
+    .with_session_id(dispatch_instance_id.to_string())
 }
 
 /// Classify a runtime run result for ack/nack/dead_letter.
@@ -1281,13 +2012,16 @@ mod tests {
         InferenceExecutionError, InferenceRequest, LlmExecutor,
     };
     use awaken_contract::contract::inference::{StopReason, StreamResult};
-    use awaken_contract::contract::lifecycle::RunStatus;
-    use awaken_contract::contract::mailbox::MailboxJobOrigin;
+    use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
     use awaken_contract::contract::message::{Message, ToolCall};
-    use awaken_contract::contract::storage::{RunRecord, RunStore, ThreadRunStore};
+    use awaken_contract::contract::storage::RunRequestOrigin;
+    use awaken_contract::contract::storage::{
+        RunRecord, RunStore, RunWaitingState, ThreadRunStore, ThreadStore, WaitingReason,
+    };
     use awaken_contract::contract::tool::{
         Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
     };
+    use awaken_contract::thread::Thread;
     use awaken_runtime::extensions::background::{
         BackgroundTaskManager, BackgroundTaskPlugin, TaskParentContext,
         TaskResult as BackgroundTaskResult,
@@ -1297,6 +2031,7 @@ mod tests {
     use awaken_stores::{InMemoryMailboxStore, InMemoryStore};
     use serde_json::{Value, json};
     use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::AtomicUsize;
     use tokio::time::{Duration, Instant, sleep};
 
     // ── Helper ───────────────────────────────────────────────────────
@@ -1318,6 +2053,189 @@ mod tests {
         Arc::new(InMemoryMailboxStore::new())
     }
 
+    struct RecoverFlakyMailboxStore {
+        inner: InMemoryMailboxStore,
+        reclaim_failures_remaining: AtomicUsize,
+        reclaim_calls: AtomicUsize,
+    }
+
+    impl RecoverFlakyMailboxStore {
+        fn new(reclaim_failures: usize) -> Self {
+            Self {
+                inner: InMemoryMailboxStore::new(),
+                reclaim_failures_remaining: AtomicUsize::new(reclaim_failures),
+                reclaim_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn reclaim_calls(&self) -> usize {
+            self.reclaim_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MailboxStore for RecoverFlakyMailboxStore {
+        async fn enqueue(&self, dispatch: &RunDispatch) -> Result<(), StorageError> {
+            self.inner.enqueue(dispatch).await
+        }
+
+        async fn claim(
+            &self,
+            thread_id: &str,
+            consumer_id: &str,
+            lease_ms: u64,
+            now: u64,
+            limit: usize,
+        ) -> Result<Vec<RunDispatch>, StorageError> {
+            self.inner
+                .claim(thread_id, consumer_id, lease_ms, now, limit)
+                .await
+        }
+
+        async fn claim_dispatch(
+            &self,
+            dispatch_id: &str,
+            consumer_id: &str,
+            lease_ms: u64,
+            now: u64,
+        ) -> Result<Option<RunDispatch>, StorageError> {
+            self.inner
+                .claim_dispatch(dispatch_id, consumer_id, lease_ms, now)
+                .await
+        }
+
+        async fn ack(
+            &self,
+            dispatch_id: &str,
+            claim_token: &str,
+            now: u64,
+        ) -> Result<(), StorageError> {
+            self.inner.ack(dispatch_id, claim_token, now).await
+        }
+
+        async fn record_dispatch_start(
+            &self,
+            dispatch_id: &str,
+            claim_token: &str,
+            dispatch_instance_id: &str,
+            now: u64,
+        ) -> Result<(), StorageError> {
+            self.inner
+                .record_dispatch_start(dispatch_id, claim_token, dispatch_instance_id, now)
+                .await
+        }
+
+        async fn record_run_result(
+            &self,
+            dispatch_id: &str,
+            claim_token: &str,
+            result: &RunDispatchResult,
+            now: u64,
+        ) -> Result<(), StorageError> {
+            self.inner
+                .record_run_result(dispatch_id, claim_token, result, now)
+                .await
+        }
+
+        async fn nack(
+            &self,
+            dispatch_id: &str,
+            claim_token: &str,
+            retry_at: u64,
+            error: &str,
+            now: u64,
+        ) -> Result<(), StorageError> {
+            self.inner
+                .nack(dispatch_id, claim_token, retry_at, error, now)
+                .await
+        }
+
+        async fn dead_letter(
+            &self,
+            dispatch_id: &str,
+            claim_token: &str,
+            error: &str,
+            now: u64,
+        ) -> Result<(), StorageError> {
+            self.inner
+                .dead_letter(dispatch_id, claim_token, error, now)
+                .await
+        }
+
+        async fn cancel(
+            &self,
+            dispatch_id: &str,
+            now: u64,
+        ) -> Result<Option<RunDispatch>, StorageError> {
+            self.inner.cancel(dispatch_id, now).await
+        }
+
+        async fn extend_lease(
+            &self,
+            dispatch_id: &str,
+            claim_token: &str,
+            extension_ms: u64,
+            now: u64,
+        ) -> Result<bool, StorageError> {
+            self.inner
+                .extend_lease(dispatch_id, claim_token, extension_ms, now)
+                .await
+        }
+
+        async fn interrupt(
+            &self,
+            thread_id: &str,
+            now: u64,
+        ) -> Result<MailboxInterrupt, StorageError> {
+            self.inner.interrupt(thread_id, now).await
+        }
+
+        async fn load_dispatch(
+            &self,
+            dispatch_id: &str,
+        ) -> Result<Option<RunDispatch>, StorageError> {
+            self.inner.load_dispatch(dispatch_id).await
+        }
+
+        async fn list_dispatches(
+            &self,
+            thread_id: &str,
+            status_filter: Option<&[RunDispatchStatus]>,
+            limit: usize,
+            offset: usize,
+        ) -> Result<Vec<RunDispatch>, StorageError> {
+            self.inner
+                .list_dispatches(thread_id, status_filter, limit, offset)
+                .await
+        }
+
+        async fn reclaim_expired_leases(
+            &self,
+            now: u64,
+            limit: usize,
+        ) -> Result<Vec<RunDispatch>, StorageError> {
+            self.reclaim_calls.fetch_add(1, Ordering::SeqCst);
+            let remaining = self.reclaim_failures_remaining.load(Ordering::SeqCst);
+            if remaining > 0
+                && self
+                    .reclaim_failures_remaining
+                    .compare_exchange(remaining, remaining - 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            {
+                return Err(StorageError::Io("injected startup recovery failure".into()));
+            }
+            self.inner.reclaim_expired_leases(now, limit).await
+        }
+
+        async fn purge_terminal(&self, older_than: u64) -> Result<usize, StorageError> {
+            self.inner.purge_terminal(older_than).await
+        }
+
+        async fn queued_thread_ids(&self) -> Result<Vec<String>, StorageError> {
+            self.inner.queued_thread_ids().await
+        }
+    }
+
     fn make_runtime() -> Arc<AgentRuntime> {
         Arc::new(AgentRuntime::new(Arc::new(StubResolver)))
     }
@@ -1326,9 +2244,164 @@ mod tests {
         Arc::new(Mailbox::new(
             runtime,
             store,
+            Arc::new(InMemoryStore::new()),
             "test-consumer".to_string(),
             MailboxConfig::default(),
         ))
+    }
+
+    fn make_mailbox_with_run_store(
+        runtime: Arc<AgentRuntime>,
+        store: Arc<InMemoryMailboxStore>,
+        run_store: Arc<dyn ThreadRunStore>,
+    ) -> Arc<Mailbox> {
+        Arc::new(Mailbox::new(
+            runtime,
+            store,
+            run_store,
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ))
+    }
+
+    struct NoopMailboxRuntime;
+
+    #[async_trait::async_trait]
+    impl RunDispatchExecutor for NoopMailboxRuntime {
+        async fn run(
+            &self,
+            _request: RunRequest,
+            _sink: Arc<dyn EventSink>,
+        ) -> Result<AgentRunResult, AgentLoopError> {
+            panic!("decoupling test must not execute runs")
+        }
+
+        fn cancel(&self, _id: &str) -> bool {
+            false
+        }
+
+        async fn cancel_and_wait_by_thread(&self, _thread_id: &str) -> bool {
+            false
+        }
+
+        fn send_decision(&self, _id: &str, _tool_call_id: String, _resume: ToolCallResume) -> bool {
+            false
+        }
+    }
+
+    struct RecordedMailboxRequest {
+        run_mode: RunMode,
+        adapter: AdapterKind,
+        dispatch_id: Option<String>,
+        session_id: Option<String>,
+    }
+
+    #[derive(Default)]
+    struct RecordingMailboxRuntime {
+        requests: StdMutex<Vec<RecordedMailboxRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl RunDispatchExecutor for RecordingMailboxRuntime {
+        async fn run(
+            &self,
+            request: RunRequest,
+            _sink: Arc<dyn EventSink>,
+        ) -> Result<AgentRunResult, AgentLoopError> {
+            let run_id = request
+                .continue_run_id
+                .clone()
+                .or(request.run_id_hint.clone())
+                .unwrap_or_else(|| "recorded-run".to_string());
+            self.requests
+                .lock()
+                .expect("lock poisoned")
+                .push(RecordedMailboxRequest {
+                    run_mode: request.run_mode,
+                    adapter: request.adapter,
+                    dispatch_id: request.dispatch_id.clone(),
+                    session_id: request.session_id.clone(),
+                });
+            Ok(AgentRunResult {
+                run_id,
+                response: "ok".to_string(),
+                termination: TerminationReason::NaturalEnd,
+                steps: 1,
+            })
+        }
+
+        fn cancel(&self, _id: &str) -> bool {
+            false
+        }
+
+        async fn cancel_and_wait_by_thread(&self, _thread_id: &str) -> bool {
+            false
+        }
+
+        fn send_decision(&self, _id: &str, _tool_call_id: String, _resume: ToolCallResume) -> bool {
+            false
+        }
+    }
+
+    struct RecordedStoreMailboxRequest {
+        thread_id: String,
+        continue_run_id: Option<String>,
+        run_mode: RunMode,
+        adapter: AdapterKind,
+    }
+
+    struct RecordingStoreMailboxRuntime {
+        requests: StdMutex<Vec<RecordedStoreMailboxRequest>>,
+    }
+
+    impl RecordingStoreMailboxRuntime {
+        fn new(_store: Arc<InMemoryStore>) -> Self {
+            Self {
+                requests: StdMutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RunDispatchExecutor for RecordingStoreMailboxRuntime {
+        async fn run(
+            &self,
+            request: RunRequest,
+            _sink: Arc<dyn EventSink>,
+        ) -> Result<AgentRunResult, AgentLoopError> {
+            let run_id = request
+                .continue_run_id
+                .clone()
+                .or(request.run_id_hint.clone())
+                .unwrap_or_else(|| "recorded-run".to_string());
+            self.requests
+                .lock()
+                .expect("lock poisoned")
+                .push(RecordedStoreMailboxRequest {
+                    thread_id: request.thread_id,
+                    continue_run_id: request.continue_run_id,
+                    run_mode: request.run_mode,
+                    adapter: request.adapter,
+                });
+            Ok(AgentRunResult {
+                run_id,
+                response: "ok".to_string(),
+                termination: TerminationReason::NaturalEnd,
+                steps: 1,
+            })
+        }
+
+        fn cancel(&self, _id: &str) -> bool {
+            false
+        }
+
+        async fn cancel_and_wait_by_thread(&self, _thread_id: &str) -> bool {
+            false
+        }
+
+        fn send_decision(&self, _id: &str, _tool_call_id: String, _resume: ToolCallResume) -> bool {
+            false
+        }
     }
 
     struct ScriptedLlm {
@@ -1443,15 +2516,60 @@ mod tests {
         }
     }
 
+    async fn wait_for_dispatch<F>(
+        store: &InMemoryMailboxStore,
+        dispatch_id: &str,
+        predicate: F,
+    ) -> RunDispatch
+    where
+        F: Fn(&RunDispatch) -> bool,
+    {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(dispatch) = store
+                .load_dispatch(dispatch_id)
+                .await
+                .expect("mailbox dispatch lookup should succeed")
+                && predicate(&dispatch)
+            {
+                return dispatch;
+            }
+
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for mailbox dispatch predicate on dispatch {dispatch_id}"
+            );
+            sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     fn seeded_waiting_run(run_id: &str, thread_id: &str, agent_id: &str) -> RunRecord {
         RunRecord {
             run_id: run_id.to_string(),
             thread_id: thread_id.to_string(),
             agent_id: agent_id.to_string(),
             parent_run_id: None,
+            request: None,
+            input: None,
+            output: None,
             status: RunStatus::Waiting,
-            termination_code: Some("awaiting_tasks".into()),
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: Some(RunWaitingState {
+                reason: WaitingReason::BackgroundTasks,
+                ticket_ids: Vec::new(),
+                tickets: Vec::new(),
+                since_dispatch_id: None,
+                message: None,
+            }),
+            outcome: None,
             created_at: 1,
+            started_at: None,
+            finished_at: None,
             updated_at: 1,
             steps: 2,
             input_tokens: 0,
@@ -1477,23 +2595,533 @@ mod tests {
     }
 
     #[test]
+    fn mailbox_lifecycle_config_defaults() {
+        let config = MailboxLifecycleConfig::default();
+        assert_eq!(config.startup_delay, Duration::ZERO);
+        assert_eq!(config.startup_recovery.max_attempts, 1);
+        assert_eq!(
+            config.startup_recovery.retry_delay,
+            Duration::from_millis(250)
+        );
+        assert!(config.maintenance_callback.is_none());
+    }
+
+    #[tokio::test]
+    async fn start_lifecycle_ready_fails_when_startup_recovery_fails() {
+        let store = Arc::new(RecoverFlakyMailboxStore::new(1));
+        let runtime = make_runtime();
+        let mailbox = Arc::new(Mailbox::new(
+            runtime,
+            store,
+            Arc::new(InMemoryStore::new()),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let error = match mailbox
+            .start_lifecycle_ready(MailboxLifecycleConfig {
+                startup_recovery: MailboxStartupRecoveryConfig {
+                    max_attempts: 1,
+                    retry_delay: Duration::ZERO,
+                },
+                ..Default::default()
+            })
+            .await
+        {
+            Ok(_) => panic!("ready lifecycle should fail when startup recovery fails"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("injected startup recovery failure")
+        );
+        assert!(
+            !mailbox
+                .lifecycle_is_running()
+                .expect("lifecycle state should be readable")
+        );
+    }
+
+    #[tokio::test]
+    async fn start_lifecycle_ready_retries_startup_recovery_until_ready() {
+        let store = Arc::new(RecoverFlakyMailboxStore::new(1));
+        let runtime = make_runtime();
+        let mailbox = Arc::new(Mailbox::new(
+            runtime,
+            store.clone(),
+            Arc::new(InMemoryStore::new()),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let mut request = RunRequest::new("thread-retry-recover", vec![Message::user("recover")])
+            .with_agent_id("missing-agent");
+        let (thread_id, messages) =
+            validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false)
+                .unwrap();
+        mailbox
+            .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
+            .await
+            .expect("prepare queued run");
+        let dispatch = mailbox
+            .build_dispatch(&request, &thread_id)
+            .expect("build queued dispatch");
+        let dispatch_id = dispatch.dispatch_id.clone();
+        store
+            .enqueue(&dispatch)
+            .await
+            .expect("enqueue queued dispatch");
+
+        let handle = mailbox
+            .start_lifecycle_ready(MailboxLifecycleConfig {
+                startup_recovery: MailboxStartupRecoveryConfig {
+                    max_attempts: 2,
+                    retry_delay: Duration::ZERO,
+                },
+                ..Default::default()
+            })
+            .await
+            .expect("ready lifecycle should retry startup recovery");
+
+        let recovered = wait_for_dispatch(&store.inner, &dispatch_id, |dispatch| {
+            dispatch.status == RunDispatchStatus::DeadLetter
+        })
+        .await;
+        assert_eq!(recovered.status, RunDispatchStatus::DeadLetter);
+        handle.shutdown().await.expect("shutdown lifecycle");
+    }
+
+    #[tokio::test]
+    async fn start_lifecycle_ready_serializes_concurrent_recovery() {
+        let store = Arc::new(RecoverFlakyMailboxStore::new(0));
+        let runtime = make_runtime();
+        let mailbox = Arc::new(Mailbox::new(
+            runtime,
+            store.clone(),
+            Arc::new(InMemoryStore::new()),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let mut starters = Vec::new();
+        for _ in 0..32 {
+            let mailbox = Arc::clone(&mailbox);
+            starters.push(tokio::spawn(async move {
+                mailbox
+                    .start_lifecycle_ready(MailboxLifecycleConfig::default())
+                    .await
+            }));
+        }
+
+        let mut handles = Vec::new();
+        for starter in starters {
+            handles.push(
+                starter
+                    .await
+                    .expect("starter task should not panic")
+                    .expect("ready lifecycle should start"),
+            );
+        }
+
+        assert_eq!(
+            store.reclaim_calls(),
+            1,
+            "concurrent ready starts should run startup recovery once"
+        );
+        assert!(handles.iter().all(MailboxLifecycleHandle::is_running));
+        handles[0].shutdown().await.expect("shutdown lifecycle");
+        assert!(handles.iter().all(|handle| !handle.is_running()));
+    }
+
+    #[tokio::test]
+    async fn start_lifecycle_does_not_bypass_ready_transition() {
+        let store = Arc::new(RecoverFlakyMailboxStore::new(0));
+        let runtime = make_runtime();
+        let mailbox = Arc::new(Mailbox::new(
+            runtime,
+            store.clone(),
+            Arc::new(InMemoryStore::new()),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let ready_mailbox = Arc::clone(&mailbox);
+        let ready = tokio::spawn(async move {
+            ready_mailbox
+                .start_lifecycle_ready(MailboxLifecycleConfig {
+                    startup_delay: Duration::from_millis(75),
+                    startup_recovery: MailboxStartupRecoveryConfig {
+                        max_attempts: 1,
+                        retry_delay: Duration::ZERO,
+                    },
+                    ..Default::default()
+                })
+                .await
+        });
+        sleep(Duration::from_millis(10)).await;
+
+        let err = match mailbox.start_lifecycle(MailboxLifecycleConfig::default()) {
+            Ok(_) => panic!("sync start must not race ready startup"),
+            Err(error) => error,
+        };
+        assert!(
+            err.to_string()
+                .contains("lifecycle transition is already running")
+        );
+
+        let handle = ready
+            .await
+            .expect("ready task should not panic")
+            .expect("ready lifecycle should start");
+        assert_eq!(
+            store.reclaim_calls(),
+            1,
+            "ready recovery should not be duplicated by sync start"
+        );
+        handle.shutdown().await.expect("shutdown lifecycle");
+    }
+
+    #[tokio::test]
+    async fn start_lifecycle_is_idempotent_and_drop_does_not_abort_recovery() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store.clone());
+
+        let mut request = RunRequest::new("thread-drop-recover", vec![Message::user("recover")])
+            .with_agent_id("missing-agent");
+        let (thread_id, messages) =
+            validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false)
+                .unwrap();
+        mailbox
+            .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
+            .await
+            .expect("prepare queued run");
+        let dispatch = mailbox
+            .build_dispatch(&request, &thread_id)
+            .expect("build queued dispatch");
+        let dispatch_id = dispatch.dispatch_id.clone();
+        store
+            .enqueue(&dispatch)
+            .await
+            .expect("enqueue queued dispatch");
+
+        let handle = mailbox
+            .start_lifecycle(MailboxLifecycleConfig {
+                startup_delay: Duration::from_millis(10),
+                ..Default::default()
+            })
+            .expect("lifecycle start should succeed");
+        let duplicate = mailbox
+            .start_lifecycle(MailboxLifecycleConfig::default())
+            .expect("duplicate lifecycle start should be a no-op");
+        assert!(handle.is_running());
+        assert!(duplicate.is_running());
+
+        drop(handle);
+        drop(duplicate);
+
+        wait_for_dispatch(&store, &dispatch_id, |dispatch| {
+            dispatch.status == RunDispatchStatus::DeadLetter
+        })
+        .await;
+
+        let cleanup = mailbox
+            .start_lifecycle(MailboxLifecycleConfig::default())
+            .expect("should return the existing lifecycle handle");
+        cleanup.shutdown().await.expect("shutdown lifecycle");
+        assert!(!cleanup.is_running());
+    }
+
+    #[tokio::test]
+    async fn start_lifecycle_explicit_abort_allows_restart() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store);
+
+        let first = mailbox
+            .start_lifecycle(MailboxLifecycleConfig::default())
+            .expect("first lifecycle start should succeed");
+        assert!(first.is_running());
+        first.shutdown().await.expect("shutdown first lifecycle");
+        assert!(!first.is_running());
+
+        let second = mailbox
+            .start_lifecycle(MailboxLifecycleConfig::default())
+            .expect("lifecycle should restart after explicit abort");
+        assert!(second.is_running());
+        second.shutdown().await.expect("shutdown second lifecycle");
+        assert!(!second.is_running());
+    }
+
+    #[tokio::test]
+    async fn maintenance_callback_runs_on_gc_tick() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = Arc::new(Mailbox::new(
+            runtime,
+            store,
+            Arc::new(InMemoryStore::new()),
+            "test-consumer".to_string(),
+            MailboxConfig {
+                gc_interval: Duration::from_millis(10),
+                sweep_interval: Duration::from_secs(60),
+                ..Default::default()
+            },
+        ));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_hook = Arc::clone(&calls);
+        let handle = mailbox
+            .start_lifecycle(MailboxLifecycleConfig {
+                maintenance_callback: Some(Arc::new(move || {
+                    calls_for_hook.fetch_add(1, Ordering::SeqCst);
+                })),
+                ..Default::default()
+            })
+            .expect("lifecycle should start");
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while calls.load(Ordering::SeqCst) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "maintenance callback did not run"
+            );
+            sleep(Duration::from_millis(5)).await;
+        }
+        handle.shutdown().await.expect("shutdown lifecycle");
+    }
+
+    #[tokio::test]
+    async fn start_lifecycle_handle_drop_keeps_lifecycle_running() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store);
+
+        let handle = mailbox
+            .start_lifecycle(MailboxLifecycleConfig::default())
+            .expect("lifecycle should start");
+        assert!(handle.is_running());
+        drop(handle);
+
+        let handle = mailbox
+            .start_lifecycle(MailboxLifecycleConfig::default())
+            .expect("lifecycle should still be running after handle drop");
+        assert!(handle.is_running());
+        handle.shutdown().await.expect("shutdown lifecycle");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_shutdown_waits_for_maintenance_to_quiesce() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = Arc::new(Mailbox::new(
+            runtime,
+            store,
+            Arc::new(InMemoryStore::new()),
+            "test-consumer".to_string(),
+            MailboxConfig {
+                gc_interval: Duration::from_millis(10),
+                sweep_interval: Duration::from_secs(60),
+                ..Default::default()
+            },
+        ));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_hook = Arc::clone(&calls);
+        let handle = mailbox
+            .start_lifecycle(MailboxLifecycleConfig {
+                maintenance_callback: Some(Arc::new(move || {
+                    calls_for_hook.fetch_add(1, Ordering::SeqCst);
+                })),
+                ..Default::default()
+            })
+            .expect("lifecycle should start");
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while calls.load(Ordering::SeqCst) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "maintenance callback did not run"
+            );
+            sleep(Duration::from_millis(5)).await;
+        }
+
+        handle.shutdown().await.expect("shutdown should quiesce");
+        assert!(!handle.is_running());
+        let calls_after_shutdown = calls.load(Ordering::SeqCst);
+        sleep(Duration::from_millis(40)).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            calls_after_shutdown,
+            "maintenance callback should not run after shutdown completes"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_start_lifecycle_is_idempotent() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store);
+
+        let mut joins = Vec::new();
+        for _ in 0..32 {
+            let mb = Arc::clone(&mailbox);
+            joins.push(tokio::spawn(async move {
+                mb.start_lifecycle(MailboxLifecycleConfig::default())
+            }));
+        }
+
+        let mut handles = Vec::new();
+        for join in joins {
+            match join.await.expect("start task should not panic") {
+                Ok(handle) => handles.push(handle),
+                Err(err) => panic!("idempotent lifecycle start should not fail: {err}"),
+            }
+        }
+
+        assert_eq!(handles.len(), 32, "all concurrent starters get a handle");
+        assert!(handles.iter().all(MailboxLifecycleHandle::is_running));
+        handles[0].shutdown().await.expect("shutdown lifecycle");
+        assert!(handles.iter().all(|handle| !handle.is_running()));
+    }
+
+    #[tokio::test]
+    async fn start_lifecycle_runs_startup_recovery_for_existing_queued_dispatches() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store.clone());
+
+        let mut request = RunRequest::new("thread-recover", vec![Message::user("recover me")])
+            .with_agent_id("missing-agent");
+        let (thread_id, messages) =
+            validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false)
+                .unwrap();
+        mailbox
+            .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
+            .await
+            .expect("prepare queued run");
+        let dispatch = mailbox
+            .build_dispatch(&request, &thread_id)
+            .expect("build queued dispatch");
+        let dispatch_id = dispatch.dispatch_id.clone();
+        store
+            .enqueue(&dispatch)
+            .await
+            .expect("enqueue queued dispatch");
+
+        let handle = mailbox
+            .start_lifecycle(MailboxLifecycleConfig::default())
+            .expect("lifecycle should start");
+
+        let recovered = wait_for_dispatch(&store, &dispatch_id, |dispatch| {
+            dispatch.status == RunDispatchStatus::DeadLetter
+        })
+        .await;
+
+        assert_eq!(recovered.status, RunDispatchStatus::DeadLetter);
+        assert!(
+            recovered
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("missing-agent")),
+            "dead-letter error should preserve the runtime failure: {recovered:?}"
+        );
+        handle.shutdown().await.expect("shutdown lifecycle");
+    }
+
+    #[tokio::test]
+    async fn start_lifecycle_reclaims_expired_claimed_dispatches_and_executes_them() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store.clone());
+
+        let mut request = RunRequest::new("thread-stale", vec![Message::user("recover stale")])
+            .with_agent_id("missing-agent");
+        let (thread_id, messages) =
+            validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false)
+                .unwrap();
+        mailbox
+            .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
+            .await
+            .expect("prepare stale run");
+        let dispatch = mailbox
+            .build_dispatch(&request, &thread_id)
+            .expect("build stale claimed dispatch");
+        let dispatch_id = dispatch.dispatch_id.clone();
+        let claim_now = dispatch.available_at;
+        store
+            .enqueue(&dispatch)
+            .await
+            .expect("enqueue queued dispatch");
+        let claimed = store
+            .claim("thread-stale", "dead-consumer", 1, claim_now, 1)
+            .await
+            .expect("claim dispatch before simulated crash");
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].status, RunDispatchStatus::Claimed);
+        assert_eq!(claimed[0].lease_until, Some(claim_now + 1));
+        sleep(Duration::from_millis(2)).await;
+
+        let handle = mailbox
+            .start_lifecycle(MailboxLifecycleConfig::default())
+            .expect("lifecycle should start");
+
+        let recovered = wait_for_dispatch(&store, &dispatch_id, |dispatch| {
+            dispatch.status == RunDispatchStatus::DeadLetter
+                && dispatch.run_status == Some(RunStatus::Done)
+        })
+        .await;
+
+        assert_eq!(recovered.status, RunDispatchStatus::DeadLetter);
+        assert_eq!(recovered.attempt_count, 1);
+        let run_id = recovered.run_id.as_str();
+        assert_ne!(
+            run_id, dispatch_id,
+            "recovered stale dispatches should also keep run id separate from mailbox dispatch id"
+        );
+        assert!(recovered.dispatch_instance_id.is_some());
+        assert!(matches!(
+            recovered.termination,
+            Some(TerminationReason::Error(ref message)) if message.contains("missing-agent")
+        ));
+        assert!(
+            recovered
+                .run_error
+                .as_deref()
+                .is_some_and(|error| error.contains("missing-agent"))
+        );
+        handle.shutdown().await.expect("shutdown lifecycle");
+    }
+
+    #[test]
     fn run_request_fields() {
         let req = RunRequest::new("t-1", vec![Message::user("hello")]).with_agent_id("agent-a");
         assert_eq!(req.thread_id, "t-1");
         assert_eq!(req.agent_id.as_deref(), Some("agent-a"));
         assert_eq!(req.messages.len(), 1);
+        assert_eq!(req.run_mode, RunMode::Foreground);
+        assert_eq!(req.adapter, AdapterKind::Internal);
     }
 
     #[test]
     fn run_spec_validation_empty_messages_errors() {
-        let result = validate_run_inputs("thread-1".into(), vec![]);
+        let result = validate_run_inputs("thread-1".into(), vec![], false);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), MailboxError::Validation(_)));
     }
 
     #[test]
+    fn run_spec_validation_allows_decision_only_resume() {
+        let result = validate_run_inputs("thread-1".into(), vec![], true);
+        assert!(result.is_ok());
+        let (thread_id, messages) = result.unwrap();
+        assert_eq!(thread_id, "thread-1");
+        assert!(messages.is_empty());
+    }
+
+    #[test]
     fn run_spec_validation_blank_thread_id_generates_new() {
-        let result = validate_run_inputs("  ".into(), vec![Message::user("hi")]);
+        let result = validate_run_inputs("  ".into(), vec![Message::user("hi")], false);
         assert!(result.is_ok());
         let (thread_id, _) = result.unwrap();
         assert!(!thread_id.is_empty());
@@ -1502,7 +3130,7 @@ mod tests {
 
     #[test]
     fn run_spec_validation_trims_thread_id() {
-        let result = validate_run_inputs("  my-thread  ".into(), vec![Message::user("hi")]);
+        let result = validate_run_inputs("  my-thread  ".into(), vec![Message::user("hi")], false);
         assert!(result.is_ok());
         let (thread_id, _) = result.unwrap();
         assert_eq!(thread_id, "my-thread");
@@ -1516,8 +3144,22 @@ mod tests {
         assert!(matches!(queued, MailboxDispatchStatus::Queued));
     }
 
+    #[test]
+    fn mailbox_construction_depends_on_runtime_boundary_not_agent_runtime() {
+        let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
+        let mailbox = Mailbox::new_with_executor(
+            runtime,
+            make_store(),
+            Arc::new(InMemoryStore::new()),
+            "decoupled-consumer".to_string(),
+            MailboxConfig::default(),
+        );
+
+        assert_eq!(mailbox.consumer_id, "decoupled-consumer");
+    }
+
     #[tokio::test]
-    async fn submit_background_enqueues_job() {
+    async fn submit_background_enqueues_dispatch() {
         let store = make_store();
         let runtime = make_runtime();
         let mailbox = make_mailbox(runtime, store.clone());
@@ -1527,39 +3169,209 @@ mod tests {
         let result = mailbox.submit_background(request).await.unwrap();
 
         assert_eq!(result.thread_id, "thread-1");
-        assert!(!result.job_id.is_empty());
+        assert!(!result.dispatch_id.is_empty());
+        assert!(!result.run_id.is_empty());
+        assert_ne!(result.dispatch_id, result.run_id);
 
-        // Verify job is in store.
-        let jobs = store.list_jobs("thread-1", None, 100, 0).await.unwrap();
-        assert!(!jobs.is_empty());
+        // Verify dispatch is in store.
+        let dispatches = store
+            .list_dispatches("thread-1", None, 100, 0)
+            .await
+            .unwrap();
+        assert!(!dispatches.is_empty());
+        assert_eq!(dispatches[0].run_id, result.run_id);
     }
 
     #[tokio::test]
-    async fn cancel_queued_job_works() {
+    async fn submit_background_delivers_scheduled_policy_context() {
+        let store = make_store();
+        let runtime = Arc::new(RecordingMailboxRuntime::default());
+        let mailbox = Arc::new(Mailbox::new(
+            runtime.clone(),
+            store,
+            Arc::new(InMemoryStore::new()),
+            "recording-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let result = mailbox
+            .submit_background(
+                RunRequest::new("thread-policy-bg", vec![Message::user("hello")])
+                    .with_agent_id("agent-1")
+                    .with_adapter(AdapterKind::Acp),
+            )
+            .await
+            .expect("background submit should enqueue");
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if !runtime.requests.lock().expect("lock poisoned").is_empty() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "runtime did not receive request");
+            sleep(Duration::from_millis(5)).await;
+        }
+
+        let requests = runtime.requests.lock().expect("lock poisoned");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].run_mode, RunMode::Scheduled);
+        assert_eq!(requests[0].adapter, AdapterKind::Acp);
+        assert_eq!(
+            requests[0].dispatch_id.as_deref(),
+            Some(result.dispatch_id.as_str())
+        );
+        assert!(
+            requests[0].session_id.is_some(),
+            "dispatch session id should be set"
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_run_for_dispatch_precreates_created_run_and_thread_projection() {
+        let thread_store = Arc::new(InMemoryStore::new());
+        let runtime = Arc::new(
+            AgentRuntime::new(Arc::new(StubResolver))
+                .with_thread_run_store(thread_store.clone() as Arc<dyn ThreadRunStore>),
+        );
+        let mailbox_store = make_store();
+        let mailbox = make_mailbox_with_run_store(
+            runtime,
+            mailbox_store,
+            thread_store.clone() as Arc<dyn ThreadRunStore>,
+        );
+        let mut request = RunRequest::new("thread-created", vec![Message::user("plan this")])
+            .with_agent_id("agent-created")
+            .with_transport_request_id("transport-created");
+        let (thread_id, messages) =
+            validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false)
+                .unwrap();
+
+        let run_id = mailbox
+            .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
+            .await
+            .expect("precreate");
+
+        assert_eq!(request.run_id_hint.as_deref(), Some(run_id.as_str()));
+        let run = thread_store
+            .load_run(&run_id)
+            .await
+            .expect("load run")
+            .expect("created run");
+        assert_eq!(run.status, RunStatus::Created);
+        assert_eq!(run.agent_id, "agent-created");
+        let request_snapshot = run.request.as_ref().unwrap();
+        assert!(
+            !request_snapshot.input_message_ids.is_empty(),
+            "new run snapshots should reference thread messages instead of duplicating bodies"
+        );
+        assert_eq!(request_snapshot.input_message_count, 1);
+        assert_eq!(
+            request_snapshot.input_message_ids,
+            vec![messages[0].id.clone().expect("message id")]
+        );
+        let input = run.input.as_ref().expect("run input message range");
+        assert_eq!(input.thread_id, "thread-created");
+        assert_eq!(input.range.unwrap().from_seq, 1);
+        assert_eq!(input.range.unwrap().to_seq, 1);
+        assert_eq!(
+            input.trigger_message_ids,
+            vec![messages[0].id.clone().expect("message id")]
+        );
+        assert_eq!(
+            run.request
+                .as_ref()
+                .unwrap()
+                .transport_request_id
+                .as_deref(),
+            Some("transport-created")
+        );
+        let thread = thread_store
+            .load_thread("thread-created")
+            .await
+            .expect("load thread")
+            .expect("thread projection");
+        assert_eq!(thread.open_run_id.as_deref(), Some(run_id.as_str()));
+        assert_eq!(thread.latest_run_id.as_deref(), Some(run_id.as_str()));
+        assert!(thread.active_run_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn prepare_run_for_dispatch_inherits_previous_runtime_state() {
+        let thread_store = Arc::new(InMemoryStore::new());
+        let mut previous = seeded_waiting_run("run-prev", "thread-state", "agent-prev");
+        previous.status = RunStatus::Done;
+        previous.state = Some(awaken_contract::state::PersistedState {
+            revision: 7,
+            extensions: std::collections::HashMap::from([(
+                "remote".to_string(),
+                json!({"context_id": "remote-ctx-1"}),
+            )]),
+        });
+        thread_store
+            .checkpoint("thread-state", &[Message::user("first")], &previous)
+            .await
+            .expect("seed previous run");
+
+        let runtime = Arc::new(
+            AgentRuntime::new(Arc::new(StubResolver))
+                .with_thread_run_store(thread_store.clone() as Arc<dyn ThreadRunStore>),
+        );
+        let mailbox = make_mailbox_with_run_store(
+            runtime,
+            make_store(),
+            thread_store.clone() as Arc<dyn ThreadRunStore>,
+        );
+        let mut request = RunRequest::new("thread-state", vec![Message::user("second")]);
+        let (thread_id, messages) =
+            validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false)
+                .unwrap();
+
+        let run_id = mailbox
+            .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
+            .await
+            .expect("precreate");
+
+        let run = thread_store
+            .load_run(&run_id)
+            .await
+            .expect("load run")
+            .expect("created run");
+        assert_eq!(run.status, RunStatus::Created);
+        assert_eq!(run.agent_id, "agent-prev");
+        let input = run.input.as_ref().expect("run input message range");
+        assert_eq!(input.range.unwrap().from_seq, 1);
+        assert_eq!(input.range.unwrap().to_seq, 2);
+        let state = run.state.expect("inherited runtime state");
+        assert_eq!(state.revision, 7);
+        assert_eq!(state.extensions["remote"]["context_id"], "remote-ctx-1");
+    }
+
+    #[tokio::test]
+    async fn cancel_queued_dispatch_works() {
         let store = make_store();
         let runtime = make_runtime();
         let mailbox = make_mailbox(runtime, store.clone());
 
-        // Submit a job with available_at in the future so it stays Queued.
+        // Submit a dispatch with available_at in the future so it stays Queued.
         let request =
             RunRequest::new("thread-cancel", vec![Message::user("hello")]).with_agent_id("agent-1");
         let result = mailbox.submit_background(request).await.unwrap();
-        let job_id = result.job_id.clone();
+        let dispatch_id = result.dispatch_id.clone();
 
-        // The job might already be dispatched (claimed). Load it to check.
-        let loaded = store.load_job(&job_id).await.unwrap().unwrap();
-        if loaded.status == MailboxJobStatus::Queued {
-            let cancelled = mailbox.cancel(&job_id).await.unwrap();
+        // The dispatch might already be dispatched (claimed). Load it to check.
+        let loaded = store.load_dispatch(&dispatch_id).await.unwrap().unwrap();
+        if loaded.status == RunDispatchStatus::Queued {
+            let cancelled = mailbox.cancel(&dispatch_id).await.unwrap();
             assert!(cancelled);
 
-            let after = store.load_job(&job_id).await.unwrap().unwrap();
-            assert_eq!(after.status, MailboxJobStatus::Cancelled);
+            let after = store.load_dispatch(&dispatch_id).await.unwrap().unwrap();
+            assert_eq!(after.status, RunDispatchStatus::Cancelled);
         }
         // If already Claimed, cancel via runtime path is tested implicitly.
     }
 
     #[tokio::test]
-    async fn list_jobs_returns_entries() {
+    async fn list_dispatches_returns_entries() {
         let store = make_store();
         let runtime = make_runtime();
         let mailbox = make_mailbox(runtime, store.clone());
@@ -1570,11 +3382,11 @@ mod tests {
             mailbox.submit_background(request).await.unwrap();
         }
 
-        let jobs = mailbox
-            .list_jobs("thread-list", None, 100, 0)
+        let dispatches = mailbox
+            .list_dispatches("thread-list", None, 100, 0)
             .await
             .unwrap();
-        assert_eq!(jobs.len(), 3);
+        assert_eq!(dispatches.len(), 3);
     }
 
     #[test]
@@ -1589,11 +3401,13 @@ mod tests {
     #[test]
     fn mailbox_submit_result_fields() {
         let result = MailboxSubmitResult {
-            job_id: "job-1".into(),
+            dispatch_id: "dispatch-1".into(),
+            run_id: "run-1".into(),
             thread_id: "thread-1".into(),
             status: MailboxDispatchStatus::Running,
         };
-        assert_eq!(result.job_id, "job-1");
+        assert_eq!(result.dispatch_id, "dispatch-1");
+        assert_eq!(result.run_id, "run-1");
         assert_eq!(result.thread_id, "thread-1");
         assert!(matches!(result.status, MailboxDispatchStatus::Running));
     }
@@ -1660,6 +3474,7 @@ mod tests {
     fn classify_error_ok_is_completed() {
         use awaken_contract::contract::lifecycle::TerminationReason;
         let result = Ok(awaken_runtime::loop_runner::AgentRunResult {
+            run_id: "run-1".to_string(),
             response: "done".to_string(),
             termination: TerminationReason::NaturalEnd,
             steps: 1,
@@ -1761,7 +3576,7 @@ mod tests {
     #[test]
     fn validate_run_inputs_preserves_normal_thread_id() {
         let (thread_id, msgs) =
-            validate_run_inputs("my-thread".into(), vec![Message::user("hi")]).unwrap();
+            validate_run_inputs("my-thread".into(), vec![Message::user("hi")], false).unwrap();
         assert_eq!(thread_id, "my-thread");
         assert_eq!(msgs.len(), 1);
     }
@@ -1771,6 +3586,7 @@ mod tests {
         let (_, msgs) = validate_run_inputs(
             "t".into(),
             vec![Message::user("a"), Message::user("b"), Message::user("c")],
+            false,
         )
         .unwrap();
         assert_eq!(msgs.len(), 3);
@@ -1778,7 +3594,8 @@ mod tests {
 
     #[test]
     fn validate_run_inputs_empty_string_generates_uuid() {
-        let (thread_id, _) = validate_run_inputs("".into(), vec![Message::user("hi")]).unwrap();
+        let (thread_id, _) =
+            validate_run_inputs("".into(), vec![Message::user("hi")], false).unwrap();
         assert!(!thread_id.is_empty());
         // UUIDv7 is 36 chars with hyphens
         assert_eq!(thread_id.len(), 36);
@@ -1805,65 +3622,71 @@ mod tests {
         assert_eq!(config.max_retry_delay_ms, 60_000);
     }
 
-    // ── build_job field validation ──────────────────────────────────
+    // ── build_dispatch field validation ──────────────────────────────────
 
     #[tokio::test]
-    async fn build_job_sets_correct_fields() {
+    async fn build_dispatch_sets_correct_fields() {
         let store = make_store();
         let runtime = make_runtime();
         let mailbox = make_mailbox(runtime, store);
 
         let request =
-            RunRequest::new("thread-42", vec![Message::user("test")]).with_agent_id("agent-x");
-        let messages = request.messages.clone();
-        let job = mailbox.build_job(&request, "thread-42", messages).unwrap();
+            RunRequest::new("thread-42", vec![Message::user("test")]).with_run_id_hint("run-42");
+        let dispatch = mailbox.build_dispatch(&request, "thread-42").unwrap();
 
-        assert_eq!(job.mailbox_id, "thread-42");
-        assert_eq!(job.agent_id, "agent-x");
-        assert_eq!(job.messages.len(), 1);
-        assert_eq!(job.status, MailboxJobStatus::Queued);
-        assert_eq!(job.attempt_count, 0);
-        assert_eq!(job.max_attempts, 5); // default
-        assert_eq!(job.priority, 128);
-        assert_eq!(job.generation, 0);
-        assert!(job.claim_token.is_none());
-        assert!(job.claimed_by.is_none());
-        assert!(job.lease_until.is_none());
-        assert!(job.last_error.is_none());
-        assert!(matches!(job.origin, MailboxJobOrigin::User));
-        // request_extras is None when no overrides/decisions/frontend_tools
-        assert!(job.request_extras.is_none());
+        assert_eq!(dispatch.thread_id, "thread-42");
+        assert_eq!(dispatch.run_id, "run-42");
+        assert_eq!(dispatch.status, RunDispatchStatus::Queued);
+        assert_eq!(dispatch.attempt_count, 0);
+        assert_eq!(dispatch.max_attempts, 5); // default
+        assert_eq!(dispatch.priority, 128);
+        assert_eq!(dispatch.dispatch_epoch, 0);
+        assert!(dispatch.claim_token.is_none());
+        assert!(dispatch.claimed_by.is_none());
+        assert!(dispatch.lease_until.is_none());
+        assert!(dispatch.last_error.is_none());
     }
 
-    #[tokio::test]
-    async fn build_job_without_agent_id_sets_empty() {
+    #[test]
+    fn build_dispatch_requires_prepared_run_id() {
         let store = make_store();
         let runtime = make_runtime();
         let mailbox = make_mailbox(runtime, store);
 
         let request = RunRequest::new("thread-1", vec![Message::user("hi")]);
-        let messages = request.messages.clone();
-        let job = mailbox.build_job(&request, "thread-1", messages).unwrap();
-        assert_eq!(job.agent_id, "");
+        assert!(mailbox.build_dispatch(&request, "thread-1").is_err());
     }
 
     #[tokio::test]
-    async fn build_job_preserves_request_extras() {
+    async fn prepare_run_preserves_request_extras_on_run_snapshot() {
         let store = make_store();
         let runtime = make_runtime();
-        let mailbox = make_mailbox(runtime, store);
+        let thread_store = Arc::new(InMemoryStore::new());
+        let mailbox = Arc::new(Mailbox::new(
+            runtime,
+            store,
+            thread_store.clone(),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
 
-        let request = RunRequest::new("thread-ext", vec![Message::user("hi")])
+        let mut request = RunRequest::new("thread-ext", vec![Message::user("hi")])
             .with_agent_id("a1")
             .with_frontend_tools(vec![awaken_contract::contract::tool::ToolDescriptor::new(
                 "ft1", "FT1", "desc",
             )]);
-        let messages = request.messages.clone();
-        let job = mailbox.build_job(&request, "thread-ext", messages).unwrap();
+        let (thread_id, messages) =
+            validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false)
+                .unwrap();
+        let run_id = mailbox
+            .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
+            .await
+            .unwrap();
+        let run = thread_store.load_run(&run_id).await.unwrap().unwrap();
 
-        assert!(job.request_extras.is_some());
-        let extras = job.request_extras.unwrap();
-        assert!(extras["frontend_tools"].is_array());
+        let snapshot = run.request.expect("request snapshot");
+        assert_eq!(snapshot.frontend_tools.len(), 1);
+        assert!(snapshot.request_extras.is_some());
     }
 
     #[test]
@@ -1874,8 +3697,12 @@ mod tests {
             decisions: vec![],
             frontend_tools: vec![ToolDescriptor::new("ft1", "FT1", "desc")],
             continue_run_id: None,
-            job_id_hint: None,
+            run_id_hint: None,
+            dispatch_id_hint: None,
             parent_thread_id: None,
+            transport_request_id: None,
+            run_mode: RunMode::Scheduled,
+            adapter: AdapterKind::Acp,
         };
         let value = extras.to_value().unwrap().unwrap();
         let parsed = RunRequestExtras::from_value(&value).unwrap();
@@ -1883,6 +3710,8 @@ mod tests {
         assert_eq!(parsed.frontend_tools[0].id, "ft1");
         assert!(parsed.decisions.is_empty());
         assert!(parsed.overrides.is_none());
+        assert_eq!(parsed.run_mode, RunMode::Scheduled);
+        assert_eq!(parsed.adapter, AdapterKind::Acp);
     }
 
     #[test]
@@ -1892,8 +3721,12 @@ mod tests {
             decisions: vec![],
             frontend_tools: vec![],
             continue_run_id: None,
-            job_id_hint: None,
+            run_id_hint: None,
+            dispatch_id_hint: None,
             parent_thread_id: None,
+            transport_request_id: None,
+            run_mode: RunMode::Foreground,
+            adapter: AdapterKind::Internal,
         };
         assert!(extras.to_value().unwrap().is_none());
     }
@@ -1906,68 +3739,116 @@ mod tests {
             decisions: vec![],
             frontend_tools: vec![ToolDescriptor::new("ft1", "FT1", "desc")],
             continue_run_id: None,
-            job_id_hint: Some("job-1".into()),
+            run_id_hint: Some("run-1".into()),
+            dispatch_id_hint: Some("dispatch-1".into()),
             parent_thread_id: Some("parent-thread".into()),
+            transport_request_id: Some("transport-1".into()),
+            run_mode: RunMode::Resume,
+            adapter: AdapterKind::AgUi,
         };
         let request = RunRequest::new("t1", vec![Message::user("hi")]);
         let applied = extras.apply_to(request);
         assert_eq!(applied.frontend_tools.len(), 1);
-        assert_eq!(applied.job_id_hint.as_deref(), Some("job-1"));
+        assert_eq!(applied.run_id_hint.as_deref(), Some("run-1"));
+        assert_eq!(applied.dispatch_id_hint.as_deref(), Some("dispatch-1"));
         assert_eq!(applied.parent_thread_id.as_deref(), Some("parent-thread"));
+        assert_eq!(applied.transport_request_id.as_deref(), Some("transport-1"));
+        assert_eq!(applied.run_mode, RunMode::Resume);
+        assert_eq!(applied.adapter, AdapterKind::AgUi);
     }
 
-    #[test]
-    fn build_job_round_trips_parent_thread_id() {
+    #[tokio::test]
+    async fn prepare_run_round_trips_parent_thread_id() {
         let store = make_store();
         let runtime = make_runtime();
-        let mailbox = make_mailbox(runtime, store);
+        let thread_store = Arc::new(InMemoryStore::new());
+        let mailbox = Arc::new(Mailbox::new(
+            runtime,
+            store,
+            thread_store.clone(),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
 
-        let request = RunRequest::new("thread-child", vec![Message::user("hi")])
+        let mut request = RunRequest::new("thread-child", vec![Message::user("hi")])
             .with_agent_id("agent")
             .with_parent_thread_id("thread-parent");
-        let job = mailbox
-            .build_job(&request, "thread-child", request.messages.clone())
-            .expect("build job should succeed");
+        let (thread_id, messages) =
+            validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false)
+                .unwrap();
+        let run_id = mailbox
+            .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
+            .await
+            .unwrap();
+        let run = thread_store.load_run(&run_id).await.unwrap().unwrap();
 
-        let extras = RunRequestExtras::from_value(job.request_extras.as_ref().unwrap())
-            .expect("extras should deserialize");
-        let restored = extras.apply_to(RunRequest::new(job.mailbox_id, job.messages));
-        assert_eq!(restored.parent_thread_id.as_deref(), Some("thread-parent"));
+        assert_eq!(
+            run.request
+                .as_ref()
+                .and_then(|snapshot| snapshot.parent_thread_id.as_deref()),
+            Some("thread-parent")
+        );
     }
 
     #[tokio::test]
-    async fn build_job_preserves_origin_metadata() {
+    async fn prepare_run_preserves_origin_metadata() {
         let store = make_store();
         let runtime = make_runtime();
-        let mailbox = make_mailbox(runtime, store);
+        let thread_store = Arc::new(InMemoryStore::new());
+        let mailbox = Arc::new(Mailbox::new(
+            runtime,
+            store,
+            thread_store.clone(),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
 
-        let request = RunRequest::new("thread-meta", vec![Message::user("hi")])
+        let mut request = RunRequest::new("thread-meta", vec![Message::user("hi")])
             .with_agent_id("a1")
-            .with_origin(MailboxJobOrigin::A2A)
+            .with_origin(RunRequestOrigin::A2A)
             .with_parent_run_id("parent-run-1");
-        let messages = request.messages.clone();
-        let job = mailbox
-            .build_job(&request, "thread-meta", messages)
+        let (thread_id, messages) =
+            validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false)
+                .unwrap();
+        let run_id = mailbox
+            .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
+            .await
             .unwrap();
+        let run = thread_store.load_run(&run_id).await.unwrap().unwrap();
+        let snapshot = run.request.as_ref().unwrap();
 
-        assert!(matches!(job.origin, MailboxJobOrigin::A2A));
-        assert_eq!(job.parent_run_id.as_deref(), Some("parent-run-1"));
+        assert!(matches!(snapshot.origin, RunRequestOrigin::A2A));
+        assert_eq!(run.parent_run_id.as_deref(), Some("parent-run-1"));
     }
 
     #[tokio::test]
-    async fn build_job_defaults_origin_to_user() {
+    async fn prepare_run_defaults_origin_to_user() {
         let store = make_store();
         let runtime = make_runtime();
-        let mailbox = make_mailbox(runtime, store);
+        let thread_store = Arc::new(InMemoryStore::new());
+        let mailbox = Arc::new(Mailbox::new(
+            runtime,
+            store,
+            thread_store.clone(),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
 
-        let request = RunRequest::new("thread-default", vec![Message::user("hi")]);
-        let messages = request.messages.clone();
-        let job = mailbox
-            .build_job(&request, "thread-default", messages)
+        let mut request = RunRequest::new("thread-default", vec![Message::user("hi")]);
+        let (thread_id, messages) =
+            validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false)
+                .unwrap();
+        let run_id = mailbox
+            .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
+            .await
             .unwrap();
+        let run = thread_store.load_run(&run_id).await.unwrap().unwrap();
 
-        assert!(matches!(job.origin, MailboxJobOrigin::User));
-        assert!(job.parent_run_id.is_none());
+        assert!(matches!(
+            run.request.as_ref().unwrap().origin,
+            RunRequestOrigin::User
+        ));
+        assert!(run.parent_run_id.is_none());
     }
 
     // ── MailboxError variants ──────────────────────────────────────
@@ -1992,6 +3873,100 @@ mod tests {
         assert!(format!("{:?}", permanent).contains("fatal"));
     }
 
+    #[tokio::test]
+    async fn background_success_records_run_result_and_keeps_dispatch_id_separate_from_run_id() {
+        let mailbox_store = make_store();
+        let run_store = Arc::new(InMemoryStore::new());
+        let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+            content: vec![ContentBlock::text("finished")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        }]));
+        let resolver = Arc::new(FixedResolver {
+            agent: ResolvedAgent::new("agent", "m", "sys", llm),
+            plugins: vec![],
+        });
+        let runtime = Arc::new(AgentRuntime::new(resolver));
+        let mailbox = Arc::new(Mailbox::new(
+            runtime,
+            mailbox_store.clone(),
+            run_store,
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let submitted = mailbox
+            .submit_background(
+                RunRequest::new("thread-run-result", vec![Message::user("go")])
+                    .with_agent_id("agent"),
+            )
+            .await
+            .expect("submit should succeed");
+
+        let acked = wait_for_dispatch(&mailbox_store, &submitted.dispatch_id, |dispatch| {
+            dispatch.status == RunDispatchStatus::Acked
+                && dispatch.run_status == Some(RunStatus::Done)
+        })
+        .await;
+
+        let run_id = acked.run_id.as_str();
+        assert_ne!(
+            run_id, submitted.dispatch_id,
+            "default mailbox dispatch IDs must not be used as canonical run IDs"
+        );
+        assert!(acked.dispatch_instance_id.is_some());
+        assert_eq!(acked.termination, Some(TerminationReason::NaturalEnd));
+        assert_eq!(acked.run_response.as_deref(), Some("finished"));
+        assert!(acked.run_error.is_none());
+        assert!(acked.completed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn background_permanent_error_records_run_result_before_dead_letter() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store.clone());
+
+        let submitted = mailbox
+            .submit_background(
+                RunRequest::new("thread-missing-agent", vec![Message::user("go")])
+                    .with_agent_id("missing-agent"),
+            )
+            .await
+            .expect("submit should succeed");
+
+        let dead = wait_for_dispatch(&store, &submitted.dispatch_id, |dispatch| {
+            dispatch.status == RunDispatchStatus::DeadLetter
+                && dispatch.run_status == Some(RunStatus::Done)
+                && dispatch.run_error.is_some()
+        })
+        .await;
+
+        let run_id = dead.run_id.as_str();
+        assert_ne!(
+            run_id, submitted.dispatch_id,
+            "synthetic terminal events must preserve canonical run id instead of reusing dispatch id"
+        );
+        assert!(dead.dispatch_instance_id.is_some());
+        assert!(matches!(
+            dead.termination,
+            Some(TerminationReason::Error(ref message)) if message.contains("missing-agent")
+        ));
+        assert!(
+            dead.last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("missing-agent"))
+        );
+        assert!(
+            dead.run_error
+                .as_deref()
+                .is_some_and(|error| error.contains("missing-agent"))
+        );
+        assert!(dead.completed_at.is_some());
+    }
+
     // ── MailboxDispatchStatus ────────────────────────────────────────
 
     #[test]
@@ -2003,19 +3978,19 @@ mod tests {
     // ── Interrupt test ──────────────────────────────────────────────
 
     #[tokio::test]
-    async fn interrupt_bumps_generation() {
+    async fn interrupt_bumps_dispatch_epoch() {
         let store = make_store();
         let runtime = make_runtime();
         let mailbox = make_mailbox(runtime, store.clone());
 
-        // Submit some jobs
+        // Submit some dispatches
         let request =
             RunRequest::new("thread-int", vec![Message::user("a")]).with_agent_id("agent-1");
         mailbox.submit_background(request).await.unwrap();
 
         let result = mailbox.interrupt("thread-int").await.unwrap();
-        // After interrupt, the generation should be bumped
-        assert!(result.new_generation > 0);
+        // After interrupt, the dispatch epoch should be bumped
+        assert!(result.new_dispatch_epoch > 0);
     }
 
     // ── submit streaming returns event channel ──────────────────────
@@ -2031,7 +4006,7 @@ mod tests {
         let (result, _event_rx) = mailbox.submit(request).await.unwrap();
 
         assert_eq!(result.thread_id, "thread-stream");
-        assert!(!result.job_id.is_empty());
+        assert!(!result.dispatch_id.is_empty());
         assert!(matches!(
             result.status,
             MailboxDispatchStatus::Running | MailboxDispatchStatus::Queued
@@ -2066,15 +4041,20 @@ mod tests {
                 .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>),
         );
         let mailbox_store = make_store();
-        let mailbox = make_mailbox(runtime, mailbox_store);
+        let mailbox = make_mailbox_with_run_store(
+            runtime,
+            mailbox_store,
+            store.clone() as Arc<dyn ThreadRunStore>,
+        );
 
-        mailbox
+        let submitted = mailbox
             .submit_background(
                 RunRequest::new("thread-waiting", vec![Message::user("poke")])
                     .with_agent_id("agent"),
             )
             .await
             .expect("submit should succeed");
+        assert_eq!(submitted.run_id, "run-waiting");
 
         let latest = wait_for_latest_run(&store, "thread-waiting", |run| {
             run.status == RunStatus::Done && run.updated_at > 1
@@ -2086,6 +4066,181 @@ mod tests {
             "incoming messages should continue the existing waiting run"
         );
         assert_eq!(latest.status, RunStatus::Done);
+    }
+
+    #[tokio::test]
+    async fn structured_user_input_waiting_thread_is_reused_by_incoming_message() {
+        let store = Arc::new(InMemoryStore::new());
+        let mut waiting = seeded_waiting_run("run-user-input", "thread-user-input", "agent");
+        waiting.waiting = Some(RunWaitingState {
+            reason: WaitingReason::UserInput,
+            ticket_ids: Vec::new(),
+            tickets: Vec::new(),
+            since_dispatch_id: None,
+            message: Some("waiting for user input".to_string()),
+        });
+        store.create_run(&waiting).await.expect("seed waiting run");
+
+        let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+            content: vec![ContentBlock::text("continued")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        }]));
+        let resolver = Arc::new(FixedResolver {
+            agent: ResolvedAgent::new("agent", "m", "sys", llm),
+            plugins: vec![],
+        });
+        let runtime = Arc::new(
+            AgentRuntime::new(resolver)
+                .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>),
+        );
+        let mailbox = Arc::new(Mailbox::new(
+            runtime,
+            make_store(),
+            store.clone(),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let submitted = mailbox
+            .submit_background(
+                RunRequest::new("thread-user-input", vec![Message::user("continue")])
+                    .with_agent_id("agent"),
+            )
+            .await
+            .expect("submit should succeed");
+
+        assert_eq!(
+            submitted.run_id, "run-user-input",
+            "structured user-input waiting should keep the same user-intent run"
+        );
+    }
+
+    #[tokio::test]
+    async fn reusable_waiting_run_prefers_thread_open_run_projection_over_latest_run() {
+        let store = Arc::new(InMemoryStore::new());
+        let thread_id = "thread-open-projection";
+        let mut open = seeded_waiting_run("run-open", thread_id, "agent");
+        open.waiting = Some(RunWaitingState {
+            reason: WaitingReason::UserInput,
+            ticket_ids: Vec::new(),
+            tickets: Vec::new(),
+            since_dispatch_id: None,
+            message: Some("waiting for explicit input".to_string()),
+        });
+        open.updated_at = 10;
+        let mut newer = seeded_waiting_run("run-newer-latest", thread_id, "agent");
+        newer.updated_at = 20;
+
+        store.create_run(&open).await.expect("seed open run");
+        store.create_run(&newer).await.expect("seed newer run");
+        let mut thread = Thread::with_id(thread_id);
+        thread.open_run_id = Some(open.run_id.clone());
+        store
+            .save_thread(&thread)
+            .await
+            .expect("save thread projection");
+
+        let runtime = Arc::new(RecordingStoreMailboxRuntime::new(store.clone()));
+        let mailbox = Arc::new(Mailbox::new(
+            runtime.clone(),
+            make_store(),
+            store.clone(),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let submitted = mailbox
+            .submit_background(
+                RunRequest::new(thread_id, vec![Message::user("continue open")])
+                    .with_agent_id("agent"),
+            )
+            .await
+            .expect("submit should succeed");
+
+        assert_eq!(
+            submitted.run_id, "run-open",
+            "thread.open_run_id must win over latest_run() when resuming same user intent"
+        );
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if !runtime.requests.lock().expect("lock poisoned").is_empty() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "request was not dispatched");
+            sleep(Duration::from_millis(5)).await;
+        }
+        let requests = runtime.requests.lock().expect("lock poisoned");
+        assert_eq!(requests[0].continue_run_id.as_deref(), Some("run-open"));
+    }
+
+    #[tokio::test]
+    async fn recover_only_enqueues_orphaned_background_task_waiting_runs() {
+        let store = Arc::new(InMemoryStore::new());
+        let mut background = seeded_waiting_run("run-bg", "thread-bg-recover", "agent");
+        background.waiting = Some(RunWaitingState {
+            reason: WaitingReason::BackgroundTasks,
+            ticket_ids: Vec::new(),
+            tickets: Vec::new(),
+            since_dispatch_id: None,
+            message: None,
+        });
+        store.create_run(&background).await.expect("seed bg run");
+
+        let mut user_input = seeded_waiting_run("run-user", "thread-user-recover", "agent");
+        user_input.waiting = Some(RunWaitingState {
+            reason: WaitingReason::UserInput,
+            ticket_ids: Vec::new(),
+            tickets: Vec::new(),
+            since_dispatch_id: None,
+            message: Some("waiting for user".to_string()),
+        });
+        store
+            .create_run(&user_input)
+            .await
+            .expect("seed user-input run");
+
+        let mailbox_store = make_store();
+        let runtime = Arc::new(RecordingStoreMailboxRuntime::new(store.clone()));
+        let mailbox = Arc::new(Mailbox::new(
+            runtime.clone(),
+            mailbox_store.clone(),
+            store.clone(),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let recovered = mailbox.recover().await.expect("recover should succeed");
+        assert_eq!(recovered, 1);
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if runtime.requests.lock().expect("lock poisoned").len() == 1 {
+                break;
+            }
+            assert!(Instant::now() < deadline, "recover did not dispatch wake");
+            sleep(Duration::from_millis(5)).await;
+        }
+
+        {
+            let requests = runtime.requests.lock().expect("lock poisoned");
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].thread_id, "thread-bg-recover");
+            assert_eq!(requests[0].continue_run_id.as_deref(), Some("run-bg"));
+            assert_eq!(requests[0].run_mode, RunMode::InternalWake);
+            assert_eq!(requests[0].adapter, AdapterKind::Internal);
+        }
+
+        let user_dispatches = mailbox_store
+            .list_dispatches("thread-user-recover", None, 10, 0)
+            .await
+            .expect("list user dispatches");
+        assert!(
+            user_dispatches.is_empty(),
+            "user-input waiting runs must stay suspended until explicit input"
+        );
     }
 
     #[tokio::test]
@@ -2124,7 +4279,11 @@ mod tests {
             AgentRuntime::new(resolver)
                 .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>),
         );
-        let mailbox = make_mailbox(runtime, mailbox_store.clone());
+        let mailbox = make_mailbox_with_run_store(
+            runtime,
+            mailbox_store.clone(),
+            store.clone() as Arc<dyn ThreadRunStore>,
+        );
 
         mailbox
             .submit_background(
@@ -2133,35 +4292,34 @@ mod tests {
             .await
             .expect("submit should succeed");
 
-        let waiting = wait_for_latest_run(&store, "thread-bg", |run| {
-            run.status == RunStatus::Waiting
-                && run.termination_code.as_deref() == Some("awaiting_tasks")
-        })
-        .await;
+        let waiting =
+            wait_for_latest_run(&store, "thread-bg", |run| run.is_background_task_waiting()).await;
         sleep(Duration::from_millis(100)).await;
 
-        let jobs = mailbox_store
-            .list_jobs("thread-bg", None, 10, 0)
+        let dispatches = mailbox_store
+            .list_dispatches("thread-bg", None, 10, 0)
             .await
-            .expect("list jobs should succeed");
+            .expect("list dispatches should succeed");
 
         assert!(
-            jobs.len() >= 2,
-            "background completion should enqueue an internal wake message; waiting run was {:?}, jobs were {:?}",
+            dispatches.len() >= 2,
+            "background completion should enqueue an internal wake message; waiting run was {:?}, dispatches were {:?}",
             waiting,
-            jobs
+            dispatches
         );
+        let messages = store
+            .load_messages("thread-bg")
+            .await
+            .expect("load messages")
+            .unwrap_or_default();
         assert!(
-            jobs.iter().skip(1).any(|job| {
-                job.messages.iter().any(|msg| {
-                    msg.role == awaken_contract::contract::message::Role::User
-                        && msg.visibility
-                            == awaken_contract::contract::message::Visibility::Internal
-                        && msg.text().contains("<background-task-event")
-                        && msg.text().contains("\"done\":true")
-                })
+            messages.iter().any(|msg| {
+                msg.role == awaken_contract::contract::message::Role::User
+                    && msg.visibility == awaken_contract::contract::message::Visibility::Internal
+                    && msg.text().contains("<background-task-event")
+                    && msg.text().contains("\"done\":true")
             }),
-            "expected a synthetic background wake job after task completion"
+            "expected a synthetic background wake message after task completion"
         );
     }
 
@@ -2195,7 +4353,7 @@ mod tests {
         let runtime = make_runtime();
         let mailbox = make_mailbox(runtime, store.clone());
 
-        // Submit 5 background jobs to the same thread concurrently.
+        // Submit 5 background dispatches to the same thread concurrently.
         let mut handles = Vec::new();
         for i in 0..5 {
             let mb = Arc::clone(&mailbox);
@@ -2225,15 +4383,15 @@ mod tests {
             "at most 1 should be Running, got {running_count}"
         );
 
-        // Store should have at most 1 Claimed job for this mailbox.
-        let jobs = store
-            .list_jobs("thread-conc", Some(&[MailboxJobStatus::Claimed]), 10, 0)
+        // Store should have at most 1 Claimed dispatch for this thread.
+        let dispatches = store
+            .list_dispatches("thread-conc", Some(&[RunDispatchStatus::Claimed]), 10, 0)
             .await
             .unwrap();
         assert!(
-            jobs.len() <= 1,
-            "store should have at most 1 Claimed job, got {}",
-            jobs.len()
+            dispatches.len() <= 1,
+            "store should have at most 1 Claimed dispatch, got {}",
+            dispatches.len()
         );
     }
 
@@ -2266,17 +4424,21 @@ mod tests {
         let ok_count = results.iter().filter(|r| r.is_ok()).count();
         assert!(ok_count >= 1, "at least 1 should succeed");
 
-        // Store should have at most 1 Claimed job.
-        let jobs = store
-            .list_jobs(
+        // Store should have at most 1 Claimed dispatch.
+        let dispatches = store
+            .list_dispatches(
                 "thread-stream-conc",
-                Some(&[MailboxJobStatus::Claimed]),
+                Some(&[RunDispatchStatus::Claimed]),
                 10,
                 0,
             )
             .await
             .unwrap();
-        assert!(jobs.len() <= 1, "at most 1 Claimed, got {}", jobs.len());
+        assert!(
+            dispatches.len() <= 1,
+            "at most 1 Claimed, got {}",
+            dispatches.len()
+        );
     }
 
     #[tokio::test]
@@ -2289,13 +4451,13 @@ mod tests {
         let req1 =
             RunRequest::new("thread-status", vec![Message::user("a")]).with_agent_id("agent-1");
         let result1 = mailbox.submit_background(req1).await.unwrap();
-        // First job should be claimed/running since thread is idle.
+        // First dispatch should be claimed/running since thread is idle.
         assert!(
             matches!(
                 result1.status,
                 MailboxDispatchStatus::Running | MailboxDispatchStatus::Queued
             ),
-            "first job should be Running or Queued"
+            "first dispatch should be Running or Queued"
         );
 
         // Second submit while first is running should be Queued.
@@ -2304,7 +4466,7 @@ mod tests {
         let result2 = mailbox.submit_background(req2).await.unwrap();
         assert!(
             matches!(result2.status, MailboxDispatchStatus::Queued),
-            "second job should be Queued while first is running"
+            "second dispatch should be Queued while first is running"
         );
     }
 
@@ -2314,7 +4476,7 @@ mod tests {
         let runtime = make_runtime();
         let mailbox = make_mailbox(runtime, store.clone());
 
-        // Submit and dispatch a job to get worker into Running state.
+        // Submit and dispatch a dispatch to get worker into Running state.
         let req =
             RunRequest::new("thread-guard", vec![Message::user("a")]).with_agent_id("agent-1");
         mailbox.submit_background(req).await.unwrap();
@@ -2373,14 +4535,14 @@ mod tests {
         // Either succeeds (interrupt cancelled old) or fails with validation error.
         // Crucially: no panic, no double-claimed state.
         match &result2 {
-            Ok((r, _)) => assert!(!r.job_id.is_empty()),
+            Ok((r, _)) => assert!(!r.dispatch_id.is_empty()),
             Err(MailboxError::Validation(_)) => {} // acceptable
             Err(e) => panic!("unexpected error: {e}"),
         }
 
-        // Store invariant: at most 1 Claimed job for this thread.
+        // Store invariant: at most 1 Claimed dispatch for this thread.
         let claimed = store
-            .list_jobs("thread-clash", Some(&[MailboxJobStatus::Claimed]), 10, 0)
+            .list_dispatches("thread-clash", Some(&[RunDispatchStatus::Claimed]), 10, 0)
             .await
             .unwrap();
         assert!(
@@ -2428,7 +4590,7 @@ mod tests {
             let reconnectable = Arc::new(ReconnectableEventSink::new(mpsc::channel(16).0));
             let mut w = worker.lock().await;
             w.status = MailboxWorkerStatus::Running {
-                job_id: "job-fake".into(),
+                dispatch_id: "dispatch-fake".into(),
                 lease_handle: tokio::spawn(futures::future::pending::<()>()),
                 sink: reconnectable,
             };
@@ -2440,12 +4602,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_job_extras_roundtrip_with_decisions() {
+    async fn build_dispatch_extras_roundtrip_with_decisions() {
         use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
-
-        let store = make_store();
-        let runtime = make_runtime();
-        let mailbox = make_mailbox(runtime, store);
 
         let decisions = vec![(
             "call-1".to_string(),
@@ -2461,30 +4619,41 @@ mod tests {
         let request = RunRequest::new("thread-dec", vec![Message::user("hi")])
             .with_agent_id("a1")
             .with_decisions(decisions.clone());
-        let messages = request.messages.clone();
-        let job = mailbox.build_job(&request, "thread-dec", messages).unwrap();
-
-        // Verify extras contain decisions.
-        assert!(job.request_extras.is_some());
-        let extras = RunRequestExtras::from_value(job.request_extras.as_ref().unwrap()).unwrap();
+        let extras = RunRequestExtras::from_request(&request);
         assert_eq!(extras.decisions.len(), 1);
         assert_eq!(extras.decisions[0].0, "call-1");
     }
 
     #[tokio::test]
-    async fn build_job_origin_a2a_roundtrip() {
+    async fn prepare_run_origin_a2a_roundtrip() {
         let store = make_store();
         let runtime = make_runtime();
-        let mailbox = make_mailbox(runtime, store);
+        let thread_store = Arc::new(InMemoryStore::new());
+        let mailbox = Arc::new(Mailbox::new(
+            runtime,
+            store,
+            thread_store.clone(),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
 
-        let request = RunRequest::new("thread-a2a", vec![Message::user("hi")])
-            .with_origin(MailboxJobOrigin::A2A)
+        let mut request = RunRequest::new("thread-a2a", vec![Message::user("hi")])
+            .with_origin(RunRequestOrigin::A2A)
             .with_parent_run_id("parent-123");
-        let messages = request.messages.clone();
-        let job = mailbox.build_job(&request, "thread-a2a", messages).unwrap();
+        let (thread_id, messages) =
+            validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false)
+                .unwrap();
+        let run_id = mailbox
+            .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
+            .await
+            .unwrap();
+        let run = thread_store.load_run(&run_id).await.unwrap().unwrap();
 
-        assert!(matches!(job.origin, MailboxJobOrigin::A2A));
-        assert_eq!(job.parent_run_id.as_deref(), Some("parent-123"));
+        assert!(matches!(
+            run.request.as_ref().unwrap().origin,
+            RunRequestOrigin::A2A
+        ));
+        assert_eq!(run.parent_run_id.as_deref(), Some("parent-123"));
     }
 
     // ── INLINE_CLAIM_GUARD_MS ───────────────────────────────────────
@@ -2499,10 +4668,10 @@ mod tests {
     #[test]
     fn nack_backoff_progression() {
         let config = MailboxConfig::default();
-        // Formula from execute_job: 2^(attempt_count.saturating_sub(1).min(6))
-        // attempt_count is 0-based on the job at nack time, but incremented
-        // by the store before re-queue. The backoff in execute_job uses
-        // job.attempt_count which is the pre-nack value.
+        // Formula from execute_dispatch: 2^(attempt_count.saturating_sub(1).min(6))
+        // attempt_count is 0-based on the dispatch at nack time, but incremented
+        // by the store before re-queue. The backoff in execute_dispatch uses
+        // dispatch.attempt_count which is the pre-nack value.
         for (attempt_count, expected_ms) in [
             (1, 250),   // 2^0 * 250 = 250
             (2, 500),   // 2^1 * 250 = 500
@@ -2563,12 +4732,12 @@ mod tests {
     // ── GC idle workers ─────────────────────────────────────────────
 
     #[tokio::test]
-    async fn gc_idle_workers_removes_idle_with_no_jobs() {
+    async fn gc_idle_workers_removes_idle_with_no_dispatches() {
         let store = make_store();
         let runtime = make_runtime();
         let mailbox = make_mailbox(runtime, store.clone());
 
-        // Manually insert an Idle worker (no jobs in store for this thread).
+        // Manually insert an Idle worker (no dispatches in store for this thread).
         {
             let mut workers = mailbox.workers.write().await;
             workers.insert(
@@ -2580,27 +4749,27 @@ mod tests {
         // Verify the worker is present.
         assert!(mailbox.workers.read().await.contains_key("thread-gc"));
 
-        // Run GC — idle worker with no queued jobs should be removed.
+        // Run GC — idle worker with no queued dispatches should be removed.
         mailbox.gc_idle_workers().await;
 
         assert!(
             !mailbox.workers.read().await.contains_key("thread-gc"),
-            "idle worker with no queued jobs should be removed"
+            "idle worker with no queued dispatches should be removed"
         );
     }
 
     #[tokio::test]
-    async fn gc_idle_workers_keeps_worker_with_queued_jobs() {
+    async fn gc_idle_workers_keeps_worker_with_queued_dispatches() {
         let store = make_store();
         let runtime = make_runtime();
         let mailbox = make_mailbox(runtime, store.clone());
 
-        // Enqueue a job for the thread (background so it goes to store).
+        // Enqueue a dispatch for the thread (background so it goes to store).
         let request =
             RunRequest::new("thread-gc-keep", vec![Message::user("hi")]).with_agent_id("agent-1");
         mailbox.submit_background(request).await.unwrap();
 
-        // Force the worker to Idle status (simulating it finished one job
+        // Force the worker to Idle status (simulating it finished one dispatch
         // but another is queued).
         {
             let mut workers = mailbox.workers.write().await;
@@ -2610,24 +4779,24 @@ mod tests {
             );
         }
 
-        // Run GC — worker has queued/claimed jobs, so it should be kept.
+        // Run GC — worker has queued/claimed dispatches, so it should be kept.
         mailbox.gc_idle_workers().await;
 
-        // The worker should still exist because there are jobs in the store.
-        let has_jobs = !store
-            .list_jobs(
+        // The worker should still exist because there are dispatches in the store.
+        let has_dispatches = !store
+            .list_dispatches(
                 "thread-gc-keep",
-                Some(&[MailboxJobStatus::Queued, MailboxJobStatus::Claimed]),
+                Some(&[RunDispatchStatus::Queued, RunDispatchStatus::Claimed]),
                 1,
                 0,
             )
             .await
             .unwrap()
             .is_empty();
-        if has_jobs {
+        if has_dispatches {
             assert!(
                 mailbox.workers.read().await.contains_key("thread-gc-keep"),
-                "idle worker with queued jobs should NOT be removed"
+                "idle worker with queued dispatches should NOT be removed"
             );
         }
     }

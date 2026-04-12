@@ -10,6 +10,9 @@ use awaken_contract::contract::inference::LLMResponse;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::suspension::ToolCallResume;
 use awaken_contract::contract::tool::ToolResult;
+use awaken_contract::contract::tool_intercept::{
+    AdapterKind, RunMode, ToolKind, ToolPolicyContext,
+};
 use awaken_contract::model::Phase;
 use awaken_contract::registry_spec::{AgentSpec, PluginConfigKey};
 
@@ -38,6 +41,9 @@ pub struct PhaseContext {
     pub tool_call_id: Option<String>,
     pub tool_args: Option<Value>,
     pub tool_result: Option<ToolResult>,
+    pub run_mode: RunMode,
+    pub adapter: AdapterKind,
+    pub tool_kind: ToolKind,
 
     // LLM response (set during AfterInference)
     pub llm_response: Option<LLMResponse>,
@@ -67,6 +73,9 @@ impl PhaseContext {
             tool_call_id: None,
             tool_args: None,
             tool_result: None,
+            run_mode: RunMode::Foreground,
+            adapter: AdapterKind::Internal,
+            tool_kind: ToolKind::Other,
             llm_response: None,
             resume_input: None,
             suspension_id: None,
@@ -103,6 +112,8 @@ impl PhaseContext {
 
     #[must_use]
     pub fn with_run_identity(mut self, identity: RunIdentity) -> Self {
+        self.run_mode = identity.run_mode();
+        self.adapter = identity.adapter();
         self.run_identity = identity;
         self
     }
@@ -120,10 +131,44 @@ impl PhaseContext {
         call_id: impl Into<String>,
         args: Option<Value>,
     ) -> Self {
-        self.tool_name = Some(name.into());
+        let name = name.into();
+        self.tool_kind = ToolKind::infer_name(&name);
+        self.tool_name = Some(name);
         self.tool_call_id = Some(call_id.into());
         self.tool_args = args;
         self
+    }
+
+    #[must_use]
+    pub fn with_run_mode(mut self, mode: RunMode) -> Self {
+        self.run_mode = mode;
+        self
+    }
+
+    #[must_use]
+    pub fn with_adapter(mut self, adapter: AdapterKind) -> Self {
+        self.adapter = adapter;
+        self
+    }
+
+    #[must_use]
+    pub fn with_tool_kind(mut self, kind: ToolKind) -> Self {
+        self.tool_kind = kind;
+        self
+    }
+
+    /// Build typed policy context for ToolGate/ToolPolicy hooks.
+    pub fn tool_policy_context(&self) -> Option<ToolPolicyContext> {
+        Some(ToolPolicyContext {
+            thread_id: self.run_identity.thread_id.clone(),
+            run_id: self.run_identity.run_id.clone(),
+            dispatch_id: self.run_identity.trace.dispatch_id.clone(),
+            run_mode: self.run_mode,
+            adapter: self.adapter,
+            tool_name: self.tool_name.clone()?,
+            tool_kind: self.tool_kind,
+            arguments: self.tool_args.clone().unwrap_or(Value::Null),
+        })
     }
 
     #[must_use]
@@ -243,6 +288,41 @@ mod tests {
         );
         assert_eq!(ctx.tool_name.as_deref(), Some("search"));
         assert_eq!(ctx.tool_call_id.as_deref(), Some("c1"));
+        assert_eq!(ctx.tool_kind, ToolKind::Search);
+        let policy = ctx.tool_policy_context().expect("policy context");
+        assert_eq!(policy.tool_name, "search");
+        assert_eq!(policy.tool_kind, ToolKind::Search);
+        assert_eq!(policy.arguments["q"], "rust");
+    }
+
+    #[test]
+    fn phase_context_tool_policy_context_carries_trace_and_mode() {
+        let identity = RunIdentity::new(
+            "t1".into(),
+            None,
+            "r1".into(),
+            None,
+            "agent".into(),
+            RunOrigin::User,
+        )
+        .with_dispatch_id("dispatch-1")
+        .with_run_mode(RunMode::Scheduled)
+        .with_adapter(AdapterKind::Acp);
+        let ctx = PhaseContext::new(Phase::ToolGate, empty_snapshot())
+            .with_run_identity(identity)
+            .with_tool_info(
+                "bash",
+                "call-1",
+                Some(serde_json::json!({"cmd": "echo ok"})),
+            );
+
+        let policy = ctx.tool_policy_context().expect("policy context");
+        assert_eq!(policy.thread_id, "t1");
+        assert_eq!(policy.run_id, "r1");
+        assert_eq!(policy.dispatch_id.as_deref(), Some("dispatch-1"));
+        assert_eq!(policy.run_mode, RunMode::Scheduled);
+        assert_eq!(policy.adapter, AdapterKind::Acp);
+        assert_eq!(policy.tool_kind, ToolKind::Execute);
     }
 
     #[test]

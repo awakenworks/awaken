@@ -11,8 +11,8 @@ use awaken_contract::contract::storage::{
     RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::Thread;
-use sqlx::PgPool;
-use sqlx::postgres::PgListener;
+use sqlx::postgres::{PgListener, PgRow};
+use sqlx::{PgPool, Row};
 use tokio::sync::Mutex;
 
 /// PostgreSQL storage backend.
@@ -84,9 +84,21 @@ impl PostgresStore {
                     thread_id TEXT NOT NULL,
                     agent_id TEXT NOT NULL DEFAULT '',
                     parent_run_id TEXT,
+                    request JSONB,
+                    run_input JSONB,
+                    run_output JSONB,
                     status TEXT NOT NULL,
-                    termination_code TEXT,
+                    termination_reason JSONB,
+                    final_output TEXT,
+                    error_payload JSONB,
+                    dispatch_id TEXT,
+                    session_id TEXT,
+                    transport_request_id TEXT,
+                    waiting JSONB,
+                    outcome JSONB,
                     created_at BIGINT NOT NULL,
+                    started_at BIGINT,
+                    finished_at BIGINT,
                     updated_at BIGINT NOT NULL,
                     steps INTEGER NOT NULL DEFAULT 0,
                     input_tokens BIGINT NOT NULL DEFAULT 0,
@@ -125,6 +137,32 @@ impl PostgresStore {
         ];
 
         for stmt in statements {
+            sqlx::query(&stmt)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+        }
+
+        let run_migrations = [
+            ("request", "JSONB"),
+            ("run_input", "JSONB"),
+            ("run_output", "JSONB"),
+            ("termination_reason", "JSONB"),
+            ("final_output", "TEXT"),
+            ("error_payload", "JSONB"),
+            ("dispatch_id", "TEXT"),
+            ("session_id", "TEXT"),
+            ("transport_request_id", "TEXT"),
+            ("waiting", "JSONB"),
+            ("outcome", "JSONB"),
+            ("started_at", "BIGINT"),
+            ("finished_at", "BIGINT"),
+        ];
+        for (column, ty) in run_migrations {
+            let stmt = format!(
+                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}",
+                self.runs_table, column, ty
+            );
             sqlx::query(&stmt)
                 .execute(&self.pool)
                 .await
@@ -347,9 +385,33 @@ impl RunStore for PostgresStore {
             .state
             .as_ref()
             .and_then(|s| serde_json::to_value(s).ok());
+        let termination_reason_json = record
+            .termination_reason
+            .as_ref()
+            .and_then(|reason| serde_json::to_value(reason).ok());
+        let request_json = record
+            .request
+            .as_ref()
+            .and_then(|request| serde_json::to_value(request).ok());
+        let input_json = record
+            .input
+            .as_ref()
+            .and_then(|input| serde_json::to_value(input).ok());
+        let output_json = record
+            .output
+            .as_ref()
+            .and_then(|output| serde_json::to_value(output).ok());
+        let waiting_json = record
+            .waiting
+            .as_ref()
+            .and_then(|waiting| serde_json::to_value(waiting).ok());
+        let outcome_json = record
+            .outcome
+            .as_ref()
+            .and_then(|outcome| serde_json::to_value(outcome).ok());
         let sql = format!(
-            "INSERT INTO {} (run_id, thread_id, agent_id, parent_run_id, status, termination_code, created_at, updated_at, steps, input_tokens, output_tokens, state)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+            "INSERT INTO {} (run_id, thread_id, agent_id, parent_run_id, request, run_input, run_output, status, termination_reason, final_output, error_payload, dispatch_id, session_id, transport_request_id, waiting, outcome, created_at, started_at, finished_at, updated_at, steps, input_tokens, output_tokens, state)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)",
             self.runs_table
         );
         sqlx::query(&sql)
@@ -357,9 +419,21 @@ impl RunStore for PostgresStore {
             .bind(&record.thread_id)
             .bind(&record.agent_id)
             .bind(&record.parent_run_id)
+            .bind(&request_json)
+            .bind(&input_json)
+            .bind(&output_json)
             .bind(format!("{:?}", record.status).to_lowercase())
-            .bind(&record.termination_code)
+            .bind(&termination_reason_json)
+            .bind(&record.final_output)
+            .bind(&record.error_payload)
+            .bind(&record.dispatch_id)
+            .bind(&record.session_id)
+            .bind(&record.transport_request_id)
+            .bind(&waiting_json)
+            .bind(&outcome_json)
             .bind(record.created_at as i64)
+            .bind(record.started_at.map(|value| value as i64))
+            .bind(record.finished_at.map(|value| value as i64))
             .bind(record.updated_at as i64)
             .bind(record.steps as i32)
             .bind(record.input_tokens as i64)
@@ -382,123 +456,31 @@ impl RunStore for PostgresStore {
     async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, StorageError> {
         self.ensure_schema().await?;
         let sql = format!(
-            "SELECT run_id, thread_id, agent_id, parent_run_id, status, termination_code, created_at, updated_at, steps, input_tokens, output_tokens, state FROM {} WHERE run_id = $1",
+            "SELECT run_id, thread_id, agent_id, parent_run_id, request, run_input, run_output, status, termination_reason, final_output, error_payload, dispatch_id, session_id, transport_request_id, waiting, outcome, created_at, started_at, finished_at, updated_at, steps, input_tokens, output_tokens, state FROM {} WHERE run_id = $1",
             self.runs_table
         );
-        let row: Option<(
-            String,
-            String,
-            String,
-            Option<String>,
-            String,
-            Option<String>,
-            i64,
-            i64,
-            i32,
-            i64,
-            i64,
-            Option<serde_json::Value>,
-        )> = sqlx::query_as(&sql)
+        let row = sqlx::query(&sql)
             .bind(run_id)
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
 
-        match row {
-            Some((
-                run_id,
-                thread_id,
-                agent_id,
-                parent_run_id,
-                status,
-                termination_code,
-                created_at,
-                updated_at,
-                steps,
-                input_tokens,
-                output_tokens,
-                state,
-            )) => {
-                let status = parse_run_status(&status);
-                let state = state.and_then(|v| serde_json::from_value(v).ok());
-                Ok(Some(RunRecord {
-                    run_id,
-                    thread_id,
-                    agent_id,
-                    parent_run_id,
-                    status,
-                    termination_code,
-                    created_at: created_at as u64,
-                    updated_at: updated_at as u64,
-                    steps: steps as usize,
-                    input_tokens: input_tokens as u64,
-                    output_tokens: output_tokens as u64,
-                    state,
-                }))
-            }
-            None => Ok(None),
-        }
+        Ok(row.map(run_record_from_pg_row))
     }
 
     async fn latest_run(&self, thread_id: &str) -> Result<Option<RunRecord>, StorageError> {
         self.ensure_schema().await?;
         let sql = format!(
-            "SELECT run_id, thread_id, agent_id, parent_run_id, status, termination_code, created_at, updated_at, steps, input_tokens, output_tokens, state FROM {} WHERE thread_id = $1 ORDER BY updated_at DESC LIMIT 1",
+            "SELECT run_id, thread_id, agent_id, parent_run_id, request, run_input, run_output, status, termination_reason, final_output, error_payload, dispatch_id, session_id, transport_request_id, waiting, outcome, created_at, started_at, finished_at, updated_at, steps, input_tokens, output_tokens, state FROM {} WHERE thread_id = $1 ORDER BY updated_at DESC LIMIT 1",
             self.runs_table
         );
-        let row: Option<(
-            String,
-            String,
-            String,
-            Option<String>,
-            String,
-            Option<String>,
-            i64,
-            i64,
-            i32,
-            i64,
-            i64,
-            Option<serde_json::Value>,
-        )> = sqlx::query_as(&sql)
+        let row = sqlx::query(&sql)
             .bind(thread_id)
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
 
-        match row {
-            Some((
-                run_id,
-                thread_id,
-                agent_id,
-                parent_run_id,
-                status,
-                termination_code,
-                created_at,
-                updated_at,
-                steps,
-                input_tokens,
-                output_tokens,
-                state,
-            )) => {
-                let status = parse_run_status(&status);
-                let state = state.and_then(|v| serde_json::from_value(v).ok());
-                Ok(Some(RunRecord {
-                    run_id,
-                    thread_id,
-                    agent_id,
-                    parent_run_id,
-                    status,
-                    termination_code,
-                    created_at: created_at as u64,
-                    updated_at: updated_at as u64,
-                    steps: steps as usize,
-                    input_tokens: input_tokens as u64,
-                    output_tokens: output_tokens as u64,
-                    state,
-                }))
-            }
-            None => Ok(None),
-        }
+        Ok(row.map(run_record_from_pg_row))
     }
 
     async fn list_runs(&self, query: &RunQuery) -> Result<RunPage, StorageError> {
@@ -522,7 +504,7 @@ impl RunStore for PostgresStore {
 
         let count_sql = format!("SELECT COUNT(*) FROM {}{}", self.runs_table, where_clause);
         let list_sql = format!(
-            "SELECT run_id, thread_id, agent_id, parent_run_id, status, termination_code, created_at, updated_at, steps, input_tokens, output_tokens, state FROM {}{} ORDER BY created_at ASC LIMIT {} OFFSET {}",
+            "SELECT run_id, thread_id, agent_id, parent_run_id, request, run_input, run_output, status, termination_reason, final_output, error_payload, dispatch_id, session_id, transport_request_id, waiting, outcome, created_at, started_at, finished_at, updated_at, steps, input_tokens, output_tokens, state FROM {}{} ORDER BY created_at ASC LIMIT {} OFFSET {}",
             self.runs_table,
             where_clause,
             query.limit.clamp(1, 200),
@@ -544,21 +526,8 @@ impl RunStore for PostgresStore {
                 .map_err(|e| StorageError::Io(e.to_string()))?
         };
 
-        let rows: Vec<(
-            String,
-            String,
-            String,
-            Option<String>,
-            String,
-            Option<String>,
-            i64,
-            i64,
-            i32,
-            i64,
-            i64,
-            Option<serde_json::Value>,
-        )> = {
-            let mut q = sqlx::query_as(&list_sql);
+        let rows = {
+            let mut q = sqlx::query(&list_sql);
             if let Some(ref tid) = query.thread_id {
                 q = q.bind(tid);
             }
@@ -570,42 +539,7 @@ impl RunStore for PostgresStore {
                 .map_err(|e| StorageError::Io(e.to_string()))?
         };
 
-        let items: Vec<RunRecord> = rows
-            .into_iter()
-            .map(
-                |(
-                    run_id,
-                    thread_id,
-                    agent_id,
-                    parent_run_id,
-                    status,
-                    termination_code,
-                    created_at,
-                    updated_at,
-                    steps,
-                    input_tokens,
-                    output_tokens,
-                    state,
-                )| {
-                    let status = parse_run_status(&status);
-                    let state = state.and_then(|v| serde_json::from_value(v).ok());
-                    RunRecord {
-                        run_id,
-                        thread_id,
-                        agent_id,
-                        parent_run_id,
-                        status,
-                        termination_code,
-                        created_at: created_at as u64,
-                        updated_at: updated_at as u64,
-                        steps: steps as usize,
-                        input_tokens: input_tokens as u64,
-                        output_tokens: output_tokens as u64,
-                        state,
-                    }
-                },
-            )
-            .collect();
+        let items: Vec<RunRecord> = rows.into_iter().map(run_record_from_pg_row).collect();
 
         let has_more = (query.offset + items.len()) < total as usize;
         Ok(RunPage {
@@ -664,6 +598,7 @@ impl ThreadRunStore for PostgresStore {
         };
         thread.metadata.created_at.get_or_insert(now);
         thread.metadata.updated_at = Some(now);
+        thread.apply_run_projection(run);
         let thread_data = serde_json::to_value(&thread)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
         let thread_sql = format!(
@@ -696,12 +631,40 @@ impl ThreadRunStore for PostgresStore {
             .state
             .as_ref()
             .and_then(|s| serde_json::to_value(s).ok());
+        let termination_reason_json = run
+            .termination_reason
+            .as_ref()
+            .and_then(|reason| serde_json::to_value(reason).ok());
+        let request_json = run
+            .request
+            .as_ref()
+            .and_then(|request| serde_json::to_value(request).ok());
+        let input_json = run
+            .input
+            .as_ref()
+            .and_then(|input| serde_json::to_value(input).ok());
+        let output_json = run
+            .output
+            .as_ref()
+            .and_then(|output| serde_json::to_value(output).ok());
+        let waiting_json = run
+            .waiting
+            .as_ref()
+            .and_then(|waiting| serde_json::to_value(waiting).ok());
+        let outcome_json = run
+            .outcome
+            .as_ref()
+            .and_then(|outcome| serde_json::to_value(outcome).ok());
         let run_sql = format!(
-            "INSERT INTO {} (run_id, thread_id, agent_id, parent_run_id, status, termination_code, created_at, updated_at, steps, input_tokens, output_tokens, state)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            "INSERT INTO {} (run_id, thread_id, agent_id, parent_run_id, request, run_input, run_output, status, termination_reason, final_output, error_payload, dispatch_id, session_id, transport_request_id, waiting, outcome, created_at, started_at, finished_at, updated_at, steps, input_tokens, output_tokens, state)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
              ON CONFLICT (run_id) DO UPDATE SET
-                status = $5, termination_code = $6, updated_at = $8,
-                steps = $9, input_tokens = $10, output_tokens = $11, state = $12",
+                request = $5, run_input = $6, run_output = $7, status = $8,
+                termination_reason = $9, final_output = $10,
+                error_payload = $11, dispatch_id = $12, session_id = $13,
+                transport_request_id = $14, waiting = $15, outcome = $16,
+                started_at = $18, finished_at = $19, updated_at = $20,
+                steps = $21, input_tokens = $22, output_tokens = $23, state = $24",
             self.runs_table
         );
         sqlx::query(&run_sql)
@@ -709,9 +672,21 @@ impl ThreadRunStore for PostgresStore {
             .bind(&run.thread_id)
             .bind(&run.agent_id)
             .bind(&run.parent_run_id)
+            .bind(&request_json)
+            .bind(&input_json)
+            .bind(&output_json)
             .bind(format!("{:?}", run.status).to_lowercase())
-            .bind(&run.termination_code)
+            .bind(&termination_reason_json)
+            .bind(&run.final_output)
+            .bind(&run.error_payload)
+            .bind(&run.dispatch_id)
+            .bind(&run.session_id)
+            .bind(&run.transport_request_id)
+            .bind(&waiting_json)
+            .bind(&outcome_json)
             .bind(run.created_at as i64)
+            .bind(run.started_at.map(|value| value as i64))
+            .bind(run.finished_at.map(|value| value as i64))
             .bind(run.updated_at as i64)
             .bind(run.steps as i32)
             .bind(run.input_tokens as i64)
@@ -729,9 +704,55 @@ impl ThreadRunStore for PostgresStore {
     }
 }
 
+fn run_record_from_pg_row(row: PgRow) -> RunRecord {
+    let status: String = row.get("status");
+    let state: Option<serde_json::Value> = row.get("state");
+    let request: Option<serde_json::Value> = row.get("request");
+    let input: Option<serde_json::Value> = row.get("run_input");
+    let output: Option<serde_json::Value> = row.get("run_output");
+    let termination_reason: Option<serde_json::Value> = row.get("termination_reason");
+    let waiting: Option<serde_json::Value> = row.get("waiting");
+    let outcome: Option<serde_json::Value> = row.get("outcome");
+    let created_at: i64 = row.get("created_at");
+    let started_at: Option<i64> = row.get("started_at");
+    let finished_at: Option<i64> = row.get("finished_at");
+    let updated_at: i64 = row.get("updated_at");
+    let steps: i32 = row.get("steps");
+    let input_tokens: i64 = row.get("input_tokens");
+    let output_tokens: i64 = row.get("output_tokens");
+
+    RunRecord {
+        run_id: row.get("run_id"),
+        thread_id: row.get("thread_id"),
+        agent_id: row.get("agent_id"),
+        parent_run_id: row.get("parent_run_id"),
+        request: request.and_then(|value| serde_json::from_value(value).ok()),
+        input: input.and_then(|value| serde_json::from_value(value).ok()),
+        output: output.and_then(|value| serde_json::from_value(value).ok()),
+        status: parse_run_status(&status),
+        termination_reason: termination_reason.and_then(|value| serde_json::from_value(value).ok()),
+        final_output: row.get("final_output"),
+        error_payload: row.get("error_payload"),
+        dispatch_id: row.get("dispatch_id"),
+        session_id: row.get("session_id"),
+        transport_request_id: row.get("transport_request_id"),
+        waiting: waiting.and_then(|value| serde_json::from_value(value).ok()),
+        outcome: outcome.and_then(|value| serde_json::from_value(value).ok()),
+        created_at: created_at as u64,
+        started_at: started_at.map(|value| value as u64),
+        finished_at: finished_at.map(|value| value as u64),
+        updated_at: updated_at as u64,
+        steps: steps as usize,
+        input_tokens: input_tokens as u64,
+        output_tokens: output_tokens as u64,
+        state: state.and_then(|value| serde_json::from_value(value).ok()),
+    }
+}
+
 fn parse_run_status(s: &str) -> awaken_contract::contract::lifecycle::RunStatus {
     use awaken_contract::contract::lifecycle::RunStatus;
     match s {
+        "created" => RunStatus::Created,
         "running" => RunStatus::Running,
         "waiting" => RunStatus::Waiting,
         "done" => RunStatus::Done,
@@ -894,6 +915,7 @@ mod tests {
     #[test]
     fn parse_run_status_known_values() {
         use awaken_contract::contract::lifecycle::RunStatus;
+        assert!(matches!(parse_run_status("created"), RunStatus::Created));
         assert!(matches!(parse_run_status("running"), RunStatus::Running));
         assert!(matches!(parse_run_status("waiting"), RunStatus::Waiting));
         assert!(matches!(parse_run_status("done"), RunStatus::Done));
@@ -981,9 +1003,21 @@ mod tests {
             thread_id: "t-1".to_string(),
             agent_id: "agent".to_string(),
             parent_run_id: None,
+            request: None,
+            input: None,
+            output: None,
             status: RunStatus::Running,
-            termination_code: None,
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: None,
+            outcome: None,
             created_at: 100,
+            started_at: None,
+            finished_at: None,
             updated_at: 100,
             steps: 0,
             input_tokens: 0,
@@ -1014,9 +1048,21 @@ mod tests {
             thread_id: thread_id.clone(),
             agent_id: "agent".to_string(),
             parent_run_id: None,
+            request: None,
+            input: None,
+            output: None,
             status: RunStatus::Running,
-            termination_code: None,
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: None,
+            outcome: None,
             created_at: 100,
+            started_at: None,
+            finished_at: None,
             updated_at: 100,
             steps: 1,
             input_tokens: 10,

@@ -12,7 +12,10 @@ use awaken_contract::contract::config_store::{
     ConfigChangeKind, ConfigChangeNotifier, ConfigStore,
 };
 use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{RunQuery, RunStore, ThreadRunStore, ThreadStore};
+use awaken_contract::contract::storage::{
+    MessageSeqRange, RunMessageInput, RunMessageOutput, RunQuery, RunStore, ThreadRunStore,
+    ThreadStore,
+};
 use awaken_contract::thread::Thread;
 use awaken_stores::PostgresStore;
 use serde_json::json;
@@ -117,7 +120,20 @@ async fn create_and_load_run() {
     let Some(store) = make_store().await else {
         return;
     };
-    let run = make_run("pg-run-1", "pg-t-1", 100);
+    let mut run = make_run("pg-run-1", "pg-t-1", 100);
+    run.input = Some(RunMessageInput {
+        thread_id: "pg-t-1".to_string(),
+        range: MessageSeqRange::new(1, 2),
+        trigger_message_ids: vec!["pg-m-1".to_string()],
+        selected_message_ids: Vec::new(),
+        context_policy: None,
+        compacted_snapshot_id: None,
+    });
+    run.output = Some(RunMessageOutput {
+        thread_id: "pg-t-1".to_string(),
+        range: MessageSeqRange::new(3, 3),
+        message_ids: vec!["pg-m-3".to_string()],
+    });
     store.create_run(&run).await.unwrap();
 
     let loaded = RunStore::load_run(&store, "pg-run-1")
@@ -125,6 +141,11 @@ async fn create_and_load_run() {
         .unwrap()
         .unwrap();
     assert_eq!(loaded.thread_id, "pg-t-1");
+    assert_eq!(loaded.input.unwrap().range.unwrap().to_seq, 2);
+    assert_eq!(
+        loaded.output.unwrap().message_ids,
+        vec!["pg-m-3".to_string()]
+    );
 }
 
 #[tokio::test]

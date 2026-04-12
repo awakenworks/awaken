@@ -370,6 +370,7 @@ fn encode_ag_ui_event_to_sse() {
     encoder.on_agent_event(&AgentEvent::RunStart {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         parent_run_id: None,
     });
     let event = AgentEvent::TextDelta {
@@ -402,6 +403,7 @@ async fn wire_sse_relay_with_ag_ui_encoder() {
     tx.try_send(AgentEvent::RunStart {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         parent_run_id: None,
     })
     .unwrap();
@@ -412,6 +414,7 @@ async fn wire_sse_relay_with_ag_ui_encoder() {
     tx.try_send(AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::NaturalEnd,
     })
@@ -446,6 +449,7 @@ async fn wire_sse_relay_with_ai_sdk_encoder() {
     tx.try_send(AgentEvent::RunStart {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         parent_run_id: None,
     })
     .unwrap();
@@ -456,6 +460,7 @@ async fn wire_sse_relay_with_ai_sdk_encoder() {
     tx.try_send(AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::NaturalEnd,
     })
@@ -493,6 +498,7 @@ async fn wire_sse_relay_with_acp_encoder() {
     tx.try_send(AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::NaturalEnd,
     })
@@ -663,6 +669,7 @@ async fn resumable_relay_with_ai_sdk_encoder() {
     tx.try_send(AgentEvent::RunStart {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         parent_run_id: None,
     })
     .unwrap();
@@ -673,6 +680,7 @@ async fn resumable_relay_with_ai_sdk_encoder() {
     tx.try_send(AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::NaturalEnd,
     })

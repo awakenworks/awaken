@@ -384,6 +384,7 @@ mod tests {
         let events = enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::NaturalEnd,
         });
@@ -397,6 +398,7 @@ mod tests {
         let events = enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::Cancelled,
         });
@@ -409,6 +411,7 @@ mod tests {
         let events = enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::Error("boom".into()),
         });
@@ -423,6 +426,7 @@ mod tests {
         let events = enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::Blocked("unsafe".into()),
         });
@@ -435,6 +439,7 @@ mod tests {
         let events = enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::Stopped(StoppedReason::new("max_rounds_reached")),
         });
@@ -447,6 +452,7 @@ mod tests {
         enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::NaturalEnd,
         });
@@ -496,6 +502,7 @@ mod tests {
         let events = enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::Suspended,
         });
@@ -516,6 +523,7 @@ mod tests {
             enc.on_agent_event(&AgentEvent::RunStart {
                 thread_id: "t1".into(),
                 run_id: "r1".into(),
+                identity: None,
                 parent_run_id: None,
             })
             .is_empty()

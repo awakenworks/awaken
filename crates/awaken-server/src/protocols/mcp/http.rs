@@ -667,6 +667,7 @@ mod tests {
         let mailbox = Arc::new(crate::mailbox::Mailbox::new(
             Arc::clone(&runtime),
             mailbox_store,
+            store.clone(),
             "test".to_string(),
             crate::mailbox::MailboxConfig::default(),
         ));

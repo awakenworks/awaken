@@ -93,6 +93,7 @@ mod tests {
                 thread_id: "t1".into(),
                 run_id: "r1".into(),
                 parent_run_id: None,
+                identity: None,
             },
             AgentEvent::TextDelta {
                 delta: "hello".into(),
@@ -100,6 +101,7 @@ mod tests {
             AgentEvent::RunFinish {
                 thread_id: "t1".into(),
                 run_id: "r1".into(),
+                identity: None,
                 result: Some(json!({"response": "done"})),
                 termination: TerminationReason::NaturalEnd,
             },

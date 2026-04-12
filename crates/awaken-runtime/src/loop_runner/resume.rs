@@ -175,6 +175,7 @@ pub(super) async fn detect_and_replay_resume(
     let mut total_output_tokens = 0;
     let mut truncation_state = TruncationState::new();
     let run_created_at = now_ms();
+    let input_message_count = messages.len();
 
     for (call_id, call_state) in resuming {
         let call = ToolCall::new(
@@ -189,6 +190,7 @@ pub(super) async fn detect_and_replay_resume(
             sink: sink.clone(),
             checkpoint_store: None,
             run_identity,
+            input_message_count,
             cancellation_token: None,
             run_overrides: &run_overrides,
             total_input_tokens: &mut total_input_tokens,

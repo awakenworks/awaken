@@ -1,6 +1,10 @@
 //! Run identity and execution policy types.
 
+use std::ops::{Deref, DerefMut};
+
 use serde::{Deserialize, Serialize};
+
+use super::tool_intercept::{AdapterKind, RunMode};
 
 /// Origin of the run.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,23 +19,95 @@ pub enum RunOrigin {
     Internal,
 }
 
-/// Strongly typed identity for the active run.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RunIdentity {
+/// Stable run identifiers and lineage.
+///
+/// This is the identity part of a run. Transport correlation and execution
+/// policy are intentionally modeled separately so callers can depend on the
+/// smallest concept they need.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunRef {
     pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_thread_id: Option<String>,
     pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<String>,
     pub agent_id: String,
-    pub origin: RunOrigin,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_tool_call_id: Option<String>,
+}
+
+/// Cross-layer trace identifiers for a run.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunTrace {
+    /// Queue dispatch that activated this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_id: Option<String>,
+    /// Protocol session or dispatch instance that carried this activation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Request id supplied by the transport layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_request_id: Option<String>,
+}
+
+/// Execution context used by policy hooks and protocol adapters.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunExecutionContext {
+    #[serde(default)]
+    pub origin: RunOrigin,
+    #[serde(default, skip_serializing_if = "is_default_run_mode")]
+    pub run_mode: RunMode,
+    #[serde(default, skip_serializing_if = "is_default_adapter")]
+    pub adapter: AdapterKind,
+}
+
+/// Strongly typed identity for the active run.
+///
+/// The serialized JSON remains flat for wire compatibility, but the Rust type
+/// is split into identity, trace, and execution-context sections. `Deref` keeps
+/// existing `identity.thread_id` / `identity.run_id` call sites readable while
+/// making transport and policy fields explicit through `trace` and `execution`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunIdentity {
+    #[serde(flatten)]
+    pub run: RunRef,
+    #[serde(flatten)]
+    pub trace: RunTrace,
+    #[serde(flatten)]
+    pub execution: RunExecutionContext,
+}
+
+impl Deref for RunIdentity {
+    type Target = RunRef;
+
+    fn deref(&self) -> &Self::Target {
+        &self.run
+    }
+}
+
+impl DerefMut for RunIdentity {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.run
+    }
+}
+
+fn is_default_run_mode(value: &RunMode) -> bool {
+    *value == RunMode::Foreground
+}
+
+fn is_default_adapter(value: &AdapterKind) -> bool {
+    *value == AdapterKind::Internal
 }
 
 impl RunIdentity {
     #[must_use]
     pub fn for_thread(thread_id: impl Into<String>) -> Self {
         Self {
-            thread_id: thread_id.into(),
+            run: RunRef {
+                thread_id: thread_id.into(),
+                ..RunRef::default()
+            },
             ..Self::default()
         }
     }
@@ -46,59 +122,144 @@ impl RunIdentity {
         origin: RunOrigin,
     ) -> Self {
         Self {
-            thread_id,
-            parent_thread_id,
-            run_id,
-            parent_run_id,
-            agent_id,
-            origin,
-            parent_tool_call_id: None,
+            run: RunRef {
+                thread_id,
+                parent_thread_id,
+                run_id,
+                parent_run_id,
+                agent_id,
+                parent_tool_call_id: None,
+            },
+            trace: RunTrace::default(),
+            execution: RunExecutionContext {
+                origin,
+                run_mode: RunMode::Foreground,
+                adapter: AdapterKind::Internal,
+            },
         }
+    }
+
+    #[must_use]
+    pub fn with_run_mode(mut self, run_mode: RunMode) -> Self {
+        self.execution.run_mode = run_mode;
+        self
+    }
+
+    #[must_use]
+    pub fn with_adapter(mut self, adapter: AdapterKind) -> Self {
+        self.execution.adapter = adapter;
+        self
     }
 
     #[must_use]
     pub fn with_parent_tool_call_id(mut self, parent_tool_call_id: impl Into<String>) -> Self {
         let value = parent_tool_call_id.into();
         if !value.trim().is_empty() {
-            self.parent_tool_call_id = Some(value);
+            self.run.parent_tool_call_id = Some(value);
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn with_dispatch_id(mut self, dispatch_id: impl Into<String>) -> Self {
+        let value = dispatch_id.into();
+        if !value.trim().is_empty() {
+            self.trace.dispatch_id = Some(value);
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        let value = session_id.into();
+        if !value.trim().is_empty() {
+            self.trace.session_id = Some(value);
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn with_transport_request_id(mut self, transport_request_id: impl Into<String>) -> Self {
+        let value = transport_request_id.into();
+        if !value.trim().is_empty() {
+            self.trace.transport_request_id = Some(value);
         }
         self
     }
 
     pub fn thread_id_opt(&self) -> Option<&str> {
-        let v = self.thread_id.trim();
+        let v = self.run.thread_id.trim();
         if v.is_empty() { None } else { Some(v) }
     }
 
     pub fn parent_thread_id_opt(&self) -> Option<&str> {
-        self.parent_thread_id
+        self.run
+            .parent_thread_id
             .as_deref()
             .map(str::trim)
             .filter(|v| !v.is_empty())
     }
 
     pub fn run_id_opt(&self) -> Option<&str> {
-        let v = self.run_id.trim();
+        let v = self.run.run_id.trim();
         if v.is_empty() { None } else { Some(v) }
     }
 
     pub fn parent_run_id_opt(&self) -> Option<&str> {
-        self.parent_run_id
+        self.run
+            .parent_run_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+    }
+
+    pub fn dispatch_id_opt(&self) -> Option<&str> {
+        self.trace
+            .dispatch_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+    }
+
+    pub fn session_id_opt(&self) -> Option<&str> {
+        self.trace
+            .session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+    }
+
+    pub fn transport_request_id_opt(&self) -> Option<&str> {
+        self.trace
+            .transport_request_id
             .as_deref()
             .map(str::trim)
             .filter(|v| !v.is_empty())
     }
 
     pub fn agent_id_opt(&self) -> Option<&str> {
-        let v = self.agent_id.trim();
+        let v = self.run.agent_id.trim();
         if v.is_empty() { None } else { Some(v) }
     }
 
     pub fn parent_tool_call_id_opt(&self) -> Option<&str> {
-        self.parent_tool_call_id
+        self.run
+            .parent_tool_call_id
             .as_deref()
             .map(str::trim)
             .filter(|v| !v.is_empty())
+    }
+
+    pub fn origin(&self) -> RunOrigin {
+        self.execution.origin
+    }
+
+    pub fn run_mode(&self) -> RunMode {
+        self.execution.run_mode
+    }
+
+    pub fn adapter(&self) -> AdapterKind {
+        self.execution.adapter
     }
 }
 
@@ -221,26 +382,90 @@ mod tests {
         let identity = RunIdentity::for_thread("t1");
         assert_eq!(identity.thread_id, "t1");
         assert!(identity.run_id.is_empty());
-        assert_eq!(identity.origin, RunOrigin::User);
+        assert_eq!(identity.origin(), RunOrigin::User);
     }
 
     #[test]
     fn run_identity_opt_methods_trim_whitespace() {
         let identity = RunIdentity {
-            thread_id: "  ".into(),
-            parent_thread_id: Some(" p1 ".into()),
-            run_id: " r1 ".into(),
-            parent_run_id: Some(" pr1 ".into()),
-            agent_id: " agent-1 ".into(),
-            parent_tool_call_id: Some(" tc1 ".into()),
+            run: RunRef {
+                thread_id: "  ".into(),
+                parent_thread_id: Some(" p1 ".into()),
+                run_id: " r1 ".into(),
+                parent_run_id: Some(" pr1 ".into()),
+                agent_id: " agent-1 ".into(),
+                parent_tool_call_id: Some(" tc1 ".into()),
+            },
+            trace: RunTrace {
+                dispatch_id: Some(" job1 ".into()),
+                session_id: Some(" session1 ".into()),
+                transport_request_id: Some(" request1 ".into()),
+            },
             ..Default::default()
         };
         assert!(identity.thread_id_opt().is_none());
         assert_eq!(identity.parent_thread_id_opt(), Some("p1"));
         assert_eq!(identity.run_id_opt(), Some("r1"));
         assert_eq!(identity.parent_run_id_opt(), Some("pr1"));
+        assert_eq!(identity.dispatch_id_opt(), Some("job1"));
+        assert_eq!(identity.session_id_opt(), Some("session1"));
+        assert_eq!(identity.transport_request_id_opt(), Some("request1"));
         assert_eq!(identity.agent_id_opt(), Some("agent-1"));
         assert_eq!(identity.parent_tool_call_id_opt(), Some("tc1"));
+    }
+
+    #[test]
+    fn run_identity_trace_ids_roundtrip_through_json() {
+        let identity = RunIdentity::new(
+            "thread-1".into(),
+            None,
+            "run-1".into(),
+            None,
+            "agent-1".into(),
+            RunOrigin::User,
+        )
+        .with_dispatch_id("dispatch-1")
+        .with_session_id("session-1")
+        .with_transport_request_id("request-1");
+
+        let json = serde_json::to_value(&identity).unwrap();
+        let parsed: RunIdentity = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.dispatch_id_opt(), Some("dispatch-1"));
+        assert_eq!(parsed.session_id_opt(), Some("session-1"));
+        assert_eq!(parsed.transport_request_id_opt(), Some("request-1"));
+    }
+
+    #[test]
+    fn run_identity_serializes_flat_while_modeling_sections() {
+        let identity = RunIdentity::new(
+            "thread-1".into(),
+            Some("parent-thread".into()),
+            "run-1".into(),
+            Some("parent-run".into()),
+            "agent-1".into(),
+            RunOrigin::Subagent,
+        )
+        .with_dispatch_id("dispatch-1")
+        .with_session_id("dispatch-1")
+        .with_run_mode(RunMode::Scheduled)
+        .with_adapter(AdapterKind::Acp);
+
+        let json = serde_json::to_value(&identity).unwrap();
+        assert!(json.get("run").is_none());
+        assert!(json.get("trace").is_none());
+        assert!(json.get("execution").is_none());
+        assert_eq!(json["thread_id"], "thread-1");
+        assert_eq!(json["run_id"], "run-1");
+        assert_eq!(json["dispatch_id"], "dispatch-1");
+        assert_eq!(json["session_id"], "dispatch-1");
+        assert_eq!(json["run_mode"], "scheduled");
+        assert_eq!(json["adapter"], "acp");
+
+        let parsed: RunIdentity = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.thread_id, "thread-1");
+        assert_eq!(parsed.trace.dispatch_id.as_deref(), Some("dispatch-1"));
+        assert_eq!(parsed.execution.run_mode, RunMode::Scheduled);
+        assert_eq!(parsed.execution.adapter, AdapterKind::Acp);
     }
 
     #[test]
@@ -287,7 +512,7 @@ mod tests {
     #[test]
     fn run_origin_default_is_user() {
         let identity = RunIdentity::default();
-        assert_eq!(identity.origin, RunOrigin::User);
+        assert_eq!(identity.origin(), RunOrigin::User);
     }
 
     #[test]
@@ -311,7 +536,7 @@ mod tests {
         assert_eq!(identity.run_id, "child-run-1");
         assert_eq!(identity.parent_run_id.as_deref(), Some("parent-run-1"));
         assert_eq!(identity.agent_id, "child-agent");
-        assert_eq!(identity.origin, RunOrigin::Subagent);
+        assert_eq!(identity.origin(), RunOrigin::Subagent);
         assert_eq!(
             identity.parent_tool_call_id.as_deref(),
             Some("tool-call-abc")
@@ -363,7 +588,7 @@ mod tests {
         sub_identity = sub_identity.with_parent_tool_call_id(parent_tool_call_id.to_string());
 
         // Verify lineage fields
-        assert_eq!(sub_identity.origin, RunOrigin::Subagent);
+        assert_eq!(sub_identity.origin(), RunOrigin::Subagent);
         assert_eq!(sub_identity.parent_run_id.as_deref(), Some(parent_run_id));
         assert_eq!(
             sub_identity.parent_tool_call_id.as_deref(),
@@ -392,7 +617,7 @@ mod tests {
             RunOrigin::Subagent,
         );
 
-        assert_eq!(sub_identity.origin, RunOrigin::Subagent);
+        assert_eq!(sub_identity.origin(), RunOrigin::Subagent);
         assert_eq!(sub_identity.parent_run_id.as_deref(), Some("parent-run"));
         assert!(sub_identity.parent_tool_call_id.is_none());
         assert!(sub_identity.parent_tool_call_id_opt().is_none());
@@ -409,7 +634,7 @@ mod tests {
             "orchestrator".to_string(),
             RunOrigin::User,
         );
-        assert_eq!(root.origin, RunOrigin::User);
+        assert_eq!(root.origin(), RunOrigin::User);
         assert!(root.parent_run_id.is_none());
         assert!(root.parent_thread_id.is_none());
 
@@ -424,7 +649,7 @@ mod tests {
         )
         .with_parent_tool_call_id("call-l0-to-l1");
 
-        assert_eq!(l1.origin, RunOrigin::Subagent);
+        assert_eq!(l1.origin(), RunOrigin::Subagent);
         assert_eq!(l1.parent_run_id.as_deref(), Some("run-root"));
         assert_eq!(l1.parent_tool_call_id.as_deref(), Some("call-l0-to-l1"));
 
@@ -439,7 +664,7 @@ mod tests {
         )
         .with_parent_tool_call_id("call-l1-to-l2");
 
-        assert_eq!(l2.origin, RunOrigin::Subagent);
+        assert_eq!(l2.origin(), RunOrigin::Subagent);
         assert_eq!(l2.parent_run_id.as_deref(), Some("run-l1"));
         assert_eq!(l2.parent_tool_call_id.as_deref(), Some("call-l1-to-l2"));
         assert_eq!(l2.agent_id, "executor");

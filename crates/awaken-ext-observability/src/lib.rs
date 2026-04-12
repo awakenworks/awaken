@@ -47,7 +47,7 @@ mod tests {
     use awaken_contract::state::{Snapshot, StateMap};
     use awaken_runtime::{PhaseContext, PhaseHook};
     use futures::future::join_all;
-    use std::sync::Arc;
+    use std::sync::{Arc, OnceLock};
 
     fn empty_snapshot() -> Snapshot {
         Snapshot::new(0, Arc::new(StateMap::default()))
@@ -724,9 +724,15 @@ mod tests {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::registry::LookupSpan;
 
+    static TRACING_CAPTURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[derive(Debug, Clone)]
     struct CapturedSpan {
+        id: tracing::span::Id,
         name: String,
+        operation: Option<String>,
+        request_model: Option<String>,
+        tool_name: Option<String>,
         was_closed: bool,
     }
 
@@ -744,8 +750,14 @@ mod tests {
             ctx: tracing_subscriber::layer::Context<'_, S>,
         ) {
             if let Some(span_ref) = ctx.span(id) {
+                let mut fields = CapturedSpanFields::default();
+                _attrs.record(&mut fields);
                 self.captured.lock().unwrap().push(CapturedSpan {
+                    id: id.clone(),
                     name: span_ref.name().to_string(),
+                    operation: fields.operation,
+                    request_model: fields.request_model,
+                    tool_name: fields.tool_name,
                     was_closed: false,
                 });
             }
@@ -755,80 +767,133 @@ mod tests {
             if let Some(span_ref) = ctx.span(&id) {
                 let name = span_ref.name().to_string();
                 let mut captured = self.captured.lock().unwrap();
-                if let Some(entry) = captured.iter_mut().find(|c| c.name == name) {
+                if let Some(entry) = captured.iter_mut().find(|c| c.id == id && c.name == name) {
                     entry.was_closed = true;
                 }
             }
         }
     }
 
+    #[derive(Default)]
+    struct CapturedSpanFields {
+        operation: Option<String>,
+        request_model: Option<String>,
+        tool_name: Option<String>,
+    }
+
+    impl tracing::field::Visit for CapturedSpanFields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.record_value(field.name(), format!("{value:?}"));
+        }
+
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.record_value(field.name(), value.to_string());
+        }
+    }
+
+    impl CapturedSpanFields {
+        fn record_value(&mut self, name: &str, value: String) {
+            match name {
+                "gen_ai.operation.name" => self.operation = Some(value),
+                "gen_ai.request.model" => self.request_model = Some(value),
+                "gen_ai.tool.name" => self.tool_name = Some(value),
+                _ => {}
+            }
+        }
+    }
+
+    static TRACING_CAPTURED_SPANS: OnceLock<Arc<std::sync::Mutex<Vec<CapturedSpan>>>> =
+        OnceLock::new();
+    static TRACING_CAPTURE_INIT: std::sync::Once = std::sync::Once::new();
+
+    fn install_tracing_capture() -> Arc<std::sync::Mutex<Vec<CapturedSpan>>> {
+        let captured = TRACING_CAPTURED_SPANS
+            .get_or_init(|| Arc::new(std::sync::Mutex::new(Vec::new())))
+            .clone();
+        TRACING_CAPTURE_INIT.call_once({
+            let captured = Arc::clone(&captured);
+            move || {
+                let layer = SpanCaptureLayer { captured };
+                let subscriber = tracing_subscriber::registry::Registry::default().with(layer);
+                let _ = tracing::subscriber::set_global_default(subscriber);
+                tracing_core::callsite::rebuild_interest_cache();
+            }
+        });
+        tracing_core::callsite::rebuild_interest_cache();
+        captured
+    }
+
     #[test]
     fn test_tracing_span_inference() {
-        let captured = Arc::new(std::sync::Mutex::new(Vec::<CapturedSpan>::new()));
-        let layer = SpanCaptureLayer {
-            captured: captured.clone(),
-        };
-        let subscriber = tracing_subscriber::registry::Registry::default().with(layer);
+        let _guard = TRACING_CAPTURE_LOCK.lock().unwrap();
+        let captured = install_tracing_capture();
+        captured.lock().unwrap().clear();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
 
-        tracing::subscriber::with_default(subscriber, || {
-            runtime.block_on(async {
-                let sink = InMemorySink::new();
-                let plugin = ObservabilityPlugin::new(sink.clone())
-                    .with_model("test-model")
-                    .with_provider("test-provider");
+        runtime.block_on(async {
+            let sink = InMemorySink::new();
+            let plugin = ObservabilityPlugin::new(sink.clone())
+                .with_model("test-model")
+                .with_provider("test-provider");
 
-                let ctx = PhaseContext::new(Phase::BeforeInference, empty_snapshot());
-                run_phase(&plugin, &ctx).await;
+            let ctx = PhaseContext::new(Phase::BeforeInference, empty_snapshot());
+            run_phase(&plugin, &ctx).await;
 
-                let ctx = PhaseContext::new(Phase::AfterInference, empty_snapshot())
-                    .with_llm_response(success_response(Some(usage(10, 20, 30))));
-                run_phase(&plugin, &ctx).await;
-            });
+            let ctx = PhaseContext::new(Phase::AfterInference, empty_snapshot())
+                .with_llm_response(success_response(Some(usage(10, 20, 30))));
+            run_phase(&plugin, &ctx).await;
         });
 
         let spans = captured.lock().unwrap();
-        let inference_span = spans.iter().find(|s| s.name == "gen_ai");
+        let inference_span = spans.iter().find(|s| {
+            s.name == "gen_ai"
+                && s.operation.as_deref() == Some("chat")
+                && s.request_model.as_deref() == Some("test-model")
+        });
         assert!(inference_span.is_some(), "expected gen_ai span (inference)");
         assert!(inference_span.unwrap().was_closed, "span should be closed");
     }
 
     #[test]
     fn test_tracing_span_tool() {
-        let captured = Arc::new(std::sync::Mutex::new(Vec::<CapturedSpan>::new()));
-        let layer = SpanCaptureLayer {
-            captured: captured.clone(),
-        };
-        let subscriber = tracing_subscriber::registry::Registry::default().with(layer);
+        let _guard = TRACING_CAPTURE_LOCK.lock().unwrap();
+        let captured = install_tracing_capture();
+        captured.lock().unwrap().clear();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
 
-        tracing::subscriber::with_default(subscriber, || {
-            runtime.block_on(async {
-                let sink = InMemorySink::new();
-                let plugin = ObservabilityPlugin::new(sink.clone());
+        runtime.block_on(async {
+            let sink = InMemorySink::new();
+            let plugin = ObservabilityPlugin::new(sink.clone());
+            let tool_name = "tracing-capture-tool";
 
-                let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot())
-                    .with_tool_info("search", "c1", Some(serde_json::json!({})));
-                run_phase(&plugin, &ctx).await;
+            let ctx = PhaseContext::new(Phase::BeforeToolExecute, empty_snapshot()).with_tool_info(
+                tool_name,
+                "c1",
+                Some(serde_json::json!({})),
+            );
+            run_phase(&plugin, &ctx).await;
 
-                let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
-                    .with_tool_info("search", "c1", Some(serde_json::json!({})))
-                    .with_tool_result(ToolResult::success(
-                        "search",
-                        serde_json::json!({"found": true}),
-                    ));
-                run_phase(&plugin, &ctx).await;
-            });
+            let ctx = PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
+                .with_tool_info(tool_name, "c1", Some(serde_json::json!({})))
+                .with_tool_result(ToolResult::success(
+                    tool_name,
+                    serde_json::json!({"found": true}),
+                ));
+            run_phase(&plugin, &ctx).await;
         });
 
         let spans = captured.lock().unwrap();
-        let tool_span = spans.iter().find(|s| s.name == "gen_ai");
+        let tool_span = spans.iter().find(|s| {
+            s.name == "gen_ai"
+                && s.operation.as_deref() == Some("execute_tool")
+                && s.tool_name.as_deref() == Some("tracing-capture-tool")
+        });
         assert!(tool_span.is_some(), "expected gen_ai span (tool)");
         assert!(tool_span.unwrap().was_closed, "span should be closed");
     }

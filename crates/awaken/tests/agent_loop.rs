@@ -933,6 +933,40 @@ fn message_text(message: &Message) -> String {
         .join("")
 }
 
+fn latest_non_tool_output_text(
+    messages: &[Message],
+    output: &awaken::contract::storage::RunMessageOutput,
+    run_id: &str,
+) -> Option<String> {
+    messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(index, message)| {
+            message.role != Role::Tool
+                && message.produced_by_run_id() == Some(run_id)
+                && output_contains_message(output, *index as u64 + 1, message)
+        })
+        .map(|(_, message)| message.text())
+}
+
+fn output_contains_message(
+    output: &awaken::contract::storage::RunMessageOutput,
+    seq: u64,
+    message: &Message,
+) -> bool {
+    if !output.message_ids.is_empty() {
+        return message
+            .id
+            .as_ref()
+            .is_some_and(|id| output.message_ids.contains(id));
+    }
+
+    output
+        .range
+        .is_none_or(|range| seq >= range.from_seq && seq <= range.to_seq)
+}
+
 #[tokio::test]
 async fn tool_suspension_transitions_run_to_waiting() {
     let llm = Arc::new(ScriptedLlm::new(vec![make_tool_call_response(
@@ -8254,7 +8288,7 @@ async fn checkpoint_stores_thread_messages() {
     .await
     .unwrap();
 
-    use awaken::contract::storage::ThreadStore;
+    use awaken::contract::storage::{RunStore, ThreadStore};
     let msgs = checkpoint.load_messages("thread-1").await.unwrap();
     assert!(msgs.is_some(), "checkpoint should store thread messages");
     let msgs = msgs.unwrap();
@@ -8262,6 +8296,126 @@ async fn checkpoint_stores_thread_messages() {
         msgs.len() >= 2,
         "should store at least user + assistant messages, got {}",
         msgs.len()
+    );
+    assert_eq!(msgs[0].role, Role::User);
+    assert!(
+        msgs[0].produced_by_run_id().is_none(),
+        "user input should remain thread-owned input, not run output"
+    );
+    let assistant = msgs
+        .iter()
+        .find(|msg| msg.role == Role::Assistant)
+        .expect("assistant output");
+    assert_eq!(assistant.produced_by_run_id(), Some("run-1"));
+
+    let record = checkpoint.load_run("run-1").await.unwrap().unwrap();
+    let input = record.input.expect("run input relation");
+    assert_eq!(input.range.unwrap().from_seq, 1);
+    assert_eq!(input.range.unwrap().to_seq, 1);
+    let output = record.output.expect("run output relation");
+    assert!(output.range.unwrap().from_seq >= 2);
+    assert!(
+        output
+            .message_ids
+            .iter()
+            .any(|id| assistant.id.as_ref() == Some(id)),
+        "run output ids should include the assistant message"
+    );
+}
+
+#[tokio::test]
+async fn checkpoint_output_supports_child_result_lookup_after_tool_messages() {
+    use awaken::contract::storage::{RunStore, ThreadStore};
+    use awaken::stores::InMemoryStore;
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![ContentBlock::text("checking")],
+            tool_calls: vec![ToolCall::new(
+                "c1",
+                "echo",
+                json!({"message": "tool result should not win"}),
+            )],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("final child answer")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = ResolvedAgent::new("test", "m", "sys", llm).with_tool(Arc::new(EchoTool));
+    let runtime = make_runtime();
+    let resolver = FixedResolver::new(agent);
+    let checkpoint = Arc::new(InMemoryStore::new());
+
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink,
+        checkpoint_store: Some(checkpoint.as_ref()),
+        messages: vec![Message::user("delegate with a tool")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.response, "final child answer");
+
+    let msgs = checkpoint
+        .load_messages("thread-1")
+        .await
+        .unwrap()
+        .expect("checkpoint messages");
+    let record = checkpoint.load_run("run-1").await.unwrap().unwrap();
+    let output = record.output.expect("run output relation");
+    let produced_ids = msgs
+        .iter()
+        .filter(|message| message.produced_by_run_id() == Some("run-1"))
+        .filter_map(|message| message.id.clone())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        output.message_ids, produced_ids,
+        "run output ids should include assistant and tool messages in append order"
+    );
+    assert!(
+        msgs.iter().any(|message| {
+            message.role == Role::Tool
+                && message
+                    .id
+                    .as_ref()
+                    .is_some_and(|id| output.message_ids.contains(id))
+        }),
+        "tool messages remain part of run output for replay and audit"
+    );
+    assert_eq!(
+        latest_non_tool_output_text(&msgs, &output, "run-1").as_deref(),
+        Some("final child answer"),
+        "child result lookup should ignore tool messages"
+    );
+
+    let mut parent_followup = Message::assistant("parent followup");
+    parent_followup.mark_produced_by("parent-run", Some(0));
+    let mut mixed_thread = msgs.clone();
+    mixed_thread.push(parent_followup);
+    assert_eq!(
+        latest_non_tool_output_text(&mixed_thread, &output, "run-1").as_deref(),
+        Some("final child answer"),
+        "child result lookup must stay scoped to the child run"
     );
 }
 

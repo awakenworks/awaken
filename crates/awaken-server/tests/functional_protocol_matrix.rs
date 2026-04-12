@@ -10,6 +10,7 @@ fn protocol_matrix_basic_flow() {
         AgentEvent::RunStart {
             thread_id: "t".into(),
             run_id: "r".into(),
+            identity: None,
             parent_run_id: None,
         },
         AgentEvent::TextDelta {
@@ -18,6 +19,7 @@ fn protocol_matrix_basic_flow() {
         AgentEvent::RunFinish {
             thread_id: "t".into(),
             run_id: "r".into(),
+            identity: None,
             result: None,
             termination: awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd,
         },

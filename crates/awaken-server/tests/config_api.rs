@@ -484,6 +484,7 @@ async fn make_app_with_skill_catalog(
     let mailbox = Arc::new(Mailbox::new(
         runtime.clone(),
         Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+        store.clone(),
         "config-api-test".into(),
         MailboxConfig::default(),
     ));

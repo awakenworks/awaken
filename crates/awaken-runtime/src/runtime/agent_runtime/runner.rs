@@ -13,6 +13,7 @@ use awaken_contract::contract::active_agent::ActiveAgentIdKey;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::identity::RunIdentity;
 use awaken_contract::contract::message::{Message, Role, Visibility};
+use awaken_contract::contract::storage::RunRecord;
 use awaken_contract::contract::suspension::ToolCallStatus;
 use awaken_contract::now_ms;
 use awaken_contract::state::PersistedState;
@@ -64,16 +65,23 @@ impl AgentRuntime {
     ) -> Result<AgentRunResult, AgentLoopError> {
         let RunRequest {
             messages: request_messages,
+            messages_already_persisted,
             thread_id,
             agent_id,
             overrides,
             decisions,
             frontend_tools,
             origin: req_origin,
+            run_mode,
+            adapter,
             parent_run_id: req_parent_run_id,
             parent_thread_id: req_parent_thread_id,
             continue_run_id,
-            job_id_hint,
+            run_id_hint,
+            dispatch_id_hint,
+            dispatch_id,
+            session_id,
+            transport_request_id,
             run_inbox,
         } = request;
         let new_messages = request_messages.clone();
@@ -96,29 +104,41 @@ impl AgentRuntime {
             .next_root_run_id(
                 &thread_id,
                 continue_run_id,
-                job_id_hint,
+                run_id_hint,
+                dispatch_id_hint,
                 matches!(&resolved_execution, ResolvedExecution::Local(_)),
             )
             .await?;
         let run_origin = match req_origin {
-            awaken_contract::contract::mailbox::MailboxJobOrigin::User => {
+            awaken_contract::contract::storage::RunRequestOrigin::User => {
                 awaken_contract::contract::identity::RunOrigin::User
             }
-            awaken_contract::contract::mailbox::MailboxJobOrigin::A2A => {
+            awaken_contract::contract::storage::RunRequestOrigin::A2A => {
                 awaken_contract::contract::identity::RunOrigin::Subagent
             }
-            awaken_contract::contract::mailbox::MailboxJobOrigin::Internal => {
+            awaken_contract::contract::storage::RunRequestOrigin::Internal => {
                 awaken_contract::contract::identity::RunOrigin::Internal
             }
         };
-        let run_identity = RunIdentity::new(
+        let mut run_identity = RunIdentity::new(
             thread_id.clone(),
             req_parent_thread_id,
             run_id.clone(),
             req_parent_run_id,
             agent_id.clone(),
             run_origin,
-        );
+        )
+        .with_run_mode(run_mode)
+        .with_adapter(adapter);
+        if let Some(dispatch_id) = dispatch_id {
+            run_identity = run_identity.with_dispatch_id(dispatch_id);
+        }
+        if let Some(session_id) = session_id {
+            run_identity = run_identity.with_session_id(session_id);
+        }
+        if let Some(transport_request_id) = transport_request_id {
+            run_identity = run_identity.with_transport_request_id(transport_request_id);
+        }
 
         let mut run_inbox = run_inbox;
         let (messages, phase_runtime, inbox, previous_non_local_state) = match &resolved_execution {
@@ -128,6 +148,7 @@ impl AgentRuntime {
                         preflight_resolved,
                         &thread_id,
                         request_messages,
+                        messages_already_persisted,
                         &decisions,
                         run_inbox.take(),
                     )
@@ -140,8 +161,12 @@ impl AgentRuntime {
                 )
             }
             ResolvedExecution::NonLocal(_) => (
-                self.load_non_local_messages(&thread_id, request_messages)
-                    .await?,
+                self.load_non_local_messages(
+                    &thread_id,
+                    request_messages,
+                    messages_already_persisted,
+                )
+                .await?,
                 None,
                 run_inbox.take().map(|run_inbox| run_inbox.receiver),
                 self.load_non_local_state(&thread_id, requested_continue_run_id.as_deref())
@@ -211,6 +236,7 @@ impl AgentRuntime {
                     .await
                     .map_err(local_root_execution_error)?;
                 Ok(AgentRunResult {
+                    run_id: run_id.clone(),
                     response: result.response.unwrap_or_default(),
                     termination: result.termination,
                     steps: result.steps,
@@ -234,6 +260,7 @@ impl AgentRuntime {
         preflight_resolved: &crate::registry::ResolvedAgent,
         thread_id: &str,
         request_messages: Vec<Message>,
+        messages_already_persisted: bool,
         decisions: &[(
             String,
             awaken_contract::contract::suspension::ToolCallResume,
@@ -280,7 +307,9 @@ impl AgentRuntime {
             strip_superseded_suspended_tool_calls(&mut messages, &store);
         }
         strip_unpaired_tool_calls(&mut messages);
-        messages.extend(request_messages);
+        if !messages_already_persisted {
+            messages.extend(request_messages);
+        }
 
         Ok(PreparedLocalRootExecution {
             messages,
@@ -293,6 +322,7 @@ impl AgentRuntime {
         &self,
         thread_id: &str,
         request_messages: Vec<Message>,
+        messages_already_persisted: bool,
     ) -> Result<Vec<Message>, AgentLoopError> {
         let mut messages = if let Some(ref storage) = self.storage {
             storage
@@ -304,7 +334,9 @@ impl AgentRuntime {
             Vec::new()
         };
         strip_unpaired_tool_calls(&mut messages);
-        messages.extend(request_messages);
+        if !messages_already_persisted {
+            messages.extend(request_messages);
+        }
         Ok(messages)
     }
 
@@ -312,7 +344,8 @@ impl AgentRuntime {
         &self,
         thread_id: &str,
         continue_run_id: Option<String>,
-        job_id_hint: Option<String>,
+        run_id_hint: Option<String>,
+        dispatch_id_hint: Option<String>,
         allow_waiting_reuse: bool,
     ) -> Result<(String, bool), AgentLoopError> {
         if let Some(run_id) = continue_run_id {
@@ -333,7 +366,26 @@ impl AgentRuntime {
                 "continue_run_id '{run_id}' does not reference an existing run"
             )));
         }
-        if let Some(run_id) = job_id_hint.and_then(|id| {
+        if let Some(run_id) = run_id_hint.and_then(|id| {
+            let trimmed = id.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }) {
+            if let Some(ref ts) = self.storage
+                && let Some(existing) = ts
+                    .load_run(&run_id)
+                    .await
+                    .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
+            {
+                if existing.status == awaken_contract::contract::lifecycle::RunStatus::Created {
+                    return Ok((run_id, false));
+                }
+                return Err(AgentLoopError::InvalidResume(format!(
+                    "run_id_hint '{run_id}' already exists as a run"
+                )));
+            }
+            return Ok((run_id, false));
+        }
+        if let Some(run_id) = dispatch_id_hint.and_then(|id| {
             let trimmed = id.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_string())
         }) {
@@ -345,23 +397,45 @@ impl AgentRuntime {
                     .is_some()
             {
                 return Err(AgentLoopError::InvalidResume(format!(
-                    "job_id_hint '{run_id}' already exists as a run"
+                    "dispatch_id_hint '{run_id}' already exists as a run"
                 )));
             }
             return Ok((run_id, false));
         }
-        if allow_waiting_reuse
-            && let Some(ref ts) = self.storage
-            && let Some(prev) = ts
-                .latest_run(thread_id)
-                .await
-                .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
-            && prev.status == awaken_contract::contract::lifecycle::RunStatus::Waiting
-            && prev.termination_code.as_deref() == Some("awaiting_tasks")
-        {
+        if allow_waiting_reuse && let Some(prev) = self.reusable_waiting_run(thread_id).await? {
             return Ok((prev.run_id.clone(), true));
         }
         Ok((uuid::Uuid::now_v7().to_string(), false))
+    }
+
+    async fn reusable_waiting_run(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<RunRecord>, AgentLoopError> {
+        let Some(ref ts) = self.storage else {
+            return Ok(None);
+        };
+
+        if let Some(thread) = ts
+            .load_thread(thread_id)
+            .await
+            .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
+            && let Some(open_run_id) = thread.open_run_id.as_deref()
+            && let Some(run) = ts
+                .load_run(open_run_id)
+                .await
+                .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
+            && run.thread_id == thread_id
+            && run.is_resumable_waiting()
+        {
+            return Ok(Some(run));
+        }
+
+        Ok(ts
+            .latest_run(thread_id)
+            .await
+            .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
+            .filter(RunRecord::is_resumable_waiting))
     }
 
     async fn resolve_agent_id(
@@ -579,7 +653,7 @@ mod tests {
     use crate::registry::traits::{BackendRegistry, ModelBinding, RegistrySet};
     use crate::registry::{AgentResolver, ResolvedAgent};
     use crate::state::{KeyScope, StateCommand, StateKey, StateKeyOptions};
-    use crate::{PhaseContext, PhaseHook};
+    use crate::{PhaseContext, PhaseHook, ToolPolicyHook};
     use async_trait::async_trait;
     use awaken_contract::PersistedState;
     use awaken_contract::contract::active_agent::ActiveAgentIdKey;
@@ -593,12 +667,15 @@ mod tests {
     use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
     use awaken_contract::contract::message::Message;
     use awaken_contract::contract::storage::{
-        RunQuery, RunRecord, RunStore, ThreadRunStore, ThreadStore,
+        RunQuery, RunRecord, RunStore, RunWaitingState, ThreadRunStore, ThreadStore, WaitingReason,
     };
     use awaken_contract::contract::suspension::ResumeDecisionAction;
     use awaken_contract::contract::suspension::ToolCallResume;
     use awaken_contract::contract::tool::{
         Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+    };
+    use awaken_contract::contract::tool_intercept::{
+        AdapterKind, RunMode, ToolPolicyContext, ToolPolicyDecision,
     };
     #[cfg(feature = "a2a")]
     use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
@@ -929,10 +1006,7 @@ mod tests {
             .expect("run lookup should succeed")
             .expect("run record should be persisted");
         assert_eq!(latest_run.status, RunStatus::Waiting);
-        assert_eq!(
-            latest_run.termination_code.as_deref(),
-            Some("input_required")
-        );
+        assert_eq!(latest_run.waiting_reason(), Some(WaitingReason::UserInput));
 
         let events = sink.events();
         assert!(events.iter().any(|event| matches!(
@@ -1145,9 +1219,21 @@ mod tests {
             thread_id: "remote-thread-cont".into(),
             agent_id: "remote-root".into(),
             parent_run_id: None,
+            request: None,
+            input: None,
+            output: None,
             status: RunStatus::Waiting,
-            termination_code: Some("input_required".into()),
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: None,
+            outcome: None,
             created_at: 1,
+            started_at: None,
+            finished_at: None,
             updated_at: 1,
             steps: 1,
             input_tokens: 0,
@@ -1209,7 +1295,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_uses_job_id_hint_for_new_run_identity() {
+    async fn run_uses_dispatch_id_hint_for_new_run_identity() {
         let runtime = build_remote_runtime(
             RemoteEndpoint {
                 backend: "test-remote".into(),
@@ -1221,13 +1307,13 @@ mod tests {
 
         runtime
             .run(
-                RunRequest::new("remote-thread-job-hint", vec![Message::user("hello")])
+                RunRequest::new("remote-thread-dispatch-hint", vec![Message::user("hello")])
                     .with_agent_id("remote-root")
-                    .with_job_id_hint("external-task-1"),
+                    .with_dispatch_id_hint("external-task-1"),
                 Arc::new(VecEventSink::new()),
             )
             .await
-            .expect("job id hint should create the run identity");
+            .expect("dispatch id hint should create the run identity");
 
         let store = runtime.thread_run_store().expect("store");
         let run = store
@@ -1235,8 +1321,206 @@ mod tests {
             .await
             .expect("load hinted run")
             .expect("hinted run");
-        assert_eq!(run.thread_id, "remote-thread-job-hint");
+        assert_eq!(run.thread_id, "remote-thread-dispatch-hint");
         assert_eq!(run.status, RunStatus::Done);
+    }
+
+    #[tokio::test]
+    async fn run_trace_dispatch_id_does_not_block_local_waiting_reuse() {
+        let store = Arc::new(InMemoryStore::new());
+        let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+            content: vec![ContentBlock::text("continued")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        }]));
+        let resolver = Arc::new(FixedResolver {
+            agent: ResolvedAgent::new("agent", "m", "sys", llm),
+            plugins: vec![],
+        });
+        let runtime = AgentRuntime::new(resolver)
+            .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>);
+        store
+            .checkpoint(
+                "thread-default-hint",
+                &[Message::user("waiting")],
+                &RunRecord {
+                    run_id: "waiting-run".into(),
+                    thread_id: "thread-default-hint".into(),
+                    agent_id: "agent".into(),
+                    parent_run_id: None,
+                    request: None,
+                    input: None,
+                    output: None,
+                    status: RunStatus::Waiting,
+                    termination_reason: None,
+                    final_output: None,
+                    error_payload: None,
+                    dispatch_id: None,
+                    session_id: None,
+                    transport_request_id: None,
+                    waiting: Some(RunWaitingState {
+                        reason: WaitingReason::BackgroundTasks,
+                        ticket_ids: Vec::new(),
+                        tickets: Vec::new(),
+                        since_dispatch_id: Some("mailbox-dispatch-1".into()),
+                        message: Some("waiting for background work".into()),
+                    }),
+                    outcome: None,
+                    created_at: 1,
+                    started_at: None,
+                    finished_at: None,
+                    updated_at: 1,
+                    steps: 1,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    state: None,
+                },
+            )
+            .await
+            .expect("seed waiting run");
+
+        let result = runtime
+            .run(
+                RunRequest::new("thread-default-hint", vec![Message::user("resume")])
+                    .with_agent_id("agent")
+                    .with_trace_dispatch_id("mailbox-dispatch-1"),
+                Arc::new(VecEventSink::new()),
+            )
+            .await
+            .expect("default dispatch trace should allow waiting reuse");
+
+        assert_eq!(result.run_id, "waiting-run");
+        assert!(
+            store
+                .load_run("mailbox-dispatch-1")
+                .await
+                .expect("load default hint run")
+                .is_none(),
+            "default dispatch trace must not create a new run when a local waiting run is reusable"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_reuses_structured_tool_permission_waiting_run() {
+        let store = Arc::new(InMemoryStore::new());
+        let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+            content: vec![ContentBlock::text("approved continuation")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        }]));
+        let resolver = Arc::new(FixedResolver {
+            agent: ResolvedAgent::new("agent", "m", "sys", llm),
+            plugins: vec![],
+        });
+        let runtime = AgentRuntime::new(resolver)
+            .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>);
+        store
+            .checkpoint(
+                "thread-tool-permission",
+                &[Message::user("waiting")],
+                &RunRecord {
+                    run_id: "waiting-tool-run".into(),
+                    thread_id: "thread-tool-permission".into(),
+                    agent_id: "agent".into(),
+                    parent_run_id: None,
+                    request: None,
+                    input: None,
+                    output: None,
+                    status: RunStatus::Waiting,
+                    termination_reason: None,
+                    final_output: None,
+                    error_payload: None,
+                    dispatch_id: None,
+                    session_id: None,
+                    transport_request_id: None,
+                    waiting: Some(RunWaitingState {
+                        reason: WaitingReason::ToolPermission,
+                        ticket_ids: vec!["call-1".into()],
+                        tickets: Vec::new(),
+                        since_dispatch_id: None,
+                        message: Some("approval required".into()),
+                    }),
+                    outcome: None,
+                    created_at: 1,
+                    started_at: None,
+                    finished_at: None,
+                    updated_at: 1,
+                    steps: 1,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    state: None,
+                },
+            )
+            .await
+            .expect("seed waiting run");
+
+        let result = runtime
+            .run(
+                RunRequest::new("thread-tool-permission", vec![Message::user("approved")])
+                    .with_agent_id("agent")
+                    .with_trace_dispatch_id("mailbox-dispatch-tool"),
+                Arc::new(VecEventSink::new()),
+            )
+            .await
+            .expect("structured waiting run should be reusable");
+
+        assert_eq!(result.run_id, "waiting-tool-run");
+        assert!(
+            store
+                .load_run("mailbox-dispatch-tool")
+                .await
+                .expect("load default hint run")
+                .is_none(),
+            "default dispatch trace must stay trace-only when a structured waiting run is reusable"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_trace_dispatch_id_is_trace_not_canonical_run_id_for_new_run() {
+        let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+            content: vec![ContentBlock::text("new run")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        }]));
+        let resolver = Arc::new(FixedResolver {
+            agent: ResolvedAgent::new("agent", "m", "sys", llm),
+            plugins: vec![],
+        });
+        let runtime = AgentRuntime::new(resolver);
+        let sink = Arc::new(VecEventSink::new());
+
+        let result = runtime
+            .run(
+                RunRequest::new("thread-default-new", vec![Message::user("start")])
+                    .with_agent_id("agent")
+                    .with_trace_dispatch_id("mailbox-dispatch-new"),
+                sink.clone(),
+            )
+            .await
+            .expect("run should succeed");
+
+        assert_ne!(result.run_id, "mailbox-dispatch-new");
+        let start = sink
+            .events()
+            .into_iter()
+            .find_map(|event| match event {
+                AgentEvent::RunStart {
+                    run_id, identity, ..
+                } => Some((run_id, identity)),
+                _ => None,
+            })
+            .expect("run start event should be emitted");
+        assert_eq!(start.0, result.run_id);
+        assert_eq!(
+            start.1.and_then(|identity| identity.trace.dispatch_id),
+            Some("mailbox-dispatch-new".into())
+        );
     }
 
     #[tokio::test]
@@ -1272,9 +1556,21 @@ mod tests {
                     thread_id: "remote-thread-state".into(),
                     agent_id: "remote-root".into(),
                     parent_run_id: None,
+                    request: None,
+                    input: None,
+                    output: None,
                     status: RunStatus::Waiting,
-                    termination_code: Some("input_required".into()),
+                    termination_reason: None,
+                    final_output: None,
+                    error_payload: None,
+                    dispatch_id: None,
+                    session_id: None,
+                    transport_request_id: None,
+                    waiting: None,
+                    outcome: None,
                     created_at: 1,
+                    started_at: None,
+                    finished_at: None,
                     updated_at: 1,
                     steps: 1,
                     input_tokens: 0,
@@ -1293,9 +1589,21 @@ mod tests {
                     thread_id: "remote-thread-state".into(),
                     agent_id: "remote-root".into(),
                     parent_run_id: None,
+                    request: None,
+                    input: None,
+                    output: None,
                     status: RunStatus::Done,
-                    termination_code: Some("natural".into()),
+                    termination_reason: None,
+                    final_output: None,
+                    error_payload: None,
+                    dispatch_id: None,
+                    session_id: None,
+                    transport_request_id: None,
+                    waiting: None,
+                    outcome: None,
                     created_at: 2,
+                    started_at: None,
+                    finished_at: None,
                     updated_at: 2,
                     steps: 1,
                     input_tokens: 0,
@@ -1429,6 +1737,53 @@ mod tests {
         ) -> Result<ToolOutput, ToolError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(ToolResult::success("echo", args).into())
+        }
+    }
+
+    struct RecordingToolPolicyHook {
+        seen: Arc<Mutex<Vec<ToolPolicyContext>>>,
+    }
+
+    #[async_trait]
+    impl ToolPolicyHook for RecordingToolPolicyHook {
+        async fn decide(
+            &self,
+            ctx: &ToolPolicyContext,
+        ) -> Result<ToolPolicyDecision, awaken_contract::StateError> {
+            self.seen.lock().expect("lock poisoned").push(ctx.clone());
+            if ctx.run_mode == RunMode::Scheduled
+                && ctx.adapter == AdapterKind::Acp
+                && ctx.tool_name == "echo"
+            {
+                return Ok(ToolPolicyDecision::Deny {
+                    reason: "scheduled ACP echo denied".into(),
+                });
+            }
+            Ok(ToolPolicyDecision::Allow)
+        }
+    }
+
+    struct RecordingToolPolicyPlugin {
+        seen: Arc<Mutex<Vec<ToolPolicyContext>>>,
+    }
+
+    impl Plugin for RecordingToolPolicyPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "recording-tool-policy",
+            }
+        }
+
+        fn register(
+            &self,
+            registrar: &mut PluginRegistrar,
+        ) -> Result<(), awaken_contract::StateError> {
+            registrar.register_tool_policy_hook(
+                "recording-tool-policy",
+                RecordingToolPolicyHook {
+                    seen: Arc::clone(&self.seen),
+                },
+            )
         }
     }
 
@@ -1669,9 +2024,21 @@ mod tests {
             thread_id: thread_id.to_string(),
             agent_id: agent_id.to_string(),
             parent_run_id: None,
+            request: None,
+            input: None,
+            output: None,
             status: RunStatus::Done,
-            termination_code: Some("natural".into()),
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: None,
+            outcome: None,
             created_at: 1,
+            started_at: None,
+            finished_at: None,
             updated_at: 1,
             steps: 1,
             input_tokens: 0,
@@ -1831,6 +2198,62 @@ mod tests {
             }),
             "resumed replay should emit ToolCallResumed with the final tool result: {events:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn run_request_policy_context_reaches_tool_gate() {
+        let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+            content: vec![ContentBlock::text("calling echo")],
+            tool_calls: vec![awaken_contract::contract::message::ToolCall::new(
+                "c1",
+                "echo",
+                json!({"message": "hello"}),
+            )],
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        }]));
+        let tool = Arc::new(EchoTool {
+            calls: AtomicUsize::new(0),
+        });
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let resolver = Arc::new(FixedResolver {
+            agent: ResolvedAgent::new("agent", "m", "sys", llm).with_tool(tool.clone()),
+            plugins: vec![Arc::new(RecordingToolPolicyPlugin {
+                seen: Arc::clone(&seen),
+            })],
+        });
+        let runtime = AgentRuntime::new(resolver);
+
+        let result = runtime
+            .run(
+                RunRequest::new("thread-policy", vec![Message::user("use echo")])
+                    .with_agent_id("agent")
+                    .with_run_mode(RunMode::Scheduled)
+                    .with_adapter(AdapterKind::Acp),
+                Arc::new(VecEventSink::new()),
+            )
+            .await
+            .expect("run should reach policy hook");
+
+        assert!(matches!(
+            result.termination,
+            TerminationReason::Blocked(ref reason) if reason == "scheduled ACP echo denied"
+        ));
+        assert_eq!(
+            tool.calls.load(Ordering::SeqCst),
+            0,
+            "denied tool must not execute"
+        );
+
+        let contexts = seen.lock().expect("lock poisoned");
+        assert_eq!(contexts.len(), 1);
+        let ctx = &contexts[0];
+        assert_eq!(ctx.thread_id, "thread-policy");
+        assert_eq!(ctx.run_mode, RunMode::Scheduled);
+        assert_eq!(ctx.adapter, AdapterKind::Acp);
+        assert_eq!(ctx.dispatch_id, None);
+        assert_eq!(ctx.tool_name, "echo");
     }
 
     #[tokio::test]
@@ -2021,8 +2444,14 @@ mod tests {
                 .await
                 .expect("latest run lookup should succeed")
                 && run.status == RunStatus::Waiting
-                && run.termination_code.as_deref() == Some("suspended")
+                && run.waiting_reason() == Some(WaitingReason::ToolPermission)
             {
+                let waiting = run.waiting.expect("waiting state should be durable");
+                assert_eq!(waiting.ticket_ids, vec!["c_suspend"]);
+                assert_eq!(waiting.tickets.len(), 1);
+                assert_eq!(waiting.tickets[0].tool_call_id, "c_suspend");
+                assert_eq!(waiting.tickets[0].tool_name, "dangerous");
+                assert_eq!(waiting.tickets[0].arguments, json!({"danger": true}));
                 break;
             }
             assert!(

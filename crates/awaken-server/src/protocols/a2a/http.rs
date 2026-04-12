@@ -18,12 +18,12 @@ use uuid::Uuid;
 use awaken_contract::contract::content::{
     AudioSource, ContentBlock, DocumentSource, ImageSource, VideoSource,
 };
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::mailbox::{MailboxJob, MailboxJobStatus};
+use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
+use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
 use awaken_contract::contract::message::{
     Message as AwakenMessage, Role as AwakenRole, Visibility,
 };
-use awaken_contract::contract::storage::{RunQuery, RunRecord};
+use awaken_contract::contract::storage::{RunQuery, RunRecord, WaitingReason};
 use awaken_contract::thread::Thread;
 pub use awaken_protocol_a2a::{
     AgentCapabilities, AgentCard, AgentInterface, AgentProvider, AgentSkill, Artifact,
@@ -75,7 +75,7 @@ struct StoredPushConfigs {
 struct ResolvedTask {
     thread_id: String,
     run: Option<RunRecord>,
-    job: Option<MailboxJob>,
+    dispatch: Option<RunDispatch>,
 }
 
 /// Build A2A routes.
@@ -1292,17 +1292,22 @@ async fn cancel_task(
         ));
     }
 
-    let queued_jobs = st
+    let queued_dispatches = st
         .mailbox
-        .list_jobs(&existing.task.id, Some(&[MailboxJobStatus::Queued]), 100, 0)
+        .list_dispatches(
+            &existing.task.id,
+            Some(&[RunDispatchStatus::Queued]),
+            100,
+            0,
+        )
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?;
 
     let mut cancelled = false;
-    for job in queued_jobs {
+    for dispatch in queued_dispatches {
         cancelled |= st
             .mailbox
-            .cancel(&job.job_id)
+            .cancel(&dispatch.dispatch_id)
             .await
             .map_err(|e| A2aError::Internal(e.to_string()))?;
     }
@@ -1447,7 +1452,9 @@ async fn prepare_send_request(
 
     let message_id = payload.message.message_id.clone();
     let awaken_message = AwakenMessage::user_with_content(content).with_id(message_id.clone());
-    let mut request = RunRequest::new(thread_id.clone(), vec![awaken_message]);
+    let mut request = RunRequest::new(thread_id.clone(), vec![awaken_message])
+        .with_origin(awaken_contract::contract::storage::RunRequestOrigin::A2A)
+        .with_adapter(awaken_contract::contract::tool_intercept::AdapterKind::A2a);
     let mut new_task_start_message_id = None;
 
     if let Some(ref tenant) = effective_tenant {
@@ -1476,7 +1483,9 @@ async fn prepare_send_request(
         }
         None => {
             new_task_start_message_id = Some(message_id);
-            request = request.with_job_id_hint(task_id.clone());
+            request = request
+                .with_run_id_hint(task_id.clone())
+                .with_dispatch_id_hint(task_id.clone());
         }
     }
 
@@ -1517,36 +1526,35 @@ async fn resolve_task(st: &AppState, task_id: &str) -> Result<Option<ResolvedTas
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?
     {
-        let job = st
+        let dispatch = st
             .mailbox
-            .load_job(task_id)
+            .load_dispatch(task_id)
             .await
             .map_err(|e| A2aError::Internal(e.to_string()))?;
         return Ok(Some(ResolvedTask {
             thread_id: run.thread_id.clone(),
             run: Some(run),
-            job,
+            dispatch,
         }));
     }
 
-    let Some(job) = st
+    let Some(dispatch) = st
         .mailbox
-        .load_job(task_id)
+        .load_dispatch(task_id)
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?
     else {
         return Ok(None);
     };
     Ok(Some(ResolvedTask {
-        thread_id: job.mailbox_id.clone(),
+        thread_id: dispatch.thread_id.clone(),
         run: None,
-        job: Some(job),
+        dispatch: Some(dispatch),
     }))
 }
 
 fn run_is_a2a_resumable(run: &RunRecord) -> bool {
-    run.status == RunStatus::Waiting
-        && !matches!(run.termination_code.as_deref(), Some("awaiting_tasks"))
+    run.is_resumable_waiting() && run.waiting_reason() != Some(WaitingReason::BackgroundTasks)
 }
 
 async fn record_task_binding(
@@ -1675,25 +1683,16 @@ async fn load_task_snapshot(
     };
     let thread_id = task.thread_id.clone();
     let latest_run = task.run.clone();
-    let latest_job = if let Some(job) = task.job.clone() {
-        Some(job)
+    let latest_dispatch = if let Some(dispatch) = task.dispatch.clone() {
+        Some(dispatch)
     } else {
         st.mailbox
-            .list_jobs(&thread_id, None, 100, 0)
+            .list_dispatches(&thread_id, None, 100, 0)
             .await
             .map_err(|e| A2aError::Internal(e.to_string()))?
             .into_iter()
-            .filter(|job| {
-                let extras = job.request_extras.as_ref();
-                let continue_run_id = extras
-                    .and_then(|value| value.get("continue_run_id"))
-                    .and_then(serde_json::Value::as_str);
-                let job_id_hint = extras
-                    .and_then(|value| value.get("job_id_hint"))
-                    .and_then(serde_json::Value::as_str);
-                continue_run_id == Some(task_id) || job_id_hint == Some(task_id)
-            })
-            .max_by_key(|job| job.updated_at)
+            .filter(|dispatch| dispatch.run_id == task_id || dispatch.dispatch_id == task_id)
+            .max_by_key(|dispatch| dispatch.updated_at)
     };
 
     let history = st
@@ -1745,25 +1744,25 @@ async fn load_task_snapshot(
         updated_at_ms: record.updated_at.saturating_mul(1000),
         current_agent_id: Some(record.agent_id.clone()),
     });
-    let job_source = latest_job.as_ref().map(|job| TaskSource {
-        state: mailbox_job_to_task_state(job.status),
-        updated_at_ms: job.updated_at,
-        current_agent_id: Some(job.agent_id.clone()),
+    let dispatch_source = latest_dispatch.as_ref().map(|dispatch| TaskSource {
+        state: dispatch_to_task_state(dispatch.status),
+        updated_at_ms: dispatch.updated_at,
+        current_agent_id: latest_run.as_ref().map(|record| record.agent_id.clone()),
     });
 
-    let source = match (&run_source, &job_source) {
-        (Some(run), Some(job)) if job.updated_at_ms >= run.updated_at_ms => {
-            if latest_job
+    let source = match (&run_source, &dispatch_source) {
+        (Some(run), Some(dispatch)) if dispatch.updated_at_ms >= run.updated_at_ms => {
+            if latest_dispatch
                 .as_ref()
-                .is_some_and(|job| job.status != MailboxJobStatus::Accepted)
+                .is_some_and(|dispatch| dispatch.status != RunDispatchStatus::Acked)
             {
-                job_source
+                dispatch_source
             } else {
                 run_source
             }
         }
         (Some(_), _) => run_source,
-        (_, Some(_)) => job_source,
+        (_, Some(_)) => dispatch_source,
         (None, None) => None,
     };
 
@@ -1839,27 +1838,28 @@ fn message_to_artifacts(message: &A2aMessage) -> Vec<Artifact> {
 
 fn run_record_to_task_state(record: &awaken_contract::contract::storage::RunRecord) -> TaskState {
     match record.status {
+        RunStatus::Created => TaskState::Submitted,
         RunStatus::Running => TaskState::Working,
-        RunStatus::Waiting => match record.termination_code.as_deref() {
-            Some("auth_required") => TaskState::AuthRequired,
-            Some("awaiting_tasks") => TaskState::Working,
+        RunStatus::Waiting => match record.waiting_reason() {
+            Some(WaitingReason::ToolPermission) => TaskState::AuthRequired,
+            Some(WaitingReason::BackgroundTasks) => TaskState::Working,
             _ => TaskState::InputRequired,
         },
-        RunStatus::Done => match record.termination_code.as_deref() {
-            Some("cancelled") => TaskState::Canceled,
-            Some(code) if code.starts_with("blocked:") => TaskState::Rejected,
-            Some(code) if code == "error" || code.starts_with("error:") => TaskState::Failed,
+        RunStatus::Done => match record.termination_reason.as_ref() {
+            Some(TerminationReason::Cancelled) => TaskState::Canceled,
+            Some(TerminationReason::Blocked(_)) => TaskState::Rejected,
+            Some(TerminationReason::Error(_)) => TaskState::Failed,
             _ => TaskState::Completed,
         },
     }
 }
 
-fn mailbox_job_to_task_state(status: MailboxJobStatus) -> TaskState {
+fn dispatch_to_task_state(status: RunDispatchStatus) -> TaskState {
     match status {
-        MailboxJobStatus::Queued => TaskState::Submitted,
-        MailboxJobStatus::Claimed | MailboxJobStatus::Accepted => TaskState::Working,
-        MailboxJobStatus::Cancelled | MailboxJobStatus::Superseded => TaskState::Canceled,
-        MailboxJobStatus::DeadLetter => TaskState::Failed,
+        RunDispatchStatus::Queued => TaskState::Submitted,
+        RunDispatchStatus::Claimed | RunDispatchStatus::Acked => TaskState::Working,
+        RunDispatchStatus::Cancelled | RunDispatchStatus::Superseded => TaskState::Canceled,
+        RunDispatchStatus::DeadLetter => TaskState::Failed,
     }
 }
 
@@ -2091,7 +2091,7 @@ async fn thread_has_context(st: &AppState, thread_id: &str) -> Result<bool, A2aE
 
     Ok(!st
         .mailbox
-        .list_jobs(thread_id, None, 1, 0)
+        .list_dispatches(thread_id, None, 1, 0)
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?
         .is_empty())
@@ -2132,17 +2132,17 @@ async fn collect_task_ids(st: &AppState) -> Result<Vec<String>, A2aError> {
         }
         offset += batch.len();
         for thread_id in batch {
-            let jobs = st
+            let dispatches = st
                 .mailbox
-                .list_jobs(
+                .list_dispatches(
                     &thread_id,
-                    Some(&[MailboxJobStatus::Queued, MailboxJobStatus::Claimed]),
+                    Some(&[RunDispatchStatus::Queued, RunDispatchStatus::Claimed]),
                     100,
                     0,
                 )
                 .await
                 .map_err(|e| A2aError::Internal(e.to_string()))?;
-            ids.extend(jobs.into_iter().map(|job| job.job_id));
+            ids.extend(dispatches.into_iter().map(|dispatch| dispatch.dispatch_id));
         }
     }
     Ok(ids.into_iter().collect())
@@ -2880,7 +2880,7 @@ fn content_block_to_a2a_part(block: &ContentBlock) -> Option<Part> {
 mod tests {
     use super::*;
     use awaken_contract::contract::lifecycle::RunStatus;
-    use awaken_contract::contract::storage::RunRecord;
+    use awaken_contract::contract::storage::{RunRecord, RunWaitingState, WaitingReason};
 
     #[test]
     fn parse_task_state_filter_accepts_enum_and_lowercase() {
@@ -2955,9 +2955,27 @@ mod tests {
             thread_id: "thread-1".into(),
             agent_id: "agent".into(),
             parent_run_id: None,
+            request: None,
+            input: None,
+            output: None,
             status: RunStatus::Waiting,
-            termination_code: Some("input_required".into()),
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: Some(RunWaitingState {
+                reason: WaitingReason::UserInput,
+                ticket_ids: Vec::new(),
+                tickets: Vec::new(),
+                since_dispatch_id: None,
+                message: None,
+            }),
+            outcome: None,
             created_at: 0,
+            started_at: None,
+            finished_at: None,
             updated_at: 0,
             steps: 0,
             input_tokens: 0,
@@ -2970,7 +2988,20 @@ mod tests {
         );
 
         let auth_required = RunRecord {
-            termination_code: Some("auth_required".into()),
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: Some(RunWaitingState {
+                reason: WaitingReason::ToolPermission,
+                ticket_ids: Vec::new(),
+                tickets: Vec::new(),
+                since_dispatch_id: None,
+                message: None,
+            }),
+            outcome: None,
             ..input_required.clone()
         };
         assert_eq!(
@@ -2979,7 +3010,20 @@ mod tests {
         );
 
         let awaiting_tasks = RunRecord {
-            termination_code: Some("awaiting_tasks".into()),
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: Some(RunWaitingState {
+                reason: WaitingReason::BackgroundTasks,
+                ticket_ids: Vec::new(),
+                tickets: Vec::new(),
+                since_dispatch_id: None,
+                message: None,
+            }),
+            outcome: None,
             ..input_required.clone()
         };
         assert_eq!(
@@ -2988,12 +3032,98 @@ mod tests {
         );
 
         let generic_waiting = RunRecord {
-            termination_code: None,
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: None,
+            outcome: None,
             ..input_required
         };
         assert_eq!(
             run_record_to_task_state(&generic_waiting),
             TaskState::InputRequired
         );
+
+        let structured_auth = RunRecord {
+            waiting: Some(RunWaitingState {
+                reason: WaitingReason::ToolPermission,
+                ticket_ids: vec!["ticket-1".into()],
+                tickets: Vec::new(),
+                since_dispatch_id: None,
+                message: None,
+            }),
+            ..generic_waiting.clone()
+        };
+        assert_eq!(
+            run_record_to_task_state(&structured_auth),
+            TaskState::AuthRequired
+        );
+
+        let structured_background = RunRecord {
+            waiting: Some(RunWaitingState {
+                reason: WaitingReason::BackgroundTasks,
+                ticket_ids: Vec::new(),
+                tickets: Vec::new(),
+                since_dispatch_id: None,
+                message: None,
+            }),
+            ..generic_waiting
+        };
+        assert_eq!(
+            run_record_to_task_state(&structured_background),
+            TaskState::Working
+        );
+    }
+
+    #[test]
+    fn a2a_resumable_waiting_uses_structured_reason() {
+        let base = RunRecord {
+            run_id: "run-1".into(),
+            thread_id: "thread-1".into(),
+            agent_id: "agent".into(),
+            parent_run_id: None,
+            request: None,
+            input: None,
+            output: None,
+            status: RunStatus::Waiting,
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: Some(RunWaitingState {
+                reason: WaitingReason::UserInput,
+                ticket_ids: Vec::new(),
+                tickets: Vec::new(),
+                since_dispatch_id: None,
+                message: None,
+            }),
+            outcome: None,
+            created_at: 0,
+            started_at: None,
+            finished_at: None,
+            updated_at: 0,
+            steps: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            state: None,
+        };
+        assert!(run_is_a2a_resumable(&base));
+
+        let background = RunRecord {
+            waiting: Some(RunWaitingState {
+                reason: WaitingReason::BackgroundTasks,
+                ticket_ids: Vec::new(),
+                tickets: Vec::new(),
+                since_dispatch_id: None,
+                message: None,
+            }),
+            ..base
+        };
+        assert!(!run_is_a2a_resumable(&background));
     }
 }

@@ -63,6 +63,7 @@ fn encoder_public_lifecycle_smoke() {
     let finish = encoder.transcode(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::NaturalEnd,
     });
@@ -154,6 +155,7 @@ fn encoder_terminal_guard_smoke() {
     let finish = encoder.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::NaturalEnd,
     });

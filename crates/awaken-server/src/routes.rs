@@ -20,6 +20,9 @@ use crate::protocols::ag_ui::http::ag_ui_routes;
 use crate::protocols::ai_sdk_v6::http::ai_sdk_routes;
 use crate::protocols::mcp::http::mcp_routes;
 use crate::query::{self, MessageQueryParams};
+use crate::services::run_control_service::{
+    InputMode, InterruptMode, RunControlError, RunControlService,
+};
 use awaken_runtime::RunRequest;
 
 /// API error type returned by route handlers.
@@ -57,6 +60,16 @@ pub(crate) fn map_mailbox_error(error: MailboxError) -> ApiError {
         MailboxError::Validation(msg) => ApiError::BadRequest(msg),
         MailboxError::Store(err) => ApiError::Internal(err.to_string()),
         MailboxError::Internal(msg) => ApiError::Internal(msg),
+    }
+}
+
+fn map_run_control_error(error: RunControlError) -> ApiError {
+    match error {
+        RunControlError::ThreadNotFound(id) => ApiError::ThreadNotFound(id),
+        RunControlError::RunNotFound(id) => ApiError::RunNotFound(id),
+        RunControlError::DecisionTargetNotFound(id) => ApiError::RunNotFound(id),
+        RunControlError::Store(error) => ApiError::Internal(error.to_string()),
+        RunControlError::Mailbox(error) => map_mailbox_error(error),
     }
 }
 
@@ -113,6 +126,7 @@ fn run_routes() -> Router<AppState> {
         .route("/v1/runs/:id/cancel", post(cancel_run))
         .route("/v1/runs/:id/decision", post(submit_decision))
         .route("/v1/threads/:id/runs", get(list_thread_runs))
+        .route("/v1/threads/:id/runs/active", get(active_thread_run))
         .route("/v1/threads/:id/runs/latest", get(latest_thread_run))
 }
 
@@ -330,25 +344,20 @@ async fn interrupt_thread(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let interrupted = st
-        .mailbox
-        .interrupt(&id)
+    let interrupted = RunControlService::new(st)
+        .interrupt_thread(&id, InterruptMode::Graceful)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+        .map_err(map_run_control_error)?;
 
-    if interrupted.active_job.is_some() || interrupted.superseded_count > 0 {
-        return Ok((
-            StatusCode::ACCEPTED,
-            Json(json!({
-                "status": "interrupt_requested",
-                "thread_id": id,
-                "superseded_jobs": interrupted.superseded_count,
-            })),
-        )
-            .into_response());
-    }
-
-    Err(ApiError::ThreadNotFound(id))
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "status": "interrupt_requested",
+            "thread_id": id,
+            "superseded_dispatches": interrupted.superseded_count,
+        })),
+    )
+        .into_response())
 }
 
 #[tracing::instrument(skip(st), fields(thread_id = %id))]
@@ -387,6 +396,8 @@ struct PostThreadMessagesPayload {
     #[serde(rename = "agentId", alias = "agent_id", default)]
     agent_id: Option<String>,
     #[serde(default)]
+    mode: InputMode,
+    #[serde(default)]
     messages: Vec<RunMessage>,
 }
 
@@ -410,15 +421,10 @@ async fn post_thread_messages(
         ));
     }
 
-    let mut request = RunRequest::new(id.clone(), messages);
-    if let Some(aid) = payload.agent_id {
-        request = request.with_agent_id(aid);
-    }
-    let result = st
-        .mailbox
-        .submit_background(request)
+    let result = RunControlService::new(st)
+        .inject_user_input(&id, payload.agent_id, messages, payload.mode)
         .await
-        .map_err(map_mailbox_error)?;
+        .map_err(map_run_control_error)?;
 
     let body = match result.status {
         MailboxDispatchStatus::Running => json!({
@@ -472,7 +478,8 @@ async fn push_mailbox(
     Ok((
         StatusCode::CREATED,
         Json(json!({
-            "job_id": result.job_id,
+            "dispatch_id": result.dispatch_id,
+            "run_id": result.run_id,
             "thread_id": result.thread_id,
         })),
     ))
@@ -485,13 +492,13 @@ async fn peek_mailbox(
     Query(params): Query<ListParams>,
 ) -> Result<Json<Value>, ApiError> {
     let limit = params.limit.clamp(1, 200);
-    let jobs = st
+    let dispatches = st
         .mailbox
-        .list_jobs(&id, None, limit, 0)
+        .list_dispatches(&id, None, limit, 0)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    let value = serde_json::to_value(&jobs).map_err(|e| ApiError::Internal(e.to_string()))?;
+    let value = serde_json::to_value(&dispatches).map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(json!({ "items": value })))
 }
 
@@ -569,6 +576,7 @@ async fn list_runs(
         .status
         .as_deref()
         .map(|s| match s {
+            "created" => Ok(RunStatus::Created),
             "running" => Ok(RunStatus::Running),
             "waiting" => Ok(RunStatus::Waiting),
             "done" => Ok(RunStatus::Done),
@@ -599,6 +607,8 @@ async fn list_runs(
 #[derive(Debug, Deserialize)]
 struct PushRunInputsPayload {
     #[serde(default)]
+    mode: InputMode,
+    #[serde(default)]
     messages: Vec<RunMessage>,
 }
 
@@ -608,11 +618,6 @@ async fn push_run_inputs(
     Path(id): Path<String>,
     Json(payload): Json<PushRunInputsPayload>,
 ) -> Result<Response, ApiError> {
-    let run = crate::services::run_service::get_run(st.store.as_ref(), &id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or(ApiError::RunNotFound(id.clone()))?;
-
     let messages = convert_run_messages(payload.messages);
     if messages.is_empty() {
         return Err(ApiError::BadRequest(
@@ -620,12 +625,10 @@ async fn push_run_inputs(
         ));
     }
 
-    let request = RunRequest::new(run.thread_id, messages).with_agent_id(run.agent_id);
-    let _ = st
-        .mailbox
-        .submit_background(request)
+    let _ = RunControlService::new(st)
+        .inject_run_input(&id, messages, payload.mode)
         .await
-        .map_err(map_mailbox_error)?;
+        .map_err(map_run_control_error)?;
 
     Ok((
         StatusCode::ACCEPTED,
@@ -642,24 +645,19 @@ async fn cancel_run(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let cancelled = st
-        .mailbox
-        .cancel(&id)
+    RunControlService::new(st)
+        .cancel_run(&id)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+        .map_err(map_run_control_error)?;
 
-    if cancelled {
-        return Ok((
-            StatusCode::ACCEPTED,
-            Json(json!({
-                "status": "cancel_requested",
-                "run_id": id,
-            })),
-        )
-            .into_response());
-    }
-
-    Err(ApiError::RunNotFound(id))
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "status": "cancel_requested",
+            "run_id": id,
+        })),
+    )
+        .into_response())
 }
 
 #[tracing::instrument(skip(st), fields(thread_id = %id))]
@@ -667,24 +665,22 @@ async fn cancel_thread(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let cancelled = st
-        .mailbox
-        .cancel(&id)
+    RunControlService::new(st)
+        .cancel_run(&id)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+        .map_err(|error| match error {
+            RunControlError::RunNotFound(_) => ApiError::ThreadNotFound(id.clone()),
+            other => map_run_control_error(other),
+        })?;
 
-    if cancelled {
-        return Ok((
-            StatusCode::ACCEPTED,
-            Json(json!({
-                "status": "cancel_requested",
-                "thread_id": id,
-            })),
-        )
-            .into_response());
-    }
-
-    Err(ApiError::ThreadNotFound(id))
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "status": "cancel_requested",
+            "thread_id": id,
+        })),
+    )
+        .into_response())
 }
 
 #[derive(Debug, Deserialize)]
@@ -725,23 +721,20 @@ async fn submit_decision(
             .unwrap_or(0),
     };
 
-    let sent = st
-        .mailbox
-        .send_decision(&id, payload.tool_call_id.clone(), resume);
+    RunControlService::new(st)
+        .decide(&id, payload.tool_call_id.clone(), resume)
+        .await
+        .map_err(map_run_control_error)?;
 
-    if sent {
-        Ok((
-            StatusCode::ACCEPTED,
-            Json(json!({
-                "status": "decision_submitted",
-                "run_id": id,
-                "tool_call_id": payload.tool_call_id,
-            })),
-        )
-            .into_response())
-    } else {
-        Err(ApiError::RunNotFound(id))
-    }
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "status": "decision_submitted",
+            "run_id": id,
+            "tool_call_id": payload.tool_call_id,
+        })),
+    )
+        .into_response())
 }
 
 #[tracing::instrument(skip(st, payload), fields(thread_id = %id))]
@@ -773,23 +766,23 @@ async fn submit_thread_decision(
             .unwrap_or(0),
     };
 
-    let sent = st
-        .mailbox
-        .send_decision(&id, payload.tool_call_id.clone(), resume);
+    RunControlService::new(st)
+        .decide(&id, payload.tool_call_id.clone(), resume)
+        .await
+        .map_err(|error| match error {
+            RunControlError::DecisionTargetNotFound(_) => ApiError::ThreadNotFound(id.clone()),
+            other => map_run_control_error(other),
+        })?;
 
-    if sent {
-        Ok((
-            StatusCode::ACCEPTED,
-            Json(json!({
-                "status": "decision_submitted",
-                "thread_id": id,
-                "tool_call_id": payload.tool_call_id,
-            })),
-        )
-            .into_response())
-    } else {
-        Err(ApiError::ThreadNotFound(id))
-    }
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "status": "decision_submitted",
+            "thread_id": id,
+            "tool_call_id": payload.tool_call_id,
+        })),
+    )
+        .into_response())
 }
 
 // ── Thread Runs ──
@@ -817,6 +810,7 @@ async fn list_thread_runs(
         .status
         .as_deref()
         .map(|s| match s {
+            "created" => Ok(RunStatus::Created),
             "running" => Ok(RunStatus::Running),
             "waiting" => Ok(RunStatus::Waiting),
             "done" => Ok(RunStatus::Done),
@@ -855,6 +849,18 @@ async fn latest_thread_run(
         .ok_or(ApiError::RunNotFound(format!("no runs for thread {id}")))?;
     let value = serde_json::to_value(record).map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(value))
+}
+
+#[tracing::instrument(skip(st), fields(thread_id = %id))]
+async fn active_thread_run(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let active = RunControlService::new(st)
+        .get_active_run(&id)
+        .await
+        .map_err(map_run_control_error)?;
+    Ok(Json(json!({ "active_run": active })))
 }
 
 #[cfg(test)]
@@ -974,6 +980,7 @@ mod tests {
         let json = r#"{}"#;
         let p: PushRunInputsPayload = serde_json::from_str(json).unwrap();
         assert!(p.messages.is_empty());
+        assert_eq!(p.mode, InputMode::Queue);
     }
 
     #[test]
@@ -984,6 +991,24 @@ mod tests {
         assert_eq!(p.messages.len(), 2);
         assert_eq!(p.messages[0].content, "msg1");
         assert_eq!(p.messages[1].content, "msg2");
+    }
+
+    #[test]
+    fn push_run_inputs_payload_accepts_interrupt_then_queue_mode() {
+        let json =
+            r#"{"mode":"interrupt_then_queue","messages":[{"role":"user","content":"redirect"}]}"#;
+        let p: PushRunInputsPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(p.mode, InputMode::InterruptThenQueue);
+        assert_eq!(p.messages.len(), 1);
+    }
+
+    #[test]
+    fn push_run_inputs_payload_accepts_resume_open_run_mode() {
+        let json =
+            r#"{"mode":"resume_open_run","messages":[{"role":"user","content":"continue"}]}"#;
+        let p: PushRunInputsPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(p.mode, InputMode::ResumeOpenRun);
+        assert_eq!(p.messages.len(), 1);
     }
 
     // ── ListRunsParams deserialization ──
@@ -1282,14 +1307,15 @@ mod tests {
 
         fn make_app_state() -> AppState {
             let runtime = Arc::new(AgentRuntime::new(Arc::new(StubResolver)));
+            let store = Arc::new(InMemoryStore::new());
             let mailbox_store = Arc::new(InMemoryMailboxStore::new());
             let mailbox = Arc::new(Mailbox::new(
                 runtime.clone(),
                 mailbox_store,
+                store.clone(),
                 "test".to_string(),
                 MailboxConfig::default(),
             ));
-            let store = Arc::new(InMemoryStore::new());
             AppState::new(
                 runtime,
                 mailbox,
@@ -1414,17 +1440,19 @@ mod tests {
             }
 
             let runtime = Arc::new(AgentRuntime::new(Arc::new(StubResolver)));
+            let store = Arc::new(FailingStore);
             let mailbox_store = Arc::new(InMemoryMailboxStore::new());
             let mailbox = Arc::new(Mailbox::new(
                 runtime.clone(),
                 mailbox_store,
+                store.clone(),
                 "test".to_string(),
                 MailboxConfig::default(),
             ));
             let state = AppState::new(
                 runtime,
                 mailbox,
-                Arc::new(FailingStore),
+                store,
                 Arc::new(StubResolver),
                 ServerConfig::default(),
             );

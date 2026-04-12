@@ -152,7 +152,8 @@ async fn ai_sdk_chat_preview_agent(
         processed.thread_id,
         crate::request::inject_frontend_context(processed.messages, processed.state),
     )
-    .with_agent_id(agent.id);
+    .with_agent_id(agent.id)
+    .with_adapter(awaken_contract::contract::tool_intercept::AdapterKind::AiSdk);
     if !processed.decisions.is_empty() {
         request = request.with_decisions(processed.decisions);
     }
@@ -308,7 +309,8 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
 
     let messages = crate::request::inject_frontend_context(messages, state);
 
-    let mut request = RunRequest::new(thread_id.clone(), messages);
+    let mut request = RunRequest::new(thread_id.clone(), messages)
+        .with_adapter(awaken_contract::contract::tool_intercept::AdapterKind::AiSdk);
     if let Some(id) = agent_id {
         request = request.with_agent_id(id);
     }
@@ -614,13 +616,13 @@ async fn interrupt_thread(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    if interrupted.active_job.is_some() || interrupted.superseded_count > 0 {
+    if interrupted.active_dispatch.is_some() || interrupted.superseded_count > 0 {
         return Ok((
             StatusCode::ACCEPTED,
             Json(json!({
                 "status": "interrupt_requested",
                 "thread_id": thread_id,
-                "superseded_jobs": interrupted.superseded_count,
+                "superseded_dispatches": interrupted.superseded_count,
             })),
         )
             .into_response());

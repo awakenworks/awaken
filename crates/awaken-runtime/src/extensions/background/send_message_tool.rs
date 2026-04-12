@@ -12,14 +12,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use awaken_contract::contract::mailbox::{
-    MailboxJob, MailboxJobOrigin, MailboxJobStatus, MailboxStore,
-};
-use awaken_contract::contract::message::Message;
 use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
-use awaken_contract::now_ms;
 
 use super::manager::BackgroundTaskManager;
 use super::state::BackgroundTaskStateKey;
@@ -79,58 +74,60 @@ impl std::fmt::Display for MessageError {
     }
 }
 
+/// Durable cross-thread message request emitted by the runtime.
+///
+/// The runtime does not know how this becomes durable work. A host can map it
+/// to a mailbox dispatch, an A2A submission, or another transport without
+/// making runtime depend on mailbox storage internals.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DurableMessageRequest {
+    pub recipient_thread_id: String,
+    pub recipient_agent_id: Option<String>,
+    pub sender_agent_id: String,
+    pub message: String,
+}
+
+/// Host-provided sink for durable cross-thread messages.
+#[async_trait]
+pub trait DurableMessageSink: Send + Sync {
+    async fn send_agent_message(&self, request: DurableMessageRequest) -> Result<String, String>;
+}
+
 // ── Tool ─────────────────────────────────────────────────────────────
 
 /// Unified message-sending tool exposed to LLMs.
 pub struct SendMessageTool {
     manager: Arc<BackgroundTaskManager>,
-    mailbox: Arc<dyn MailboxStore>,
+    durable_sink: Arc<dyn DurableMessageSink>,
 }
 
 impl SendMessageTool {
-    pub fn new(manager: Arc<BackgroundTaskManager>, mailbox: Arc<dyn MailboxStore>) -> Self {
-        Self { manager, mailbox }
+    pub fn new(
+        manager: Arc<BackgroundTaskManager>,
+        durable_sink: Arc<dyn DurableMessageSink>,
+    ) -> Self {
+        Self {
+            manager,
+            durable_sink,
+        }
     }
 
-    async fn send_via_mailbox(
+    async fn send_durable(
         &self,
         recipient_thread_id: &str,
         recipient_agent_id: &str,
         sender_agent_id: &str,
         message: &str,
     ) -> Result<String, String> {
-        let now = now_ms();
-        let job_id = uuid::Uuid::now_v7().to_string();
-        let job = MailboxJob {
-            job_id: job_id.clone(),
-            mailbox_id: recipient_thread_id.to_string(),
-            agent_id: recipient_agent_id.to_string(),
-            messages: vec![Message::internal_user(format!(
-                "<agent-message from=\"{sender_agent_id}\">\n{message}\n</agent-message>"
-            ))],
-            origin: MailboxJobOrigin::Internal,
-            sender_id: Some(sender_agent_id.to_string()),
-            parent_run_id: None,
-            request_extras: None,
-            priority: 128,
-            dedupe_key: None,
-            generation: 0,
-            status: MailboxJobStatus::Queued,
-            available_at: now,
-            attempt_count: 0,
-            max_attempts: 3,
-            last_error: None,
-            claim_token: None,
-            claimed_by: None,
-            lease_until: None,
-            created_at: now,
-            updated_at: now,
-        };
-        self.mailbox
-            .enqueue(&job)
+        self.durable_sink
+            .send_agent_message(DurableMessageRequest {
+                recipient_thread_id: recipient_thread_id.to_string(),
+                recipient_agent_id: (!recipient_agent_id.is_empty())
+                    .then(|| recipient_agent_id.to_string()),
+                sender_agent_id: sender_agent_id.to_string(),
+                message: message.to_string(),
+            })
             .await
-            .map(|_| job_id)
-            .map_err(|e| e.to_string())
     }
 
     fn resolve_child(
@@ -297,8 +294,8 @@ impl Tool for SendMessageTool {
                     // Leave agent_id empty — the runner will infer the correct
                     // agent from the thread's latest run record. We don't have
                     // parent_agent_id in RunIdentity yet.
-                    match self.send_via_mailbox(parent_tid, "", sender, message).await {
-                        Ok(job_id) => Self::make_receipt(job_id),
+                    match self.send_durable(parent_tid, "", sender, message).await {
+                        Ok(dispatch_id) => Self::make_receipt(dispatch_id),
                         Err(e) => Self::make_error(MessageError::TransportFailed(e)),
                     }
                 }
@@ -308,10 +305,10 @@ impl Tool for SendMessageTool {
                 let target_thread = to["thread_id"].as_str().unwrap_or_default();
                 let target_agent = to["agent_id"].as_str().unwrap_or_default();
                 match self
-                    .send_via_mailbox(target_thread, target_agent, sender, message)
+                    .send_durable(target_thread, target_agent, sender, message)
                     .await
                 {
-                    Ok(job_id) => Self::make_receipt(job_id),
+                    Ok(dispatch_id) => Self::make_receipt(dispatch_id),
                     Err(e) => Self::make_error(MessageError::TransportFailed(e)),
                 }
             }
@@ -335,7 +332,24 @@ mod tests {
     use crate::state::StateStore;
     use awaken_contract::contract::identity::RunIdentity;
     use awaken_contract::registry_spec::AgentSpec;
-    use awaken_stores::InMemoryMailboxStore;
+    use tokio::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingDurableSink {
+        requests: Mutex<Vec<DurableMessageRequest>>,
+    }
+
+    #[async_trait]
+    impl DurableMessageSink for RecordingDurableSink {
+        async fn send_agent_message(
+            &self,
+            request: DurableMessageRequest,
+        ) -> Result<String, String> {
+            let mut requests = self.requests.lock().await;
+            requests.push(request);
+            Ok(format!("durable-{}", requests.len()))
+        }
+    }
 
     fn make_ctx_with_store(thread_id: &str, agent_id: &str, store: &StateStore) -> ToolCallContext {
         ToolCallContext {
@@ -376,7 +390,7 @@ mod tests {
     }
 
     fn make_tool(manager: Arc<BackgroundTaskManager>) -> SendMessageTool {
-        SendMessageTool::new(manager, Arc::new(InMemoryMailboxStore::new()))
+        SendMessageTool::new(manager, Arc::new(RecordingDurableSink::default()))
     }
 
     // -- child by name --
@@ -456,8 +470,8 @@ mod tests {
     #[tokio::test]
     async fn agent_delivers_durable() {
         let (manager, _store) = make_manager_and_store();
-        let mailbox = Arc::new(InMemoryMailboxStore::new());
-        let tool = SendMessageTool::new(manager, mailbox.clone());
+        let sink = Arc::new(RecordingDurableSink::default());
+        let tool = SendMessageTool::new(manager, sink.clone());
         let ctx = make_ctx("thread-1", "sender");
         let r = tool
             .execute(
@@ -468,17 +482,12 @@ mod tests {
             .unwrap();
         assert_eq!(r.result.data["status"], "accepted");
 
-        let jobs = mailbox.list_jobs("thread-2", None, 10, 0).await.unwrap();
-        assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].messages.len(), 1);
-        assert_eq!(
-            jobs[0].messages[0].role,
-            awaken_contract::contract::message::Role::User
-        );
-        assert_eq!(
-            jobs[0].messages[0].visibility,
-            awaken_contract::contract::message::Visibility::Internal
-        );
+        let requests = sink.requests.lock().await;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].recipient_thread_id, "thread-2");
+        assert_eq!(requests[0].recipient_agent_id, None);
+        assert_eq!(requests[0].sender_agent_id, "sender");
+        assert_eq!(requests[0].message, "hello");
     }
 
     // -- agent live rejected --
@@ -509,8 +518,8 @@ mod tests {
     #[tokio::test]
     async fn parent_with_thread_id_delivers() {
         let (manager, _store) = make_manager_and_store();
-        let mailbox = Arc::new(InMemoryMailboxStore::new());
-        let tool = SendMessageTool::new(manager, mailbox.clone());
+        let sink = Arc::new(RecordingDurableSink::default());
+        let tool = SendMessageTool::new(manager, sink.clone());
 
         let mut ctx = make_ctx("thread-child", "child-agent");
         ctx.run_identity = awaken_contract::contract::identity::RunIdentity::new(
@@ -531,26 +540,12 @@ mod tests {
             .unwrap();
         assert_eq!(r.result.data["status"], "accepted");
 
-        // Verify the mailbox job routes to the PARENT's thread, not the child's
-        let jobs = mailbox
-            .list_jobs("thread-parent", None, 10, 0)
-            .await
-            .unwrap();
-        assert_eq!(jobs.len(), 1, "job should be queued on parent's thread");
-        // agent_id should be empty (inferred by runner), NOT "run-parent"
-        assert!(
-            jobs[0].agent_id.is_empty(),
-            "parent job agent_id should be empty for inference, got: '{}'",
-            jobs[0].agent_id
-        );
-        assert_eq!(
-            jobs[0].messages[0].role,
-            awaken_contract::contract::message::Role::User
-        );
-        assert_eq!(
-            jobs[0].messages[0].visibility,
-            awaken_contract::contract::message::Visibility::Internal
-        );
+        let requests = sink.requests.lock().await;
+        assert_eq!(requests.len(), 1, "message should route to parent's thread");
+        assert_eq!(requests[0].recipient_thread_id, "thread-parent");
+        assert_eq!(requests[0].recipient_agent_id, None);
+        assert_eq!(requests[0].sender_agent_id, "child-agent");
+        assert_eq!(requests[0].message, "analysis complete");
     }
 
     // -- validation --
@@ -651,13 +646,13 @@ mod tests {
         );
     }
 
-    // -- agent routing includes agent_id in MailboxJob --
+    // -- agent routing includes agent_id in durable request --
 
     #[tokio::test]
     async fn agent_routing_includes_agent_id() {
         let (manager, _store) = make_manager_and_store();
-        let mailbox = Arc::new(InMemoryMailboxStore::new());
-        let tool = SendMessageTool::new(manager, mailbox.clone());
+        let sink = Arc::new(RecordingDurableSink::default());
+        let tool = SendMessageTool::new(manager, sink.clone());
         let ctx = make_ctx("thread-1", "sender");
 
         let r = tool
@@ -672,12 +667,8 @@ mod tests {
             .unwrap();
         assert_eq!(r.result.data["status"], "accepted");
 
-        // Verify the mailbox job has the correct agent_id
-        let jobs = mailbox
-            .list_jobs("thread-target", None, 10, 0)
-            .await
-            .unwrap();
-        assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].agent_id, "reviewer");
+        let requests = sink.requests.lock().await;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].recipient_agent_id.as_deref(), Some("reviewer"));
     }
 }

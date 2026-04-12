@@ -10,9 +10,8 @@ use async_trait::async_trait;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::mailbox::{
-    MailboxInterrupt, MailboxJob, MailboxJobOrigin, MailboxJobStatus, MailboxStore,
+    MailboxInterrupt, MailboxStore, RunDispatch, RunDispatchResult, RunDispatchStatus,
 };
-use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::StorageError;
 use awaken_stores::InMemoryMailboxStore;
 use tokio::sync::mpsc;
@@ -43,54 +42,83 @@ impl FailingMailboxStore {
 
 #[async_trait]
 impl MailboxStore for FailingMailboxStore {
-    async fn enqueue(&self, job: &MailboxJob) -> Result<(), StorageError> {
+    async fn enqueue(&self, dispatch: &RunDispatch) -> Result<(), StorageError> {
         if self.fail_enqueue.load(Ordering::SeqCst) {
             return Err(StorageError::Io("injected enqueue failure".into()));
         }
-        self.inner.enqueue(job).await
+        self.inner.enqueue(dispatch).await
     }
 
     async fn claim(
         &self,
-        mailbox_id: &str,
+        thread_id: &str,
         consumer_id: &str,
         lease_ms: u64,
         now: u64,
         limit: usize,
-    ) -> Result<Vec<MailboxJob>, StorageError> {
+    ) -> Result<Vec<RunDispatch>, StorageError> {
         if self.fail_claim.load(Ordering::SeqCst) {
             return Err(StorageError::Io("injected claim failure".into()));
         }
         self.inner
-            .claim(mailbox_id, consumer_id, lease_ms, now, limit)
+            .claim(thread_id, consumer_id, lease_ms, now, limit)
             .await
     }
 
-    async fn claim_job(
+    async fn claim_dispatch(
         &self,
-        job_id: &str,
+        dispatch_id: &str,
         consumer_id: &str,
         lease_ms: u64,
         now: u64,
-    ) -> Result<Option<MailboxJob>, StorageError> {
+    ) -> Result<Option<RunDispatch>, StorageError> {
         if self.fail_claim.load(Ordering::SeqCst) {
-            return Err(StorageError::Io("injected claim_job failure".into()));
+            return Err(StorageError::Io("injected claim_dispatch failure".into()));
         }
         self.inner
-            .claim_job(job_id, consumer_id, lease_ms, now)
+            .claim_dispatch(dispatch_id, consumer_id, lease_ms, now)
             .await
     }
 
-    async fn ack(&self, job_id: &str, claim_token: &str, now: u64) -> Result<(), StorageError> {
+    async fn ack(
+        &self,
+        dispatch_id: &str,
+        claim_token: &str,
+        now: u64,
+    ) -> Result<(), StorageError> {
         if self.fail_ack.load(Ordering::SeqCst) {
             return Err(StorageError::Io("injected ack failure".into()));
         }
-        self.inner.ack(job_id, claim_token, now).await
+        self.inner.ack(dispatch_id, claim_token, now).await
+    }
+
+    async fn record_dispatch_start(
+        &self,
+        dispatch_id: &str,
+        claim_token: &str,
+        dispatch_instance_id: &str,
+        now: u64,
+    ) -> Result<(), StorageError> {
+        self.inner
+            .record_dispatch_start(dispatch_id, claim_token, dispatch_instance_id, now)
+            .await
+    }
+
+    async fn record_run_result(
+        &self,
+        dispatch_id: &str,
+        claim_token: &str,
+        result: &RunDispatchResult,
+        now: u64,
+    ) -> Result<(), StorageError> {
+        self.inner
+            .record_run_result(dispatch_id, claim_token, result, now)
+            .await
     }
 
     async fn nack(
         &self,
-        job_id: &str,
+        dispatch_id: &str,
         claim_token: &str,
         retry_at: u64,
         error: &str,
@@ -100,59 +128,59 @@ impl MailboxStore for FailingMailboxStore {
             return Err(StorageError::Io("injected nack failure".into()));
         }
         self.inner
-            .nack(job_id, claim_token, retry_at, error, now)
+            .nack(dispatch_id, claim_token, retry_at, error, now)
             .await
     }
 
     async fn dead_letter(
         &self,
-        job_id: &str,
+        dispatch_id: &str,
         claim_token: &str,
         error: &str,
         now: u64,
     ) -> Result<(), StorageError> {
         self.inner
-            .dead_letter(job_id, claim_token, error, now)
+            .dead_letter(dispatch_id, claim_token, error, now)
             .await
     }
 
-    async fn cancel(&self, job_id: &str, now: u64) -> Result<Option<MailboxJob>, StorageError> {
-        self.inner.cancel(job_id, now).await
+    async fn cancel(
+        &self,
+        dispatch_id: &str,
+        now: u64,
+    ) -> Result<Option<RunDispatch>, StorageError> {
+        self.inner.cancel(dispatch_id, now).await
     }
 
     async fn extend_lease(
         &self,
-        job_id: &str,
+        dispatch_id: &str,
         claim_token: &str,
         extension_ms: u64,
         now: u64,
     ) -> Result<bool, StorageError> {
         self.inner
-            .extend_lease(job_id, claim_token, extension_ms, now)
+            .extend_lease(dispatch_id, claim_token, extension_ms, now)
             .await
     }
 
-    async fn interrupt(
-        &self,
-        mailbox_id: &str,
-        now: u64,
-    ) -> Result<MailboxInterrupt, StorageError> {
-        self.inner.interrupt(mailbox_id, now).await
+    async fn interrupt(&self, thread_id: &str, now: u64) -> Result<MailboxInterrupt, StorageError> {
+        self.inner.interrupt(thread_id, now).await
     }
 
-    async fn load_job(&self, job_id: &str) -> Result<Option<MailboxJob>, StorageError> {
-        self.inner.load_job(job_id).await
+    async fn load_dispatch(&self, dispatch_id: &str) -> Result<Option<RunDispatch>, StorageError> {
+        self.inner.load_dispatch(dispatch_id).await
     }
 
-    async fn list_jobs(
+    async fn list_dispatches(
         &self,
-        mailbox_id: &str,
-        status_filter: Option<&[MailboxJobStatus]>,
+        thread_id: &str,
+        status_filter: Option<&[RunDispatchStatus]>,
         limit: usize,
         offset: usize,
-    ) -> Result<Vec<MailboxJob>, StorageError> {
+    ) -> Result<Vec<RunDispatch>, StorageError> {
         self.inner
-            .list_jobs(mailbox_id, status_filter, limit, offset)
+            .list_dispatches(thread_id, status_filter, limit, offset)
             .await
     }
 
@@ -160,7 +188,7 @@ impl MailboxStore for FailingMailboxStore {
         &self,
         now: u64,
         limit: usize,
-    ) -> Result<Vec<MailboxJob>, StorageError> {
+    ) -> Result<Vec<RunDispatch>, StorageError> {
         self.inner.reclaim_expired_leases(now, limit).await
     }
 
@@ -168,25 +196,20 @@ impl MailboxStore for FailingMailboxStore {
         self.inner.purge_terminal(older_than).await
     }
 
-    async fn queued_mailbox_ids(&self) -> Result<Vec<String>, StorageError> {
-        self.inner.queued_mailbox_ids().await
+    async fn queued_thread_ids(&self) -> Result<Vec<String>, StorageError> {
+        self.inner.queued_thread_ids().await
     }
 }
 
-fn make_job(job_id: &str, mailbox_id: &str) -> MailboxJob {
-    MailboxJob {
-        job_id: job_id.to_string(),
-        mailbox_id: mailbox_id.to_string(),
-        agent_id: "agent-1".to_string(),
-        messages: vec![Message::user("hello")],
-        origin: MailboxJobOrigin::User,
-        sender_id: None,
-        parent_run_id: None,
-        request_extras: None,
+fn make_dispatch(dispatch_id: &str, thread_id: &str) -> RunDispatch {
+    RunDispatch {
+        dispatch_id: dispatch_id.to_string(),
+        thread_id: thread_id.to_string(),
+        run_id: format!("run-{dispatch_id}"),
         priority: 128,
         dedupe_key: None,
-        generation: 0,
-        status: MailboxJobStatus::Queued,
+        dispatch_epoch: 0,
+        status: RunDispatchStatus::Queued,
         available_at: 1000,
         attempt_count: 0,
         max_attempts: 5,
@@ -194,6 +217,12 @@ fn make_job(job_id: &str, mailbox_id: &str) -> MailboxJob {
         claim_token: None,
         claimed_by: None,
         lease_until: None,
+        dispatch_instance_id: None,
+        run_status: None,
+        termination: None,
+        run_response: None,
+        run_error: None,
+        completed_at: None,
         created_at: 1000,
         updated_at: 1000,
     }
@@ -208,8 +237,8 @@ async fn enqueue_failure_propagates_error() {
     let store = FailingMailboxStore::new();
     store.fail_enqueue.store(true, Ordering::SeqCst);
 
-    let job = make_job("j-1", "mbox-1");
-    let result = store.enqueue(&job).await;
+    let dispatch = make_dispatch("j-1", "thread-1");
+    let result = store.enqueue(&dispatch).await;
 
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -226,14 +255,14 @@ async fn enqueue_failure_propagates_error() {
 async fn claim_failure_propagates_error() {
     let store = FailingMailboxStore::new();
 
-    // Enqueue a job first
-    let job = make_job("j-1", "mbox-1");
-    store.enqueue(&job).await.unwrap();
+    // Enqueue a dispatch first
+    let dispatch = make_dispatch("j-1", "thread-1");
+    store.enqueue(&dispatch).await.unwrap();
 
     // Now make claim fail
     store.fail_claim.store(true, Ordering::SeqCst);
 
-    let result = store.claim("mbox-1", "consumer-1", 30_000, 1000, 1).await;
+    let result = store.claim("thread-1", "consumer-1", 30_000, 1000, 1).await;
     assert!(result.is_err());
     match result.unwrap_err() {
         StorageError::Io(msg) => assert!(msg.contains("injected claim failure")),
@@ -242,18 +271,18 @@ async fn claim_failure_propagates_error() {
 }
 
 // ============================================================================
-// Ack failure leaves job in Claimed state (lease will expire for reclaim)
+// Ack failure leaves dispatch in Claimed state (lease will expire for reclaim)
 // ============================================================================
 
 #[tokio::test]
-async fn ack_failure_leaves_job_claimed_for_reclaim() {
+async fn ack_failure_leaves_dispatch_claimed_for_reclaim() {
     let store = FailingMailboxStore::new();
 
     // Enqueue and claim
-    let job = make_job("j-1", "mbox-1");
-    store.enqueue(&job).await.unwrap();
+    let dispatch = make_dispatch("j-1", "thread-1");
+    store.enqueue(&dispatch).await.unwrap();
     let claimed = store
-        .claim("mbox-1", "consumer-1", 30_000, 1000, 1)
+        .claim("thread-1", "consumer-1", 30_000, 1000, 1)
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
@@ -264,11 +293,11 @@ async fn ack_failure_leaves_job_claimed_for_reclaim() {
     let result = store.ack("j-1", &claim_token, 2000).await;
     assert!(result.is_err());
 
-    // Job should still be in Claimed state
-    let loaded = store.load_job("j-1").await.unwrap().unwrap();
-    assert_eq!(loaded.status, MailboxJobStatus::Claimed);
+    // Dispatch should still be in Claimed state
+    let loaded = store.load_dispatch("j-1").await.unwrap().unwrap();
+    assert_eq!(loaded.status, RunDispatchStatus::Claimed);
 
-    // After lease expiry, reclaim should recover the job
+    // After lease expiry, reclaim should recover the dispatch
     store.fail_ack.store(false, Ordering::SeqCst);
     let lease_expiry = loaded.lease_until.unwrap() + 1;
     let reclaimed = store
@@ -276,23 +305,23 @@ async fn ack_failure_leaves_job_claimed_for_reclaim() {
         .await
         .unwrap();
     assert_eq!(reclaimed.len(), 1);
-    assert_eq!(reclaimed[0].job_id, "j-1");
-    assert_eq!(reclaimed[0].status, MailboxJobStatus::Queued);
+    assert_eq!(reclaimed[0].dispatch_id, "j-1");
+    assert_eq!(reclaimed[0].status, RunDispatchStatus::Queued);
     assert_eq!(reclaimed[0].attempt_count, 1);
 }
 
 // ============================================================================
-// Nack failure leaves job in Claimed state
+// Nack failure leaves dispatch in Claimed state
 // ============================================================================
 
 #[tokio::test]
-async fn nack_failure_leaves_job_claimed() {
+async fn nack_failure_leaves_dispatch_claimed() {
     let store = FailingMailboxStore::new();
 
-    let job = make_job("j-1", "mbox-1");
-    store.enqueue(&job).await.unwrap();
+    let dispatch = make_dispatch("j-1", "thread-1");
+    store.enqueue(&dispatch).await.unwrap();
     let claimed = store
-        .claim("mbox-1", "consumer-1", 30_000, 1000, 1)
+        .claim("thread-1", "consumer-1", 30_000, 1000, 1)
         .await
         .unwrap();
     let claim_token = claimed[0].claim_token.clone().unwrap();
@@ -303,53 +332,53 @@ async fn nack_failure_leaves_job_claimed() {
         .await;
     assert!(result.is_err());
 
-    // Job remains Claimed
-    let loaded = store.load_job("j-1").await.unwrap().unwrap();
-    assert_eq!(loaded.status, MailboxJobStatus::Claimed);
+    // Dispatch remains Claimed
+    let loaded = store.load_dispatch("j-1").await.unwrap().unwrap();
+    assert_eq!(loaded.status, RunDispatchStatus::Claimed);
 }
 
 // ============================================================================
-// Enqueue failure does not affect existing jobs
+// Enqueue failure does not affect existing dispatches
 // ============================================================================
 
 #[tokio::test]
-async fn enqueue_failure_does_not_corrupt_existing_jobs() {
+async fn enqueue_failure_does_not_corrupt_existing_dispatches() {
     let store = FailingMailboxStore::new();
 
-    // Successfully enqueue first job
-    let job1 = make_job("j-1", "mbox-1");
-    store.enqueue(&job1).await.unwrap();
+    // Successfully enqueue first dispatch
+    let dispatch1 = make_dispatch("j-1", "thread-1");
+    store.enqueue(&dispatch1).await.unwrap();
 
     // Fail second enqueue
     store.fail_enqueue.store(true, Ordering::SeqCst);
-    let job2 = make_job("j-2", "mbox-1");
-    assert!(store.enqueue(&job2).await.is_err());
+    let dispatch2 = make_dispatch("j-2", "thread-1");
+    assert!(store.enqueue(&dispatch2).await.is_err());
 
-    // First job is still intact
-    let loaded = store.load_job("j-1").await.unwrap().unwrap();
-    assert_eq!(loaded.job_id, "j-1");
-    assert_eq!(loaded.status, MailboxJobStatus::Queued);
+    // First dispatch is still intact
+    let loaded = store.load_dispatch("j-1").await.unwrap().unwrap();
+    assert_eq!(loaded.dispatch_id, "j-1");
+    assert_eq!(loaded.status, RunDispatchStatus::Queued);
 
-    // Second job was never persisted
-    assert!(store.load_job("j-2").await.unwrap().is_none());
+    // Second dispatch was never persisted
+    assert!(store.load_dispatch("j-2").await.unwrap().is_none());
 }
 
 // ============================================================================
-// Claim failure after enqueue — job remains claimable after recovery
+// Claim failure after enqueue — dispatch remains claimable after recovery
 // ============================================================================
 
 #[tokio::test]
-async fn job_remains_claimable_after_claim_failure_recovery() {
+async fn dispatch_remains_claimable_after_claim_failure_recovery() {
     let store = FailingMailboxStore::new();
 
-    let job = make_job("j-1", "mbox-1");
-    store.enqueue(&job).await.unwrap();
+    let dispatch = make_dispatch("j-1", "thread-1");
+    store.enqueue(&dispatch).await.unwrap();
 
     // Fail claim
     store.fail_claim.store(true, Ordering::SeqCst);
     assert!(
         store
-            .claim("mbox-1", "consumer-1", 30_000, 1000, 1)
+            .claim("thread-1", "consumer-1", 30_000, 1000, 1)
             .await
             .is_err()
     );
@@ -357,11 +386,11 @@ async fn job_remains_claimable_after_claim_failure_recovery() {
     // Recover
     store.fail_claim.store(false, Ordering::SeqCst);
     let claimed = store
-        .claim("mbox-1", "consumer-1", 30_000, 1000, 1)
+        .claim("thread-1", "consumer-1", 30_000, 1000, 1)
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
-    assert_eq!(claimed[0].job_id, "j-1");
+    assert_eq!(claimed[0].dispatch_id, "j-1");
 }
 
 // ============================================================================
@@ -385,6 +414,7 @@ async fn unbounded_channel_sink_handles_closed_receiver() {
     sink.emit(AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd,
     })

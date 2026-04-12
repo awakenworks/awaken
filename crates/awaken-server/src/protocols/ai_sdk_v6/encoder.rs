@@ -439,6 +439,7 @@ mod tests {
         let events = enc.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         });
         assert_eq!(events.len(), 2);
@@ -595,6 +596,7 @@ mod tests {
         let events = enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::NaturalEnd,
         });
@@ -611,6 +613,7 @@ mod tests {
         enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::NaturalEnd,
         });
@@ -701,6 +704,7 @@ mod tests {
         let events = enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::Suspended,
         });
@@ -723,6 +727,7 @@ mod tests {
         enc.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         });
         let text_events = enc.on_agent_event(&AgentEvent::TextDelta {
@@ -745,6 +750,7 @@ mod tests {
         turn1.extend(enc1.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         }));
         turn1.extend(enc1.on_agent_event(&AgentEvent::StepStart {
@@ -769,6 +775,7 @@ mod tests {
         turn1.extend(enc1.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::Suspended,
         }));
@@ -803,6 +810,7 @@ mod tests {
         turn2.extend(enc2.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         }));
         turn2.extend(enc2.on_agent_event(&AgentEvent::ToolCallResumed {
@@ -819,6 +827,7 @@ mod tests {
         turn2.extend(enc2.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::NaturalEnd,
         }));
@@ -1094,6 +1103,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         }));
         all.extend(enc.on_agent_event(&AgentEvent::StepStart {
@@ -1120,6 +1130,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::Suspended,
         }));
@@ -1135,6 +1146,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         }));
         all.extend(enc.on_agent_event(&AgentEvent::ToolCallResumed {
@@ -1151,6 +1163,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::NaturalEnd,
         }));

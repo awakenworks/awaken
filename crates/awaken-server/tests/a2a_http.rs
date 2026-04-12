@@ -5,7 +5,9 @@ use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequ
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{RunRecord, RunStore, ThreadRunStore, ThreadStore};
+use awaken_contract::contract::storage::{
+    RunRecord, RunStore, RunWaitingState, ThreadRunStore, ThreadStore, WaitingReason,
+};
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_contract::thread::Thread;
 use awaken_runtime::builder::AgentRuntimeBuilder;
@@ -100,6 +102,7 @@ where
     let mailbox = Arc::new(awaken_server::mailbox::Mailbox::new(
         runtime.clone(),
         mailbox_store,
+        store.clone(),
         "test".to_string(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));
@@ -468,9 +471,27 @@ async fn waiting_task_id_resumes_the_same_task() {
         thread_id: context_id.to_string(),
         agent_id: "alpha".to_string(),
         parent_run_id: None,
+        request: None,
+        input: None,
+        output: None,
         status: RunStatus::Waiting,
-        termination_code: Some("input_required".to_string()),
+        termination_reason: None,
+        final_output: None,
+        error_payload: None,
+        dispatch_id: None,
+        session_id: None,
+        transport_request_id: None,
+        waiting: Some(RunWaitingState {
+            reason: WaitingReason::UserInput,
+            ticket_ids: Vec::new(),
+            tickets: Vec::new(),
+            since_dispatch_id: None,
+            message: None,
+        }),
+        outcome: None,
         created_at: 1,
+        started_at: None,
+        finished_at: None,
         updated_at: 1,
         steps: 1,
         input_tokens: 0,

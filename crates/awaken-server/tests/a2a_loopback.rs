@@ -225,6 +225,7 @@ async fn a2a_loopback_orchestrator_delegates_to_worker() {
     let mailbox = Arc::new(Mailbox::new(
         runtime.clone(),
         mailbox_store,
+        store.clone(),
         "loopback-test".to_string(),
         MailboxConfig::default(),
     ));

@@ -686,6 +686,7 @@ impl ThreadRunStore for FileStore {
             .unwrap_or_else(|| Thread::with_id(thread_id));
         thread.metadata.created_at.get_or_insert(now);
         thread.metadata.updated_at = Some(now);
+        thread.apply_run_projection(run);
 
         // Serialize all payloads up-front so we fail before any I/O.
         let thread_payload = serde_json::to_string_pretty(&thread)
@@ -742,9 +743,21 @@ mod tests {
             thread_id: thread_id.to_string(),
             agent_id: "agent".to_string(),
             parent_run_id: None,
+            request: None,
+            input: None,
+            output: None,
             status: RunStatus::Running,
-            termination_code: None,
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: None,
+            outcome: None,
             created_at: 100,
+            started_at: None,
+            finished_at: None,
             updated_at: 100,
             steps: 0,
             input_tokens: 0,

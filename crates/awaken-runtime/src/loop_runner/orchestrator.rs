@@ -5,11 +5,12 @@ use crate::inbox::inbox_event_message;
 use crate::state::StateStore;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::message::{Role, gen_message_id};
+use awaken_contract::contract::message::{Message, Role, gen_message_id};
 use awaken_contract::model::Phase;
 
 use super::checkpoint::{
-    StepCompletion, check_termination, complete_step, emit_state_snapshot, persist_checkpoint,
+    CheckpointPersist, StepCompletion, check_termination, complete_step, emit_state_snapshot,
+    persist_checkpoint,
 };
 use super::resume::{
     WaitOutcome, detect_and_replay_resume, has_suspended_calls, wait_for_resume_or_cancel,
@@ -72,6 +73,7 @@ pub(super) async fn run_agent_loop_impl(
         &run_identity,
     )
     .await?;
+    let input_message_count = messages.len();
 
     // Inject frontend-defined tools as executable FrontEndTool instances.
     // Each suspends on execute(), so the protocol layer forwards the call
@@ -109,6 +111,7 @@ pub(super) async fn run_agent_loop_impl(
         thread_id: run_identity.thread_id.clone(),
         run_id: run_identity.run_id.clone(),
         parent_run_id: run_identity.parent_run_id.clone(),
+        identity: Some(run_identity.clone()),
     })
     .await;
     detect_and_replay_resume(&agent, runtime, &run_identity, &mut messages, sink.clone()).await?;
@@ -129,6 +132,7 @@ pub(super) async fn run_agent_loop_impl(
         Ok(_) => {}
         Err(awaken_contract::StateError::Cancelled) => {
             return Ok(AgentRunResult {
+                run_id: run_identity.run_id.clone(),
                 response: String::new(),
                 termination: TerminationReason::Cancelled,
                 steps: 0,
@@ -211,6 +215,7 @@ pub(super) async fn run_agent_loop_impl(
             sink: sink.clone(),
             checkpoint_store,
             run_identity: &run_identity,
+            input_message_count,
             cancellation_token: cancellation_token.as_ref(),
             run_overrides: &run_overrides,
             total_input_tokens: &mut total_input_tokens,
@@ -236,6 +241,7 @@ pub(super) async fn run_agent_loop_impl(
                     sink: sink.as_ref(),
                     checkpoint_store,
                     messages: &messages,
+                    input_message_count,
                     run_identity: &run_identity,
                     run_created_at,
                     total_input_tokens,
@@ -263,7 +269,7 @@ pub(super) async fn run_agent_loop_impl(
 
                 if has_pending_work(store) {
                     // Background tasks still running but no new messages yet.
-                    if run_identity.origin
+                    if run_identity.origin()
                         == awaken_contract::contract::identity::RunOrigin::Subagent
                     {
                         // Sub-agent: wait in-process for task events via inbox.
@@ -308,6 +314,7 @@ pub(super) async fn run_agent_loop_impl(
                     sink: sink.as_ref(),
                     checkpoint_store,
                     messages: &messages,
+                    input_message_count,
                     run_identity: &run_identity,
                     run_created_at,
                     total_input_tokens,
@@ -327,6 +334,7 @@ pub(super) async fn run_agent_loop_impl(
                     sink: sink.as_ref(),
                     checkpoint_store,
                     messages: &messages,
+                    input_message_count,
                     run_identity: &run_identity,
                     run_created_at,
                     total_input_tokens,
@@ -351,6 +359,7 @@ pub(super) async fn run_agent_loop_impl(
                     sink: sink.as_ref(),
                     checkpoint_store,
                     messages: &messages,
+                    input_message_count,
                     run_identity: &run_identity,
                     run_created_at,
                     total_input_tokens,
@@ -366,6 +375,7 @@ pub(super) async fn run_agent_loop_impl(
                 sink.emit(AgentEvent::RunFinish {
                     thread_id: run_identity.thread_id.clone(),
                     run_id: run_identity.run_id.clone(),
+                    identity: Some(run_identity.clone()),
                     result: None,
                     termination: TerminationReason::Suspended,
                 })
@@ -385,6 +395,7 @@ pub(super) async fn run_agent_loop_impl(
                                 thread_id: run_identity.thread_id.clone(),
                                 run_id: run_identity.run_id.clone(),
                                 parent_run_id: run_identity.parent_run_id.clone(),
+                                identity: Some(run_identity.clone()),
                             })
                             .await;
                             detect_and_replay_resume(
@@ -401,6 +412,7 @@ pub(super) async fn run_agent_loop_impl(
                                 sink.emit(AgentEvent::RunFinish {
                                     thread_id: run_identity.thread_id.clone(),
                                     run_id: run_identity.run_id.clone(),
+                                    identity: Some(run_identity.clone()),
                                     result: None,
                                     termination: TerminationReason::Suspended,
                                 })
@@ -420,15 +432,19 @@ pub(super) async fn run_agent_loop_impl(
                             for event in events {
                                 messages.push(std::sync::Arc::new(inbox_event_message(&event)));
                             }
-                            persist_checkpoint(
+                            persist_checkpoint(CheckpointPersist {
                                 store,
                                 checkpoint_store,
-                                &messages,
-                                &run_identity,
+                                messages: &messages,
+                                input_message_count,
+                                run_identity: &run_identity,
                                 run_created_at,
                                 total_input_tokens,
                                 total_output_tokens,
-                            )
+                                termination_reason: None,
+                                final_output: None,
+                                error_payload: None,
+                            })
                             .await?;
                             continue;
                         }
@@ -449,6 +465,7 @@ pub(super) async fn run_agent_loop_impl(
                     sink: sink.as_ref(),
                     checkpoint_store,
                     messages: &messages,
+                    input_message_count,
                     run_identity: &run_identity,
                     run_created_at,
                     total_input_tokens,
@@ -500,25 +517,27 @@ pub(super) async fn run_agent_loop_impl(
         Err(e) => return Err(AgentLoopError::PhaseError(e)),
     }
 
-    persist_checkpoint(
+    let response = latest_run_response(&messages, input_message_count);
+
+    persist_checkpoint(CheckpointPersist {
         store,
         checkpoint_store,
-        messages.as_slice(),
-        &run_identity,
+        messages: messages.as_slice(),
+        input_message_count,
+        run_identity: &run_identity,
         run_created_at,
         total_input_tokens,
         total_output_tokens,
-    )
+        termination_reason: Some(termination.clone()),
+        final_output: (!response.is_empty()).then(|| response.clone()),
+        error_payload: match &termination {
+            TerminationReason::Error(message) => Some(serde_json::json!({ "message": message })),
+            _ => None,
+        },
+    })
     .await?;
 
     emit_state_snapshot(store, sink.as_ref()).await;
-
-    let response = messages
-        .iter()
-        .rev()
-        .find(|m| m.role == Role::Assistant)
-        .map(|m| m.text())
-        .unwrap_or_default();
 
     // Include run status and reason in RunFinish result so clients can
     // distinguish "done" from "waiting" and know the specific reason.
@@ -529,6 +548,7 @@ pub(super) async fn run_agent_loop_impl(
         .unwrap_or(RunStatus::Done);
     let status_reason = lifecycle_final.and_then(|l| l.status_reason);
     let status_str = match run_status {
+        RunStatus::Created => "created",
         RunStatus::Running => "running",
         RunStatus::Waiting => "waiting",
         RunStatus::Done => "done",
@@ -541,21 +561,49 @@ pub(super) async fn run_agent_loop_impl(
     sink.emit(AgentEvent::RunFinish {
         thread_id: run_identity.thread_id.clone(),
         run_id: run_identity.run_id.clone(),
+        identity: Some(run_identity.clone()),
         result: Some(result_json),
         termination: termination.clone(),
     })
     .await;
 
     Ok(AgentRunResult {
+        run_id: run_identity.run_id.clone(),
         response,
         termination,
         steps,
     })
 }
 
+fn latest_run_response(messages: &[std::sync::Arc<Message>], input_message_count: usize) -> String {
+    messages
+        .get(input_message_count..)
+        .unwrap_or(&[])
+        .iter()
+        .rev()
+        .find(|message| message.role == Role::Assistant)
+        .map(|message| message.text())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn latest_run_response_uses_current_run_non_tool_output() {
+        let messages = vec![
+            std::sync::Arc::new(Message::user("current request")),
+            std::sync::Arc::new(Message::assistant("previous context response")),
+            std::sync::Arc::new(Message::assistant("checking")),
+            std::sync::Arc::new(Message::tool("call-1", "tool result")),
+            std::sync::Arc::new(Message::assistant("final answer")),
+            std::sync::Arc::new(Message::tool("call-2", "late tool result")),
+        ];
+
+        assert_eq!(latest_run_response(&messages, 2), "final answer");
+        assert_eq!(latest_run_response(&messages, messages.len()), "");
+    }
 
     mod pending_work_tests {
         use super::*;
@@ -763,7 +811,7 @@ mod tests {
         }
 
         #[test]
-        fn termination_code_stores_status_reason_for_waiting() {
+        fn lifecycle_stores_status_reason_for_waiting() {
             let store = store_with_lifecycle();
             crate::loop_runner::commit_update::<RunLifecycle>(
                 &store,
@@ -787,7 +835,7 @@ mod tests {
         }
 
         #[test]
-        fn termination_code_stores_status_reason_for_done() {
+        fn lifecycle_stores_status_reason_for_done() {
             let store = store_with_lifecycle();
             crate::loop_runner::commit_update::<RunLifecycle>(
                 &store,

@@ -102,6 +102,7 @@ impl From<crate::execution::executor::ToolExecutorError> for AgentLoopError {
 /// Result of running the agent loop.
 #[derive(Debug)]
 pub struct AgentRunResult {
+    pub run_id: String,
     pub response: String,
     pub termination: awaken_contract::contract::lifecycle::TerminationReason,
     pub steps: usize,
