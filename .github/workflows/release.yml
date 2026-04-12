@@ -43,6 +43,7 @@ jobs:
           }
           publish awaken-contract
           publish awaken-stores
+          publish awaken-protocol-a2a
           publish awaken-tool-pattern
           publish awaken-runtime
           publish awaken-ext-deferred-tools
