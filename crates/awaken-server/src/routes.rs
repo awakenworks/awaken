@@ -22,6 +22,9 @@ use crate::protocols::mcp::http::mcp_routes;
 use crate::query::{self, MessageQueryParams};
 use awaken_runtime::RunRequest;
 
+#[cfg(feature = "websocket")]
+use crate::transport::websocket::handle_websocket;
+
 /// API error type returned by route handlers.
 #[derive(Debug)]
 pub enum ApiError {
@@ -65,7 +68,7 @@ pub(crate) fn map_mailbox_error(error: MailboxError) -> ApiError {
 /// `max_concurrent` controls the maximum number of in-flight requests.
 /// Pass `0` to disable the limit (useful in tests).
 pub fn build_router() -> Router<AppState> {
-    Router::new()
+    let router = Router::new()
         .merge(health_routes())
         .merge(thread_routes())
         .merge(run_routes())
@@ -74,7 +77,17 @@ pub fn build_router() -> Router<AppState> {
         .merge(ag_ui_routes())
         .merge(a2a_routes())
         .merge(mcp_routes())
-        .route("/metrics", get(crate::metrics::metrics_handler))
+        .route("/metrics", get(crate::metrics::metrics_handler));
+
+    #[cfg(feature = "websocket")]
+    {
+        return router.route("/ws/:thread_id", axum::routing::get(handle_websocket));
+    }
+
+    #[cfg(not(feature = "websocket"))]
+    {
+        router
+    }
 }
 
 fn health_routes() -> Router<AppState> {
