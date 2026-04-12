@@ -236,7 +236,7 @@ pub struct ShutdownConfig {
 ## MailboxConfig
 
 Configuration for the persistent run queue (mailbox). Controls lease timing,
-sweep/GC intervals, and retry behavior for failed jobs.
+sweep/GC intervals, and retry behavior for failed dispatches.
 
 ```rust,ignore
 pub struct MailboxConfig {
@@ -258,11 +258,11 @@ pub struct MailboxConfig {
 |---|---|---|---|
 | `lease_ms` | `u64` | `30_000` | Lease duration in milliseconds for active runs |
 | `suspended_lease_ms` | `u64` | `600_000` | Lease duration in milliseconds for suspended runs awaiting human input |
-| `lease_renewal_interval` | `Duration` | `10s` | How often the worker renews its lease on a running job |
-| `sweep_interval` | `Duration` | `30s` | How often to scan for expired leases and reclaim orphaned jobs |
-| `gc_interval` | `Duration` | `60s` | How often to run garbage collection for terminal (completed/failed) jobs |
-| `gc_ttl` | `Duration` | `24h` | How long terminal jobs are retained before purging |
-| `default_max_attempts` | `u32` | `5` | Maximum delivery attempts before a job is dead-lettered |
+| `lease_renewal_interval` | `Duration` | `10s` | How often the worker renews its lease on a running dispatch |
+| `sweep_interval` | `Duration` | `30s` | How often to scan for expired leases and reclaim orphaned dispatches |
+| `gc_interval` | `Duration` | `60s` | How often to run garbage collection for terminal dispatches |
+| `gc_ttl` | `Duration` | `24h` | How long terminal dispatches are retained before purging |
+| `default_max_attempts` | `u32` | `5` | Maximum delivery attempts before a dispatch is dead-lettered |
 | `default_retry_delay_ms` | `u64` | `250` | Base retry delay in milliseconds between attempts |
 | `max_retry_delay_ms` | `u64` | `30_000` | Maximum retry delay in milliseconds for exponential backoff |
 

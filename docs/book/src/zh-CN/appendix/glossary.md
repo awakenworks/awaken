@@ -23,7 +23,7 @@
 | `ToolCallContext` | 工具调用上下文 | tool 执行期可读取状态和上报活动的上下文。 |
 | `TerminationReason` | 终止原因 | run 结束的原因。 |
 | `SuspendTicket` | 挂起票据 | 描述挂起原因、恢复模式和待决 tool call。 |
-| `MailboxJob` | 邮箱任务 | 后台执行与 HITL 的持久化作业项。 |
+| `RunDispatch` | 运行投递 | 后台执行与 HITL 的持久化队列投递记录。 |
 | `RunRequest` | 运行请求 | 启动 run 的输入。 |
 | `MergeStrategy` | 合并策略 | 并行状态写入如何合并。 |
 | `KeyScope` | 键作用域 | 状态键生命周期：`Run` 或 `Thread`。 |

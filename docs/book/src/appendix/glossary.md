@@ -23,7 +23,7 @@
 | `ToolCallContext` | 工具调用上下文 | Execution context with state access, identity, and activity reporting. |
 | `TerminationReason` | 终止原因 | Why a run ended (NaturalEnd, Stopped, Error, etc.). |
 | `SuspendTicket` | 挂起票据 | Suspension payload with pending call and resume mode. |
-| `MailboxJob` | 邮箱任务 | Durable job entry for async/HITL workflows. |
+| `RunDispatch` | 邮箱任务 | Durable dispatch entry for async/HITL workflows. |
 | `RunRequest` | 运行请求 | Input to start a run: messages, thread ID, agent ID. |
 | `MergeStrategy` | 合并策略 | How parallel state mutations are reconciled: Exclusive (conflict = error) or Commutative (order-independent). |
 | `KeyScope` | 键作用域 | Lifetime of a state key: Run (per-execution) or Thread (persisted across runs). |

@@ -219,7 +219,7 @@ The following tirea concepts have no awaken equivalent:
 | `ToolOutput` with `StateCommand` | Tools can schedule actions as side-effects |
 | `ToolGateHook` | Pure interception hook for Block / Suspend / SetResult decisions |
 | `CircuitBreaker` | Per-model LLM failure protection |
-| `Mailbox` | Durable job queue with lease-based claim |
+| `Mailbox` | Durable dispatch queue with lease-based claim |
 | `EventReplayBuffer` | SSE reconnection with frame replay |
 | `DeferredToolsPlugin` | Lazy tool loading with probability model |
 | `ProfileStore` | Cross-session persistent state |

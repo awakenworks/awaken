@@ -24,14 +24,14 @@ and `crates/awaken-server/src/config_routes.rs`.
 | `GET` | `/v1/threads/:id` | Get a thread by ID |
 | `PATCH` | `/v1/threads/:id` | Update thread metadata |
 | `DELETE` | `/v1/threads/:id` | Delete a thread |
-| `POST` | `/v1/threads/:id/cancel` | Cancel a specific queued or running job addressed by this thread ID. Returns `cancel_requested`. |
+| `POST` | `/v1/threads/:id/cancel` | Cancel a specific queued or running dispatch addressed by this thread ID. Returns `cancel_requested`. |
 | `POST` | `/v1/threads/:id/decision` | Submit a HITL decision for a waiting run on this thread |
-| `POST` | `/v1/threads/:id/interrupt` | Interrupt the thread: bumps the thread generation, supersedes all pending queued jobs, and cancels the active run. Returns `interrupt_requested` with `superseded_jobs` count. Unlike `/cancel`, this performs a clean-slate interrupt via `mailbox.interrupt()`. |
+| `POST` | `/v1/threads/:id/interrupt` | Interrupt the thread: bumps the thread dispatch epoch, supersedes all pending queued dispatches, and cancels the active run. Returns `interrupt_requested` with `superseded_dispatches` count. Unlike `/cancel`, this performs a clean-slate interrupt via `mailbox.interrupt()`. |
 | `PATCH` | `/v1/threads/:id/metadata` | Alias for thread metadata updates |
 | `GET` | `/v1/threads/:id/messages` | List thread messages |
 | `POST` | `/v1/threads/:id/messages` | Submit messages as a background run on this thread |
 | `POST` | `/v1/threads/:id/mailbox` | Push a message payload to the thread mailbox |
-| `GET` | `/v1/threads/:id/mailbox` | List mailbox jobs for the thread |
+| `GET` | `/v1/threads/:id/mailbox` | List mailbox dispatches for the thread |
 | `GET` | `/v1/threads/:id/runs` | List runs for the thread |
 | `GET` | `/v1/threads/:id/runs/latest` | Get the latest run for the thread |
 
@@ -91,7 +91,7 @@ Current built-in namespaces:
 | `GET` | `/v1/ai-sdk/threads/:thread_id/stream` | Alias for stream resume by thread ID |
 | `GET` | `/v1/ai-sdk/threads/:thread_id/messages` | List thread messages |
 | `POST` | `/v1/ai-sdk/threads/:thread_id/cancel` | Cancel the active or queued run on a thread |
-| `POST` | `/v1/ai-sdk/threads/:thread_id/interrupt` | Interrupt a thread (bump generation, supersede pending jobs, cancel active run) |
+| `POST` | `/v1/ai-sdk/threads/:thread_id/interrupt` | Interrupt a thread (bump dispatch epoch, supersede pending dispatches, cancel active run) |
 
 ## AG-UI routes
 

@@ -22,14 +22,14 @@
 | `GET` | `/v1/threads/:id` | 获取 thread |
 | `PATCH` | `/v1/threads/:id` | 更新 thread 元信息 |
 | `DELETE` | `/v1/threads/:id` | 删除 thread |
-| `POST` | `/v1/threads/:id/cancel` | 取消该 thread 上排队或运行中的某个 job；返回 `cancel_requested` |
+| `POST` | `/v1/threads/:id/cancel` | 取消该 thread 上排队或运行中的某个 dispatch；返回 `cancel_requested` |
 | `POST` | `/v1/threads/:id/decision` | 向该 thread 上等待中的 run 提交 HITL decision |
-| `POST` | `/v1/threads/:id/interrupt` | 中断该 thread：递增 thread generation、取消所有待执行 job、中止活动 run；返回 `interrupt_requested` 及 `superseded_jobs` 计数。与 `/cancel` 不同，此接口通过 `mailbox.interrupt()` 执行完整的"清空并中断"操作 |
+| `POST` | `/v1/threads/:id/interrupt` | 中断该 thread：递增 thread dispatch epoch、取消所有待执行 dispatch、中止活动 run；返回 `interrupt_requested` 及 `superseded_dispatches` 计数。与 `/cancel` 不同，此接口通过 `mailbox.interrupt()` 执行完整的"清空并中断"操作 |
 | `PATCH` | `/v1/threads/:id/metadata` | 更新 metadata 的别名接口 |
 | `GET` | `/v1/threads/:id/messages` | 列出消息 |
 | `POST` | `/v1/threads/:id/messages` | 作为后台 run 提交消息 |
 | `POST` | `/v1/threads/:id/mailbox` | 向 mailbox 推送消息载荷 |
-| `GET` | `/v1/threads/:id/mailbox` | 查看该 thread 的 mailbox job |
+| `GET` | `/v1/threads/:id/mailbox` | 查看该 thread 的 mailbox dispatch |
 | `GET` | `/v1/threads/:id/runs` | 列出该 thread 的 runs |
 | `GET` | `/v1/threads/:id/runs/latest` | 获取最新 run |
 
@@ -88,7 +88,7 @@ section。
 | `GET` | `/v1/ai-sdk/threads/:thread_id/stream` | 同上别名 |
 | `GET` | `/v1/ai-sdk/threads/:thread_id/messages` | 列出 thread 消息 |
 | `POST` | `/v1/ai-sdk/threads/:thread_id/cancel` | 取消该 thread 上活动或排队中的 run |
-| `POST` | `/v1/ai-sdk/threads/:thread_id/interrupt` | 中断 thread（递增 generation、取消待执行 job、中止活动 run）|
+| `POST` | `/v1/ai-sdk/threads/:thread_id/interrupt` | 中断 thread（递增 dispatch epoch、取消待执行 dispatch、中止活动 run）|
 
 ## AG-UI 路由
 
