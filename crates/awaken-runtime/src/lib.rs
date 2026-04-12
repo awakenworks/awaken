@@ -10,6 +10,7 @@
 pub mod agent;
 pub mod backend;
 pub mod builder;
+pub mod builtin_tools;
 pub(crate) mod cancellation;
 pub mod context;
 pub mod engine;

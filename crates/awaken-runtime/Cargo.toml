@@ -41,6 +41,7 @@ awaken-runtime = { path = ".", features = ["test-utils"] }
 awaken-stores = { workspace = true }
 tokio = { workspace = true }
 proptest = { workspace = true }
+httpmock = "0.7"
 
 [lints]
 workspace = true
