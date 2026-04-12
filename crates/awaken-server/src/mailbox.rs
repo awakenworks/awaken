@@ -997,10 +997,6 @@ impl Mailbox {
     }
 
     /// Recover on startup: reload queued dispatches and dispatch idle threads.
-    ///
-    /// Also reclaims any Claimed dispatches from a previous process that never
-    /// completed (orphan cleanup), preventing threads from being stuck in a
-    /// "running" state indefinitely after a restart.
     #[tracing::instrument(skip(self))]
     pub async fn recover(self: &Arc<Self>) -> Result<usize, MailboxError> {
         let now = now_ms();
@@ -1009,22 +1005,6 @@ impl Mailbox {
         // Reclaim expired leases from previous process crash.
         let reclaimed = self.store.reclaim_expired_leases(now, 100).await?;
         total += reclaimed.len();
-
-        // Force-reclaim any Claimed dispatches that survived from a previous
-        // process — their leases may not have expired yet but the executor
-        // that held them is gone.
-        let stale_claimed = self
-            .store
-            .reclaim_expired_leases(now + self.config.lease_ms, 500)
-            .await
-            .unwrap_or_default();
-        if !stale_claimed.is_empty() {
-            tracing::info!(
-                count = stale_claimed.len(),
-                "recover: force-reclaimed stale claimed dispatches from previous process"
-            );
-            total += stale_claimed.len();
-        }
 
         // Reload all queued mailbox IDs and try to dispatch.
         let thread_ids = self.store.queued_thread_ids().await?;
