@@ -252,6 +252,11 @@ impl MailboxStore for SqliteMailboxStore {
     async fn enqueue(&self, dispatch: &RunDispatch) -> Result<(), StorageError> {
         let conn = self.conn.lock().await;
 
+        // WAL health check: verify the connection can write by doing a quick integrity probe.
+        // This catches silently-corrupted WAL states from prior I/O errors.
+        conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE)")
+            .map_err(|e| StorageError::Io(format!("WAL health check failed: {e}")))?;
+
         // Dedupe check.
         if let Some(ref dk) = dispatch.dedupe_key {
             let dup: bool = conn
@@ -321,6 +326,20 @@ impl MailboxStore for SqliteMailboxStore {
             ],
         )
         .map_err(|e| StorageError::Io(format!("insert dispatch: {e}")))?;
+
+        // Post-insert verification: confirm the row is actually readable.
+        // This guards against WAL corruption where writes appear to succeed
+        // but data is not actually persisted.
+        let exists: bool = conn
+            .prepare_cached("SELECT EXISTS(SELECT 1 FROM run_dispatches WHERE dispatch_id = ?1)")
+            .map_err(|e| StorageError::Io(format!("verify prepare: {e}")))?
+            .query_row(params![dispatch.dispatch_id], |row| row.get(0))
+            .map_err(|e| StorageError::Io(format!("verify query: {e}")))?;
+        if !exists {
+            return Err(StorageError::Io(
+                "enqueue verification failed: dispatch not readable after insert".into(),
+            ));
+        }
 
         Ok(())
     }
