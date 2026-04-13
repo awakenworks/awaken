@@ -10,7 +10,7 @@ use awaken_runtime::{AgentResolver, AgentRuntime};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
-use crate::mailbox::Mailbox;
+use crate::mailbox::{Mailbox, MailboxLifecycleConfig};
 use crate::transport::replay_buffer::EventReplayBuffer;
 
 pub type ReplayBufferEntry = (Arc<EventReplayBuffer>, Instant);
@@ -78,6 +78,17 @@ impl Default for ShutdownConfig {
     }
 }
 
+/// Mailbox lifecycle ownership for the HTTP server.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MailboxLifecycleMode {
+    /// The server starts mailbox startup recovery and maintenance.
+    #[default]
+    Auto,
+    /// The embedding application manages mailbox lifecycle explicitly.
+    Manual,
+}
+
 /// Server configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
@@ -99,6 +110,9 @@ pub struct ServerConfig {
     /// Optional bearer token required for authenticated extended A2A agent cards.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub a2a_extended_card_bearer_token: Option<String>,
+    /// Mailbox lifecycle ownership. Defaults to framework-managed auto mode.
+    #[serde(default)]
+    pub mailbox_lifecycle: MailboxLifecycleMode,
 }
 
 fn default_sse_buffer() -> usize {
@@ -122,6 +136,7 @@ impl Default for ServerConfig {
             shutdown: ShutdownConfig::default(),
             max_concurrent_requests: default_max_concurrent(),
             a2a_extended_card_bearer_token: None,
+            mailbox_lifecycle: MailboxLifecycleMode::Auto,
         }
     }
 }
@@ -316,6 +331,27 @@ pub async fn serve(state: AppState) -> std::io::Result<()> {
     let addr = state.config.address.clone();
     let timeout = std::time::Duration::from_secs(state.config.shutdown.timeout_secs);
     let max_concurrent = state.config.max_concurrent_requests;
+    let mailbox_lifecycle = match state.config.mailbox_lifecycle {
+        MailboxLifecycleMode::Auto => {
+            let cleanup_state = state.clone();
+            Some(
+                state
+                    .mailbox
+                    .start_lifecycle_ready(MailboxLifecycleConfig {
+                        maintenance_callback: Some(Arc::new(move || {
+                            cleanup_state
+                                .purge_stale_replay_buffers(std::time::Duration::from_secs(300));
+                        })),
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(|error| {
+                        std::io::Error::other(format!("failed to start mailbox lifecycle: {error}"))
+                    })?,
+            )
+        }
+        MailboxLifecycleMode::Manual => None,
+    };
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("listening on {addr}");
@@ -324,7 +360,13 @@ pub async fn serve(state: AppState) -> std::io::Result<()> {
         .layer(tower::limit::ConcurrencyLimitLayer::new(max_concurrent))
         .with_state(state);
 
-    serve_with_shutdown(listener, app, timeout).await
+    let result = serve_with_shutdown(listener, app, timeout).await;
+    if let Some(mailbox_lifecycle) = mailbox_lifecycle
+        && let Err(error) = mailbox_lifecycle.shutdown().await
+    {
+        tracing::warn!(error = %error, "failed to stop mailbox lifecycle cleanly");
+    }
+    result
 }
 
 #[cfg(test)]
@@ -339,6 +381,7 @@ mod tests {
         assert_eq!(config.replay_buffer_capacity, 1024);
         assert_eq!(config.shutdown.timeout_secs, 30);
         assert_eq!(config.max_concurrent_requests, 100);
+        assert_eq!(config.mailbox_lifecycle, MailboxLifecycleMode::Auto);
     }
 
     #[test]
@@ -350,6 +393,7 @@ mod tests {
             shutdown: ShutdownConfig { timeout_secs: 10 },
             max_concurrent_requests: 50,
             a2a_extended_card_bearer_token: None,
+            mailbox_lifecycle: MailboxLifecycleMode::Manual,
         };
         let json = serde_json::to_string(&config).unwrap();
         let parsed: ServerConfig = serde_json::from_str(&json).unwrap();
@@ -358,6 +402,7 @@ mod tests {
         assert_eq!(parsed.replay_buffer_capacity, 512);
         assert_eq!(parsed.shutdown.timeout_secs, 10);
         assert_eq!(parsed.max_concurrent_requests, 50);
+        assert_eq!(parsed.mailbox_lifecycle, MailboxLifecycleMode::Manual);
     }
 
     #[test]
@@ -368,6 +413,14 @@ mod tests {
         assert_eq!(config.sse_buffer_size, 64);
         assert_eq!(config.shutdown.timeout_secs, 30);
         assert_eq!(config.max_concurrent_requests, 100);
+        assert_eq!(config.mailbox_lifecycle, MailboxLifecycleMode::Auto);
+    }
+
+    #[test]
+    fn mailbox_lifecycle_mode_deserializes_manual() {
+        let json = r#"{"address": "localhost:9000", "mailbox_lifecycle": "manual"}"#;
+        let config: ServerConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.mailbox_lifecycle, MailboxLifecycleMode::Manual);
     }
 
     #[test]

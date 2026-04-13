@@ -11,6 +11,7 @@ pub enum Role {
     System,
     User,
     Assistant,
+    Reasoning,
     Tool,
 }
 

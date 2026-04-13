@@ -50,7 +50,7 @@ pub enum KeyScope {
 
 ## MergeStrategy
 
-决定并行执行下多个 `MutationBatch` 如何合并：
+决定并行 phase hook 或自定义并行 executor 集成下，多个 `MutationBatch` 如何合并：
 
 ```rust,ignore
 pub enum MergeStrategy {

@@ -204,6 +204,7 @@ fn make_ag_ui_app(llm: Arc<dyn LlmExecutor>, tools: Vec<(String, Arc<dyn Tool>)>
     let mailbox = std::sync::Arc::new(awaken_server::mailbox::Mailbox::new(
         runtime.clone(),
         mailbox_store,
+        store.clone(),
         "test".to_string(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));
@@ -1003,6 +1004,7 @@ async fn multiple_sequential_runs_on_same_thread() {
     let mailbox = std::sync::Arc::new(awaken_server::mailbox::Mailbox::new(
         runtime.clone(),
         mailbox_store,
+        store.clone(),
         "test".to_string(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));

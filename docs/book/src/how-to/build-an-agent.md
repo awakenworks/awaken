@@ -12,10 +12,8 @@ Use this when you need to assemble an agent with tools, persistence, and a provi
 
 1. Define the agent spec.
 
-```rust,ignore
-use awaken::engine::GenaiExecutor;
-use awaken::registry::ModelBinding;
-use awaken::{AgentSpec, AgentRuntimeBuilder};
+```rust,no_run
+use awaken::AgentSpec;
 
 let spec = AgentSpec::new("assistant")
     .with_model_id("claude-sonnet")
@@ -25,8 +23,42 @@ let spec = AgentSpec::new("assistant")
 
 2. Register tools.
 
-```rust,ignore
+```rust,no_run
 use std::sync::Arc;
+use async_trait::async_trait;
+use serde_json::{Value, json};
+use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult};
+use awaken::{AgentRuntimeBuilder, AgentSpec};
+
+struct SearchTool;
+
+#[async_trait]
+impl Tool for SearchTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("search", "Search", "Search documents")
+            .with_parameters(json!({"type": "object", "properties": {}}))
+    }
+
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        Ok(ToolResult::success("search", json!([])).into())
+    }
+}
+
+struct CalculatorTool;
+
+#[async_trait]
+impl Tool for CalculatorTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("calculator", "Calculator", "Evaluate expressions")
+            .with_parameters(json!({"type": "object", "properties": {}}))
+    }
+
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        Ok(ToolResult::success("calculator", json!({"result": 0})).into())
+    }
+}
+
+let spec = AgentSpec::new("assistant");
 
 let builder = AgentRuntimeBuilder::new()
     .with_agent_spec(spec)
@@ -36,7 +68,14 @@ let builder = AgentRuntimeBuilder::new()
 
 3. Register a provider and a model.
 
-```rust,ignore
+```rust,no_run
+use std::sync::Arc;
+use awaken::engine::GenaiExecutor;
+use awaken::registry::ModelBinding;
+use awaken::AgentRuntimeBuilder;
+
+let builder = AgentRuntimeBuilder::new();
+
 let builder = builder
     .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
     .with_model_binding("claude-sonnet", ModelBinding {
@@ -47,8 +86,12 @@ let builder = builder
 
 4. Attach persistence.
 
-```rust,ignore
+```rust,no_run
+use std::sync::Arc;
 use awaken::stores::InMemoryStore;
+use awaken::AgentRuntimeBuilder;
+
+let builder = AgentRuntimeBuilder::new();
 
 let store = Arc::new(InMemoryStore::new());
 let builder = builder.with_thread_run_store(store);
@@ -56,8 +99,25 @@ let builder = builder.with_thread_run_store(store);
 
 5. Build and validate.
 
-```rust,ignore
-let runtime = builder.build()?;
+```rust,no_run
+use std::sync::Arc;
+use awaken::engine::MockLlmExecutor;
+use awaken::registry::ModelBinding;
+use awaken::{AgentRuntimeBuilder, AgentSpec};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let builder = AgentRuntimeBuilder::new()
+        .with_agent_spec(AgentSpec::new("assistant").with_model_id("mock"))
+        .with_provider("mock", Arc::new(MockLlmExecutor::new()))
+        .with_model_binding("mock", ModelBinding {
+            provider_id: "mock".into(),
+            upstream_model: "mock".into(),
+        });
+
+    let runtime = builder.build()?;
+    let _runtime = runtime;
+    Ok(())
+}
 ```
 
 `build` resolves every registered agent and catches missing models, providers, or plugins at startup rather than at request time.
@@ -67,8 +127,9 @@ let runtime = builder.build()?;
 `AgentSpec` is the runtime config object for an agent. The fields and sections
 below are the same data edited by `/v1/config/agents` and the admin console:
 
-```rust,ignore
+```rust,no_run
 use serde_json::json;
+use awaken::AgentSpec;
 
 let mut spec = AgentSpec::new("assistant")
     .with_model_id("claude-sonnet")
@@ -95,16 +156,30 @@ Future prompt semantic hooks should follow the same typed section pattern.
 
 7. Execute a run.
 
-```rust,ignore
-use std::sync::Arc;
-use awaken::RunRequest;
-use awaken::contract::event_sink::VecEventSink;
+```rust,no_run
+use awaken::engine::MockLlmExecutor;
+use awaken::prelude::*;
 
-let request = RunRequest::new("thread-1", vec![user_message])
-    .with_agent_id("assistant");
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = AgentRuntimeBuilder::new()
+        .with_agent_spec(AgentSpec::new("assistant").with_model_id("mock"))
+        .with_provider("mock", Arc::new(MockLlmExecutor::new()))
+        .with_model_binding("mock", ModelBinding {
+            provider_id: "mock".into(),
+            upstream_model: "mock".into(),
+        })
+        .build()?;
+    let user_message = Message::user("Hello");
 
-let sink = Arc::new(VecEventSink::new());
-let handle = runtime.run(request, sink.clone()).await?;
+    let request = RunRequest::new("thread-1", vec![user_message])
+        .with_agent_id("assistant");
+
+    // Use runtime.run(..., sink) when callers need streaming events.
+    let result = runtime.run_to_completion(request).await?;
+    let _result = result;
+    Ok(())
+}
 ```
 
 ## Verify

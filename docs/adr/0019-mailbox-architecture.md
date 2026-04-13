@@ -19,27 +19,34 @@ No single component covers persistence, consumption, and distributed claim toget
 
 ### D1: Single Mailbox service backed by MailboxStore trait
 
-Replace `RunDispatcher`, the old `MailboxStore`, and `ActiveRunRegistry`'s scheduling role with a unified `Mailbox` service in `awaken-server`. `Mailbox` holds `Arc<AgentRuntime>` + `Arc<dyn MailboxStore>` and is the sole entry point for durable multi-request server execution paths (HTTP, A2A, AG-UI, AI-SDK).
+Replace `RunDispatcher`, the old `MailboxStore`, and `ActiveRunRegistry`'s scheduling role with a unified `Mailbox` service in `awaken-server`. `Mailbox` holds a `RunDispatchExecutor`, a `MailboxStore`, and a `ThreadRunStore`; it is the sole entry point for durable multi-request server execution paths (HTTP, A2A, AG-UI, AI-SDK).
 
 ### D2: Thread-keyed routing
 
-`mailbox_id = thread_id`. Every run request is routed by thread. Agent-targeted messages auto-generate a `thread_id` at the API level — the queue never sees `agent_id` as an address.
+`thread_id = thread_id`. Every run request is routed by thread. Agent-targeted messages auto-generate a `thread_id` at the API level — the queue never sees `agent_id` as an address.
 
-### D3: Write-ahead-log semantics
+### D3: Run-first write-ahead semantics
 
-Every run request persists via `MailboxStore::enqueue()` before dispatch. Crash recovery replays `Queued` entries on startup via `recover()`.
+Every durable request first creates or updates a `RunRecord`, persists thread
+message references, and then enqueues a `RunDispatch`. Crash recovery replays
+`Queued` dispatches on startup via `recover()`.
 
-### D4: Six-state lifecycle
+### D4: Six-state dispatch lifecycle
 
 ```
-Queued → Claimed → Accepted | Cancelled | Superseded | DeadLetter
+Queued → Claimed → Acked | Cancelled | Superseded | DeadLetter
 ```
 
-Three terminal states (`Accepted`, `Cancelled`, `DeadLetter`). `Superseded` is terminal, triggered by thread interrupt (generation bump). `Claimed → Queued` retry via `nack()` increments `attempt_count`.
+Four terminal states (`Acked`, `Cancelled`, `Superseded`, `DeadLetter`).
+`Superseded` is terminal, triggered by thread interrupt (dispatch epoch bump).
+`Claimed → Queued` retry via `nack()` increments `attempt_count`.
+`Acked` means the dispatch was consumed and should not be retried; it does not
+mean the agent run succeeded. Runtime success and failure are recorded on
+`RunRecord`.
 
 ### D5: Lease-based distributed claim
 
-Multiple processes compete for jobs through atomic `claim()` on the shared store. Each claim sets `claim_token` + `lease_until`. A renewal heartbeat extends the lease; sweep reclaims expired leases from crashed consumers. No inter-process communication needed — the store is the coordination layer.
+Multiple processes compete for dispatches through atomic `claim()` on the shared store. Each claim sets `claim_token` + `lease_until`. A renewal heartbeat extends the lease; sweep reclaims expired leases from crashed consumers. No inter-process communication needed — the store is the coordination layer.
 
 ### D6: Event-driven dispatch with sweep safety net
 
@@ -47,7 +54,7 @@ Normal path: `enqueue` triggers immediate dispatch if the thread's `MailboxWorke
 
 ### D7: Crate placement
 
-- `awaken-contract` — `MailboxJob`, `MailboxJobStatus`, `MailboxJobOrigin`, `MailboxStore` trait.
+- `awaken-contract` — `RunDispatch`, `RunDispatchStatus`, `RunRequestOrigin`, `MailboxStore` trait.
 - `awaken-stores` — `InMemoryMailboxStore`, `FileMailboxStore`, `PostgresMailboxStore`. (**Note**: only `InMemoryMailboxStore` is implemented; `FileMailboxStore` and `PostgresMailboxStore` are not yet implemented.)
 - `awaken-server` — `Mailbox` service, `MailboxConfig`, handler integration.
 
@@ -61,7 +68,7 @@ Normal path: `enqueue` triggers immediate dispatch if the thread's `MailboxWorke
 - distributed claim, lease renewal, and lease reclamation
 - retry scheduling and dead-lettering
 - reconnectable event delivery for long-lived server transports
-- job-level status query and garbage collection
+- dispatch-level status query and garbage collection
 
 `AgentRuntime` owns the **internal execution semantics** of a single active run:
 
@@ -74,8 +81,8 @@ Normal path: `enqueue` triggers immediate dispatch if the thread's `MailboxWorke
 
 This split is intentional:
 
-- `Mailbox` decides **whether a run may start now, who owns it, and what should happen if it is superseded or lost**
-- `AgentRuntime` decides **how the accepted run progresses once execution begins**
+- `Mailbox` decides **whether a run dispatch may start now, who owns it, and what should happen if it is superseded or lost**
+- `AgentRuntime` decides **how the claimed runtime run progresses once execution begins**
 
 ### D9: Protocol/transport responsibilities stay above both layers
 
@@ -96,7 +103,7 @@ Use `Mailbox` for scenarios such as:
 | Two submissions target the same thread | Mailbox | Thread-level serialization and latest-wins are queue ownership problems |
 | A request must survive process crash before execution starts | Mailbox | Requires durable write-ahead submission and recovery |
 | A claimed worker crashes mid-run | Mailbox + store | Lease expiry and reclaim are distributed ownership concerns |
-| A queued job needs retry / backoff / dead-letter | Mailbox | These are job lifecycle policies, not loop semantics |
+| A queued dispatch needs retry / backoff / dead-letter | Mailbox | These are dispatch lifecycle policies, not loop semantics |
 | A client disconnects and later reconnects to the same suspended run | Mailbox + transport | Event delivery continuity is outside `AgentRuntime` |
 | The system must apply priority / admission control / fairness | Mailbox | Scheduling and backpressure belong to the control plane |
 
@@ -138,3 +145,5 @@ This keeps `AgentRuntime` independently usable for embedded, local, and stdio-st
 - `AppState` replaces `dispatcher` + `mailbox_store` fields with a single `mailbox: Arc<Mailbox>`.
 - ADR-0012's `ThreadRunStore` remains unchanged for checkpoint persistence; `Mailbox` orchestrates around it.
 - `AgentRuntime` stays reusable outside the server queue path for ephemeral and embedded execution.
+- ADR-0022 refines the durable model: `RunRecord` is the source of truth for
+  run intent/outcome, while `RunDispatch` is the dispatch/lease/retry record.

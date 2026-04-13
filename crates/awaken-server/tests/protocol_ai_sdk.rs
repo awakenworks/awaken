@@ -21,6 +21,7 @@ fn make_encoder_with_run(thread_id: &str, run_id: &str) -> AiSdkEncoder {
     enc.on_agent_event(&AgentEvent::RunStart {
         thread_id: thread_id.into(),
         run_id: run_id.into(),
+        identity: None,
         parent_run_id: None,
     });
     enc
@@ -47,6 +48,7 @@ fn run_start_emits_message_start_and_run_info() {
     let events = enc.on_agent_event(&AgentEvent::RunStart {
         thread_id: "thread_1".into(),
         run_id: "run_12345678".into(),
+        identity: None,
         parent_run_id: None,
     });
     assert_eq!(events.len(), 2);
@@ -232,6 +234,7 @@ fn natural_end_maps_to_stop_reason() {
     let events = enc.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::NaturalEnd,
     });
@@ -250,6 +253,7 @@ fn suspended_emits_finish_tool_calls() {
     let events = enc.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::Suspended,
     });
@@ -267,6 +271,7 @@ fn error_termination_maps_to_error_reason() {
     let events = enc.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::Error("boom".into()),
     });
@@ -284,6 +289,7 @@ fn blocked_maps_to_content_filter_reason() {
     let events = enc.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::Blocked("unsafe".into()),
     });
@@ -301,6 +307,7 @@ fn cancelled_maps_to_stop_reason() {
     let events = enc.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::Cancelled,
     });
@@ -318,6 +325,7 @@ fn stopped_max_rounds_maps_to_stop_reason() {
     let events = enc.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::Stopped(StoppedReason::new("max_rounds_reached")),
     });
@@ -339,6 +347,7 @@ fn events_after_finish_are_suppressed() {
     enc.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::NaturalEnd,
     });
@@ -376,6 +385,7 @@ fn run_finish_closes_text_and_emits_finish() {
     let events = enc.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::NaturalEnd,
     });
@@ -401,6 +411,7 @@ fn reasoning_delta_opens_reasoning_block() {
     enc.on_agent_event(&AgentEvent::RunStart {
         thread_id: "t1".into(),
         run_id: "msg1".into(),
+        identity: None,
         parent_run_id: None,
     });
     let events = enc.on_agent_event(&AgentEvent::ReasoningDelta {
@@ -431,6 +442,7 @@ fn run_finish_closes_reasoning_block() {
     let events = enc.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::NaturalEnd,
     });
@@ -561,6 +573,7 @@ fn encoder_adopts_first_step_start_message_id() {
     enc.on_agent_event(&AgentEvent::RunStart {
         thread_id: "t1".into(),
         run_id: "run_12345678".into(),
+        identity: None,
         parent_run_id: None,
     });
     let initial_id = enc.message_id().to_string();
@@ -616,6 +629,7 @@ fn full_lifecycle_text_tool_finish() {
     let ev = enc.on_agent_event(&AgentEvent::RunStart {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         parent_run_id: None,
     });
     assert_eq!(ev.len(), 2);
@@ -641,6 +655,7 @@ fn full_lifecycle_text_tool_finish() {
     let ev = enc.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::NaturalEnd,
     });
@@ -1190,6 +1205,7 @@ fn run_start_has_thread_and_run_id() {
     let events = enc.on_agent_event(&AgentEvent::RunStart {
         thread_id: "thread_42".into(),
         run_id: "run_99".into(),
+        identity: None,
         parent_run_id: None,
     });
     assert_eq!(events.len(), 2);
@@ -1217,6 +1233,7 @@ fn run_finish_with_result() {
     let events = enc.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: Some(json!({"summary": "completed"})),
         termination: TerminationReason::NaturalEnd,
     });
@@ -1236,6 +1253,7 @@ fn run_finish_cancelled_reason() {
     let events = enc.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::Cancelled,
     });
@@ -1511,6 +1529,7 @@ fn events_start_with_run_started() {
     let events = enc.on_agent_event(&AgentEvent::RunStart {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         parent_run_id: None,
     });
     assert!(
@@ -1526,6 +1545,7 @@ fn events_end_with_run_finished() {
     let events = enc.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::NaturalEnd,
     });
@@ -1566,6 +1586,7 @@ fn no_events_after_finish() {
     enc.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::NaturalEnd,
     });
@@ -1615,6 +1636,7 @@ fn no_events_after_error() {
         enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::NaturalEnd,
         })
@@ -1651,6 +1673,7 @@ fn natural_end_produces_finish() {
     let events = enc.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::NaturalEnd,
     });
@@ -1669,6 +1692,7 @@ fn blocked_produces_finish() {
     let events = enc.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::Blocked("unsafe content".into()),
     });
@@ -1708,6 +1732,7 @@ fn max_rounds_termination() {
     let events = enc.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::Stopped(StoppedReason::new("max_rounds_reached")),
     });

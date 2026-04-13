@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+use crate::contract::lifecycle::RunStatus;
+use crate::contract::storage::RunRecord;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -33,6 +35,15 @@ pub struct Thread {
     /// Thread metadata (timestamps, title, custom data).
     #[serde(default)]
     pub metadata: ThreadMetadata,
+    /// Run currently executing on a worker for this thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_run_id: Option<String>,
+    /// Current unfinished user intent for this thread. Waiting runs remain open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_run_id: Option<String>,
+    /// Most recently known run for this thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_run_id: Option<String>,
 }
 
 impl Thread {
@@ -41,6 +52,9 @@ impl Thread {
         Self {
             id: uuid::Uuid::now_v7().to_string(),
             metadata: ThreadMetadata::default(),
+            active_run_id: None,
+            open_run_id: None,
+            latest_run_id: None,
         }
     }
 
@@ -49,6 +63,9 @@ impl Thread {
         Self {
             id: id.into(),
             metadata: ThreadMetadata::default(),
+            active_run_id: None,
+            open_run_id: None,
+            latest_run_id: None,
         }
     }
 
@@ -57,6 +74,33 @@ impl Thread {
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.metadata.title = Some(title.into());
         self
+    }
+
+    /// Update the thread's run pointers from a durable run record.
+    pub fn apply_run_projection(&mut self, run: &RunRecord) {
+        self.latest_run_id = Some(run.run_id.clone());
+        match run.status {
+            RunStatus::Created => {
+                self.active_run_id = None;
+                self.open_run_id = Some(run.run_id.clone());
+            }
+            RunStatus::Running => {
+                self.active_run_id = Some(run.run_id.clone());
+                self.open_run_id = Some(run.run_id.clone());
+            }
+            RunStatus::Waiting => {
+                self.active_run_id = None;
+                self.open_run_id = Some(run.run_id.clone());
+            }
+            RunStatus::Done => {
+                if self.active_run_id.as_deref() == Some(run.run_id.as_str()) {
+                    self.active_run_id = None;
+                }
+                if self.open_run_id.as_deref() == Some(run.run_id.as_str()) {
+                    self.open_run_id = None;
+                }
+            }
+        }
     }
 }
 
@@ -69,6 +113,8 @@ impl Default for Thread {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contract::lifecycle::RunStatus;
+    use crate::contract::storage::RunRecord;
     use serde_json::json;
 
     #[test]
@@ -178,5 +224,55 @@ mod tests {
         let json_str = serde_json::to_string(&thread).unwrap();
         // Empty custom map should be omitted
         assert!(!json_str.contains("custom"));
+    }
+
+    fn run_record(run_id: &str, status: RunStatus) -> RunRecord {
+        RunRecord {
+            run_id: run_id.to_string(),
+            thread_id: "thread-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            parent_run_id: None,
+            request: None,
+            input: None,
+            output: None,
+            status,
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: None,
+            outcome: None,
+            created_at: 1,
+            started_at: None,
+            finished_at: None,
+            updated_at: 1,
+            steps: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            state: None,
+        }
+    }
+
+    #[test]
+    fn thread_run_projection_keeps_waiting_run_open_but_not_active() {
+        let mut thread = Thread::with_id("thread-1");
+        thread.apply_run_projection(&run_record("run-1", RunStatus::Created));
+        assert_eq!(thread.open_run_id.as_deref(), Some("run-1"));
+        assert!(thread.active_run_id.is_none());
+
+        thread.apply_run_projection(&run_record("run-1", RunStatus::Running));
+        assert_eq!(thread.open_run_id.as_deref(), Some("run-1"));
+        assert_eq!(thread.active_run_id.as_deref(), Some("run-1"));
+
+        thread.apply_run_projection(&run_record("run-1", RunStatus::Waiting));
+        assert_eq!(thread.open_run_id.as_deref(), Some("run-1"));
+        assert!(thread.active_run_id.is_none());
+
+        thread.apply_run_projection(&run_record("run-1", RunStatus::Done));
+        assert!(thread.open_run_id.is_none());
+        assert!(thread.active_run_id.is_none());
+        assert_eq!(thread.latest_run_id.as_deref(), Some("run-1"));
     }
 }

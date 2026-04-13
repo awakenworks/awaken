@@ -34,6 +34,7 @@ SSE 流（`text/event-stream`），每一行是一个 JSON 编码的 `UIStreamEv
 |-------|--------|------|
 | `/v1/ai-sdk/threads/:thread_id/runs` | `POST` | 在指定 thread 上启动 run |
 | `/v1/ai-sdk/agents/:agent_id/runs` | `POST` | 在指定 agent 上启动 run |
+| `/v1/ai-sdk/agent-previews/runs` | `POST` | 使用当前 registries 运行草稿 `AgentSpec`，不会持久化该 agent |
 | `/v1/ai-sdk/chat/:thread_id/stream` | `GET` | 按 thread ID 续接 SSE |
 | `/v1/ai-sdk/threads/:thread_id/stream` | `GET` | 同上，thread 路由别名 |
 | `/v1/ai-sdk/threads/:thread_id/messages` | `GET` | 读取 thread 消息历史 |

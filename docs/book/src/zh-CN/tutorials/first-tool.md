@@ -13,7 +13,7 @@
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.1" }
+awaken = { package = "awaken-agent", version = "0.2" }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
@@ -25,8 +25,8 @@ serde_json = "1"
 `StateKey` 描述状态映射中的一个命名槽位，声明值类型、更新策略和生命周期范围。
 
 ```rust,no_run
-# use awaken::{StateKey, KeyScope, MergeStrategy};
-#
+use awaken::{KeyScope, MergeStrategy, StateKey};
+
 /// 记录问候工具被调用的次数。
 struct GreetCount;
 
@@ -42,7 +42,6 @@ impl StateKey for GreetCount {
         *value += update;
     }
 }
-# fn main() {}
 ```
 
 关键选项说明：
@@ -56,20 +55,26 @@ impl StateKey for GreetCount {
 该工具通过 `ctx.state::<GreetCount>()` 读取当前计数并返回个性化问候。
 
 ```rust,no_run
-# use awaken::{StateKey, KeyScope, MergeStrategy};
-# struct GreetCount;
-# impl StateKey for GreetCount {
-#     const KEY: &'static str = "greet_count";
-#     const MERGE: MergeStrategy = MergeStrategy::Commutative;
-#     const SCOPE: KeyScope = KeyScope::Run;
-#     type Value = u32;
-#     type Update = u32;
-#     fn apply(value: &mut Self::Value, update: Self::Update) { *value += update; }
-# }
-use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use awaken::{KeyScope, MergeStrategy, StateKey};
 use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
+
+/// 记录问候工具被调用的次数。
+struct GreetCount;
+
+impl StateKey for GreetCount {
+    const KEY: &'static str = "greet_count";
+    const MERGE: MergeStrategy = MergeStrategy::Commutative;
+    const SCOPE: KeyScope = KeyScope::Run;
+
+    type Value = u32;
+    type Update = u32;
+
+    fn apply(value: &mut Self::Value, update: Self::Update) {
+        *value += update;
+    }
+}
 
 struct GreetTool;
 
@@ -110,102 +115,138 @@ impl Tool for GreetTool {
         })).into())
     }
 }
-# fn main() {}
 ```
 
 ## 3. 注册 Tool
 
 ```rust,no_run
-# use std::sync::Arc;
-# use async_trait::async_trait;
-# use serde_json::{json, Value};
-# use awaken::{StateKey, KeyScope, MergeStrategy};
-# use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
-# struct GreetCount;
-# impl StateKey for GreetCount {
-#     const KEY: &'static str = "greet_count";
-#     const MERGE: MergeStrategy = MergeStrategy::Commutative;
-#     const SCOPE: KeyScope = KeyScope::Run;
-#     type Value = u32;
-#     type Update = u32;
-#     fn apply(value: &mut Self::Value, update: Self::Update) { *value += update; }
-# }
-# struct GreetTool;
-# #[async_trait]
-# impl Tool for GreetTool {
-#     fn descriptor(&self) -> ToolDescriptor {
-#         ToolDescriptor::new("greet", "Greet", "Greet a user by name")
-#     }
-#     async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
-#         Ok(ToolResult::success("greet", json!({})).into())
-#     }
-# }
+use std::sync::Arc;
+use async_trait::async_trait;
+use serde_json::{json, Value};
+use awaken::{KeyScope, MergeStrategy, StateKey};
+use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
+use awaken::engine::GenaiExecutor;
+use awaken::registry::ModelBinding;
 use awaken::registry_spec::AgentSpec;
 use awaken::AgentRuntimeBuilder;
 
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-let agent_spec = AgentSpec::new("assistant")
-    .with_model_id("gpt-4o-mini")
-    .with_system_prompt("You are a helpful assistant. Use the greet tool when asked.")
-    .with_max_rounds(5);
+struct GreetCount;
 
-let runtime = AgentRuntimeBuilder::new()
-    .with_agent_spec(agent_spec)
-    .with_tool("greet", Arc::new(GreetTool))
-    .build()?;
-# Ok(())
-# }
+impl StateKey for GreetCount {
+    const KEY: &'static str = "greet_count";
+    const MERGE: MergeStrategy = MergeStrategy::Commutative;
+    const SCOPE: KeyScope = KeyScope::Run;
+
+    type Value = u32;
+    type Update = u32;
+
+    fn apply(value: &mut Self::Value, update: Self::Update) {
+        *value += update;
+    }
+}
+
+struct GreetTool;
+
+#[async_trait]
+impl Tool for GreetTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("greet", "Greet", "Greet a user by name")
+    }
+
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        Ok(ToolResult::success("greet", json!({})).into())
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let agent_spec = AgentSpec::new("assistant")
+        .with_model_id("gpt-4o-mini")
+        .with_system_prompt("You are a helpful assistant. Use the greet tool when asked.")
+        .with_max_rounds(5);
+
+    let runtime = AgentRuntimeBuilder::new()
+        .with_agent_spec(agent_spec)
+        .with_tool("greet", Arc::new(GreetTool))
+        .with_provider("openai", Arc::new(GenaiExecutor::new()))
+        .with_model_binding("gpt-4o-mini", ModelBinding {
+            provider_id: "openai".into(),
+            upstream_model: "gpt-4o-mini".into(),
+        })
+        .build()?;
+
+    let _runtime = runtime;
+    Ok(())
+}
 ```
 
 ## 4. 运行
 
 ```rust,no_run
-# use std::sync::Arc;
-# use async_trait::async_trait;
-# use serde_json::{json, Value};
-# use awaken::{StateKey, KeyScope, MergeStrategy};
-# use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
-# use awaken::registry_spec::AgentSpec;
-# use awaken::AgentRuntimeBuilder;
-# struct GreetCount;
-# impl StateKey for GreetCount {
-#     const KEY: &'static str = "greet_count";
-#     const MERGE: MergeStrategy = MergeStrategy::Commutative;
-#     const SCOPE: KeyScope = KeyScope::Run;
-#     type Value = u32;
-#     type Update = u32;
-#     fn apply(value: &mut Self::Value, update: Self::Update) { *value += update; }
-# }
-# struct GreetTool;
-# #[async_trait]
-# impl Tool for GreetTool {
-#     fn descriptor(&self) -> ToolDescriptor {
-#         ToolDescriptor::new("greet", "Greet", "Greet a user by name")
-#     }
-#     async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
-#         Ok(ToolResult::success("greet", json!({})).into())
-#     }
-# }
+use std::sync::Arc;
+use async_trait::async_trait;
+use serde_json::{json, Value};
+use awaken::{KeyScope, MergeStrategy, StateKey};
 use awaken::contract::message::Message;
 use awaken::contract::event_sink::VecEventSink;
+use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
+use awaken::engine::GenaiExecutor;
+use awaken::registry::ModelBinding;
+use awaken::registry_spec::AgentSpec;
+use awaken::AgentRuntimeBuilder;
 use awaken::RunRequest;
 
-# #[tokio::main]
-# async fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let runtime = AgentRuntimeBuilder::new()
-#     .with_agent_spec(AgentSpec::new("assistant").with_model_id("gpt-4o-mini"))
-#     .with_tool("greet", Arc::new(GreetTool))
-#     .build()?;
-let request = RunRequest::new(
-    "thread-1",
-    vec![Message::user("Greet Alice")],
-)
-.with_agent_id("assistant");
+struct GreetCount;
 
-let sink = Arc::new(VecEventSink::new());
-runtime.run(request, sink.clone()).await?;
-# Ok(())
-# }
+impl StateKey for GreetCount {
+    const KEY: &'static str = "greet_count";
+    const MERGE: MergeStrategy = MergeStrategy::Commutative;
+    const SCOPE: KeyScope = KeyScope::Run;
+
+    type Value = u32;
+    type Update = u32;
+
+    fn apply(value: &mut Self::Value, update: Self::Update) {
+        *value += update;
+    }
+}
+
+struct GreetTool;
+
+#[async_trait]
+impl Tool for GreetTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("greet", "Greet", "Greet a user by name")
+    }
+
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        Ok(ToolResult::success("greet", json!({})).into())
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = AgentRuntimeBuilder::new()
+        .with_agent_spec(AgentSpec::new("assistant").with_model_id("gpt-4o-mini"))
+        .with_tool("greet", Arc::new(GreetTool))
+        .with_provider("openai", Arc::new(GenaiExecutor::new()))
+        .with_model_binding("gpt-4o-mini", ModelBinding {
+            provider_id: "openai".into(),
+            upstream_model: "gpt-4o-mini".into(),
+        })
+        .build()?;
+
+    let request = RunRequest::new(
+        "thread-1",
+        vec![Message::user("Greet Alice")],
+    )
+    .with_agent_id("assistant");
+
+    // 本教程捕获事件，是因为下一步要验证工具确实被调用。
+    // 如果只需要最终结果，使用 runtime.run_to_completion(request)。
+    let sink = Arc::new(VecEventSink::new());
+    runtime.run(request, sink.clone()).await?;
+    Ok(())
+}
 ```
 
 ## 5. 验证

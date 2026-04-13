@@ -20,7 +20,7 @@ The Agent-to-Agent (A2A) adapter implements the [A2A protocol](https://a2a-proto
 | `/v1/a2a/tasks/:task_id/pushNotificationConfigs/:config_id` | GET / DELETE | Read or delete a push notification config. |
 | `/v1/a2a/extendedAgentCard` | GET | Extended agent card. Returns `501` unless `capabilities.extendedAgentCard=true`. |
 
-Tenant-scoped variants mirror the same interface under `/v1/a2a/:tenant/...`, for example `/v1/a2a/research/message:send` and `/v1/a2a/research/tasks/:task_id`.
+Tenant-scoped variants mirror the same interface under `/v1/a2a/:tenant/...`, for example `/v1/a2a/research/message:send`, `/v1/a2a/research/tasks/:task_id`, and `/v1/a2a/research/tasks/:task_id/pushNotificationConfigs`.
 
 ## Agent Card
 
@@ -125,9 +125,11 @@ Awaken currently enables these A2A capabilities by default:
 
 `extendedAgentCard` remains opt-in and is enabled only when `ServerConfig.a2a_extended_card_bearer_token` is configured. When disabled, the extended card endpoints return spec-shaped unsupported errors.
 
-## Remote Agent Delegation
+## Remote Agent Execution
 
-Awaken agents can delegate to remote A2A agents via `AgentTool::remote()`. The `A2aBackend` sends a `message:send` request to the remote endpoint, reads the returned `task.id`, then polls `/tasks/:task_id` for completion. From the LLM's perspective, this is a regular tool call — the A2A transport is transparent.
+Awaken agents can run or delegate to remote A2A agents through the built-in `A2aBackend`, an `ExecutionBackend` implementation. For delegation, the parent LLM sees a regular tool call. For root execution, `AgentRuntime` resolves the endpoint-backed agent as `ResolvedExecution::NonLocal`.
+
+The backend sends a `message:send` request to the remote endpoint, reads the returned `task.id`, and then streams or polls `/tasks/:task_id` until the task reaches a terminal or interrupted state. It preserves remote lifecycle state for continuation, waiting input/auth, cancellation, and artifacts.
 
 Configuration for remote agents is declared in `AgentSpec`. `RemoteEndpoint` is generic, and A2A uses `backend: "a2a"`:
 
@@ -147,7 +149,7 @@ Configuration for remote agents is declared in `AgentSpec`. `RemoteEndpoint` is 
 }
 ```
 
-Agents with an `endpoint` field are resolved as remote backend agents. Today the built-in delegate backend is A2A. Agents without `endpoint` run locally.
+Agents with an `endpoint` field are resolved as remote backend agents when a matching backend factory is registered. Today the built-in remote backend is A2A. Agents without `endpoint` run locally.
 
 ## Related
 

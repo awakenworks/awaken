@@ -1,6 +1,6 @@
 # 使用 Agent Handoff
 
-当你需要在同一个 run、同一条 thread 内，动态切换 agent 的 system prompt、model 或工具集，而不终止 run 时，使用本页。
+当你需要在同一个 run、同一条 thread 内切换到另一个已注册 agent ID，而不终止 run 或创建新 thread 时，使用本页。
 
 ## 前置条件
 
@@ -9,56 +9,54 @@
 
 ## 概览
 
-handoff 的核心不是启动一个全新 agent run，而是在当前 run 内应用 `AgentOverlay`，覆盖基础 agent 的一部分配置。
+handoff 会把请求的 active agent 写入状态。下一个 step 边界时，loop 读取 `ActiveAgentIdKey`，通过 `AgentResolver` 重新解析该 agent ID，停用旧插件、激活新插件，并在同一条 thread 历史上继续执行。
+
+需要切换到的目标应注册为具体的 `AgentSpec`。`AgentOverlay` 是 `HandoffPlugin` 保存并可通过 `overlay()` 查询的可选元数据；内置 loop 不会把 overlay 字段合并进基础 `AgentSpec`。
 
 关键类型：
 
-- `HandoffPlugin`
-- `AgentOverlay`
-- `HandoffState`
-- `HandoffAction`
+- `HandoffPlugin`：把 handoff 状态同步到 active agent ID
+- `AgentOverlay`：供集成方查看的可选 variant 元数据
+- `HandoffState`：记录当前 active variant 和待处理请求
+- `HandoffAction`：`Request`、`Activate`、`Clear` reducer action
 
 ## 步骤
 
-1. 定义 overlay：
+1. 把 variant 定义成已注册 agent spec：
 
 ```rust,ignore
-use awaken::extensions::handoff::AgentOverlay;
+use awaken::registry_spec::AgentSpec;
 
-let researcher = AgentOverlay {
-    system_prompt: Some("You are a research specialist. Find and cite sources.".into()),
-    model_id: Some("claude-sonnet".into()),
-    allowed_tools: Some(vec!["web_search".into(), "read_document".into()]),
-    excluded_tools: None,
-};
+let mut base = AgentSpec::new("assistant")
+    .with_model_id("claude-sonnet")
+    .with_system_prompt("You are a helpful assistant.");
 
-let writer = AgentOverlay {
-    system_prompt: Some("You are a technical writer. Produce clear documentation.".into()),
-    model_id: None,
-    allowed_tools: None,
-    excluded_tools: Some(vec!["web_search".into()]),
-};
+let mut researcher = AgentSpec::new("researcher")
+    .with_model_id("claude-sonnet")
+    .with_system_prompt("You are a research specialist. Find and cite sources.");
+researcher.allowed_tools = Some(vec!["web_search".into(), "read_document".into()]);
+
+let writer = AgentSpec::new("writer")
+    .with_model_id("claude-sonnet")
+    .with_system_prompt("You are a technical writer. Produce clear documentation.");
 ```
 
-`model_id` 字段使用的也是模型注册表 ID。
+`request_handoff()` 传入的字符串必须匹配这些 agent ID。
 
-2. 用 overlays 构建 `HandoffPlugin`：
+2. 构建 `HandoffPlugin`：
 
 ```rust,ignore
-use std::collections::HashMap;
 use awaken::extensions::handoff::HandoffPlugin;
 
-let mut overlays = HashMap::new();
-overlays.insert("researcher".to_string(), researcher);
-overlays.insert("writer".to_string(), writer);
-
-let handoff = HandoffPlugin::new(overlays);
+let handoff = HandoffPlugin::new(Default::default());
 ```
 
 3. 把插件注册进 runtime：
 
 ```rust,ignore
 use std::sync::Arc;
+use awaken::engine::GenaiExecutor;
+use awaken::registry::ModelBinding;
 use awaken::AgentRuntimeBuilder;
 
 let mut spec = spec;
@@ -66,8 +64,14 @@ spec.plugin_ids.push("agent_handoff".into());
 
 let runtime = AgentRuntimeBuilder::new()
     .with_plugin("agent_handoff", Arc::new(handoff))
-    .with_agent_spec(spec)
-    .with_provider("anthropic", Arc::new(provider))
+    .with_agent_spec(base)
+    .with_agent_spec(researcher)
+    .with_agent_spec(writer)
+    .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
+    .with_model_binding("claude-sonnet", ModelBinding {
+        provider_id: "anthropic".into(),
+        upstream_model: "claude-sonnet-4-20250514".into(),
+    })
     .build()?;
 ```
 
@@ -91,7 +95,7 @@ let mut cmd = StateCommand::new();
 cmd.update::<ActiveAgentKey>(clear_handoff());
 ```
 
-5. 从插件状态里读取 overlay：
+5. 可选：读取 overlay 元数据：
 
 ```rust,ignore
 let overlay = handoff.overlay("researcher");
@@ -111,7 +115,7 @@ let overlay = handoff.overlay("researcher");
 | | Handoff | Delegation |
 |---|---|---|
 | Thread | 同一 thread、同一 run | 通常会产生子 agent 执行上下文 |
-| 状态 | 共享，原地覆盖 | 一般隔离 |
+| 状态 | 同一 thread state；在 step 边界重新解析 active agent | 一般隔离 |
 | 适用场景 | 切换角色、人设或工具集 | 拆分独立子任务 |
 | 开销 | 很低 | 更高 |
 
@@ -119,9 +123,9 @@ let overlay = handoff.overlay("researcher");
 
 | 错误 | 原因 | 修复 |
 |---|---|---|
-| overlay 没生效 | `request_handoff` 的名字和 overlays map 不一致 | 保证字符串完全一致 |
+| handoff resolve failed | `request_handoff` 的名字不是已注册 agent ID | 注册同名 `AgentSpec` |
 | `StateError::KeyAlreadyRegistered` | 其他插件也注册了 `ActiveAgentKey` | 每个 runtime 只保留一个 `HandoffPlugin` |
-| hook 没有执行 | 插件未激活 | 把 `"agent_handoff"` 加到 hook filter |
+| hook 没有执行 | agent hook filter 排除了插件 | 把 `"agent_handoff"` 加到 hook filter，或保持 filter 为空 |
 
 ## 关键文件
 

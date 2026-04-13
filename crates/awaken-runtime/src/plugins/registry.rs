@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use crate::phase::{
     EffectHandlerArc, PhaseHook, PhaseHookArc, ScheduledActionHandlerArc, ToolGateHook,
-    ToolGateHookArc, TypedEffectAdapter, TypedEffectHandler, TypedScheduledActionAdapter,
-    TypedScheduledActionHandler,
+    ToolGateHookArc, ToolPolicyGateHook, ToolPolicyHook, TypedEffectAdapter, TypedEffectHandler,
+    TypedScheduledActionAdapter, TypedScheduledActionHandler,
 };
 use crate::state::{KeyScope, MergeStrategy, StateKey, StateKeyOptions, StateMap};
 use awaken_contract::StateError;
@@ -240,6 +240,23 @@ impl PluginRegistrar {
         self.tool_gate_hooks.push(ToolGateHookRegistration {
             plugin_id: plugin_id.into(),
             hook: Arc::new(hook),
+        });
+        Ok(())
+    }
+
+    /// Register a typed tool policy hook. Policy hooks are executed through the
+    /// existing ToolGate phase, so ordering and conflict resolution stay unified.
+    pub fn register_tool_policy_hook<H>(
+        &mut self,
+        plugin_id: impl Into<String>,
+        hook: H,
+    ) -> Result<(), StateError>
+    where
+        H: ToolPolicyHook,
+    {
+        self.tool_gate_hooks.push(ToolGateHookRegistration {
+            plugin_id: plugin_id.into(),
+            hook: Arc::new(ToolPolicyGateHook::new(Arc::new(hook))),
         });
         Ok(())
     }

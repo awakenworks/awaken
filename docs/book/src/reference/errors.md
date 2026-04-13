@@ -8,7 +8,8 @@ All error types use `thiserror` derives and implement `std::error::Error` +
 Errors from state management operations. Defined in `awaken-contract`.
 
 ```rust,no_run
-# use awaken::Phase;
+use awaken::Phase;
+
 pub enum StateError {
     RevisionConflict { expected: u64, actual: u64 },
     MutationBaseRevisionMismatch { left: u64, right: u64 },
@@ -56,8 +57,10 @@ pub enum ToolError {
 Errors from `AgentRuntimeBuilder::build()`.
 
 ```rust,no_run
-# use awaken::StateError;
-# struct DiscoveryError;
+use awaken::StateError;
+
+struct DiscoveryError;
+
 pub enum BuildError {
     State(StateError),
     AgentRegistryConflict(String),
@@ -79,7 +82,8 @@ pub enum BuildError {
 Errors from agent runtime operations (resolving agents, starting runs).
 
 ```rust,no_run
-# use awaken::StateError;
+use awaken::StateError;
+
 pub enum RuntimeError {
     State(StateError),
     ThreadAlreadyRunning { thread_id: String },
@@ -127,16 +131,19 @@ pub enum StorageError {
 ## ResolveError
 
 Errors from the agent resolution pipeline (resolving `AgentSpec` to a runnable
-`ResolvedAgent`).
+`ResolvedAgent` or `ResolvedExecution`).
 
 ```rust,no_run
-# use awaken::StateError;
+use awaken::StateError;
+
 pub enum ResolveError {
     AgentNotFound(String),
     ModelNotFound(String),
     ProviderNotFound(String),
     PluginNotFound(String),
     InvalidPluginConfig { plugin: String, key: String, message: String },
+    UnsupportedRemoteBackend { agent_id: String, backend: String },
+    InvalidRemoteEndpointConfig { agent_id: String, backend: String, message: String },
     RemoteAgentNotDirectlyRunnable(String),
     ToolIdConflict { tool_id: String, source_a: String, source_b: String },
     EnvBuild(StateError),
@@ -144,6 +151,10 @@ pub enum ResolveError {
 ```
 
 **Crate path:** `awaken::registry::resolve::ResolveError`
+
+`RemoteAgentNotDirectlyRunnable` applies to direct local resolution through
+`AgentResolver::resolve()`. Runtime root execution uses `ExecutionResolver` and
+can run endpoint-backed agents when a matching backend factory is registered.
 
 ## UnknownKeyPolicy
 

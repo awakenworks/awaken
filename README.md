@@ -25,7 +25,7 @@ Docs: [GitHub Pages](https://awakenworks.github.io/awaken/) | [Chinese docs](htt
 
 ## 30-second mental model
 
-1. **Tools** — typed functions your agent can call; JSON schema is generated at compile time
+1. **Tools** — implement `Tool` directly or `TypedTool` with `schemars`-generated JSON Schema
 2. **Agents** — each agent has a system prompt, a model, and a set of allowed tools; the LLM drives orchestration through natural language — no predefined graphs
 3. **State** — typed run/thread state plus persistent profile/shared state for cross-thread or cross-agent coordination
 4. **Plugins** — lifecycle hooks for permissions, observability, context management, skills, MCP, and more
@@ -34,14 +34,15 @@ Your agent picks tools, calls them, reads and updates state, and repeats — all
 
 ## Try it in 5 minutes
 
-Prerequisites:
+Prerequisites: Rust 1.85+ for the published crate, or the pinned `rust-toolchain.toml`
+toolchain when working from this repository, plus an LLM provider API key.
 
 - Rust 1.85 or newer. This repository pins Rust 1.93.0 for local development.
 - An OpenAI-compatible API key.
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.1" }
+awaken = { package = "awaken-agent", version = "0.2" }
 tokio = { version = "1.51.0", features = ["full"] }
 async-trait = "0.1.89"
 serde_json = "1.0.149"
@@ -59,8 +60,6 @@ use serde_json::{json, Value};
 use async_trait::async_trait;
 use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
 use awaken::contract::message::Message;
-use awaken::contract::event::AgentEvent;
-use awaken::contract::event_sink::VecEventSink;
 use awaken::engine::GenaiExecutor;
 use awaken::registry_spec::AgentSpec;
 use awaken::registry::ModelBinding;
@@ -108,17 +107,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_agent_id("assistant");
 
-    let sink = Arc::new(VecEventSink::new());
-    runtime.run(request, sink.clone()).await?;
-
-    let events = sink.take();
-    println!("events: {}", events.len());
-
-    let finished = events.iter().any(|e| matches!(e, AgentEvent::RunFinish { .. }));
-    println!("run_finish_seen: {}", finished);
+    // The quickstart only needs the final result. Use run(..., sink) when
+    // streaming events to SSE, WebSocket, protocol adapters, or tests.
+    let result = runtime.run_to_completion(request).await?;
+    println!("response: {}", result.response);
+    println!("termination: {:?}", result.termination);
 
     Ok(())
 }
+```
+
+The quickstart path is covered without network access:
+
+```bash
+cargo test -p awaken-agent --test readme_quickstart
+```
+
+Live provider validation is opt-in so CI does not depend on external model services:
+
+```bash
+OPENAI_API_KEY=<your-key> cargo test -p awaken-agent --test readme_live_provider -- --ignored
 ```
 
 ## Serve over any protocol
@@ -135,6 +143,7 @@ let runtime = Arc::new(runtime);
 let mailbox = Arc::new(Mailbox::new(
     runtime.clone(),
     Arc::new(InMemoryMailboxStore::new()),
+    store.clone(),
     "default-consumer".into(),
     MailboxConfig::default(),
 ));
@@ -201,6 +210,10 @@ import { CopilotKit } from "@copilotkit/react-core";
 </CopilotKit>
 ```
 
+#### Managed configuration
+
+Wire a `ConfigStore` into `AppState` to manage agents, models, providers, and MCP servers through `/v1/config/*`. Use the [configuration-driven tuning guide](https://awakenworks.github.io/awaken/how-to/configure-agent-behavior.html) to tune providers, model bindings, tools, and plugin sections. The Admin Console in [`apps/admin-console`](./apps/admin-console/) uses the same API and reads `VITE_BACKEND_URL` for the server base URL.
+
 ## Built-in plugins
 
 Facade features are enabled by default via the `full` feature. Use
@@ -215,7 +228,7 @@ dependencies.
 | **Observability** | OpenTelemetry telemetry aligned with GenAI Semantic Conventions; supports OTLP, file, and in-memory export. | `observability` |
 | **MCP** | Connects to external MCP servers and registers their tools as native Awaken tools. | `mcp` |
 | **Skills** | Discovers skill packages and injects a catalog before inference so the LLM can activate skills on demand. | `skills` |
-| **Generative UI** | Streams declarative UI components to frontends via the A2UI protocol. | `generative-ui` |
+| **Generative UI** | Streams declarative UI components to frontends via A2UI, JSON Render, and OpenUI Lang integrations. | `generative-ui` |
 | **Deferred Tools** | Hides large tool schemas behind `ToolSearch`, then uses a discounted Beta probability model to re-defer idle promoted tools. | direct crate: `awaken-ext-deferred-tools` |
 
 Deferred tools are configured through the `deferred_tools` agent section when
@@ -227,11 +240,13 @@ Custom interception hooks should use `ToolGateHook` via `PluginRegistrar::regist
 
 ## Why Awaken
 
-- One backend serves every frontend protocol — React (AI SDK v6), Next.js (AG-UI), other agents (A2A), and tool servers (MCP) from the same binary.
-- Configuration is the control plane — model/provider routing, prompts, reminders, permissions, and tool-loading policy are data that can be validated, edited, and applied at runtime.
-- The LLM orchestrates — define each agent's identity and tool access; no hand-coded DAGs or state machines.
-- Type-safe state with compile-time checks, scoped lifetimes, and merge strategies for safe concurrent writes.
-- Production-ready: circuit breaker, exponential backoff, graceful shutdown, Prometheus metrics, and health probes included.
+- One backend serves multiple protocols: AI SDK v6, AG-UI, A2A, MCP, plus native HTTP/SSE routes.
+- Configuration is the control plane: model/provider routing, prompts, reminders, permissions, and tool-loading policy use schema-backed config that can be validated and applied at runtime.
+- The LLM orchestrates: define the agent identity, model binding, and tool access; no hand-coded DAG is required.
+- Runtime-managed configuration updates agents, model bindings, providers, and MCP servers through the Config API or Admin Console.
+- Plugin extension points are typed: 9 lifecycle phases, `PhaseHook`, `ToolGateHook`, scheduled actions, effects, request transforms, and plugin-provided tools.
+- State is type-safe: `StateKey` binds each key to Rust value/update types, scopes it to run/thread/profile, and applies declared merge strategies before commit.
+- Operational surfaces are built in: LLM retry/backoff, per-model circuit breaker, request timeout, graceful shutdown, Prometheus metrics, health probes, and mailbox retry/backoff.
 - Zero `unsafe` — the entire workspace forbids `unsafe` and relies on the Rust compiler for memory safety.
 
 ## When to use Awaken
@@ -252,16 +267,16 @@ Custom interception hooks should use `ToolGateHook` via `PluginRegistrar::regist
 
 ## Architecture
 
-Awaken is split into three runtime layers. `awaken-contract` defines the shared contracts: agent specs, model/provider specs, tools, events, transport traits, and the typed state model. `awaken-runtime` resolves an `AgentSpec` into a `ResolvedAgent`, builds an `ExecutionEnv` from plugins, executes the phase loop, and manages active runs plus external control such as cancellation and HITL decisions. `awaken-server` exposes that same runtime through HTTP routes, SSE replay, mailbox-backed background execution, and protocol adapters for AI SDK v6, AG-UI, A2A, and MCP.
+Awaken is split into three runtime layers. `awaken-contract` defines the shared contracts: agent specs, model/provider specs, tools, events, transport traits, and the typed state model. `awaken-runtime` resolves an `AgentSpec` into `ResolvedExecution`: local agents become a `ResolvedAgent` with an `ExecutionEnv` built from plugins, while endpoint-backed agents run through an `ExecutionBackend`. It also executes the phase loop and manages active runs plus external control such as cancellation and HITL decisions. `awaken-server` exposes that same runtime through HTTP routes, SSE replay, mailbox-backed background execution, and protocol adapters for AI SDK v6, AG-UI, A2A, and MCP.
 
-Around those layers sit storage and extensions. `awaken-stores` provides memory, file, and PostgreSQL backends for threads and runs. `awaken-ext-*` crates extend the runtime at phase and tool boundaries.
+Around those layers sit storage and extensions. `awaken-stores` provides memory, file, and PostgreSQL persistence for threads and runs; memory, file, and PostgreSQL config stores; memory and SQLite mailbox stores; and memory/file profile stores. `awaken-ext-*` crates extend the runtime at phase and tool boundaries.
 
 ```text
 awaken                   Facade crate with feature flags
 ├─ awaken-contract       Contracts: specs, tools, events, transport, state model
 ├─ awaken-runtime        Resolver, phase engine, loop runner, runtime control
 ├─ awaken-server         Routes, mailbox, SSE transport, protocol adapters
-├─ awaken-stores         Memory, file, and PostgreSQL persistence
+├─ awaken-stores         Memory, file, PostgreSQL, and SQLite-backed stores
 ├─ awaken-tool-pattern   Glob/regex matching used by extensions
 └─ awaken-ext-*          Optional runtime extensions
 ```
@@ -275,7 +290,8 @@ awaken                   Facade crate with feature flags
 | [`tool_call_live`](./crates/awaken/examples/tool_call_live.rs) | Tool calling with calculator |
 | [`ai-sdk-starter`](./examples/ai-sdk-starter/) | React + AI SDK v6 full-stack |
 | [`copilotkit-starter`](./examples/copilotkit-starter/) | Next.js + CopilotKit full-stack |
-| [`admin-console`](./apps/admin-console/) | Browser UI for runtime config and plugin schemas |
+| [`openui-chat`](./examples/openui-chat/) | OpenUI Lang chat frontend |
+| [`admin-console`](./apps/admin-console/) | Config API management UI |
 
 ```bash
 export OPENAI_API_KEY=<your-key>
@@ -295,6 +311,7 @@ npm --prefix apps/admin-console run dev
 |---|---|---|
 | Build your first agent | [Get Started](https://awakenworks.github.io/awaken/get-started.html) | [Build Agents](https://awakenworks.github.io/awaken/build-agents.html) |
 | See a full-stack app | [AI SDK starter](./examples/ai-sdk-starter/) | [CopilotKit starter](./examples/copilotkit-starter/) |
+| Manage runtime config | [Admin Console](./apps/admin-console/) | [Configure Agent Behavior](https://awakenworks.github.io/awaken/how-to/configure-agent-behavior.html) |
 | Explore the API | [Reference docs](https://awakenworks.github.io/awaken/reference/overview.html) | `cargo doc --workspace --no-deps --open` |
 | Understand the runtime | [Architecture](https://awakenworks.github.io/awaken/explanation/architecture.html) | [Run Lifecycle and Phases](https://awakenworks.github.io/awaken/explanation/run-lifecycle-and-phases.html) |
 | Migrate from tirea | [Migration guide](https://awakenworks.github.io/awaken/appendix/migration-from-tirea.html) | |
@@ -307,7 +324,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) and [DEVELOPMENT.md](./DEVELOPMENT.md) 
 
 Areas where contributions are especially welcome:
 
-- Additional storage backends (Redis, full SQLite thread/run store)
+- Additional mailbox, config, and storage backends beyond the built-in memory/file/PostgreSQL/SQLite options
 - Built-in tool implementations (file read/write, web search)
 - Token cost tracking and budget enforcement
 - Model fallback/degradation chains

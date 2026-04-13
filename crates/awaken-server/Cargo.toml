@@ -8,7 +8,12 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
-categories.workspace = true
+categories = [
+    "artificial-intelligence",
+    "asynchronous",
+    "network-programming",
+    "web-programming",
+]
 
 [dependencies]
 awaken-contract = { workspace = true }

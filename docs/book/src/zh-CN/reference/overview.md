@@ -20,9 +20,9 @@
 | `awaken::phase` | `awaken-runtime` | `PhaseRuntime`、`PhaseHook` |
 | `awaken::plugins` | `awaken-runtime` | `Plugin`、`PluginRegistrar` |
 | `awaken::policies` | `awaken-runtime` | context window / retry policy |
-| `awaken::registry` | `awaken-runtime` | `AgentResolver`、`ResolvedAgent` |
+| `awaken::registry` | `awaken-runtime` | `AgentResolver`、`ExecutionResolver`、`ResolvedAgent`、`ResolvedExecution` |
 | `awaken::runtime` | `awaken-runtime` | `AgentRuntime` |
-| `awaken::stores` | `awaken-stores` | file / postgres / memory store |
+| `awaken::stores` | `awaken-stores` | memory / file / PostgreSQL / SQLite-backed store |
 
 ## 受 feature flag 控制的模块
 
@@ -41,7 +41,7 @@
 常用类型还会直接从 crate root 导出，例如：
 
 - 来自 `awaken-contract`：`AgentSpec`、`KeyScope`、`MergeStrategy`、`Phase`、`StateKey`、`StateMap`、`Snapshot`
-- 来自 `awaken-runtime`：`AgentRuntime`、`AgentRuntimeBuilder`、`BuildError`、`RunRequest`、`RuntimeError`、`PhaseHook`
+- 来自 `awaken-runtime`：`AgentRuntime`、`AgentRuntimeBuilder`、`BuildError`、`RunRequest`、`RuntimeError`、`PhaseHook`、`ToolGateHook`
 
 ## Feature Flags
 

@@ -70,7 +70,8 @@ pub enum KeyScope {
 ## MergeStrategy
 
 Determines how concurrent updates to the same key are handled when merging
-`MutationBatch`es from parallel tool execution.
+`MutationBatch`es from parallel phase hooks or custom parallel executor
+integrations.
 
 ```rust,ignore
 pub enum MergeStrategy {

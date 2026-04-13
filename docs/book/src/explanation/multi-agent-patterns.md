@@ -48,10 +48,10 @@ The `A2aBackend` handles the A2A protocol lifecycle:
 
 1. Sends a `message:send` request with the user message.
 2. Receives a task wrapper, extracts `task.id`, and polls `/tasks/:task_id` at the configured interval.
-3. Returns the completed response as a `DelegateRunResult`.
+3. Returns the completed response as a `BackendRunResult`.
 4. The result is formatted as a `ToolResult` and returned to the parent agent's LLM context.
 
-If the remote agent times out or fails, the `DelegateRunStatus` reflects the failure and the parent agent receives an error tool result.
+If the remote agent times out or fails, the `BackendRunStatus` reflects the failure and the parent agent receives an error tool result.
 
 ## Sub-Agent Patterns
 
@@ -69,7 +69,12 @@ Each delegation is a tool call within the orchestrator's step loop. The orchestr
 
 ### Parallel Delegation
 
-When the LLM emits multiple tool calls in a single inference response, sub-agent delegations can execute concurrently. The runtime processes tool calls in parallel by default -- if the LLM calls both `agent_run_researcher` and `agent_run_writer` in the same response, both execute simultaneously.
+When the LLM emits multiple delegate tool calls in a single inference response,
+they use the same `ToolExecutor` as any other tool call. The built-in resolver
+installs `SequentialToolExecutor`, so delegations run one at a time by default.
+Install `ParallelToolExecutor` with a custom resolver or
+`ResolvedAgent::with_tool_executor(...)` when delegate calls are independent and
+should execute concurrently.
 
 ### Nested Delegation
 
@@ -104,26 +109,32 @@ Handoff is a re-resolve, not a loop restart. Thread history is preserved. The ne
 | Return path | Result flows back to parent LLM | No return -- new agent owns the run |
 | Use case | Task decomposition, specialized subtasks | Role switching, escalation, routing |
 
-## AgentBackend Trait
+## ExecutionBackend Trait
 
-Both local and remote delegation use the `AgentBackend` trait:
+Root execution and delegation both use the canonical `ExecutionBackend` trait:
 
 ```rust,ignore
-pub trait AgentBackend: Send + Sync {
-    async fn execute(
+pub trait ExecutionBackend: Send + Sync {
+    fn capabilities(&self) -> BackendCapabilities;
+
+    async fn abort(&self, request: BackendAbortRequest<'_>)
+        -> Result<(), ExecutionBackendError>;
+
+    async fn execute_root(
         &self,
-        agent_id: &str,
-        messages: Vec<Message>,
-        event_sink: Arc<dyn EventSink>,
-        parent_run_id: Option<String>,
-        parent_tool_call_id: Option<String>,
-    ) -> Result<DelegateRunResult, AgentBackendError>;
+        request: BackendRootRunRequest<'_>,
+    ) -> Result<BackendRunResult, ExecutionBackendError>;
+
+    async fn execute_delegate(
+        &self,
+        request: BackendDelegateRunRequest<'_>,
+    ) -> Result<BackendRunResult, ExecutionBackendError>;
 }
 ```
 
-`DelegateRunResult` carries the agent ID, terminal status, optional response text, and step count. `DelegateRunStatus` variants: `Completed`, `Failed(String)`, `Cancelled`, `Timeout`.
+`BackendRunResult` carries the agent ID, status, termination reason, optional response text, structured output, run ID, inbox, and persisted state. `BackendRunStatus` variants include `Completed`, `WaitingInput`, `WaitingAuth`, `Suspended`, `Failed`, `Cancelled`, and `Timeout`.
 
-This trait is the extension point for custom delegation backends beyond local and A2A.
+This trait is the extension point for custom local or remote execution backends beyond the built-in local and A2A implementations. `awaken_runtime::extensions::a2a` still re-exports `AgentBackend`, `AgentBackendFactory`, and `DelegateRunResult` as compatibility aliases, but new code should use the `ExecutionBackend` names.
 
 ## See Also
 

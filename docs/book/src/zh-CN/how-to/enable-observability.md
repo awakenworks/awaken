@@ -10,7 +10,7 @@
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.1", features = ["observability"] }
+awaken = { package = "awaken-agent", version = "0.2", features = ["observability"] }
 tokio = { version = "1", features = ["full"] }
 ```
 

@@ -95,31 +95,29 @@ The `awaken-ext-permission` plugin uses suspension to implement ask-mode approva
 
 ## Mailbox Architecture
 
-The mailbox provides a persistent queue for all run requests. Every run -- streaming, background, A2A, internal -- enters the system as a `MailboxJob`.
+The mailbox provides a persistent dispatch queue for run activations. Every
+durable run activation -- streaming, background, A2A, internal -- enters the
+system as a `RunDispatch`.
 
-### MailboxJob
+`RunDispatch` owns delivery, lease, retry, and queue-audit state. The run's
+business truth lives on `RunRecord`.
+
+### RunDispatch
 
 ```rust,ignore
-pub struct MailboxJob {
+pub struct RunDispatch {
     // Identity
-    pub job_id: String,          // UUID v7
-    pub mailbox_id: String,      // Thread ID (routing anchor)
-
-    // Request payload
-    pub agent_id: String,
-    pub messages: Vec<Message>,
-    pub origin: MailboxJobOrigin,
-    pub sender_id: Option<String>,
-    pub parent_run_id: Option<String>,
-    pub request_extras: Option<Value>,
+    pub dispatch_id: String,     // UUID v7
+    pub thread_id: String,       // Thread ID (routing anchor)
+    pub run_id: String,          // Canonical runtime run ID
 
     // Queue semantics
     pub priority: u8,            // 0 = highest, 255 = lowest, default 128
     pub dedupe_key: Option<String>,
-    pub generation: u64,
+    pub dispatch_epoch: u64,
 
     // Lifecycle
-    pub status: MailboxJobStatus,
+    pub status: RunDispatchStatus,
     pub available_at: u64,
     pub attempt_count: u32,
     pub max_attempts: u32,
@@ -130,40 +128,72 @@ pub struct MailboxJob {
     pub claimed_by: Option<String>,
     pub lease_until: Option<u64>,
 
+    // Runtime trace projection
+    pub dispatch_instance_id: Option<String>,
+    pub run_status: Option<RunStatus>,
+    pub termination: Option<TerminationReason>,
+    pub run_response: Option<String>,
+    pub run_error: Option<String>,
+    pub completed_at: Option<u64>,
+
     // Timestamps
     pub created_at: u64,
     pub updated_at: u64,
 }
 ```
 
-### MailboxJobStatus
+Dispatch records do not store request messages, agent identity, request extras,
+or transport payload. Activation reconstruction loads `RunRecord.request` and
+the thread message log.
+
+### RunDispatchStatus
 
 ```text
-Queued --claim--> Claimed --ack--> Accepted (terminal)
+Queued --claim--> Claimed --ack--> Acked (terminal)
   |                  |
   |               nack(retry) --> Queued (attempt_count++, available_at = retry_at)
   |                  |
   |               nack(permanent) --> DeadLetter (terminal)
   |
   |-- cancel --> Cancelled (terminal)
-  +-- interrupt(generation bump) --> Superseded (terminal)
+  +-- interrupt(dispatch epoch bump) --> Superseded (terminal)
 ```
 
 ```rust,ignore
-pub enum MailboxJobStatus {
+pub enum RunDispatchStatus {
     Queued,      // Waiting to be claimed
     Claimed,     // Claimed by a consumer, executing
-    Accepted,    // Successfully processed (terminal)
+    Acked,       // Dispatch consumed, do not retry (terminal)
     Cancelled,   // Cancelled by caller (terminal)
-    Superseded,  // Replaced by a newer generation (terminal)
+    Superseded,  // Replaced by a newer dispatch epoch (terminal)
     DeadLetter,  // Permanently failed (terminal)
 }
 ```
 
-### MailboxJobOrigin
+`Acked` is a dispatch state, not a success state. Read `RunRecord.status`,
+`RunRecord.waiting`, and `RunRecord.outcome` to decide whether the agent
+succeeded, failed, or is still waiting.
+
+### RunDispatchResult
+
+The queue record stores a compact projection of the runtime result so operators
+can debug a consumed dispatch without treating queue status as business status:
 
 ```rust,ignore
-pub enum MailboxJobOrigin {
+pub struct RunDispatchResult {
+    pub run_id: String,
+    pub dispatch_instance_id: String,
+    pub status: RunStatus,
+    pub termination: Option<TerminationReason>,
+    pub response: Option<String>,
+    pub error: Option<String>,
+}
+```
+
+### RunRequestOrigin
+
+```rust,ignore
+pub enum RunRequestOrigin {
     User,      // HTTP API, SDK
     A2A,       // Agent-to-Agent protocol
     Internal,  // Child run notification, handoff
@@ -174,16 +204,47 @@ pub enum MailboxJobOrigin {
 
 `MailboxStore` defines the persistent queue interface:
 
-- **enqueue** -- persist a job, auto-assign generation, reject duplicate `dedupe_key`
-- **claim** -- atomically claim up to N `Queued` jobs for a mailbox (lease-based)
-- **claim_job** -- claim a specific job by ID (for inline streaming)
-- **ack** -- mark a job as `Accepted` (validates claim token)
-- **nack** -- return a job to `Queued` for retry, or `DeadLetter` if max attempts exceeded
-- **cancel** -- cancel a `Queued` job
+- **enqueue** -- persist a dispatch, assign the current dispatch epoch, reject duplicate `dedupe_key`
+- **claim** -- atomically claim up to N `Queued` dispatches for a mailbox (lease-based)
+- **claim_dispatch** -- claim a specific dispatch by ID (for inline streaming)
+- **ack** -- mark a dispatch as `Acked` (validates claim token)
+- **nack** -- return a dispatch to `Queued` for retry, or `DeadLetter` if max attempts exceeded
+- **cancel** -- cancel a `Queued` dispatch
 - **extend_lease** -- heartbeat to extend an active claim
-- **interrupt** -- atomically bump generation, supersede stale `Queued` jobs, return the active `Claimed` job for cancellation
+- **interrupt** -- atomically bump the dispatch epoch, supersede stale `Queued` dispatches, return the active `Claimed` dispatch for cancellation
 
-Implementations must guarantee: durable enqueue, atomic claim (exactly one winner), claim token validation on ack/nack, and atomic interrupt with generation bump.
+Implementations must guarantee: durable enqueue, atomic claim (exactly one winner), claim token validation on ack/nack, and atomic interrupt with a dispatch epoch bump.
+
+## Waiting Runs and Run Control
+
+Suspension is a non-terminal state of the same run. A waiting run persists
+`RunWaitingState` on `RunRecord`:
+
+```rust,ignore
+pub struct RunWaitingState {
+    pub reason: WaitingReason,
+    pub ticket_ids: Vec<String>,
+    pub tickets: Vec<RunWaitingTicket>,
+    pub since_dispatch_id: Option<String>,
+    pub message: Option<String>,
+}
+```
+
+When a run waits for approval or input, the current dispatch is acked and the
+thread keeps `open_run_id`. A later approval or user input creates another
+dispatch for the same `run_id`.
+
+`RunControlService` is the server-side control surface for this flow:
+
+- `get_active_run` reads the thread's active/open run projection.
+- `decide` records a tool-call decision and resumes the waiting run.
+- `cancel_run` terminates a run.
+- `interrupt_thread` interrupts current work for a thread.
+- `inject_user_input` and `inject_run_input` append user input and can resume
+  the same open run.
+
+This is the API layer used by Web/IDE-style frontends to reconnect, approve,
+cancel, interrupt, or steer a run without inventing protocol-specific state.
 
 ### MailboxInterrupt
 
@@ -191,15 +252,17 @@ When a new high-priority request arrives for a thread that already has queued or
 
 ```rust,ignore
 pub struct MailboxInterrupt {
-    pub new_generation: u64,       // Generation after bump
-    pub active_job: Option<MailboxJob>,  // Currently running job to cancel
-    pub superseded_count: usize,   // Queued jobs superseded
+    pub new_dispatch_epoch: u64,
+    pub active_dispatch: Option<RunDispatch>,
+    pub superseded_count: usize,
 }
 ```
 
-The caller cancels the `active_job`'s runtime run if present, ensuring the new request takes priority.
+The caller cancels the `active_dispatch`'s runtime run if present, ensuring the
+new request takes priority.
 
 ## See Also
 
 - [Run Lifecycle and Phases](./run-lifecycle-and-phases.md) -- how suspension bridges run and tool-call layers
 - [Enable Tool Permission HITL](../how-to/enable-tool-permission-hitl.md) -- practical setup guide
+- ADR-0022: Run Dispatch Data Model -- durable run/dispatch model

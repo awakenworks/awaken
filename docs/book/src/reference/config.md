@@ -104,7 +104,13 @@ Current configurable plugin sections exposed by the starter runtime:
 Controls context window management and auto-compaction.
 
 ```rust,no_run
-# #[derive(Default)] pub enum ContextCompactionMode { #[default] KeepRecentRawSuffix, CompactToSafeFrontier }
+#[derive(Default)]
+pub enum ContextCompactionMode {
+    #[default]
+    KeepRecentRawSuffix,
+    CompactToSafeFrontier,
+}
+
 pub struct ContextWindowPolicy {
     pub max_context_tokens: usize,          // default: 200_000
     pub max_output_tokens: usize,           // default: 16_384
@@ -136,7 +142,15 @@ provider. They do not re-resolve `AgentSpec.model_id` and do not switch provider
 See [Provider and Model Configuration](./provider-model-config.md).
 
 ```rust,no_run
-# pub enum ReasoningEffort { None, Low, Medium, High, Max, Budget(u32) }
+pub enum ReasoningEffort {
+    None,
+    Low,
+    Medium,
+    High,
+    Max,
+    Budget(u32),
+}
+
 pub struct InferenceOverride {
     pub upstream_model: Option<String>,      // upstream model name
     pub fallback_upstream_models: Option<Vec<String>>, // upstream model names
@@ -203,6 +217,12 @@ pub struct RemoteAuth {
 }
 ```
 
+For A2A, `base_url` points at the A2A interface root, for example
+`https://agent.example.com/v1/a2a`; `target` selects the remote agent when the
+backend exposes more than one agent. Legacy A2A fields (`bearer_token`,
+`agent_id`, `poll_interval_ms`) deserialize only when no canonical fields are
+present. New config should use `auth`, `target`, and `options`.
+
 ## ServerConfig
 
 HTTP server configuration. Used when the `server` feature is enabled.
@@ -236,7 +256,7 @@ pub struct ShutdownConfig {
 ## MailboxConfig
 
 Configuration for the persistent run queue (mailbox). Controls lease timing,
-sweep/GC intervals, and retry behavior for failed jobs.
+sweep/GC intervals, and retry behavior for failed dispatches.
 
 ```rust,ignore
 pub struct MailboxConfig {
@@ -258,11 +278,11 @@ pub struct MailboxConfig {
 |---|---|---|---|
 | `lease_ms` | `u64` | `30_000` | Lease duration in milliseconds for active runs |
 | `suspended_lease_ms` | `u64` | `600_000` | Lease duration in milliseconds for suspended runs awaiting human input |
-| `lease_renewal_interval` | `Duration` | `10s` | How often the worker renews its lease on a running job |
-| `sweep_interval` | `Duration` | `30s` | How often to scan for expired leases and reclaim orphaned jobs |
-| `gc_interval` | `Duration` | `60s` | How often to run garbage collection for terminal (completed/failed) jobs |
-| `gc_ttl` | `Duration` | `24h` | How long terminal jobs are retained before purging |
-| `default_max_attempts` | `u32` | `5` | Maximum delivery attempts before a job is dead-lettered |
+| `lease_renewal_interval` | `Duration` | `10s` | How often the worker renews its lease on a running dispatch |
+| `sweep_interval` | `Duration` | `30s` | How often to scan for expired leases and reclaim orphaned dispatches |
+| `gc_interval` | `Duration` | `60s` | How often to run garbage collection for terminal dispatches |
+| `gc_ttl` | `Duration` | `24h` | How long terminal dispatches are retained before purging |
+| `default_max_attempts` | `u32` | `5` | Maximum delivery attempts before a dispatch is dead-lettered |
 | `default_retry_delay_ms` | `u64` | `250` | Base retry delay in milliseconds between attempts |
 | `max_retry_delay_ms` | `u64` | `30_000` | Maximum retry delay in milliseconds for exponential backoff |
 
@@ -494,7 +514,18 @@ Related types:
 
 - `ConfigChangeNotifier` / `ConfigChangeSubscriber` — optional native change notifications
 - `AppState::with_config_store(...)` — enables runtime config routes in `awaken-server`
+- `ConfigRuntimeManager` — validates config writes by compiling a candidate registry snapshot before publishing it
+- `ConfigService` — service layer used by `/v1/config/*`, `/v1/agents`, and `/v1/capabilities`
+
+Built-in implementations:
+
+- `InMemoryStore` implements `ThreadRunStore`, `ProfileStore`, and `ConfigStore`
+- `FileStore` implements `ThreadRunStore`, `ProfileStore`, and `ConfigStore`
+- `PostgresStore` implements `ThreadRunStore` and `ConfigStore`
 
 ## Related
 
 - [Build an Agent](../how-to/build-an-agent.md)
+- [Configure Agent Behavior](../how-to/configure-agent-behavior.md)
+- [HTTP API](./http-api.md)
+- [Provider and Model Configuration](./provider-model-config.md)

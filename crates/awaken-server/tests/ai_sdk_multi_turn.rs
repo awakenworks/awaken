@@ -74,6 +74,7 @@ fn make_app() -> axum::Router {
     let mailbox = Arc::new(awaken_server::mailbox::Mailbox::new(
         runtime.clone(),
         mailbox_store,
+        store.clone(),
         "test".into(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));

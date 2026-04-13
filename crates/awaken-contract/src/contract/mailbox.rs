@@ -1,101 +1,99 @@
-//! Mailbox job types and persistent store trait for the unified run queue.
+//! Run dispatch types and persistent store trait for the unified run queue.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-use super::message::Message;
+use super::lifecycle::{RunStatus, TerminationReason};
 use super::storage::StorageError;
 
-// ── MailboxJobStatus ────────────────────────────────────────────────
+// ── RunDispatchStatus ───────────────────────────────────────────────
 
-/// Six-state lifecycle for a mailbox job.
+/// Six-state lifecycle for a dispatch attempt.
 ///
 /// ```text
-/// Queued ──claim──> Claimed ──ack──> Accepted (terminal)
+/// Queued ──claim──> Claimed ──ack──> Acked (terminal)
 ///   |                  |
 ///   |               nack(retry) ──> Queued (attempt_count++, available_at = retry_at)
 ///   |                  |
 ///   |               nack(permanent) ──> DeadLetter (terminal)
 ///   |
 ///   |── cancel ──> Cancelled (terminal)
-///   └── interrupt(generation bump) ──> Superseded (terminal)
+///   └── interrupt(dispatch epoch bump) ──> Superseded (terminal)
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MailboxJobStatus {
+pub enum RunDispatchStatus {
     Queued,
     Claimed,
-    Accepted,
+    Acked,
     Cancelled,
     Superseded,
     DeadLetter,
 }
 
-impl MailboxJobStatus {
+impl RunDispatchStatus {
     /// Returns `true` for terminal states that cannot transition further.
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Accepted | Self::Cancelled | Self::Superseded | Self::DeadLetter
+            Self::Acked | Self::Cancelled | Self::Superseded | Self::DeadLetter
         )
     }
 }
 
-// ── MailboxJobOrigin ────────────────────────────────────────────────
+// ── RunDispatchResult ────────────────────────────────────────────────
 
-/// Origin of a mailbox job request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MailboxJobOrigin {
-    /// HTTP API, SDK.
-    User,
-    /// Agent-to-Agent protocol.
-    A2A,
-    /// Child run completion notification, handoff.
-    Internal,
+/// Durable runtime-result projection for the dispatch that consumed a run.
+///
+/// `RunRecord` remains the source of truth for business outcome. This compact
+/// projection exists on the queue record so operators can inspect what happened
+/// to a claimed dispatch without treating `Acked` as agent success.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunDispatchResult {
+    /// Runtime run ID used by the execution engine.
+    pub run_id: String,
+    /// Dispatch attempt ID that links a queue claim to a runtime invocation.
+    pub dispatch_instance_id: String,
+    /// Durable runtime status reached by this run.
+    pub status: RunStatus,
+    /// Structured terminal reason, if the runtime reached a terminal state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub termination: Option<TerminationReason>,
+    /// Final response text, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<String>,
+    /// Runtime error text, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
-// ── MailboxJob ──────────────────────────────────────────────────────
+// ── RunDispatch ─────────────────────────────────────────────────────
 
-/// A run request persisted in the mailbox queue.
+/// A run dispatch persisted in the mailbox queue.
 ///
-/// Every run — streaming, background, A2A, internal notification —
-/// enters the system as a MailboxJob keyed by thread_id.
+/// This record owns delivery/lease/retry state only. Business request,
+/// message, and outcome semantics live on `RunRecord` and the thread message
+/// log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MailboxJob {
+pub struct RunDispatch {
     // ── identity ──
     /// UUID v7, globally unique.
-    pub job_id: String,
-    /// Thread ID, routing anchor (`mailbox_id = thread_id`).
-    pub mailbox_id: String,
-
-    // ── request payload ──
-    /// Target agent.
-    pub agent_id: String,
-    /// User/system messages.
-    pub messages: Vec<Message>,
-    /// Where this job originated.
-    pub origin: MailboxJobOrigin,
-    /// Audit / reply routing.
-    pub sender_id: Option<String>,
-    /// Parent-child run linkage.
-    pub parent_run_id: Option<String>,
-    /// Opaque RunRequest extras (overrides, decisions, frontend_tools, etc.)
-    /// serialized as JSON. Mailbox does not inspect this; it is passed
-    /// through to `spawn_execution` which reconstructs the full RunRequest.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub request_extras: Option<Value>,
+    pub dispatch_id: String,
+    /// Thread ID, routing anchor.
+    pub thread_id: String,
+    /// Canonical runtime run ID this dispatch activates.
+    pub run_id: String,
 
     // ── queue semantics ──
     /// 0 = highest, 255 = lowest, default 128.
     pub priority: u8,
     /// Idempotent delivery key.
     pub dedupe_key: Option<String>,
-    /// Mailbox generation (set by store on enqueue).
-    pub generation: u64,
+    /// Thread dispatch epoch captured when this dispatch was created.
+    pub dispatch_epoch: u64,
 
     // ── lifecycle ──
     /// Current status.
-    pub status: MailboxJobStatus,
+    pub status: RunDispatchStatus,
     /// Unix millis; future value = delayed delivery.
     pub available_at: u64,
     /// Number of claim attempts so far.
@@ -108,13 +106,33 @@ pub struct MailboxJob {
     // ── lease ──
     /// UUID set on claim.
     pub claim_token: Option<String>,
-    /// Consumer identifier (process) that claimed this job.
+    /// Consumer identifier (process) that claimed this dispatch.
     pub claimed_by: Option<String>,
     /// Unix millis, extended by heartbeat.
     pub lease_until: Option<u64>,
 
+    // ── runtime trace ──
+    /// Dispatch attempt ID associated with the current/latest claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_instance_id: Option<String>,
+    /// Runtime status associated with this dispatch's current/latest run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_status: Option<RunStatus>,
+    /// Structured terminal reason for the current/latest run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub termination: Option<TerminationReason>,
+    /// Final response text for the current/latest run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_response: Option<String>,
+    /// Runtime error text for the current/latest run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_error: Option<String>,
+    /// Unix millis when the runtime result was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<u64>,
+
     // ── timestamps ──
-    /// Unix millis when the job was created.
+    /// Unix millis when the dispatch was created.
     pub created_at: u64,
     /// Unix millis of the last update.
     pub updated_at: u64,
@@ -125,12 +143,12 @@ pub struct MailboxJob {
 /// Result of a mailbox interrupt operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MailboxInterrupt {
-    /// New generation after bump.
-    pub new_generation: u64,
-    /// The job that was Claimed (running) at interrupt time, if any.
+    /// New thread dispatch epoch after bump.
+    pub new_dispatch_epoch: u64,
+    /// The dispatch that was Claimed (running) at interrupt time, if any.
     /// Caller should cancel the corresponding runtime run.
-    pub active_job: Option<MailboxJob>,
-    /// Number of Queued jobs superseded.
+    pub active_dispatch: Option<RunDispatch>,
+    /// Number of Queued dispatches superseded.
     pub superseded_count: usize,
 }
 
@@ -141,73 +159,105 @@ pub struct MailboxInterrupt {
 /// Implementations must guarantee:
 /// - enqueue is durable before returning
 /// - claim is atomic (exactly one consumer wins)
-/// - interrupt atomically bumps generation + supersedes stale jobs
+/// - interrupt atomically bumps dispatch epoch + supersedes stale dispatches
 /// - ack/nack/dead_letter validate claim_token (reject stale claims)
 #[async_trait]
 pub trait MailboxStore: Send + Sync {
     // ── write path ──
 
-    /// Persist a job. Sets generation from current mailbox state
-    /// (auto-creates state if first job for this mailbox_id).
-    /// Rejects if dedupe_key matches an existing non-terminal job.
-    async fn enqueue(&self, job: &MailboxJob) -> Result<(), StorageError>;
+    /// Persist a dispatch. Sets dispatch epoch from current thread state
+    /// (auto-creates state if first dispatch for this thread_id).
+    /// Rejects if dedupe_key matches an existing non-terminal dispatch.
+    async fn enqueue(&self, dispatch: &RunDispatch) -> Result<(), StorageError>;
 
-    /// Atomically claim up to `limit` Queued jobs for a mailbox
+    /// Atomically claim up to `limit` Queued dispatches for a thread
     /// where `available_at <= now`. Sets status=Claimed, claim_token,
     /// claimed_by, lease_until = now + lease_ms.
-    /// Returns claimed jobs ordered by (priority ASC, created_at ASC).
+    /// Returns claimed dispatches ordered by (priority ASC, created_at ASC).
     async fn claim(
         &self,
-        mailbox_id: &str,
+        thread_id: &str,
         consumer_id: &str,
         lease_ms: u64,
         now: u64,
         limit: usize,
-    ) -> Result<Vec<MailboxJob>, StorageError>;
+    ) -> Result<Vec<RunDispatch>, StorageError>;
 
-    /// Claim a specific job by job_id. Same semantics as `claim()`
-    /// but targets a single known job (used for inline streaming).
-    async fn claim_job(
+    /// Claim a specific dispatch by dispatch_id. Same semantics as `claim()`
+    /// but targets a single known dispatch (used for inline streaming).
+    async fn claim_dispatch(
         &self,
-        job_id: &str,
+        dispatch_id: &str,
         consumer_id: &str,
         lease_ms: u64,
         now: u64,
-    ) -> Result<Option<MailboxJob>, StorageError>;
+    ) -> Result<Option<RunDispatch>, StorageError>;
 
-    /// Mark job as successfully processed. Validates claim_token.
-    async fn ack(&self, job_id: &str, claim_token: &str, now: u64) -> Result<(), StorageError>;
+    /// Mark mailbox delivery as consumed and no longer retryable.
+    ///
+    /// This validates `claim_token` and only records dispatch consumption. Use
+    /// `record_run_result` for the agent run outcome.
+    async fn ack(&self, dispatch_id: &str, claim_token: &str, now: u64)
+    -> Result<(), StorageError>;
 
-    /// Return job to queue for retry. Sets available_at = retry_at,
+    /// Record the runtime dispatch identity for a claimed dispatch.
+    ///
+    /// Implementations should validate the claim token and set
+    /// `run_status=Running`, while clearing any prior terminal result fields.
+    async fn record_dispatch_start(
+        &self,
+        dispatch_id: &str,
+        claim_token: &str,
+        dispatch_instance_id: &str,
+        now: u64,
+    ) -> Result<(), StorageError>;
+
+    /// Record the runtime result for a claimed dispatch.
+    ///
+    /// This is intentionally separate from `ack`: `Acked` means the mailbox
+    /// delivery was consumed, while these fields describe the agent run outcome.
+    async fn record_run_result(
+        &self,
+        dispatch_id: &str,
+        claim_token: &str,
+        result: &RunDispatchResult,
+        now: u64,
+    ) -> Result<(), StorageError>;
+
+    /// Return dispatch to queue for retry. Sets available_at = retry_at,
     /// increments attempt_count, records error.
     /// If attempt_count >= max_attempts, transitions to DeadLetter instead.
     async fn nack(
         &self,
-        job_id: &str,
+        dispatch_id: &str,
         claim_token: &str,
         retry_at: u64,
         error: &str,
         now: u64,
     ) -> Result<(), StorageError>;
 
-    /// Permanently fail a job. Terminal state.
+    /// Permanently fail a dispatch. Terminal state.
     async fn dead_letter(
         &self,
-        job_id: &str,
+        dispatch_id: &str,
         claim_token: &str,
         error: &str,
         now: u64,
     ) -> Result<(), StorageError>;
 
-    /// Cancel a specific job. Works on Queued jobs only.
-    /// For Claimed jobs, caller must also cancel the runtime run.
-    async fn cancel(&self, job_id: &str, now: u64) -> Result<Option<MailboxJob>, StorageError>;
+    /// Cancel a specific dispatch. Works on Queued dispatches only.
+    /// For Claimed dispatches, caller must also cancel the runtime run.
+    async fn cancel(
+        &self,
+        dispatch_id: &str,
+        now: u64,
+    ) -> Result<Option<RunDispatch>, StorageError>;
 
-    /// Extend an active lease. Returns false if job not Claimed
+    /// Extend an active lease. Returns false if dispatch not Claimed
     /// or claim_token mismatch (lease already expired and reclaimed).
     async fn extend_lease(
         &self,
-        job_id: &str,
+        dispatch_id: &str,
         claim_token: &str,
         extension_ms: u64,
         now: u64,
@@ -215,44 +265,42 @@ pub trait MailboxStore: Send + Sync {
 
     // ── interrupt ──
 
-    /// Atomically: bump generation, supersede all Queued jobs
-    /// with generation < new_generation, return the Claimed job
-    /// (if any) so caller can cancel its runtime run.
-    async fn interrupt(&self, mailbox_id: &str, now: u64)
-    -> Result<MailboxInterrupt, StorageError>;
+    /// Atomically: bump dispatch epoch, supersede stale Queued dispatches,
+    /// return the Claimed dispatch (if any) so caller can cancel its runtime run.
+    async fn interrupt(&self, thread_id: &str, now: u64) -> Result<MailboxInterrupt, StorageError>;
 
     // ── read path ──
 
-    /// Load a single job by ID.
-    async fn load_job(&self, job_id: &str) -> Result<Option<MailboxJob>, StorageError>;
+    /// Load a single dispatch by ID.
+    async fn load_dispatch(&self, dispatch_id: &str) -> Result<Option<RunDispatch>, StorageError>;
 
-    /// List jobs for a mailbox, filtered by status.
-    async fn list_jobs(
+    /// List dispatches for a thread, filtered by status.
+    async fn list_dispatches(
         &self,
-        mailbox_id: &str,
-        status_filter: Option<&[MailboxJobStatus]>,
+        thread_id: &str,
+        status_filter: Option<&[RunDispatchStatus]>,
         limit: usize,
         offset: usize,
-    ) -> Result<Vec<MailboxJob>, StorageError>;
+    ) -> Result<Vec<RunDispatch>, StorageError>;
 
     // ── maintenance ──
 
-    /// Reclaim jobs whose lease_until < now (orphaned by crashed consumers).
+    /// Reclaim dispatches whose lease_until < now (orphaned by crashed consumers).
     /// Resets to Queued with incremented attempt_count.
-    /// Returns reclaimed jobs for immediate dispatch.
+    /// Returns reclaimed dispatches for immediate execution.
     async fn reclaim_expired_leases(
         &self,
         now: u64,
         limit: usize,
-    ) -> Result<Vec<MailboxJob>, StorageError>;
+    ) -> Result<Vec<RunDispatch>, StorageError>;
 
-    /// Purge terminal jobs (Accepted, Cancelled, Superseded, DeadLetter)
+    /// Purge terminal dispatches (Acked, Cancelled, Superseded, DeadLetter)
     /// older than `older_than` timestamp. Returns count purged.
     async fn purge_terminal(&self, older_than: u64) -> Result<usize, StorageError>;
 
-    /// List distinct mailbox_ids that have at least one Queued job.
+    /// List distinct thread_ids that have at least one Queued dispatch.
     /// Used by recover() at startup.
-    async fn queued_mailbox_ids(&self) -> Result<Vec<String>, StorageError>;
+    async fn queued_thread_ids(&self) -> Result<Vec<String>, StorageError>;
 }
 
 #[cfg(test)]
@@ -265,20 +313,20 @@ mod tests {
         use super::*;
         use proptest::prelude::*;
 
-        fn arb_mailbox_status() -> impl Strategy<Value = MailboxJobStatus> {
+        fn arb_dispatch_status() -> impl Strategy<Value = RunDispatchStatus> {
             prop_oneof![
-                Just(MailboxJobStatus::Queued),
-                Just(MailboxJobStatus::Claimed),
-                Just(MailboxJobStatus::Accepted),
-                Just(MailboxJobStatus::Cancelled),
-                Just(MailboxJobStatus::Superseded),
-                Just(MailboxJobStatus::DeadLetter),
+                Just(RunDispatchStatus::Queued),
+                Just(RunDispatchStatus::Claimed),
+                Just(RunDispatchStatus::Acked),
+                Just(RunDispatchStatus::Cancelled),
+                Just(RunDispatchStatus::Superseded),
+                Just(RunDispatchStatus::DeadLetter),
             ]
         }
 
-        fn arb_mailbox_job() -> impl Strategy<Value = MailboxJob> {
+        fn arb_dispatch() -> impl Strategy<Value = RunDispatch> {
             (
-                arb_mailbox_status(),
+                arb_dispatch_status(),
                 0u32..100,
                 0u64..u64::MAX,
                 0u64..u64::MAX,
@@ -294,28 +342,23 @@ mod tests {
                         available_at,
                         priority,
                         max_attempts,
-                        generation,
+                        dispatch_epoch,
                     )| {
                         let claim_token = match status {
-                            MailboxJobStatus::Claimed => Some("token-123".to_string()),
+                            RunDispatchStatus::Claimed => Some("token-123".to_string()),
                             _ => None,
                         };
                         let claimed_by = match status {
-                            MailboxJobStatus::Claimed => Some("consumer-1".to_string()),
+                            RunDispatchStatus::Claimed => Some("consumer-1".to_string()),
                             _ => None,
                         };
-                        MailboxJob {
-                            job_id: "job-prop".to_string(),
-                            mailbox_id: "thread-prop".to_string(),
-                            agent_id: "agent-prop".to_string(),
-                            messages: vec![Message::user("proptest")],
-                            origin: MailboxJobOrigin::User,
-                            sender_id: None,
-                            parent_run_id: None,
-                            request_extras: None,
+                        RunDispatch {
+                            dispatch_id: "dispatch-prop".to_string(),
+                            thread_id: "thread-prop".to_string(),
+                            run_id: "run-prop".to_string(),
                             priority,
                             dedupe_key: None,
-                            generation,
+                            dispatch_epoch,
                             status,
                             available_at,
                             attempt_count,
@@ -323,11 +366,17 @@ mod tests {
                             last_error: None,
                             claim_token,
                             claimed_by,
-                            lease_until: if status == MailboxJobStatus::Claimed {
+                            lease_until: if status == RunDispatchStatus::Claimed {
                                 Some(created_at.saturating_add(30_000))
                             } else {
                                 None
                             },
+                            dispatch_instance_id: None,
+                            run_status: None,
+                            termination: None,
+                            run_response: None,
+                            run_error: None,
+                            completed_at: None,
                             created_at,
                             updated_at: created_at,
                         }
@@ -337,55 +386,55 @@ mod tests {
 
         proptest! {
             #[test]
-            fn terminal_status_is_terminal(status in arb_mailbox_status()) {
+            fn terminal_status_is_terminal(status in arb_dispatch_status()) {
                 let expected_terminal = matches!(
                     status,
-                    MailboxJobStatus::Accepted
-                    | MailboxJobStatus::Cancelled
-                    | MailboxJobStatus::Superseded
-                    | MailboxJobStatus::DeadLetter
+                    RunDispatchStatus::Acked
+                    | RunDispatchStatus::Cancelled
+                    | RunDispatchStatus::Superseded
+                    | RunDispatchStatus::DeadLetter
                 );
                 prop_assert_eq!(status.is_terminal(), expected_terminal);
             }
 
             #[test]
-            fn claimed_job_always_has_claim_token(job in arb_mailbox_job()) {
-                if job.status == MailboxJobStatus::Claimed {
+            fn claimed_dispatch_always_has_claim_token(dispatch in arb_dispatch()) {
+                if dispatch.status == RunDispatchStatus::Claimed {
                     prop_assert!(
-                        job.claim_token.is_some(),
-                        "Claimed job must have a claim_token"
+                        dispatch.claim_token.is_some(),
+                        "Claimed dispatch must have a claim_token"
                     );
                 }
             }
 
             #[test]
-            fn queued_job_never_has_claim_token(job in arb_mailbox_job()) {
-                if job.status == MailboxJobStatus::Queued {
+            fn queued_dispatch_never_has_claim_token(dispatch in arb_dispatch()) {
+                if dispatch.status == RunDispatchStatus::Queued {
                     prop_assert!(
-                        job.claim_token.is_none(),
-                        "Queued job must not have a claim_token"
+                        dispatch.claim_token.is_none(),
+                        "Queued dispatch must not have a claim_token"
                     );
                 }
             }
 
             #[test]
-            fn mailbox_job_serde_roundtrip(job in arb_mailbox_job()) {
-                let json = serde_json::to_string(&job).unwrap();
-                let parsed: MailboxJob = serde_json::from_str(&json).unwrap();
-                prop_assert_eq!(parsed.job_id, job.job_id);
-                prop_assert_eq!(parsed.status, job.status);
-                prop_assert_eq!(parsed.attempt_count, job.attempt_count);
-                prop_assert_eq!(parsed.priority, job.priority);
-                prop_assert_eq!(parsed.generation, job.generation);
-                prop_assert_eq!(parsed.claim_token, job.claim_token);
-                prop_assert_eq!(parsed.available_at, job.available_at);
-                prop_assert_eq!(parsed.max_attempts, job.max_attempts);
+            fn run_dispatch_serde_roundtrip(dispatch in arb_dispatch()) {
+                let json = serde_json::to_string(&dispatch).unwrap();
+                let parsed: RunDispatch = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(parsed.dispatch_id, dispatch.dispatch_id);
+                prop_assert_eq!(parsed.status, dispatch.status);
+                prop_assert_eq!(parsed.attempt_count, dispatch.attempt_count);
+                prop_assert_eq!(parsed.priority, dispatch.priority);
+                prop_assert_eq!(parsed.dispatch_epoch, dispatch.dispatch_epoch);
+                prop_assert_eq!(parsed.claim_token, dispatch.claim_token);
+                prop_assert_eq!(parsed.available_at, dispatch.available_at);
+                prop_assert_eq!(parsed.max_attempts, dispatch.max_attempts);
             }
 
             #[test]
-            fn mailbox_job_status_serde_roundtrip_prop(status in arb_mailbox_status()) {
+            fn run_dispatch_status_serde_roundtrip_prop(status in arb_dispatch_status()) {
                 let json = serde_json::to_string(&status).unwrap();
-                let parsed: MailboxJobStatus = serde_json::from_str(&json).unwrap();
+                let parsed: RunDispatchStatus = serde_json::from_str(&json).unwrap();
                 prop_assert_eq!(parsed, status);
             }
         }
@@ -393,32 +442,27 @@ mod tests {
 
     #[test]
     fn is_terminal_returns_true_for_terminal_states() {
-        assert!(MailboxJobStatus::Accepted.is_terminal());
-        assert!(MailboxJobStatus::Cancelled.is_terminal());
-        assert!(MailboxJobStatus::Superseded.is_terminal());
-        assert!(MailboxJobStatus::DeadLetter.is_terminal());
+        assert!(RunDispatchStatus::Acked.is_terminal());
+        assert!(RunDispatchStatus::Cancelled.is_terminal());
+        assert!(RunDispatchStatus::Superseded.is_terminal());
+        assert!(RunDispatchStatus::DeadLetter.is_terminal());
     }
 
     #[test]
     fn is_terminal_returns_false_for_non_terminal_states() {
-        assert!(!MailboxJobStatus::Queued.is_terminal());
-        assert!(!MailboxJobStatus::Claimed.is_terminal());
+        assert!(!RunDispatchStatus::Queued.is_terminal());
+        assert!(!RunDispatchStatus::Claimed.is_terminal());
     }
 
-    fn make_mailbox_job() -> MailboxJob {
-        MailboxJob {
-            job_id: "job-001".to_string(),
-            mailbox_id: "thread-abc".to_string(),
-            agent_id: "agent-1".to_string(),
-            messages: vec![Message::user("hello")],
-            origin: MailboxJobOrigin::User,
-            sender_id: Some("user-42".to_string()),
-            parent_run_id: None,
-            request_extras: Some(serde_json::json!({"overrides": {"temperature": 0.7}})),
+    fn make_run_dispatch() -> RunDispatch {
+        RunDispatch {
+            dispatch_id: "dispatch-001".to_string(),
+            thread_id: "thread-abc".to_string(),
+            run_id: "run-001".to_string(),
             priority: 128,
             dedupe_key: Some("req-xyz".to_string()),
-            generation: 1,
-            status: MailboxJobStatus::Queued,
+            dispatch_epoch: 1,
+            status: RunDispatchStatus::Queued,
             available_at: 1000,
             attempt_count: 0,
             max_attempts: 5,
@@ -426,29 +470,30 @@ mod tests {
             claim_token: None,
             claimed_by: None,
             lease_until: None,
+            dispatch_instance_id: None,
+            run_status: None,
+            termination: None,
+            run_response: None,
+            run_error: None,
+            completed_at: None,
             created_at: 1000,
             updated_at: 1000,
         }
     }
 
     #[test]
-    fn mailbox_job_serde_roundtrip() {
-        let job = make_mailbox_job();
-        let json = serde_json::to_string(&job).unwrap();
-        let parsed: MailboxJob = serde_json::from_str(&json).unwrap();
+    fn run_dispatch_serde_roundtrip() {
+        let dispatch = make_run_dispatch();
+        let json = serde_json::to_string(&dispatch).unwrap();
+        let parsed: RunDispatch = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(parsed.job_id, "job-001");
-        assert_eq!(parsed.mailbox_id, "thread-abc");
-        assert_eq!(parsed.agent_id, "agent-1");
-        assert_eq!(parsed.messages.len(), 1);
-        assert_eq!(parsed.origin, MailboxJobOrigin::User);
-        assert_eq!(parsed.sender_id.as_deref(), Some("user-42"));
-        assert!(parsed.parent_run_id.is_none());
-        assert!(parsed.request_extras.is_some());
+        assert_eq!(parsed.dispatch_id, "dispatch-001");
+        assert_eq!(parsed.thread_id, "thread-abc");
+        assert_eq!(parsed.run_id, "run-001");
         assert_eq!(parsed.priority, 128);
         assert_eq!(parsed.dedupe_key.as_deref(), Some("req-xyz"));
-        assert_eq!(parsed.generation, 1);
-        assert_eq!(parsed.status, MailboxJobStatus::Queued);
+        assert_eq!(parsed.dispatch_epoch, 1);
+        assert_eq!(parsed.status, RunDispatchStatus::Queued);
         assert_eq!(parsed.available_at, 1000);
         assert_eq!(parsed.attempt_count, 0);
         assert_eq!(parsed.max_attempts, 5);
@@ -456,50 +501,83 @@ mod tests {
         assert!(parsed.claim_token.is_none());
         assert!(parsed.claimed_by.is_none());
         assert!(parsed.lease_until.is_none());
+        assert!(parsed.dispatch_instance_id.is_none());
+        assert!(parsed.run_status.is_none());
+        assert!(parsed.termination.is_none());
+        assert!(parsed.run_response.is_none());
+        assert!(parsed.run_error.is_none());
+        assert!(parsed.completed_at.is_none());
         assert_eq!(parsed.created_at, 1000);
         assert_eq!(parsed.updated_at, 1000);
     }
 
     #[test]
-    fn mailbox_job_status_serde_roundtrip() {
-        for status in [
-            MailboxJobStatus::Queued,
-            MailboxJobStatus::Claimed,
-            MailboxJobStatus::Accepted,
-            MailboxJobStatus::Cancelled,
-            MailboxJobStatus::Superseded,
-            MailboxJobStatus::DeadLetter,
-        ] {
-            let json = serde_json::to_string(&status).unwrap();
-            let parsed: MailboxJobStatus = serde_json::from_str(&json).unwrap();
-            assert_eq!(parsed, status);
-        }
+    fn run_dispatch_runtime_trace_serde_roundtrip() {
+        use super::super::lifecycle::TerminationReason;
+
+        let mut dispatch = make_run_dispatch();
+        dispatch.dispatch_instance_id = Some("dispatch-1".into());
+        dispatch.run_status = Some(RunStatus::Done);
+        dispatch.termination = Some(TerminationReason::NaturalEnd);
+        dispatch.run_response = Some("done".into());
+        dispatch.completed_at = Some(2000);
+
+        let json = serde_json::to_string(&dispatch).unwrap();
+        let parsed: RunDispatch = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.run_id, "run-001");
+        assert_eq!(parsed.dispatch_instance_id.as_deref(), Some("dispatch-1"));
+        assert_eq!(parsed.run_status, Some(RunStatus::Done));
+        assert_eq!(parsed.termination, Some(TerminationReason::NaturalEnd));
+        assert_eq!(parsed.run_response.as_deref(), Some("done"));
+        assert_eq!(parsed.completed_at, Some(2000));
+        assert_eq!(parsed.status, RunDispatchStatus::Queued);
     }
 
     #[test]
-    fn mailbox_job_origin_serde_roundtrip() {
-        for origin in [
-            MailboxJobOrigin::User,
-            MailboxJobOrigin::A2A,
-            MailboxJobOrigin::Internal,
+    fn run_dispatch_result_serde_roundtrip() {
+        use super::super::lifecycle::TerminationReason;
+
+        let result = RunDispatchResult {
+            run_id: "run-1".into(),
+            dispatch_instance_id: "dispatch-1".into(),
+            status: RunStatus::Done,
+            termination: Some(TerminationReason::Blocked("needs approval".into())),
+            response: None,
+            error: Some("needs approval".into()),
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        let parsed: RunDispatchResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, result);
+    }
+
+    #[test]
+    fn run_dispatch_status_serde_roundtrip() {
+        for status in [
+            RunDispatchStatus::Queued,
+            RunDispatchStatus::Claimed,
+            RunDispatchStatus::Acked,
+            RunDispatchStatus::Cancelled,
+            RunDispatchStatus::Superseded,
+            RunDispatchStatus::DeadLetter,
         ] {
-            let json = serde_json::to_string(&origin).unwrap();
-            let parsed: MailboxJobOrigin = serde_json::from_str(&json).unwrap();
-            assert_eq!(parsed, origin);
+            let json = serde_json::to_string(&status).unwrap();
+            let parsed: RunDispatchStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, status);
         }
     }
 
     #[test]
     fn mailbox_interrupt_serde_roundtrip() {
         let interrupt = MailboxInterrupt {
-            new_generation: 5,
-            active_job: Some(make_mailbox_job()),
+            new_dispatch_epoch: 5,
+            active_dispatch: Some(make_run_dispatch()),
             superseded_count: 3,
         };
         let json = serde_json::to_string(&interrupt).unwrap();
         let parsed: MailboxInterrupt = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.new_generation, 5);
-        assert!(parsed.active_job.is_some());
+        assert_eq!(parsed.new_dispatch_epoch, 5);
+        assert!(parsed.active_dispatch.is_some());
         assert_eq!(parsed.superseded_count, 3);
     }
 }

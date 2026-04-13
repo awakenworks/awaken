@@ -1,5 +1,6 @@
 //! Agent loop streaming events and IO contracts.
 
+use super::identity::RunIdentity;
 use super::inference::TokenUsage;
 use super::lifecycle::TerminationReason;
 use super::suspension::ToolCallOutcome;
@@ -17,12 +18,16 @@ pub enum AgentEvent {
         run_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         parent_run_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        identity: Option<RunIdentity>,
     },
 
     /// Run finished.
     RunFinish {
         thread_id: String,
         run_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        identity: Option<RunIdentity>,
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<Value>,
         termination: TerminationReason,
@@ -119,6 +124,12 @@ pub enum AgentEvent {
 }
 
 impl AgentEvent {
+    /// Returns true when this event terminates the current event stream.
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::RunFinish { .. } | Self::Error { .. })
+    }
+
     /// Extract the response text from a `RunFinish` result value.
     ///
     /// # Examples
@@ -158,6 +169,7 @@ mod tests {
             thread_id: "t1".into(),
             run_id: "r1".into(),
             parent_run_id: None,
+            identity: None,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"event_type\":\"run_start\""));
@@ -170,6 +182,7 @@ mod tests {
         let event = AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: Some(json!({"response": "hello"})),
             termination: TerminationReason::NaturalEnd,
         };
@@ -185,6 +198,98 @@ mod tests {
             assert_eq!(termination, TerminationReason::NaturalEnd);
         } else {
             panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn terminal_helpers_classify_run_finish_and_error_only() {
+        let run_finish = AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            identity: None,
+            result: None,
+            termination: TerminationReason::NaturalEnd,
+        };
+        assert!(run_finish.is_terminal());
+
+        let error = AgentEvent::Error {
+            message: "boom".into(),
+            code: Some("E_TEST".into()),
+        };
+        assert!(error.is_terminal());
+
+        let non_terminal_events = vec![
+            AgentEvent::RunStart {
+                thread_id: "t1".into(),
+                run_id: "r1".into(),
+                parent_run_id: None,
+                identity: None,
+            },
+            AgentEvent::TextDelta { delta: "x".into() },
+            AgentEvent::ReasoningDelta { delta: "r".into() },
+            AgentEvent::ToolCallStart {
+                id: "c1".into(),
+                name: "search".into(),
+            },
+            AgentEvent::ToolCallDelta {
+                id: "c1".into(),
+                args_delta: "{}".into(),
+            },
+            AgentEvent::ToolCallReady {
+                id: "c1".into(),
+                name: "search".into(),
+                arguments: json!({}),
+            },
+            AgentEvent::ToolCallDone {
+                id: "c1".into(),
+                message_id: "m1".into(),
+                result: ToolResult::success("ok", json!({})),
+                outcome: ToolCallOutcome::Succeeded,
+            },
+            AgentEvent::ToolCallStreamDelta {
+                id: "c1".into(),
+                name: "search".into(),
+                delta: "x".into(),
+            },
+            AgentEvent::ReasoningEncryptedValue {
+                encrypted_value: "opaque".into(),
+            },
+            AgentEvent::MessagesSnapshot { messages: vec![] },
+            AgentEvent::ActivitySnapshot {
+                message_id: "m1".into(),
+                activity_type: "progress".into(),
+                content: json!({}),
+                replace: None,
+            },
+            AgentEvent::ActivityDelta {
+                message_id: "m1".into(),
+                activity_type: "progress".into(),
+                patch: vec![],
+            },
+            AgentEvent::ToolCallResumed {
+                target_id: "c1".into(),
+                result: json!({}),
+            },
+            AgentEvent::StepStart {
+                message_id: "m1".into(),
+            },
+            AgentEvent::StepEnd,
+            AgentEvent::InferenceComplete {
+                model: "m".into(),
+                usage: None,
+                duration_ms: 1,
+            },
+            AgentEvent::StateSnapshot {
+                snapshot: json!({}),
+            },
+            AgentEvent::StateDelta { delta: vec![] },
+        ];
+
+        for event in non_terminal_events {
+            assert!(
+                !event.is_terminal(),
+                "event should not be terminal: {event:?}"
+            );
         }
     }
 
@@ -372,10 +477,12 @@ mod tests {
                 thread_id: "t".into(),
                 run_id: "r".into(),
                 parent_run_id: None,
+                identity: None,
             },
             AgentEvent::RunFinish {
                 thread_id: "t".into(),
                 run_id: "r".into(),
+                identity: None,
                 result: None,
                 termination: TerminationReason::NaturalEnd,
             },
@@ -568,6 +675,7 @@ mod tests {
             thread_id: "t1".into(),
             run_id: "r1".into(),
             parent_run_id: Some("parent".into()),
+            identity: None,
         };
         let wire: Value = serde_json::to_value(&event).unwrap();
         assert_eq!(wire["event_type"], "run_start");
@@ -581,6 +689,7 @@ mod tests {
         let event = AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: Some(json!({"response": "hello"})),
             termination: TerminationReason::NaturalEnd,
         };
@@ -596,6 +705,7 @@ mod tests {
             thread_id: "t1".into(),
             run_id: "r1".into(),
             parent_run_id: None,
+            identity: None,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(!json.contains("parent_run_id"));
@@ -606,6 +716,7 @@ mod tests {
         let event = AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::NaturalEnd,
         };
@@ -643,10 +754,12 @@ mod tests {
                 thread_id: "t".into(),
                 run_id: "r".into(),
                 parent_run_id: None,
+                identity: None,
             },
             AgentEvent::RunFinish {
                 thread_id: "t".into(),
                 run_id: "r".into(),
+                identity: None,
                 result: None,
                 termination: TerminationReason::NaturalEnd,
             },

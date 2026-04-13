@@ -2,13 +2,13 @@
 
 ## 目标
 
-端到端运行一个智能体，并确认你收到完整的事件流。
+端到端运行一个智能体，并检查最终结果。
 
 ## 前置条件
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.1" }
+awaken = { package = "awaken-agent", version = "0.2" }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde_json = "1"
@@ -32,8 +32,6 @@ use serde_json::{json, Value};
 use async_trait::async_trait;
 use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
 use awaken::contract::message::Message;
-use awaken::contract::event::AgentEvent;
-use awaken::contract::event_sink::VecEventSink;
 use awaken::engine::GenaiExecutor;
 use awaken::registry_spec::AgentSpec;
 use awaken::registry::ModelBinding;
@@ -85,16 +83,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_agent_id("assistant");
 
-    let sink = Arc::new(VecEventSink::new());
-    runtime.run(request, sink.clone()).await?;
-
-    let events = sink.take();
-    println!("events: {}", events.len());
-
-    let finished = events
-        .iter()
-        .any(|e| matches!(e, AgentEvent::RunFinish { .. }));
-    println!("run_finish_seen: {}", finished);
+    // 本教程只需要最终结果；需要向 SSE、WebSocket、协议适配器或测试流式发送事件时，
+    // 使用 run(..., sink)。
+    let result = runtime.run_to_completion(request).await?;
+    println!("response: {}", result.response);
+    println!("termination: {:?}", result.termination);
 
     Ok(())
 }
@@ -110,10 +103,8 @@ cargo run
 
 预期输出包括：
 
-- `events: <n>`，其中 `n > 0`
-- `run_finish_seen: true`
-
-事件流将至少包含 `RunStart`、一个或多个 `TextDelta` 或 `ToolCallStart`/`ToolCallDone` 事件，以及最终的 `RunFinish`。
+- `response: ...`
+- `termination: NaturalEnd`
 
 ## 你创建了什么
 
@@ -136,15 +127,13 @@ let runtime = AgentRuntimeBuilder::new()
 之后，标准入口点是：
 
 ```rust,ignore
-let sink = Arc::new(VecEventSink::new());
-runtime.run(request, sink.clone()).await?;
-let events = sink.take();
+let result = runtime.run_to_completion(request).await?;
 ```
 
 常见使用模式：
 
-- 一次性 CLI 程序：构造 `RunRequest`，通过 `VecEventSink` 收集事件，打印结果
-- 应用服务：将 `runtime.run(...)` 封装在你自己的应用逻辑中
+- 一次性 CLI 程序：构造 `RunRequest`，调用 `runtime.run_to_completion(...)`，打印结果
+- 应用服务：当调用方需要流式事件时，使用带 `EventSink` 的 `runtime.run(...)`
 - HTTP 服务器：将 `Arc<AgentRuntime>` 存储在应用状态中，暴露协议路由
 
 ## 下一步阅读
@@ -160,7 +149,7 @@ let events = sink.take();
 - 模型/提供商不匹配：`gpt-4o-mini` 需要兼容的 OpenAI 风格提供商配置。
 - 缺少密钥：在 `cargo run` 之前设置 `OPENAI_API_KEY` 或 `DEEPSEEK_API_KEY`。
 - 工具未被选中：确保提示词明确要求使用 `echo`。
-- 没有 `RunFinish` 事件：检查 `with_max_rounds` 设置是否足够高，以便模型完成执行。
+- 过早终止：检查 `with_max_rounds` 设置是否足够高，以便模型完成执行。
 
 ## 下一步
 

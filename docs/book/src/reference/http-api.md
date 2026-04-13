@@ -24,14 +24,14 @@ and `crates/awaken-server/src/config_routes.rs`.
 | `GET` | `/v1/threads/:id` | Get a thread by ID |
 | `PATCH` | `/v1/threads/:id` | Update thread metadata |
 | `DELETE` | `/v1/threads/:id` | Delete a thread |
-| `POST` | `/v1/threads/:id/cancel` | Cancel a specific queued or running job addressed by this thread ID. Returns `cancel_requested`. |
+| `POST` | `/v1/threads/:id/cancel` | Cancel a specific queued or running dispatch addressed by this thread ID. Returns `cancel_requested`. |
 | `POST` | `/v1/threads/:id/decision` | Submit a HITL decision for a waiting run on this thread |
-| `POST` | `/v1/threads/:id/interrupt` | Interrupt the thread: bumps the thread generation, supersedes all pending queued jobs, and cancels the active run. Returns `interrupt_requested` with `superseded_jobs` count. Unlike `/cancel`, this performs a clean-slate interrupt via `mailbox.interrupt()`. |
+| `POST` | `/v1/threads/:id/interrupt` | Interrupt the thread: bumps the thread dispatch epoch, supersedes all pending queued dispatches, and cancels the active run. Returns `interrupt_requested` with `superseded_dispatches` count. Unlike `/cancel`, this performs a clean-slate interrupt via `mailbox.interrupt()`. |
 | `PATCH` | `/v1/threads/:id/metadata` | Alias for thread metadata updates |
 | `GET` | `/v1/threads/:id/messages` | List thread messages |
 | `POST` | `/v1/threads/:id/messages` | Submit messages as a background run on this thread |
 | `POST` | `/v1/threads/:id/mailbox` | Push a message payload to the thread mailbox |
-| `GET` | `/v1/threads/:id/mailbox` | List mailbox jobs for the thread |
+| `GET` | `/v1/threads/:id/mailbox` | List mailbox dispatches for the thread |
 | `GET` | `/v1/threads/:id/runs` | List runs for the thread |
 | `GET` | `/v1/threads/:id/runs/latest` | Get the latest run for the thread |
 
@@ -87,11 +87,12 @@ Current built-in namespaces:
 | `POST` | `/v1/ai-sdk/agent-previews/runs` | Run a draft `AgentSpec` without saving it; used by the admin console preview |
 | `POST` | `/v1/ai-sdk/threads/:thread_id/runs` | Start a thread-scoped AI SDK run |
 | `POST` | `/v1/ai-sdk/agents/:agent_id/runs` | Start an agent-scoped AI SDK run |
+| `POST` | `/v1/ai-sdk/agent-previews/runs` | Run a draft `AgentSpec` against the current registries without persisting it |
 | `GET` | `/v1/ai-sdk/chat/:thread_id/stream` | Resume an SSE stream by thread ID |
 | `GET` | `/v1/ai-sdk/threads/:thread_id/stream` | Alias for stream resume by thread ID |
 | `GET` | `/v1/ai-sdk/threads/:thread_id/messages` | List thread messages |
 | `POST` | `/v1/ai-sdk/threads/:thread_id/cancel` | Cancel the active or queued run on a thread |
-| `POST` | `/v1/ai-sdk/threads/:thread_id/interrupt` | Interrupt a thread (bump generation, supersede pending jobs, cancel active run) |
+| `POST` | `/v1/ai-sdk/threads/:thread_id/interrupt` | Interrupt a thread (bump dispatch epoch, supersede pending dispatches, cancel active run) |
 
 ## AG-UI routes
 
@@ -125,14 +126,22 @@ Current built-in namespaces:
 | `GET` | `/v1/a2a/:tenant/tasks/:task_id` | Get tenant-scoped task status |
 | `POST` | `/v1/a2a/:tenant/tasks/:task_id:cancel` | Cancel a tenant-scoped task |
 | `POST` | `/v1/a2a/:tenant/tasks/:task_id:subscribe` | Subscribe to tenant-scoped task updates |
+| `POST` | `/v1/a2a/:tenant/tasks/:task_id/pushNotificationConfigs` | Create a tenant-scoped push notification config |
+| `GET` | `/v1/a2a/:tenant/tasks/:task_id/pushNotificationConfigs` | List tenant-scoped push notification configs |
+| `GET` | `/v1/a2a/:tenant/tasks/:task_id/pushNotificationConfigs/:config_id` | Get a tenant-scoped push notification config |
+| `DELETE` | `/v1/a2a/:tenant/tasks/:task_id/pushNotificationConfigs/:config_id` | Delete a tenant-scoped push notification config |
 | `GET` | `/v1/a2a/:tenant/extendedAgentCard` | Get the tenant-scoped extended agent card |
 
 ## MCP HTTP routes
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/v1/mcp` | MCP JSON-RPC request/response endpoint |
+| `POST` | `/v1/mcp` | MCP JSON-RPC request/response endpoint. `initialize` creates a session and returns `MCP-Session-Id`; later requests, notifications, and responses require that header. |
 | `GET` | `/v1/mcp` | Reserved for MCP server-initiated SSE; currently returns `405` |
+| `DELETE` | `/v1/mcp` | Terminate a known MCP HTTP session identified by `MCP-Session-Id`; returns `204` or `404` |
+
+`initialize` requests must not include `MCP-Session-Id`. `tools/call` may stream
+responses. All MCP HTTP routes validate `Origin` when present.
 
 ## Common query parameters
 

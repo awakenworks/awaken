@@ -364,6 +364,8 @@ async fn tool_call_flow_end_to_end() {
         decision_rx: None,
         overrides: None,
         frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
     })
     .await
     .unwrap();
@@ -448,58 +450,22 @@ assert_eq!(*types.last().unwrap(), "run_finish");
 
 ## 6. 使用真实 LLM 测试（在线测试）
 
-要针对真实的提供商进行端到端验证，可使用 `GenaiExecutor` 并通过环境变量传递凭据。将这些测试标记为 `#[ignore]`，使其仅在显式请求时运行。
+默认 CI 应保持无网络。确定性的 e2e 覆盖使用 scripted provider；真实 provider 检查放在 `#[ignore]` 测试中，只在显式请求时运行。
 
-```rust,ignore
-use awaken::engine::GenaiExecutor;
-
-#[tokio::test]
-#[ignore] // Run with: cargo test -- --ignored
-async fn live_llm_responds() {
-    // Requires: OPENAI_API_KEY or (LLM_BASE_URL + LLM_API_KEY)
-    let model = std::env::var("LLM_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
-    let llm = Arc::new(GenaiExecutor::new());
-
-    let agent = ResolvedAgent::new(
-        "live-test",
-        &model,
-        "You are a test assistant. Answer in one word.",
-        llm,
-    );
-
-    // ... set up resolver, store, runtime, sink as in section 4 ...
-
-    let result = run_agent_loop(AgentLoopParams {
-        resolver: &resolver,
-        agent_id: "live-test",
-        runtime: &runtime,
-        sink: sink.clone(),
-        checkpoint_store: None,
-        messages: vec![Message::user("What is 2+2? Answer in one word.")],
-        run_identity: test_identity(),
-        cancellation_token: None,
-        decision_rx: None,
-        overrides: None,
-        frontend_tools: Vec::new(),
-    })
-    .await
-    .unwrap();
-
-    assert!(!result.response.is_empty());
-}
-```
+README quickstart 路径由 `crates/awaken/tests/readme_quickstart.rs` 提供无网络覆盖。真实 provider smoke test 是 `crates/awaken/tests/readme_live_provider.rs`；它会通过真实 provider 验证 `GenaiExecutor`、`AgentRuntimeBuilder`、model binding 和 `run_to_completion`。
 
 运行在线测试：
 
 ```bash
 # OpenAI 兼容的提供商
-OPENAI_API_KEY=<your-key> LLM_MODEL=gpt-4o-mini cargo test -- --ignored
+OPENAI_API_KEY=<your-key> LLM_MODEL=gpt-4o-mini \
+  cargo test -p awaken-agent --test readme_live_provider -- --ignored
 
 # 自定义端点（例如 BigModel）
 LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4/ \
   LLM_API_KEY=<key> \
   LLM_MODEL=GLM-4.7-Flash \
-  cargo test -- --ignored
+  cargo test -p awaken-agent --test readme_live_provider -- --ignored
 ```
 
 完整的可运行示例（含控制台输出）请参见 `examples/live_test.rs` 和 `examples/tool_call_live.rs`。

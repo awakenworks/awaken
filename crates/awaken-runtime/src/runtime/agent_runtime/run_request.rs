@@ -2,10 +2,11 @@
 
 use crate::inbox::{InboxReceiver, InboxSender};
 use awaken_contract::contract::inference::InferenceOverride;
-use awaken_contract::contract::mailbox::MailboxJobOrigin;
 use awaken_contract::contract::message::Message;
+use awaken_contract::contract::storage::RunRequestOrigin;
 use awaken_contract::contract::suspension::ToolCallResume;
 use awaken_contract::contract::tool::ToolDescriptor;
+use awaken_contract::contract::tool_intercept::{AdapterKind, RunMode};
 
 /// In-process inbox pair owned by a single run.
 pub struct RunInbox {
@@ -17,6 +18,12 @@ pub struct RunInbox {
 pub struct RunRequest {
     /// New messages to append before running.
     pub messages: Vec<Message>,
+    /// True when `messages` already exist in the thread message log.
+    ///
+    /// Mailbox-backed dispatch reconstructs new input messages from
+    /// `RunRecord.request` and the thread log, so the runtime must use them as
+    /// the current turn without appending a duplicate copy.
+    pub messages_already_persisted: bool,
     /// Thread ID. Existing → load history; new → create.
     pub thread_id: String,
     /// Target agent ID.
@@ -29,15 +36,27 @@ pub struct RunRequest {
     /// Frontend-defined tools for this run.
     pub frontend_tools: Vec<ToolDescriptor>,
     /// Where this request originated.
-    pub origin: MailboxJobOrigin,
+    pub origin: RunRequestOrigin,
+    /// Execution mode used by framework-level policy hooks.
+    pub run_mode: RunMode,
+    /// Protocol or adapter that submitted this request.
+    pub adapter: AdapterKind,
     /// Parent run ID for child run linkage (tracing/lineage).
     pub parent_run_id: Option<String>,
     /// Parent thread ID for message routing back to parent.
     pub parent_thread_id: Option<String>,
     /// Continue a previous run instead of creating a new one.
     pub continue_run_id: Option<String>,
-    /// Optional job ID hint used by mailbox-based transports before a run record exists.
-    pub job_id_hint: Option<String>,
+    /// Optional canonical run ID preallocated by the caller.
+    pub run_id_hint: Option<String>,
+    /// Optional transport dispatch/task ID that should be used as the run ID.
+    pub dispatch_id_hint: Option<String>,
+    /// Queue dispatch that delivered this run request, if any.
+    pub dispatch_id: Option<String>,
+    /// External session/dispatch identifier associated with this run.
+    pub session_id: Option<String>,
+    /// Transport request identifier associated with this run.
+    pub transport_request_id: Option<String>,
     /// Optional in-process inbox pair for background-task notifications.
     pub run_inbox: Option<RunInbox>,
 }
@@ -47,16 +66,23 @@ impl RunRequest {
     pub fn new(thread_id: impl Into<String>, messages: Vec<Message>) -> Self {
         Self {
             messages,
+            messages_already_persisted: false,
             thread_id: thread_id.into(),
             agent_id: None,
             overrides: None,
             decisions: Vec::new(),
             frontend_tools: Vec::new(),
-            origin: MailboxJobOrigin::User,
+            origin: RunRequestOrigin::User,
+            run_mode: RunMode::Foreground,
+            adapter: AdapterKind::Internal,
             parent_run_id: None,
             parent_thread_id: None,
             continue_run_id: None,
-            job_id_hint: None,
+            run_id_hint: None,
+            dispatch_id_hint: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
             run_inbox: None,
         }
     }
@@ -86,8 +112,20 @@ impl RunRequest {
     }
 
     #[must_use]
-    pub fn with_origin(mut self, origin: MailboxJobOrigin) -> Self {
+    pub fn with_origin(mut self, origin: RunRequestOrigin) -> Self {
         self.origin = origin;
+        self
+    }
+
+    #[must_use]
+    pub fn with_run_mode(mut self, run_mode: RunMode) -> Self {
+        self.run_mode = run_mode;
+        self
+    }
+
+    #[must_use]
+    pub fn with_adapter(mut self, adapter: AdapterKind) -> Self {
+        self.adapter = adapter;
         self
     }
 
@@ -110,14 +148,50 @@ impl RunRequest {
     }
 
     #[must_use]
-    pub fn with_job_id_hint(mut self, job_id_hint: impl Into<String>) -> Self {
-        self.job_id_hint = Some(job_id_hint.into());
+    pub fn with_run_id_hint(mut self, run_id_hint: impl Into<String>) -> Self {
+        self.run_id_hint = Some(run_id_hint.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_dispatch_id_hint(mut self, dispatch_id_hint: impl Into<String>) -> Self {
+        self.dispatch_id_hint = Some(dispatch_id_hint.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_trace_dispatch_id(mut self, dispatch_id: impl Into<String>) -> Self {
+        self.dispatch_id = Some(dispatch_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_dispatch_id(mut self, dispatch_id: impl Into<String>) -> Self {
+        self.dispatch_id = Some(dispatch_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_transport_request_id(mut self, transport_request_id: impl Into<String>) -> Self {
+        self.transport_request_id = Some(transport_request_id.into());
         self
     }
 
     #[must_use]
     pub fn with_inbox(mut self, sender: InboxSender, receiver: InboxReceiver) -> Self {
         self.run_inbox = Some(RunInbox { sender, receiver });
+        self
+    }
+
+    #[must_use]
+    pub fn with_messages_already_persisted(mut self, value: bool) -> Self {
+        self.messages_already_persisted = value;
         self
     }
 }

@@ -1,6 +1,6 @@
 # Provider 与 Model 配置
 
-Awaken 把 provider 连接和 model 选择分开处理。运行时总是通过下面这条链路解析 agent：
+Awaken 把 provider 连接和 model 选择分开处理。本地 agent 执行会通过下面这条链路解析 provider 和 model：
 
 ```text
 AgentSpec.model_id
@@ -10,6 +10,8 @@ AgentSpec.model_id
   -> Arc<dyn LlmExecutor>
   -> InferenceRequest.upstream_model = upstream_model
 ```
+
+Endpoint-backed agent 会跳过这条本地 provider/model 链路。它们会被解析成非本地 `ResolvedExecution`，并交给配置的 `ExecutionBackend` 执行。
 
 ## 术语
 
@@ -177,3 +179,9 @@ let overrides = InferenceOverride {
 Provider factory 只返回 provider executor；retry 由解析流水线添加，不隐藏在 provider 构造里。
 
 非流式执行中，retry 与 fallback 作用于完整推理调用。流式执行中，retry 与 fallback 只作用于打开 stream 的阶段。stream 已经开始后，如果后续 stream item 报错，会直接向上返回，因为重试会导致已经发出的 delta 重复。
+
+## 相关
+
+- [通过配置调优 Agent 行为](../how-to/configure-agent-behavior.md)
+- [配置](./config.md)
+- [智能体解析](../explanation/agent-resolution.md)

@@ -24,9 +24,9 @@ Together, `(ProfileKey::KEY, key: &str)` uniquely identifies a shared state entr
 
 Create a struct that implements `ProfileKey`. The `KEY` constant is the namespace; the `Value` type is what gets serialized.
 
-```rust,ignore
+```rust
 use serde::{Deserialize, Serialize};
-use awaken_contract::ProfileKey;
+use awaken::contract::profile_store::ProfileKey;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct TeamContext {
@@ -46,13 +46,35 @@ impl ProfileKey for TeamContextKey {
 
 Inside your plugin's `register` method, call `register_profile_key` on the registrar.
 
-```rust,ignore
-use awaken_contract::StateError;
-use awaken_runtime::plugins::registry::PluginRegistrar;
+```rust,no_run
+use serde::{Deserialize, Serialize};
+use awaken::contract::profile_store::ProfileKey;
+use awaken::{Plugin, PluginDescriptor, PluginRegistrar, StateError};
 
-fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
-    r.register_profile_key::<TeamContextKey>()?;
-    Ok(())
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct TeamContext {
+    pub goal: String,
+    pub constraints: Vec<String>,
+}
+
+pub struct TeamContextKey;
+
+impl ProfileKey for TeamContextKey {
+    const KEY: &'static str = "team_context";
+    type Value = TeamContext;
+}
+
+pub struct TeamPlugin;
+
+impl Plugin for TeamPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor { name: "team" }
+    }
+
+    fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+        r.register_profile_key::<TeamContextKey>()?;
+        Ok(())
+    }
 }
 ```
 
@@ -60,12 +82,28 @@ fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
 
 In any phase hook, obtain `ProfileAccess` from the context and use `read` / `write` with a key string. `StateScope` is a convenience builder for common key patterns — call `.as_str()` to get the key.
 
-```rust,ignore
-use awaken_contract::StateScope;
+```rust,no_run
+use serde::{Deserialize, Serialize};
+use awaken::contract::shared_state::StateScope;
+use awaken::PhaseContext;
+use awaken::contract::profile_store::ProfileKey;
 
-async fn execute(&self, ctx: &mut PhaseContext) -> Result<(), anyhow::Error> {
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct TeamContext {
+    pub goal: String,
+    pub constraints: Vec<String>,
+}
+
+pub struct TeamContextKey;
+
+impl ProfileKey for TeamContextKey {
+    const KEY: &'static str = "team_context";
+    type Value = TeamContext;
+}
+
+async fn execute(ctx: &mut PhaseContext) -> Result<(), Box<dyn std::error::Error>> {
     let profile = ctx.profile().expect("ProfileStore not configured");
-    let identity = ctx.snapshot().run_identity();
+    let identity = &ctx.run_identity;
 
     // Build a scope key from the current agent's parent thread
     let scope = match &identity.parent_thread_id {

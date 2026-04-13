@@ -33,12 +33,17 @@ where
             }
         }
 
-        // Transcode each agent event
+        // Transcode each agent event. Terminal events close the stream even if
+        // the producer keeps a sender alive while waiting for resume/cleanup.
         while let Some(event) = event_stream.next().await {
+            let is_terminal = event.is_terminal();
             for item in encoder.transcode(&event) {
                 if let Ok(bytes) = serde_json::to_vec(&item) {
                     yield bytes;
                 }
+            }
+            if is_terminal {
+                break;
             }
         }
 
@@ -149,5 +154,69 @@ mod tests {
         assert_eq!(items.len(), 1);
         let json = String::from_utf8(items[0].clone()).unwrap();
         assert!(json.contains("bounded"));
+    }
+
+    #[tokio::test]
+    async fn relay_events_stops_on_terminal_event_without_sender_drop() {
+        use awaken_contract::contract::lifecycle::TerminationReason;
+
+        let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let encoder = Identity::<AgentEvent>::default();
+        let stream = relay_events_stream(encoder, UnboundedReceiverStream::new(rx));
+        tokio::pin!(stream);
+
+        tx.send(AgentEvent::TextDelta {
+            delta: "before".into(),
+        })
+        .unwrap();
+        tx.send(AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            identity: None,
+            result: None,
+            termination: TerminationReason::NaturalEnd,
+        })
+        .unwrap();
+        tx.send(AgentEvent::TextDelta {
+            delta: "after".into(),
+        })
+        .unwrap();
+
+        let first = stream.next().await.expect("first event");
+        assert!(String::from_utf8(first).unwrap().contains("before"));
+
+        let terminal = stream.next().await.expect("terminal event");
+        assert!(String::from_utf8(terminal).unwrap().contains("run_finish"));
+
+        let completed = tokio::time::timeout(std::time::Duration::from_millis(100), stream.next())
+            .await
+            .expect("stream should close after terminal event");
+        assert!(completed.is_none());
+    }
+
+    #[tokio::test]
+    async fn relay_events_stops_on_error_event_without_sender_drop() {
+        let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let encoder = Identity::<AgentEvent>::default();
+        let stream = relay_events_stream(encoder, UnboundedReceiverStream::new(rx));
+        tokio::pin!(stream);
+
+        tx.send(AgentEvent::Error {
+            message: "boom".into(),
+            code: Some("test".into()),
+        })
+        .unwrap();
+        tx.send(AgentEvent::TextDelta {
+            delta: "after".into(),
+        })
+        .unwrap();
+
+        let terminal = stream.next().await.expect("terminal event");
+        assert!(String::from_utf8(terminal).unwrap().contains("boom"));
+
+        let completed = tokio::time::timeout(std::time::Duration::from_millis(100), stream.next())
+            .await
+            .expect("stream should close after error event");
+        assert!(completed.is_none());
     }
 }

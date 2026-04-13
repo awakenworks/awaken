@@ -2,13 +2,13 @@
 
 ## Goal
 
-Run one agent end-to-end and confirm you receive a complete event stream.
+Run one agent end-to-end and inspect the final result.
 
 ## Prerequisites
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.1" }
+awaken = { package = "awaken-agent", version = "0.2" }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde_json = "1"
@@ -32,8 +32,6 @@ use serde_json::{json, Value};
 use async_trait::async_trait;
 use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
 use awaken::contract::message::Message;
-use awaken::contract::event::AgentEvent;
-use awaken::contract::event_sink::VecEventSink;
 use awaken::engine::GenaiExecutor;
 use awaken::registry_spec::AgentSpec;
 use awaken::registry::ModelBinding;
@@ -85,16 +83,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_agent_id("assistant");
 
-    let sink = Arc::new(VecEventSink::new());
-    runtime.run(request, sink.clone()).await?;
-
-    let events = sink.take();
-    println!("events: {}", events.len());
-
-    let finished = events
-        .iter()
-        .any(|e| matches!(e, AgentEvent::RunFinish { .. }));
-    println!("run_finish_seen: {}", finished);
+    // This tutorial only needs the final result. Use run(..., sink) when
+    // streaming events to SSE, WebSocket, protocol adapters, or tests.
+    let result = runtime.run_to_completion(request).await?;
+    println!("response: {}", result.response);
+    println!("termination: {:?}", result.termination);
 
     Ok(())
 }
@@ -110,10 +103,8 @@ cargo run
 
 Expected output includes:
 
-- `events: <n>` where `n > 0`
-- `run_finish_seen: true`
-
-The event stream will contain at least `RunStart`, one or more `TextDelta` or `ToolCallStart`/`ToolCallDone` events, and a final `RunFinish`.
+- `response: ...`
+- `termination: NaturalEnd`
 
 ## What You Created
 
@@ -136,15 +127,13 @@ let runtime = AgentRuntimeBuilder::new()
 After that, the normal entry point is:
 
 ```rust,ignore
-let sink = Arc::new(VecEventSink::new());
-runtime.run(request, sink.clone()).await?;
-let events = sink.take();
+let result = runtime.run_to_completion(request).await?;
 ```
 
 Common usage patterns:
 
-- one-shot CLI program: construct `RunRequest`, collect events via `VecEventSink`, print result
-- application service: wrap `runtime.run(...)` inside your own app logic
+- one-shot CLI program: construct `RunRequest`, call `runtime.run_to_completion(...)`, print the result
+- application service: use `runtime.run(...)` with an `EventSink` when callers need streaming events
 - HTTP server: store `Arc<AgentRuntime>` in app state and expose protocol routes
 
 ## Which Doc To Read Next
@@ -160,7 +149,7 @@ Use the next page based on what you want:
 - Model/provider mismatch: `gpt-4o-mini` requires a compatible OpenAI-style provider setup.
 - Missing key: set `OPENAI_API_KEY` or `DEEPSEEK_API_KEY` before `cargo run`.
 - Tool not selected: ensure the prompt explicitly asks to use `echo`.
-- No `RunFinish` event: check that `with_max_rounds` is set high enough for the model to complete.
+- Early termination: check that `with_max_rounds` is high enough for the model to complete.
 
 ## Next
 

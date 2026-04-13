@@ -187,6 +187,9 @@ pub struct RemoteAuth {
 }
 ```
 
+对于 A2A，`base_url` 指向 A2A interface root，例如
+`https://agent.example.com/v1/a2a`；`target` 在远端 backend 暴露多个 agent 时选择目标 agent。旧 A2A 字段（`bearer_token`、`agent_id`、`poll_interval_ms`）只有在没有 canonical 字段时才会被反序列化。新配置应使用 `auth`、`target` 和 `options`。
+
 ## ServerConfig
 
 HTTP server 配置。需启用 `server` feature。
@@ -440,7 +443,18 @@ pub trait ConfigStore: Send + Sync {
 
 - `ConfigChangeNotifier` / `ConfigChangeSubscriber` —— 可选的原生变更通知接口
 - `AppState::with_config_store(...)` —— 为 `awaken-server` 启用运行时配置路由
+- `ConfigRuntimeManager` —— 写入配置前编译并校验候选 registry snapshot，校验通过后发布
+- `ConfigService` —— `/v1/config/*`、`/v1/agents` 和 `/v1/capabilities` 使用的服务层
+
+内置实现：
+
+- `InMemoryStore` 实现 `ThreadRunStore`、`ProfileStore` 和 `ConfigStore`
+- `FileStore` 实现 `ThreadRunStore`、`ProfileStore` 和 `ConfigStore`
+- `PostgresStore` 实现 `ThreadRunStore` 和 `ConfigStore`
 
 ## 相关
 
 - [构建 Agent](../how-to/build-an-agent.md)
+- [通过配置调优 Agent 行为](../how-to/configure-agent-behavior.md)
+- [HTTP API](./http-api.md)
+- [Provider 与 Model 配置](./provider-model-config.md)

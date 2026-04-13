@@ -12,8 +12,8 @@ Use this when you need to extend the agent lifecycle with state keys, phase hook
 1. Define a state key.
 
 ```rust,no_run
-use awaken::{StateKey, MergeStrategy, StateError, JsonValue};
 use serde::{Serialize, Deserialize};
+use awaken::{MergeStrategy, StateKey};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AuditLog {
@@ -32,31 +32,40 @@ impl StateKey for AuditLogKey {
     fn apply(value: &mut Self::Value, update: Self::Update) {
         *value = update;
     }
-
-    fn encode(value: &Self::Value) -> Result<JsonValue, StateError> {
-        serde_json::to_value(value).map_err(|e| StateError::KeyEncode { key: Self::KEY.into(), message: e.to_string() })
-    }
-
-    fn decode(json: JsonValue) -> Result<Self::Value, StateError> {
-        serde_json::from_value(json).map_err(|e| StateError::KeyDecode { key: Self::KEY.into(), message: e.to_string() })
-    }
 }
 ```
 
 2. Implement a phase hook.
 
-```rust,ignore
+```rust,no_run
 use async_trait::async_trait;
-use awaken::{PhaseHook, PhaseContext, StateCommand, StateError};
+use serde::{Deserialize, Serialize};
+use awaken::{MergeStrategy, PhaseContext, PhaseHook, StateCommand, StateError, StateKey};
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AuditLog {
+    pub entries: Vec<String>,
+}
+
+pub struct AuditLogKey;
+
+impl StateKey for AuditLogKey {
+    const KEY: &'static str = "audit_log";
+    const MERGE: MergeStrategy = MergeStrategy::Exclusive;
+    type Value = AuditLog;
+    type Update = AuditLog;
+
+    fn apply(value: &mut Self::Value, update: Self::Update) {
+        *value = update;
+    }
+}
 
 pub struct AuditHook;
 
 #[async_trait]
 impl PhaseHook for AuditHook {
     async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
-        let mut log = ctx.state::<AuditLogKey>().cloned().unwrap_or(AuditLog {
-            entries: Vec::new(),
-        });
+        let mut log = ctx.state::<AuditLogKey>().cloned().unwrap_or_default();
         log.entries.push(format!("Phase executed at {:?}", ctx.phase));
         let mut cmd = StateCommand::new();
         cmd.update::<AuditLogKey>(log);
@@ -67,8 +76,40 @@ impl PhaseHook for AuditHook {
 
 3. Implement the Plugin trait.
 
-```rust,ignore
-use awaken::{Plugin, PluginDescriptor, PluginRegistrar, Phase, StateError, StateKeyOptions, KeyScope};
+```rust,no_run
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use awaken::{
+    KeyScope, MergeStrategy, Phase, PhaseContext, PhaseHook, Plugin, PluginDescriptor,
+    PluginRegistrar, StateCommand, StateError, StateKey, StateKeyOptions,
+};
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AuditLog {
+    pub entries: Vec<String>,
+}
+
+pub struct AuditLogKey;
+
+impl StateKey for AuditLogKey {
+    const KEY: &'static str = "audit_log";
+    const MERGE: MergeStrategy = MergeStrategy::Exclusive;
+    type Value = AuditLog;
+    type Update = AuditLog;
+
+    fn apply(value: &mut Self::Value, update: Self::Update) {
+        *value = update;
+    }
+}
+
+pub struct AuditHook;
+
+#[async_trait]
+impl PhaseHook for AuditHook {
+    async fn run(&self, _ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        Ok(StateCommand::new())
+    }
+}
 
 pub struct AuditPlugin;
 
@@ -85,7 +126,7 @@ impl Plugin for AuditPlugin {
 
         registrar.register_phase_hook(
             "audit",
-            Phase::PostInference,
+            Phase::AfterInference,
             AuditHook,
         )?;
 
@@ -96,27 +137,40 @@ impl Plugin for AuditPlugin {
 
 4. Register the plugin and activate it on an agent.
 
-```rust,ignore
+```rust,no_run
 use std::sync::Arc;
 use awaken::engine::GenaiExecutor;
 use awaken::registry::ModelBinding;
-use awaken::{AgentSpec, AgentRuntimeBuilder};
+use awaken::{AgentSpec, AgentRuntimeBuilder, Plugin, PluginDescriptor};
 
-let mut spec = AgentSpec::new("assistant")
-    .with_model_id("claude-sonnet")
-    .with_system_prompt("You are a helpful assistant.")
-    .with_hook_filter("audit");
-spec.plugin_ids.push("audit".into());
+pub struct AuditPlugin;
 
-let runtime = AgentRuntimeBuilder::new()
-    .with_plugin("audit", Arc::new(AuditPlugin))
-    .with_agent_spec(spec)
-    .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
-    .with_model_binding("claude-sonnet", ModelBinding {
-        provider_id: "anthropic".into(),
-        upstream_model: "claude-sonnet-4-20250514".into(),
-    })
-    .build()?;
+impl Plugin for AuditPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor { name: "audit" }
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut spec = AgentSpec::new("assistant")
+        .with_model_id("claude-sonnet")
+        .with_system_prompt("You are a helpful assistant.")
+        .with_hook_filter("audit");
+    spec.plugin_ids.push("audit".into());
+
+    let runtime = AgentRuntimeBuilder::new()
+        .with_plugin("audit", Arc::new(AuditPlugin))
+        .with_agent_spec(spec)
+        .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
+        .with_model_binding("claude-sonnet", ModelBinding {
+            provider_id: "anthropic".into(),
+            upstream_model: "claude-sonnet-4-20250514".into(),
+        })
+        .build()?;
+
+    let _runtime = runtime;
+    Ok(())
+}
 ```
 
 `plugin_ids` loads the plugin for the agent. `with_hook_filter` only filters the

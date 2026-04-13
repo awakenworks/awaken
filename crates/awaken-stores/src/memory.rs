@@ -184,6 +184,7 @@ impl ThreadRunStore for InMemoryStore {
             .unwrap_or_else(|| Thread::with_id(thread_id));
         thread.metadata.created_at.get_or_insert(now);
         thread.metadata.updated_at = Some(now);
+        thread.apply_run_projection(run);
         thread_guard.insert(thread_id.to_owned(), thread);
         msg_guard.insert(thread_id.to_owned(), messages.to_vec());
         run_guard.insert(run.run_id.clone(), run.clone());
@@ -314,9 +315,21 @@ mod tests {
             thread_id: thread_id.to_string(),
             agent_id: "agent".to_string(),
             parent_run_id: None,
+            request: None,
+            input: None,
+            output: None,
             status,
-            termination_code: None,
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: None,
+            outcome: None,
             created_at: 100,
+            started_at: None,
+            finished_at: None,
             updated_at: 100,
             steps: 0,
             input_tokens: 0,

@@ -154,7 +154,11 @@ pub type RunOutput = futures::stream::BoxStream<'static, AgentEvent>;
 Why a run terminated. Serialized as `{ "type": "...", "value": ... }`.
 
 ```rust,no_run
-# pub struct StoppedReason { pub code: String, pub detail: Option<String> }
+pub struct StoppedReason {
+    pub code: String,
+    pub detail: Option<String>,
+}
+
 pub enum TerminationReason {
     NaturalEnd,
     BehaviorRequested,

@@ -134,6 +134,7 @@ where
     let mailbox = Arc::new(Mailbox::new(
         runtime.clone(),
         Arc::new(InMemoryMailboxStore::new()),
+        store.clone(),
         server_name.to_string(),
         MailboxConfig::default(),
     ));

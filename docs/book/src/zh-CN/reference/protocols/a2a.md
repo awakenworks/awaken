@@ -20,7 +20,7 @@ A2A 适配器实现了官方 [A2A 协议](https://a2a-protocol.org/latest/specif
 | `/v1/a2a/tasks/:task_id/pushNotificationConfigs/:config_id` | `GET` / `DELETE` | 读取或删除推送通知配置。 |
 | `/v1/a2a/extendedAgentCard` | `GET` | 扩展 agent card；只有 `capabilities.extendedAgentCard=true` 时才受支持。 |
 
-租户/agent 作用域的等价路由位于 `/v1/a2a/:tenant/...`，例如 `/v1/a2a/research/message:send` 和 `/v1/a2a/research/tasks/:task_id`。
+租户/agent 作用域的等价路由位于 `/v1/a2a/:tenant/...`，例如 `/v1/a2a/research/message:send`、`/v1/a2a/research/tasks/:task_id` 和 `/v1/a2a/research/tasks/:task_id/pushNotificationConfigs`。
 
 ## Agent Card
 
@@ -125,9 +125,11 @@ Awaken 当前默认启用以下 A2A 能力：
 
 `extendedAgentCard` 仍然是可选能力，只有在配置 `ServerConfig.a2a_extended_card_bearer_token` 后才会启用。未启用时，对应端点会返回符合规范的 unsupported 错误。
 
-## 远程 Agent 委托
+## 远程 Agent 执行
 
-Awaken agent 可以通过 `AgentTool::remote()` 委托到远程 A2A agent。`A2aBackend` 会向远端发送 `message:send` 请求，读取返回的 `task.id`，再轮询 `/tasks/:task_id` 直到完成。从 LLM 视角看，这仍然只是一次普通工具调用。
+Awaken agent 可以通过内置 `A2aBackend` 运行或委托到远程 A2A agent；它是一个 `ExecutionBackend` 实现。委托时，父 agent 的 LLM 看到的是普通工具调用。root execution 时，`AgentRuntime` 会把 endpoint-backed agent 解析为 `ResolvedExecution::NonLocal`。
+
+backend 会向远端发送 `message:send` 请求，读取返回的 `task.id`，再通过 stream 或轮询 `/tasks/:task_id` 直到任务进入终态或中断态。它会保留远端生命周期状态，用于 continuation、等待输入/认证、取消和 artifact 输出。
 
 远程 agent 配置写在 `AgentSpec` 中。`RemoteEndpoint` 是通用结构，A2A 通过 `backend: "a2a"` 指定：
 
@@ -147,7 +149,7 @@ Awaken agent 可以通过 `AgentTool::remote()` 委托到远程 A2A agent。`A2a
 }
 ```
 
-带 `endpoint` 的 agent 会按远程 backend agent 解析。目前内置的委托 backend 是 A2A；没有 `endpoint` 的 agent 仍在本地运行。
+带 `endpoint` 的 agent 在注册了匹配 backend factory 时会按远程 backend agent 解析。当前内置远程 backend 是 A2A；没有 `endpoint` 的 agent 仍在本地运行。
 
 ## 另见
 

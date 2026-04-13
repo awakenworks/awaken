@@ -16,10 +16,10 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult, ToolOutput};
 
-# async fn fetch_weather(_city: &str) -> Result<String, ToolError> {
-#     Ok("Sunny, 22°C".to_string())
-# }
-#
+async fn fetch_weather(_city: &str) -> Result<String, ToolError> {
+    Ok("Sunny, 22°C".to_string())
+}
+
 pub struct WeatherTool;
 
 #[async_trait]
@@ -52,12 +52,39 @@ impl Tool for WeatherTool {
 
 2. Optionally override argument validation.
 
-```rust,ignore
-fn validate_args(&self, args: &Value) -> Result<(), ToolError> {
-    if !args.get("city").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty()) {
-        return Err(ToolError::InvalidArguments("'city' must be a non-empty string".into()));
+```rust,no_run
+use async_trait::async_trait;
+use serde_json::{Value, json};
+use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult};
+
+pub struct WeatherTool;
+
+#[async_trait]
+impl Tool for WeatherTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("get_weather", "Get Weather", "Fetch current weather for a city")
+            .with_parameters(json!({
+                "type": "object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "City name"
+                    }
+                },
+                "required": ["city"]
+            }))
     }
-    Ok(())
+
+    fn validate_args(&self, args: &Value) -> Result<(), ToolError> {
+        if !args.get("city").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty()) {
+            return Err(ToolError::InvalidArguments("'city' must be a non-empty string".into()));
+        }
+        Ok(())
+    }
+
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        Ok(ToolResult::success("get_weather", json!({})).into())
+    }
 }
 ```
 
@@ -65,15 +92,45 @@ fn validate_args(&self, args: &Value) -> Result<(), ToolError> {
 
 3. Register the tool with the builder.
 
-```rust,ignore
+```rust,no_run
 use std::sync::Arc;
-use awaken::AgentRuntimeBuilder;
+use async_trait::async_trait;
+use serde_json::{Value, json};
+use awaken::engine::GenaiExecutor;
+use awaken::registry::ModelBinding;
+use awaken::{AgentRuntimeBuilder, AgentSpec};
+use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult};
 
-let runtime = AgentRuntimeBuilder::new()
-    .with_tool("get_weather", Arc::new(WeatherTool))
-    .with_agent_spec(spec)
-    .with_provider("anthropic", Arc::new(provider))
-    .build()?;
+pub struct WeatherTool;
+
+#[async_trait]
+impl Tool for WeatherTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("get_weather", "Get Weather", "Fetch current weather for a city")
+            .with_parameters(json!({"type": "object", "properties": {}}))
+    }
+
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        Ok(ToolResult::success("get_weather", json!({})).into())
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let spec = AgentSpec::new("assistant").with_model_id("claude-sonnet");
+
+    let runtime = AgentRuntimeBuilder::new()
+        .with_tool("get_weather", Arc::new(WeatherTool))
+        .with_agent_spec(spec)
+        .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
+        .with_model_binding("claude-sonnet", ModelBinding {
+            provider_id: "anthropic".into(),
+            upstream_model: "claude-sonnet-4-20250514".into(),
+        })
+        .build()?;
+
+    let _runtime = runtime;
+    Ok(())
+}
 ```
 
 The string ID passed to `with_tool` must match the `id` in `ToolDescriptor::new`.
@@ -82,10 +139,38 @@ The string ID passed to `with_tool` must match the `id` in `ToolDescriptor::new`
 
    Tools can also be registered inside a `Plugin::register` method through the `PluginRegistrar`:
 
-```rust,ignore
-fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
-    registrar.register_tool("get_weather", Arc::new(WeatherTool))?;
-    Ok(())
+```rust,no_run
+use std::sync::Arc;
+use async_trait::async_trait;
+use serde_json::{Value, json};
+use awaken::{Plugin, PluginDescriptor, PluginRegistrar, StateError};
+use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult};
+
+pub struct WeatherTool;
+
+#[async_trait]
+impl Tool for WeatherTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("get_weather", "Get Weather", "Fetch current weather for a city")
+            .with_parameters(json!({"type": "object", "properties": {}}))
+    }
+
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        Ok(ToolResult::success("get_weather", json!({})).into())
+    }
+}
+
+pub struct WeatherPlugin;
+
+impl Plugin for WeatherPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor { name: "weather" }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_tool("get_weather", Arc::new(WeatherTool))?;
+        Ok(())
+    }
 }
 ```
 

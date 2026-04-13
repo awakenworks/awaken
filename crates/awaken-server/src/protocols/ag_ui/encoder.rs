@@ -72,6 +72,7 @@ impl AgUiEncoder {
                 thread_id,
                 run_id,
                 parent_run_id,
+                ..
             } => {
                 self.message_id = run_id.clone();
                 vec![Event::run_started(thread_id, run_id, parent_run_id.clone())]
@@ -93,7 +94,7 @@ impl AgUiEncoder {
                     self.reasoning_open = true;
                     events.push(Event::ReasoningMessageStart {
                         message_id: self.message_id.clone(),
-                        role: Role::Assistant,
+                        role: Role::Reasoning,
                         base: BaseEvent::default(),
                     });
                 }
@@ -206,6 +207,7 @@ impl AgUiEncoder {
                 run_id,
                 result,
                 termination,
+                ..
             } => {
                 self.guard.mark_finished();
                 let mut events = Vec::new();
@@ -357,6 +359,7 @@ mod tests {
         let events = enc.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         });
         assert_eq!(events.len(), 1);
@@ -415,6 +418,7 @@ mod tests {
         let events = enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::NaturalEnd,
         });
@@ -436,6 +440,7 @@ mod tests {
         let events = enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::Error("boom".into()),
         });
@@ -467,7 +472,13 @@ mod tests {
             delta: "thinking".into(),
         });
         assert_eq!(events.len(), 2);
-        assert!(matches!(&events[0], Event::ReasoningMessageStart { .. }));
+        assert!(matches!(
+            &events[0],
+            Event::ReasoningMessageStart {
+                role: Role::Reasoning,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -512,6 +523,7 @@ mod tests {
         enc.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         });
         enc.on_agent_event(&AgentEvent::StepStart {
@@ -532,6 +544,7 @@ mod tests {
         let run_events = enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::NaturalEnd,
         });
@@ -552,6 +565,7 @@ mod tests {
         enc.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         });
         enc.on_agent_event(&AgentEvent::StepStart {
@@ -565,6 +579,7 @@ mod tests {
         let run_events = enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::NaturalEnd,
         });
@@ -595,6 +610,7 @@ mod tests {
         all_events.extend(enc.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         }));
         all_events.extend(enc.on_agent_event(&AgentEvent::StepStart {
@@ -637,6 +653,7 @@ mod tests {
         all_events.extend(enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::NaturalEnd,
         }));
@@ -695,6 +712,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t".into(),
             run_id: "r".into(),
+            identity: None,
             parent_run_id: None,
         }));
         all.extend(enc.on_agent_event(&AgentEvent::StepStart {
@@ -703,6 +721,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t".into(),
             run_id: "r".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::Error("boom".into()),
         }));
@@ -718,6 +737,7 @@ mod tests {
         let events = enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::Suspended,
         });
@@ -745,6 +765,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         }));
         all.extend(enc.on_agent_event(&AgentEvent::StepStart {
@@ -764,6 +785,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::Suspended,
         }));
@@ -787,6 +809,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         }));
         all.extend(enc.on_agent_event(&AgentEvent::StepStart {
@@ -799,6 +822,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::NaturalEnd,
         }));
@@ -834,12 +858,14 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         }));
         // Suspend
         all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::Suspended,
         }));
@@ -848,6 +874,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::Suspended,
         }));
@@ -871,6 +898,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         }));
         all.extend(enc.on_agent_event(&AgentEvent::StepStart {
@@ -904,6 +932,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::Suspended,
         }));
@@ -920,6 +949,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         }));
         // ToolCallResumed with approval result
@@ -937,6 +967,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::NaturalEnd,
         }));
@@ -965,6 +996,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         }));
         all.extend(enc.on_agent_event(&AgentEvent::StepStart {
@@ -983,6 +1015,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::Suspended,
         }));
@@ -991,6 +1024,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         }));
         all.extend(enc.on_agent_event(&AgentEvent::ToolCallResumed {
@@ -1007,6 +1041,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::NaturalEnd,
         }));
@@ -1034,6 +1069,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         }));
         all.extend(enc.on_agent_event(&AgentEvent::StepStart {
@@ -1052,6 +1088,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::Suspended,
         }));
@@ -1060,11 +1097,13 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         }));
         all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::Cancelled,
         }));
@@ -1224,6 +1263,7 @@ mod tests {
                 AgentEvent::RunFinish {
                     thread_id: "t1".into(),
                     run_id: "r1".into(),
+                    identity: None,
                     result: None,
                     termination: TerminationReason::NaturalEnd,
                 },
@@ -1415,6 +1455,7 @@ mod tests {
                 AgentEvent::RunFinish {
                     thread_id: "t1".into(),
                     run_id: "r1".into(),
+                    identity: None,
                     result: None,
                     termination: TerminationReason::Suspended,
                 },
@@ -1445,6 +1486,7 @@ mod tests {
         let events = enc2.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::Suspended,
         });
@@ -1467,6 +1509,7 @@ mod tests {
         all.extend(enc.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         }));
         all.extend(enc.on_agent_event(&AgentEvent::Error {
@@ -1508,6 +1551,7 @@ mod tests {
             enc.on_agent_event(&AgentEvent::RunFinish {
                 thread_id: "t1".into(),
                 run_id: "r1".into(),
+                identity: None,
                 result: None,
                 termination: TerminationReason::NaturalEnd,
             })
@@ -1746,6 +1790,7 @@ mod tests {
                 AgentEvent::RunStart {
                     thread_id: "t1".into(),
                     run_id: "r1".into(),
+                    identity: None,
                     parent_run_id: None,
                 },
                 AgentEvent::StepStart {
@@ -1785,6 +1830,7 @@ mod tests {
                 AgentEvent::RunFinish {
                     thread_id: "t1".into(),
                     run_id: "r1".into(),
+                    identity: None,
                     result: None,
                     termination: TerminationReason::NaturalEnd,
                 },

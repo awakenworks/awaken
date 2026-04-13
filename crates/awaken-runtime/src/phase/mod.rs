@@ -4,7 +4,8 @@ mod queue_plugin;
 mod reports;
 
 pub use crate::hooks::{
-    PhaseContext, PhaseHook, ToolGateHook, TypedEffectHandler, TypedScheduledActionHandler,
+    PhaseContext, PhaseHook, ToolGateHook, ToolPolicyHook, TypedEffectHandler,
+    TypedScheduledActionHandler,
 };
 pub use engine::PhaseRuntime;
 pub use env::ExecutionEnv;
@@ -13,6 +14,6 @@ pub use reports::{
 };
 
 pub(crate) use crate::hooks::{
-    EffectHandlerArc, PhaseHookArc, ScheduledActionHandlerArc, ToolGateHookArc, TypedEffectAdapter,
-    TypedScheduledActionAdapter,
+    EffectHandlerArc, PhaseHookArc, ScheduledActionHandlerArc, ToolGateHookArc, ToolPolicyGateHook,
+    TypedEffectAdapter, TypedScheduledActionAdapter,
 };

@@ -1028,7 +1028,7 @@ mod tests {
     async fn report_progress_populates_lineage_fields() {
         use crate::contract::event::AgentEvent;
         use crate::contract::event_sink::VecEventSink;
-        use crate::contract::identity::RunIdentity;
+        use crate::contract::identity::{RunIdentity, RunRef};
         use crate::contract::progress::ProgressStatus;
 
         let sink = Arc::new(VecEventSink::new());
@@ -1036,10 +1036,13 @@ mod tests {
         ctx.call_id = "call-7".into();
         ctx.tool_name = "fetch".into();
         ctx.run_identity = RunIdentity {
-            run_id: "run-abc".into(),
-            parent_run_id: Some("run-parent".into()),
-            thread_id: "thread-xyz".into(),
-            parent_tool_call_id: Some("parent-call-1".into()),
+            run: RunRef {
+                run_id: "run-abc".into(),
+                parent_run_id: Some("run-parent".into()),
+                thread_id: "thread-xyz".into(),
+                parent_tool_call_id: Some("parent-call-1".into()),
+                ..RunRef::default()
+            },
             ..RunIdentity::default()
         };
         ctx.activity_sink = Some(sink.clone() as Arc<dyn EventSink>);
@@ -1066,7 +1069,7 @@ mod tests {
     async fn report_progress_parent_node_id_falls_back_to_run_when_no_parent_call() {
         use crate::contract::event::AgentEvent;
         use crate::contract::event_sink::VecEventSink;
-        use crate::contract::identity::RunIdentity;
+        use crate::contract::identity::{RunIdentity, RunRef};
         use crate::contract::progress::ProgressStatus;
 
         let sink = Arc::new(VecEventSink::new());
@@ -1074,8 +1077,11 @@ mod tests {
         ctx.call_id = "call-8".into();
         ctx.tool_name = "fetch".into();
         ctx.run_identity = RunIdentity {
-            run_id: "run-xyz".into(),
-            parent_tool_call_id: None,
+            run: RunRef {
+                run_id: "run-xyz".into(),
+                parent_tool_call_id: None,
+                ..RunRef::default()
+            },
             ..RunIdentity::default()
         };
         ctx.activity_sink = Some(sink.clone() as Arc<dyn EventSink>);

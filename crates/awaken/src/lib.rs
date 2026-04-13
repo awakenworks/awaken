@@ -8,12 +8,26 @@
 //!
 //! ```rust,ignore
 //! use awaken::prelude::*;
+//! use awaken::engine::GenaiExecutor;
 //!
-//! let runtime = AgentRuntimeBuilder::new("my-agent")
-//!     .build()
-//!     .await?;
+//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! let runtime = AgentRuntimeBuilder::new()
+//!     .with_agent_spec(AgentSpec::new("assistant").with_model_id("gpt-4o-mini"))
+//!     .with_provider("openai", Arc::new(GenaiExecutor::new()))
+//!     .with_model_binding("gpt-4o-mini", ModelBinding {
+//!         provider_id: "openai".into(),
+//!         upstream_model: "gpt-4o-mini".into(),
+//!     })
+//!     .build()?;
 //!
-//! runtime.run(RunRequest::default()).await?;
+//! let request = RunRequest::new("thread-1", vec![Message::user("Hello")])
+//!     .with_agent_id("assistant");
+//!
+//! let result = runtime.run_to_completion(request).await?;
+//! let response = result.response;
+//! # let _ = response;
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! # Module layout
@@ -34,7 +48,7 @@
 
 pub mod prelude;
 
-/// Storage backend implementations (in-memory, file, PostgreSQL).
+/// Storage backend implementations (in-memory, file, PostgreSQL, SQLite mailbox).
 pub use awaken_stores as stores;
 
 /// Generative-UI extension (feature `generative-ui`).

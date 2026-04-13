@@ -14,7 +14,7 @@
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "...", features = ["server"] }
+awaken = { package = "awaken-agent", version = "0.2", features = ["server"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 ```
 
@@ -58,6 +58,7 @@ let mailbox_store = Arc::new(InMemoryMailboxStore::new());
 let mailbox = Arc::new(Mailbox::new(
     runtime.clone(),
     mailbox_store,
+    store.clone(),
     "default-consumer".to_string(),
     MailboxConfig::default(),
 ));

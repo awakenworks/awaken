@@ -95,6 +95,8 @@ impl TerminationReason {
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
+    /// Run has been accepted as a user intent but has not started executing.
+    Created,
     /// Run is actively executing.
     #[default]
     Running,
@@ -116,6 +118,7 @@ impl RunStatus {
             return true;
         }
         match self {
+            RunStatus::Created => matches!(next, RunStatus::Running | RunStatus::Done),
             RunStatus::Running => matches!(next, RunStatus::Waiting | RunStatus::Done),
             RunStatus::Waiting => matches!(next, RunStatus::Running | RunStatus::Done),
             RunStatus::Done => false,
@@ -142,6 +145,8 @@ mod tests {
 
     #[test]
     fn run_status_transitions_match_state_machine() {
+        assert!(RunStatus::Created.can_transition_to(RunStatus::Running));
+        assert!(RunStatus::Created.can_transition_to(RunStatus::Done));
         assert!(RunStatus::Running.can_transition_to(RunStatus::Waiting));
         assert!(RunStatus::Running.can_transition_to(RunStatus::Done));
         assert!(RunStatus::Waiting.can_transition_to(RunStatus::Running));
@@ -157,6 +162,7 @@ mod tests {
 
     #[test]
     fn run_status_terminal_matches_done_only() {
+        assert!(!RunStatus::Created.is_terminal());
         assert!(!RunStatus::Running.is_terminal());
         assert!(!RunStatus::Waiting.is_terminal());
         assert!(RunStatus::Done.is_terminal());
@@ -270,7 +276,12 @@ mod tests {
 
     #[test]
     fn run_status_serde_roundtrip() {
-        for status in [RunStatus::Running, RunStatus::Waiting, RunStatus::Done] {
+        for status in [
+            RunStatus::Created,
+            RunStatus::Running,
+            RunStatus::Waiting,
+            RunStatus::Done,
+        ] {
             let json = serde_json::to_string(&status).unwrap();
             let parsed: RunStatus = serde_json::from_str(&json).unwrap();
             assert_eq!(parsed, status);
@@ -462,6 +473,9 @@ mod tests {
     fn run_status_all_valid_transitions() {
         // Valid transitions (including self-transitions).
         let valid = [
+            (RunStatus::Created, RunStatus::Created),
+            (RunStatus::Created, RunStatus::Running),
+            (RunStatus::Created, RunStatus::Done),
             (RunStatus::Running, RunStatus::Running),
             (RunStatus::Running, RunStatus::Waiting),
             (RunStatus::Running, RunStatus::Done),
@@ -479,8 +493,10 @@ mod tests {
 
         // Invalid transitions: Done cannot go back to Running or Waiting.
         let invalid = [
+            (RunStatus::Created, RunStatus::Waiting),
             (RunStatus::Done, RunStatus::Running),
             (RunStatus::Done, RunStatus::Waiting),
+            (RunStatus::Done, RunStatus::Created),
         ];
         for (from, to) in &invalid {
             assert!(

@@ -2,22 +2,23 @@
 
 ## Which LLM providers are supported?
 
-Any provider compatible with genai. This includes OpenAI, Anthropic, DeepSeek, Google Gemini, Ollama, and others. Configure the provider via model ID string in `AgentSpec` or `AgentConfig`. The `GenaiExecutor` handles provider routing based on the model prefix.
+Any provider compatible with `genai`. This includes OpenAI, Anthropic, DeepSeek, Google Gemini, Ollama, and others. Register a provider executor under a provider ID, bind a stable model ID through `ModelBinding { provider_id, upstream_model }`, and reference that stable ID from `AgentSpec.model_id`.
 
 ## How do I add a new storage backend?
 
-Implement the `ThreadRunStore` trait from `awaken-contract`. The trait requires methods for loading and saving threads, runs, and checkpoints. See `InMemoryStore` and `FileStore` in `awaken-stores` for reference implementations. Pass your store to `AgentRuntime::new().with_thread_run_store(store)` or `AgentRuntimeBuilder::new().with_thread_run_store(store)`.
+Implement the storage trait for the surface you need: `ThreadRunStore` for thread/run persistence, `ConfigStore` for runtime-managed config, `ProfileStore` for profile/shared state, and `MailboxStore` for HITL/background jobs. See `InMemoryStore`, `FileStore`, `PostgresStore`, `InMemoryMailboxStore`, and `SqliteMailboxStore` in `awaken-stores` for reference implementations.
 
 ## Can I use awaken without the server?
 
-Yes. `AgentRuntime` is a standalone library type. Create a runtime, build a `RunRequest`, and call `runtime.run(request, sink)` directly. The server crate (`awaken-server`) is an optional HTTP/SSE gateway layered on top.
+Yes. `AgentRuntime` is a standalone library type. Create a runtime, build a `RunRequest`, and call `runtime.run_to_completion(request)` when you only need the final result. Use `runtime.run(request, sink)` when your caller needs streaming events. The server crate (`awaken-server`) is an optional HTTP/SSE gateway layered on top.
 
 ## How do I run multiple agents?
 
 Two approaches:
 
-- **Delegates**: Define delegate agent IDs in the parent `AgentSpec`. The runtime handles handoff via `ActiveAgentIdKey` at step boundaries.
-- **A2A protocol**: Register remote agents via `AgentRuntimeBuilder::with_remote_agents()`. Remote agents are discovered and invoked over HTTP using the Agent-to-Agent protocol.
+- **Delegates**: Define delegate agent IDs in the parent `AgentSpec`. The runtime exposes each delegate as an `AgentTool`; local delegates run in-process and endpoint-backed delegates run through an `ExecutionBackend`.
+- **Handoff**: Use the handoff extension when one agent should take over the current thread instead of returning a delegate result.
+- **A2A protocol**: Register or discover remote agents via `AgentRuntimeBuilder::with_remote_agents()` or endpoint-backed `AgentSpec` values. Remote agents are invoked over HTTP using the Agent-to-Agent protocol.
 
 ## What is the difference between Run scope and Thread scope?
 
@@ -32,7 +33,7 @@ Return `ToolResult::error(tool_name, message)` from your tool's `execute` method
 
 ## Can tools run in parallel?
 
-Yes. Configure `ToolExecutionMode` in the agent spec. When set to parallel mode, the runtime executes independent tool calls concurrently. Results are collected and merged before proceeding to the next inference step.
+Yes, but not through `AgentSpec`. The built-in resolver defaults to `SequentialToolExecutor`. Install `ParallelToolExecutor` with a custom resolver or `ResolvedAgent::with_tool_executor(...)` when the tools are independent and can share a frozen state snapshot safely.
 
 ## How do I debug a run that is stuck?
 
@@ -44,7 +45,7 @@ Implement `LlmExecutor` with canned responses. See [Testing Strategy](../how-to/
 
 ## What happens when parallel tools write to the same state key?
 
-If the key uses `MergeStrategy::Exclusive`, the merge fails and hooks fall back to serial execution. Use `MergeStrategy::Commutative` for keys that support concurrent writes. See [State and Snapshot Model](../explanation/state-and-snapshot-model.md).
+If you merge parallel state batches yourself, `MergeStrategy::Exclusive` conflicts when two batches write the same key, while `MergeStrategy::Commutative` allows deterministic merging for keys designed for concurrent writes. The default loop commits tool results in result order; custom parallel integrations should use the parallel merge helpers. See [State and Snapshot Model](../explanation/state-and-snapshot-model.md).
 
 ## How do request transforms work?
 
@@ -52,16 +53,17 @@ Plugins register `InferenceRequestTransform` via the registrar. Transforms modif
 
 ## Can I write a custom storage backend?
 
-Yes. Implement `ThreadRunStore` (for state persistence) and optionally `MailboxStore` (for HITL). See trait definitions in `awaken-stores`. File and PostgreSQL implementations serve as references.
+Yes. Implement `ThreadRunStore` for state persistence, `ConfigStore` for runtime config, `ProfileStore` for profile/shared state, and optionally `MailboxStore` for HITL/background jobs. File, PostgreSQL, memory, and SQLite mailbox implementations serve as references.
 
 ## How does context compaction work?
 
 When `autocompact_threshold: Option<usize>` is set in `ContextWindowPolicy`, the `CompactionPlugin` monitors token usage. When the context exceeds that threshold, it finds a safe compaction boundary (where all tool call/result pairs are complete), summarizes older messages via LLM, and replaces them with a `<conversation-summary>` message. See [Optimize Context Window](../how-to/optimize-context-window.md).
 
-## How do I choose between AI SDK v6, AG-UI, and A2A protocols?
+## How do I choose between AI SDK v6, AG-UI, A2A, and MCP protocols?
 
 - **AI SDK v6**: Best for React frontends using Vercel AI SDK. Supports text streaming, tool calls, and state snapshots.
 - **AG-UI**: Best for CopilotKit frontends. Supports generative UI components and agent collaboration.
 - **A2A**: Best for agent-to-agent communication. Used for delegate agents and inter-service orchestration.
+- **MCP HTTP**: Best when external MCP clients need to call Awaken tools over JSON-RPC with an `MCP-Session-Id` lifecycle.
 
-All three run over HTTP/SSE. Choose based on your frontend framework.
+Choose based on the client ecosystem and wire protocol you need.

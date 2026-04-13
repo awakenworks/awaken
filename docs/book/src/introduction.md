@@ -9,14 +9,14 @@
 | `awaken-contract` | Core contracts: types, traits, state model, agent specs |
 | `awaken-runtime` | Execution engine: phase loop, plugin system, agent loop, builder |
 | `awaken-server` | HTTP/SSE gateway with protocol adapters |
-| `awaken-stores` | Storage backends: memory, file, postgres |
+| `awaken-stores` | Storage backends: memory, file, PostgreSQL, and SQLite mailbox |
 | `awaken-tool-pattern` | Glob/regex tool matching for permission and reminder rules |
 | `awaken-ext-permission` | Permission plugin with allow/deny/ask policies |
 | `awaken-ext-observability` | OpenTelemetry-based LLM and tool call tracing |
 | `awaken-ext-mcp` | Model Context Protocol client integration |
 | `awaken-ext-skills` | Skill package discovery and activation |
 | `awaken-ext-reminder` | Declarative reminder rules triggered after tool execution |
-| `awaken-ext-generative-ui` | Declarative UI components (A2UI protocol) |
+| `awaken-ext-generative-ui` | Declarative UI components through A2UI, JSON Render, and OpenUI Lang |
 | `awaken-ext-deferred-tools` | Deferred tool loading with probabilistic promotion |
 | `awaken` | Facade crate that re-exports core modules |
 
@@ -28,7 +28,7 @@ Application code
         |
         v
 AgentRuntime
-  resolves AgentSpec -> ResolvedAgent
+  resolves AgentSpec -> ResolvedExecution
   builds ExecutionEnv from plugins
   runs the phase loop and exposes cancel / decision control
         |
@@ -72,5 +72,6 @@ These paths matter most when you move from docs into code:
 | `crates/awaken-server/` | HTTP/SSE server surfaces |
 | `crates/awaken-stores/` | Storage backends |
 | `crates/awaken/examples/` | Small runtime examples |
-| `examples/src/` | Full-stack server examples |
+| `examples/` | Full-stack frontend and server examples |
+| `apps/admin-console/` | Config API management UI |
 | `docs/book/src/` | This documentation source |

@@ -109,6 +109,7 @@ mod tests {
         encoder.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         });
         let event = AgentEvent::TextDelta {
@@ -170,6 +171,7 @@ mod tests {
         let event = AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         };
         let frames = encode_event_to_sse(&mut encoder, &event);
@@ -186,6 +188,7 @@ mod tests {
         let event = AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: TerminationReason::NaturalEnd,
         };
@@ -202,6 +205,7 @@ mod tests {
         encoder.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             parent_run_id: None,
         });
         let frames = encode_prologue_to_sse(&mut encoder);

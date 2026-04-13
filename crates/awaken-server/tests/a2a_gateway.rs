@@ -11,7 +11,9 @@ use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage}
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::message::ToolCall;
 use awaken_contract::contract::message::{Message, Role};
-use awaken_contract::contract::storage::{RunRecord, RunStore, ThreadRunStore, ThreadStore};
+use awaken_contract::contract::storage::{
+    RunRecord, RunStore, ThreadRunStore, ThreadStore, WaitingReason,
+};
 use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
 use awaken_contract::state::PersistedState;
 use awaken_protocol_a2a::{
@@ -395,6 +397,7 @@ fn make_gateway_app_with_options(
     let mailbox = Arc::new(awaken_server::mailbox::Mailbox::new(
         runtime.clone(),
         mailbox_store,
+        store.clone(),
         "gateway-test".to_string(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));
@@ -461,6 +464,7 @@ fn make_delegate_gateway_app(mock_base_url: &str) -> TestApp {
     let mailbox = Arc::new(awaken_server::mailbox::Mailbox::new(
         runtime.clone(),
         mailbox_store,
+        store.clone(),
         "gateway-test".to_string(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));
@@ -568,7 +572,6 @@ struct SeedRemoteRun<'a> {
     run_id: &'a str,
     message: &'a str,
     status: RunStatus,
-    termination_code: &'a str,
     updated_at: u64,
     state: PersistedState,
 }
@@ -583,9 +586,21 @@ async fn seed_remote_run(store: &Arc<InMemoryStore>, seed: SeedRemoteRun<'_>) {
                 thread_id: seed.thread_id.into(),
                 agent_id: "remote-agent".into(),
                 parent_run_id: None,
+                request: None,
+                input: None,
+                output: None,
                 status: seed.status,
-                termination_code: Some(seed.termination_code.into()),
+                termination_reason: None,
+                final_output: None,
+                error_payload: None,
+                dispatch_id: None,
+                session_id: None,
+                transport_request_id: None,
+                waiting: None,
+                outcome: None,
                 created_at: seed.updated_at,
+                started_at: None,
+                finished_at: None,
                 updated_at: seed.updated_at,
                 steps: 1,
                 input_tokens: 0,
@@ -1058,7 +1073,6 @@ async fn gateway_continuation_uses_requested_run_remote_state_not_latest_run() {
             run_id: "older-waiting-run",
             message: "old waiting turn",
             status: RunStatus::Waiting,
-            termination_code: "input_required",
             updated_at: 1,
             state: old_state,
         },
@@ -1071,7 +1085,6 @@ async fn gateway_continuation_uses_requested_run_remote_state_not_latest_run() {
             run_id: "latest-completed-run",
             message: "latest completed turn",
             status: RunStatus::Done,
-            termination_code: "natural",
             updated_at: 2,
             state: latest_state,
         },
@@ -1149,10 +1162,7 @@ async fn run_api_gateway_maps_remote_input_required_to_waiting() {
         .expect("latest run lookup")
         .expect("persisted run");
     assert_eq!(latest_run.status, RunStatus::Waiting);
-    assert_eq!(
-        latest_run.termination_code.as_deref(),
-        Some("input_required")
-    );
+    assert_eq!(latest_run.waiting_reason(), Some(WaitingReason::UserInput));
 
     let send_requests = mock.state.send_requests.lock();
     let cfg = send_requests[0]

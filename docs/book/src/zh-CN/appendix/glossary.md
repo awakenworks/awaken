@@ -23,7 +23,7 @@
 | `ToolCallContext` | 工具调用上下文 | tool 执行期可读取状态和上报活动的上下文。 |
 | `TerminationReason` | 终止原因 | run 结束的原因。 |
 | `SuspendTicket` | 挂起票据 | 描述挂起原因、恢复模式和待决 tool call。 |
-| `MailboxJob` | 邮箱任务 | 后台执行与 HITL 的持久化作业项。 |
+| `RunDispatch` | 运行投递 | 后台执行与 HITL 的持久化队列投递记录。 |
 | `RunRequest` | 运行请求 | 启动 run 的输入。 |
 | `MergeStrategy` | 合并策略 | 并行状态写入如何合并。 |
 | `KeyScope` | 键作用域 | 状态键生命周期：`Run` 或 `Thread`。 |
@@ -31,7 +31,10 @@
 | `RunStatus` | 运行状态 | 粗粒度 run 状态：`Running`、`Waiting`、`Done`。 |
 | `ToolCallStatus` | 工具调用状态 | 单个 tool call 的状态。 |
 | `ResolvedAgent` | 已解析智能体 | 从 registries 解析完成、可直接运行的 agent。 |
+| `ResolvedExecution` | 已解析执行 | 运行时解析结果：本地 `ResolvedAgent` 或 backend-backed 远程 agent。 |
 | `AgentResolver` | 智能体解析器 | 把 agent ID 解析成 `ResolvedAgent` 的组件。 |
+| `ExecutionResolver` | 执行解析器 | `AgentRuntime` root run 使用的解析器，用来选择本地执行或 backend-backed 执行。 |
+| `ExecutionBackend` | 执行后端 | 非本地 root execution 和 delegation 的扩展点，包括 A2A。 |
 | `BuildError` | 构建错误 | `AgentRuntimeBuilder::build()` 阶段的错误。 |
 | `RuntimeError` | 运行时错误 | agent loop 执行中的错误。 |
 | `InferenceOverride` | 推理覆盖 | 针对单次推理的 model / temperature 等覆盖。 |

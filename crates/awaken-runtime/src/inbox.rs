@@ -5,7 +5,7 @@
 //!
 //! When the receiver has been dropped (agent run ended), `send()` invokes
 //! an optional `on_closed` callback so infrastructure (e.g. mailbox) can
-//! react — for example by enqueuing a wake job for continuation.
+//! react — for example by enqueuing a wake dispatch for continuation.
 
 use std::sync::Arc;
 

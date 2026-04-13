@@ -44,6 +44,60 @@ pub struct MessageMetadata {
     pub step_index: Option<u32>,
 }
 
+/// A message persisted as part of a thread's append-only log.
+///
+/// `Message` remains the protocol payload. `MessageRecord` is the durable
+/// thread-owned view that assigns a sequence number and exposes producer
+/// relationships without making runs own message bodies.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageRecord {
+    /// Stable message identifier.
+    pub message_id: String,
+    /// Thread that owns the message.
+    pub thread_id: String,
+    /// 1-based sequence number within the thread log.
+    pub seq: u64,
+    /// Message payload.
+    pub message: Message,
+    /// Run that produced this message, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub produced_by_run_id: Option<String>,
+    /// Step that produced this message, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_index: Option<u32>,
+    /// Tool call this message responds to, if this is a tool result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// Unix timestamp (seconds) when the message was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<u64>,
+}
+
+impl MessageRecord {
+    /// Build a record from a thread-owned message payload.
+    pub fn from_message(thread_id: impl Into<String>, seq: u64, message: Message) -> Self {
+        let produced_by_run_id = message
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.run_id.clone());
+        let step_index = message
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.step_index);
+        let tool_call_id = message.tool_call_id.clone();
+        Self {
+            message_id: message.id.clone().unwrap_or_else(gen_message_id),
+            thread_id: thread_id.into(),
+            seq,
+            message,
+            produced_by_run_id,
+            step_index,
+            tool_call_id,
+            created_at: None,
+        }
+    }
+}
+
 /// Generate a time-ordered UUID v7 message identifier.
 pub fn gen_message_id() -> String {
     uuid::Uuid::now_v7().to_string()
@@ -235,6 +289,26 @@ impl Message {
     pub fn with_metadata(mut self, metadata: MessageMetadata) -> Self {
         self.metadata = Some(metadata);
         self
+    }
+
+    /// Return the run that produced this message, if recorded.
+    #[must_use]
+    pub fn produced_by_run_id(&self) -> Option<&str> {
+        self.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.run_id.as_deref())
+    }
+
+    /// Mark this message as produced by a run without overwriting existing
+    /// producer metadata.
+    pub fn mark_produced_by(&mut self, run_id: &str, step_index: Option<u32>) {
+        let metadata = self.metadata.get_or_insert_with(MessageMetadata::default);
+        if metadata.run_id.is_none() {
+            metadata.run_id = Some(run_id.to_string());
+        }
+        if metadata.step_index.is_none() {
+            metadata.step_index = step_index;
+        }
     }
 }
 
@@ -583,6 +657,50 @@ mod tests {
         let meta: MessageMetadata = serde_json::from_str(json).unwrap();
         assert_eq!(meta.run_id.as_deref(), Some("r1"));
         assert!(meta.step_index.is_none());
+    }
+
+    #[test]
+    fn message_record_projects_thread_sequence_and_producer() {
+        let msg = Message::tool("call-1", "result")
+            .with_id("msg-1".to_string())
+            .with_metadata(MessageMetadata {
+                run_id: Some("run-1".to_string()),
+                step_index: Some(3),
+            });
+
+        let record = MessageRecord::from_message("thread-1", 7, msg);
+
+        assert_eq!(record.message_id, "msg-1");
+        assert_eq!(record.thread_id, "thread-1");
+        assert_eq!(record.seq, 7);
+        assert_eq!(record.produced_by_run_id.as_deref(), Some("run-1"));
+        assert_eq!(record.step_index, Some(3));
+        assert_eq!(record.tool_call_id.as_deref(), Some("call-1"));
+    }
+
+    #[test]
+    fn mark_produced_by_preserves_existing_metadata() {
+        let mut msg = Message::assistant("hello").with_metadata(MessageMetadata {
+            run_id: Some("existing-run".to_string()),
+            step_index: Some(1),
+        });
+
+        msg.mark_produced_by("new-run", Some(2));
+
+        assert_eq!(msg.produced_by_run_id(), Some("existing-run"));
+        let metadata = msg.metadata.as_ref().unwrap();
+        assert_eq!(metadata.step_index, Some(1));
+    }
+
+    #[test]
+    fn mark_produced_by_sets_missing_metadata() {
+        let mut msg = Message::assistant("hello");
+
+        msg.mark_produced_by("run-1", Some(0));
+
+        assert_eq!(msg.produced_by_run_id(), Some("run-1"));
+        let metadata = msg.metadata.as_ref().unwrap();
+        assert_eq!(metadata.step_index, Some(0));
     }
 
     // ── Message text extraction tests ──

@@ -983,6 +983,7 @@ async fn resumed_calls_do_not_serialize_neighboring_fresh_batches() {
     let mut total_input_tokens = 0;
     let mut total_output_tokens = 0;
     let mut truncation_state = crate::context::TruncationState::new();
+    let input_message_count = messages.len();
     let mut ctx = super::step::StepContext {
         agent: &mut agent,
         messages: &mut messages,
@@ -990,6 +991,7 @@ async fn resumed_calls_do_not_serialize_neighboring_fresh_batches() {
         sink,
         checkpoint_store: None,
         run_identity: &run_identity,
+        input_message_count,
         cancellation_token: None,
         run_overrides: &run_overrides,
         total_input_tokens: &mut total_input_tokens,
@@ -1200,6 +1202,7 @@ async fn tool_gate_recheck_executes_before_tool_hook_once() {
             .with_tools(vec![Arc::new(UnlockTool), Arc::new(GuardedTool)]);
     agent.env = env;
 
+    let input_message_count = messages.len();
     let mut ctx = super::step::StepContext {
         agent: &mut agent,
         messages: &mut messages,
@@ -1207,6 +1210,7 @@ async fn tool_gate_recheck_executes_before_tool_hook_once() {
         sink: sink_dyn,
         checkpoint_store: None,
         run_identity: &run_identity,
+        input_message_count,
         cancellation_token: None,
         run_overrides: &run_overrides,
         total_input_tokens: &mut total_input_tokens,
@@ -1275,6 +1279,7 @@ async fn tool_gate_flush_suspension_backfills_rechecked_and_later_calls() {
             .with_tools(vec![Arc::new(SuspendedUnlockTool), Arc::new(GuardedTool)]);
     agent.env = env;
 
+    let input_message_count = messages.len();
     let mut ctx = super::step::StepContext {
         agent: &mut agent,
         messages: &mut messages,
@@ -1282,6 +1287,7 @@ async fn tool_gate_flush_suspension_backfills_rechecked_and_later_calls() {
         sink: sink_dyn,
         checkpoint_store: None,
         run_identity: &run_identity,
+        input_message_count,
         cancellation_token: None,
         run_overrides: &run_overrides,
         total_input_tokens: &mut total_input_tokens,

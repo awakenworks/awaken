@@ -73,7 +73,10 @@ impl EventSink for SharedEventSink {
     }
 }
 
-/// Discards all events (useful in tests where events are not needed).
+/// Discards all events.
+///
+/// Use this when the caller only needs the final run result and does not need
+/// to stream or assert on intermediate events.
 pub struct NullEventSink;
 
 #[async_trait]
@@ -93,6 +96,7 @@ mod tests {
                 thread_id: "t1".into(),
                 run_id: "r1".into(),
                 parent_run_id: None,
+                identity: None,
             },
             AgentEvent::TextDelta {
                 delta: "hello".into(),
@@ -100,6 +104,7 @@ mod tests {
             AgentEvent::RunFinish {
                 thread_id: "t1".into(),
                 run_id: "r1".into(),
+                identity: None,
                 result: Some(json!({"response": "done"})),
                 termination: TerminationReason::NaturalEnd,
             },

@@ -227,9 +227,21 @@ fn run_record_fields() {
         thread_id: "t1".into(),
         agent_id: "agent-1".into(),
         parent_run_id: None,
+        request: None,
+        input: None,
+        output: None,
         status: RunStatus::Running,
-        termination_code: None,
+        termination_reason: None,
+        final_output: None,
+        error_payload: None,
+        dispatch_id: None,
+        session_id: None,
+        transport_request_id: None,
+        waiting: None,
+        outcome: None,
         created_at: 1000,
+        started_at: None,
+        finished_at: None,
         updated_at: 1000,
         steps: 0,
         input_tokens: 0,
@@ -262,8 +274,13 @@ mod integration {
     use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
     use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
     use awaken_contract::contract::lifecycle::RunStatus;
+    use awaken_contract::contract::mailbox::MailboxStore;
     use awaken_contract::contract::message::{Message, ToolCall};
-    use awaken_contract::contract::storage::{RunRecord, RunStore, ThreadStore};
+    use awaken_contract::contract::storage::{
+        RunRecord, RunStore, RunWaitingState, RunWaitingTicket, ThreadRunStore, ThreadStore,
+        WaitingReason,
+    };
+    use awaken_contract::contract::suspension::ToolCallResumeMode;
     use awaken_contract::registry_spec::AgentSpec;
     use awaken_contract::thread::Thread;
     use awaken_runtime::builder::AgentRuntimeBuilder;
@@ -301,6 +318,7 @@ mod integration {
     struct TestApp {
         router: axum::Router,
         store: Arc<InMemoryStore>,
+        mailbox_store: Arc<awaken_stores::InMemoryMailboxStore>,
     }
 
     fn make_test_app() -> TestApp {
@@ -326,10 +344,11 @@ mod integration {
                 .build()
                 .expect("build runtime"),
         );
-        let mailbox_store = std::sync::Arc::new(awaken_stores::InMemoryMailboxStore::new());
+        let mailbox_store = Arc::new(awaken_stores::InMemoryMailboxStore::new());
         let mailbox = std::sync::Arc::new(awaken_server::mailbox::Mailbox::new(
             runtime.clone(),
-            mailbox_store,
+            mailbox_store.clone(),
+            store.clone(),
             "test".to_string(),
             awaken_server::mailbox::MailboxConfig::default(),
         ));
@@ -343,6 +362,7 @@ mod integration {
         TestApp {
             router: build_router().with_state(state),
             store,
+            mailbox_store,
         }
     }
 
@@ -449,22 +469,58 @@ mod integration {
         thread_id: &str,
         status: RunStatus,
     ) -> RunRecord {
-        let record = RunRecord {
+        let record = run_record(run_id, thread_id, status, 1000);
+        store.create_run(&record).await.unwrap();
+        record
+    }
+
+    fn run_record(run_id: &str, thread_id: &str, status: RunStatus, updated_at: u64) -> RunRecord {
+        RunRecord {
             run_id: run_id.to_string(),
             thread_id: thread_id.to_string(),
             agent_id: "test-agent".to_string(),
             parent_run_id: None,
+            request: None,
+            input: None,
+            output: None,
             status,
-            termination_code: None,
-            created_at: 1000,
-            updated_at: 1000,
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: None,
+            outcome: None,
+            created_at: updated_at,
+            started_at: None,
+            finished_at: None,
+            updated_at,
             steps: 1,
             input_tokens: 10,
             output_tokens: 20,
             state: None,
-        };
-        store.create_run(&record).await.unwrap();
-        record
+        }
+    }
+
+    fn waiting_tool_run(run_id: &str, thread_id: &str, ticket_id: &str) -> RunRecord {
+        let mut run = run_record(run_id, thread_id, RunStatus::Waiting, 1000);
+        run.waiting = Some(RunWaitingState {
+            reason: WaitingReason::ToolPermission,
+            ticket_ids: vec![ticket_id.to_string()],
+            tickets: vec![RunWaitingTicket {
+                ticket_id: ticket_id.to_string(),
+                tool_call_id: "tool-call-1".to_string(),
+                tool_name: "dangerous".to_string(),
+                arguments: json!({"path": "/tmp/x"}),
+                resume_mode: ToolCallResumeMode::ReplayToolCall,
+                reason: Some("approval".to_string()),
+                updated_at: 1000,
+            }],
+            since_dispatch_id: Some("dispatch-1".to_string()),
+            message: Some("suspended".to_string()),
+        });
+        run
     }
 
     // ====================================================================
@@ -647,6 +703,155 @@ mod integration {
     }
 
     #[tokio::test]
+    async fn active_run_for_thread_returns_running_run() {
+        let test = make_test_app();
+        seed_run(&test.store, "run-active", "t-active", RunStatus::Running).await;
+        seed_run(&test.store, "run-done", "t-active", RunStatus::Done).await;
+
+        let (status, body) = get_json(test.router, "/v1/threads/t-active/runs/active").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["active_run"]["run_id"].as_str(), Some("run-active"));
+        assert_eq!(body["active_run"]["status"].as_str(), Some("running"));
+    }
+
+    #[tokio::test]
+    async fn active_run_for_thread_prefers_active_projection() {
+        let test = make_test_app();
+        let mut thread = Thread::with_id("t-projection");
+        thread.active_run_id = Some("run-active-projected".into());
+        thread.open_run_id = Some("run-active-projected".into());
+        test.store.save_thread(&thread).await.unwrap();
+        test.store
+            .create_run(&run_record(
+                "run-active-projected",
+                "t-projection",
+                RunStatus::Running,
+                100,
+            ))
+            .await
+            .unwrap();
+        test.store
+            .create_run(&run_record(
+                "run-newer-waiting",
+                "t-projection",
+                RunStatus::Waiting,
+                200,
+            ))
+            .await
+            .unwrap();
+
+        let (status, body) = get_json(test.router, "/v1/threads/t-projection/runs/active").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["active_run"]["run_id"].as_str(),
+            Some("run-active-projected")
+        );
+        assert_eq!(body["active_run"]["status"].as_str(), Some("running"));
+    }
+
+    #[tokio::test]
+    async fn active_run_for_thread_uses_open_waiting_projection() {
+        let test = make_test_app();
+        let mut thread = Thread::with_id("t-open");
+        thread.open_run_id = Some("run-open-waiting".into());
+        test.store.save_thread(&thread).await.unwrap();
+        test.store
+            .create_run(&run_record(
+                "run-open-waiting",
+                "t-open",
+                RunStatus::Waiting,
+                100,
+            ))
+            .await
+            .unwrap();
+        test.store
+            .create_run(&run_record(
+                "run-stale-running",
+                "t-open",
+                RunStatus::Running,
+                200,
+            ))
+            .await
+            .unwrap();
+
+        let (status, body) = get_json(test.router, "/v1/threads/t-open/runs/active").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["active_run"]["run_id"].as_str(),
+            Some("run-open-waiting")
+        );
+        assert_eq!(body["active_run"]["status"].as_str(), Some("waiting"));
+    }
+
+    #[tokio::test]
+    async fn active_run_for_thread_includes_durable_waiting_tickets() {
+        let test = make_test_app();
+        let thread_id = "t-open-ticket";
+        let run = waiting_tool_run("run-open-ticket", thread_id, "ticket-1");
+        test.store
+            .checkpoint(thread_id, &[Message::user("approve?")], &run)
+            .await
+            .unwrap();
+
+        let (status, body) = get_json(test.router, "/v1/threads/t-open-ticket/runs/active").await;
+
+        assert_eq!(status, StatusCode::OK);
+        let waiting = &body["active_run"]["waiting"];
+        assert_eq!(waiting["reason"].as_str(), Some("tool_permission"));
+        assert_eq!(waiting["ticket_ids"][0].as_str(), Some("ticket-1"));
+        assert_eq!(
+            waiting["tickets"][0]["tool_call_id"].as_str(),
+            Some("tool-call-1")
+        );
+        assert_eq!(
+            waiting["tickets"][0]["tool_name"].as_str(),
+            Some("dangerous")
+        );
+    }
+
+    #[tokio::test]
+    async fn active_run_for_thread_falls_back_when_projection_is_stale() {
+        let test = make_test_app();
+        let mut thread = Thread::with_id("t-stale");
+        thread.active_run_id = Some("missing-run".into());
+        thread.open_run_id = Some("done-run".into());
+        test.store.save_thread(&thread).await.unwrap();
+        test.store
+            .create_run(&run_record("done-run", "t-stale", RunStatus::Done, 100))
+            .await
+            .unwrap();
+        test.store
+            .create_run(&run_record(
+                "run-fallback",
+                "t-stale",
+                RunStatus::Running,
+                200,
+            ))
+            .await
+            .unwrap();
+
+        let (status, body) = get_json(test.router, "/v1/threads/t-stale/runs/active").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["active_run"]["run_id"].as_str(), Some("run-fallback"));
+        assert_eq!(body["active_run"]["status"].as_str(), Some("running"));
+    }
+
+    #[tokio::test]
+    async fn active_run_for_thread_returns_null_when_idle() {
+        let test = make_test_app();
+        seed_run(&test.store, "run-done", "t-idle", RunStatus::Done).await;
+
+        let (status, body) = get_json(test.router, "/v1/threads/t-idle/runs/active").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["active_run"].is_null());
+    }
+
+    #[tokio::test]
     async fn get_run_not_found_returns_404() {
         let test = make_test_app();
         let (status, body) = get_json(test.router, "/v1/runs/nonexistent-run").await;
@@ -750,6 +955,122 @@ mod integration {
         .await;
         // Bad action returns 400 before the thread lookup
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn thread_messages_accepts_interrupt_then_queue_input_mode() {
+        let test = make_test_app();
+        let thread_id = seed_thread(&test.store, Some("Control Thread")).await;
+
+        let (status, body) = post_json(
+            test.router.clone(),
+            &format!("/v1/threads/{thread_id}/messages"),
+            json!({
+                "mode": "interrupt_then_queue",
+                "messages": [{"role": "user", "content": "redirect"}]
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(body["thread_id"].as_str(), Some(thread_id.as_str()));
+        assert!(matches!(
+            body["status"].as_str(),
+            Some("running") | Some("queued")
+        ));
+    }
+
+    #[tokio::test]
+    async fn thread_messages_resume_open_run_continues_projected_waiting_run() {
+        let test = make_test_app();
+        let thread_id = "thread-resume-open";
+        let mut run = run_record("run-open-input", thread_id, RunStatus::Waiting, 1000);
+        run.waiting = Some(RunWaitingState {
+            reason: WaitingReason::UserInput,
+            ticket_ids: Vec::new(),
+            tickets: Vec::new(),
+            since_dispatch_id: None,
+            message: Some("waiting for user input".to_string()),
+        });
+        test.store
+            .checkpoint(thread_id, &[Message::user("original")], &run)
+            .await
+            .unwrap();
+
+        let (status, body) = post_json(
+            test.router,
+            &format!("/v1/threads/{thread_id}/messages"),
+            json!({
+                "mode": "resume_open_run",
+                "messages": [{"role": "user", "content": "continue same run"}]
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(body["thread_id"].as_str(), Some(thread_id));
+
+        let dispatches = test
+            .mailbox_store
+            .list_dispatches(thread_id, None, 10, 0)
+            .await
+            .unwrap();
+        assert_eq!(dispatches.len(), 1);
+        assert_eq!(dispatches[0].run_id, "run-open-input");
+    }
+
+    #[tokio::test]
+    async fn decision_endpoint_requeues_durable_waiting_ticket_after_restart() {
+        let test = make_test_app();
+        let thread_id = "thread-durable-decision";
+        let run = waiting_tool_run("run-durable-decision", thread_id, "ticket-durable");
+        test.store
+            .checkpoint(thread_id, &[Message::user("approve?")], &run)
+            .await
+            .unwrap();
+
+        let (status, body) = post_json(
+            test.router.clone(),
+            "/v1/runs/run-durable-decision/decision",
+            json!({
+                "toolCallId": "tool-call-1",
+                "action": "resume",
+                "payload": {"approved": true}
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(body["run_id"].as_str(), Some("run-durable-decision"));
+
+        let dispatches = test
+            .mailbox_store
+            .list_dispatches(thread_id, None, 10, 0)
+            .await
+            .unwrap();
+        assert_eq!(dispatches.len(), 1);
+        assert_eq!(dispatches[0].run_id, "run-durable-decision");
+    }
+
+    #[tokio::test]
+    async fn run_inputs_use_run_anchor_and_accept_control_mode() {
+        let test = make_test_app();
+        let thread_id = seed_thread(&test.store, Some("Run Input Thread")).await;
+        seed_run(&test.store, "run-control-1", &thread_id, RunStatus::Running).await;
+
+        let (status, body) = post_json(
+            test.router,
+            "/v1/runs/run-control-1/inputs",
+            json!({
+                "mode": "queue",
+                "messages": [{"role": "user", "content": "follow up"}]
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(body["status"].as_str(), Some("inputs_accepted"));
+        assert_eq!(body["run_id"].as_str(), Some("run-control-1"));
     }
 
     // ====================================================================

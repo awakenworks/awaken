@@ -5,7 +5,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions use [Se
 
 ## [Unreleased]
 
-Development work lands here. Before releasing, move these items to a versioned section.
+Development work lands here before the next versioned release.
+
+## [0.2.0] - 2026-04-11
+
+### Breaking Changes
+
+- Agent and model configuration now uses the canonical `model_id` -> `ModelBinding { provider_id, upstream_model }` chain. Legacy `model`, `provider`, `model_name`, and `fallback_models` fields are rejected in managed Awaken config.
+- A2A HTTP routes and payloads use the v1 `message:send`, `message:stream`, task wrapper, `supportedInterfaces`, and enum naming shapes. Older `tasks/send` and top-level AgentCard `id`/`url` shapes are not emitted.
+- Tool interception should move to `ToolGateHook` via `PluginRegistrar::register_tool_gate_hook()`. `BeforeToolExecute` now represents execution-time hooks only.
+- Remote agent endpoints use the canonical `RemoteEndpoint` shape: `backend`, `base_url`, `auth`, `target`, `timeout_ms`, and `options`. Legacy A2A endpoint fields are accepted only as an isolated migration input and cannot be mixed with canonical fields.
+
+### Added
+
+- Canonical `ExecutionBackend` contract for local and remote agent execution, including root execution, delegate execution, abort, remote state continuation, input/auth waits, and output capability reporting.
+- Managed configuration API for `agents`, `models`, `providers`, and `mcp-servers`, backed by `ConfigStore` and runtime snapshot validation.
+- Admin Console app for editing runtime configuration through the Config API.
+- SQLite mailbox store via `SqliteMailboxStore` and the `awaken-stores/sqlite` feature.
+- A2A streaming, task subscription, push notification config routes, extended agent cards, and official protocol interop coverage.
+- MCP Streamable HTTP session lifecycle, including `MCP-Session-Id`, strict initialize/session validation, streaming `tools/call`, and `DELETE /v1/mcp` session termination.
+- OpenUI chat example and expanded generative UI support for A2UI, JSON Render, and OpenUI Lang integrations.
+
+### Changed
+
+- The runtime lifecycle now includes a pure `ToolGate` decision point before tool execution, making permission and interception behavior independent from execution-time side effects.
+- Runtime-managed config changes compile and validate a candidate registry snapshot before it replaces the active runtime snapshot.
+- A2A remote execution preserves backend task lifecycle state across polling, streaming, interruption, cancellation, and continuation.
+- Provider/model retry and inference overrides now operate on upstream model names for the already resolved provider.
+- Documentation and examples now use `awaken-agent = 0.2` dependency snippets and canonical model/provider APIs.
+
+### Compatibility
+
+- Existing Rust imports continue to use `awaken` even though the crate is published as `awaken-agent`.
+- `awaken_runtime::extensions::a2a` still re-exports compatibility aliases such as `AgentBackend`, `AgentBackendFactory`, and `DelegateRunResult`, but new code should use `ExecutionBackend`, `ExecutionBackendFactory`, and `BackendRunResult`.
+- `RemoteEndpoint` deserializes legacy `bearer_token`, `agent_id`, and `poll_interval_ms` only when no canonical fields are present. New serialized config should use `auth`, `target`, and `options`.
 
 ## [0.1.0] - 2026-04-03
 

@@ -9,14 +9,14 @@
 | `awaken-contract` | 核心契约：类型、trait、状态模型、智能体规约 |
 | `awaken-runtime` | 执行引擎：阶段循环、插件系统、智能体循环、构建器 |
 | `awaken-server` | HTTP/SSE 网关与协议适配器 |
-| `awaken-stores` | 存储后端：内存、文件、PostgreSQL |
+| `awaken-stores` | 存储后端：内存、文件、PostgreSQL 和 SQLite mailbox |
 | `awaken-tool-pattern` | Glob/正则工具匹配，用于权限和提醒规则 |
 | `awaken-ext-permission` | 权限插件，支持 allow/deny/ask 策略 |
 | `awaken-ext-observability` | 基于 OpenTelemetry 的 LLM 和工具调用追踪 |
 | `awaken-ext-mcp` | Model Context Protocol 客户端集成 |
 | `awaken-ext-skills` | 技能包发现与激活 |
 | `awaken-ext-reminder` | 声明式提醒规则，在工具执行后触发 |
-| `awaken-ext-generative-ui` | 声明式 UI 组件（A2UI 协议） |
+| `awaken-ext-generative-ui` | 通过 A2UI、JSON Render 和 OpenUI Lang 提供声明式 UI 组件 |
 | `awaken-ext-deferred-tools` | 基于概率模型的延迟工具加载 |
 | `awaken` | 门面 crate，重新导出核心模块 |
 
@@ -28,7 +28,7 @@
         |
         v
 AgentRuntime
-  将 AgentSpec 解析为 ResolvedAgent
+  将 AgentSpec 解析为 ResolvedExecution
   从插件构建 ExecutionEnv
   执行 phase loop，并暴露 cancel / decision 控制面
         |
@@ -72,5 +72,6 @@ AgentRuntime
 | `crates/awaken-server/` | HTTP/SSE 服务端 |
 | `crates/awaken-stores/` | 存储后端 |
 | `crates/awaken/examples/` | 小型运行时示例 |
-| `examples/src/` | 全栈服务端示例 |
+| `examples/` | 全栈前端与服务端示例 |
+| `apps/admin-console/` | Config API 管理界面 |
 | `docs/book/src/` | 本文档源码 |

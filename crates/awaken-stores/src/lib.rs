@@ -4,7 +4,9 @@
 //! `awaken-contract`: [`ThreadStore`](awaken_contract::contract::storage::ThreadStore),
 //! [`RunStore`](awaken_contract::contract::storage::RunStore),
 //! [`ThreadRunStore`](awaken_contract::contract::storage::ThreadRunStore),
-//! and [`MailboxStore`](awaken_contract::contract::mailbox::MailboxStore).
+//! [`ProfileStore`](awaken_contract::contract::profile_store::ProfileStore),
+//! [`ConfigStore`](awaken_contract::contract::config_store::ConfigStore), and
+//! [`MailboxStore`](awaken_contract::contract::mailbox::MailboxStore).
 
 pub mod memory;
 pub mod memory_mailbox;

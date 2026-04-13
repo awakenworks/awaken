@@ -4,10 +4,13 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::lifecycle::RunStatus;
-use super::message::Message;
+use super::lifecycle::{RunStatus, TerminationReason};
+use super::message::{Message, MessageRecord};
+use super::suspension::{ToolCallResume, ToolCallResumeMode};
+use super::tool::ToolDescriptor;
 use crate::state::PersistedState;
 use crate::thread::Thread;
+use serde_json::Value;
 
 // ── errors ──────────────────────────────────────────────────────────
 
@@ -38,6 +41,188 @@ pub enum StorageError {
 
 // ── run record ──────────────────────────────────────────────────────
 
+/// Origin of a run request.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RunRequestOrigin {
+    /// HTTP API, SDK.
+    #[default]
+    User,
+    /// Agent-to-Agent protocol.
+    A2A,
+    /// Child run completion notification, handoff.
+    Internal,
+}
+
+/// Durable snapshot of the request that created or resumed a run.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RunRequestSnapshot {
+    /// Where this user intent originated.
+    #[serde(default = "default_run_origin")]
+    pub origin: RunRequestOrigin,
+    /// Optional sender/audit identifier from the transport layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_id: Option<String>,
+    /// Message ids that triggered this run activation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_message_ids: Vec<String>,
+    /// Count of new input messages in this activation.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub input_message_count: u64,
+    /// Opaque request extras preserved for protocol adapters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_extras: Option<Value>,
+    /// Resume decisions included with this activation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<RunResumeDecision>,
+    /// Frontend-defined tools available to this run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frontend_tools: Vec<ToolDescriptor>,
+    /// Parent thread for child-run message routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_thread_id: Option<String>,
+    /// Transport request identifier associated with the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_request_id: Option<String>,
+}
+
+fn default_run_origin() -> RunRequestOrigin {
+    RunRequestOrigin::User
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+/// Stored resume decision for a suspended tool call.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RunResumeDecision {
+    pub call_id: String,
+    pub resume: ToolCallResume,
+}
+
+/// Inclusive range of messages in a thread's append-only log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageSeqRange {
+    /// 1-based first message sequence number.
+    pub from_seq: u64,
+    /// 1-based last message sequence number.
+    pub to_seq: u64,
+}
+
+impl MessageSeqRange {
+    /// Create a non-empty inclusive range.
+    #[must_use]
+    pub fn new(from_seq: u64, to_seq: u64) -> Option<Self> {
+        (from_seq > 0 && from_seq <= to_seq).then_some(Self { from_seq, to_seq })
+    }
+
+    /// Number of messages covered by this range.
+    #[must_use]
+    pub fn len(self) -> u64 {
+        self.to_seq - self.from_seq + 1
+    }
+
+    /// Returns true when the range contains no messages.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.from_seq > self.to_seq
+    }
+}
+
+/// Message log slice consumed by a run.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunMessageInput {
+    /// Thread whose message log is read.
+    pub thread_id: String,
+    /// Contiguous range read from the thread log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<MessageSeqRange>,
+    /// User/input messages that triggered this run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trigger_message_ids: Vec<String>,
+    /// Optional explicit selection for non-contiguous reads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_message_ids: Vec<String>,
+    /// Optional context policy identifier used to build the prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_policy: Option<String>,
+    /// Optional compacted context snapshot used instead of raw messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compacted_snapshot_id: Option<String>,
+}
+
+/// Message log slice produced by a run.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunMessageOutput {
+    /// Thread whose message log was appended.
+    pub thread_id: String,
+    /// Contiguous range produced by the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<MessageSeqRange>,
+    /// Produced message ids in append order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub message_ids: Vec<String>,
+}
+
+/// Why a run is currently waiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitingReason {
+    ToolPermission,
+    UserInput,
+    BackgroundTasks,
+    ExternalEvent,
+    RateLimit,
+    ManualPause,
+}
+
+/// Durable projection for a non-terminal waiting run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RunWaitingTicket {
+    /// Stable external ticket id. Prefer the suspension id when one exists.
+    pub ticket_id: String,
+    /// Runtime tool-call id that owns this pending control point.
+    pub tool_call_id: String,
+    /// Tool name associated with the pending call.
+    pub tool_name: String,
+    /// Original tool-call arguments.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub arguments: Value,
+    /// Resume mapping strategy needed to continue the run.
+    #[serde(default)]
+    pub resume_mode: ToolCallResumeMode,
+    /// Optional suspension action/reason from the ticket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Unix timestamp (milliseconds) when this ticket was last updated.
+    #[serde(default)]
+    pub updated_at: u64,
+}
+
+/// Durable projection for a non-terminal waiting run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RunWaitingState {
+    pub reason: WaitingReason,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ticket_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tickets: Vec<RunWaitingTicket>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_dispatch_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Terminal outcome for a run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RunOutcome {
+    pub termination_reason: TerminationReason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_payload: Option<Value>,
+}
+
 /// A run record for tracking run history and enabling resume.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRecord {
@@ -49,12 +234,49 @@ pub struct RunRecord {
     pub agent_id: String,
     /// Parent run identifier for nested/handoff runs.
     pub parent_run_id: Option<String>,
+    /// Snapshot of the user intent/request that owns this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<RunRequestSnapshot>,
+    /// Messages read by this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<RunMessageInput>,
+    /// Messages produced by this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<RunMessageOutput>,
     /// Current status of the run.
     pub status: RunStatus,
-    /// Application-defined termination code.
-    pub termination_code: Option<String>,
+    /// Structured termination reason for completed or waiting runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub termination_reason: Option<TerminationReason>,
+    /// Final text response, when the run produced one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_output: Option<String>,
+    /// Structured error payload, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_payload: Option<Value>,
+    /// Queue dispatch that delivered this run, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_id: Option<String>,
+    /// External session/dispatch identifier associated with this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Transport request identifier associated with this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_request_id: Option<String>,
+    /// Structured waiting state for non-terminal suspended runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<RunWaitingState>,
+    /// Structured terminal outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<RunOutcome>,
     /// Unix timestamp (seconds) when the run was created.
     pub created_at: u64,
+    /// Unix timestamp (seconds) when execution first started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<u64>,
+    /// Unix timestamp (seconds) when execution reached a terminal state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<u64>,
     /// Unix timestamp (seconds) of the last update.
     pub updated_at: u64,
     /// Number of steps (rounds) completed.
@@ -65,6 +287,33 @@ pub struct RunRecord {
     pub output_tokens: u64,
     /// State snapshot for resume.
     pub state: Option<PersistedState>,
+}
+
+impl RunRecord {
+    /// Return the structured waiting reason for a non-terminal run.
+    ///
+    /// Waiting state is durable and structured. Runtime status reason strings
+    /// are not used for same-run resume.
+    #[must_use]
+    pub fn waiting_reason(&self) -> Option<WaitingReason> {
+        if self.status != RunStatus::Waiting {
+            return None;
+        }
+
+        self.waiting.as_ref().map(|waiting| waiting.reason)
+    }
+
+    /// Return true when this waiting run can be resumed as the same user intent.
+    #[must_use]
+    pub fn is_resumable_waiting(&self) -> bool {
+        self.waiting_reason().is_some()
+    }
+
+    /// Return true when startup recovery should enqueue an internal background wake.
+    #[must_use]
+    pub fn is_background_task_waiting(&self) -> bool {
+        self.waiting_reason() == Some(WaitingReason::BackgroundTasks)
+    }
 }
 
 // ── query types ─────────────────────────────────────────────────────
@@ -141,6 +390,78 @@ pub trait ThreadStore: Send + Sync {
 
     /// Load all messages for a thread. Returns `None` if no messages exist.
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError>;
+
+    /// Load thread-owned message records with stable 1-based sequence numbers.
+    async fn load_message_records(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<Vec<MessageRecord>>, StorageError> {
+        let Some(messages) = self.load_messages(thread_id).await? else {
+            return Ok(None);
+        };
+        Ok(Some(
+            messages
+                .into_iter()
+                .enumerate()
+                .map(|(index, message)| {
+                    MessageRecord::from_message(thread_id.to_string(), index as u64 + 1, message)
+                })
+                .collect(),
+        ))
+    }
+
+    /// Append messages to a thread's durable log and return their records.
+    async fn append_message_records(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+    ) -> Result<Vec<MessageRecord>, StorageError> {
+        let mut existing = self.load_messages(thread_id).await?.unwrap_or_default();
+        let start_seq = existing.len() as u64 + 1;
+        existing.extend(messages.iter().cloned());
+        self.save_messages(thread_id, &existing).await?;
+        Ok(messages
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, message)| {
+                MessageRecord::from_message(
+                    thread_id.to_string(),
+                    start_seq + index as u64,
+                    message,
+                )
+            })
+            .collect())
+    }
+
+    /// Load one message record by message ID.
+    async fn load_message_record(
+        &self,
+        thread_id: &str,
+        message_id: &str,
+    ) -> Result<Option<MessageRecord>, StorageError> {
+        let Some(records) = self.load_message_records(thread_id).await? else {
+            return Ok(None);
+        };
+        Ok(records
+            .into_iter()
+            .find(|record| record.message_id == message_id))
+    }
+
+    /// Load message records by inclusive sequence range.
+    async fn load_message_records_range(
+        &self,
+        thread_id: &str,
+        range: MessageSeqRange,
+    ) -> Result<Vec<MessageRecord>, StorageError> {
+        let Some(records) = self.load_message_records(thread_id).await? else {
+            return Ok(Vec::new());
+        };
+        Ok(records
+            .into_iter()
+            .filter(|record| record.seq >= range.from_seq && record.seq <= range.to_seq)
+            .collect())
+    }
 
     /// Persist messages for a thread (full overwrite).
     async fn save_messages(
@@ -350,12 +671,23 @@ mod tests {
     #[tokio::test]
     async fn thread_store_save_and_load_messages() {
         let store = MockThreadStore::default();
-        let msgs = vec![Message::user("hello"), Message::assistant("hi")];
+        let msgs = vec![
+            Message::user("hello"),
+            Message::assistant("hi").with_metadata(crate::contract::message::MessageMetadata {
+                run_id: Some("run-1".to_string()),
+                step_index: Some(0),
+            }),
+        ];
         store.save_messages("t-1", &msgs).await.unwrap();
 
         let loaded = store.load_messages("t-1").await.unwrap().unwrap();
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].text(), "hello");
+        let records = store.load_message_records("t-1").await.unwrap().unwrap();
+        assert_eq!(records[0].thread_id, "t-1");
+        assert_eq!(records[0].seq, 1);
+        assert_eq!(records[1].seq, 2);
+        assert_eq!(records[1].produced_by_run_id.as_deref(), Some("run-1"));
     }
 
     #[tokio::test]
@@ -437,9 +769,21 @@ mod tests {
             thread_id: thread_id.to_owned(),
             agent_id: "agent-1".to_owned(),
             parent_run_id: None,
+            request: None,
+            input: None,
+            output: None,
             status: RunStatus::Running,
-            termination_code: None,
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: None,
+            outcome: None,
             created_at: updated_at,
+            started_at: None,
+            finished_at: None,
             updated_at,
             steps: 0,
             input_tokens: 0,
@@ -500,12 +844,107 @@ mod tests {
 
     #[test]
     fn run_record_serde_roundtrip() {
-        let run = make_run("r1", "t-1", 42);
+        let mut run = make_run("r1", "t-1", 42);
+        run.input = Some(RunMessageInput {
+            thread_id: "t-1".to_string(),
+            range: MessageSeqRange::new(1, 2),
+            trigger_message_ids: vec!["m-1".to_string()],
+            selected_message_ids: Vec::new(),
+            context_policy: None,
+            compacted_snapshot_id: None,
+        });
+        run.output = Some(RunMessageOutput {
+            thread_id: "t-1".to_string(),
+            range: MessageSeqRange::new(3, 4),
+            message_ids: vec!["m-3".to_string(), "m-4".to_string()],
+        });
         let json = serde_json::to_string(&run).unwrap();
         let parsed: RunRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.run_id, "r1");
         assert_eq!(parsed.thread_id, "t-1");
         assert_eq!(parsed.updated_at, 42);
+        assert_eq!(parsed.input.unwrap().range.unwrap().len(), 2);
+        assert_eq!(
+            parsed.output.unwrap().message_ids,
+            vec!["m-3".to_string(), "m-4".to_string()]
+        );
+    }
+
+    #[test]
+    fn message_seq_range_rejects_empty_or_zero_based_ranges() {
+        assert!(MessageSeqRange::new(0, 1).is_none());
+        assert!(MessageSeqRange::new(2, 1).is_none());
+        let range = MessageSeqRange::new(2, 4).unwrap();
+        assert_eq!(range.len(), 3);
+        assert!(!range.is_empty());
+    }
+
+    #[test]
+    fn run_record_waiting_reason_prefers_structured_state() {
+        let mut run = make_run("r1", "t-1", 42);
+        run.status = RunStatus::Waiting;
+        run.waiting = Some(RunWaitingState {
+            reason: WaitingReason::ToolPermission,
+            ticket_ids: vec!["ticket-1".to_string()],
+            tickets: Vec::new(),
+            since_dispatch_id: None,
+            message: None,
+        });
+
+        assert_eq!(run.waiting_reason(), Some(WaitingReason::ToolPermission));
+        assert!(run.is_resumable_waiting());
+        assert!(!run.is_background_task_waiting());
+    }
+
+    #[test]
+    fn run_record_waiting_reason_uses_structured_state() {
+        let mut run = make_run("r1", "t-1", 42);
+        run.status = RunStatus::Waiting;
+        run.waiting = Some(RunWaitingState {
+            reason: WaitingReason::BackgroundTasks,
+            ticket_ids: Vec::new(),
+            tickets: Vec::new(),
+            since_dispatch_id: None,
+            message: None,
+        });
+        assert_eq!(run.waiting_reason(), Some(WaitingReason::BackgroundTasks));
+        assert!(run.is_background_task_waiting());
+
+        run.waiting.as_mut().unwrap().reason = WaitingReason::ToolPermission;
+        assert_eq!(run.waiting_reason(), Some(WaitingReason::ToolPermission));
+
+        run.waiting.as_mut().unwrap().reason = WaitingReason::UserInput;
+        assert_eq!(run.waiting_reason(), Some(WaitingReason::UserInput));
+    }
+
+    #[test]
+    fn run_record_done_ignores_waiting_state() {
+        let mut run = make_run("r1", "t-1", 42);
+        run.status = RunStatus::Done;
+        run.waiting = Some(RunWaitingState {
+            reason: WaitingReason::BackgroundTasks,
+            ticket_ids: Vec::new(),
+            tickets: Vec::new(),
+            since_dispatch_id: None,
+            message: None,
+        });
+
+        assert_eq!(run.waiting_reason(), None);
+        assert!(!run.is_resumable_waiting());
+        assert!(!run.is_background_task_waiting());
+    }
+
+    #[test]
+    fn run_request_origin_serde_roundtrip() {
+        for origin in [
+            RunRequestOrigin::User,
+            RunRequestOrigin::A2A,
+            RunRequestOrigin::Internal,
+        ] {
+            let json = serde_json::to_string(&origin).unwrap();
+            let parsed: RunRequestOrigin = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, origin);
+        }
     }
 
     // ── Query types ──

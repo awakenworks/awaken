@@ -21,7 +21,7 @@
 
 ## 30 秒速览
 
-1. **Tools** — 类型化函数，JSON Schema 在编译时自动生成
+1. **Tools** — 可直接实现 `Tool`，也可用 `TypedTool` 通过 `schemars` 生成 JSON Schema
 2. **Agents** — 每个 Agent 拥有系统提示词、模型和允许的工具集；LLM 通过自然语言驱动编排 — 无需预定义流程图
 3. **State** — 既有 `run` / `thread` 作用域的类型化状态，也有用于跨线程/跨 Agent 协作的持久化 profile/shared state
 4. **Plugins** — 生命周期钩子覆盖权限、可观测性、上下文管理、Skills、MCP 等
@@ -30,13 +30,13 @@ Agent 选择工具、调用工具、读写状态，如此循环 — 全部由运
 
 ## 5 分钟上手
 
-**前置条件：** Rust 1.85 或更新版本。仓库本地开发工具链由 `rust-toolchain.toml` 固定为 `1.93.0`；另需一个 OpenAI 兼容 LLM 提供商 API Key。
+**前置条件：** 使用发布 crate 时需要 Rust `1.85+`；从本仓库运行示例时使用 `rust-toolchain.toml` 固定的 `1.93.0`；还需要一个 LLM 提供商 API Key。
 
 在 `Cargo.toml` 中添加：
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.1" }
+awaken = { package = "awaken-agent", version = "0.2" }
 tokio = { version = "1.51.0", features = ["full"] }
 async-trait = "0.1.89"
 serde_json = "1.0.149"
@@ -50,8 +50,6 @@ use serde_json::{json, Value};
 use async_trait::async_trait;
 use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
 use awaken::contract::message::Message;
-use awaken::contract::event::AgentEvent;
-use awaken::contract::event_sink::VecEventSink;
 use awaken::engine::GenaiExecutor;
 use awaken::registry_spec::AgentSpec;
 use awaken::registry::ModelBinding;
@@ -103,16 +101,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_agent_id("assistant");
 
-    let sink = Arc::new(VecEventSink::new());
-    runtime.run(request, sink.clone()).await?;
-
-    let events = sink.take();
-    println!("events: {}", events.len());
-
-    let finished = events
-        .iter()
-        .any(|e| matches!(e, AgentEvent::RunFinish { .. }));
-    println!("run_finish_seen: {}", finished);
+    // 快速开始只需要最终结果；需要 SSE、WebSocket、协议适配器或测试事件流时，
+    // 使用 run(..., sink)。
+    let result = runtime.run_to_completion(request).await?;
+    println!("response: {}", result.response);
+    println!("termination: {:?}", result.termination);
 
     Ok(())
 }
@@ -125,7 +118,19 @@ export OPENAI_API_KEY=<your-key>
 cargo run
 ```
 
-预期输出包含 `run_finish_seen: true`。
+预期输出包含 `response: ...` 和 `termination: NaturalEnd`。
+
+快速开始路径已有无网络测试覆盖：
+
+```bash
+cargo test -p awaken-agent --test readme_quickstart
+```
+
+真实 provider 验证是显式 opt-in，不让默认 CI 依赖外部模型服务：
+
+```bash
+OPENAI_API_KEY=<your-key> cargo test -p awaken-agent --test readme_live_provider -- --ignored
+```
 
 ## 通过任意协议提供服务
 
@@ -141,6 +146,7 @@ let runtime = Arc::new(runtime);
 let mailbox = Arc::new(Mailbox::new(
     runtime.clone(),
     Arc::new(InMemoryMailboxStore::new()),
+    store.clone(),
     "default-consumer".into(),
     MailboxConfig::default(),
 ));
@@ -204,6 +210,10 @@ import { CopilotKit } from "@copilotkit/react-core";
 </CopilotKit>
 ```
 
+#### 托管配置
+
+把 `ConfigStore` 接入 `AppState` 后，可通过 `/v1/config/*` 管理 agents、models、providers 和 MCP servers。[`apps/admin-console`](../../apps/admin-console/) 使用同一套 API，并通过 `VITE_BACKEND_URL` 读取服务端地址。
+
 ## 内置插件
 
 | Plugin | 说明 | Feature Flag |
@@ -213,7 +223,7 @@ import { CopilotKit } from "@copilotkit/react-core";
 | **Observability** | 符合 GenAI 语义规范的 OpenTelemetry 遥测，支持 OTLP、文件和内存导出。 | `observability` |
 | **MCP** | 连接外部 MCP 服务器，自动发现并注册其工具为 Awaken 原生工具。 | `mcp` |
 | **Skills** | 发现技能包，推理前注入技能目录供 LLM 按需激活。 | `skills` |
-| **Generative UI** | 通过 A2UI 协议向前端流式推送声明式 UI 组件。 | `generative-ui` |
+| **Generative UI** | 通过 A2UI、JSON Render 和 OpenUI Lang 集成向前端流式推送声明式 UI 组件。 | `generative-ui` |
 | **Deferred Tools** | 将大型工具 schema 隐藏在 `ToolSearch` 之后，并用折扣 Beta 概率模型把空闲的已提升工具重新延迟。 | 直接依赖：`awaken-ext-deferred-tools` |
 
 `awaken-ext-deferred-tools` 未包含在 `awaken` 门面 crate 的 `full` feature 中。
@@ -225,12 +235,13 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 ## 为什么选择 Awaken
 
-- **一个后端服务所有前端** — 从同一个二进制文件提供 React（AI SDK v6）、Next.js（AG-UI）、其他 Agent（A2A）和工具服务器（MCP）。无需分别部署。
-- **配置就是控制面** — model/provider 路由、prompt、reminder、permission 与工具加载策略都是可校验、可页面编辑、可运行时生效的数据。
-- **LLM 编排一切，无需 DAG** — 定义 Agent 的身份和工具访问权限；LLM 决定何时委托、委托给谁、如何组合结果。无需手写流程图或状态机。
-- **可组合的插件体系** — 9 个类型化生命周期阶段，其中包含纯判定的 `ToolGate`。权限、上下文注入、可观测性、工具发现，全部声明式配置。`PhaseHook` / `ToolGateHook` 类型安全，插件注册 API 在构建时捕获配置错误。
-- **类型安全的状态与回放** — State 是带编译时检查的 Rust 结构体。合并策略处理并发写入，无需锁。作用域限定为 thread 或 run，每次变更都是可回放的不可变快照。
-- **内置生产韧性** — 熔断器、指数退避、推理超时、优雅关闭、Prometheus 指标和健康探针，开箱即用。
+- **一个后端服务多种协议** — 同一个二进制可提供 AI SDK v6、AG-UI、A2A、MCP，以及原生 HTTP/SSE 路由。
+- **配置就是控制面** — model/provider 路由、prompt、reminder、permission 与工具加载策略使用 schema-backed 配置，可校验并在运行时应用。
+- **LLM 编排，无需 DAG** — 定义 Agent 身份、模型绑定和工具访问权限；无需手写流程图。
+- **运行时托管配置** — 通过 Config API 或 Admin Console 更新 agents、model bindings、providers 与 MCP servers。
+- **类型化插件扩展点** — 9 个生命周期阶段、`PhaseHook`、`ToolGateHook`、scheduled actions、effects、request transforms 和插件注册工具都由代码契约约束。
+- **类型安全的状态与回放** — `StateKey` 把每个 key 绑定到 Rust value/update 类型，限定 run/thread/profile 作用域，并在提交前按声明的 merge strategy 合并。
+- **内置运维面** — LLM retry/backoff、按 model 维度的熔断器、请求超时、优雅关闭、Prometheus 指标、健康探针和 mailbox retry/backoff。
 - **零 `unsafe` 代码** — 整个工作空间禁止 `unsafe`，内存安全由 Rust 编译器保证。
 
 ## 适用场景 / 不适用场景
@@ -253,16 +264,16 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 ## 架构
 
-Awaken 由三层运行时组成。`awaken-contract` 定义共享契约：Agent 规格、model/provider 规格、工具、事件、传输 trait，以及类型化状态模型。`awaken-runtime` 负责把 `AgentSpec` 解析成 `ResolvedAgent`，从插件构建 `ExecutionEnv`，执行 phase loop，并管理运行中的 run 及其取消、HITL 决策等控制路径。`awaken-server` 则把同一个 runtime 暴露成 HTTP 路由、SSE 回放、mailbox 后台执行，以及 AI SDK v6、AG-UI、A2A、MCP 协议适配器。
+Awaken 由三层运行时组成。`awaken-contract` 定义共享契约：Agent 规格、model/provider 规格、工具、事件、传输 trait，以及类型化状态模型。`awaken-runtime` 负责把 `AgentSpec` 解析成 `ResolvedExecution`：本地 agent 会成为带插件 `ExecutionEnv` 的 `ResolvedAgent`，endpoint-backed agent 则通过 `ExecutionBackend` 执行。它还负责执行 phase loop，并管理运行中的 run 及其取消、HITL 决策等控制路径。`awaken-server` 则把同一个 runtime 暴露成 HTTP 路由、SSE 回放、mailbox 后台执行，以及 AI SDK v6、AG-UI、A2A、MCP 协议适配器。
 
-围绕这三层的是存储和扩展。`awaken-stores` 提供线程与 run 的内存、文件、PostgreSQL 后端。`awaken-ext-*` crates 在 phase 和 tool 边界扩展运行时能力，包括权限、可观测性、MCP 工具发现、Skills、Reminder、Generative UI 和 deferred tools。
+围绕这三层的是存储和扩展。`awaken-stores` 为 thread/run 提供内存、文件、PostgreSQL 持久化，为 config 提供内存、文件、PostgreSQL 后端，为 mailbox 提供内存和 SQLite 后端，并为 profile state 提供内存和文件后端。`awaken-ext-*` crates 在 phase 和 tool 边界扩展运行时能力，包括权限、可观测性、MCP 工具发现、Skills、Reminder、Generative UI 和 deferred tools。
 
 ```text
 awaken                   门面 crate，管理 feature flags
 ├─ awaken-contract       契约：spec、tool、event、transport、state model
 ├─ awaken-runtime        resolver、phase engine、loop runner、runtime control
 ├─ awaken-server         route、mailbox、SSE transport、protocol adapter
-├─ awaken-stores         内存、文件、PostgreSQL 持久化
+├─ awaken-stores         内存、文件、PostgreSQL 与 SQLite-backed 存储
 ├─ awaken-tool-pattern   扩展使用的 glob/regex 匹配
 └─ awaken-ext-*          可选运行时扩展
 ```
@@ -276,7 +287,8 @@ awaken                   门面 crate，管理 feature flags
 | [`tool_call_live`](../../crates/awaken/examples/tool_call_live.rs) | 工具调用（计算器） |
 | [`ai-sdk-starter`](../../examples/ai-sdk-starter/) | React + AI SDK v6 全栈 |
 | [`copilotkit-starter`](../../examples/copilotkit-starter/) | Next.js + CopilotKit 全栈 |
-| [`admin-console`](../../apps/admin-console/) | 管理运行时配置与插件 schema 的浏览器 UI |
+| [`openui-chat`](../../examples/openui-chat/) | OpenUI Lang chat 前端 |
+| [`admin-console`](../../apps/admin-console/) | Config API 管理界面 |
 
 ```bash
 export OPENAI_API_KEY=<your-key>
@@ -297,6 +309,7 @@ npm --prefix apps/admin-console run dev
 |---|---|---|
 | 构建第一个 Agent | [快速上手](https://awakenworks.github.io/awaken/zh-CN/get-started.html) | [构建 Agent 路径](https://awakenworks.github.io/awaken/zh-CN/build-agents.html) |
 | 查看全栈应用 | [AI SDK starter](../../examples/ai-sdk-starter/) | [CopilotKit starter](../../examples/copilotkit-starter/) |
+| 管理运行时配置 | [Admin Console](../../apps/admin-console/) | [Config API](https://awakenworks.github.io/awaken/zh-CN/reference/config.html) |
 | 探索 API | [参考文档](https://awakenworks.github.io/awaken/zh-CN/reference/overview.html) | `cargo doc --workspace --no-deps --open` |
 | 理解运行时 | [架构](https://awakenworks.github.io/awaken/zh-CN/explanation/architecture.html) | [Run 生命周期与 Phases](https://awakenworks.github.io/awaken/zh-CN/explanation/run-lifecycle-and-phases.html) |
 | 从 tirea 迁移 | [迁移指南](https://awakenworks.github.io/awaken/zh-CN/appendix/migration-from-tirea.html) | |
@@ -307,7 +320,7 @@ npm --prefix apps/admin-console run dev
 
 [适合新贡献者的 Issue](https://github.com/AwakenWorks/awaken/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) 是入门的好起点。特别欢迎：
 
-- 新增存储后端（Redis、完整 SQLite thread/run store）
+- 新增内置 memory/file/PostgreSQL/SQLite 之外的 mailbox、config 与 storage 后端
 - 内置工具实现（文件读写、Web 搜索）
 - Token 用量追踪和预算控制
 - 模型降级链

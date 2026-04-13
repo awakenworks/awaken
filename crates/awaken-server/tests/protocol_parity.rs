@@ -75,6 +75,7 @@ fn make_app() -> axum::Router {
     let mailbox = std::sync::Arc::new(awaken_server::mailbox::Mailbox::new(
         runtime.clone(),
         mailbox_store,
+        store.clone(),
         "test".to_string(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));
@@ -135,6 +136,7 @@ fn run_start_has_output_in_agui_and_aisdk() {
     let ev = AgentEvent::RunStart {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         parent_run_id: None,
     };
     let agui = AgUiEncoder::new().transcode(&ev);
@@ -150,6 +152,7 @@ fn run_finish_has_output_in_agui_and_aisdk() {
     let ev = AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: None,
         termination: TerminationReason::NaturalEnd,
     };
@@ -367,6 +370,7 @@ fn reasoning_encrypted_value_produces_output_in_agui_and_aisdk() {
     agui.transcode(&AgentEvent::RunStart {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         parent_run_id: None,
     });
     let agui_out = agui.transcode(&ev);
@@ -375,6 +379,7 @@ fn reasoning_encrypted_value_produces_output_in_agui_and_aisdk() {
     aisdk.transcode(&AgentEvent::RunStart {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         parent_run_id: None,
     });
     let aisdk_out = aisdk.transcode(&ev);

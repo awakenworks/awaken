@@ -3,12 +3,12 @@ name = "awaken-stores"
 version.workspace = true
 readme = "../../README.md"
 edition.workspace = true
-description = "Storage backends (memory, file, PostgreSQL) for Awaken agent state"
+description = "Storage backends (memory, file, PostgreSQL, SQLite mailbox) for Awaken agent state"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
-categories.workspace = true
+categories = ["artificial-intelligence", "database"]
 
 [dependencies]
 awaken-contract = { workspace = true }

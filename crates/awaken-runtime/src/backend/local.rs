@@ -249,6 +249,7 @@ fn map_termination(termination: &TerminationReason) -> BackendRunStatus {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
@@ -258,7 +259,11 @@ mod tests {
         InferenceExecutionError, InferenceRequest, LlmExecutor,
     };
     use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-    use awaken_contract::contract::message::Message;
+    use awaken_contract::contract::message::{Message, ToolCall};
+    use awaken_contract::contract::tool::{
+        Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+    };
+    use serde_json::{Value, json};
 
     use crate::backend::{
         BackendControl, BackendDelegatePolicy, BackendDelegateRunRequest, BackendParentContext,
@@ -267,7 +272,17 @@ mod tests {
     use crate::plugins::{Plugin, PluginDescriptor};
     use crate::registry::{AgentResolver, ExecutionResolver, ResolvedExecution};
 
-    struct ScriptedLlm;
+    struct ScriptedLlm {
+        responses: Mutex<Vec<StreamResult>>,
+    }
+
+    impl ScriptedLlm {
+        fn new(responses: Vec<StreamResult>) -> Self {
+            Self {
+                responses: Mutex::new(responses),
+            }
+        }
+    }
 
     #[async_trait]
     impl LlmExecutor for ScriptedLlm {
@@ -275,17 +290,50 @@ mod tests {
             &self,
             _request: InferenceRequest,
         ) -> Result<StreamResult, InferenceExecutionError> {
-            Ok(StreamResult {
-                content: vec![ContentBlock::text("delegated response")],
-                tool_calls: vec![],
-                usage: Some(TokenUsage::default()),
-                stop_reason: Some(StopReason::EndTurn),
-                has_incomplete_tool_calls: false,
-            })
+            let mut responses = self.responses.lock().unwrap();
+            assert!(!responses.is_empty(), "scripted LLM exhausted");
+            Ok(responses.remove(0))
         }
 
         fn name(&self) -> &str {
             "scripted"
+        }
+    }
+
+    fn text_response(text: &str) -> StreamResult {
+        StreamResult {
+            content: vec![ContentBlock::text(text)],
+            tool_calls: vec![],
+            usage: Some(TokenUsage::default()),
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        }
+    }
+
+    fn tool_call_response(text: &str, tool_name: &str, call_id: &str, args: Value) -> StreamResult {
+        StreamResult {
+            content: vec![ContentBlock::text(text)],
+            tool_calls: vec![ToolCall::new(call_id, tool_name, args)],
+            usage: Some(TokenUsage::default()),
+            stop_reason: Some(StopReason::ToolUse),
+            has_incomplete_tool_calls: false,
+        }
+    }
+
+    struct EchoTool;
+
+    #[async_trait]
+    impl Tool for EchoTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("echo", "echo", "Echoes input back")
+        }
+
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolResult::success_with_message("echo", args, "tool result should not win").into())
         }
     }
 
@@ -338,7 +386,12 @@ mod tests {
             bind_count: bind_count.clone(),
         });
         let resolver = FixedResolver {
-            agent: ResolvedAgent::new("delegate", "m", "sys", Arc::new(ScriptedLlm)),
+            agent: ResolvedAgent::new(
+                "delegate",
+                "m",
+                "sys",
+                Arc::new(ScriptedLlm::new(vec![text_response("delegated response")])),
+            ),
             plugins: vec![plugin],
         };
 
@@ -362,5 +415,50 @@ mod tests {
 
         assert!(matches!(result.status, BackendRunStatus::Completed));
         assert_eq!(bind_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn execute_delegate_returns_final_non_tool_message_after_tool_output() {
+        let resolver = FixedResolver {
+            agent: ResolvedAgent::new(
+                "delegate",
+                "m",
+                "sys",
+                Arc::new(ScriptedLlm::new(vec![
+                    tool_call_response(
+                        "checking",
+                        "echo",
+                        "call-1",
+                        json!({"message": "tool result should not win"}),
+                    ),
+                    text_response("final child answer"),
+                ])),
+            )
+            .with_tool(Arc::new(EchoTool)),
+            plugins: Vec::new(),
+        };
+
+        let result = LocalBackend::new()
+            .execute_delegate(BackendDelegateRunRequest {
+                agent_id: "delegate",
+                messages: vec![Message::user("delegate with a tool")],
+                new_messages: vec![Message::user("delegate with a tool")],
+                sink: Arc::new(NullEventSink),
+                resolver: &resolver,
+                parent: BackendParentContext {
+                    parent_run_id: Some("parent-run".into()),
+                    parent_thread_id: Some("parent-thread".into()),
+                    parent_tool_call_id: Some("tool-1".into()),
+                },
+                control: BackendControl::default(),
+                policy: BackendDelegatePolicy::default(),
+            })
+            .await
+            .expect("delegate execution should succeed");
+
+        assert!(matches!(result.status, BackendRunStatus::Completed));
+        assert_eq!(result.response.as_deref(), Some("final child answer"));
+        assert_eq!(result.output.text.as_deref(), Some("final child answer"));
+        assert_eq!(result.steps, 2);
     }
 }

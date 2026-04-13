@@ -28,6 +28,7 @@ fn message_embeds_in_run_finish_result_and_survives_roundtrip() {
     let event = AgentEvent::RunFinish {
         thread_id: "t1".into(),
         run_id: "r1".into(),
+        identity: None,
         result: Some(json!({"response": "done", "last_message": msg_json})),
         termination: TerminationReason::NaturalEnd,
     };
@@ -206,9 +207,21 @@ fn run_record_roundtrip_preserves_all_fields() {
         thread_id: "t-1".into(),
         agent_id: "agent-1".into(),
         parent_run_id: Some("r-parent".into()),
+        request: None,
+        input: None,
+        output: None,
         status: RunStatus::Running,
-        termination_code: Some("natural_end".into()),
+        termination_reason: Some(TerminationReason::NaturalEnd),
+        final_output: Some("done".into()),
+        error_payload: None,
+        dispatch_id: Some("dispatch-1".into()),
+        session_id: Some("session-1".into()),
+        transport_request_id: Some("request-1".into()),
+        waiting: None,
+        outcome: None,
         created_at: 1000,
+        started_at: None,
+        finished_at: None,
         updated_at: 2000,
         steps: 5,
         input_tokens: 1000,
@@ -224,7 +237,14 @@ fn run_record_roundtrip_preserves_all_fields() {
     assert_eq!(parsed.steps, 5);
     assert_eq!(parsed.input_tokens, 1000);
     assert_eq!(parsed.output_tokens, 500);
-    assert_eq!(parsed.termination_code.as_deref(), Some("natural_end"));
+    assert_eq!(
+        parsed.termination_reason,
+        Some(TerminationReason::NaturalEnd)
+    );
+    assert_eq!(parsed.final_output.as_deref(), Some("done"));
+    assert_eq!(parsed.dispatch_id.as_deref(), Some("dispatch-1"));
+    assert_eq!(parsed.session_id.as_deref(), Some("session-1"));
+    assert_eq!(parsed.transport_request_id.as_deref(), Some("request-1"));
 }
 
 #[test]
@@ -238,9 +258,21 @@ fn run_page_with_multiple_records_roundtrips() {
                 thread_id: "t-1".into(),
                 agent_id: "a-1".into(),
                 parent_run_id: None,
+                request: None,
+                input: None,
+                output: None,
                 status: RunStatus::Done,
-                termination_code: None,
+                termination_reason: None,
+                final_output: None,
+                error_payload: None,
+                dispatch_id: None,
+                session_id: None,
+                transport_request_id: None,
+                waiting: None,
+                outcome: None,
                 created_at: 100,
+                started_at: None,
+                finished_at: None,
                 updated_at: 200,
                 steps: 3,
                 input_tokens: 500,
@@ -252,9 +284,21 @@ fn run_page_with_multiple_records_roundtrips() {
                 thread_id: "t-1".into(),
                 agent_id: "a-1".into(),
                 parent_run_id: Some("r-1".into()),
+                request: None,
+                input: None,
+                output: None,
                 status: RunStatus::Running,
-                termination_code: None,
+                termination_reason: None,
+                final_output: None,
+                error_payload: None,
+                dispatch_id: None,
+                session_id: None,
+                transport_request_id: None,
+                waiting: None,
+                outcome: None,
                 created_at: 300,
+                started_at: None,
+                finished_at: None,
                 updated_at: 400,
                 steps: 1,
                 input_tokens: 200,
@@ -514,6 +558,7 @@ fn all_termination_reasons_serialize_in_run_finish() {
         let event = AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
+            identity: None,
             result: None,
             termination: reason,
         };

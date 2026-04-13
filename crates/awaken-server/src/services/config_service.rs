@@ -739,6 +739,7 @@ mod tests {
         let mailbox = Arc::new(Mailbox::new(
             runtime.clone(),
             Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+            thread_store.clone(),
             "config-service-test".into(),
             MailboxConfig::default(),
         ));
@@ -870,6 +871,7 @@ mod tests {
         let mailbox = Arc::new(Mailbox::new(
             runtime.clone(),
             Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+            thread_store.clone(),
             "config-service-test".into(),
             MailboxConfig::default(),
         ));

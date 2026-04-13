@@ -1,10 +1,10 @@
 # Agent Resolution
 
-When `runtime.run(request)` is called, the `agent_id` in the request must be resolved into a fully wired `ResolvedAgent` -- a struct that holds live references to an LLM executor, tools, plugins, and an execution environment. This resolution happens on every `resolve()` call; nothing is cached or shared between runs. This page describes the three-stage resolution pipeline and the builder that feeds it.
+When `AgentRuntime` runs a request through `run_to_completion(request)` or `run(request, sink)`, the `agent_id` in the request is resolved through `ExecutionResolver` into a `ResolvedExecution`: either `Local(ResolvedAgent)` or `NonLocal(ResolvedBackendAgent)`. A local `ResolvedAgent` holds live references to an LLM executor, tools, plugins, and an execution environment. A non-local execution is backed by an `ExecutionBackend`, such as the built-in A2A backend. Resolution happens on every call; local agent environments are not shared between runs.
 
 ## Pipeline Overview
 
-Resolution is a pure function: `(RegistrySet, agent_id) -> ResolvedAgent`. It proceeds through three sequential stages:
+Local resolution is a pure function: `(RegistrySet, agent_id) -> ResolvedAgent`. It proceeds through three sequential stages:
 
 ```mermaid
 flowchart LR
@@ -42,13 +42,20 @@ Any failure at any stage produces a `ResolveError` and aborts. The pipeline neve
 
 The first stage fetches the raw data from registries:
 
-1. **AgentSpec** -- looked up from `AgentSpecRegistry` by `agent_id`. If the spec has an `endpoint` field (remote backend agent), resolution fails with `RemoteAgentNotDirectlyRunnable` -- remote agents can only be used as delegates, not run directly.
+1. **AgentSpec** -- looked up from `AgentSpecRegistry` by `agent_id`. If direct local resolution is requested for a spec with `endpoint`, it fails with `RemoteAgentNotDirectlyRunnable`. `AgentRuntime` uses `resolve_execution()` for root runs, so endpoint-backed agents are resolved as `ResolvedExecution::NonLocal` when a backend factory exists.
 
 2. **ModelBinding** -- the spec's `model_id` field (a model registry ID like `"default"`) is resolved through `ModelRegistry` into a runtime `ModelBinding`, which maps it to a provider ID and an upstream API model name (for example, provider `"openai"`, upstream model `"gpt-4o"`). The server-side config API persists serializable `ModelBindingSpec` entries and converts them into `ModelBinding` during registry publication.
 
 3. **LlmExecutor** -- the provider ID from the model binding is resolved through `ProviderRegistry` to get a live `LlmExecutor` instance.
 
 4. **Retry decoration** -- if the agent spec contains a `RetryConfigKey` section with `max_retries > 0` or non-empty `fallback_upstream_models`, the executor is wrapped in a `RetryingExecutor` decorator.
+
+### Non-local execution
+
+For endpoint-backed agents, `resolve_execution()` validates the configured
+`RemoteEndpoint`, builds a `ResolvedBackendAgent`, and leaves execution to the
+selected `ExecutionBackend`. The local model/provider/plugin/tool pipeline is
+skipped for that root run because the remote backend owns those decisions.
 
 ## Stage 2: Plugin Pipeline
 
@@ -105,7 +112,7 @@ Tools are merged in this order:
 
 1. **Global tools** -- all tools registered in `ToolRegistry` via the builder (e.g., `builder.with_tool("search", search_tool)`).
 
-2. **Delegate agent tools** -- for each agent ID in `AgentSpec.delegates`, the pipeline creates an `AgentTool`. If the delegate has an `endpoint` (remote), the pipeline selects the configured remote backend. Today the built-in remote delegate backend is A2A; local delegates still use a resolver-backed local tool. Delegate tools require the `a2a` feature flag; without it, delegates are silently ignored with a warning.
+2. **Delegate agent tools** -- for each agent ID in `AgentSpec.delegates`, the pipeline creates an `AgentTool`. If the delegate has an `endpoint` (remote), the pipeline selects the configured `ExecutionBackend`. Today the built-in remote backend is A2A; local delegates still use a resolver-backed local execution. Delegate tools require the `a2a` feature flag; without it, delegates are silently ignored with a warning.
 
 3. **Plugin-registered tools** -- tools declared by plugins during `register()`, stored in `ExecutionEnv.tools`.
 

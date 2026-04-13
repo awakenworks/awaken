@@ -1117,6 +1117,7 @@ Always greet the user warmly and ask how you can help today.
     let mailbox = Arc::new(Mailbox::new(
         runtime.clone(),
         mailbox_store as Arc<dyn MailboxStore>,
+        file_store.clone() as Arc<dyn ThreadRunStore>,
         format!("starter-backend:{}", std::process::id()),
         MailboxConfig::default(),
     ));

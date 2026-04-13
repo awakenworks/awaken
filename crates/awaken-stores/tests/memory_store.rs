@@ -2,10 +2,11 @@
 
 use std::sync::Arc;
 
-use awaken_contract::contract::lifecycle::RunStatus;
+use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
-    RunQuery, RunStore, StorageError, ThreadRunStore, ThreadStore,
+    MessageSeqRange, RunMessageInput, RunMessageOutput, RunQuery, RunStore, StorageError,
+    ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::Thread;
 use awaken_stores::InMemoryStore;
@@ -126,6 +127,34 @@ async fn create_and_load_run() {
     let loaded = RunStore::load_run(&store, "run-1").await.unwrap().unwrap();
     assert_eq!(loaded.thread_id, "t-1");
     assert_eq!(loaded.updated_at, 100);
+}
+
+#[tokio::test]
+async fn create_and_load_run_message_relations() {
+    let store = InMemoryStore::new();
+    let mut run = make_run("run-1", "t-1", 100);
+    run.input = Some(RunMessageInput {
+        thread_id: "t-1".to_string(),
+        range: MessageSeqRange::new(1, 2),
+        trigger_message_ids: vec!["m-1".to_string()],
+        selected_message_ids: Vec::new(),
+        context_policy: None,
+        compacted_snapshot_id: None,
+    });
+    run.output = Some(RunMessageOutput {
+        thread_id: "t-1".to_string(),
+        range: MessageSeqRange::new(3, 4),
+        message_ids: vec!["m-3".to_string(), "m-4".to_string()],
+    });
+
+    store.create_run(&run).await.unwrap();
+
+    let loaded = RunStore::load_run(&store, "run-1").await.unwrap().unwrap();
+    assert_eq!(loaded.input.unwrap().range.unwrap().from_seq, 1);
+    assert_eq!(
+        loaded.output.unwrap().message_ids,
+        vec!["m-3".to_string(), "m-4".to_string()]
+    );
 }
 
 #[tokio::test]
@@ -272,16 +301,19 @@ async fn run_record_with_parent() {
 }
 
 #[tokio::test]
-async fn run_record_with_termination_code() {
+async fn run_record_with_termination_reason() {
     let store = InMemoryStore::new();
     let mut run = make_run("r1", "t-1", 100);
     run.status = RunStatus::Done;
-    run.termination_code = Some("natural".to_string());
+    run.termination_reason = Some(TerminationReason::NaturalEnd);
     store.create_run(&run).await.unwrap();
 
     let loaded = RunStore::load_run(&store, "r1").await.unwrap().unwrap();
     assert_eq!(loaded.status, RunStatus::Done);
-    assert_eq!(loaded.termination_code.as_deref(), Some("natural"));
+    assert_eq!(
+        loaded.termination_reason,
+        Some(TerminationReason::NaturalEnd)
+    );
 }
 
 // ========================================================================
@@ -772,7 +804,7 @@ async fn full_agent_run_via_checkpoint() {
     // 4. Final assistant message
     let mut final_run = make_run("run-1", "t-1", 300);
     final_run.status = RunStatus::Done;
-    final_run.termination_code = Some("natural".to_string());
+    final_run.termination_reason = Some(TerminationReason::NaturalEnd);
     final_run.steps = 2;
     final_run.input_tokens = 100;
     final_run.output_tokens = 50;

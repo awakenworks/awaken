@@ -8,7 +8,7 @@ Application assembly
         |
         v
 AgentRuntime
-  resolve AgentSpec -> ResolvedAgent
+  resolve AgentSpec -> ResolvedExecution
   build ExecutionEnv from plugins
   run the phase loop
   expose cancel / decision control for active runs
@@ -21,9 +21,9 @@ Server + storage surfaces
 
 **Contract layer** -- `awaken-contract` defines the shared types used everywhere: `AgentSpec`, `ModelBindingSpec`, `ProviderSpec`, `Tool`, `AgentEvent`, transport traits, and the typed state model. This is the vocabulary that the rest of the system speaks.
 
-**Runtime core** -- `awaken-runtime` is the orchestration layer. It resolves agent IDs to fully wired configurations (`ResolvedAgent`), builds an `ExecutionEnv` from plugins, manages active runs, and delegates execution to the loop runner plus phase engine.
+**Runtime core** -- `awaken-runtime` is the orchestration layer. It resolves agent IDs to `ResolvedExecution`, which is either a local `ResolvedAgent` or a non-local `ResolvedBackendAgent` backed by an `ExecutionBackend`. Local runs build an `ExecutionEnv` from plugins and execute through the loop runner plus phase engine; non-local runs delegate execution to the backend.
 
-**Server and persistence surfaces** -- `awaken-server` turns the runtime into HTTP and SSE endpoints, mailbox-backed background execution, and protocol adapters. `awaken-stores` provides concrete persistence backends for threads and runs. `awaken-ext-*` crates extend the runtime at phase and tool boundaries without changing the core loop.
+**Server and persistence surfaces** -- `awaken-server` turns the runtime into HTTP and SSE endpoints, mailbox-backed background execution, config management, and protocol adapters. `awaken-stores` provides concrete persistence backends for thread/run data, runtime config, profile/shared state, and mailbox jobs. `awaken-ext-*` crates extend the runtime at phase and tool boundaries without changing the core loop.
 
 ## Request Sequence
 
@@ -39,7 +39,7 @@ sequenceDiagram
 
     Client->>Server: POST /v1/ai-sdk/chat
     Server->>Runtime: RunRequest (agent_id, thread_id, messages)
-    Runtime->>Runtime: Resolve agent (AgentSpec -> ResolvedAgent)
+    Runtime->>Runtime: Resolve agent (AgentSpec -> ResolvedExecution)
     Runtime->>Runtime: Load thread history
     Runtime->>Runtime: RunStart phase
     loop Step loop
@@ -61,6 +61,10 @@ sequenceDiagram
     Runtime-->>Server: AgentEvent stream
     Server-->>Client: SSE events (protocol-specific encoding)
 ```
+
+For endpoint-backed agents, the resolution step returns a non-local execution
+and the selected backend owns the remote task lifecycle instead of entering the
+local phase loop shown above.
 
 ## Phase-Driven Execution Loop
 

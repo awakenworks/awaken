@@ -1,16 +1,21 @@
-# Use Generative UI (A2UI)
+# Use Generative UI
 
 Use this when you want the agent to send declarative UI components to a frontend -- for example, rendering a form, a data table, or an interactive card without the frontend knowing the layout in advance.
+
+Awaken currently supports two integration styles:
+
+- A2UI tool calls through `A2uiPlugin` and the `render_a2ui` tool, covered below.
+- Streaming sub-agent output through `run_streaming_subagent()`, with JSON Render and OpenUI Lang presets behind the `json-render` and `openui` features of `awaken-ext-generative-ui`.
 
 ## Prerequisites
 
 - A working awaken agent runtime (see [Build an Agent](./build-an-agent.md))
-- A frontend that consumes A2UI messages from the event stream (e.g. a CopilotKit or AI SDK integration)
-- A component catalog registered on the frontend that defines available UI components
+- For A2UI: a frontend that consumes A2UI messages from the event stream and a registered component catalog
+- For JSON Render or OpenUI Lang: a frontend renderer that consumes streamed tool output, such as the `ai-sdk-starter` or `openui-chat` examples
 
 ```toml
 [dependencies]
-awaken = { package = "awaken-agent", version = "0.1" }
+awaken = { package = "awaken-agent", version = "0.2" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```
@@ -208,6 +213,7 @@ let agent_spec = agent_spec.with_section("generative-ui", serde_json::json!({
 
 ## Related Example
 
+- `examples/examples/generative_ui.rs` -- streaming sub-agent pipeline with OpenUI Lang output
 - `crates/awaken-ext-generative-ui/src/a2ui/tests.rs` -- validation and tool execution test cases
 
 ## Key Files
@@ -219,6 +225,8 @@ let agent_spec = agent_spec.with_section("generative-ui", serde_json::json!({
 | `crates/awaken-ext-generative-ui/src/a2ui/tool.rs` | `A2uiRenderTool` -- validation and execution |
 | `crates/awaken-ext-generative-ui/src/a2ui/types.rs` | `A2uiMessage`, `A2uiComponent`, and related structs |
 | `crates/awaken-ext-generative-ui/src/a2ui/validation.rs` | `validate_a2ui_messages` structural checks |
+| `crates/awaken-ext-generative-ui/src/json_render.rs` | JSON Render prompt and output compiler |
+| `crates/awaken-ext-generative-ui/src/openui.rs` | OpenUI Lang prompt preset |
 
 ## Related
 
