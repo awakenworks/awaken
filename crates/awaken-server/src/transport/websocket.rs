@@ -15,8 +15,8 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
 use axum::extract::ws::{WebSocket, WebSocketUpgrade};
+use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -82,13 +82,8 @@ pub async fn handle_websocket(
         });
 
         // Main loop: pull client messages, forward to runtime.
-        if let Err(e) = relay_client_messages_to_runtime(
-            receiver,
-            mailbox,
-            thread_id,
-            event_sink,
-        )
-        .await
+        if let Err(e) =
+            relay_client_messages_to_runtime(receiver, mailbox, thread_id, event_sink).await
         {
             error!("WebSocket relay error: {e:?}");
         }
