@@ -73,4 +73,3 @@ fn websocket_message_extra_fields_preserved() {
     assert_eq!(msg["content"], "test");
     assert_eq!(msg["extra"], "field");
 }
-
