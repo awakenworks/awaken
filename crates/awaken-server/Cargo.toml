@@ -28,7 +28,8 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal", "time"] }
-axum = { version = "0.7", default-features = false, features = ["http1", "json", "query", "tokio"] }
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "query", "tokio", "ws"] }
+tokio-tungstenite = { version = "0.24", optional = true }
 tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.6", features = ["trace"] }
 async-stream = "0.3"
@@ -71,6 +72,7 @@ default = ["permission"]
 permission = ["dep:awaken-ext-permission"]
 nats = []
 otel = []
+websocket = ["dep:tokio-tungstenite"]
 
 [lints]
 workspace = true

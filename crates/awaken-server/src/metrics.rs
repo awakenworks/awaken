@@ -80,6 +80,16 @@ pub fn dec_sse_connections() {
     gauge!("awaken_sse_connections").decrement(1.0);
 }
 
+/// Increment the active WebSocket connections gauge.
+pub fn inc_ws_connections() {
+    gauge!("awaken_ws_connections").increment(1.0);
+}
+
+/// Decrement the active WebSocket connections gauge.
+pub fn dec_ws_connections() {
+    gauge!("awaken_ws_connections").decrement(1.0);
+}
+
 // ── Route handler ───────────────────────────────────────────────────
 
 /// GET /metrics — Prometheus scrape endpoint.
