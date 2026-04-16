@@ -20,7 +20,7 @@
     "@ag-ui/client": "^0.0.48",
     "@copilotkit/react-core": "^1.54.1",
     "@copilotkit/react-ui": "^1.54.1",
-    "@copilotkit/runtime": "^1.54.1",
+    "@copilotkit/runtime": "^1.56.0",
     "@json-render/react": "^0.16.0",
     "@openuidev/react-lang": "^0.1.4",
     "@openuidev/react-ui": "^0.9.20",
