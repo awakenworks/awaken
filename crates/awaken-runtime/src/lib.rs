@@ -16,6 +16,7 @@ pub mod engine;
 mod error;
 pub mod execution;
 pub mod extensions;
+pub mod builtin_tools;
 mod hooks;
 pub mod inbox;
 pub mod loop_runner;

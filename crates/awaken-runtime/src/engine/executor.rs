@@ -7,6 +7,7 @@ use futures::{Stream, StreamExt};
 use genai::Client;
 use genai::chat::ReasoningEffort as GenaiReasoningEffort;
 use genai::chat::{ChatOptions, ChatStreamEvent};
+#[cfg(any(feature = "a2a", feature = "web-search"))]
 use reqwest::StatusCode;
 
 use awaken_contract::contract::content::ContentBlock;
@@ -144,7 +145,8 @@ impl GenaiExecutor {
     fn map_error(e: genai::Error) -> InferenceExecutionError {
         tracing::warn!(error = ?e, "LLM inference error");
 
-        // Try structured matching on status codes first.
+        // Try structured matching on status codes first when reqwest is available
+        #[cfg(any(feature = "a2a", feature = "web-search"))]
         if let Some(status) = Self::extract_status_code(&e) {
             let msg = format!("{e:#}");
             return match status.as_u16() {
@@ -175,6 +177,7 @@ impl GenaiExecutor {
     }
 
     /// Extract an HTTP status code from structured `genai::Error` variants.
+    #[cfg(any(feature = "a2a", feature = "web-search"))]
     fn extract_status_code(e: &genai::Error) -> Option<StatusCode> {
         match e {
             genai::Error::HttpError { status, .. } => Some(*status),
@@ -639,6 +642,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(feature = "a2a", feature = "web-search"))]
     #[test]
     fn map_error_http_429_structured() {
         let err = genai::Error::HttpError {
@@ -653,6 +657,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(feature = "a2a", feature = "web-search"))]
     #[test]
     fn map_error_http_500_structured() {
         let err = genai::Error::HttpError {
@@ -667,6 +672,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(feature = "a2a", feature = "web-search"))]
     #[test]
     fn map_error_http_504_structured() {
         let err = genai::Error::HttpError {
@@ -778,6 +784,7 @@ mod tests {
     // Error classification tests for WebAdapterCall and WebModelCall
     // -----------------------------------------------------------------------
 
+    #[cfg(any(feature = "a2a", feature = "web-search"))]
     #[test]
     fn map_error_web_adapter_call_429() {
         use genai::adapter::AdapterKind;
@@ -798,6 +805,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(feature = "a2a", feature = "web-search"))]
     #[test]
     fn map_error_web_model_call_429() {
         use genai::ModelIden;
@@ -819,6 +827,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(feature = "a2a", feature = "web-search"))]
     #[test]
     fn map_error_web_adapter_call_503() {
         use genai::adapter::AdapterKind;
@@ -839,6 +848,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(feature = "a2a", feature = "web-search"))]
     #[test]
     fn map_error_web_model_call_504() {
         use genai::ModelIden;
