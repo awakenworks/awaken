@@ -13,6 +13,7 @@ categories = ["artificial-intelligence", "asynchronous"]
 [dependencies]
 awaken-contract = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
+awaken-ext-web-search = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -31,6 +32,7 @@ parking_lot = { workspace = true }
 [features]
 default = ["a2a", "handoff", "background"]
 a2a = ["dep:reqwest"]
+web-search = ["dep:reqwest", "dep:awaken-ext-web-search", "awaken-ext-web-search/serpapi"]
 handoff = []
 background = []
 parallel-tools = []

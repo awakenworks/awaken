@@ -8,6 +8,7 @@ members = [
     "crates/awaken-ext-permission",
     "crates/awaken-ext-observability",
     "crates/awaken-ext-mcp",
+    "crates/awaken-ext-web-search",
     "crates/awaken",
     "crates/awaken-ext-skills",
     "crates/awaken-ext-reminder",
@@ -38,6 +39,7 @@ awaken-runtime = { version = "0.2.0", path = "crates/awaken-runtime" }
 awaken-ext-permission = { version = "0.2.0", path = "crates/awaken-ext-permission" }
 awaken-ext-observability = { version = "0.2.0", path = "crates/awaken-ext-observability" }
 awaken-ext-mcp = { version = "0.2.0", path = "crates/awaken-ext-mcp" }
+awaken-ext-web-search = { version = "0.2.0", path = "crates/awaken-ext-web-search" }
 awaken-ext-skills = { version = "0.2.0", path = "crates/awaken-ext-skills" }
 awaken-ext-reminder = { version = "0.2.0", path = "crates/awaken-ext-reminder" }
 awaken-ext-generative-ui = { version = "0.2.0", path = "crates/awaken-ext-generative-ui" }
@@ -63,6 +65,7 @@ agent-client-protocol = "0.10.4"
 jsonschema = "0.45"
 parking_lot = "0.12"
 proptest = "1"
+httpmock = "0.7"
 tokio-util = { version = "0.7", features = ["compat"] }
 
 [workspace.lints.rust]

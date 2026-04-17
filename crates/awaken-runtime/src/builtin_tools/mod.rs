@@ -1,3 +1,5 @@
+#[cfg(feature = "web-search")]
 pub mod web_search;
 
-pub use web_search::WebSearchTool;
+#[cfg(feature = "web-search")]
+pub use web_search::*;

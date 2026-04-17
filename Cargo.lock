@@ -630,6 +630,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-ext-web-search"
+version = "0.1.2-dev"
+dependencies = [
+ "async-trait",
+ "awaken-contract",
+ "httpmock",
+ "reqwest 0.13.2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-protocol-a2a"
 version = "0.2.0"
 dependencies = [
@@ -643,6 +657,7 @@ version = "0.2.0"
 dependencies = [
  "async-trait",
  "awaken-contract",
+ "awaken-ext-web-search",
  "awaken-protocol-a2a",
  "awaken-runtime",
  "awaken-stores",

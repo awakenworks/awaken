@@ -134,6 +134,10 @@ pub mod state {
     };
 }
 
+/// Built-in tools.
+#[cfg(feature = "web-search")]
+pub use awaken_runtime::builtin_tools;
+
 // ── Flat re-exports: most commonly used types at crate root ──
 
 // contract types
