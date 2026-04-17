@@ -86,7 +86,11 @@ impl Tool for WebSearchTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext,
+    ) -> Result<ToolOutput, ToolError> {
         let query = args
             .get("query")
             .and_then(Value::as_str)
@@ -145,7 +149,10 @@ mod tests {
     async fn executes_with_custom_provider() {
         let tool = WebSearchTool::with_provider(Arc::new(MockProvider));
         let ctx = ToolCallContext::test_default();
-        let out = tool.execute(json!({"query": "test"}), &ctx).await.unwrap();
+        let out = tool
+            .execute(json!({"query": "test"}), &ctx)
+            .await
+            .unwrap();
 
         assert!(out.result.is_success());
     }
