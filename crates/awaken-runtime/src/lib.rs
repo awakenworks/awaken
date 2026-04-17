@@ -10,13 +10,13 @@
 pub mod agent;
 pub mod backend;
 pub mod builder;
+pub mod builtin_tools;
 pub(crate) mod cancellation;
 pub mod context;
 pub mod engine;
 mod error;
 pub mod execution;
 pub mod extensions;
-pub mod builtin_tools;
 mod hooks;
 pub mod inbox;
 pub mod loop_runner;
@@ -46,8 +46,8 @@ pub use backend::{
 };
 pub use builder::{AgentRuntimeBuilder, BuildError};
 pub use phase::{
-    DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv, PhaseContext, PhaseHook, PhaseRuntime, ToolGateHook,
-    ToolPolicyHook, TypedEffectHandler, TypedScheduledActionHandler,
+    ExecutionEnv, PhaseContext, PhaseHook, PhaseRuntime, ToolGateHook, ToolPolicyHook,
+    TypedEffectHandler, TypedScheduledActionHandler, DEFAULT_MAX_PHASE_ROUNDS,
 };
 pub use plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 pub use registry::{AgentResolver, ExecutionResolver, ResolvedAgent, ResolvedExecution};
