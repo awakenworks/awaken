@@ -1,10 +1,15 @@
 //! Run dispatch types and persistent store trait for the unified run queue.
 
+use std::pin::Pin;
+
 use async_trait::async_trait;
+use futures::Stream;
 use serde::{Deserialize, Serialize};
 
 use super::lifecycle::{RunStatus, TerminationReason};
+use super::message::Message;
 use super::storage::StorageError;
+use super::suspension::ToolCallResume;
 
 // ── RunDispatchStatus ───────────────────────────────────────────────
 
@@ -150,6 +155,74 @@ pub struct MailboxInterrupt {
     pub active_dispatch: Option<RunDispatch>,
     /// Number of Queued dispatches superseded.
     pub superseded_count: usize,
+}
+
+// ── LiveRunCommand ─────────────────────────────────────────────────────────
+
+/// Control command delivered to an active run's owning node (out-of-band
+/// relative to durable dispatch). Consumed by the runtime forwarder attached
+/// to each `RunHandle`; unsubscribed targets silently drop commands (best
+/// effort — steering is ephemeral by design).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum LiveRunCommand {
+    /// Inject messages into the running agent's inbox. Agent picks them up
+    /// at the next step boundary (`turn-boundary` semantics).
+    Messages(Vec<Message>),
+    /// Cooperatively cancel the run (`immediate` semantics — triggers the
+    /// run's cancellation token).
+    Cancel,
+    /// Deliver tool-call resume decisions to the run.
+    Decision(Vec<(String, ToolCallResume)>),
+}
+
+/// Completion receipt for a delivered `LiveRunCommand`. Consumers call
+/// [`LiveCommandReceipt::ack`] **only after the run has actually accepted
+/// the command** (e.g. the inbox channel returned success). A dropped
+/// receipt signals the producer that delivery did not complete, and the
+/// producer's `deliver_live` resolves as
+/// [`LiveDeliveryOutcome::NoSubscriber`] so the caller can fall back to
+/// durable dispatch. Producers MUST NOT observe `Delivered` until the
+/// receipt has been acknowledged.
+pub trait LiveCommandReceipt: Send + Sync {
+    /// Confirm the command was handed to the live consumer. Consumes the
+    /// receipt; dropping the handle without calling `ack` is treated as
+    /// non-delivery by the producer.
+    fn ack(self: Box<Self>);
+}
+
+/// Entry yielded by a [`LiveRunCommandStream`]: the command plus the
+/// receipt the consumer must `ack` once the run has received it.
+pub struct LiveRunCommandEntry {
+    pub command: LiveRunCommand,
+    pub receipt: Box<dyn LiveCommandReceipt>,
+}
+
+impl std::fmt::Debug for LiveRunCommandEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LiveRunCommandEntry")
+            .field("command", &self.command)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Stream of [`LiveRunCommandEntry`] consumed by the owning node's runtime
+/// forwarder.
+pub type LiveRunCommandStream = Pin<Box<dyn Stream<Item = LiveRunCommandEntry> + Send>>;
+
+/// Outcome of a `MailboxStore::deliver_live` call — lets the caller decide
+/// whether to fall back to the durable queue. `NoSubscriber` means *no node
+/// acknowledged the command*; the command was either lost in transit or
+/// the run failed to accept it. Callers must treat `NoSubscriber` as
+/// "did not deliver" and fall back to durable dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveDeliveryOutcome {
+    /// The owning run accepted the command (forwarder acked after handing
+    /// the command to the in-process channel).
+    Delivered,
+    /// No subscriber, or the subscriber failed to accept within the
+    /// producer's timeout. Caller should fall back to durable dispatch.
+    NoSubscriber,
 }
 
 // ── MailboxStore trait ──────────────────────────────────────────────
@@ -301,6 +374,37 @@ pub trait MailboxStore: Send + Sync {
     /// List distinct thread_ids that have at least one Queued dispatch.
     /// Used by recover() at startup.
     async fn queued_thread_ids(&self) -> Result<Vec<String>, StorageError>;
+
+    // ── live-channel (ephemeral steering) ──
+    //
+    // Separate from durable dispatch: these deliver best-effort control
+    // commands to whichever node currently owns the run. Default impls are
+    // no-ops so stores that don't support live delivery (test fakes) opt out.
+
+    /// Deliver a `LiveRunCommand` to the run currently active for `thread_id`.
+    /// Implementations report `Delivered` when at least one subscriber has
+    /// observed the command, or `NoSubscriber` when delivery would be a
+    /// silent drop (the caller then owns durable-fallback policy). The
+    /// default implementation is `NoSubscriber` so stores that opt out of
+    /// live delivery force every caller to fall back automatically.
+    async fn deliver_live(
+        &self,
+        thread_id: &str,
+        cmd: LiveRunCommand,
+    ) -> Result<LiveDeliveryOutcome, StorageError> {
+        let _ = (thread_id, cmd);
+        Ok(LiveDeliveryOutcome::NoSubscriber)
+    }
+
+    /// Subscribe to the live-command stream for `thread_id`. Called by the
+    /// runtime on the owning node when a run is registered.
+    async fn open_live_channel(
+        &self,
+        thread_id: &str,
+    ) -> Result<LiveRunCommandStream, StorageError> {
+        let _ = thread_id;
+        Ok(Box::pin(futures::stream::empty()))
+    }
 }
 
 #[cfg(test)]

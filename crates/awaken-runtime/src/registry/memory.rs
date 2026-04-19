@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[cfg(feature = "a2a")]
 use crate::backend::ExecutionBackendFactory;
 use crate::builder::BuildError;
 #[cfg(feature = "a2a")]

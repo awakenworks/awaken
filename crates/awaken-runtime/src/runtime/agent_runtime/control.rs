@@ -1,5 +1,6 @@
 //! Control methods: cancel, send_decisions — with dual-index lookup (run_id + thread_id).
 
+use awaken_contract::contract::message::Message;
 use awaken_contract::contract::suspension::ToolCallResume;
 
 use super::AgentRuntime;
@@ -84,6 +85,19 @@ impl AgentRuntime {
             HandleLookup::NotFound => false,
             HandleLookup::Ambiguous => {
                 tracing::warn!(id = %id, "send_decision rejected: ambiguous control id");
+                false
+            }
+        }
+    }
+
+    /// Send direct input messages to an active run by run ID or thread ID.
+    /// Ambiguous IDs are rejected.
+    pub fn send_messages(&self, id: &str, messages: Vec<Message>) -> bool {
+        match self.active_runs.lookup_strict(id) {
+            HandleLookup::Found(handle) => handle.send_messages(messages),
+            HandleLookup::NotFound => false,
+            HandleLookup::Ambiguous => {
+                tracing::warn!(id = %id, "send_messages rejected: ambiguous control id");
                 false
             }
         }
@@ -307,6 +321,43 @@ mod tests {
         drop(rx);
 
         assert!(!rt.send_decision("r1", "tc1".into(), make_resume()));
+    }
+
+    // -- send_messages (dual-index) --
+
+    #[test]
+    fn send_messages_by_run_id_delivers_to_inbox() {
+        let rt = make_runtime();
+        let (inbox_tx, mut inbox_rx) = crate::inbox::inbox_channel();
+        let (handle, _token, _rx) = rt.create_run_channels_with_inbox("r1".into(), Some(inbox_tx));
+        rt.register_run("t1", handle).unwrap();
+
+        assert!(rt.send_messages("r1", vec![Message::user("live")]));
+
+        let payload = inbox_rx.try_recv().expect("payload should be delivered");
+        let messages = crate::inbox::inbox_payload_messages(&payload);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].text(), "live");
+    }
+
+    #[test]
+    fn send_messages_returns_false_without_inbox() {
+        let rt = make_runtime();
+        let (handle, _token, _rx) = rt.create_run_channels("r1".into());
+        rt.register_run("t1", handle).unwrap();
+
+        assert!(!rt.send_messages("r1", vec![Message::user("live")]));
+    }
+
+    #[test]
+    fn send_messages_returns_false_for_closed_inbox() {
+        let rt = make_runtime();
+        let (inbox_tx, inbox_rx) = crate::inbox::inbox_channel();
+        drop(inbox_rx);
+        let (handle, _token, _rx) = rt.create_run_channels_with_inbox("r1".into(), Some(inbox_tx));
+        rt.register_run("t1", handle).unwrap();
+
+        assert!(!rt.send_messages("r1", vec![Message::user("live")]));
     }
 
     // -- cancel after unregister --

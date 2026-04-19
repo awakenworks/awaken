@@ -32,6 +32,7 @@ pub(super) struct StepCompletion<'a> {
     pub(super) run_created_at: u64,
     pub(super) total_input_tokens: u64,
     pub(super) total_output_tokens: u64,
+    pub(super) thread_ctx: Option<&'a crate::ThreadContextSnapshot>,
 }
 
 pub(super) struct CheckpointPersist<'a> {
@@ -46,6 +47,7 @@ pub(super) struct CheckpointPersist<'a> {
     pub(super) termination_reason: Option<TerminationReason>,
     pub(super) final_output: Option<String>,
     pub(super) error_payload: Option<Value>,
+    pub(super) thread_ctx: Option<&'a crate::ThreadContextSnapshot>,
 }
 
 pub(super) async fn complete_step(params: StepCompletion<'_>) -> Result<(), AgentLoopError> {
@@ -61,6 +63,7 @@ pub(super) async fn complete_step(params: StepCompletion<'_>) -> Result<(), Agen
         run_created_at,
         total_input_tokens,
         total_output_tokens,
+        thread_ctx,
     } = params;
 
     commit_update::<RunLifecycle>(
@@ -86,6 +89,7 @@ pub(super) async fn complete_step(params: StepCompletion<'_>) -> Result<(), Agen
         termination_reason: None,
         final_output: None,
         error_payload: None,
+        thread_ctx,
     })
     .await?;
 
@@ -110,6 +114,7 @@ pub(super) async fn persist_checkpoint(
         termination_reason,
         final_output,
         error_payload,
+        thread_ctx,
     } = params;
     let Some(storage) = checkpoint_store else {
         return Ok(());
@@ -119,10 +124,14 @@ pub(super) async fn persist_checkpoint(
     let state = store
         .export_persisted()
         .map_err(AgentLoopError::PhaseError)?;
-    let previous = storage
-        .load_run(&run_identity.run_id)
-        .await
-        .map_err(|e| AgentLoopError::StorageError(e.to_string()))?;
+    let previous = if let Some(ctx) = thread_ctx {
+        ctx.run_cache.get(&run_identity.run_id).cloned()
+    } else {
+        storage
+            .load_run(&run_identity.run_id)
+            .await
+            .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
+    };
     let created_at = previous
         .as_ref()
         .map(|record| record.created_at)

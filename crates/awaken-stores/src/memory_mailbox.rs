@@ -1,14 +1,17 @@
 //! In-memory implementation of the new lease-based `MailboxStore`.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::mailbox::{
-    MailboxInterrupt, MailboxStore, RunDispatch, RunDispatchResult, RunDispatchStatus,
+    LiveCommandReceipt, LiveDeliveryOutcome, LiveRunCommand, LiveRunCommandEntry,
+    LiveRunCommandStream, MailboxInterrupt, MailboxStore, RunDispatch, RunDispatchResult,
+    RunDispatchStatus,
 };
 use awaken_contract::contract::storage::StorageError;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, mpsc, oneshot};
 use uuid::Uuid;
 
 /// Per-thread dispatch epoch for interrupt semantics.
@@ -24,6 +27,25 @@ struct MailboxState {
 pub struct InMemoryMailboxStore {
     dispatches: RwLock<HashMap<String, RunDispatch>>,
     state: RwLock<HashMap<String, MailboxState>>,
+    /// Single-consumer live-channel: one forwarder per thread at a time.
+    /// Re-opening replaces the previous sender so the stale forwarder sees
+    /// the channel close.
+    live: RwLock<HashMap<String, mpsc::UnboundedSender<LiveRunCommandEntry>>>,
+}
+
+/// How long a producer waits for the consumer to ack an in-memory live
+/// command before falling back to durable dispatch. Short by design — the
+/// in-process forwarder only needs to execute a `try_send` to ack.
+const LIVE_ACK_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Oneshot-backed receipt: `ack` sends `()` on the paired receiver, which
+/// unblocks the producer's `deliver_live` await.
+struct OneshotReceipt(oneshot::Sender<()>);
+
+impl LiveCommandReceipt for OneshotReceipt {
+    fn ack(self: Box<Self>) {
+        let _ = self.0.send(());
+    }
 }
 
 impl InMemoryMailboxStore {
@@ -496,6 +518,63 @@ impl MailboxStore for InMemoryMailboxStore {
         ids.sort();
         Ok(ids)
     }
+
+    async fn deliver_live(
+        &self,
+        thread_id: &str,
+        cmd: LiveRunCommand,
+    ) -> Result<LiveDeliveryOutcome, StorageError> {
+        // Snapshot the sender without holding the map lock across await.
+        let sender = {
+            let map = self.live.read().await;
+            match map.get(thread_id) {
+                Some(sender) => sender.clone(),
+                None => return Ok(LiveDeliveryOutcome::NoSubscriber),
+            }
+        };
+        let (ack_tx, ack_rx) = oneshot::channel();
+        let receipt: Box<dyn LiveCommandReceipt> = Box::new(OneshotReceipt(ack_tx));
+        if sender
+            .send(LiveRunCommandEntry {
+                command: cmd,
+                receipt,
+            })
+            .is_err()
+        {
+            // Receiver dropped — forwarder is gone.
+            let mut map = self.live.write().await;
+            if let Some(current) = map.get(thread_id)
+                && current.is_closed()
+            {
+                map.remove(thread_id);
+            }
+            return Ok(LiveDeliveryOutcome::NoSubscriber);
+        }
+        // Wait for the consumer to ack (i.e. to successfully hand the
+        // command off to the run). Timeout maps to `NoSubscriber` so the
+        // caller falls back to the durable queue.
+        match tokio::time::timeout(LIVE_ACK_TIMEOUT, ack_rx).await {
+            Ok(Ok(())) => Ok(LiveDeliveryOutcome::Delivered),
+            _ => Ok(LiveDeliveryOutcome::NoSubscriber),
+        }
+    }
+
+    async fn open_live_channel(
+        &self,
+        thread_id: &str,
+    ) -> Result<LiveRunCommandStream, StorageError> {
+        // Single-consumer: a fresh `open_live_channel` replaces any prior
+        // forwarder. In production there's one forwarder per thread at a
+        // time (enforced by `ActiveRunRegistry`); tests that drive multiple
+        // subscribers should be written against `NatsMailboxStore` or an
+        // intentional fanout backend.
+        let (tx, rx) = mpsc::unbounded_channel::<LiveRunCommandEntry>();
+        self.live.write().await.insert(thread_id.to_string(), tx);
+        let stream = futures::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|entry| (entry, rx))
+        });
+        Ok(Box::pin(stream))
+    }
 }
 
 #[cfg(test)]
@@ -597,6 +676,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn claim_honors_batch_limit_without_active_claim() {
+        let store = InMemoryMailboxStore::new();
+        for _ in 0..3 {
+            store
+                .enqueue(&make_dispatch("m-1", "agent-1"))
+                .await
+                .unwrap();
+        }
+
+        let claimed = store
+            .claim("m-1", "consumer-1", 30_000, 1000, 2)
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 2);
+        assert!(
+            claimed
+                .iter()
+                .all(|dispatch| dispatch.status == RunDispatchStatus::Claimed)
+        );
+    }
+
+    #[tokio::test]
     async fn claim_priority_ordering() {
         let store = InMemoryMailboxStore::new();
 
@@ -616,13 +717,35 @@ mod tests {
         store.enqueue(&mid).await.unwrap();
 
         let claimed = store
-            .claim("m-1", "consumer-1", 30_000, 1000, 10)
+            .claim("m-1", "consumer-1", 30_000, 1000, 1)
             .await
             .unwrap();
-        assert_eq!(claimed.len(), 3);
+        assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].priority, 10);
-        assert_eq!(claimed[1].priority, 128);
-        assert_eq!(claimed[2].priority, 200);
+        let token = claimed[0].claim_token.clone().unwrap();
+        store
+            .ack(&claimed[0].dispatch_id, &token, 1100)
+            .await
+            .unwrap();
+
+        let claimed = store
+            .claim("m-1", "consumer-1", 30_000, 1200, 1)
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].priority, 128);
+        let token = claimed[0].claim_token.clone().unwrap();
+        store
+            .ack(&claimed[0].dispatch_id, &token, 1300)
+            .await
+            .unwrap();
+
+        let claimed = store
+            .claim("m-1", "consumer-1", 30_000, 1400, 1)
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].priority, 200);
     }
 
     #[tokio::test]
@@ -1362,6 +1485,201 @@ mod tests {
         // Should be claimable again.
         let reclaimed = store.claim("m-1", "c-1", 30_000, 2000, 1).await.unwrap();
         assert_eq!(reclaimed.len(), 1);
+    }
+
+    // ── Live-channel tests ──
+
+    mod live_channel {
+        use super::*;
+        use awaken_contract::contract::mailbox::{LiveDeliveryOutcome, LiveRunCommand};
+        use awaken_contract::contract::message::Message;
+        use futures::StreamExt;
+        use std::time::Duration;
+        use tokio::time::timeout;
+
+        /// Spawn a consumer task that drains the stream and auto-acks each
+        /// entry, capturing the commands for assertions.
+        fn spawn_auto_ack_consumer(
+            mut stream: LiveRunCommandStream,
+        ) -> (
+            tokio::task::JoinHandle<()>,
+            std::sync::Arc<tokio::sync::Mutex<Vec<LiveRunCommand>>>,
+        ) {
+            let captured = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+            let captured_clone = captured.clone();
+            let handle = tokio::spawn(async move {
+                while let Some(entry) = stream.next().await {
+                    captured_clone.lock().await.push(entry.command.clone());
+                    entry.receipt.ack();
+                }
+            });
+            (handle, captured)
+        }
+
+        #[tokio::test]
+        async fn publish_reaches_subscriber_and_delivered_requires_ack() {
+            let store = InMemoryMailboxStore::new();
+            let stream = store.open_live_channel("t-1").await.unwrap();
+            let (_consumer, captured) = spawn_auto_ack_consumer(stream);
+
+            let outcome = store
+                .deliver_live("t-1", LiveRunCommand::Messages(vec![Message::user("hi")]))
+                .await
+                .unwrap();
+            assert_eq!(outcome, LiveDeliveryOutcome::Delivered);
+
+            let commands = captured.lock().await.clone();
+            assert_eq!(commands.len(), 1);
+            match &commands[0] {
+                LiveRunCommand::Messages(msgs) => assert_eq!(msgs[0].text(), "hi"),
+                other => panic!("expected Messages, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn publish_without_subscriber_reports_no_subscriber() {
+            let store = InMemoryMailboxStore::new();
+            let outcome = store
+                .deliver_live("t-2", LiveRunCommand::Cancel)
+                .await
+                .expect("deliver_live is infallible here");
+            assert_eq!(outcome, LiveDeliveryOutcome::NoSubscriber);
+        }
+
+        #[tokio::test]
+        async fn publish_after_subscriber_drop_reports_no_subscriber() {
+            let store = InMemoryMailboxStore::new();
+            {
+                let _stream = store.open_live_channel("t-drop").await.unwrap();
+                // subscriber dropped at scope exit
+            }
+            let outcome = store
+                .deliver_live("t-drop", LiveRunCommand::Cancel)
+                .await
+                .expect("deliver_live is infallible here");
+            assert_eq!(outcome, LiveDeliveryOutcome::NoSubscriber);
+        }
+
+        #[tokio::test]
+        async fn consumer_that_drops_receipt_triggers_no_subscriber() {
+            // Regression for issue #2: ack-after-forward guarantees that a
+            // consumer which fails to hand off the command (drops receipt)
+            // causes the producer to report NoSubscriber.
+            let store = InMemoryMailboxStore::new();
+            let mut stream = store.open_live_channel("t-nof").await.unwrap();
+
+            let producer = tokio::spawn({
+                let store = std::sync::Arc::new(store);
+                let s = store.clone();
+                async move {
+                    s.deliver_live("t-nof", LiveRunCommand::Cancel)
+                        .await
+                        .unwrap()
+                }
+            });
+
+            // Receive the entry, DO NOT ack — drop the receipt.
+            let entry = timeout(Duration::from_millis(200), stream.next())
+                .await
+                .unwrap()
+                .unwrap();
+            drop(entry.receipt);
+
+            let outcome = producer.await.unwrap();
+            assert_eq!(outcome, LiveDeliveryOutcome::NoSubscriber);
+        }
+
+        #[tokio::test]
+        async fn different_threads_isolated() {
+            let store = InMemoryMailboxStore::new();
+            let stream_a = store.open_live_channel("t-a").await.unwrap();
+            let mut stream_b = store.open_live_channel("t-b").await.unwrap();
+            let (_consumer_a, captured_a) = spawn_auto_ack_consumer(stream_a);
+
+            store
+                .deliver_live("t-a", LiveRunCommand::Cancel)
+                .await
+                .unwrap();
+            assert_eq!(captured_a.lock().await.len(), 1);
+
+            let got_b = timeout(Duration::from_millis(100), stream_b.next()).await;
+            assert!(got_b.is_err(), "t-b must not receive t-a's command");
+        }
+
+        #[tokio::test]
+        async fn reopen_replaces_previous_subscriber() {
+            // Single-consumer semantics: opening a second channel on the
+            // same thread invalidates the prior forwarder (its stream ends).
+            let store = InMemoryMailboxStore::new();
+            let mut old_stream = store.open_live_channel("t-replace").await.unwrap();
+            let new_stream = store.open_live_channel("t-replace").await.unwrap();
+            let (_consumer, captured) = spawn_auto_ack_consumer(new_stream);
+
+            store
+                .deliver_live("t-replace", LiveRunCommand::Cancel)
+                .await
+                .unwrap();
+
+            // Old stream should be closed (sender replaced).
+            let old = timeout(Duration::from_millis(100), old_stream.next()).await;
+            assert!(
+                matches!(old, Ok(None)),
+                "old stream must close, got {old:?}"
+            );
+            assert_eq!(captured.lock().await.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn order_preserved_for_single_subscriber() {
+            let store = InMemoryMailboxStore::new();
+            let stream = store.open_live_channel("t-ord").await.unwrap();
+            let (_consumer, captured) = spawn_auto_ack_consumer(stream);
+
+            for i in 0..5 {
+                store
+                    .deliver_live(
+                        "t-ord",
+                        LiveRunCommand::Messages(vec![Message::user(format!("m-{i}"))]),
+                    )
+                    .await
+                    .unwrap();
+            }
+
+            let captured = captured.lock().await;
+            for (i, cmd) in captured.iter().enumerate() {
+                match cmd {
+                    LiveRunCommand::Messages(msgs) => {
+                        assert_eq!(msgs[0].text(), format!("m-{i}"))
+                    }
+                    other => panic!("unexpected {other:?}"),
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn cmd_variants_all_delivered() {
+            let store = InMemoryMailboxStore::new();
+            let stream = store.open_live_channel("t-var").await.unwrap();
+            let (_consumer, captured) = spawn_auto_ack_consumer(stream);
+
+            store
+                .deliver_live("t-var", LiveRunCommand::Messages(vec![Message::user("x")]))
+                .await
+                .unwrap();
+            store
+                .deliver_live("t-var", LiveRunCommand::Cancel)
+                .await
+                .unwrap();
+            store
+                .deliver_live("t-var", LiveRunCommand::Decision(vec![]))
+                .await
+                .unwrap();
+
+            let captured = captured.lock().await;
+            assert!(matches!(captured[0], LiveRunCommand::Messages(_)));
+            assert!(matches!(captured[1], LiveRunCommand::Cancel));
+            assert!(matches!(captured[2], LiveRunCommand::Decision(_)));
+        }
     }
 
     // ── Property-based tests ──

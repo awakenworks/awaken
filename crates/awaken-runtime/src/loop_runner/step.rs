@@ -66,6 +66,7 @@ pub(super) struct StepContext<'a> {
     pub total_output_tokens: &'a mut u64,
     pub truncation_state: &'a mut TruncationState,
     pub run_created_at: u64,
+    pub thread_ctx: Option<&'a crate::ThreadContextSnapshot>,
 }
 
 pub(super) struct ToolBatchTranscript {
@@ -1208,6 +1209,7 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
             run_created_at: ctx.run_created_at,
             total_input_tokens: *ctx.total_input_tokens,
             total_output_tokens: *ctx.total_output_tokens,
+            thread_ctx: ctx.thread_ctx,
         })
         .await?;
         return Ok(StepOutcome::NaturalEnd);

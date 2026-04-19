@@ -23,14 +23,14 @@ typedmap = { workspace = true }
 uuid = { workspace = true }
 genai = { workspace = true }
 tokio = { workspace = true }
-reqwest = { workspace = true, optional = true }
+reqwest = { workspace = true }
 schemars = { workspace = true }
 jsonschema = { workspace = true }
 parking_lot = { workspace = true }
 
 [features]
 default = ["a2a", "handoff", "background"]
-a2a = ["dep:reqwest"]
+a2a = []
 handoff = []
 background = []
 parallel-tools = []

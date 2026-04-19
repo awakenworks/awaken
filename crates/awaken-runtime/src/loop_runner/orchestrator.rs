@@ -1,7 +1,7 @@
 //! Main agent loop orchestration.
 
 use crate::context::TruncationState;
-use crate::inbox::inbox_event_message;
+use crate::inbox::inbox_payload_messages;
 use crate::state::StateStore;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
@@ -19,6 +19,7 @@ use super::setup::{PreparedRun, prepare_run};
 use super::step::{self, StepContext, StepOutcome, execute_step};
 use super::{AgentLoopError, AgentLoopParams, AgentRunResult, commit_update, now_ms};
 use crate::agent::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
+#[cfg(feature = "handoff")]
 use crate::state::MutationBatch;
 
 /// Returns `true` when any plugin has declared pending work.
@@ -34,9 +35,16 @@ fn has_pending_work(store: &StateStore) -> bool {
         .unwrap_or(false)
 }
 
+fn push_inbox_payload(messages: &mut Vec<std::sync::Arc<Message>>, payload: &serde_json::Value) {
+    for message in inbox_payload_messages(payload) {
+        messages.push(std::sync::Arc::new(message));
+    }
+}
+
 #[tracing::instrument(skip_all, fields(agent_id = %params.agent_id, run_id = %params.run_identity.run_id))]
 pub(super) async fn run_agent_loop_impl(
     params: AgentLoopParams<'_>,
+    thread_ctx: Option<crate::ThreadContextSnapshot>,
 ) -> Result<AgentRunResult, AgentLoopError> {
     let AgentLoopParams {
         resolver,
@@ -222,6 +230,7 @@ pub(super) async fn run_agent_loop_impl(
             total_output_tokens: &mut total_output_tokens,
             truncation_state: &mut truncation_state,
             run_created_at,
+            thread_ctx: thread_ctx.as_ref(),
         };
 
         let step_result = match execute_step(&mut step_ctx).await {
@@ -246,6 +255,7 @@ pub(super) async fn run_agent_loop_impl(
                     run_created_at,
                     total_input_tokens,
                     total_output_tokens,
+                    thread_ctx: thread_ctx.as_ref(),
                 })
                 .await?;
                 break TerminationReason::Cancelled;
@@ -257,7 +267,7 @@ pub(super) async fn run_agent_loop_impl(
                 let mut has_new_messages = false;
                 if let Some(ref mut inbox) = inbox {
                     for msg in inbox.drain() {
-                        messages.push(std::sync::Arc::new(inbox_event_message(&msg)));
+                        push_inbox_payload(&mut messages, &msg);
                         has_new_messages = true;
                     }
                 }
@@ -278,10 +288,9 @@ pub(super) async fn run_agent_loop_impl(
                         if let Some(ref mut inbox) = inbox {
                             match inbox.recv_or_cancel(cancellation_token.as_ref()).await {
                                 Some(msg) => {
-                                    messages.push(std::sync::Arc::new(inbox_event_message(&msg)));
+                                    push_inbox_payload(&mut messages, &msg);
                                     for extra in inbox.drain() {
-                                        messages
-                                            .push(std::sync::Arc::new(inbox_event_message(&extra)));
+                                        push_inbox_payload(&mut messages, &extra);
                                     }
                                     continue; // back to loop — LLM processes events
                                 }
@@ -319,6 +328,7 @@ pub(super) async fn run_agent_loop_impl(
                     run_created_at,
                     total_input_tokens,
                     total_output_tokens,
+                    thread_ctx: thread_ctx.as_ref(),
                 })
                 .await?;
                 break TerminationReason::Blocked(reason);
@@ -339,6 +349,7 @@ pub(super) async fn run_agent_loop_impl(
                     run_created_at,
                     total_input_tokens,
                     total_output_tokens,
+                    thread_ctx: thread_ctx.as_ref(),
                 })
                 .await?;
                 break reason;
@@ -364,6 +375,7 @@ pub(super) async fn run_agent_loop_impl(
                     run_created_at,
                     total_input_tokens,
                     total_output_tokens,
+                    thread_ctx: thread_ctx.as_ref(),
                 })
                 .await?;
 
@@ -430,7 +442,7 @@ pub(super) async fn run_agent_loop_impl(
                         }
                         WaitOutcome::InboxMessages(events) => {
                             for event in events {
-                                messages.push(std::sync::Arc::new(inbox_event_message(&event)));
+                                push_inbox_payload(&mut messages, &event);
                             }
                             persist_checkpoint(CheckpointPersist {
                                 store,
@@ -444,6 +456,7 @@ pub(super) async fn run_agent_loop_impl(
                                 termination_reason: None,
                                 final_output: None,
                                 error_payload: None,
+                                thread_ctx: thread_ctx.as_ref(),
                             })
                             .await?;
                             continue;
@@ -470,12 +483,13 @@ pub(super) async fn run_agent_loop_impl(
                     run_created_at,
                     total_input_tokens,
                     total_output_tokens,
+                    thread_ctx: thread_ctx.as_ref(),
                 })
                 .await?;
                 // Drain inbox messages that arrived during step execution
                 if let Some(ref mut inbox) = inbox {
                     for msg in inbox.drain() {
-                        messages.push(std::sync::Arc::new(inbox_event_message(&msg)));
+                        push_inbox_payload(&mut messages, &msg);
                     }
                 }
                 if let Some(reason) = check_termination(store) {
@@ -534,6 +548,7 @@ pub(super) async fn run_agent_loop_impl(
             TerminationReason::Error(message) => Some(serde_json::json!({ "message": message })),
             _ => None,
         },
+        thread_ctx: thread_ctx.as_ref(),
     })
     .await?;
 

@@ -391,12 +391,34 @@ async fn get_thread_messages(
     })))
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum PushInputMode {
+    #[default]
+    Queue,
+    #[serde(alias = "steer")]
+    LiveThenQueue,
+    InterruptThenQueue,
+    ResumeOpenRun,
+}
+
+impl PushInputMode {
+    fn input_mode(self) -> Option<InputMode> {
+        match self {
+            PushInputMode::Queue => Some(InputMode::Queue),
+            PushInputMode::InterruptThenQueue => Some(InputMode::InterruptThenQueue),
+            PushInputMode::ResumeOpenRun => Some(InputMode::ResumeOpenRun),
+            PushInputMode::LiveThenQueue => None,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct PostThreadMessagesPayload {
     #[serde(rename = "agentId", alias = "agent_id", default)]
     agent_id: Option<String>,
     #[serde(default)]
-    mode: InputMode,
+    mode: PushInputMode,
     #[serde(default)]
     messages: Vec<RunMessage>,
 }
@@ -421,10 +443,20 @@ async fn post_thread_messages(
         ));
     }
 
-    let result = RunControlService::new(st)
-        .inject_user_input(&id, payload.agent_id, messages, payload.mode)
-        .await
-        .map_err(map_run_control_error)?;
+    let service = RunControlService::new(st);
+    let result = match payload.mode.input_mode() {
+        Some(mode) => {
+            service
+                .inject_user_input(&id, payload.agent_id, messages, mode)
+                .await
+        }
+        None => {
+            service
+                .inject_user_input_live_then_queue(&id, payload.agent_id, messages)
+                .await
+        }
+    }
+    .map_err(map_run_control_error)?;
 
     let body = match result.status {
         MailboxDispatchStatus::Running => json!({
@@ -607,7 +639,7 @@ async fn list_runs(
 #[derive(Debug, Deserialize)]
 struct PushRunInputsPayload {
     #[serde(default)]
-    mode: InputMode,
+    mode: PushInputMode,
     #[serde(default)]
     messages: Vec<RunMessage>,
 }
@@ -625,10 +657,16 @@ async fn push_run_inputs(
         ));
     }
 
-    let _ = RunControlService::new(st)
-        .inject_run_input(&id, messages, payload.mode)
-        .await
-        .map_err(map_run_control_error)?;
+    let service = RunControlService::new(st);
+    let result = match payload.mode.input_mode() {
+        Some(mode) => service.inject_run_input(&id, messages, mode).await,
+        None => {
+            service
+                .inject_run_input_live_then_queue(&id, messages)
+                .await
+        }
+    };
+    let _ = result.map_err(map_run_control_error)?;
 
     Ok((
         StatusCode::ACCEPTED,
@@ -980,7 +1018,7 @@ mod tests {
         let json = r#"{}"#;
         let p: PushRunInputsPayload = serde_json::from_str(json).unwrap();
         assert!(p.messages.is_empty());
-        assert_eq!(p.mode, InputMode::Queue);
+        assert_eq!(p.mode, PushInputMode::Queue);
     }
 
     #[test]
@@ -998,8 +1036,20 @@ mod tests {
         let json =
             r#"{"mode":"interrupt_then_queue","messages":[{"role":"user","content":"redirect"}]}"#;
         let p: PushRunInputsPayload = serde_json::from_str(json).unwrap();
-        assert_eq!(p.mode, InputMode::InterruptThenQueue);
+        assert_eq!(p.mode, PushInputMode::InterruptThenQueue);
         assert_eq!(p.messages.len(), 1);
+    }
+
+    #[test]
+    fn push_run_inputs_payload_accepts_live_then_queue_mode_and_steer_alias() {
+        let json = r#"{"mode":"live_then_queue","messages":[{"role":"user","content":"steer"}]}"#;
+        let p: PushRunInputsPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(p.mode, PushInputMode::LiveThenQueue);
+        assert_eq!(p.messages.len(), 1);
+
+        let alias = r#"{"mode":"steer","messages":[{"role":"user","content":"steer"}]}"#;
+        let p: PushRunInputsPayload = serde_json::from_str(alias).unwrap();
+        assert_eq!(p.mode, PushInputMode::LiveThenQueue);
     }
 
     #[test]
@@ -1007,7 +1057,7 @@ mod tests {
         let json =
             r#"{"mode":"resume_open_run","messages":[{"role":"user","content":"continue"}]}"#;
         let p: PushRunInputsPayload = serde_json::from_str(json).unwrap();
-        assert_eq!(p.mode, InputMode::ResumeOpenRun);
+        assert_eq!(p.mode, PushInputMode::ResumeOpenRun);
         assert_eq!(p.messages.len(), 1);
     }
 

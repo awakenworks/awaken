@@ -1293,6 +1293,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn claim_honors_batch_limit_without_active_claim() {
+        let store = SqliteMailboxStore::open_memory().unwrap();
+        for id in ["dispatch-1", "dispatch-2", "dispatch-3"] {
+            store.enqueue(&make_dispatch(id, "thread-a")).await.unwrap();
+        }
+
+        let claimed = store
+            .claim("thread-a", "consumer-1", 30_000, 2000, 2)
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 2);
+        assert!(
+            claimed
+                .iter()
+                .all(|dispatch| dispatch.status == RunDispatchStatus::Claimed)
+        );
+    }
+
+    #[tokio::test]
     async fn nack_increments_attempt_and_requeues() {
         let store = SqliteMailboxStore::open_memory().unwrap();
         let mut dispatch = make_dispatch("dispatch-1", "thread-a");

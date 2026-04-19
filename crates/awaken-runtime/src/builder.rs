@@ -8,6 +8,7 @@ use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::AgentSpec;
 
+#[cfg(feature = "a2a")]
 use crate::backend::ExecutionBackendFactory;
 use crate::plugins::Plugin;
 #[cfg(feature = "a2a")]

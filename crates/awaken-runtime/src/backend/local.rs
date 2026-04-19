@@ -47,6 +47,16 @@ impl ExecutionBackend for LocalBackend {
         &self,
         request: BackendRootRunRequest<'_>,
     ) -> Result<BackendRunResult, ExecutionBackendError> {
+        self.execute_root_with_thread_context(request, None).await
+    }
+}
+
+impl LocalBackend {
+    pub(crate) async fn execute_root_with_thread_context(
+        &self,
+        request: BackendRootRunRequest<'_>,
+        thread_ctx: Option<crate::ThreadContextSnapshot>,
+    ) -> Result<BackendRunResult, ExecutionBackendError> {
         let phase_runtime = request
             .local
             .as_ref()
@@ -64,21 +74,24 @@ impl ExecutionBackend for LocalBackend {
                 .map_err(ExecutionBackendError::Loop)?;
         }
 
-        let result = run_agent_loop(AgentLoopParams {
-            resolver: request.resolver,
-            agent_id: request.agent_id,
-            runtime: phase_runtime,
-            sink: request.sink,
-            checkpoint_store: request.checkpoint_store,
-            messages: request.messages,
-            run_identity,
-            cancellation_token: request.control.cancellation_token,
-            decision_rx: request.control.decision_rx,
-            overrides: request.overrides,
-            frontend_tools: request.frontend_tools,
-            inbox: request.inbox,
-            is_continuation: request.is_continuation,
-        })
+        let result = crate::loop_runner::run_agent_loop_with_thread_context(
+            AgentLoopParams {
+                resolver: request.resolver,
+                agent_id: request.agent_id,
+                runtime: phase_runtime,
+                sink: request.sink,
+                checkpoint_store: request.checkpoint_store,
+                messages: request.messages,
+                run_identity,
+                cancellation_token: request.control.cancellation_token,
+                decision_rx: request.control.decision_rx,
+                overrides: request.overrides,
+                frontend_tools: request.frontend_tools,
+                inbox: request.inbox,
+                is_continuation: request.is_continuation,
+            },
+            thread_ctx,
+        )
         .await
         .map_err(ExecutionBackendError::Loop)?;
 
@@ -100,9 +113,7 @@ impl ExecutionBackend for LocalBackend {
             state: None,
         })
     }
-}
 
-impl LocalBackend {
     pub async fn execute_delegate(
         &self,
         request: BackendDelegateRunRequest<'_>,

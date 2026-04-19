@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use parking_lot::Mutex as SyncMutex;
 use thiserror::Error;
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tokio::task::JoinHandle;
@@ -20,7 +21,8 @@ use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::mailbox::{
-    MailboxInterrupt, MailboxStore, RunDispatch, RunDispatchResult, RunDispatchStatus,
+    LiveDeliveryOutcome, LiveRunCommand, MailboxInterrupt, MailboxStore, RunDispatch,
+    RunDispatchResult, RunDispatchStatus,
 };
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
@@ -31,13 +33,15 @@ use awaken_contract::contract::suspension::{ToolCallOutcome, ToolCallResume};
 use awaken_contract::contract::tool_intercept::{AdapterKind, RunMode};
 use awaken_contract::now_ms;
 use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult};
-use awaken_runtime::{AgentRuntime, RunRequest};
+use awaken_runtime::{AgentRuntime, RunRequest, ThreadContextSnapshot};
 
 use crate::transport::channel_sink::ReconnectableEventSink;
 
 /// Guard window for inline-claimed dispatches: if the process crashes between
 /// enqueue and claim, the sweep will reclaim the dispatch after this period.
 const INLINE_CLAIM_GUARD_MS: u64 = 60_000;
+const REMOTE_CANCEL_WAIT_MS: u64 = 5_000;
+const REMOTE_CANCEL_POLL_MS: u64 = 25;
 
 /// Validation message returned when an inline submit loses the active-run race.
 pub(crate) const ACTIVE_RUN_CONFLICT_MESSAGE: &str =
@@ -150,8 +154,6 @@ impl RunRequestExtras {
 /// Implements [`OnInboxClosed`](awaken_runtime::inbox::OnInboxClosed) — when an `InboxSender::send()` fails
 /// because the receiver was dropped (agent run returned with AwaitingTasks),
 /// this enqueues a mailbox wake dispatch so the thread gets a continuation run.
-///
-/// Uses `dedupe_key` to coalesce multiple task completions into one wake dispatch.
 pub struct TaskDoneMailboxNotify {
     mailbox: Arc<Mailbox>,
     thread_id: String,
@@ -248,6 +250,17 @@ pub trait RunDispatchExecutor: Send + Sync {
         sink: Arc<dyn EventSink>,
     ) -> Result<AgentRunResult, AgentLoopError>;
 
+    /// Execute a run with an optional mailbox-provided thread cache.
+    async fn run_with_thread_context(
+        &self,
+        request: RunRequest,
+        sink: Arc<dyn EventSink>,
+        thread_ctx: Option<ThreadContextSnapshot>,
+    ) -> Result<AgentRunResult, AgentLoopError> {
+        let _ = thread_ctx;
+        self.run(request, sink).await
+    }
+
     /// Cancel an active run by run id or thread id.
     fn cancel(&self, id: &str) -> bool;
 
@@ -256,6 +269,12 @@ pub trait RunDispatchExecutor: Send + Sync {
 
     /// Forward one human/tool decision to an active run.
     fn send_decision(&self, id: &str, tool_call_id: String, resume: ToolCallResume) -> bool;
+
+    /// Forward direct input messages to an active run.
+    fn send_messages(&self, id: &str, messages: Vec<Message>) -> bool {
+        let _ = (id, messages);
+        false
+    }
 }
 
 #[async_trait]
@@ -268,6 +287,15 @@ impl RunDispatchExecutor for AgentRuntime {
         AgentRuntime::run(self, request, sink).await
     }
 
+    async fn run_with_thread_context(
+        &self,
+        request: RunRequest,
+        sink: Arc<dyn EventSink>,
+        thread_ctx: Option<ThreadContextSnapshot>,
+    ) -> Result<AgentRunResult, AgentLoopError> {
+        AgentRuntime::run_with_thread_context(self, request, sink, thread_ctx).await
+    }
+
     fn cancel(&self, id: &str) -> bool {
         AgentRuntime::cancel(self, id)
     }
@@ -278,6 +306,10 @@ impl RunDispatchExecutor for AgentRuntime {
 
     fn send_decision(&self, id: &str, tool_call_id: String, resume: ToolCallResume) -> bool {
         AgentRuntime::send_decision(self, id, tool_call_id, resume)
+    }
+
+    fn send_messages(&self, id: &str, messages: Vec<Message>) -> bool {
+        AgentRuntime::send_messages(self, id, messages)
     }
 }
 
@@ -447,20 +479,66 @@ enum MailboxWorkerStatus {
     Claiming,
     Running {
         dispatch_id: String,
+        run_id: String,
         lease_handle: JoinHandle<()>,
         sink: Arc<ReconnectableEventSink>,
     },
 }
 
+/// Cached thread state, valid for the duration of a lease.
+struct ThreadContext {
+    messages: Vec<Message>,
+    latest_run: Option<RunRecord>,
+    run_cache: HashMap<String, RunRecord>,
+}
+
+impl ThreadContext {
+    async fn load(run_store: &dyn ThreadRunStore, thread_id: &str) -> Result<Self, MailboxError> {
+        let messages = run_store
+            .load_messages(thread_id)
+            .await?
+            .unwrap_or_default();
+        let latest_run = run_store.latest_run(thread_id).await?;
+        let mut run_cache = HashMap::new();
+        if let Some(ref run) = latest_run {
+            run_cache.insert(run.run_id.clone(), run.clone());
+        }
+        Ok(Self {
+            messages,
+            latest_run,
+            run_cache,
+        })
+    }
+
+    fn get_run(&self, run_id: &str) -> Option<&RunRecord> {
+        self.run_cache.get(run_id)
+    }
+
+    fn reusable_waiting_run_id(&self) -> Option<&str> {
+        self.latest_run
+            .as_ref()
+            .filter(|r| r.is_resumable_waiting())
+            .map(|r| r.run_id.as_str())
+    }
+
+    fn apply_checkpoint(&mut self, messages: &[Message], run: &RunRecord) {
+        self.messages = messages.to_vec();
+        self.latest_run = Some(run.clone());
+        self.run_cache.insert(run.run_id.clone(), run.clone());
+    }
+}
+
 /// Per-thread worker. Store is the sole queue authority.
 struct MailboxWorker {
     status: MailboxWorkerStatus,
+    thread_ctx: Option<ThreadContext>,
 }
 
 impl Default for MailboxWorker {
     fn default() -> Self {
         Self {
             status: MailboxWorkerStatus::Idle,
+            thread_ctx: None,
         }
     }
 }
@@ -521,7 +599,7 @@ pub struct Mailbox {
     store: Arc<dyn MailboxStore>,
     run_store: Arc<dyn ThreadRunStore>,
     consumer_id: String,
-    workers: RwLock<HashMap<String, Arc<Mutex<MailboxWorker>>>>,
+    workers: RwLock<HashMap<String, Arc<SyncMutex<MailboxWorker>>>>,
     config: MailboxConfig,
     lifecycle_tasks: Arc<StdMutex<Option<MailboxLifecycleTasks>>>,
     lifecycle_start_lock: Arc<Mutex<()>>,
@@ -588,14 +666,17 @@ impl Mailbox {
         match self.store.interrupt(&thread_id, now).await {
             Ok(interrupt) => {
                 // Step 2: Cancel active runtime run if the interrupt found one.
-                if interrupt.active_dispatch.is_some()
-                    && self.executor.cancel_and_wait_by_thread(&thread_id).await
-                {
-                    tracing::info!(
-                        thread_id = %thread_id,
-                        superseded = interrupt.superseded_count,
-                        "interrupted thread for new submission"
-                    );
+                if let Some(active_dispatch) = interrupt.active_dispatch.as_ref() {
+                    let cancelled = self
+                        .cancel_active_dispatch(&thread_id, active_dispatch, true)
+                        .await?;
+                    if cancelled {
+                        tracing::info!(
+                            thread_id = %thread_id,
+                            superseded = interrupt.superseded_count,
+                            "interrupted thread for new submission"
+                        );
+                    }
                 }
             }
             Err(e) => {
@@ -645,12 +726,23 @@ impl Mailbox {
             // Create reconnectable sink for SSE reconnection on resume.
             let reconnectable_sink = Arc::new(ReconnectableEventSink::new(event_tx.clone()));
 
+            // Pre-warm thread context cache.
+            let thread_ctx = match ThreadContext::load(self.run_store.as_ref(), &thread_id).await {
+                Ok(ctx) => Some(ctx),
+                Err(e) => {
+                    tracing::warn!(thread_id, error = %e, "failed to pre-warm thread context");
+                    None
+                }
+            };
+
             // Update worker state.
             let worker = self.get_or_create_worker(&thread_id).await;
             {
-                let mut w = worker.lock().await;
+                let mut w = worker.lock();
+                w.thread_ctx = thread_ctx;
                 w.status = MailboxWorkerStatus::Running {
                     dispatch_id: dispatch_id.clone(),
+                    run_id: run_id.clone(),
                     lease_handle,
                     sink: Arc::clone(&reconnectable_sink),
                 };
@@ -715,23 +807,11 @@ impl Mailbox {
 
         // Dispatch via try_dispatch_next which handles Idle → Claiming atomically.
         self.get_or_create_worker(&thread_id).await;
-        self.try_dispatch_next(&thread_id).await;
-
-        // Check if this dispatch was claimed (Running) or is still Queued.
-        let status = {
-            let workers = self.workers.read().await;
-            if let Some(worker) = workers.get(&thread_id) {
-                let w = worker.lock().await;
-                match &w.status {
-                    MailboxWorkerStatus::Running {
-                        dispatch_id: running_id,
-                        ..
-                    } if *running_id == dispatch_id => MailboxDispatchStatus::Running,
-                    _ => MailboxDispatchStatus::Queued,
-                }
-            } else {
-                MailboxDispatchStatus::Queued
-            }
+        let claimed = self.try_dispatch_next(&thread_id).await;
+        let status = if claimed {
+            MailboxDispatchStatus::Running
+        } else {
+            MailboxDispatchStatus::Queued
         };
 
         Ok(MailboxSubmitResult {
@@ -740,6 +820,56 @@ impl Mailbox {
             thread_id,
             status,
         })
+    }
+
+    /// Try to steer the currently active run first, then fall back to the
+    /// durable mailbox queue when live delivery is unavailable.
+    ///
+    /// # Delivery semantics
+    ///
+    /// **At-least-once** across the live + durable paths. The owning
+    /// node's forwarder acks a live command only after `InboxSender::
+    /// try_send` has returned success, so `Delivered` means the run has
+    /// the message. However — and this is the distributed edge case —
+    /// there is still a window where:
+    ///
+    /// 1. The forwarder hands the message to the run (`try_send` ok).
+    /// 2. The ack publish to the producer's reply subject drops or
+    ///    times out (network blip, broker partition).
+    /// 3. Producer observes `NoSubscriber` and falls back to
+    ///    [`Mailbox::submit_background`], which enqueues a fresh
+    ///    durable dispatch carrying the same messages.
+    /// 4. When the current run ends, the queued dispatch executes and
+    ///    the user-visible message history contains duplicates.
+    ///
+    /// `RunRequest` does not expose dispatch-level dedupe. Callers that need
+    /// exactly-once effects must drive idempotency at the application layer
+    /// (e.g., unique
+    ///   message IDs normalized via `normalize_message_ids`; agent
+    ///   state that rejects redundant inputs).
+    #[tracing::instrument(skip(self, request), fields(thread_id = %request.thread_id))]
+    pub async fn submit_live_then_queue(
+        self: &Arc<Self>,
+        mut request: RunRequest,
+        expected_run_id: Option<&str>,
+    ) -> Result<MailboxSubmitResult, MailboxError> {
+        let (thread_id, messages) = validate_run_inputs(
+            request.thread_id.clone(),
+            request.messages.clone(),
+            !request.decisions.is_empty(),
+        )?;
+        let messages = normalize_message_ids(&messages);
+
+        if let Some(result) = self
+            .try_deliver_live_messages(&thread_id, expected_run_id, messages.clone())
+            .await?
+        {
+            return Ok(result);
+        }
+
+        request.thread_id = thread_id;
+        request.messages = messages;
+        self.submit_background(request).await
     }
 
     // ── Control ──────────────────────────────────────────────────────
@@ -757,7 +887,28 @@ impl Mailbox {
         }
 
         // Try runtime cancel (for Claimed/Running dispatches).
-        Ok(self.executor.cancel(id))
+        if self.executor.cancel(id) {
+            return Ok(true);
+        }
+
+        if let Some(dispatch) = self.store.load_dispatch(id).await?
+            && dispatch.status == RunDispatchStatus::Claimed
+        {
+            return self.deliver_live_cancel(&dispatch.thread_id).await;
+        }
+
+        let run = if let Some(run) = self.run_store.load_run(id).await? {
+            Some(run)
+        } else {
+            self.run_store.latest_run(id).await?
+        };
+        if let Some(run) = run
+            && matches!(run.status, RunStatus::Running | RunStatus::Waiting)
+        {
+            return self.deliver_live_cancel(&run.thread_id).await;
+        }
+
+        Ok(false)
     }
 
     /// Interrupt a thread: bump dispatch epoch, supersede all pending,
@@ -767,8 +918,9 @@ impl Mailbox {
         let result = self.store.interrupt(thread_id, now).await?;
 
         // Cancel active runtime run if any.
-        if result.active_dispatch.is_some() {
-            self.executor.cancel(thread_id);
+        if let Some(active_dispatch) = result.active_dispatch.as_ref() {
+            self.cancel_active_dispatch(thread_id, active_dispatch, false)
+                .await?;
         }
 
         Ok(result)
@@ -777,6 +929,151 @@ impl Mailbox {
     /// Forward a tool-call decision to an active run.
     pub fn send_decision(&self, id: &str, tool_call_id: String, resume: ToolCallResume) -> bool {
         self.executor.send_decision(id, tool_call_id, resume)
+    }
+
+    async fn cancel_active_dispatch(
+        &self,
+        thread_id: &str,
+        active_dispatch: &RunDispatch,
+        wait_for_release: bool,
+    ) -> Result<bool, MailboxError> {
+        if wait_for_release {
+            if self.executor.cancel_and_wait_by_thread(thread_id).await {
+                return Ok(true);
+            }
+        } else if self.executor.cancel(thread_id) {
+            return Ok(true);
+        }
+
+        if !self.deliver_live_cancel(thread_id).await? {
+            return Ok(false);
+        }
+
+        if wait_for_release
+            && !self
+                .wait_for_dispatch_not_claimed(&active_dispatch.dispatch_id)
+                .await?
+        {
+            tracing::warn!(
+                thread_id,
+                dispatch_id = %active_dispatch.dispatch_id,
+                "remote cancel delivered but active dispatch did not release before foreground submit"
+            );
+        }
+        Ok(true)
+    }
+
+    async fn deliver_live_cancel(&self, thread_id: &str) -> Result<bool, MailboxError> {
+        match self
+            .store
+            .deliver_live(thread_id, LiveRunCommand::Cancel)
+            .await?
+        {
+            LiveDeliveryOutcome::Delivered => Ok(true),
+            LiveDeliveryOutcome::NoSubscriber => Ok(false),
+        }
+    }
+
+    async fn wait_for_dispatch_not_claimed(&self, dispatch_id: &str) -> Result<bool, MailboxError> {
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(REMOTE_CANCEL_WAIT_MS);
+        loop {
+            match self.store.load_dispatch(dispatch_id).await? {
+                Some(dispatch) if dispatch.status == RunDispatchStatus::Claimed => {}
+                _ => return Ok(true),
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(false);
+            }
+            tokio::time::sleep(Duration::from_millis(REMOTE_CANCEL_POLL_MS)).await;
+        }
+    }
+
+    async fn try_deliver_live_messages(
+        &self,
+        thread_id: &str,
+        expected_run_id: Option<&str>,
+        messages: Vec<Message>,
+    ) -> Result<Option<MailboxSubmitResult>, MailboxError> {
+        if messages.is_empty() {
+            return Ok(None);
+        }
+
+        let local_active = {
+            let workers = self.workers.read().await;
+            workers.get(thread_id).and_then(|worker| {
+                let worker = worker.lock();
+                match &worker.status {
+                    MailboxWorkerStatus::Running {
+                        dispatch_id,
+                        run_id,
+                        ..
+                    } => Some((dispatch_id.clone(), run_id.clone())),
+                    MailboxWorkerStatus::Idle | MailboxWorkerStatus::Claiming => None,
+                }
+            })
+        };
+
+        if let Some((active_dispatch_id, active_run_id)) = local_active {
+            // Race guard against a run that just rolled over.
+            if expected_run_id.is_some_and(|expected| expected != active_run_id) {
+                return Ok(None);
+            }
+            // Local fast path: executor has a direct handle to the run's
+            // inbox and returns a boolean indicating whether the channel
+            // accepted the payload. A `false` here means the local run
+            // just ended — fall back to durable dispatch.
+            if !self.executor.send_messages(&active_run_id, messages) {
+                return Ok(None);
+            }
+            return Ok(Some(MailboxSubmitResult {
+                dispatch_id: active_dispatch_id,
+                run_id: active_run_id,
+                thread_id: thread_id.to_string(),
+                status: MailboxDispatchStatus::Running,
+            }));
+        }
+
+        // No local worker: check whether another node is running this
+        // thread. `ThreadRunStore::latest_run` is the global truth (every
+        // node checkpoints to the same store).
+        let Some(remote_run) = self.run_store.latest_run(thread_id).await? else {
+            return Ok(None);
+        };
+        if remote_run.status != RunStatus::Running {
+            return Ok(None);
+        }
+        if expected_run_id.is_some_and(|expected| expected != remote_run.run_id) {
+            return Ok(None);
+        }
+
+        // Cross-node: ask the store to deliver. If the owning node's
+        // forwarder isn't subscribed yet, `deliver_live` reports
+        // `NoSubscriber` and we fall through so `submit_live_then_queue`
+        // enqueues a durable dispatch instead of silently dropping.
+        let outcome = self
+            .store
+            .deliver_live(
+                thread_id,
+                awaken_contract::contract::mailbox::LiveRunCommand::Messages(messages),
+            )
+            .await?;
+        match outcome {
+            awaken_contract::contract::mailbox::LiveDeliveryOutcome::Delivered => {}
+            awaken_contract::contract::mailbox::LiveDeliveryOutcome::NoSubscriber => {
+                return Ok(None);
+            }
+        }
+
+        let dispatch_id = remote_run
+            .dispatch_id
+            .clone()
+            .unwrap_or_else(|| remote_run.run_id.clone());
+        Ok(Some(MailboxSubmitResult {
+            dispatch_id,
+            run_id: remote_run.run_id,
+            thread_id: thread_id.to_string(),
+            status: MailboxDispatchStatus::Running,
+        }))
     }
 
     /// Reconnect the event sink for an active (suspended) run.
@@ -788,7 +1085,7 @@ impl Mailbox {
         let Some(worker) = workers.get(thread_id) else {
             return false;
         };
-        let w = worker.lock().await;
+        let w = worker.lock();
         match &w.status {
             MailboxWorkerStatus::Running { sink, .. } => {
                 sink.reconnect(new_tx);
@@ -799,6 +1096,18 @@ impl Mailbox {
     }
 
     async fn reusable_waiting_run_id(&self, thread_id: &str) -> Option<String> {
+        // Fast path: check worker cache.
+        {
+            let workers = self.workers.read().await;
+            if let Some(worker) = workers.get(thread_id) {
+                let w = worker.lock();
+                if let Some(ref ctx) = w.thread_ctx {
+                    return ctx.reusable_waiting_run_id().map(|s| s.to_string());
+                }
+            }
+        }
+
+        // Slow path: fall back to store.
         if let Some(thread) = self.run_store.load_thread(thread_id).await.ok().flatten()
             && let Some(open_run_id) = thread.open_run_id.as_deref()
             && let Some(run) = self.run_store.load_run(open_run_id).await.ok().flatten()
@@ -1125,6 +1434,15 @@ impl Mailbox {
             Arc::clone(&suspended),
         );
 
+        // Pre-warm thread context cache.
+        let thread_ctx = match ThreadContext::load(self.run_store.as_ref(), thread_id).await {
+            Ok(ctx) => Some(ctx),
+            Err(e) => {
+                tracing::warn!(thread_id, error = %e, "failed to pre-warm thread context");
+                None
+            }
+        };
+
         // Create channel for background dispatch (events go nowhere unless observed).
         let (event_tx, _event_rx) = mpsc::channel(Self::EVENT_CHANNEL_CAPACITY);
         let reconnectable_sink = Arc::new(ReconnectableEventSink::new(event_tx.clone()));
@@ -1132,9 +1450,11 @@ impl Mailbox {
         // Update worker state.
         let worker = self.get_or_create_worker(thread_id).await;
         {
-            let mut w = worker.lock().await;
+            let mut w = worker.lock();
+            w.thread_ctx = thread_ctx;
             w.status = MailboxWorkerStatus::Running {
                 dispatch_id: dispatch_id.clone(),
+                run_id: dispatch.run_id.clone(),
                 lease_handle,
                 sink: Arc::clone(&reconnectable_sink),
             };
@@ -1151,26 +1471,28 @@ impl Mailbox {
     }
 
     /// Claim from store and execute the next dispatch for this thread.
+    /// Returns `true` if the worker transitioned to Claiming (dispatch in progress).
     #[tracing::instrument(skip(self), fields(thread_id = %thread_id))]
-    async fn try_dispatch_next(self: &Arc<Self>, thread_id: &str) {
+    async fn try_dispatch_next(self: &Arc<Self>, thread_id: &str) -> bool {
         let worker = {
             let workers = self.workers.read().await;
             match workers.get(thread_id) {
                 Some(w) => Arc::clone(w),
-                None => return,
+                None => return false,
             }
         };
 
         // Atomically transition Idle → Claiming to prevent TOCTOU race.
         {
-            let mut w = worker.lock().await;
+            let mut w = worker.lock();
             if !matches!(w.status, MailboxWorkerStatus::Idle) {
-                return;
+                return false;
             }
             w.status = MailboxWorkerStatus::Claiming;
         }
 
         self.dispatch_next_claim(thread_id).await;
+        true
     }
 
     /// Spawn a lease renewal task that periodically extends the lease.
@@ -1307,6 +1629,19 @@ impl Mailbox {
             {
                 tracing::warn!(dispatch_id, run_id, error = %e, "failed to record mailbox dispatch start");
             }
+            let thread_ctx = {
+                let workers = this.workers.read().await;
+                workers.get(&thread_id).and_then(|worker| {
+                    let w = worker.lock();
+                    w.thread_ctx.as_ref().map(|ctx| {
+                        ThreadContextSnapshot::new(
+                            ctx.messages.clone(),
+                            ctx.latest_run.clone(),
+                            ctx.run_cache.clone(),
+                        )
+                    })
+                })
+            };
             let continue_run_id = request.continue_run_id.clone();
             let (inbox_sender, inbox_receiver) = awaken_runtime::inbox::inbox_channel_with_fallback(
                 Arc::new(TaskDoneMailboxNotify::new(
@@ -1317,7 +1652,10 @@ impl Mailbox {
             );
             request = request.with_inbox(inbox_sender, inbox_receiver);
 
-            let result = this.executor.run(request, Arc::new(sink)).await;
+            let result = this
+                .executor
+                .run_with_thread_context(request, Arc::new(sink), thread_ctx)
+                .await;
             let now = now_ms();
             let run_result = mailbox_run_result(&run_id, &dispatch_instance_id, &result);
             if let Err(e) = this
@@ -1400,7 +1738,7 @@ impl Mailbox {
             // Abort lease renewal.
             let worker = this.get_or_create_worker(&thread_id).await;
             {
-                let mut w = worker.lock().await;
+                let mut w = worker.lock();
                 let should_transition = matches!(
                     &w.status,
                     MailboxWorkerStatus::Running { dispatch_id: cid, .. } if *cid == dispatch_id
@@ -1408,6 +1746,7 @@ impl Mailbox {
                 if should_transition {
                     // Take ownership of the old status to abort the lease handle.
                     let old = std::mem::replace(&mut w.status, MailboxWorkerStatus::Idle);
+                    w.thread_ctx = None;
                     if let MailboxWorkerStatus::Running { lease_handle, .. } = old {
                         lease_handle.abort();
                     }
@@ -1420,7 +1759,7 @@ impl Mailbox {
     }
 
     /// Get or create a per-thread worker.
-    async fn get_or_create_worker(&self, thread_id: &str) -> Arc<Mutex<MailboxWorker>> {
+    async fn get_or_create_worker(&self, thread_id: &str) -> Arc<SyncMutex<MailboxWorker>> {
         // Fast path: read lock.
         {
             let workers = self.workers.read().await;
@@ -1433,7 +1772,7 @@ impl Mailbox {
         Arc::clone(
             workers
                 .entry(thread_id.to_string())
-                .or_insert_with(|| Arc::new(Mutex::new(MailboxWorker::default()))),
+                .or_insert_with(|| Arc::new(SyncMutex::new(MailboxWorker::default()))),
         )
     }
 
@@ -1462,12 +1801,26 @@ impl Mailbox {
         }
 
         let normalized_messages = normalize_message_ids(messages);
-        let existing_messages = self
-            .run_store
-            .load_messages(thread_id)
-            .await?
-            .unwrap_or_default();
-        let previous_run = self.run_store.latest_run(thread_id).await?;
+        let (existing_messages, previous_run) = {
+            let workers = self.workers.read().await;
+            let cached = workers.get(thread_id).and_then(|w| {
+                let w = w.lock();
+                w.thread_ctx
+                    .as_ref()
+                    .map(|ctx| (ctx.messages.clone(), ctx.latest_run.clone()))
+            });
+            if let Some((msgs, run)) = cached {
+                (msgs, run)
+            } else {
+                let msgs = self
+                    .run_store
+                    .load_messages(thread_id)
+                    .await?
+                    .unwrap_or_default();
+                let run = self.run_store.latest_run(thread_id).await?;
+                (msgs, run)
+            }
+        };
         let mut appended_messages = existing_messages;
         appended_messages.extend(normalized_messages.iter().cloned());
         let input_message_ids = normalized_messages
@@ -1506,7 +1859,21 @@ impl Mailbox {
             compacted_snapshot_id: None,
         });
 
-        if let Some(mut existing) = self.run_store.load_run(&run_id).await? {
+        let cached_run = {
+            let workers = self.workers.read().await;
+            workers.get(thread_id).and_then(|w| {
+                let w = w.lock();
+                w.thread_ctx
+                    .as_ref()
+                    .and_then(|ctx| ctx.get_run(&run_id).cloned())
+            })
+        };
+        let existing_run = if let Some(run) = cached_run {
+            Some(run)
+        } else {
+            self.run_store.load_run(&run_id).await?
+        };
+        if let Some(mut existing) = existing_run {
             if existing.thread_id != thread_id {
                 return Err(MailboxError::Validation(format!(
                     "run_id '{run_id}' belongs to thread '{}', not '{thread_id}'",
@@ -1524,6 +1891,15 @@ impl Mailbox {
             self.run_store
                 .checkpoint(thread_id, &appended_messages, &existing)
                 .await?;
+            {
+                let workers = self.workers.read().await;
+                if let Some(worker) = workers.get(thread_id) {
+                    let mut w = worker.lock();
+                    if let Some(ref mut ctx) = w.thread_ctx {
+                        ctx.apply_checkpoint(&appended_messages, &existing);
+                    }
+                }
+            }
             return Ok(run_id);
         }
 
@@ -1571,6 +1947,15 @@ impl Mailbox {
         self.run_store
             .checkpoint(thread_id, &appended_messages, &record)
             .await?;
+        {
+            let workers = self.workers.read().await;
+            if let Some(worker) = workers.get(thread_id) {
+                let mut w = worker.lock();
+                if let Some(ref mut ctx) = w.thread_ctx {
+                    ctx.apply_checkpoint(&appended_messages, &record);
+                }
+            }
+        }
         Ok(run_id)
     }
 
@@ -1619,16 +2004,30 @@ impl Mailbox {
         &self,
         dispatch: &RunDispatch,
     ) -> Result<RunRequest, MailboxError> {
-        let run = self
-            .run_store
-            .load_run(&dispatch.run_id)
-            .await?
-            .ok_or_else(|| {
-                MailboxError::Validation(format!(
-                    "run '{}' not found for dispatch '{}'",
-                    dispatch.run_id, dispatch.dispatch_id
-                ))
-            })?;
+        let run = {
+            let cached = {
+                let workers = self.workers.read().await;
+                workers.get(&dispatch.thread_id).and_then(|w| {
+                    let w = w.lock();
+                    w.thread_ctx
+                        .as_ref()
+                        .and_then(|ctx| ctx.get_run(&dispatch.run_id).cloned())
+                })
+            };
+            if let Some(run) = cached {
+                run
+            } else {
+                self.run_store
+                    .load_run(&dispatch.run_id)
+                    .await?
+                    .ok_or_else(|| {
+                        MailboxError::Validation(format!(
+                            "run '{}' not found for dispatch '{}'",
+                            dispatch.run_id, dispatch.dispatch_id
+                        ))
+                    })?
+            }
+        };
         if run.thread_id != dispatch.thread_id {
             return Err(MailboxError::Validation(format!(
                 "run '{}' belongs to thread '{}', not dispatch thread '{}'",
@@ -1689,6 +2088,27 @@ impl Mailbox {
     ) -> Result<Vec<Message>, MailboxError> {
         if snapshot.input_message_ids.is_empty() {
             return self.activation_messages_from_range(run, snapshot).await;
+        }
+        // Try cache first for message lookups.
+        let cached_messages: Option<Vec<Message>> = {
+            let workers = self.workers.read().await;
+            workers.get(&run.thread_id).and_then(|w| {
+                let w = w.lock();
+                w.thread_ctx.as_ref().and_then(|ctx| {
+                    let mut msgs = Vec::with_capacity(snapshot.input_message_ids.len());
+                    for msg_id in &snapshot.input_message_ids {
+                        let found = ctx
+                            .messages
+                            .iter()
+                            .find(|m| m.id.as_deref() == Some(msg_id.as_str()));
+                        msgs.push(found?.clone());
+                    }
+                    Some(msgs)
+                })
+            })
+        };
+        if let Some(msgs) = cached_messages {
+            return Ok(msgs);
         }
         let mut messages = Vec::with_capacity(snapshot.input_message_ids.len());
         for message_id in &snapshot.input_message_ids {
@@ -1784,7 +2204,7 @@ impl Mailbox {
             let workers = self.workers.read().await;
             let mut keys = Vec::new();
             for (thread_id, worker) in workers.iter() {
-                let w = worker.lock().await;
+                let w = worker.lock();
                 if matches!(w.status, MailboxWorkerStatus::Idle) {
                     keys.push(thread_id.clone());
                 }
@@ -1802,7 +2222,7 @@ impl Mailbox {
         for thread_id in &idle_keys {
             // Re-check under write lock: status might have changed.
             let still_idle = if let Some(worker) = workers.get(thread_id) {
-                let w = worker.lock().await;
+                let w = worker.lock();
                 matches!(w.status, MailboxWorkerStatus::Idle)
             } else {
                 false
@@ -1839,12 +2259,12 @@ impl Mailbox {
 /// Revert worker from Claiming → Idle, but only if still in Claiming state.
 /// Prevents overwriting a Running state set by a concurrent dispatch.
 async fn revert_claiming_to_idle(
-    workers: &tokio::sync::RwLock<HashMap<String, Arc<tokio::sync::Mutex<MailboxWorker>>>>,
+    workers: &RwLock<HashMap<String, Arc<SyncMutex<MailboxWorker>>>>,
     thread_id: &str,
 ) {
     let workers = workers.read().await;
     if let Some(worker) = workers.get(thread_id) {
-        let mut w = worker.lock().await;
+        let mut w = worker.lock();
         if matches!(w.status, MailboxWorkerStatus::Claiming) {
             w.status = MailboxWorkerStatus::Idle;
         }
@@ -2287,6 +2707,10 @@ mod tests {
         fn send_decision(&self, _id: &str, _tool_call_id: String, _resume: ToolCallResume) -> bool {
             false
         }
+
+        fn send_messages(&self, _id: &str, _messages: Vec<Message>) -> bool {
+            false
+        }
     }
 
     struct RecordedMailboxRequest {
@@ -2339,6 +2763,10 @@ mod tests {
         }
 
         fn send_decision(&self, _id: &str, _tool_call_id: String, _resume: ToolCallResume) -> bool {
+            false
+        }
+
+        fn send_messages(&self, _id: &str, _messages: Vec<Message>) -> bool {
             false
         }
     }
@@ -2402,6 +2830,10 @@ mod tests {
         fn send_decision(&self, _id: &str, _tool_call_id: String, _resume: ToolCallResume) -> bool {
             false
         }
+
+        fn send_messages(&self, _id: &str, _messages: Vec<Message>) -> bool {
+            false
+        }
     }
 
     struct ScriptedLlm {
@@ -2438,6 +2870,49 @@ mod tests {
 
         fn name(&self) -> &str {
             "scripted"
+        }
+    }
+
+    struct RecordingLlm {
+        responses: StdMutex<Vec<StreamResult>>,
+        requests: Arc<StdMutex<Vec<InferenceRequest>>>,
+    }
+
+    impl RecordingLlm {
+        fn new(
+            responses: Vec<StreamResult>,
+            requests: Arc<StdMutex<Vec<InferenceRequest>>>,
+        ) -> Self {
+            Self {
+                responses: StdMutex::new(responses),
+                requests,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmExecutor for RecordingLlm {
+        async fn execute(
+            &self,
+            request: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            self.requests.lock().expect("lock poisoned").push(request);
+            let mut responses = self.responses.lock().expect("lock poisoned");
+            if responses.is_empty() {
+                Ok(StreamResult {
+                    content: vec![ContentBlock::text("done")],
+                    tool_calls: vec![],
+                    usage: None,
+                    stop_reason: Some(StopReason::EndTurn),
+                    has_incomplete_tool_calls: false,
+                })
+            } else {
+                Ok(responses.remove(0))
+            }
+        }
+
+        fn name(&self) -> &str {
+            "recording"
         }
     }
 
@@ -2486,6 +2961,45 @@ mod tests {
                 .await
                 .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
             Ok(ToolResult::success("spawn_bg", json!({"spawned": true})).into())
+        }
+    }
+
+    struct BlockingTool {
+        started: StdMutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    }
+
+    impl BlockingTool {
+        fn new(
+            started: tokio::sync::oneshot::Sender<()>,
+            release: tokio::sync::oneshot::Receiver<()>,
+        ) -> Self {
+            Self {
+                started: StdMutex::new(Some(started)),
+                release: tokio::sync::Mutex::new(Some(release)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Tool for BlockingTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("block", "block", "wait until released")
+        }
+
+        async fn execute(
+            &self,
+            _args: Value,
+            _ctx: &ToolCallContext,
+        ) -> Result<ToolOutput, ToolError> {
+            if let Some(started) = self.started.lock().expect("lock poisoned").take() {
+                let _ = started.send(());
+            }
+            let release = self.release.lock().await.take();
+            if let Some(release) = release {
+                let _ = release.await;
+            }
+            Ok(ToolResult::success("block", json!({"released": true})).into())
         }
     }
 
@@ -3971,7 +4485,9 @@ mod tests {
 
     #[test]
     fn dispatch_status_queued_zero() {
+        let running = MailboxDispatchStatus::Running;
         let status = MailboxDispatchStatus::Queued;
+        assert!(matches!(running, MailboxDispatchStatus::Running));
         assert!(matches!(status, MailboxDispatchStatus::Queued));
     }
 
@@ -4011,6 +4527,591 @@ mod tests {
             result.status,
             MailboxDispatchStatus::Running | MailboxDispatchStatus::Queued
         ));
+    }
+
+    #[tokio::test]
+    async fn live_then_queue_steers_active_run_without_new_dispatch() {
+        let store = Arc::new(InMemoryStore::new());
+        let mailbox_store = make_store();
+        let requests = Arc::new(StdMutex::new(Vec::new()));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let llm = Arc::new(RecordingLlm::new(
+            vec![
+                StreamResult {
+                    content: vec![ContentBlock::text("start tool")],
+                    tool_calls: vec![ToolCall::new("block-1", "block", json!({}))],
+                    usage: None,
+                    stop_reason: Some(StopReason::ToolUse),
+                    has_incomplete_tool_calls: false,
+                },
+                StreamResult {
+                    content: vec![ContentBlock::text("saw live input")],
+                    tool_calls: vec![],
+                    usage: None,
+                    stop_reason: Some(StopReason::EndTurn),
+                    has_incomplete_tool_calls: false,
+                },
+            ],
+            requests.clone(),
+        ));
+        let resolver = Arc::new(FixedResolver {
+            agent: ResolvedAgent::new("agent", "m", "sys", llm)
+                .with_tool(Arc::new(BlockingTool::new(started_tx, release_rx))),
+            plugins: vec![],
+        });
+        let runtime = Arc::new(
+            AgentRuntime::new(resolver)
+                .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>)
+                .with_mailbox_store(mailbox_store.clone()),
+        );
+        let mailbox = make_mailbox_with_run_store(
+            runtime,
+            mailbox_store.clone(),
+            store.clone() as Arc<dyn ThreadRunStore>,
+        );
+
+        let first = mailbox
+            .submit_background(
+                RunRequest::new("thread-live-steer", vec![Message::user("start")])
+                    .with_agent_id("agent"),
+            )
+            .await
+            .expect("initial submit should start");
+
+        tokio::time::timeout(Duration::from_secs(1), started_rx)
+            .await
+            .expect("tool should start")
+            .expect("started signal should send");
+
+        let steered = mailbox
+            .submit_live_then_queue(
+                RunRequest::new("thread-live-steer", vec![Message::user("live steer")])
+                    .with_agent_id("agent"),
+                None,
+            )
+            .await
+            .expect("live steer should be accepted");
+        assert_eq!(steered.status, MailboxDispatchStatus::Running);
+        assert_eq!(steered.run_id, first.run_id);
+        assert_eq!(steered.dispatch_id, first.dispatch_id);
+
+        let _ = release_tx.send(());
+        let latest = wait_for_latest_run(&store, "thread-live-steer", |run| {
+            run.status == RunStatus::Done
+        })
+        .await;
+        assert_eq!(latest.run_id, first.run_id);
+
+        let live_message_seen = {
+            let recorded = requests.lock().expect("lock poisoned");
+            assert_eq!(recorded.len(), 2);
+            recorded[1].messages.iter().any(|message| {
+                message.text() == "live steer"
+                    && message.role == awaken_contract::contract::message::Role::User
+                    && message.visibility == awaken_contract::contract::message::Visibility::All
+            })
+        };
+        assert!(
+            live_message_seen,
+            "second LLM turn should receive the live user message"
+        );
+
+        let messages = store
+            .load_messages("thread-live-steer")
+            .await
+            .expect("load messages")
+            .expect("messages should be persisted");
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.text() == "live steer")
+                .count(),
+            1,
+            "live message should be persisted exactly once"
+        );
+
+        let dispatches = mailbox_store
+            .list_dispatches("thread-live-steer", None, 10, 0)
+            .await
+            .expect("list dispatches");
+        assert_eq!(
+            dispatches
+                .iter()
+                .filter(|dispatch| dispatch.run_id == first.run_id)
+                .count(),
+            1,
+            "live steering must not create an extra dispatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_then_queue_falls_back_to_durable_dispatch_when_receiver_unavailable() {
+        let mailbox_store = make_store();
+        let thread_store = Arc::new(InMemoryStore::new());
+        let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
+        let mailbox = Arc::new(Mailbox::new_with_executor(
+            runtime,
+            mailbox_store.clone(),
+            thread_store.clone(),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+        let thread_id = "thread-live-fallback";
+        let mut active_request =
+            RunRequest::new(thread_id, vec![Message::user("active")]).with_agent_id("agent");
+        let (_, active_messages) = validate_run_inputs(
+            active_request.thread_id.clone(),
+            active_request.messages.clone(),
+            false,
+        )
+        .expect("active input should validate");
+        mailbox
+            .prepare_run_for_dispatch(&mut active_request, thread_id, &active_messages)
+            .await
+            .expect("prepare active run");
+        let active_dispatch = mailbox
+            .build_dispatch(&active_request, thread_id)
+            .expect("build active dispatch");
+        let active_dispatch_id = active_dispatch.dispatch_id.clone();
+        mailbox_store
+            .enqueue(&active_dispatch)
+            .await
+            .expect("enqueue active dispatch");
+        mailbox_store
+            .claim_dispatch(&active_dispatch_id, "test-consumer", 30_000, now_ms())
+            .await
+            .expect("claim active dispatch")
+            .expect("active dispatch should be claimed");
+        let worker = mailbox.get_or_create_worker(thread_id).await;
+        {
+            let mut worker = worker.lock();
+            worker.status = MailboxWorkerStatus::Running {
+                dispatch_id: active_dispatch_id.clone(),
+                run_id: active_dispatch.run_id.clone(),
+                lease_handle: tokio::spawn(async {}),
+                sink: Arc::new(ReconnectableEventSink::new(mpsc::channel(16).0)),
+            };
+        }
+
+        let result = mailbox
+            .submit_live_then_queue(
+                RunRequest::new(thread_id, vec![Message::user("fallback")]).with_agent_id("agent"),
+                None,
+            )
+            .await
+            .expect("fallback submit should succeed");
+
+        assert_eq!(result.status, MailboxDispatchStatus::Queued);
+        assert_ne!(result.dispatch_id, active_dispatch_id);
+        let messages = thread_store
+            .load_messages(thread_id)
+            .await
+            .expect("load messages")
+            .expect("messages should exist");
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.text() == "fallback")
+                .count(),
+            1,
+            "fallback message should be persisted once"
+        );
+        let queued = mailbox_store
+            .list_dispatches(thread_id, Some(&[RunDispatchStatus::Queued]), 10, 0)
+            .await
+            .expect("list queued");
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].dispatch_id, result.dispatch_id);
+    }
+
+    #[tokio::test]
+    async fn foreground_submit_sends_live_cancel_for_remote_active_dispatch() {
+        use awaken_contract::contract::mailbox::LiveRunCommand;
+        use futures::StreamExt;
+
+        let mailbox_store = make_store();
+        let thread_store = Arc::new(InMemoryStore::new());
+        let runtime = Arc::new(RecordingMailboxRuntime::default());
+        let mailbox = Arc::new(Mailbox::new_with_executor(
+            runtime,
+            mailbox_store.clone(),
+            thread_store.clone(),
+            "foreground-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+        let thread_id = "thread-remote-foreground";
+
+        let mut active_request =
+            RunRequest::new(thread_id, vec![Message::user("active")]).with_agent_id("agent");
+        let (_, active_messages) = validate_run_inputs(
+            active_request.thread_id.clone(),
+            active_request.messages.clone(),
+            false,
+        )
+        .expect("active input should validate");
+        mailbox
+            .prepare_run_for_dispatch(&mut active_request, thread_id, &active_messages)
+            .await
+            .expect("prepare active run");
+        let active_dispatch = mailbox
+            .build_dispatch(&active_request, thread_id)
+            .expect("build active dispatch");
+        let active_dispatch_id = active_dispatch.dispatch_id.clone();
+        mailbox_store
+            .enqueue(&active_dispatch)
+            .await
+            .expect("enqueue active dispatch");
+        let claimed = mailbox_store
+            .claim_dispatch(&active_dispatch_id, "remote-consumer", 30_000, now_ms())
+            .await
+            .expect("claim active dispatch")
+            .expect("active dispatch should be claimed");
+        let active_claim_token = claimed.claim_token.clone().expect("claim token");
+
+        let subscriber = mailbox_store
+            .open_live_channel(thread_id)
+            .await
+            .expect("open live channel");
+        let captured = Arc::new(tokio::sync::Mutex::new(Vec::<LiveRunCommand>::new()));
+        let captured_clone = captured.clone();
+        let store_clone = mailbox_store.clone();
+        let active_dispatch_id_clone = active_dispatch_id.clone();
+        let active_claim_token_clone = active_claim_token.clone();
+        let _forwarder = tokio::spawn(async move {
+            let mut subscriber = subscriber;
+            while let Some(entry) = subscriber.next().await {
+                captured_clone.lock().await.push(entry.command.clone());
+                if matches!(entry.command, LiveRunCommand::Cancel) {
+                    store_clone
+                        .ack(
+                            &active_dispatch_id_clone,
+                            &active_claim_token_clone,
+                            now_ms(),
+                        )
+                        .await
+                        .expect("remote run should release active dispatch");
+                    entry.receipt.ack();
+                    break;
+                }
+                drop(entry.receipt);
+            }
+        });
+
+        let (submitted, _events) = mailbox
+            .submit(
+                RunRequest::new(thread_id, vec![Message::user("replacement")])
+                    .with_agent_id("agent"),
+            )
+            .await
+            .expect("foreground submit should cancel remote active run and claim replacement");
+
+        assert_eq!(submitted.status, MailboxDispatchStatus::Running);
+        assert_ne!(submitted.dispatch_id, active_dispatch_id);
+        let commands = captured.lock().await;
+        assert!(
+            commands
+                .iter()
+                .any(|command| matches!(command, LiveRunCommand::Cancel)),
+            "foreground submit must deliver live Cancel to the remote active run"
+        );
+    }
+
+    /// Cross-node live delivery: no local worker, but the thread has an
+    /// active Running run recorded globally in ThreadRunStore. Mailbox must
+    /// publish on the live channel (for the owning node's forwarder to
+    /// receive) and return Running rather than falling back.
+    #[tokio::test]
+    async fn live_then_queue_publishes_for_remote_active_run() {
+        use awaken_contract::contract::mailbox::LiveRunCommand;
+        use futures::StreamExt;
+
+        let mailbox_store = make_store();
+        let thread_store = Arc::new(InMemoryStore::new());
+        let thread_id = "thread-remote";
+        let remote_run_id = "run-remote";
+
+        // Seed a Running run — simulates another node owning this run.
+        let mut run = seeded_waiting_run(remote_run_id, thread_id, "agent");
+        run.status = RunStatus::Running;
+        thread_store
+            .create_run(&run)
+            .await
+            .expect("seed remote run");
+
+        // Simulate the remote forwarder: drain the stream and ack each
+        // entry so the producer's `deliver_live` resolves as Delivered.
+        let subscriber = mailbox_store
+            .open_live_channel(thread_id)
+            .await
+            .expect("open live channel");
+        let captured = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<LiveRunCommand>::new()));
+        let captured_clone = captured.clone();
+        let _forwarder = tokio::spawn(async move {
+            let mut subscriber = subscriber;
+            while let Some(entry) = subscriber.next().await {
+                captured_clone.lock().await.push(entry.command.clone());
+                entry.receipt.ack();
+            }
+        });
+
+        let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
+        let mailbox = Arc::new(Mailbox::new_with_executor(
+            runtime,
+            mailbox_store.clone(),
+            thread_store.clone(),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let result = mailbox
+            .submit_live_then_queue(
+                RunRequest::new(thread_id, vec![Message::user("steer-remote")])
+                    .with_agent_id("agent"),
+                None,
+            )
+            .await
+            .expect("submit should succeed");
+
+        assert_eq!(result.status, MailboxDispatchStatus::Running);
+        assert_eq!(result.run_id, remote_run_id);
+
+        // The acked subscriber must have captured the message.
+        let commands = captured.lock().await;
+        assert_eq!(commands.len(), 1);
+        match &commands[0] {
+            LiveRunCommand::Messages(msgs) => assert_eq!(msgs[0].text(), "steer-remote"),
+            other => panic!("expected Messages, got {other:?}"),
+        }
+        drop(commands);
+
+        // No new dispatch should have been enqueued.
+        let queued = mailbox_store
+            .list_dispatches(thread_id, Some(&[RunDispatchStatus::Queued]), 10, 0)
+            .await
+            .expect("list queued");
+        assert!(
+            queued.is_empty(),
+            "cross-node live delivery must not create a dispatch"
+        );
+    }
+
+    /// Regression for issue #2: cross-node delivery where the subscriber
+    /// drops the receipt (simulating inbox full / forwarder failure) must
+    /// fall back to durable queue, not report `Running`.
+    #[tokio::test]
+    async fn live_then_queue_falls_back_when_subscriber_drops_receipt() {
+        use futures::StreamExt;
+
+        let mailbox_store = make_store();
+        let thread_store = Arc::new(InMemoryStore::new());
+        let thread_id = "thread-dropped-receipt";
+
+        let mut run = seeded_waiting_run("run-dropped", thread_id, "agent");
+        run.status = RunStatus::Running;
+        thread_store.create_run(&run).await.expect("seed run");
+
+        let subscriber = mailbox_store
+            .open_live_channel(thread_id)
+            .await
+            .expect("open live channel");
+        // Drop every receipt — simulates forwarder that can't hand off.
+        let _rogue = tokio::spawn(async move {
+            let mut subscriber = subscriber;
+            while let Some(entry) = subscriber.next().await {
+                drop(entry.receipt);
+            }
+        });
+
+        let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
+        let mailbox = Arc::new(Mailbox::new_with_executor(
+            runtime,
+            mailbox_store.clone(),
+            thread_store.clone(),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let result = mailbox
+            .submit_live_then_queue(
+                RunRequest::new(thread_id, vec![Message::user("hello?")]).with_agent_id("agent"),
+                None,
+            )
+            .await
+            .expect("submit should succeed via queue fallback");
+
+        let dispatches = mailbox_store
+            .list_dispatches(thread_id, None, 10, 0)
+            .await
+            .expect("list dispatches");
+        assert_eq!(
+            dispatches.len(),
+            1,
+            "unacked receipt must force a durable dispatch"
+        );
+        assert_eq!(result.dispatch_id, dispatches[0].dispatch_id);
+    }
+
+    /// Contract test documenting the `submit_live_then_queue` at-least-once
+    /// guarantee: a forwarder that accepts the live command but whose ack
+    /// is lost (ack publish failure / network timeout) causes the producer
+    /// to observe `NoSubscriber` and fall back to durable dispatch, even
+    /// though the run has already received the payload. Callers needing
+    /// exactly-once effects must use agent-level idempotency.
+    #[tokio::test]
+    async fn live_then_queue_is_at_least_once_when_ack_lost() {
+        use futures::StreamExt;
+
+        let mailbox_store = make_store();
+        let thread_store = Arc::new(InMemoryStore::new());
+        let thread_id = "thread-ack-lost";
+
+        let mut run = seeded_waiting_run("run-ack-lost", thread_id, "agent");
+        run.status = RunStatus::Running;
+        thread_store.create_run(&run).await.expect("seed run");
+
+        let subscriber = mailbox_store
+            .open_live_channel(thread_id)
+            .await
+            .expect("open live channel");
+        // Consumer captures the command (simulates `try_send` success)
+        // but drops the receipt (simulates the ack publish failing).
+        let accepted = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+        let accepted_c = accepted.clone();
+        let _consumer = tokio::spawn(async move {
+            let mut subscriber = subscriber;
+            while let Some(entry) = subscriber.next().await {
+                if let awaken_contract::contract::mailbox::LiveRunCommand::Messages(ref msgs) =
+                    entry.command
+                {
+                    for m in msgs {
+                        accepted_c.lock().await.push(m.text());
+                    }
+                }
+                // Forwarder accepted, but ack "publish" never happens.
+                drop(entry.receipt);
+            }
+        });
+
+        let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
+        let mailbox = Arc::new(Mailbox::new_with_executor(
+            runtime,
+            mailbox_store.clone(),
+            thread_store.clone(),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let result = mailbox
+            .submit_live_then_queue(
+                RunRequest::new(thread_id, vec![Message::user("steer-payload")])
+                    .with_agent_id("agent"),
+                None,
+            )
+            .await
+            .expect("submit should succeed via queue fallback");
+
+        // Contract part 1: the forwarder DID receive the payload.
+        let received = accepted.lock().await.clone();
+        assert_eq!(
+            received.as_slice(),
+            &["steer-payload".to_string()],
+            "forwarder must have observed the live command before dropping receipt"
+        );
+
+        // Contract part 2: because the ack was "lost", submit fell back
+        // to durable dispatch — the SAME payload is now queued for a
+        // future run.  This is the at-least-once window.
+        let dispatches = mailbox_store
+            .list_dispatches(thread_id, None, 10, 0)
+            .await
+            .expect("list dispatches");
+        assert_eq!(dispatches.len(), 1);
+        assert_eq!(result.dispatch_id, dispatches[0].dispatch_id);
+    }
+
+    /// expected_run_id mismatch against a remote Running run must abort
+    /// live delivery and fall back to dispatch (preventing steering the
+    /// wrong run after a rollover).
+    #[tokio::test]
+    async fn live_then_queue_rejects_remote_mismatched_expected_run_id() {
+        let mailbox_store = make_store();
+        let thread_store = Arc::new(InMemoryStore::new());
+        let thread_id = "thread-mismatch";
+
+        let mut run = seeded_waiting_run("run-actual", thread_id, "agent");
+        run.status = RunStatus::Running;
+        thread_store.create_run(&run).await.expect("seed run");
+
+        let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
+        let mailbox = Arc::new(Mailbox::new_with_executor(
+            runtime,
+            mailbox_store.clone(),
+            thread_store.clone(),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let result = mailbox
+            .submit_live_then_queue(
+                RunRequest::new(thread_id, vec![Message::user("wrong-run")]).with_agent_id("agent"),
+                Some("run-stale"),
+            )
+            .await
+            .expect("submit should succeed");
+
+        assert_ne!(
+            result.run_id, "run-actual",
+            "mismatched expected_run_id must not steer the stale remote run"
+        );
+    }
+
+    /// Cross-node live delivery when **no subscriber** is attached to the
+    /// live channel must fall back to `submit_background` — never report
+    /// `Running` based on a publish the owning node will never observe.
+    #[tokio::test]
+    async fn live_then_queue_falls_back_to_queue_when_no_remote_subscriber() {
+        let mailbox_store = make_store();
+        let thread_store = Arc::new(InMemoryStore::new());
+        let thread_id = "thread-no-subscriber";
+
+        // Seed a Running run on some other (imaginary) node. Crucially,
+        // we do NOT call `open_live_channel` — no one is listening.
+        let mut run = seeded_waiting_run("run-no-listener", thread_id, "agent");
+        run.status = RunStatus::Running;
+        thread_store.create_run(&run).await.expect("seed run");
+
+        let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
+        let mailbox = Arc::new(Mailbox::new_with_executor(
+            runtime,
+            mailbox_store.clone(),
+            thread_store.clone(),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let result = mailbox
+            .submit_live_then_queue(
+                RunRequest::new(thread_id, vec![Message::user("hello?")]).with_agent_id("agent"),
+                None,
+            )
+            .await
+            .expect("submit should succeed via queue fallback");
+
+        // The submit must have entered the durable queue — a new dispatch
+        // appears whether Queued or Claimed (depending on whether a worker
+        // picks it up). The key property is: a dispatch was enqueued rather
+        // than silently declared `Running` on the remote.
+        let all_dispatches = mailbox_store
+            .list_dispatches(thread_id, None, 10, 0)
+            .await
+            .expect("list dispatches");
+        assert_eq!(
+            all_dispatches.len(),
+            1,
+            "no-subscriber cross-node must fall back to durable queue"
+        );
+        assert_eq!(result.dispatch_id, all_dispatches[0].dispatch_id);
     }
 
     #[tokio::test]
@@ -4484,7 +5585,7 @@ mod tests {
         // Worker should be Running (or Claiming).
         let workers = mailbox.workers.read().await;
         if let Some(worker) = workers.get("thread-guard") {
-            let w = worker.lock().await;
+            let w = worker.lock();
             assert!(
                 !matches!(w.status, MailboxWorkerStatus::Idle),
                 "worker should not be Idle after dispatch"
@@ -4498,7 +5599,7 @@ mod tests {
         // Worker should still be Running, not reverted to Idle.
         let workers = mailbox.workers.read().await;
         if let Some(worker) = workers.get("thread-guard") {
-            let w = worker.lock().await;
+            let w = worker.lock();
             assert!(
                 !matches!(w.status, MailboxWorkerStatus::Idle),
                 "worker should still not be Idle"
@@ -4588,9 +5689,10 @@ mod tests {
         let worker = mailbox.get_or_create_worker("thread-reconnect").await;
         {
             let reconnectable = Arc::new(ReconnectableEventSink::new(mpsc::channel(16).0));
-            let mut w = worker.lock().await;
+            let mut w = worker.lock();
             w.status = MailboxWorkerStatus::Running {
                 dispatch_id: "dispatch-fake".into(),
+                run_id: "run-fake".into(),
                 lease_handle: tokio::spawn(futures::future::pending::<()>()),
                 sink: reconnectable,
             };
@@ -4742,7 +5844,7 @@ mod tests {
             let mut workers = mailbox.workers.write().await;
             workers.insert(
                 "thread-gc".to_string(),
-                Arc::new(Mutex::new(MailboxWorker::default())),
+                Arc::new(SyncMutex::new(MailboxWorker::default())),
             );
         }
 
@@ -4775,7 +5877,7 @@ mod tests {
             let mut workers = mailbox.workers.write().await;
             workers.insert(
                 "thread-gc-keep".to_string(),
-                Arc::new(Mutex::new(MailboxWorker::default())),
+                Arc::new(SyncMutex::new(MailboxWorker::default())),
             );
         }
 
@@ -4811,5 +5913,252 @@ mod tests {
         mailbox.gc_idle_workers().await;
         let workers = mailbox.workers.read().await;
         assert!(workers.is_empty());
+    }
+
+    // ── ThreadContext cache tests ───────────────────────────────────
+
+    fn make_run_record(run_id: &str, thread_id: &str, status: RunStatus) -> RunRecord {
+        RunRecord {
+            run_id: run_id.to_string(),
+            thread_id: thread_id.to_string(),
+            agent_id: "agent".to_string(),
+            parent_run_id: None,
+            request: None,
+            input: None,
+            output: None,
+            status,
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: None,
+            outcome: None,
+            created_at: 1,
+            started_at: None,
+            finished_at: None,
+            updated_at: 1,
+            steps: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            state: None,
+        }
+    }
+
+    fn make_waiting_run_record(run_id: &str, thread_id: &str) -> RunRecord {
+        let mut run = make_run_record(run_id, thread_id, RunStatus::Waiting);
+        run.waiting = Some(RunWaitingState {
+            reason: WaitingReason::BackgroundTasks,
+            ticket_ids: Vec::new(),
+            tickets: Vec::new(),
+            since_dispatch_id: None,
+            message: None,
+        });
+        run
+    }
+
+    fn make_noop_mailbox(thread_store: Arc<InMemoryStore>) -> Arc<Mailbox> {
+        let mailbox_store = make_store();
+        let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
+        Arc::new(Mailbox::new_with_executor(
+            runtime,
+            mailbox_store,
+            thread_store,
+            "test-consumer".into(),
+            MailboxConfig::default(),
+        ))
+    }
+
+    #[tokio::test]
+    async fn thread_context_cache_used_by_reusable_waiting_run_id() {
+        let thread_store = Arc::new(InMemoryStore::new());
+        let mailbox = make_noop_mailbox(thread_store.clone());
+        let thread_id = "thread-ctx-reuse";
+
+        // Create a waiting run in the store.
+        let run = make_waiting_run_record("run-waiting", thread_id);
+        thread_store
+            .checkpoint(thread_id, &[Message::user("hi")], &run)
+            .await
+            .unwrap();
+
+        // Pre-warm the cache on the worker.
+        let worker = mailbox.get_or_create_worker(thread_id).await;
+        let ctx = ThreadContext::load(thread_store.as_ref(), thread_id)
+            .await
+            .unwrap();
+        {
+            let mut w = worker.lock();
+            w.thread_ctx = Some(ctx);
+        }
+
+        let result = mailbox.reusable_waiting_run_id(thread_id).await;
+        assert_eq!(result, Some("run-waiting".to_string()));
+    }
+
+    #[tokio::test]
+    async fn thread_context_cache_updated_after_prepare_checkpoint() {
+        let thread_store = Arc::new(InMemoryStore::new());
+        let mailbox = make_noop_mailbox(thread_store.clone());
+        let thread_id = "thread-ctx-checkpoint";
+
+        // Persist initial state with a Done run.
+        let run = make_run_record("run-prev", thread_id, RunStatus::Done);
+        thread_store
+            .checkpoint(thread_id, &[Message::user("first")], &run)
+            .await
+            .unwrap();
+
+        // Pre-warm the cache.
+        let worker = mailbox.get_or_create_worker(thread_id).await;
+        let ctx = ThreadContext::load(thread_store.as_ref(), thread_id)
+            .await
+            .unwrap();
+        {
+            let mut w = worker.lock();
+            w.thread_ctx = Some(ctx);
+        }
+
+        // Prepare a new dispatch — this should update the cache.
+        let mut request =
+            RunRequest::new(thread_id, vec![Message::user("second")]).with_agent_id("agent");
+        let msgs = request.messages.clone();
+        mailbox
+            .prepare_run_for_dispatch(&mut request, thread_id, &msgs)
+            .await
+            .expect("prepare should succeed");
+
+        // Verify cache was updated with both messages and the new run.
+        let w = worker.lock();
+        let ctx = w.thread_ctx.as_ref().expect("cache should exist");
+        assert_eq!(ctx.messages.len(), 2, "cache should have 2 messages");
+        assert!(ctx.latest_run.is_some(), "cache should have latest run");
+    }
+
+    #[tokio::test]
+    async fn prepare_run_falls_back_to_store_without_cache() {
+        let thread_store = Arc::new(InMemoryStore::new());
+        let mailbox = make_noop_mailbox(thread_store.clone());
+        let thread_id = "thread-no-cache";
+
+        // Persist initial state but do NOT pre-warm the cache.
+        let run = make_run_record("run-prev", thread_id, RunStatus::Done);
+        thread_store
+            .checkpoint(thread_id, &[Message::user("first")], &run)
+            .await
+            .unwrap();
+
+        // No cache — should fall back to store.
+        let mut request =
+            RunRequest::new(thread_id, vec![Message::user("second")]).with_agent_id("agent");
+        let msgs = request.messages.clone();
+        let run_id = mailbox
+            .prepare_run_for_dispatch(&mut request, thread_id, &msgs)
+            .await
+            .expect("should succeed from store fallback");
+        assert!(!run_id.is_empty());
+
+        // Store should have both messages.
+        let stored = thread_store
+            .load_messages(thread_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn thread_context_cache_cleared_on_idle_transition() {
+        let thread_store = Arc::new(InMemoryStore::new());
+        let mailbox = make_noop_mailbox(thread_store.clone());
+        let thread_id = "thread-ctx-clear";
+
+        let run = make_run_record("r1", thread_id, RunStatus::Done);
+        thread_store
+            .checkpoint(thread_id, &[Message::user("hi")], &run)
+            .await
+            .unwrap();
+
+        // Set up worker as Running with a populated cache.
+        let worker = mailbox.get_or_create_worker(thread_id).await;
+        let ctx = ThreadContext::load(thread_store.as_ref(), thread_id)
+            .await
+            .unwrap();
+        {
+            let mut w = worker.lock();
+            w.thread_ctx = Some(ctx);
+            w.status = MailboxWorkerStatus::Running {
+                dispatch_id: "d1".into(),
+                run_id: "r1".into(),
+                lease_handle: tokio::spawn(async {}),
+                sink: Arc::new(ReconnectableEventSink::new(mpsc::channel(16).0)),
+            };
+        }
+
+        // Verify cache exists before transition.
+        assert!(worker.lock().thread_ctx.is_some());
+
+        // Simulate completion: transition to Idle and clear cache.
+        {
+            let mut w = worker.lock();
+            let old = std::mem::replace(&mut w.status, MailboxWorkerStatus::Idle);
+            w.thread_ctx = None;
+            if let MailboxWorkerStatus::Running { lease_handle, .. } = old {
+                lease_handle.abort();
+            }
+        }
+
+        assert!(
+            worker.lock().thread_ctx.is_none(),
+            "cache should be cleared on idle transition"
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_context_load_populates_run_cache() {
+        let store = Arc::new(InMemoryStore::new());
+        let thread_id = "thread-load-test";
+
+        let run = make_run_record("r1", thread_id, RunStatus::Done);
+        store
+            .checkpoint(thread_id, &[Message::user("msg")], &run)
+            .await
+            .unwrap();
+
+        let ctx = ThreadContext::load(store.as_ref(), thread_id)
+            .await
+            .expect("load should succeed");
+
+        assert_eq!(ctx.messages.len(), 1);
+        assert!(ctx.latest_run.is_some());
+        assert_eq!(ctx.latest_run.as_ref().unwrap().run_id, "r1");
+        assert!(ctx.get_run("r1").is_some());
+        assert!(ctx.get_run("unknown").is_none());
+    }
+
+    #[tokio::test]
+    async fn reusable_waiting_run_id_returns_none_for_done_cached_run() {
+        let thread_store = Arc::new(InMemoryStore::new());
+        let mailbox = make_noop_mailbox(thread_store.clone());
+        let thread_id = "thread-done-run";
+
+        let run = make_run_record("run-done", thread_id, RunStatus::Done);
+        thread_store
+            .checkpoint(thread_id, &[Message::user("hi")], &run)
+            .await
+            .unwrap();
+
+        let worker = mailbox.get_or_create_worker(thread_id).await;
+        let ctx = ThreadContext::load(thread_store.as_ref(), thread_id)
+            .await
+            .unwrap();
+        {
+            let mut w = worker.lock();
+            w.thread_ctx = Some(ctx);
+        }
+
+        let result = mailbox.reusable_waiting_run_id(thread_id).await;
+        assert_eq!(result, None, "Done run should not be reusable");
     }
 }

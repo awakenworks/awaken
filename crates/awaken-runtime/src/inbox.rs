@@ -51,14 +51,42 @@ impl InboxSender {
     /// the receiver was dropped — in that case `on_closed` (if set) is
     /// also invoked so the infrastructure layer can take action.
     pub fn send(&self, msg: serde_json::Value) -> bool {
-        if self.tx.unbounded_send(msg.clone()).is_ok() {
-            return true;
+        match self.tx.unbounded_send(msg) {
+            Ok(()) => {
+                let depth = self.tx.len();
+                if depth > 0 && depth.is_multiple_of(Self::DEPTH_WARNING_THRESHOLD) {
+                    tracing::warn!(depth, "inbox channel depth is high");
+                }
+                true
+            }
+            Err(e) => {
+                if let Some(ref cb) = self.on_closed {
+                    cb.closed(&e.into_inner());
+                }
+                false
+            }
         }
-        // Receiver gone — invoke fallback
-        if let Some(ref cb) = self.on_closed {
-            cb.closed(&msg);
-        }
-        false
+    }
+
+    const DEPTH_WARNING_THRESHOLD: usize = 256;
+
+    /// Try to send a message without invoking the closed-channel fallback.
+    ///
+    /// Runtime control paths use this when the caller owns fallback policy
+    /// itself, for example live user-input steering that should queue a
+    /// durable dispatch if the active receiver is gone.
+    pub fn try_send(&self, msg: serde_json::Value) -> bool {
+        self.tx.unbounded_send(msg).is_ok()
+    }
+
+    /// Returns the number of messages currently buffered in the channel.
+    pub fn len(&self) -> usize {
+        self.tx.len()
+    }
+
+    /// Returns `true` when the channel buffer is empty.
+    pub fn is_empty(&self) -> bool {
+        self.tx.is_empty()
     }
 
     /// Returns `true` when the receiving half has been dropped.
@@ -121,6 +149,35 @@ pub fn inbox_event_message(json: &serde_json::Value) -> Message {
     msg
 }
 
+/// Convert direct messages into a single inbox payload.
+pub fn inbox_messages_payload(messages: Vec<Message>) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "messages",
+        "messages": messages,
+    })
+}
+
+/// Convert any inbox payload into messages for the owner agent.
+///
+/// Unknown payloads are treated as background-task events to preserve the
+/// historical inbox behavior.
+pub fn inbox_payload_messages(json: &serde_json::Value) -> Vec<Message> {
+    if json.get("kind").and_then(|kind| kind.as_str()) == Some("messages")
+        && let Some(values) = json
+            .get("messages")
+            .and_then(|messages| messages.as_array())
+    {
+        let messages = values
+            .iter()
+            .filter_map(|value| serde_json::from_value::<Message>(value.clone()).ok())
+            .collect::<Vec<_>>();
+        if !messages.is_empty() {
+            return messages;
+        }
+    }
+    vec![inbox_event_message(json)]
+}
+
 /// Create a new `(InboxSender, InboxReceiver)` pair.
 pub fn inbox_channel() -> (InboxSender, InboxReceiver) {
     let (tx, rx) = mpsc::unbounded();
@@ -165,6 +222,23 @@ mod tests {
         assert_eq!(msgs[1], "done");
 
         assert!(rx.try_recv().is_none());
+    }
+
+    #[test]
+    fn try_send_does_not_invoke_closed_fallback() {
+        struct Counter(AtomicUsize);
+        impl OnInboxClosed for Counter {
+            fn closed(&self, _msg: &serde_json::Value) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let counter = Arc::new(Counter(AtomicUsize::new(0)));
+        let (tx, rx) = inbox_channel_with_fallback(counter.clone());
+        drop(rx);
+
+        assert!(!tx.try_send(serde_json::json!("lost")));
+        assert_eq!(counter.0.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -240,5 +314,29 @@ mod tests {
         assert_eq!(msg.visibility, Visibility::Internal);
         assert!(msg.text().contains("background-task-event"));
         assert!(msg.text().contains("bg_1"));
+    }
+
+    #[test]
+    fn inbox_messages_payload_roundtrips_direct_messages() {
+        let payload = inbox_messages_payload(vec![Message::user("live steering")]);
+        let messages = inbox_payload_messages(&payload);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].role,
+            awaken_contract::contract::message::Role::User
+        );
+        assert_eq!(messages[0].visibility, Visibility::All);
+        assert_eq!(messages[0].text(), "live steering");
+    }
+
+    #[test]
+    fn inbox_payload_messages_keeps_background_event_fallback() {
+        let messages = inbox_payload_messages(&serde_json::json!({
+            "kind": "completed",
+            "task_id": "bg_2",
+        }));
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].visibility, Visibility::Internal);
+        assert!(messages[0].text().contains("background-task-event"));
     }
 }

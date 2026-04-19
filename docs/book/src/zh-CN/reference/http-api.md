@@ -33,6 +33,12 @@
 | `GET` | `/v1/threads/:id/runs` | 列出该 thread 的 runs |
 | `GET` | `/v1/threads/:id/runs/latest` | 获取最新 run |
 
+`POST /v1/threads/:id/messages` 与 `POST /v1/runs/:id/inputs` 支持可选的
+`mode` 字段。`queue` 会追加持久化 mailbox dispatch；`live_then_queue` 会先
+尝试把消息投递给活动 run，live 投递不可用时再排队；`steer` 是
+`live_then_queue` 的别名；`interrupt_then_queue` 会先取消活动 run 再排队；
+`resume_open_run` 会继续可恢复的等待中 run。
+
 ## Runs
 
 | 方法 | 路径 | 说明 |
