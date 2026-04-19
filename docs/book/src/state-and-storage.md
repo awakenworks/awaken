@@ -17,7 +17,9 @@ This path is for teams moving beyond stateless demos.
 
 Current built-in stores cover memory, file, and PostgreSQL for thread/run data;
 memory, file, and PostgreSQL for config; memory and file for profile/shared
-state; and memory or SQLite for mailbox jobs.
+state; and memory, SQLite, or NATS JetStream for mailbox jobs. A
+`NatsBufferedThreadStore` decorator can also wrap any thread/run backend to
+coalesce checkpoint writes through a JetStream WAL.
 
 ## Related internals
 
