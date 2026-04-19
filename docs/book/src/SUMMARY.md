@@ -34,6 +34,7 @@
 - [State & Storage](./state-and-storage.md)
 - [Use File Store](./how-to/use-file-store.md)
 - [Use Postgres Store](./how-to/use-postgres-store.md)
+- [Use NATS Stores](./how-to/use-nats-stores.md)
 - [Optimize Context Window](./how-to/optimize-context-window.md)
 - [State Keys](./reference/state-keys.md)
 - [Thread Model](./reference/thread-model.md)
