@@ -325,6 +325,10 @@ pub enum LiveDeliveryOutcome {
 /// safely make a claim decision.
 #[async_trait]
 pub trait DispatchSignalReceipt: Send + Sync {
+    fn redelivery_attempts(&self) -> Option<u64> {
+        None
+    }
+
     async fn ack(self: Box<Self>) -> Result<(), StorageError>;
     async fn nack(self: Box<Self>) -> Result<(), StorageError>;
     async fn nack_with_delay(self: Box<Self>, delay: Duration) -> Result<(), StorageError> {

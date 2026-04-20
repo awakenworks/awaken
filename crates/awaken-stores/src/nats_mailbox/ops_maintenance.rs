@@ -3,25 +3,32 @@
 use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
 use awaken_contract::contract::storage::StorageError;
 
-use super::{NatsMailboxStore, claim_guard, codec, keys, ops_query, ops_write};
+use super::{
+    NatsMailboxStore, claim_guard, codec, keys, kv_helpers, metrics, ops_query, ops_write,
+};
 
 pub async fn reclaim_expired_leases(
     store: &NatsMailboxStore,
     now: u64,
     limit: usize,
 ) -> Result<Vec<RunDispatch>, StorageError> {
-    let candidates = ops_query::load_all_dispatches(store)
-        .await?
-        .into_iter()
-        .filter(|dispatch| {
-            dispatch.status == RunDispatchStatus::Claimed
-                && dispatch.lease_until.is_some_and(|until| until < now)
-        })
-        .take(limit)
-        .collect::<Vec<_>>();
+    let candidates = match tokio::time::timeout(
+        store.authoritative_scan_timeout,
+        claim_guard::expired_dispatch_ids(store, now, limit),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            return Err(StorageError::Io(format!(
+                "authoritative thread-claim scan timed out after {:?}",
+                store.authoritative_scan_timeout
+            )));
+        }
+    };
     let mut reclaimed = Vec::new();
-    for candidate in candidates {
-        if let Some(d) = reclaim_one(store, &candidate.dispatch_id, now).await? {
+    for dispatch_id in candidates {
+        if let Some(d) = reclaim_one(store, &dispatch_id, now).await? {
             reclaimed.push(d);
         }
     }
@@ -42,12 +49,18 @@ async fn reclaim_one(
         let Some(entry) = entry else {
             return Ok(None);
         };
+        if kv_helpers::is_tombstone(&entry) {
+            return Ok(None);
+        }
         let mut dispatch = codec::decode(&entry.value)?;
         if dispatch.status != RunDispatchStatus::Claimed {
             return Ok(None);
         }
         if dispatch.lease_until.map(|u| u >= now).unwrap_or(true) {
             return Ok(None);
+        }
+        if let Some(lease_until) = dispatch.lease_until {
+            metrics::record_claimed_dispatch_lease_age(now, lease_until);
         }
         let old_claim_token = dispatch.claim_token.clone();
         let thread_epoch = ops_write::current_thread_epoch(store, &dispatch.thread_id).await?;
@@ -58,9 +71,7 @@ async fn reclaim_one(
                 Some("claimed dispatch lease expired after interrupt".to_string());
             dispatch.completed_at = Some(now);
             dispatch.updated_at = now;
-            dispatch.claim_token = None;
-            dispatch.claimed_by = None;
-            dispatch.lease_until = None;
+            ops_write::clear_claim_fields(&mut dispatch);
             let bytes = codec::encode(&dispatch)?;
             if let Ok(revision) = store
                 .kv_dispatch
@@ -85,6 +96,8 @@ async fn reclaim_one(
                     )
                     .await;
                 }
+                ops_write::cleanup_thread_index(store, &dispatch).await;
+                metrics::inc_expired_claim_reclaimed();
                 return Ok(None);
             }
             continue;
@@ -96,14 +109,10 @@ async fn reclaim_one(
             dispatch.status = RunDispatchStatus::DeadLetter;
             dispatch.last_error = Some("lease expired; max attempts reached".to_string());
             dispatch.completed_at = Some(now);
-            dispatch.claim_token = None;
-            dispatch.claimed_by = None;
-            dispatch.lease_until = None;
+            ops_write::clear_claim_fields(&mut dispatch);
         } else {
             dispatch.status = RunDispatchStatus::Queued;
-            dispatch.claim_token = None;
-            dispatch.claimed_by = None;
-            dispatch.lease_until = None;
+            ops_write::clear_claim_fields(&mut dispatch);
         }
         let bytes = codec::encode(&dispatch)?;
         if let Ok(revision) = store
@@ -130,6 +139,10 @@ async fn reclaim_one(
                 )
                 .await;
             }
+            if dispatch.status == RunDispatchStatus::DeadLetter {
+                ops_write::cleanup_thread_index(store, &dispatch).await;
+            }
+            metrics::inc_expired_claim_reclaimed();
             return Ok(Some(dispatch));
         }
     }
@@ -140,16 +153,26 @@ pub async fn purge_terminal(
     store: &NatsMailboxStore,
     older_than: u64,
 ) -> Result<usize, StorageError> {
-    let ids = store.index.read().await.terminal_older_than(older_than);
+    let dispatches = ops_query::load_all_dispatches(store)
+        .await?
+        .into_iter()
+        .filter(|dispatch| {
+            dispatch.status.is_terminal()
+                && dispatch
+                    .completed_at
+                    .is_some_and(|completed_at| completed_at < older_than)
+        })
+        .collect::<Vec<_>>();
     let mut purged = 0;
-    for id in ids {
+    for dispatch in dispatches {
         if store
             .kv_dispatch
-            .delete(&keys::dispatch_key(&id))
+            .delete(&keys::dispatch_key(&dispatch.dispatch_id))
             .await
             .is_ok()
         {
-            store.index.write().await.remove(&id);
+            store.index.write().await.remove(&dispatch.dispatch_id);
+            ops_write::cleanup_thread_index(store, &dispatch).await;
             purged += 1;
         }
     }

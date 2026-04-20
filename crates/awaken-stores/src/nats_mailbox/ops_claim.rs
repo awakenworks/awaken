@@ -3,7 +3,14 @@
 use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
 use awaken_contract::contract::storage::StorageError;
 
-use super::{NatsMailboxStore, claim_guard, codec, keys, ops_query, ops_write};
+use super::{
+    NatsMailboxStore, claim_guard, codec, keys, kv_helpers, metrics, ops_query, ops_write,
+};
+
+enum AvailableAtPolicy {
+    Ignore,
+    Respect,
+}
 
 pub async fn claim_dispatch(
     store: &NatsMailboxStore,
@@ -11,6 +18,43 @@ pub async fn claim_dispatch(
     consumer_id: &str,
     lease_ms: u64,
     now: u64,
+) -> Result<Option<RunDispatch>, StorageError> {
+    claim_dispatch_inner(
+        store,
+        dispatch_id,
+        consumer_id,
+        lease_ms,
+        now,
+        AvailableAtPolicy::Ignore,
+    )
+    .await
+}
+
+async fn claim_available_dispatch(
+    store: &NatsMailboxStore,
+    dispatch_id: &str,
+    consumer_id: &str,
+    lease_ms: u64,
+    now: u64,
+) -> Result<Option<RunDispatch>, StorageError> {
+    claim_dispatch_inner(
+        store,
+        dispatch_id,
+        consumer_id,
+        lease_ms,
+        now,
+        AvailableAtPolicy::Respect,
+    )
+    .await
+}
+
+async fn claim_dispatch_inner(
+    store: &NatsMailboxStore,
+    dispatch_id: &str,
+    consumer_id: &str,
+    lease_ms: u64,
+    now: u64,
+    available_at_policy: AvailableAtPolicy,
 ) -> Result<Option<RunDispatch>, StorageError> {
     for _ in 0..5 {
         let entry = store
@@ -21,17 +65,18 @@ pub async fn claim_dispatch(
         let Some(entry) = entry else {
             return Ok(None);
         };
+        if kv_helpers::is_tombstone(&entry) {
+            return Ok(None);
+        }
         let mut dispatch = codec::decode(&entry.value)?;
 
         if dispatch.status != RunDispatchStatus::Queued {
             return Ok(None);
         }
-        // Note: `claim_dispatch` is the by-ID inline-claim path and
-        // must NOT honor `available_at` — that field only guards
-        // queue-scan claims (`claim()` by thread) so a foreground
-        // submit can set a future `available_at` to keep the sweeper
-        // away, then immediately claim the dispatch it just wrote.
-        // Memory and SQLite backends already have this semantic.
+        if matches!(available_at_policy, AvailableAtPolicy::Respect) && dispatch.available_at > now
+        {
+            return Ok(None);
+        }
 
         // Epoch check: reject dispatches whose recorded epoch is older
         // than the thread's authoritative epoch in KV. This is the
@@ -44,9 +89,7 @@ pub async fn claim_dispatch(
             dispatch.dispatch_epoch = thread_epoch;
             dispatch.completed_at = Some(now);
             dispatch.updated_at = now;
-            dispatch.claim_token = None;
-            dispatch.claimed_by = None;
-            dispatch.lease_until = None;
+            ops_write::clear_claim_fields(&mut dispatch);
             let bytes = codec::encode(&dispatch)?;
             if let Ok(revision) = store
                 .kv_dispatch
@@ -67,6 +110,7 @@ pub async fn claim_dispatch(
                     )
                     .await;
                 }
+                ops_write::cleanup_thread_index(store, &dispatch).await;
                 return Ok(None);
             }
             continue;
@@ -126,12 +170,18 @@ pub async fn claim(
         return Ok(Vec::new());
     }
 
-    let mut candidates = ops_query::load_thread_dispatches(store, thread_id)
-        .await?
-        .into_iter()
-        .filter(|dispatch| dispatch.status == RunDispatchStatus::Queued)
-        .collect::<Vec<_>>();
+    let mut candidates = match ops_query::load_thread_dispatches(store, thread_id).await {
+        Ok(dispatches) => dispatches,
+        Err(error) => {
+            metrics::inc_claim_attempt("error");
+            return Err(error);
+        }
+    }
+    .into_iter()
+    .filter(|dispatch| dispatch.status == RunDispatchStatus::Queued)
+    .collect::<Vec<_>>();
     candidates.retain(|d| d.available_at <= now);
+    let available_candidates = candidates.len();
     candidates.sort_by(|a, b| {
         a.priority
             .cmp(&b.priority)
@@ -140,14 +190,29 @@ pub async fn claim(
 
     let mut claimed = Vec::new();
     for candidate in candidates {
-        if let Some(d) =
-            claim_dispatch(store, &candidate.dispatch_id, consumer_id, lease_ms, now).await?
+        match claim_available_dispatch(store, &candidate.dispatch_id, consumer_id, lease_ms, now)
+            .await
         {
-            claimed.push(d);
-            if claimed.len() >= limit {
-                break;
+            Ok(Some(d)) => {
+                claimed.push(d);
+                if claimed.len() >= limit {
+                    break;
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                metrics::inc_claim_attempt("error");
+                return Err(error);
             }
         }
     }
+    let result = if !claimed.is_empty() {
+        "claimed"
+    } else if available_candidates > 0 {
+        "blocked"
+    } else {
+        "no_eligible"
+    };
+    metrics::inc_claim_attempt(result);
     Ok(claimed)
 }

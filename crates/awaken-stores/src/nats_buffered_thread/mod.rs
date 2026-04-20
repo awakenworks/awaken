@@ -63,9 +63,8 @@ impl<T: ThreadRunStore + Send + Sync + 'static> NatsBufferedThreadStore<T> {
         inner: Arc<T>,
         config: config::NatsBufferedThreadConfig,
     ) -> Result<Self, StorageError> {
-        let client = async_nats::connect(&config.url)
-            .await
-            .map_err(|e| StorageError::Io(format!("connect: {e}")))?;
+        let client =
+            crate::nats_connect::connect(&config.url, config.credentials.as_deref()).await?;
         let jetstream = async_nats::jetstream::new(client.clone());
 
         let stream_config = stream::Config {

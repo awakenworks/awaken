@@ -99,16 +99,19 @@ async fn index_rebuilds_from_kv_on_restart() {
         .await
         .expect("connect 1");
     store1.enqueue(&test_dispatch("d1", "t1")).await.unwrap();
+    store1.__test_purge_thread_index("t1").await.unwrap();
     store1.shutdown().await.unwrap();
     drop(store1);
 
-    // Second store connects to same buckets; index must rebuild.
+    // Second store connects to same buckets; initial scan must rebuild the
+    // authoritative thread index used by claim().
     let store2 = NatsMailboxStore::connect(mk_config())
         .await
         .expect("connect 2");
 
-    let loaded = store2.load_dispatch("d1").await.unwrap();
-    assert!(loaded.is_some(), "second store should see d1 from KV");
+    let claimed = store2.claim("t1", "c2", 30_000, 1_000, 1).await.unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].dispatch_id, "d1");
     store2.shutdown().await.unwrap();
 }
 
@@ -210,6 +213,46 @@ async fn dispatch_signal_can_wake_a_different_store_instance() {
 
     store1.shutdown().await.unwrap();
     store2.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn pull_dispatch_signal_repairs_missing_thread_index_without_restart() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+
+    store
+        .enqueue(&test_dispatch(
+            "d-signal-repairs-index",
+            "t-signal-repairs-index",
+        ))
+        .await
+        .unwrap();
+    store
+        .__test_purge_thread_index("t-signal-repairs-index")
+        .await
+        .unwrap();
+
+    let mut signals = store
+        .pull_dispatch_signals(1, Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert_eq!(signals.len(), 1);
+    let signal = signals.pop().unwrap();
+    assert_eq!(signal.dispatch_id, "d-signal-repairs-index");
+
+    let claimed = store
+        .claim("t-signal-repairs-index", "consumer", 30_000, 1_000, 1)
+        .await
+        .unwrap();
+    assert_eq!(
+        claimed.len(),
+        1,
+        "pull_dispatch_signals should repair the authoritative thread index before claim"
+    );
+    assert_eq!(claimed[0].dispatch_id, "d-signal-repairs-index");
+    signal.receipt.ack().await.unwrap();
+
+    store.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -505,6 +548,67 @@ async fn dispatch_signal_delayed_nack_does_not_hot_loop() {
 }
 
 #[tokio::test]
+async fn sweeper_republishes_queued_signal_after_ttl() {
+    let fixture = NatsFixture::start().await;
+    let mut config = NatsMailboxConfig::new(fixture.url.clone());
+    config.stream_name = format!("DISPATCH_{}", uuid::Uuid::now_v7().simple());
+    config.consumer_name = format!("c_{}", uuid::Uuid::now_v7().simple());
+    config.dispatch_bucket = format!("d_{}", uuid::Uuid::now_v7().simple());
+    config.epoch_bucket = format!("e_{}", uuid::Uuid::now_v7().simple());
+    config.thread_index_bucket = format!("ti_{}", uuid::Uuid::now_v7().simple());
+    config.sweeper_interval = Duration::from_millis(50);
+    config.sweeper_republish_after = Duration::from_millis(500);
+    let store = NatsMailboxStore::connect(config).await.expect("connect");
+
+    store
+        .__test_plant_dispatch_without_publish(&test_dispatch("d-republish-ttl", "t-republish-ttl"))
+        .await
+        .unwrap();
+
+    let first = loop {
+        let mut signals = store
+            .pull_dispatch_signals(1, Duration::from_millis(250))
+            .await
+            .unwrap();
+        if let Some(signal) = signals.pop()
+            && signal.dispatch_id == "d-republish-ttl"
+        {
+            break signal;
+        }
+    };
+    first.receipt.ack().await.unwrap();
+
+    let early = store
+        .pull_dispatch_signals(1, Duration::from_millis(150))
+        .await
+        .unwrap();
+    assert!(
+        early.is_empty(),
+        "sweeper must not republish before sweeper_republish_after elapses"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let second = loop {
+        let mut signals = store
+            .pull_dispatch_signals(1, Duration::from_millis(250))
+            .await
+            .unwrap();
+        if let Some(signal) = signals.pop()
+            && signal.dispatch_id == "d-republish-ttl"
+        {
+            break signal;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "queued dispatch signal should be republished after TTL"
+        );
+    };
+    second.receipt.ack().await.unwrap();
+
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn dispatch_signal_nack_redelivers_to_other_store_instance() {
     let fixture = NatsFixture::start().await;
     let (store1, store2) = make_shared_stores(&fixture).await;
@@ -609,6 +713,47 @@ async fn background_enqueue_after_interrupt_is_claimable_via_scan() {
         claimed.len(),
         1,
         "background dispatch must be claimable after interrupt"
+    );
+
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn queue_claim_respects_retry_available_at_after_nack() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+
+    store
+        .enqueue(&test_dispatch("d-retry-window", "t-retry-window"))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim("t-retry-window", "consumer-1", 30_000, 1_000, 1)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    let token = claimed[0].claim_token.clone().unwrap();
+    store
+        .nack("d-retry-window", &token, 10_000, "retry later", 2_000)
+        .await
+        .unwrap();
+
+    let early = store
+        .claim("t-retry-window", "consumer-2", 30_000, 3_000, 1)
+        .await
+        .unwrap();
+    assert!(
+        early.is_empty(),
+        "queue claim must respect the current KV record's available_at retry window"
+    );
+
+    let inline = store
+        .claim_dispatch("d-retry-window", "inline-consumer", 30_000, 3_000)
+        .await
+        .unwrap();
+    assert!(
+        inline.is_some(),
+        "by-id inline claim still intentionally ignores available_at"
     );
 
     store.shutdown().await.unwrap();
@@ -758,6 +903,148 @@ async fn dedupe_lock_orphan_is_reconciled_by_next_enqueue() {
         .enqueue(&d1)
         .await
         .expect("next enqueue must reconcile the orphan lock");
+
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn dedupe_lock_holder_delete_tombstone_is_reconciled_by_next_enqueue() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+
+    let holder = test_dispatch("d-tombstone-holder", "t-tombstone");
+    store.__test_plant_dispatch_exact(&holder).await.unwrap();
+    store
+        .__test_force_dedupe_lock("t-tombstone", "same-key", "d-tombstone-holder")
+        .await
+        .unwrap();
+    store
+        .__test_delete_dispatch_record("d-tombstone-holder")
+        .await
+        .unwrap();
+
+    let mut next = test_dispatch("d-after-tombstone", "t-tombstone");
+    next.dedupe_key = Some("same-key".to_string());
+    store
+        .enqueue(&next)
+        .await
+        .expect("dedupe lock holder tombstones should reconcile as missing holders");
+
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn thread_claim_tombstone_does_not_block_next_claim() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+
+    store
+        .enqueue(&test_dispatch("d-claim-before-purge", "t-claim-tombstone"))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim("t-claim-tombstone", "consumer-1", 30_000, 1_000, 1)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    let token = claimed[0].claim_token.clone().unwrap();
+    store
+        .ack("d-claim-before-purge", &token, 2_000)
+        .await
+        .unwrap();
+    store
+        .__test_purge_thread_claim("t-claim-tombstone")
+        .await
+        .unwrap();
+
+    store
+        .enqueue(&test_dispatch("d-claim-after-purge", "t-claim-tombstone"))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim("t-claim-tombstone", "consumer-2", 30_000, 3_000, 1)
+        .await
+        .unwrap();
+    assert_eq!(
+        claimed.len(),
+        1,
+        "thread claim Delete/Purge tombstones should be treated as absent"
+    );
+    assert_eq!(claimed[0].dispatch_id, "d-claim-after-purge");
+
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn dedupe_lock_tombstone_is_treated_as_absent() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+
+    store
+        .__test_force_dedupe_lock("t-lock-tombstone", "same-key", "old-holder")
+        .await
+        .unwrap();
+    store
+        .__test_purge_dedupe_lock("t-lock-tombstone", "same-key")
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .__test_dedupe_lock_holder("t-lock-tombstone", "same-key")
+            .await
+            .unwrap(),
+        None
+    );
+
+    let mut next = test_dispatch("d-after-lock-tombstone", "t-lock-tombstone");
+    next.dedupe_key = Some("same-key".to_string());
+    store
+        .enqueue(&next)
+        .await
+        .expect("dedupe lock tombstones should not block a new enqueue");
+
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn purge_terminal_uses_authoritative_kv_when_local_index_is_missing() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+
+    store
+        .enqueue(&test_dispatch("d-authoritative-gc", "t-authoritative-gc"))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim("t-authoritative-gc", "consumer", 30_000, 1_000, 1)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    let token = claimed[0].claim_token.clone().unwrap();
+    store
+        .ack("d-authoritative-gc", &token, 2_000)
+        .await
+        .unwrap();
+    store
+        .__test_remove_dispatch_from_index("d-authoritative-gc")
+        .await;
+    assert!(
+        !store.index_contains("d-authoritative-gc").await,
+        "test requires the local index to miss the terminal dispatch"
+    );
+
+    let purged = store.purge_terminal(3_000).await.unwrap();
+    assert_eq!(
+        purged, 1,
+        "purge_terminal should scan authoritative dispatch KV, not only local index"
+    );
+    assert!(
+        store
+            .load_dispatch("d-authoritative-gc")
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     store.shutdown().await.unwrap();
 }

@@ -3,7 +3,7 @@
 use awaken_contract::contract::mailbox::{MailboxInterruptDetails, RunDispatchStatus};
 use awaken_contract::contract::storage::StorageError;
 
-use super::{NatsMailboxStore, claim_guard, codec, keys, ops_query, ops_write};
+use super::{NatsMailboxStore, claim_guard, codec, keys, kv_helpers, ops_query, ops_write};
 
 enum SupersedeOutcome {
     Superseded(Box<awaken_contract::contract::mailbox::RunDispatch>),
@@ -102,6 +102,7 @@ async fn bump_epoch(store: &NatsMailboxStore, thread_id: &str) -> Result<u64, St
             .await
             .map_err(|e| StorageError::Io(format!("kv entry: {e}")))?;
         let (current, revision) = match entry {
+            Some(e) if kv_helpers::is_tombstone(&e) => (0u64, 0u64),
             Some(e) => (codec::decode_epoch(&e.value)?, e.revision),
             None => (0u64, 0u64),
         };
@@ -134,6 +135,9 @@ async fn supersede(
         let Some(entry) = entry else {
             return Err(StorageError::NotFound(dispatch_id.to_string()));
         };
+        if kv_helpers::is_tombstone(&entry) {
+            return Err(StorageError::NotFound(dispatch_id.to_string()));
+        }
         let mut dispatch = codec::decode(&entry.value)?;
         if dispatch.status != RunDispatchStatus::Queued {
             if dispatch.status == RunDispatchStatus::Claimed {
@@ -148,9 +152,7 @@ async fn supersede(
         dispatch.dispatch_epoch = new_epoch;
         dispatch.completed_at = Some(now);
         dispatch.updated_at = now;
-        dispatch.claim_token = None;
-        dispatch.claimed_by = None;
-        dispatch.lease_until = None;
+        ops_write::clear_claim_fields(&mut dispatch);
         let bytes = codec::encode(&dispatch)?;
         if let Ok(revision) = store
             .kv_dispatch
@@ -162,6 +164,7 @@ async fn supersede(
                 .write()
                 .await
                 .upsert_with_revision(dispatch.clone(), revision);
+            ops_write::cleanup_thread_index(store, &dispatch).await;
             return Ok(SupersedeOutcome::Superseded(Box::new(dispatch)));
         }
     }

@@ -671,9 +671,14 @@ impl MailboxStore for SqliteMailboxStore {
 
         conn.execute(
             "UPDATE run_dispatches
-             SET status = 'Acked', updated_at = ?1
-             WHERE dispatch_id = ?2",
-            params![now as i64, dispatch_id],
+             SET status = 'Acked',
+                 claim_token = NULL,
+                 claimed_by = NULL,
+                 lease_until = NULL,
+                 completed_at = ?1,
+                 updated_at = ?2
+             WHERE dispatch_id = ?3",
+            params![now as i64, now as i64, dispatch_id],
         )
         .map_err(|e| StorageError::Io(format!("ack update: {e}")))?;
 
@@ -852,9 +857,19 @@ impl MailboxStore for SqliteMailboxStore {
                  SET status = 'DeadLetter',
                      attempt_count = ?1,
                      last_error = ?2,
-                     updated_at = ?3
-                 WHERE dispatch_id = ?4",
-                params![new_attempt_count as i64, error, now as i64, dispatch_id],
+                     claim_token = NULL,
+                     claimed_by = NULL,
+                     lease_until = NULL,
+                     completed_at = ?3,
+                     updated_at = ?4
+                 WHERE dispatch_id = ?5",
+                params![
+                    new_attempt_count as i64,
+                    error,
+                    now as i64,
+                    now as i64,
+                    dispatch_id
+                ],
             )
             .map_err(|e| StorageError::Io(format!("nack dead_letter update: {e}")))?;
         } else {
@@ -927,9 +942,10 @@ impl MailboxStore for SqliteMailboxStore {
                  claim_token = NULL,
                  claimed_by = NULL,
                  lease_until = NULL,
-                 updated_at = ?2
-             WHERE dispatch_id = ?3",
-            params![error, now as i64, dispatch_id],
+                 completed_at = ?2,
+                 updated_at = ?3
+             WHERE dispatch_id = ?4",
+            params![error, now as i64, now as i64, dispatch_id],
         )
         .map_err(|e| StorageError::Io(format!("dead_letter update: {e}")))?;
 
@@ -958,9 +974,14 @@ impl MailboxStore for SqliteMailboxStore {
 
         conn.execute(
             "UPDATE run_dispatches
-             SET status = 'Cancelled', updated_at = ?1
-             WHERE dispatch_id = ?2",
-            params![now as i64, dispatch_id],
+             SET status = 'Cancelled',
+                 claim_token = NULL,
+                 claimed_by = NULL,
+                 lease_until = NULL,
+                 completed_at = ?1,
+                 updated_at = ?2
+             WHERE dispatch_id = ?3",
+            params![now as i64, now as i64, dispatch_id],
         )
         .map_err(|e| StorageError::Io(format!("cancel update: {e}")))?;
 
@@ -1317,8 +1338,12 @@ impl MailboxStore for SqliteMailboxStore {
                 "UPDATE run_dispatches
                  SET status = 'DeadLetter',
                      attempt_count = ?1,
-                     updated_at = ?2
-                 WHERE dispatch_id = ?3",
+                     claim_token = NULL,
+                     claimed_by = NULL,
+                     lease_until = NULL,
+                     completed_at = ?2,
+                     updated_at = ?3
+                 WHERE dispatch_id = ?4",
             )
             .map_err(|e| StorageError::Io(format!("prepare reclaim deadletter: {e}")))?;
 
@@ -1341,6 +1366,7 @@ impl MailboxStore for SqliteMailboxStore {
                 deadletter_stmt
                     .execute(params![
                         new_attempt as i64,
+                        now as i64,
                         now as i64,
                         &dispatch.dispatch_id
                     ])

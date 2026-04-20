@@ -24,6 +24,9 @@ pub mod sqlite_mailbox;
 mod nats_keys;
 
 #[cfg(feature = "nats")]
+mod nats_connect;
+
+#[cfg(feature = "nats")]
 pub mod nats_mailbox;
 
 #[cfg(feature = "nats")]

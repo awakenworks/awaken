@@ -25,6 +25,7 @@ async-trait = { workspace = true }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "json"], default-features = false, optional = true }
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 async-nats = { version = "0.38", optional = true }
+metrics = { version = "0.24", optional = true }
 bytes = "1"
 
 [dev-dependencies]
@@ -39,7 +40,7 @@ default = []
 file = []
 postgres = ["dep:sqlx"]
 sqlite = ["dep:rusqlite"]
-nats = ["dep:async-nats"]
+nats = ["dep:async-nats", "dep:metrics"]
 
 [lints]
 workspace = true

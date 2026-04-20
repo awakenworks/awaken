@@ -1,10 +1,9 @@
 //! Read-path operations.
 
-use async_nats::jetstream::kv::Operation;
 use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
 use awaken_contract::contract::storage::StorageError;
 
-use super::{NatsMailboxStore, codec, keys, ops_write};
+use super::{NatsMailboxStore, codec, keys, kv_helpers, metrics};
 
 pub async fn load_dispatch(
     store: &NatsMailboxStore,
@@ -16,7 +15,7 @@ pub async fn load_dispatch(
         .await
         .map_err(|e| StorageError::Io(format!("kv dispatch entry: {e}")))?;
     match entry {
-        Some(entry) if matches!(entry.operation, Operation::Delete | Operation::Purge) => Ok(None),
+        Some(entry) if kv_helpers::is_tombstone(&entry) => Ok(None),
         Some(entry) => Ok(Some(codec::decode(&entry.value)?)),
         None => Ok(None),
     }
@@ -26,18 +25,13 @@ pub(crate) async fn load_thread_dispatches(
     store: &NatsMailboxStore,
     thread_id: &str,
 ) -> Result<Vec<RunDispatch>, StorageError> {
+    let started = std::time::Instant::now();
     let Some(ids) = load_thread_index_ids(store, thread_id).await? else {
-        let dispatches = load_all_dispatches(store)
-            .await?
-            .into_iter()
-            .filter(|dispatch| dispatch.thread_id == thread_id)
-            .collect::<Vec<_>>();
-        for dispatch in &dispatches {
-            ops_write::append_thread_index(store, thread_id, &dispatch.dispatch_id).await?;
-        }
-        return Ok(dispatches);
+        metrics::record_claim_scan(0, started.elapsed());
+        return Ok(Vec::new());
     };
 
+    let id_count = ids.len();
     let mut dispatches = Vec::new();
     for dispatch_id in ids {
         let Some(dispatch) = load_dispatch(store, &dispatch_id).await? else {
@@ -48,6 +42,7 @@ pub(crate) async fn load_thread_dispatches(
             dispatches.push(dispatch);
         }
     }
+    metrics::record_claim_scan(id_count, started.elapsed());
     Ok(dispatches)
 }
 
@@ -60,24 +55,46 @@ async fn load_thread_index_ids(
         .entry(&keys::thread_index_key(thread_id))
         .await
         .map_err(|e| StorageError::Io(format!("thread index entry: {e}")))?;
-    entry
-        .map(|entry| codec::decode_thread_index(&entry.value))
-        .transpose()
+    match entry {
+        Some(entry) if kv_helpers::is_tombstone(&entry) => Ok(None),
+        Some(entry) => codec::decode_thread_index(&entry.value).map(Some),
+        None => Ok(None),
+    }
 }
 
 pub(crate) async fn load_all_dispatches(
     store: &NatsMailboxStore,
 ) -> Result<Vec<RunDispatch>, StorageError> {
+    match tokio::time::timeout(
+        store.authoritative_scan_timeout,
+        load_all_dispatches_inner(store),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(StorageError::Io(format!(
+            "authoritative dispatch scan timed out after {:?}",
+            store.authoritative_scan_timeout
+        ))),
+    }
+}
+
+async fn load_all_dispatches_inner(
+    store: &NatsMailboxStore,
+) -> Result<Vec<RunDispatch>, StorageError> {
     use futures::StreamExt;
 
+    let started = std::time::Instant::now();
     let mut keys = store
         .kv_dispatch
         .keys()
         .await
         .map_err(|e| StorageError::Io(format!("kv dispatch keys: {e}")))?;
     let mut dispatches = Vec::new();
+    let mut key_count = 0usize;
     while let Some(key_result) = keys.next().await {
         let key = key_result.map_err(|e| StorageError::Io(format!("kv dispatch key: {e}")))?;
+        key_count += 1;
         let Some(dispatch_id) = keys::dispatch_id_from_key(&key) else {
             continue;
         };
@@ -87,6 +104,7 @@ pub(crate) async fn load_all_dispatches(
         store.index.write().await.upsert(dispatch.clone());
         dispatches.push(dispatch);
     }
+    metrics::record_authoritative_scan(key_count, started.elapsed());
     Ok(dispatches)
 }
 
