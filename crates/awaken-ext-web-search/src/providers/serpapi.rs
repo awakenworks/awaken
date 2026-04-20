@@ -85,11 +85,10 @@ impl SearchProvider for SerpApiProvider {
             qp.append_pair("engine", "google");
             qp.append_pair("q", query);
             qp.append_pair("num", &num_results.to_string());
+            qp.append_pair("api_key", &self.api_key);
         }
 
-        let mut request = self.client.get(endpoint);
-        // SerpAPI supports passing API key via Authorization header, which is more secure
-        request = request.header("Authorization", format!("Bearer {}", self.api_key));
+        let request = self.client.get(endpoint);
 
         // Retry logic for timeout errors
         let mut _last_error = None;
@@ -188,7 +187,7 @@ mod tests {
                     .query_param("engine", "google")
                     .query_param("q", "rust")
                     .query_param("num", "5")
-                    .header("Authorization", "Bearer k");
+                    .query_param("api_key", "k");
 
                 then.status(200).json_body(json!({
                     "organic_results": [

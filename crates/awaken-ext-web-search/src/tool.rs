@@ -55,6 +55,8 @@ impl WebSearchTool {
     ///
     /// If `api_key` is empty, it will be read from the `SERPAPI_KEY` environment variable.
     /// If `base_url` is `None`, the default SerpAPI base URL will be used.
+    ///
+    /// **Note**: This constructor is only available when the `serpapi` feature is enabled.
     #[cfg(feature = "serpapi")]
     pub fn new(api_key: impl Into<String>, base_url: Option<String>) -> Self {
         let provider = crate::providers::SerpApiProvider::new(api_key, base_url);
@@ -79,7 +81,10 @@ impl Tool for WebSearchTool {
                 },
                 "num_results": {
                     "type": "integer",
-                    "description": "Maximum number of results to return"
+                    "description": "Maximum number of results to return",
+                    "default": 5,
+                    "minimum": 1,
+                    "maximum": 20
                 }
             },
             "required": ["query"]
@@ -92,12 +97,20 @@ impl Tool for WebSearchTool {
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidArguments("missing 'query'".into()))?;
 
-        let num_results: usize = args
-            .get("num_results")
-            .and_then(Value::as_u64)
-            .unwrap_or(5)
-            .try_into()
-            .unwrap_or(5);
+        let num_results = match args.get("num_results") {
+            Some(v) => {
+                let n = v.as_u64().ok_or_else(|| {
+                    ToolError::InvalidArguments("'num_results' must be an integer".into())
+                })?;
+                if n < 1 || n > 20 {
+                    return Err(ToolError::InvalidArguments(
+                        "'num_results' must be between 1 and 20 inclusive".into(),
+                    ));
+                }
+                n as usize
+            }
+            None => 5,
+        };
 
         let results = self.provider.search(query, num_results, ctx).await?;
 
