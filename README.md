@@ -2,12 +2,12 @@
 
 [English](./README.md) | [中文](./README.zh-CN.md)
 
-[![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io](https://img.shields.io/crates/v/awaken-agent.svg?label=crates.io)](https://crates.io/crates/awaken-agent) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.85-orange)
+[![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io](https://img.shields.io/crates/v/awaken-agent.svg?label=crates.io)](https://crates.io/crates/awaken-agent) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.93-orange)
 
 Production AI agent runtime for Rust — type-safe state, multi-protocol serving, plugin extensibility.
 
 Published on crates.io as `awaken-agent`; keep importing it in Rust as `awaken`.
-The workspace uses Rust 1.93.0 for development; the crate MSRV is 1.85.
+The workspace uses Rust 1.93.0 for development; the crate MSRV is 1.93.
 
 Docs: [GitHub Pages](https://awakenworks.github.io/awaken/) | [Chinese docs](https://awakenworks.github.io/awaken/zh-CN/)
 
@@ -34,10 +34,10 @@ Your agent picks tools, calls them, reads and updates state, and repeats — all
 
 ## Try it in 5 minutes
 
-Prerequisites: Rust 1.85+ for the published crate, or the pinned `rust-toolchain.toml`
+Prerequisites: Rust 1.93+ for the published crate, or the pinned `rust-toolchain.toml`
 toolchain when working from this repository, plus an LLM provider API key.
 
-- Rust 1.85 or newer. This repository pins Rust 1.93.0 for local development.
+- Rust 1.93 or newer. This repository pins Rust 1.93.0 for local development.
 - An OpenAI-compatible API key.
 
 ```toml

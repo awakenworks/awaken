@@ -2,12 +2,12 @@
 
 [English](./README.md) | [中文](./README.zh-CN.md)
 
-[![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io](https://img.shields.io/crates/v/awaken-agent.svg?label=crates.io)](https://crates.io/crates/awaken-agent) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.85-orange)
+[![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io](https://img.shields.io/crates/v/awaken-agent.svg?label=crates.io)](https://crates.io/crates/awaken-agent) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.93-orange)
 
 生产级 Rust AI Agent 运行时 — 类型安全状态、多协议服务、插件化扩展。
 
 在 crates.io 上发布名为 `awaken-agent`，Rust 代码中的导入仍然保持为 `awaken`。
-仓库开发工具链由 Rust 1.93.0 固定，crate 的 MSRV 为 1.85。
+仓库开发工具链由 Rust 1.93.0 固定，crate 的 MSRV 为 1.93。
 
 在线文档：[GitHub Pages（英文）](https://awakenworks.github.io/awaken/) | [GitHub Pages（中文）](https://awakenworks.github.io/awaken/zh-CN/)
 
@@ -34,7 +34,7 @@ Agent 选择工具、调用工具、读写状态，如此循环 — 全部由运
 
 ## 5 分钟上手
 
-**前置条件：** 使用发布 crate 时需要 Rust `1.85+`；从本仓库运行示例时使用 `rust-toolchain.toml` 固定的 `1.93.0`；还需要一个 LLM 提供商 API Key。
+**前置条件：** 使用发布 crate 时需要 Rust `1.93+`；从本仓库运行示例时使用 `rust-toolchain.toml` 固定的 `1.93.0`；还需要一个 LLM 提供商 API Key。
 
 在 `Cargo.toml` 中添加：
 
