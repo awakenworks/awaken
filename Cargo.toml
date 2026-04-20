@@ -28,7 +28,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/AwakenWorks/awaken"
 homepage = "https://github.com/AwakenWorks/awaken"
 keywords = ["ai-agent", "llm", "agent-framework", "tool-use", "multi-agent"]
-rust-version = "1.85"
+rust-version = "1.93"
 
 [workspace.dependencies]
 awaken-contract = { version = "0.2.1-dev", path = "crates/awaken-contract" }
