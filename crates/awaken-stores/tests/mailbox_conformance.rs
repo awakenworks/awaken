@@ -364,7 +364,7 @@ pub async fn interrupt_supersedes_queued<S: MailboxStore>(store: &S) {
         .await
         .unwrap();
 
-    let result = store.interrupt("t-interrupt", 2000).await.unwrap();
+    let result = store.interrupt_detailed("t-interrupt", 2000).await.unwrap();
     assert_eq!(result.superseded_count, 2);
     assert_eq!(result.superseded_dispatches.len(), 2);
     assert!(result.active_dispatch.is_none());
@@ -414,7 +414,10 @@ pub async fn interrupt_returns_active_claimed<S: MailboxStore>(store: &S) {
         .await
         .unwrap();
 
-    let result = store.interrupt("t-interrupt-active", 2000).await.unwrap();
+    let result = store
+        .interrupt_detailed("t-interrupt-active", 2000)
+        .await
+        .unwrap();
     let active = result
         .active_dispatch
         .expect("interrupt must return active claimed dispatch");

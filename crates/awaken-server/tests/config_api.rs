@@ -28,8 +28,8 @@ use awaken_runtime::registry::ToolRegistry;
 use awaken_runtime::registry::memory::MapToolRegistry;
 use awaken_runtime::registry::traits::ModelBinding;
 use awaken_server::app::{
-    AppState, ServerConfig, SkillCatalogArgument, SkillCatalogContext, SkillCatalogEntry,
-    SkillCatalogProvider,
+    AdminApiConfig, AppState, ServerConfig, SkillCatalogArgument, SkillCatalogContext,
+    SkillCatalogEntry, SkillCatalogProvider,
 };
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
@@ -572,13 +572,29 @@ async fn make_app_with_skill_catalog(
     make_app_with_skill_catalog_and_config(skill_catalog_provider, ServerConfig::default()).await
 }
 
-async fn make_app_with_config(config: ServerConfig) -> TestApp {
-    make_app_with_skill_catalog_and_config(None, config).await
+async fn make_app_with_admin_token(token: &str) -> TestApp {
+    make_app_with_skill_catalog_config_and_admin(
+        None,
+        ServerConfig::default(),
+        Some(AdminApiConfig {
+            bearer_token: Some(token.to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
 }
 
 async fn make_app_with_skill_catalog_and_config(
     skill_catalog_provider: Option<Arc<dyn SkillCatalogProvider>>,
     config: ServerConfig,
+) -> TestApp {
+    make_app_with_skill_catalog_config_and_admin(skill_catalog_provider, config, None).await
+}
+
+async fn make_app_with_skill_catalog_config_and_admin(
+    skill_catalog_provider: Option<Arc<dyn SkillCatalogProvider>>,
+    config: ServerConfig,
+    admin_config: Option<AdminApiConfig>,
 ) -> TestApp {
     let notifier = Arc::new(TestConfigChangeNotifier::new());
     let (runtime, store, manager) =
@@ -601,6 +617,9 @@ async fn make_app_with_skill_catalog_and_config(
     )
     .with_config_store(config_store)
     .with_config_runtime_manager(manager.clone());
+    if let Some(admin_config) = admin_config {
+        state = state.with_admin_api_config(admin_config);
+    }
     if let Some(provider) = skill_catalog_provider {
         state = state.with_skill_catalog_provider(provider);
     }
@@ -683,11 +702,7 @@ async fn wait_until(
 
 #[tokio::test]
 async fn admin_config_routes_require_bearer_token_when_configured() {
-    let app = make_app_with_config(ServerConfig {
-        admin_api_bearer_token: Some("admin-token".into()),
-        ..Default::default()
-    })
-    .await;
+    let app = make_app_with_admin_token("admin-token").await;
 
     let (status, body) = request_json(&app.router, Method::GET, "/v1/capabilities", None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);

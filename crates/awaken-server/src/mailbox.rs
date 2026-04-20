@@ -21,8 +21,8 @@ use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_contract::contract::mailbox::{
-    LiveDeliveryOutcome, LiveRunCommand, LiveRunTarget, MailboxInterrupt, MailboxStore,
-    RunDispatch, RunDispatchResult, RunDispatchStatus,
+    LiveDeliveryOutcome, LiveRunCommand, LiveRunTarget, MailboxInterrupt, MailboxInterruptDetails,
+    MailboxStore, RunDispatch, RunDispatchResult, RunDispatchStatus,
 };
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
@@ -743,7 +743,7 @@ impl Mailbox {
         // Step 1: Interrupt — bump dispatch epoch, supersede stale queued dispatches.
         let now = now_ms();
         let interrupt_start = Instant::now();
-        match self.store.interrupt(&thread_id, now).await {
+        match self.store.interrupt_detailed(&thread_id, now).await {
             Ok(interrupt) => {
                 record_mailbox_operation_result("interrupt", "ok", interrupt_start);
                 crate::metrics::inc_mailbox_operation_by(
@@ -1051,9 +1051,18 @@ impl Mailbox {
     /// Interrupt a thread: bump dispatch epoch, supersede all pending,
     /// cancel active run. Clean slate for the thread.
     pub async fn interrupt(&self, thread_id: &str) -> Result<MailboxInterrupt, MailboxError> {
+        self.interrupt_detailed(thread_id).await.map(Into::into)
+    }
+
+    /// Interrupt a thread and return the exact queued dispatches superseded by
+    /// the operation.
+    pub async fn interrupt_detailed(
+        &self,
+        thread_id: &str,
+    ) -> Result<MailboxInterruptDetails, MailboxError> {
         let now = now_ms();
         let interrupt_start = Instant::now();
-        let interrupt_result = self.store.interrupt(thread_id, now).await;
+        let interrupt_result = self.store.interrupt_detailed(thread_id, now).await;
         record_mailbox_operation_result(
             "interrupt",
             result_label(&interrupt_result),
@@ -3445,6 +3454,14 @@ mod tests {
             self.inner.interrupt(thread_id, now).await
         }
 
+        async fn interrupt_detailed(
+            &self,
+            thread_id: &str,
+            now: u64,
+        ) -> Result<MailboxInterruptDetails, StorageError> {
+            self.inner.interrupt_detailed(thread_id, now).await
+        }
+
         async fn current_dispatch_epoch(&self, thread_id: &str) -> Result<u64, StorageError> {
             self.inner.current_dispatch_epoch(thread_id).await
         }
@@ -3721,6 +3738,14 @@ mod tests {
             self.inner.interrupt(thread_id, now).await
         }
 
+        async fn interrupt_detailed(
+            &self,
+            thread_id: &str,
+            now: u64,
+        ) -> Result<MailboxInterruptDetails, StorageError> {
+            self.inner.interrupt_detailed(thread_id, now).await
+        }
+
         async fn current_dispatch_epoch(&self, thread_id: &str) -> Result<u64, StorageError> {
             self.inner.current_dispatch_epoch(thread_id).await
         }
@@ -3940,6 +3965,14 @@ mod tests {
             now: u64,
         ) -> Result<MailboxInterrupt, StorageError> {
             self.inner.interrupt(thread_id, now).await
+        }
+
+        async fn interrupt_detailed(
+            &self,
+            thread_id: &str,
+            now: u64,
+        ) -> Result<MailboxInterruptDetails, StorageError> {
+            self.inner.interrupt_detailed(thread_id, now).await
         }
 
         async fn current_dispatch_epoch(&self, thread_id: &str) -> Result<u64, StorageError> {
@@ -6508,7 +6541,7 @@ mod tests {
         let second =
             enqueue_prepared_dispatch(&mailbox, store.as_ref(), "thread-int-runs", "second").await;
 
-        let result = mailbox.interrupt("thread-int-runs").await.unwrap();
+        let result = mailbox.interrupt_detailed("thread-int-runs").await.unwrap();
         assert_eq!(result.superseded_count, 2);
         assert_eq!(result.superseded_dispatches.len(), 2);
 

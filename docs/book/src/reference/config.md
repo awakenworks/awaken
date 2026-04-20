@@ -253,6 +253,31 @@ pub struct ShutdownConfig {
 | `a2a_extended_card_bearer_token` | `Option<String>` | `None` | Enables authenticated `GET /v1/a2a/extendedAgentCard` when set |
 | `shutdown.timeout_secs` | `u64` | `30` | Seconds to wait for in-flight requests to drain before force-exiting |
 
+## AdminApiConfig
+
+Admin/configuration API security settings. Attach this to `AppState` with
+`AppState::with_admin_api_config`, or use
+`AppState::with_admin_api_bearer_token` when only bearer auth is needed.
+
+```rust,ignore
+pub struct AdminApiConfig {
+    pub bearer_token: Option<String>,
+    pub cors_allowed_origins: Vec<String>,
+}
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `bearer_token` | `Option<String>` | `None` | Requires `Authorization: Bearer ...` for `/v1/capabilities`, `/v1/config/*`, and `/v1/agents*` when set |
+| `cors_allowed_origins` | `Vec<String>` | `["http://127.0.0.1:3002", "http://localhost:3002"]` | Browser origins allowed by the admin CORS layer |
+
+Environment variables override the `AppState` admin settings:
+
+| Variable | Description |
+|---|---|
+| `AWAKEN_ADMIN_API_BEARER_TOKEN` | Bearer token required for admin/configuration APIs |
+| `AWAKEN_ADMIN_CORS_ALLOWED_ORIGINS` | Comma-separated CORS origins for browser admin APIs |
+
 ## MailboxConfig
 
 Configuration for the persistent run queue (mailbox). Controls lease timing,

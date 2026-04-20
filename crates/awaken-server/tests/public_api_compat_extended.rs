@@ -23,10 +23,13 @@ use awaken_contract::contract::storage::{RunWaitingState, ThreadRunStore};
 use awaken_contract::contract::suspension::ToolCallResume;
 use awaken_runtime::RunRequest;
 use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult};
+use awaken_server::app::{MailboxLifecycleMode, ServerConfig, ShutdownConfig};
 use awaken_server::mailbox::{
     Mailbox, MailboxConfig, MailboxDispatchStatus, MailboxError, MailboxRunOutcome,
     MailboxSubmitResult, RunDispatchExecutor,
 };
+use awaken_server::metrics;
+use awaken_server::routes::ApiError;
 use awaken_server::services::run_control_service::{
     ActiveRun, InputMode, InterruptMode, RunControlError,
 };
@@ -99,6 +102,16 @@ fn mailbox_methods_signature_intact() {
     > = |mb, id| Box::pin(mb.interrupt(id));
 
     let _send_decision: fn(&Mailbox, &str, String, ToolCallResume) -> bool = Mailbox::send_decision;
+}
+
+#[test]
+fn mailbox_interrupt_struct_literal_keeps_0_2_fields() {
+    let interrupt = MailboxInterrupt {
+        new_dispatch_epoch: 1,
+        active_dispatch: None,
+        superseded_count: 0,
+    };
+    assert_eq!(interrupt.new_dispatch_epoch, 1);
 }
 
 #[test]
@@ -176,6 +189,42 @@ fn mailbox_config_default_constructs() {
     // Fields mentioned in 0.2 docs must still exist.
     let _ = cfg.lease_ms;
     let _ = cfg.suspended_lease_ms;
+}
+
+#[test]
+fn server_config_struct_literal_keeps_0_2_fields() {
+    let cfg = ServerConfig {
+        address: "0.0.0.0:3000".into(),
+        sse_buffer_size: 64,
+        replay_buffer_capacity: 1024,
+        shutdown: ShutdownConfig { timeout_secs: 30 },
+        max_concurrent_requests: 100,
+        a2a_extended_card_bearer_token: None,
+        mailbox_lifecycle: MailboxLifecycleMode::Auto,
+    };
+    assert_eq!(cfg.address, "0.0.0.0:3000");
+}
+
+#[test]
+fn api_error_exhaustive_match_keeps_0_2_variants() {
+    fn label(error: ApiError) -> &'static str {
+        match error {
+            ApiError::BadRequest(_) => "bad_request",
+            ApiError::Conflict(_) => "conflict",
+            ApiError::NotFound(_) => "not_found",
+            ApiError::ThreadNotFound(_) => "thread_not_found",
+            ApiError::RunNotFound(_) => "run_not_found",
+            ApiError::Internal(_) => "internal",
+        }
+    }
+    assert_eq!(label(ApiError::NotFound("x".into())), "not_found");
+}
+
+#[test]
+fn metrics_0_2_function_signatures_still_exist() {
+    let _record_run_duration: fn(f64) = metrics::record_run_duration;
+    let _inc_inference_requests: fn(&str, &str) = metrics::inc_inference_requests;
+    let _record_inference_duration: fn(f64) = metrics::record_inference_duration;
 }
 
 // ── Signature lockdown for RunControlService ──────────────────────────────

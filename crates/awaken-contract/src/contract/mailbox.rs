@@ -156,12 +156,66 @@ pub struct MailboxInterrupt {
     pub active_dispatch: Option<RunDispatch>,
     /// Number of Queued dispatches superseded.
     pub superseded_count: usize,
+}
+
+/// Detailed result of a mailbox interrupt operation.
+///
+/// `MailboxInterrupt` intentionally keeps the 0.2 public struct shape so
+/// downstream struct literals remain source-compatible. New code that needs the
+/// exact superseded dispatch records should use this type via
+/// [`MailboxStore::interrupt_detailed`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MailboxInterruptDetails {
+    /// New thread dispatch epoch after bump.
+    pub new_dispatch_epoch: u64,
+    /// The dispatch that was Claimed (running) at interrupt time, if any.
+    /// Caller should cancel the corresponding runtime run.
+    pub active_dispatch: Option<RunDispatch>,
+    /// Number of Queued dispatches superseded.
+    pub superseded_count: usize,
     /// Queued dispatches that were atomically superseded by this interrupt.
     ///
     /// This is the authoritative set callers should use to reconcile terminal
     /// dispatch state back to the durable run lifecycle.
     #[serde(default)]
     pub superseded_dispatches: Vec<RunDispatch>,
+}
+
+impl MailboxInterruptDetails {
+    #[must_use]
+    pub fn into_summary(self) -> MailboxInterrupt {
+        MailboxInterrupt {
+            new_dispatch_epoch: self.new_dispatch_epoch,
+            active_dispatch: self.active_dispatch,
+            superseded_count: self.superseded_count,
+        }
+    }
+
+    #[must_use]
+    pub fn summary(&self) -> MailboxInterrupt {
+        MailboxInterrupt {
+            new_dispatch_epoch: self.new_dispatch_epoch,
+            active_dispatch: self.active_dispatch.clone(),
+            superseded_count: self.superseded_count,
+        }
+    }
+}
+
+impl From<MailboxInterrupt> for MailboxInterruptDetails {
+    fn from(interrupt: MailboxInterrupt) -> Self {
+        Self {
+            new_dispatch_epoch: interrupt.new_dispatch_epoch,
+            active_dispatch: interrupt.active_dispatch,
+            superseded_count: interrupt.superseded_count,
+            superseded_dispatches: Vec::new(),
+        }
+    }
+}
+
+impl From<MailboxInterruptDetails> for MailboxInterrupt {
+    fn from(details: MailboxInterruptDetails) -> Self {
+        details.into_summary()
+    }
 }
 
 // ── LiveRunCommand ─────────────────────────────────────────────────────────
@@ -411,6 +465,19 @@ pub trait MailboxStore: Send + Sync {
     /// Atomically: bump dispatch epoch, supersede stale Queued dispatches,
     /// return the Claimed dispatch (if any) so caller can cancel its runtime run.
     async fn interrupt(&self, thread_id: &str, now: u64) -> Result<MailboxInterrupt, StorageError>;
+
+    /// Detailed interrupt result including the exact queued dispatches that
+    /// were superseded.
+    ///
+    /// The default delegates to the 0.2-compatible summary method. Stores that
+    /// can return authoritative superseded records should override this method.
+    async fn interrupt_detailed(
+        &self,
+        thread_id: &str,
+        now: u64,
+    ) -> Result<MailboxInterruptDetails, StorageError> {
+        self.interrupt(thread_id, now).await.map(Into::into)
+    }
 
     /// Return the authoritative dispatch epoch for a thread.
     ///
@@ -847,23 +914,42 @@ mod tests {
             new_dispatch_epoch: 5,
             active_dispatch: Some(make_run_dispatch()),
             superseded_count: 3,
-            superseded_dispatches: vec![make_run_dispatch()],
         };
         let json = serde_json::to_string(&interrupt).unwrap();
         let parsed: MailboxInterrupt = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.new_dispatch_epoch, 5);
         assert!(parsed.active_dispatch.is_some());
         assert_eq!(parsed.superseded_count, 3);
-        assert_eq!(parsed.superseded_dispatches.len(), 1);
     }
 
     #[test]
-    fn mailbox_interrupt_deserializes_legacy_payload_without_superseded_dispatches() {
-        let json = r#"{"new_dispatch_epoch":5,"active_dispatch":null,"superseded_count":3}"#;
-        let parsed: MailboxInterrupt = serde_json::from_str(json).unwrap();
+    fn mailbox_interrupt_ignores_detailed_payload_for_legacy_summary() {
+        let json = serde_json::json!({
+            "new_dispatch_epoch": 5,
+            "active_dispatch": null,
+            "superseded_count": 3,
+            "superseded_dispatches": [make_run_dispatch()]
+        });
+        let parsed: MailboxInterrupt = serde_json::from_value(json).unwrap();
         assert_eq!(parsed.new_dispatch_epoch, 5);
         assert!(parsed.active_dispatch.is_none());
         assert_eq!(parsed.superseded_count, 3);
-        assert!(parsed.superseded_dispatches.is_empty());
+    }
+
+    #[test]
+    fn mailbox_interrupt_details_serde_roundtrip() {
+        let details = MailboxInterruptDetails {
+            new_dispatch_epoch: 5,
+            active_dispatch: Some(make_run_dispatch()),
+            superseded_count: 3,
+            superseded_dispatches: vec![make_run_dispatch()],
+        };
+        let json = serde_json::to_string(&details).unwrap();
+        let parsed: MailboxInterruptDetails = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.new_dispatch_epoch, 5);
+        assert!(parsed.active_dispatch.is_some());
+        assert_eq!(parsed.superseded_count, 3);
+        assert_eq!(parsed.superseded_dispatches.len(), 1);
+        assert_eq!(parsed.summary().superseded_count, 3);
     }
 }

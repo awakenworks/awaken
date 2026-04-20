@@ -155,8 +155,23 @@ pub fn record_run_completion(seconds: f64, outcome: &str) {
     .record(seconds);
 }
 
+/// Record a run duration in seconds.
+pub fn record_run_duration(seconds: f64) {
+    histogram!("awaken_run_duration_seconds").record(seconds);
+}
+
 /// Increment the inference requests counter.
-pub fn inc_inference_requests(model: &str, provider: &str, status: &str) {
+pub fn inc_inference_requests(model: &str, status: &str) {
+    counter!(
+        "awaken_inference_requests_total",
+        "model" => model.to_string(),
+        "status" => status.to_string()
+    )
+    .increment(1);
+}
+
+/// Increment the inference requests counter with provider label.
+pub fn inc_inference_requests_with_provider(model: &str, provider: &str, status: &str) {
     counter!(
         "awaken_inference_requests_total",
         "model" => model.to_string(),
@@ -167,7 +182,17 @@ pub fn inc_inference_requests(model: &str, provider: &str, status: &str) {
 }
 
 /// Record an inference call duration in seconds.
-pub fn record_inference_duration(seconds: f64, model: &str, provider: &str, status: &str) {
+pub fn record_inference_duration(seconds: f64) {
+    histogram!("awaken_inference_duration_seconds").record(seconds);
+}
+
+/// Record an inference call duration in seconds with model/provider/status labels.
+pub fn record_inference_duration_with_provider(
+    seconds: f64,
+    model: &str,
+    provider: &str,
+    status: &str,
+) {
     histogram!(
         "awaken_inference_duration_seconds",
         "model" => model.to_string(),
@@ -305,8 +330,8 @@ mod tests {
         inc_mailbox_operation_by("reclaim", "ok", 2);
         set_mailbox_dispatch_depth("queued", 3.0);
         record_run_completion(1.23, "completed");
-        inc_inference_requests("gpt-4", "openai", "ok");
-        record_inference_duration(0.5, "gpt-4", "openai", "ok");
+        inc_inference_requests_with_provider("gpt-4", "openai", "ok");
+        record_inference_duration_with_provider(0.5, "gpt-4", "openai", "ok");
         inc_inference_tokens("gpt-4", "openai", "input", 10);
         inc_errors("timeout");
         inc_sse_connections();
@@ -370,9 +395,9 @@ mod tests {
     #[test]
     fn inference_metrics_appear_in_output() {
         install_recorder();
-        inc_inference_requests("gpt-4", "openai", "ok");
-        inc_inference_requests("gpt-4", "openai", "error");
-        record_inference_duration(1.5, "gpt-4", "openai", "ok");
+        inc_inference_requests_with_provider("gpt-4", "openai", "ok");
+        inc_inference_requests_with_provider("gpt-4", "openai", "error");
+        record_inference_duration_with_provider(1.5, "gpt-4", "openai", "ok");
         inc_inference_tokens("gpt-4", "openai", "input", 100);
         let output = render().unwrap_or_default();
         assert!(

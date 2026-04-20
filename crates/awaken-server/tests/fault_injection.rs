@@ -10,7 +10,8 @@ use async_trait::async_trait;
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::mailbox::{
-    MailboxInterrupt, MailboxStore, RunDispatch, RunDispatchResult, RunDispatchStatus,
+    MailboxInterrupt, MailboxInterruptDetails, MailboxStore, RunDispatch, RunDispatchResult,
+    RunDispatchStatus,
 };
 use awaken_contract::contract::storage::StorageError;
 use awaken_stores::InMemoryMailboxStore;
@@ -166,6 +167,14 @@ impl MailboxStore for FailingMailboxStore {
 
     async fn interrupt(&self, thread_id: &str, now: u64) -> Result<MailboxInterrupt, StorageError> {
         self.inner.interrupt(thread_id, now).await
+    }
+
+    async fn interrupt_detailed(
+        &self,
+        thread_id: &str,
+        now: u64,
+    ) -> Result<MailboxInterruptDetails, StorageError> {
+        self.inner.interrupt_detailed(thread_id, now).await
     }
 
     async fn current_dispatch_epoch(&self, thread_id: &str) -> Result<u64, StorageError> {

@@ -1,6 +1,6 @@
 //! Interrupt + dispatch epoch management.
 
-use awaken_contract::contract::mailbox::{MailboxInterrupt, RunDispatchStatus};
+use awaken_contract::contract::mailbox::{MailboxInterruptDetails, RunDispatchStatus};
 use awaken_contract::contract::storage::StorageError;
 
 use super::{NatsMailboxStore, claim_guard, codec, keys, ops_query, ops_write};
@@ -15,7 +15,7 @@ pub async fn interrupt(
     store: &NatsMailboxStore,
     thread_id: &str,
     now: u64,
-) -> Result<MailboxInterrupt, StorageError> {
+) -> Result<MailboxInterruptDetails, StorageError> {
     let new_epoch = bump_epoch(store, thread_id).await?;
 
     let mut dispatches = ops_query::load_thread_dispatches(store, thread_id).await?;
@@ -85,7 +85,7 @@ pub async fn interrupt(
         }
     }
 
-    Ok(MailboxInterrupt {
+    Ok(MailboxInterruptDetails {
         new_dispatch_epoch: new_epoch,
         active_dispatch,
         superseded_count,

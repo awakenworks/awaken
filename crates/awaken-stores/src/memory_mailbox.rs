@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::mailbox::{
     LiveCommandReceipt, LiveDeliveryOutcome, LiveRunCommand, LiveRunCommandEntry,
-    LiveRunCommandStream, LiveRunTarget, MailboxInterrupt, MailboxStore, RunDispatch,
-    RunDispatchResult, RunDispatchStatus,
+    LiveRunCommandStream, LiveRunTarget, MailboxInterrupt, MailboxInterruptDetails, MailboxStore,
+    RunDispatch, RunDispatchResult, RunDispatchStatus,
 };
 use awaken_contract::contract::storage::StorageError;
 use tokio::sync::{RwLock, mpsc, oneshot};
@@ -597,6 +597,16 @@ impl MailboxStore for InMemoryMailboxStore {
     }
 
     async fn interrupt(&self, thread_id: &str, now: u64) -> Result<MailboxInterrupt, StorageError> {
+        self.interrupt_detailed(thread_id, now)
+            .await
+            .map(Into::into)
+    }
+
+    async fn interrupt_detailed(
+        &self,
+        thread_id: &str,
+        now: u64,
+    ) -> Result<MailboxInterruptDetails, StorageError> {
         let mut dispatches = self.dispatches.write().await;
         let mut state = self.state.write().await;
 
@@ -633,7 +643,7 @@ impl MailboxStore for InMemoryMailboxStore {
             }
         }
 
-        Ok(MailboxInterrupt {
+        Ok(MailboxInterruptDetails {
             new_dispatch_epoch,
             active_dispatch,
             superseded_count,

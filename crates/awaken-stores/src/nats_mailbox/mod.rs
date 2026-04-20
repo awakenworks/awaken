@@ -39,7 +39,7 @@ use async_trait::async_trait;
 use awaken_contract::contract::mailbox::{
     DispatchSignalEntry, DispatchSignalReceipt, LiveCommandReceipt, LiveDeliveryOutcome,
     LiveRunCommand, LiveRunCommandEntry, LiveRunCommandStream, LiveRunTarget, MailboxInterrupt,
-    MailboxStore, RunDispatch, RunDispatchResult, RunDispatchStatus,
+    MailboxInterruptDetails, MailboxStore, RunDispatch, RunDispatchResult, RunDispatchStatus,
 };
 use awaken_contract::contract::storage::StorageError;
 use bytes::Bytes;
@@ -398,6 +398,15 @@ impl MailboxStore for NatsMailboxStore {
         ops_write::extend_lease(self, dispatch_id, claim_token, extension_ms, now).await
     }
     async fn interrupt(&self, thread_id: &str, now: u64) -> Result<MailboxInterrupt, StorageError> {
+        self.interrupt_detailed(thread_id, now)
+            .await
+            .map(Into::into)
+    }
+    async fn interrupt_detailed(
+        &self,
+        thread_id: &str,
+        now: u64,
+    ) -> Result<MailboxInterruptDetails, StorageError> {
         ops_interrupt::interrupt(self, thread_id, now).await
     }
     async fn current_dispatch_epoch(&self, thread_id: &str) -> Result<u64, StorageError> {

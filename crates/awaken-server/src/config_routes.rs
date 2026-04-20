@@ -1,6 +1,6 @@
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -41,7 +41,7 @@ pub fn config_routes() -> Router<AppState> {
 async fn get_capabilities(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<impl IntoResponse, ConfigRouteError> {
     ensure_admin_auth(&state, &headers)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
     Ok(Json(
@@ -53,7 +53,7 @@ async fn get_schema(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(namespace): Path<String>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<impl IntoResponse, ConfigRouteError> {
     ensure_admin_auth(&state, &headers)?;
     let namespace = ConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     Ok(Json(namespace.schema_json().map_err(map_service_error)?))
@@ -63,7 +63,7 @@ async fn list_agents(
     State(state): State<AppState>,
     headers: HeaderMap,
     query: Query<ListParams>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<impl IntoResponse, ConfigRouteError> {
     ensure_admin_auth(&state, &headers)?;
     list_config_inner(state, "agents".to_string(), query.0).await
 }
@@ -72,7 +72,7 @@ async fn get_agent(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<impl IntoResponse, ConfigRouteError> {
     ensure_admin_auth(&state, &headers)?;
     get_config_inner(state, "agents".to_string(), id).await
 }
@@ -82,7 +82,7 @@ async fn list_config(
     headers: HeaderMap,
     Path(namespace): Path<String>,
     Query(params): Query<ListParams>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<impl IntoResponse, ConfigRouteError> {
     ensure_admin_auth(&state, &headers)?;
     list_config_inner(state, namespace, params).await
 }
@@ -91,7 +91,7 @@ async fn list_config_inner(
     state: AppState,
     namespace: String,
     params: ListParams,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<impl IntoResponse, ConfigRouteError> {
     let namespace = ConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
     let items = service
@@ -111,7 +111,7 @@ async fn create_config(
     headers: HeaderMap,
     Path(namespace): Path<String>,
     Json(body): Json<Value>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<impl IntoResponse, ConfigRouteError> {
     ensure_admin_auth(&state, &headers)?;
     let namespace = ConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
@@ -126,7 +126,7 @@ async fn get_config(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((namespace, id)): Path<(String, String)>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<impl IntoResponse, ConfigRouteError> {
     ensure_admin_auth(&state, &headers)?;
     get_config_inner(state, namespace, id).await
 }
@@ -135,7 +135,7 @@ async fn get_config_inner(
     state: AppState,
     namespace: String,
     id: String,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<impl IntoResponse, ConfigRouteError> {
     let namespace = ConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
     let value = service
@@ -151,7 +151,7 @@ async fn put_config(
     headers: HeaderMap,
     Path((namespace, id)): Path<(String, String)>,
     Json(body): Json<Value>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<impl IntoResponse, ConfigRouteError> {
     ensure_admin_auth(&state, &headers)?;
     let namespace = ConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
@@ -166,7 +166,7 @@ async fn delete_config(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((namespace, id)): Path<(String, String)>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<impl IntoResponse, ConfigRouteError> {
     ensure_admin_auth(&state, &headers)?;
     let namespace = ConfigNamespace::parse(&namespace).map_err(map_service_error)?;
     let service = ConfigService::new(&state).map_err(map_service_error)?;
@@ -177,28 +177,61 @@ async fn delete_config(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn ensure_admin_auth(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
-    let Some(expected) = state.config.admin_api_bearer_token.as_deref() else {
+#[derive(Debug)]
+enum ConfigRouteError {
+    Api(ApiError),
+    Unauthorized(String),
+}
+
+impl From<ApiError> for ConfigRouteError {
+    fn from(error: ApiError) -> Self {
+        Self::Api(error)
+    }
+}
+
+impl IntoResponse for ConfigRouteError {
+    fn into_response(self) -> Response {
+        match self {
+            ConfigRouteError::Api(error) => error.into_response(),
+            ConfigRouteError::Unauthorized(message) => {
+                (StatusCode::UNAUTHORIZED, Json(json!({ "error": message }))).into_response()
+            }
+        }
+    }
+}
+
+fn ensure_admin_auth(state: &AppState, headers: &HeaderMap) -> Result<(), ConfigRouteError> {
+    let config = crate::app::admin_api_config(state);
+    ensure_admin_auth_for_token(config.bearer_token.as_deref(), headers)
+}
+
+fn ensure_admin_auth_for_token(
+    expected: Option<&str>,
+    headers: &HeaderMap,
+) -> Result<(), ConfigRouteError> {
+    let Some(expected) = expected else {
         return Ok(());
     };
     let Some(auth) = headers.get(axum::http::header::AUTHORIZATION) else {
-        return Err(ApiError::Unauthorized(
+        return Err(ConfigRouteError::Unauthorized(
             "admin authentication required".into(),
         ));
     };
     let auth = auth
         .to_str()
-        .map_err(|_| ApiError::Unauthorized("invalid Authorization header".into()))?;
+        .map_err(|_| ConfigRouteError::Unauthorized("invalid Authorization header".into()))?;
     let Some(token) = auth
         .strip_prefix("Bearer ")
         .or_else(|| auth.strip_prefix("bearer "))
     else {
-        return Err(ApiError::Unauthorized(
+        return Err(ConfigRouteError::Unauthorized(
             "Authorization header must use Bearer authentication".into(),
         ));
     };
     if token != expected {
-        return Err(ApiError::Unauthorized("invalid admin bearer token".into()));
+        return Err(ConfigRouteError::Unauthorized(
+            "invalid admin bearer token".into(),
+        ));
     }
     Ok(())
 }
@@ -218,5 +251,42 @@ fn map_service_error(error: ConfigServiceError) -> ApiError {
         ConfigServiceError::Serialization(_)
         | ConfigServiceError::Apply(_)
         | ConfigServiceError::Storage(_) => ApiError::Internal(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{HeaderMap, HeaderValue, header};
+
+    #[test]
+    fn admin_auth_allows_unconfigured_routes() {
+        let headers = HeaderMap::new();
+        assert!(ensure_admin_auth_for_token(None, &headers).is_ok());
+    }
+
+    #[test]
+    fn admin_auth_rejects_missing_or_wrong_token() {
+        let headers = HeaderMap::new();
+        let missing = ensure_admin_auth_for_token(Some("secret"), &headers).unwrap_err();
+        assert_eq!(missing.into_response().status(), StatusCode::UNAUTHORIZED);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer wrong"),
+        );
+        let wrong = ensure_admin_auth_for_token(Some("secret"), &headers).unwrap_err();
+        assert_eq!(wrong.into_response().status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn admin_auth_accepts_bearer_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer secret"),
+        );
+        assert!(ensure_admin_auth_for_token(Some("secret"), &headers).is_ok());
     }
 }

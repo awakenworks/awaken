@@ -1,7 +1,7 @@
 //! Application state and server startup.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::Instant;
 
 use awaken_contract::contract::config_store::ConfigStore;
@@ -15,6 +15,13 @@ use crate::transport::replay_buffer::EventReplayBuffer;
 
 pub type ReplayBufferEntry = (Arc<EventReplayBuffer>, Instant);
 pub type ReplayBufferMap = Arc<Mutex<HashMap<String, ReplayBufferEntry>>>;
+type AdminApiConfigRegistry = HashMap<
+    usize,
+    (
+        Weak<Mutex<HashMap<String, ReplayBufferEntry>>>,
+        AdminApiConfig,
+    ),
+>;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -89,6 +96,26 @@ pub enum MailboxLifecycleMode {
     Manual,
 }
 
+/// Admin/configuration API security settings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminApiConfig {
+    /// Optional bearer token required for admin/configuration APIs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bearer_token: Option<String>,
+    /// Origins allowed to call browser admin APIs.
+    #[serde(default = "default_admin_cors_allowed_origins")]
+    pub cors_allowed_origins: Vec<String>,
+}
+
+impl Default for AdminApiConfig {
+    fn default() -> Self {
+        Self {
+            bearer_token: None,
+            cors_allowed_origins: default_admin_cors_allowed_origins(),
+        }
+    }
+}
+
 /// Server configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
@@ -110,12 +137,6 @@ pub struct ServerConfig {
     /// Optional bearer token required for authenticated extended A2A agent cards.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub a2a_extended_card_bearer_token: Option<String>,
-    /// Optional bearer token required for admin/configuration APIs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub admin_api_bearer_token: Option<String>,
-    /// Origins allowed to call browser admin APIs.
-    #[serde(default = "default_admin_cors_allowed_origins")]
-    pub admin_cors_allowed_origins: Vec<String>,
     /// Mailbox lifecycle ownership. Defaults to framework-managed auto mode.
     #[serde(default)]
     pub mailbox_lifecycle: MailboxLifecycleMode,
@@ -133,6 +154,35 @@ fn default_max_concurrent() -> usize {
     100
 }
 
+const ADMIN_API_BEARER_TOKEN_ENV: &str = "AWAKEN_ADMIN_API_BEARER_TOKEN";
+const ADMIN_CORS_ALLOWED_ORIGINS_ENV: &str = "AWAKEN_ADMIN_CORS_ALLOWED_ORIGINS";
+static ADMIN_API_CONFIGS: OnceLock<Mutex<AdminApiConfigRegistry>> = OnceLock::new();
+
+fn admin_api_config_registry() -> &'static Mutex<AdminApiConfigRegistry> {
+    ADMIN_API_CONFIGS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn admin_api_bearer_token_from_env() -> Option<String> {
+    std::env::var(ADMIN_API_BEARER_TOKEN_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn admin_cors_allowed_origins_from_env() -> Option<Vec<String>> {
+    std::env::var(ADMIN_CORS_ALLOWED_ORIGINS_ENV)
+        .ok()
+        .and_then(|value| {
+            let origins = value
+                .split(',')
+                .map(str::trim)
+                .filter(|origin| !origin.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>();
+            (!origins.is_empty()).then_some(origins)
+        })
+}
+
 fn default_admin_cors_allowed_origins() -> Vec<String> {
     vec![
         "http://127.0.0.1:3002".to_string(),
@@ -140,17 +190,48 @@ fn default_admin_cors_allowed_origins() -> Vec<String> {
     ]
 }
 
+pub(crate) fn admin_api_config(state: &AppState) -> AdminApiConfig {
+    let key = Arc::as_ptr(&state.replay_buffers) as usize;
+    let mut config = {
+        let mut registry = admin_api_config_registry().lock();
+        registry.retain(|_, (weak, _)| weak.upgrade().is_some());
+        registry
+            .get(&key)
+            .map(|(_, config)| config.clone())
+            .unwrap_or_default()
+    };
+
+    if let Some(token) = admin_api_bearer_token_from_env() {
+        config.bearer_token = Some(token);
+    }
+    if let Some(origins) = admin_cors_allowed_origins_from_env() {
+        config.cors_allowed_origins = origins;
+    }
+
+    config
+}
+
+fn admin_api_config_for_replay_buffers(replay_buffers: &ReplayBufferMap, config: AdminApiConfig) {
+    let key = Arc::as_ptr(replay_buffers) as usize;
+    let weak = Arc::downgrade(replay_buffers);
+    let mut registry = admin_api_config_registry().lock();
+    registry.retain(|_, (weak, _)| weak.upgrade().is_some());
+    registry.insert(key, (weak, config));
+}
+
+fn admin_cors_allowed_origins_for_state(state: &AppState) -> Vec<String> {
+    admin_api_config(state).cors_allowed_origins
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            address: "127.0.0.1:3000".to_string(),
+            address: "0.0.0.0:3000".to_string(),
             sse_buffer_size: default_sse_buffer(),
             replay_buffer_capacity: default_replay_buffer_capacity(),
             shutdown: ShutdownConfig::default(),
             max_concurrent_requests: default_max_concurrent(),
             a2a_extended_card_bearer_token: None,
-            admin_api_bearer_token: None,
-            admin_cors_allowed_origins: default_admin_cors_allowed_origins(),
             mailbox_lifecycle: MailboxLifecycleMode::Auto,
         }
     }
@@ -224,6 +305,33 @@ impl AppState {
     pub fn with_skill_catalog_provider(mut self, provider: Arc<dyn SkillCatalogProvider>) -> Self {
         self.skill_catalog_provider = Some(provider);
         self
+    }
+
+    /// Attach admin/configuration API security settings without changing the
+    /// 0.2-compatible `ServerConfig` struct shape.
+    pub fn with_admin_api_config(self, config: AdminApiConfig) -> Self {
+        admin_api_config_for_replay_buffers(&self.replay_buffers, config);
+        self
+    }
+
+    /// Require a bearer token for admin/configuration APIs.
+    pub fn with_admin_api_bearer_token(self, token: impl Into<String>) -> Self {
+        let mut config = admin_api_config(&self);
+        config.bearer_token = Some(token.into());
+        self.with_admin_api_config(config)
+    }
+
+    /// Configure CORS origins allowed to call browser admin APIs.
+    pub fn with_admin_cors_allowed_origins(self, origins: Vec<String>) -> Self {
+        let mut config = admin_api_config(&self);
+        config.cors_allowed_origins = origins;
+        self.with_admin_api_config(config)
+    }
+
+    /// Return the effective admin/configuration API settings, including
+    /// environment variable overrides.
+    pub fn admin_api_config(&self) -> AdminApiConfig {
+        admin_api_config(self)
     }
 
     /// Insert a replay buffer for the given key, tracking creation time.
@@ -374,9 +482,10 @@ pub async fn serve(state: AppState) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("listening on {addr}");
 
+    let admin_cors = admin_cors_layer(&state)?;
     let app = crate::routes::build_router()
         .layer(tower::limit::ConcurrencyLimitLayer::new(max_concurrent))
-        .layer(admin_cors_layer(&state.config)?)
+        .layer(admin_cors)
         .with_state(state);
 
     let result = serve_with_shutdown(listener, app, timeout).await;
@@ -389,7 +498,7 @@ pub async fn serve(state: AppState) -> std::io::Result<()> {
 }
 
 fn validate_admin_surface(state: &AppState) -> std::io::Result<()> {
-    if state.config.admin_api_bearer_token.is_some() {
+    if admin_api_config(state).bearer_token.is_some() {
         return Ok(());
     }
     if state.config_store.is_none() && state.config_runtime_manager.is_none() {
@@ -404,17 +513,18 @@ fn validate_admin_surface(state: &AppState) -> std::io::Result<()> {
     }
     Err(std::io::Error::new(
         std::io::ErrorKind::PermissionDenied,
-        "admin/config APIs require admin_api_bearer_token when binding a non-loopback address",
+        format!(
+            "admin/config APIs require {ADMIN_API_BEARER_TOKEN_ENV} when binding a non-loopback address"
+        ),
     ))
 }
 
-fn admin_cors_layer(config: &ServerConfig) -> std::io::Result<tower_http::cors::CorsLayer> {
+fn admin_cors_layer(state: &AppState) -> std::io::Result<tower_http::cors::CorsLayer> {
     use axum::http::{HeaderValue, Method, header};
     use tower_http::cors::CorsLayer;
 
-    let origins = config
-        .admin_cors_allowed_origins
-        .iter()
+    let origins = admin_cors_allowed_origins_for_state(state)
+        .into_iter()
         .map(|origin| {
             origin.parse::<HeaderValue>().map_err(|error| {
                 std::io::Error::new(
@@ -445,17 +555,11 @@ mod tests {
     #[test]
     fn server_config_default_values() {
         let config = ServerConfig::default();
-        assert_eq!(config.address, "127.0.0.1:3000");
+        assert_eq!(config.address, "0.0.0.0:3000");
         assert_eq!(config.sse_buffer_size, 64);
         assert_eq!(config.replay_buffer_capacity, 1024);
         assert_eq!(config.shutdown.timeout_secs, 30);
         assert_eq!(config.max_concurrent_requests, 100);
-        assert!(config.admin_api_bearer_token.is_none());
-        assert!(
-            config
-                .admin_cors_allowed_origins
-                .contains(&"http://127.0.0.1:3002".to_string())
-        );
         assert_eq!(config.mailbox_lifecycle, MailboxLifecycleMode::Auto);
     }
 
@@ -468,8 +572,6 @@ mod tests {
             shutdown: ShutdownConfig { timeout_secs: 10 },
             max_concurrent_requests: 50,
             a2a_extended_card_bearer_token: None,
-            admin_api_bearer_token: Some("admin-secret".into()),
-            admin_cors_allowed_origins: vec!["http://127.0.0.1:3002".into()],
             mailbox_lifecycle: MailboxLifecycleMode::Manual,
         };
         let json = serde_json::to_string(&config).unwrap();
@@ -479,10 +581,6 @@ mod tests {
         assert_eq!(parsed.replay_buffer_capacity, 512);
         assert_eq!(parsed.shutdown.timeout_secs, 10);
         assert_eq!(parsed.max_concurrent_requests, 50);
-        assert_eq!(
-            parsed.admin_api_bearer_token.as_deref(),
-            Some("admin-secret")
-        );
         assert_eq!(parsed.mailbox_lifecycle, MailboxLifecycleMode::Manual);
     }
 
@@ -494,8 +592,6 @@ mod tests {
         assert_eq!(config.sse_buffer_size, 64);
         assert_eq!(config.shutdown.timeout_secs, 30);
         assert_eq!(config.max_concurrent_requests, 100);
-        assert!(config.admin_api_bearer_token.is_none());
-        assert!(!config.admin_cors_allowed_origins.is_empty());
         assert_eq!(config.mailbox_lifecycle, MailboxLifecycleMode::Auto);
     }
 

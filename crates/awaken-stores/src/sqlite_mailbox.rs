@@ -6,7 +6,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_contract::contract::mailbox::{
-    MailboxInterrupt, MailboxStore, RunDispatch, RunDispatchResult, RunDispatchStatus,
+    MailboxInterrupt, MailboxInterruptDetails, MailboxStore, RunDispatch, RunDispatchResult,
+    RunDispatchStatus,
 };
 use awaken_contract::contract::storage::StorageError;
 use rusqlite::{Connection, Row, params};
@@ -1025,6 +1026,16 @@ impl MailboxStore for SqliteMailboxStore {
     }
 
     async fn interrupt(&self, thread_id: &str, now: u64) -> Result<MailboxInterrupt, StorageError> {
+        self.interrupt_detailed(thread_id, now)
+            .await
+            .map(Into::into)
+    }
+
+    async fn interrupt_detailed(
+        &self,
+        thread_id: &str,
+        now: u64,
+    ) -> Result<MailboxInterruptDetails, StorageError> {
         let conn = self.conn.lock().await;
 
         // Bump dispatch_epoch: INSERT ON CONFLICT DO UPDATE +1.
@@ -1110,7 +1121,7 @@ impl MailboxStore for SqliteMailboxStore {
             .optional()
             .map_err(|e| StorageError::Io(format!("interrupt active: {e}")))?;
 
-        Ok(MailboxInterrupt {
+        Ok(MailboxInterruptDetails {
             new_dispatch_epoch: new_dispatch_epoch as u64,
             active_dispatch,
             superseded_count,
