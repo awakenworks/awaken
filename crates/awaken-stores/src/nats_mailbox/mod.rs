@@ -24,6 +24,8 @@ mod codec;
 mod config;
 mod index;
 mod keys;
+mod kv_helpers;
+mod metrics;
 mod ops_claim;
 mod ops_interrupt;
 mod ops_maintenance;
@@ -64,6 +66,8 @@ pub struct NatsMailboxStore {
     pub(crate) consumer: async_nats::jetstream::consumer::PullConsumer,
     #[allow(dead_code)]
     pub(crate) stream_name: String,
+    pub(crate) authoritative_scan_timeout: std::time::Duration,
+    pub(crate) live_request_timeout: std::time::Duration,
     pub(crate) index: Arc<tokio::sync::RwLock<DispatchIndex>>,
     pub(crate) shutdown_tx: tokio::sync::watch::Sender<bool>,
     pub(crate) _watcher: tokio::task::JoinHandle<()>,
@@ -73,9 +77,8 @@ pub struct NatsMailboxStore {
 impl NatsMailboxStore {
     /// Connect to NATS, create/verify stream + buckets + consumer.
     pub async fn connect(config: NatsMailboxConfig) -> Result<Self, StorageError> {
-        let client = async_nats::connect(&config.url)
-            .await
-            .map_err(|e| StorageError::Io(format!("connect: {e}")))?;
+        let client =
+            crate::nats_connect::connect(&config.url, config.credentials.as_deref()).await?;
         let jetstream = async_nats::jetstream::new(client.clone());
 
         // Stream for dispatch delivery signals.
@@ -107,6 +110,10 @@ impl NatsMailboxStore {
         let kv_epoch = Self::get_or_create_bucket(&jetstream, &config.epoch_bucket).await?;
         let kv_thread_index =
             Self::get_or_create_bucket(&jetstream, &config.thread_index_bucket).await?;
+        let watcher_initial_scan_timeout = config.watcher_initial_scan_timeout;
+        let sweeper_republish_after = config.sweeper_republish_after;
+        let authoritative_scan_timeout = config.authoritative_scan_timeout;
+        let live_request_timeout = config.nats_request_timeout;
 
         let index = Arc::new(tokio::sync::RwLock::new(DispatchIndex::default()));
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
@@ -116,22 +123,31 @@ impl NatsMailboxStore {
         let (watcher_ready_tx, watcher_ready_rx) = tokio::sync::oneshot::channel();
         let watcher_handle = index::spawn_watcher(
             kv_dispatch.clone(),
+            kv_thread_index.clone(),
             Arc::clone(&index),
             watcher_shutdown_rx,
             watcher_ready_tx,
         );
-        match watcher_ready_rx.await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
+        match tokio::time::timeout(watcher_initial_scan_timeout, watcher_ready_rx).await {
+            Err(_) => {
+                watcher_handle.abort();
                 return Err(StorageError::Io(format!(
-                    "mailbox index initial scan: {error}"
+                    "mailbox index initial scan timed out after {watcher_initial_scan_timeout:?}"
                 )));
             }
-            Err(_) => {
-                return Err(StorageError::Io(
-                    "mailbox index watcher exited before initial scan".to_string(),
-                ));
-            }
+            Ok(ready) => match ready {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    return Err(StorageError::Io(format!(
+                        "mailbox index initial scan: {error}"
+                    )));
+                }
+                Err(_) => {
+                    return Err(StorageError::Io(
+                        "mailbox index watcher exited before initial scan".to_string(),
+                    ));
+                }
+            },
         }
 
         let sweeper_shutdown_rx = shutdown_tx.subscribe();
@@ -140,6 +156,7 @@ impl NatsMailboxStore {
             Arc::clone(&index),
             sweeper_shutdown_rx,
             config.sweeper_interval,
+            sweeper_republish_after,
         );
 
         Ok(Self {
@@ -150,6 +167,8 @@ impl NatsMailboxStore {
             kv_thread_index,
             consumer,
             stream_name: config.stream_name,
+            authoritative_scan_timeout,
+            live_request_timeout,
             index,
             shutdown_tx,
             _watcher: watcher_handle,
@@ -193,6 +212,49 @@ impl NatsMailboxStore {
     #[doc(hidden)]
     pub async fn __test_remove_dispatch_from_index(&self, dispatch_id: &str) {
         self.index.write().await.remove(dispatch_id);
+    }
+
+    #[doc(hidden)]
+    pub async fn __test_purge_thread_index(&self, thread_id: &str) -> Result<(), StorageError> {
+        self.kv_thread_index
+            .purge(&keys::thread_index_key(thread_id))
+            .await
+            .map(|_| ())
+            .map_err(|e| StorageError::Io(format!("purge thread index: {e}")))
+    }
+
+    #[doc(hidden)]
+    pub async fn __test_purge_thread_claim(&self, thread_id: &str) -> Result<(), StorageError> {
+        self.kv_thread_index
+            .purge(&keys::thread_claim_key(thread_id))
+            .await
+            .map(|_| ())
+            .map_err(|e| StorageError::Io(format!("purge thread claim: {e}")))
+    }
+
+    #[doc(hidden)]
+    pub async fn __test_purge_dedupe_lock(
+        &self,
+        thread_id: &str,
+        dedupe_key: &str,
+    ) -> Result<(), StorageError> {
+        self.kv_thread_index
+            .purge(&keys::dedupe_lock_key(thread_id, dedupe_key))
+            .await
+            .map(|_| ())
+            .map_err(|e| StorageError::Io(format!("purge dedupe lock: {e}")))
+    }
+
+    #[doc(hidden)]
+    pub async fn __test_delete_dispatch_record(
+        &self,
+        dispatch_id: &str,
+    ) -> Result<(), StorageError> {
+        self.kv_dispatch
+            .delete(&keys::dispatch_key(dispatch_id))
+            .await
+            .map(|_| ())
+            .map_err(|e| StorageError::Io(format!("delete dispatch record: {e}")))
     }
 
     /// Test-only: force a dedupe lock into the KV bucket without going
@@ -242,6 +304,7 @@ impl NatsMailboxStore {
             .await
             .map_err(|e| StorageError::Io(format!("dedupe lock entry: {e}")))?;
         entry
+            .filter(|entry| !kv_helpers::is_tombstone(entry))
             .map(|entry| codec::decode_dedupe_lock(&entry.value).map(|lock| lock.dispatch_id))
             .transpose()
     }
@@ -263,6 +326,7 @@ impl NatsMailboxStore {
             .await
             .map_err(|e| StorageError::Io(format!("kv entry: {e}")))?
         {
+            Some(entry) if kv_helpers::is_tombstone(&entry) => 0,
             Some(entry) => codec::decode_epoch(&entry.value)?,
             None => 0,
         };
@@ -497,6 +561,12 @@ impl MailboxStore for NatsMailboxStore {
                 let _ = message.ack().await;
                 continue;
             };
+            if dispatch.status.is_terminal() {
+                ops_write::cleanup_thread_index(self, &dispatch).await;
+            } else {
+                ops_write::append_thread_index(self, &dispatch.thread_id, &dispatch.dispatch_id)
+                    .await?;
+            }
             self.index.write().await.upsert(dispatch.clone());
             entries.push(DispatchSignalEntry {
                 thread_id: dispatch.thread_id,
@@ -569,18 +639,28 @@ async fn deliver_live_subject(
 ) -> Result<LiveDeliveryOutcome, StorageError> {
     let payload = serde_json::to_vec(&cmd)
         .map_err(|e| StorageError::Serialization(format!("LiveRunCommand encode: {e}")))?;
-    match store.client.request(subject, Bytes::from(payload)).await {
-        Ok(_) => Ok(LiveDeliveryOutcome::Delivered),
-        Err(err) => match err.kind() {
-            async_nats::client::RequestErrorKind::NoResponders
-            | async_nats::client::RequestErrorKind::TimedOut => {
-                Ok(LiveDeliveryOutcome::NoSubscriber)
-            }
-            async_nats::client::RequestErrorKind::Other => {
-                Err(StorageError::Io(format!("nats request: {err}")))
-            }
+    let result = match tokio::time::timeout(
+        store.live_request_timeout,
+        store.client.request(subject, Bytes::from(payload)),
+    )
+    .await
+    {
+        Err(_) => Ok(LiveDeliveryOutcome::NoSubscriber),
+        Ok(result) => match result {
+            Ok(_) => Ok(LiveDeliveryOutcome::Delivered),
+            Err(err) => match err.kind() {
+                async_nats::client::RequestErrorKind::NoResponders
+                | async_nats::client::RequestErrorKind::TimedOut => {
+                    Ok(LiveDeliveryOutcome::NoSubscriber)
+                }
+                async_nats::client::RequestErrorKind::Other => {
+                    Err(StorageError::Io(format!("nats request: {err}")))
+                }
+            },
         },
-    }
+    };
+    metrics::inc_live_delivery(&result);
+    result
 }
 
 async fn open_live_subject(
@@ -646,6 +726,13 @@ struct NatsDispatchSignalReceipt {
 
 #[async_trait]
 impl DispatchSignalReceipt for NatsDispatchSignalReceipt {
+    fn redelivery_attempts(&self) -> Option<u64> {
+        self.message
+            .info()
+            .ok()
+            .and_then(|info| u64::try_from(info.delivered).ok())
+    }
+
     async fn ack(self: Box<Self>) -> Result<(), StorageError> {
         self.message
             .ack()

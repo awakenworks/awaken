@@ -11,7 +11,11 @@ pub struct NatsMailboxConfig {
     pub epoch_bucket: String,
     pub thread_index_bucket: String,
     pub sweeper_interval: Duration,
+    pub sweeper_republish_after: Duration,
     pub dedup_window: Duration,
+    pub watcher_initial_scan_timeout: Duration,
+    pub authoritative_scan_timeout: Duration,
+    pub nats_request_timeout: Duration,
 }
 
 impl NatsMailboxConfig {
@@ -35,7 +39,11 @@ impl Default for NatsMailboxConfig {
             epoch_bucket: "thread-epoch".to_string(),
             thread_index_bucket: "thread-index".to_string(),
             sweeper_interval: Duration::from_secs(5),
+            sweeper_republish_after: Duration::from_secs(30),
             dedup_window: Duration::from_secs(120),
+            watcher_initial_scan_timeout: Duration::from_secs(30),
+            authoritative_scan_timeout: Duration::from_secs(30),
+            nats_request_timeout: Duration::from_secs(5),
         }
     }
 }

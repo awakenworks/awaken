@@ -73,6 +73,12 @@ impl InMemoryMailboxStore {
         dispatch.lease_until = None;
     }
 
+    fn clear_claim_fields(dispatch: &mut RunDispatch) {
+        dispatch.claim_token = None;
+        dispatch.claimed_by = None;
+        dispatch.lease_until = None;
+    }
+
     fn live_key_for_thread(thread_id: &str) -> String {
         format!("thread:{thread_id}")
     }
@@ -342,7 +348,9 @@ impl MailboxStore for InMemoryMailboxStore {
         }
 
         dispatch.status = RunDispatchStatus::Acked;
+        dispatch.completed_at = Some(now);
         dispatch.updated_at = now;
+        Self::clear_claim_fields(dispatch);
         Ok(())
     }
 
@@ -485,15 +493,14 @@ impl MailboxStore for InMemoryMailboxStore {
         dispatch.attempt_count += 1;
         dispatch.last_error = Some(error.to_string());
         dispatch.updated_at = now;
+        Self::clear_claim_fields(dispatch);
 
         if dispatch.attempt_count >= dispatch.max_attempts {
             dispatch.status = RunDispatchStatus::DeadLetter;
+            dispatch.completed_at = Some(now);
         } else {
             dispatch.status = RunDispatchStatus::Queued;
             dispatch.available_at = retry_at;
-            dispatch.claim_token = None;
-            dispatch.claimed_by = None;
-            dispatch.lease_until = None;
         }
 
         Ok(())
@@ -538,7 +545,9 @@ impl MailboxStore for InMemoryMailboxStore {
 
         dispatch.status = RunDispatchStatus::DeadLetter;
         dispatch.last_error = Some(error.to_string());
+        dispatch.completed_at = Some(now);
         dispatch.updated_at = now;
+        Self::clear_claim_fields(dispatch);
         Ok(())
     }
 
@@ -555,7 +564,9 @@ impl MailboxStore for InMemoryMailboxStore {
         };
 
         dispatch.status = RunDispatchStatus::Cancelled;
+        dispatch.completed_at = Some(now);
         dispatch.updated_at = now;
+        Self::clear_claim_fields(dispatch);
         Ok(Some(dispatch.clone()))
     }
 
@@ -792,12 +803,11 @@ impl MailboxStore for InMemoryMailboxStore {
 
             if dispatch.attempt_count >= dispatch.max_attempts {
                 dispatch.status = RunDispatchStatus::DeadLetter;
+                dispatch.completed_at = Some(now);
             } else {
                 dispatch.status = RunDispatchStatus::Queued;
-                dispatch.claim_token = None;
-                dispatch.claimed_by = None;
-                dispatch.lease_until = None;
             }
+            Self::clear_claim_fields(dispatch);
             reclaimed.push(dispatch.clone());
         }
 

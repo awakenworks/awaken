@@ -6,7 +6,7 @@ use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchResult, RunDispatchStatus};
 use awaken_contract::contract::storage::StorageError;
 
-use super::{NatsMailboxStore, claim_guard, codec, keys};
+use super::{NatsMailboxStore, claim_guard, codec, keys, kv_helpers, metrics};
 
 const DEDUPE_ORPHAN_GRACE_MS: u64 = 5_000;
 
@@ -161,8 +161,10 @@ async fn acquire_dedupe_lock(
                 if err.kind() != CreateErrorKind::AlreadyExists {
                     return Err(StorageError::Io(format!("dedupe lock create: {err}")));
                 }
+                metrics::inc_dedupe_lock_conflict();
                 // Conflict → reconcile against the authoritative state.
                 if reconcile_dedupe_lock(store, thread_id, dedupe_key).await? {
+                    metrics::inc_dedupe_lock_reconciled();
                     // Orphan/terminal/stale lock purged; retry acquire.
                     continue;
                 }
@@ -195,6 +197,9 @@ async fn reconcile_dedupe_lock(
         Some(entry) => entry,
         None => return Ok(true), // gone already; retry acquire
     };
+    if kv_helpers::is_tombstone(&entry) {
+        return Ok(true);
+    }
     let lock = codec::decode_dedupe_lock(&entry.value)?;
     if lock.dispatch_id.is_empty() {
         return purge_lock_if_revision(store, &key, entry.revision).await;
@@ -214,6 +219,9 @@ async fn reconcile_dedupe_lock(
         }
         return purge_lock_if_revision(store, &key, entry.revision).await;
     };
+    if kv_helpers::is_tombstone(&holder_entry) {
+        return purge_lock_if_revision(store, &key, entry.revision).await;
+    }
     let holder = codec::decode(&holder_entry.value)?;
     if matches!(
         holder.status,
@@ -230,6 +238,7 @@ async fn reconcile_dedupe_lock(
         .await
         .map_err(|e| StorageError::Io(format!("dedupe reconcile epoch lookup: {e}")))?
     {
+        Some(e) if kv_helpers::is_tombstone(&e) => 0,
         Some(e) => codec::decode_epoch(&e.value)?,
         None => 0,
     };
@@ -264,15 +273,14 @@ async fn purge_lock_if_revision(
     {
         Ok(_) => Ok(true),
         Err(err) => {
-            if store
-                .kv_thread_index
-                .entry(key)
-                .await
-                .map_err(|e| {
-                    StorageError::Io(format!("dedupe lock entry after purge conflict: {e}"))
-                })?
-                .is_none()
-            {
+            let entry_after_conflict = store.kv_thread_index.entry(key).await.map_err(|e| {
+                StorageError::Io(format!("dedupe lock entry after purge conflict: {e}"))
+            })?;
+            let lock_is_gone = match entry_after_conflict.as_ref() {
+                Some(entry) => kv_helpers::is_tombstone(entry),
+                None => true,
+            };
+            if lock_is_gone {
                 return Ok(true);
             }
             tracing::warn!(key, revision, error = %err, "dedupe lock purge failed");
@@ -291,6 +299,7 @@ pub(crate) async fn current_thread_epoch(
         .await
         .map_err(|e| StorageError::Io(format!("kv entry epoch: {e}")))?
     {
+        Some(e) if kv_helpers::is_tombstone(&e) => Ok(0),
         Some(e) => codec::decode_epoch(&e.value),
         None => Ok(0),
     }
@@ -320,6 +329,9 @@ pub(super) async fn release_dedupe_lock(
             return;
         }
     };
+    if kv_helpers::is_tombstone(&entry) {
+        return;
+    }
     let lock = match codec::decode_dedupe_lock(&entry.value) {
         Ok(lock) => lock,
         Err(err) => {
@@ -364,18 +376,26 @@ pub(crate) async fn append_thread_index(
     thread_id: &str,
     dispatch_id: &str,
 ) -> Result<(), StorageError> {
+    append_thread_index_to_bucket(&store.kv_thread_index, thread_id, dispatch_id).await
+}
+
+pub(crate) async fn append_thread_index_to_bucket(
+    kv_thread_index: &async_nats::jetstream::kv::Store,
+    thread_id: &str,
+    dispatch_id: &str,
+) -> Result<(), StorageError> {
     let key = keys::thread_index_key(thread_id);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut backoff = std::time::Duration::from_micros(200);
     let mut attempts = 0u32;
     loop {
         attempts += 1;
-        let entry = store
-            .kv_thread_index
+        let entry = kv_thread_index
             .entry(&key)
             .await
             .map_err(|e| StorageError::Io(format!("kv entry: {e}")))?;
         let (mut ids, revision) = match entry {
+            Some(e) if kv_helpers::is_tombstone(&e) => (Vec::new(), 0),
             Some(e) => (codec::decode_thread_index(&e.value)?, e.revision),
             None => (Vec::new(), 0),
         };
@@ -385,15 +405,13 @@ pub(crate) async fn append_thread_index(
         ids.push(dispatch_id.to_string());
         let bytes = codec::encode_thread_index(&ids)?;
         let result: Result<(), String> = if revision == 0 {
-            store
-                .kv_thread_index
+            kv_thread_index
                 .create(&key, bytes)
                 .await
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         } else {
-            store
-                .kv_thread_index
+            kv_thread_index
                 .update(&key, bytes, revision)
                 .await
                 .map(|_| ())
@@ -408,6 +426,84 @@ pub(crate) async fn append_thread_index(
                     )));
                 }
                 tracing::debug!(error = %e, "thread_index CAS retry");
+                tokio::time::sleep(backoff).await;
+                backoff = std::cmp::min(
+                    backoff.saturating_mul(2),
+                    std::time::Duration::from_millis(20),
+                );
+            }
+        }
+    }
+}
+
+pub(super) async fn cleanup_thread_index(store: &NatsMailboxStore, dispatch: &RunDispatch) {
+    if let Err(error) = remove_thread_index_from_bucket(
+        &store.kv_thread_index,
+        &dispatch.thread_id,
+        &dispatch.dispatch_id,
+    )
+    .await
+    {
+        tracing::warn!(
+            thread_id = %dispatch.thread_id,
+            dispatch_id = %dispatch.dispatch_id,
+            error = %error,
+            "failed to remove terminal dispatch from thread index"
+        );
+    }
+}
+
+pub(crate) async fn remove_thread_index_from_bucket(
+    kv_thread_index: &async_nats::jetstream::kv::Store,
+    thread_id: &str,
+    dispatch_id: &str,
+) -> Result<(), StorageError> {
+    let key = keys::thread_index_key(thread_id);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut backoff = std::time::Duration::from_micros(200);
+    let mut attempts = 0u32;
+    loop {
+        attempts += 1;
+        let entry = kv_thread_index
+            .entry(&key)
+            .await
+            .map_err(|e| StorageError::Io(format!("kv entry: {e}")))?;
+        let Some(entry) = entry else {
+            return Ok(());
+        };
+        if kv_helpers::is_tombstone(&entry) {
+            return Ok(());
+        }
+        let mut ids = codec::decode_thread_index(&entry.value)?;
+        let original_len = ids.len();
+        ids.retain(|id| id != dispatch_id);
+        if ids.len() == original_len {
+            return Ok(());
+        }
+
+        let result = if ids.is_empty() {
+            kv_thread_index
+                .purge_expect_revision(&key, Some(entry.revision))
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        } else {
+            let bytes = codec::encode_thread_index(&ids)?;
+            kv_thread_index
+                .update(&key, bytes, entry.revision)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        };
+        match result {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(StorageError::Io(format!(
+                        "thread_index remove CAS timeout after {attempts} attempts"
+                    )));
+                }
+                tracing::debug!(error = %e, "thread_index remove CAS retry");
                 tokio::time::sleep(backoff).await;
                 backoff = std::cmp::min(
                     backoff.saturating_mul(2),
@@ -434,6 +530,9 @@ pub async fn extend_lease(
         let Some(entry) = entry else {
             return Ok(false);
         };
+        if kv_helpers::is_tombstone(&entry) {
+            return Ok(false);
+        }
         let mut dispatch = codec::decode(&entry.value)?;
         if dispatch.status != RunDispatchStatus::Claimed {
             return Ok(false);
@@ -447,9 +546,7 @@ pub async fn extend_lease(
             dispatch.dispatch_epoch = thread_epoch;
             dispatch.completed_at = Some(now);
             dispatch.updated_at = now;
-            dispatch.claim_token = None;
-            dispatch.claimed_by = None;
-            dispatch.lease_until = None;
+            clear_claim_fields(&mut dispatch);
             let bytes = codec::encode(&dispatch)?;
             if let Ok(revision) = store
                 .kv_dispatch
@@ -471,6 +568,7 @@ pub async fn extend_lease(
                     )
                     .await;
                 }
+                cleanup_thread_index(store, &dispatch).await;
                 return Ok(false);
             }
             continue;
@@ -528,6 +626,9 @@ where
         let Some(entry) = entry else {
             return Ok(None);
         };
+        if kv_helpers::is_tombstone(&entry) {
+            return Ok(None);
+        }
         let mut dispatch = codec::decode(&entry.value)?;
         if let Some(now) = stale_check_now
             && dispatch.status == RunDispatchStatus::Claimed
@@ -567,6 +668,7 @@ where
                         )
                         .await;
                     }
+                    cleanup_thread_index(store, &dispatch).await;
                     return Err(StorageError::VersionConflict {
                         expected: stale_epoch,
                         actual: thread_epoch,
@@ -593,7 +695,7 @@ where
     Err(StorageError::Io("CAS exhausted retries".to_string()))
 }
 
-fn clear_claim_fields(dispatch: &mut RunDispatch) {
+pub(super) fn clear_claim_fields(dispatch: &mut RunDispatch) {
     dispatch.claim_token = None;
     dispatch.claimed_by = None;
     dispatch.lease_until = None;
@@ -640,6 +742,7 @@ pub async fn ack(
             )
             .await;
         }
+        cleanup_thread_index(store, &dispatch).await;
     }
     Ok(())
 }
@@ -697,6 +800,9 @@ pub async fn nack(
             )
             .await;
         }
+        if dispatch.status == RunDispatchStatus::DeadLetter {
+            cleanup_thread_index(store, &dispatch).await;
+        }
     }
     Ok(())
 }
@@ -741,6 +847,7 @@ pub async fn dead_letter(
             )
             .await;
         }
+        cleanup_thread_index(store, &dispatch).await;
     }
     Ok(())
 }
@@ -761,6 +868,9 @@ pub async fn supersede_claimed(
         let Some(entry) = entry else {
             return Ok(None);
         };
+        if kv_helpers::is_tombstone(&entry) {
+            return Ok(None);
+        }
         let mut dispatch = codec::decode(&entry.value)?;
         if dispatch.status != RunDispatchStatus::Claimed {
             return Ok(None);
@@ -802,6 +912,7 @@ pub async fn supersede_claimed(
                 )
                 .await;
             }
+            cleanup_thread_index(store, &dispatch).await;
             return Ok(Some(dispatch));
         }
     }
@@ -845,6 +956,9 @@ pub async fn cancel(
             &dispatch.dispatch_id,
         )
         .await;
+    }
+    if let Some(ref dispatch) = result {
+        cleanup_thread_index(store, dispatch).await;
     }
     Ok(result)
 }

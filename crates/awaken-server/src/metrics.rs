@@ -109,6 +109,33 @@ pub fn inc_mailbox_operation_by(operation: &str, result: &str, count: u64) {
     .increment(count);
 }
 
+/// Increment dispatch signal pull count.
+pub fn inc_mailbox_dispatch_signal_pulled_by(count: u64) {
+    if count == 0 {
+        return;
+    }
+    counter!("awaken_mailbox_dispatch_signal_pulled_total").increment(count);
+}
+
+/// Increment successful dispatch signal ack count.
+pub fn inc_mailbox_dispatch_signal_ack() {
+    counter!("awaken_mailbox_dispatch_signal_ack_total").increment(1);
+}
+
+/// Increment successful dispatch signal nack count.
+pub fn inc_mailbox_dispatch_signal_nack(delayed: bool) {
+    counter!(
+        "awaken_mailbox_dispatch_signal_nack_total",
+        "delayed" => delayed.to_string()
+    )
+    .increment(1);
+}
+
+/// Increment dispatch signal redelivery count.
+pub fn inc_mailbox_dispatch_signal_redelivery() {
+    counter!("awaken_mailbox_dispatch_signal_redelivery_total").increment(1);
+}
+
 /// Record mailbox enqueue → dispatch processing start latency in seconds.
 pub fn record_mailbox_dispatch_enqueue_to_start(seconds: f64) {
     histogram!("awaken_mailbox_dispatch_enqueue_to_start_seconds").record(seconds);
@@ -328,6 +355,10 @@ mod tests {
         record_mailbox_dispatch_runtime(0.49, "completed");
         record_mailbox_operation("enqueue", "ok", 0.001);
         inc_mailbox_operation_by("reclaim", "ok", 2);
+        inc_mailbox_dispatch_signal_pulled_by(1);
+        inc_mailbox_dispatch_signal_ack();
+        inc_mailbox_dispatch_signal_nack(true);
+        inc_mailbox_dispatch_signal_redelivery();
         set_mailbox_dispatch_depth("queued", 3.0);
         record_run_completion(1.23, "completed");
         inc_inference_requests_with_provider("gpt-4", "openai", "ok");
@@ -492,6 +523,20 @@ mod tests {
             output.contains("awaken_mailbox_operation_duration_seconds"),
             "expected mailbox operation duration histogram in output"
         );
+    }
+
+    #[test]
+    fn mailbox_dispatch_signal_metrics_appear_in_output() {
+        install_recorder();
+        inc_mailbox_dispatch_signal_pulled_by(2);
+        inc_mailbox_dispatch_signal_ack();
+        inc_mailbox_dispatch_signal_nack(true);
+        inc_mailbox_dispatch_signal_redelivery();
+        let output = render().unwrap_or_default();
+        assert!(output.contains("awaken_mailbox_dispatch_signal_pulled_total"));
+        assert!(output.contains("awaken_mailbox_dispatch_signal_ack_total"));
+        assert!(output.contains("awaken_mailbox_dispatch_signal_nack_total"));
+        assert!(output.contains("awaken_mailbox_dispatch_signal_redelivery_total"));
     }
 
     #[test]

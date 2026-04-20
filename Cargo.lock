@@ -561,6 +561,7 @@ dependencies = [
  "awaken-contract",
  "bytes",
  "futures",
+ "metrics",
  "proptest",
  "rusqlite",
  "serde",

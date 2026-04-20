@@ -32,6 +32,12 @@ struct ThreadBatch {
     msgs_to_ack: Vec<async_nats::jetstream::Message>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WalAckAction {
+    Ack,
+    Nak,
+}
+
 pub fn spawn_flusher<T: ThreadRunStore + Send + Sync + 'static>(
     inner: Arc<T>,
     consumer: async_nats::jetstream::consumer::PullConsumer,
@@ -99,6 +105,29 @@ async fn decode_or_ack(msg: &async_nats::jetstream::Message) -> Option<entry::Ch
             tracing::warn!(error = %err, "poison entry; acking to skip");
             let _ = msg.ack().await;
             None
+        }
+    }
+}
+
+fn wal_ack_action(checkpoints_ok: bool, watermark_ok: bool) -> WalAckAction {
+    if checkpoints_ok && watermark_ok {
+        WalAckAction::Ack
+    } else {
+        WalAckAction::Nak
+    }
+}
+
+async fn finish_wal_messages(messages: Vec<async_nats::jetstream::Message>, action: WalAckAction) {
+    for msg in messages {
+        let result = match action {
+            WalAckAction::Ack => msg.ack().await,
+            WalAckAction::Nak => {
+                msg.ack_with(async_nats::jetstream::AckKind::Nak(None))
+                    .await
+            }
+        };
+        if let Err(error) = result {
+            tracing::warn!(%error, ?action, "failed to finish WAL message");
         }
     }
 }
@@ -206,11 +235,7 @@ async fn flush_batch<T: ThreadRunStore + Send + Sync + 'static>(
             Ok(seq) => seq,
             Err(e) => {
                 tracing::warn!(thread_id, error = %e, "read flushed_seq failed");
-                for msg in batch.msgs_to_ack {
-                    let _ = msg
-                        .ack_with(async_nats::jetstream::AckKind::Nak(None))
-                        .await;
-                }
+                finish_wal_messages(batch.msgs_to_ack, WalAckAction::Nak).await;
                 continue;
             }
         };
@@ -223,17 +248,8 @@ async fn flush_batch<T: ThreadRunStore + Send + Sync + 'static>(
             let stale_ok =
                 persist_stale_runs_without_projection(inner.as_ref(), &thread_id, &stale_runs)
                     .await;
-            if stale_ok {
-                for msg in batch.msgs_to_ack {
-                    let _ = msg.ack().await;
-                }
-            } else {
-                for msg in batch.msgs_to_ack {
-                    let _ = msg
-                        .ack_with(async_nats::jetstream::AckKind::Nak(None))
-                        .await;
-                }
-            }
+            let action = wal_ack_action(stale_ok, true);
+            finish_wal_messages(batch.msgs_to_ack, action).await;
             continue;
         }
 
@@ -251,26 +267,25 @@ async fn flush_batch<T: ThreadRunStore + Send + Sync + 'static>(
             .await
         };
         let all_ok = stale_ok && fresh_ok;
-
-        if all_ok {
-            if let Err(e) =
-                hot_meta::write_flushed_seq(kv_hot, &thread_id, batch.latest_thread_seq).await
-            {
-                tracing::warn!(thread_id, error = %e, "write flushed_seq failed");
-            }
-            for msg in batch.msgs_to_ack {
-                let _ = msg.ack().await;
+        let watermark_ok = if all_ok {
+            match hot_meta::write_flushed_seq(kv_hot, &thread_id, batch.latest_thread_seq).await {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::warn!(
+                        thread_id,
+                        error = %e,
+                        "write flushed_seq failed; nacking WAL batch for redelivery"
+                    );
+                    false
+                }
             }
         } else {
-            for msg in batch.msgs_to_ack {
-                let _ = msg
-                    .ack_with(async_nats::jetstream::AckKind::Nak(None))
-                    .await;
-            }
-        }
+            false
+        };
+        let action = wal_ack_action(all_ok, watermark_ok);
+        finish_wal_messages(batch.msgs_to_ack, action).await;
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,6 +331,14 @@ mod tests {
         let ordered = order_runs_for_flush(map);
         let seqs: Vec<u64> = ordered.iter().map(|(_, s)| *s).collect();
         assert_eq!(seqs, vec![10, 42, 99]);
+    }
+
+    #[test]
+    fn watermark_write_failure_naks_wal_batch() {
+        assert_eq!(wal_ack_action(true, true), WalAckAction::Ack);
+        assert_eq!(wal_ack_action(true, false), WalAckAction::Nak);
+        assert_eq!(wal_ack_action(false, true), WalAckAction::Nak);
+        assert_eq!(wal_ack_action(false, false), WalAckAction::Nak);
     }
 
     /// Regression for issue #4: flushing a batch with multiple runs for the

@@ -51,6 +51,12 @@ pub fn make_dispatch(
     }
 }
 
+fn assert_claim_fields_clear(dispatch: &RunDispatch) {
+    assert!(dispatch.claim_token.is_none());
+    assert!(dispatch.claimed_by.is_none());
+    assert!(dispatch.lease_until.is_none());
+}
+
 /// Enqueue a single dispatch and verify it is returned by `list_dispatches`.
 pub async fn enqueue_and_list<S: MailboxStore>(store: &S) {
     let dispatch = make_dispatch("d1", "t-enqueue", "r1", 128, 1000);
@@ -198,6 +204,7 @@ pub async fn ack_transitions_to_acked<S: MailboxStore>(store: &S) {
 
     let loaded = store.load_dispatch("d1").await.unwrap().unwrap();
     assert_eq!(loaded.status, RunDispatchStatus::Acked);
+    assert_claim_fields_clear(&loaded);
 }
 
 /// `ack()` with a claim_token that does not match the active lease must fail.
@@ -276,6 +283,7 @@ pub async fn nack_dead_letters_after_max_attempts<S: MailboxStore>(store: &S) {
     let loaded = store.load_dispatch("d1").await.unwrap().unwrap();
     assert_eq!(loaded.status, RunDispatchStatus::DeadLetter);
     assert_eq!(loaded.attempt_count, 2);
+    assert_claim_fields_clear(&loaded);
 }
 
 /// `cancel()` on a Queued dispatch transitions it to Cancelled.
@@ -289,6 +297,7 @@ pub async fn cancel_queued_dispatch<S: MailboxStore>(store: &S) {
 
     let loaded = store.load_dispatch("d1").await.unwrap().unwrap();
     assert_eq!(loaded.status, RunDispatchStatus::Cancelled);
+    assert_claim_fields_clear(&loaded);
 }
 
 /// `cancel()` is only for Queued dispatches; Claimed dispatches remain owned by
@@ -615,6 +624,7 @@ pub async fn reclaim_expired_leases_dead_letters_at_max_attempts<S: MailboxStore
     let loaded = store.load_dispatch("d1").await.unwrap().unwrap();
     assert_eq!(loaded.status, RunDispatchStatus::DeadLetter);
     assert_eq!(loaded.attempt_count, 1);
+    assert_claim_fields_clear(&loaded);
 }
 
 /// `purge_terminal()` removes terminal dispatches older than the cutoff.

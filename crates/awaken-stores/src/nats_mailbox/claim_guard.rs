@@ -2,7 +2,7 @@
 
 use awaken_contract::contract::storage::StorageError;
 
-use super::{NatsMailboxStore, codec, keys};
+use super::{NatsMailboxStore, codec, keys, kv_helpers};
 
 pub(crate) struct AcquiredThreadClaim {
     pub claim_token: String,
@@ -23,12 +23,59 @@ pub(crate) async fn active_dispatch_id(
     else {
         return Ok(None);
     };
+    if kv_helpers::is_tombstone(&entry) {
+        return Ok(None);
+    }
     let claim = codec::decode_thread_claim(&entry.value)?;
     if claim.lease_until >= now {
         Ok(Some(claim.dispatch_id))
     } else {
         Ok(None)
     }
+}
+
+pub(crate) async fn expired_dispatch_ids(
+    store: &NatsMailboxStore,
+    now: u64,
+    limit: usize,
+) -> Result<Vec<String>, StorageError> {
+    use futures::StreamExt;
+
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut keys = store
+        .kv_thread_index
+        .keys()
+        .await
+        .map_err(|e| StorageError::Io(format!("thread claim keys: {e}")))?;
+    let mut expired = Vec::new();
+    while let Some(key_result) = keys.next().await {
+        let key = key_result.map_err(|e| StorageError::Io(format!("thread claim key: {e}")))?;
+        if !key.starts_with("claim.") {
+            continue;
+        }
+        let entry = store
+            .kv_thread_index
+            .entry(&key)
+            .await
+            .map_err(|e| StorageError::Io(format!("thread claim entry: {e}")))?;
+        let Some(entry) = entry else {
+            continue;
+        };
+        if kv_helpers::is_tombstone(&entry) {
+            continue;
+        }
+        let claim = codec::decode_thread_claim(&entry.value)?;
+        if claim.lease_until != 0 && claim.lease_until < now {
+            expired.push(claim.dispatch_id);
+            if expired.len() >= limit {
+                break;
+            }
+        }
+    }
+    Ok(expired)
 }
 
 pub(crate) async fn acquire(
@@ -45,6 +92,7 @@ pub(crate) async fn acquire(
             .entry(&key)
             .await
             .map_err(|e| StorageError::Io(format!("thread claim entry: {e}")))?;
+        let entry = entry.filter(|entry| !kv_helpers::is_tombstone(entry));
 
         if let Some(ref entry) = entry {
             let existing = codec::decode_thread_claim(&entry.value)?;
@@ -107,6 +155,9 @@ pub(crate) async fn extend(
         let Some(entry) = entry else {
             return Ok(false);
         };
+        if kv_helpers::is_tombstone(&entry) {
+            return Ok(false);
+        }
         let mut claim = codec::decode_thread_claim(&entry.value)?;
         if claim.dispatch_id != dispatch_id || claim.claim_token != claim_token {
             return Ok(false);
@@ -142,6 +193,9 @@ pub(crate) async fn release(
         let Some(entry) = entry else {
             return Ok(());
         };
+        if kv_helpers::is_tombstone(&entry) {
+            return Ok(());
+        }
         let mut claim = codec::decode_thread_claim(&entry.value)?;
         if claim.dispatch_id != dispatch_id || claim.claim_token != claim_token {
             return Ok(());

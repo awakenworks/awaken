@@ -4,9 +4,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
+use awaken_contract::contract::storage::StorageError;
 use tokio::sync::RwLock;
 
-use super::{codec, keys};
+use super::{codec, keys, kv_helpers, metrics, ops_write};
 
 fn status_key(status: RunDispatchStatus) -> String {
     format!("{status:?}")
@@ -137,29 +138,6 @@ impl DispatchIndex {
             .map_or(0, HashSet::len)
     }
 
-    pub fn terminal_older_than(&self, cutoff: u64) -> Vec<String> {
-        let terminal_statuses = [
-            RunDispatchStatus::Acked,
-            RunDispatchStatus::Cancelled,
-            RunDispatchStatus::Superseded,
-            RunDispatchStatus::DeadLetter,
-        ];
-        let mut out = Vec::new();
-        for status in terminal_statuses {
-            if let Some(ids) = self.by_status.get(&status_key(status)) {
-                for id in ids {
-                    if let Some(indexed) = self.by_id.get(id) {
-                        let dispatch = &indexed.dispatch;
-                        if dispatch.completed_at.is_some_and(|c| c < cutoff) {
-                            out.push(id.clone());
-                        }
-                    }
-                }
-            }
-        }
-        out
-    }
-
     pub fn available_queued(&self, now: u64) -> Vec<RunDispatch> {
         let Some(queued_ids) = self.by_status.get(&status_key(RunDispatchStatus::Queued)) else {
             return Vec::new();
@@ -176,6 +154,7 @@ impl DispatchIndex {
 /// Spawn a background task that keeps the index in sync with the KV bucket.
 pub fn spawn_watcher(
     kv: async_nats::jetstream::kv::Store,
+    kv_thread_index: async_nats::jetstream::kv::Store,
     index: Arc<RwLock<DispatchIndex>>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ready_tx: tokio::sync::oneshot::Sender<Result<(), String>>,
@@ -195,7 +174,9 @@ pub fn spawn_watcher(
             }
         };
 
-        let initial_scan = initial_scan(&kv, &index).await.map_err(|e| e.to_string());
+        let initial_scan = initial_scan(&kv, &kv_thread_index, &index)
+            .await
+            .map_err(|e| e.to_string());
         if let Err(ref e) = initial_scan {
             tracing::warn!(error = %e, "nats_mailbox watcher initial scan failed");
         }
@@ -209,7 +190,7 @@ pub fn spawn_watcher(
                 }
                 entry = watcher.next() => {
                     match entry {
-                        Some(Ok(entry)) => apply_entry(&index, entry).await,
+                        Some(Ok(entry)) => apply_entry(&kv_thread_index, &index, entry).await,
                         Some(Err(e)) => {
                             tracing::warn!(error = %e, "nats_mailbox watcher error");
                         }
@@ -223,47 +204,97 @@ pub fn spawn_watcher(
 
 async fn initial_scan(
     kv: &async_nats::jetstream::kv::Store,
+    kv_thread_index: &async_nats::jetstream::kv::Store,
     index: &Arc<RwLock<DispatchIndex>>,
-) -> Result<(), async_nats::Error> {
+) -> Result<(), StorageError> {
     use futures::StreamExt;
-    let mut keys = kv.keys().await?;
+    let started = std::time::Instant::now();
+    let mut keys = kv
+        .keys()
+        .await
+        .map_err(|e| StorageError::Io(format!("kv dispatch keys: {e}")))?;
+    let mut key_count = 0usize;
     while let Some(key_result) = keys.next().await {
         let key = match key_result {
             Ok(k) => k,
             Err(_) => continue,
         };
+        key_count += 1;
         if let Ok(Some(entry)) = kv.entry(&key).await
+            && !kv_helpers::is_tombstone(&entry)
             && let Ok(dispatch) = codec::decode(&entry.value)
         {
+            reconcile_thread_index(kv_thread_index, &dispatch).await?;
             index
                 .write()
                 .await
                 .upsert_with_revision(dispatch, entry.revision);
         }
     }
+    metrics::record_watcher_initial_scan(key_count, started.elapsed());
     Ok(())
 }
 
-async fn apply_entry(index: &Arc<RwLock<DispatchIndex>>, entry: async_nats::jetstream::kv::Entry) {
-    use async_nats::jetstream::kv::Operation;
-    match entry.operation {
-        Operation::Put => {
-            if let Ok(dispatch) = codec::decode(&entry.value) {
-                index
-                    .write()
-                    .await
-                    .upsert_with_revision(dispatch, entry.revision);
-            }
+async fn apply_entry(
+    kv_thread_index: &async_nats::jetstream::kv::Store,
+    index: &Arc<RwLock<DispatchIndex>>,
+    entry: async_nats::jetstream::kv::Entry,
+) {
+    if kv_helpers::is_tombstone(&entry) {
+        if let Some(id) = keys::dispatch_id_from_key(&entry.key) {
+            index
+                .write()
+                .await
+                .remove_with_revision(&id, entry.revision);
         }
-        Operation::Delete | Operation::Purge => {
-            if let Some(id) = keys::dispatch_id_from_key(&entry.key) {
-                index
-                    .write()
-                    .await
-                    .remove_with_revision(&id, entry.revision);
-            }
-        }
+        return;
     }
+
+    if let Ok(dispatch) = codec::decode(&entry.value) {
+        if let Err(error) = reconcile_thread_index(kv_thread_index, &dispatch).await {
+            tracing::warn!(
+                thread_id = %dispatch.thread_id,
+                dispatch_id = %dispatch.dispatch_id,
+                error = %error,
+                "failed to maintain nats_mailbox thread index from watcher"
+            );
+        }
+        index
+            .write()
+            .await
+            .upsert_with_revision(dispatch, entry.revision);
+    }
+}
+
+async fn reconcile_thread_index(
+    kv_thread_index: &async_nats::jetstream::kv::Store,
+    dispatch: &RunDispatch,
+) -> Result<(), StorageError> {
+    if is_terminal(dispatch.status) {
+        ops_write::remove_thread_index_from_bucket(
+            kv_thread_index,
+            &dispatch.thread_id,
+            &dispatch.dispatch_id,
+        )
+        .await
+    } else {
+        ops_write::append_thread_index_to_bucket(
+            kv_thread_index,
+            &dispatch.thread_id,
+            &dispatch.dispatch_id,
+        )
+        .await
+    }
+}
+
+fn is_terminal(status: RunDispatchStatus) -> bool {
+    matches!(
+        status,
+        RunDispatchStatus::Acked
+            | RunDispatchStatus::Cancelled
+            | RunDispatchStatus::Superseded
+            | RunDispatchStatus::DeadLetter
+    )
 }
 
 #[cfg(test)]

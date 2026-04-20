@@ -14,15 +14,15 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use parking_lot::Mutex as SyncMutex;
 use thiserror::Error;
-use tokio::sync::{Mutex, RwLock, mpsc};
-use tokio::task::JoinHandle;
+use tokio::sync::{Mutex, RwLock, Semaphore, mpsc};
+use tokio::task::{JoinHandle, JoinSet};
 
 use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_contract::contract::mailbox::{
-    LiveDeliveryOutcome, LiveRunCommand, LiveRunTarget, MailboxInterrupt, MailboxInterruptDetails,
-    MailboxStore, RunDispatch, RunDispatchResult, RunDispatchStatus,
+    DispatchSignalEntry, LiveDeliveryOutcome, LiveRunCommand, LiveRunTarget, MailboxInterrupt,
+    MailboxInterruptDetails, MailboxStore, RunDispatch, RunDispatchResult, RunDispatchStatus,
 };
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
@@ -45,10 +45,18 @@ const REMOTE_CANCEL_WAIT_MS: u64 = 5_000;
 #[cfg(test)]
 const REMOTE_CANCEL_WAIT_MS: u64 = 250;
 const REMOTE_CANCEL_POLL_MS: u64 = 25;
-const DISPATCH_SIGNAL_BATCH: usize = 32;
-const DISPATCH_SIGNAL_EXPIRES: Duration = Duration::from_millis(500);
+const DISPATCH_SIGNAL_BATCH_DEFAULT: usize = 32;
+const DISPATCH_SIGNAL_EXPIRES_DEFAULT: Duration = Duration::from_millis(500);
 const DISPATCH_SIGNAL_ERROR_DELAY: Duration = Duration::from_millis(250);
-const DISPATCH_SIGNAL_BLOCKED_NACK_DELAY: Duration = Duration::from_millis(500);
+const DISPATCH_SIGNAL_BLOCKED_NACK_BASE_DELAY_DEFAULT: Duration = Duration::from_millis(500);
+const DISPATCH_SIGNAL_BLOCKED_NACK_MAX_DELAY_DEFAULT: Duration = Duration::from_secs(30);
+const DISPATCH_SIGNAL_BATCH_ENV: &str = "AWAKEN_DISPATCH_SIGNAL_BATCH_SIZE";
+const DISPATCH_SIGNAL_EXPIRES_ENV: &str = "AWAKEN_DISPATCH_SIGNAL_FETCH_EXPIRES_MS";
+const DISPATCH_SIGNAL_NACK_BASE_DELAY_ENV: &str = "AWAKEN_DISPATCH_SIGNAL_NACK_BASE_DELAY_MS";
+const DISPATCH_SIGNAL_NACK_MAX_DELAY_ENV: &str = "AWAKEN_DISPATCH_SIGNAL_NACK_MAX_DELAY_MS";
+const DISPATCH_SIGNAL_MAX_CONCURRENT_HANDLERS_DEFAULT: usize = 32;
+const DISPATCH_SIGNAL_MAX_CONCURRENT_HANDLERS_ENV: &str =
+    "AWAKEN_DISPATCH_SIGNAL_MAX_CONCURRENT_HANDLERS";
 const TERMINAL_RECONCILE_BATCH: usize = 100;
 const MAILBOX_DEPTH_STATUSES: [RunDispatchStatus; 6] = [
     RunDispatchStatus::Queued,
@@ -1856,77 +1864,114 @@ impl Mailbox {
             let pull_start = Instant::now();
             let pull_result = self
                 .store
-                .pull_dispatch_signals(DISPATCH_SIGNAL_BATCH, DISPATCH_SIGNAL_EXPIRES)
+                .pull_dispatch_signals(
+                    dispatch_signal_batch_size(),
+                    dispatch_signal_fetch_expires(),
+                )
                 .await;
             record_mailbox_operation_result("signal_pull", result_label(&pull_result), pull_start);
             match pull_result {
                 Ok(entries) => {
-                    for entry in entries {
-                        self.get_or_create_worker(&entry.thread_id).await;
-                        let attempt = self.try_dispatch_next(&entry.thread_id).await;
-                        let nack_delay = match attempt {
-                            DispatchAttempt::TransientError => Some(None),
-                            DispatchAttempt::NoEligible => {
-                                match self.dispatch_signal_still_available(&entry).await {
-                                    Ok(true) => Some(Some(DISPATCH_SIGNAL_BLOCKED_NACK_DELAY)),
-                                    Ok(false) => None,
-                                    Err(error) => {
-                                        tracing::warn!(
-                                            thread_id = %entry.thread_id,
-                                            dispatch_id = %entry.dispatch_id,
-                                            error = %error,
-                                            "failed to verify unclaimed dispatch signal"
-                                        );
-                                        Some(None)
-                                    }
-                                }
-                            }
-                            DispatchAttempt::Claimed | DispatchAttempt::Busy => None,
-                        };
-                        if let Some(delay) = nack_delay {
-                            let nack_start = Instant::now();
-                            let result = if let Some(delay) = delay {
-                                entry.receipt.nack_with_delay(delay).await
-                            } else {
-                                entry.receipt.nack().await
-                            };
-                            record_mailbox_operation_result(
-                                "signal_nack",
-                                result_label(&result),
-                                nack_start,
-                            );
-                            if let Err(error) = result {
-                                tracing::warn!(
-                                    thread_id = %entry.thread_id,
-                                    dispatch_id = %entry.dispatch_id,
-                                    error = %error,
-                                    "failed to nack dispatch signal after claim error"
-                                );
-                            }
-                            continue;
-                        }
-                        let ack_start = Instant::now();
-                        let ack_result = entry.receipt.ack().await;
-                        record_mailbox_operation_result(
-                            "signal_ack",
-                            result_label(&ack_result),
-                            ack_start,
-                        );
-                        if let Err(error) = ack_result {
-                            tracing::warn!(
-                                thread_id = %entry.thread_id,
-                                dispatch_id = %entry.dispatch_id,
-                                error = %error,
-                                "failed to ack dispatch signal"
-                            );
-                        }
-                    }
+                    crate::metrics::inc_mailbox_dispatch_signal_pulled_by(entries.len() as u64);
+                    self.handle_dispatch_signal_entries(entries).await;
                 }
                 Err(error) => {
                     tracing::warn!(error = %error, "dispatch signal pull failed");
                     tokio::time::sleep(DISPATCH_SIGNAL_ERROR_DELAY).await;
                 }
             }
+        }
+    }
+
+    async fn handle_dispatch_signal_entries(self: &Arc<Self>, entries: Vec<DispatchSignalEntry>) {
+        if entries.is_empty() {
+            return;
+        }
+        let max_concurrent = dispatch_signal_max_concurrent_handlers()
+            .min(entries.len())
+            .max(1);
+        let semaphore = Arc::new(Semaphore::new(max_concurrent));
+        let mut tasks = JoinSet::new();
+        for entry in entries {
+            let Ok(permit) = Arc::clone(&semaphore).acquire_owned().await else {
+                tracing::warn!("dispatch signal concurrency limiter closed");
+                break;
+            };
+            let mailbox = Arc::clone(self);
+            tasks.spawn(async move {
+                let _permit = permit;
+                mailbox.handle_dispatch_signal_entry(entry).await;
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            if let Err(error) = result {
+                tracing::warn!(error = %error, "dispatch signal handler task failed");
+            }
+        }
+    }
+
+    async fn handle_dispatch_signal_entry(self: Arc<Self>, entry: DispatchSignalEntry) {
+        let redelivery_attempts = entry.receipt.redelivery_attempts();
+        if redelivery_attempts.is_some_and(|attempts| attempts > 1) {
+            crate::metrics::inc_mailbox_dispatch_signal_redelivery();
+        }
+        self.get_or_create_worker(&entry.thread_id).await;
+        let attempt = self.try_dispatch_next(&entry.thread_id).await;
+        let nack_delay = match attempt {
+            DispatchAttempt::TransientError => Some(None),
+            DispatchAttempt::NoEligible => {
+                match self.dispatch_signal_still_available(&entry).await {
+                    Ok(true) => Some(Some(dispatch_signal_blocked_nack_delay(
+                        redelivery_attempts,
+                    ))),
+                    Ok(false) => None,
+                    Err(error) => {
+                        tracing::warn!(
+                            thread_id = %entry.thread_id,
+                            dispatch_id = %entry.dispatch_id,
+                            error = %error,
+                            "failed to verify unclaimed dispatch signal"
+                        );
+                        Some(None)
+                    }
+                }
+            }
+            DispatchAttempt::Claimed | DispatchAttempt::Busy => None,
+        };
+        if let Some(delay) = nack_delay {
+            let nack_start = Instant::now();
+            let result = if let Some(delay) = delay {
+                entry.receipt.nack_with_delay(delay).await
+            } else {
+                entry.receipt.nack().await
+            };
+            record_mailbox_operation_result("signal_nack", result_label(&result), nack_start);
+            if result.is_ok() {
+                crate::metrics::inc_mailbox_dispatch_signal_nack(delay.is_some());
+            }
+            if let Err(error) = result {
+                tracing::warn!(
+                    thread_id = %entry.thread_id,
+                    dispatch_id = %entry.dispatch_id,
+                    error = %error,
+                    "failed to nack dispatch signal after claim error"
+                );
+            }
+            return;
+        }
+        let ack_start = Instant::now();
+        let ack_result = entry.receipt.ack().await;
+        record_mailbox_operation_result("signal_ack", result_label(&ack_result), ack_start);
+        if ack_result.is_ok() {
+            crate::metrics::inc_mailbox_dispatch_signal_ack();
+        }
+        if let Err(error) = ack_result {
+            tracing::warn!(
+                thread_id = %entry.thread_id,
+                dispatch_id = %entry.dispatch_id,
+                error = %error,
+                "failed to ack dispatch signal"
+            );
         }
     }
 
@@ -3200,6 +3245,60 @@ fn record_mailbox_dispatch_terminal_metrics(dispatch: &RunDispatch, outcome: &st
 
 fn record_mailbox_operation_result(operation: &str, result: &str, start: Instant) {
     crate::metrics::record_mailbox_operation(operation, result, start.elapsed().as_secs_f64());
+}
+
+fn dispatch_signal_blocked_nack_delay(redelivery_attempts: Option<u64>) -> Duration {
+    let exponent = redelivery_attempts.unwrap_or(1).saturating_sub(1).min(16);
+    let multiplier = 1u32.checked_shl(exponent as u32).unwrap_or(u32::MAX);
+    dispatch_signal_nack_base_delay()
+        .saturating_mul(multiplier)
+        .min(dispatch_signal_nack_max_delay())
+}
+
+fn dispatch_signal_batch_size() -> usize {
+    env_usize(DISPATCH_SIGNAL_BATCH_ENV, DISPATCH_SIGNAL_BATCH_DEFAULT)
+}
+
+fn dispatch_signal_fetch_expires() -> Duration {
+    env_duration_ms(DISPATCH_SIGNAL_EXPIRES_ENV, DISPATCH_SIGNAL_EXPIRES_DEFAULT)
+}
+
+fn dispatch_signal_nack_base_delay() -> Duration {
+    env_duration_ms(
+        DISPATCH_SIGNAL_NACK_BASE_DELAY_ENV,
+        DISPATCH_SIGNAL_BLOCKED_NACK_BASE_DELAY_DEFAULT,
+    )
+}
+
+fn dispatch_signal_nack_max_delay() -> Duration {
+    env_duration_ms(
+        DISPATCH_SIGNAL_NACK_MAX_DELAY_ENV,
+        DISPATCH_SIGNAL_BLOCKED_NACK_MAX_DELAY_DEFAULT,
+    )
+}
+
+fn dispatch_signal_max_concurrent_handlers() -> usize {
+    env_usize(
+        DISPATCH_SIGNAL_MAX_CONCURRENT_HANDLERS_ENV,
+        DISPATCH_SIGNAL_MAX_CONCURRENT_HANDLERS_DEFAULT,
+    )
+}
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn env_duration_ms(name: &str, default: Duration) -> Duration {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(default)
 }
 
 fn result_label<T, E>(result: &Result<T, E>) -> &'static str {
@@ -4678,6 +4777,22 @@ mod tests {
         assert_eq!(config.default_max_attempts, 5);
         assert_eq!(config.default_retry_delay_ms, 250);
         assert_eq!(config.max_retry_delay_ms, 30_000);
+    }
+
+    #[test]
+    fn dispatch_signal_blocked_nack_delay_backs_off_and_caps() {
+        assert_eq!(
+            dispatch_signal_blocked_nack_delay(None),
+            Duration::from_millis(500)
+        );
+        assert_eq!(
+            dispatch_signal_blocked_nack_delay(Some(3)),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            dispatch_signal_blocked_nack_delay(Some(100)),
+            Duration::from_secs(30)
+        );
     }
 
     #[test]
