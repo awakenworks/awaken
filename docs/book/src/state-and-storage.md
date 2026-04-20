@@ -21,6 +21,21 @@ state; and memory, SQLite, or NATS JetStream for mailbox jobs. A
 `NatsBufferedThreadStore` decorator can also wrap any thread/run backend to
 coalesce checkpoint writes through a JetStream WAL.
 
+## Mailbox backend choice
+
+Mailbox jobs are run-dispatch control-plane records. They are separate from
+the thread/run checkpoint store, so a deployment can combine, for example,
+PostgreSQL thread storage with a NATS mailbox.
+
+| Backend | Use when | Boundary |
+| --- | --- | --- |
+| `InMemoryMailboxStore` | Tests, local development, and embedded single-process runs. | Process-local only; queued dispatches are lost when the process exits. |
+| `SqliteMailboxStore` | A single-node server needs durable mailbox jobs without running NATS. | Durable on local storage, but not the horizontally-scaled mailbox backend. |
+| `NatsMailboxStore` | Multiple server instances need shared dispatch ownership, wakeups, and lease recovery. | Requires JetStream and KV; all instances must share the same stream, buckets, and durable consumer. |
+
+See [Use NATS Stores](./how-to/use-nats-stores.md) for distributed mailbox
+configuration and operations.
+
 ## Related internals
 
 - [State and Snapshot Model](./explanation/state-and-snapshot-model.md)

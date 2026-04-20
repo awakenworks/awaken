@@ -55,7 +55,9 @@ Normal path: `enqueue` triggers immediate dispatch if the thread's `MailboxWorke
 ### D7: Crate placement
 
 - `awaken-contract` — `RunDispatch`, `RunDispatchStatus`, `RunRequestOrigin`, `MailboxStore` trait.
-- `awaken-stores` — `InMemoryMailboxStore`, `FileMailboxStore`, `PostgresMailboxStore`. (**Note**: only `InMemoryMailboxStore` is implemented; `FileMailboxStore` and `PostgresMailboxStore` are not yet implemented.)
+- `awaken-stores` — mailbox backend implementations. Current built-in
+  implementations are `InMemoryMailboxStore`, `SqliteMailboxStore`, and
+  `NatsMailboxStore`.
 - `awaken-server` — `Mailbox` service, `MailboxConfig`, handler integration.
 
 ### D8: Mailbox is the control plane; AgentRuntime is the execution plane
