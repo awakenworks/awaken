@@ -87,19 +87,6 @@ impl DispatchIndex {
         threads.into_iter().collect()
     }
 
-    pub fn claimed_with_expired_lease(&self, now: u64, limit: usize) -> Vec<RunDispatch> {
-        let Some(claimed_ids) = self.by_status.get(&status_key(RunDispatchStatus::Claimed)) else {
-            return Vec::new();
-        };
-        claimed_ids
-            .iter()
-            .filter_map(|id| self.by_id.get(id))
-            .filter(|d| d.lease_until.is_some_and(|until| until < now))
-            .take(limit)
-            .cloned()
-            .collect()
-    }
-
     pub fn terminal_older_than(&self, cutoff: u64) -> Vec<String> {
         let terminal_statuses = [
             RunDispatchStatus::Acked,

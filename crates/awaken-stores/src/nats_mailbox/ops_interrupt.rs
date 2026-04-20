@@ -3,7 +3,7 @@
 use awaken_contract::contract::mailbox::{MailboxInterrupt, RunDispatchStatus};
 use awaken_contract::contract::storage::StorageError;
 
-use super::{NatsMailboxStore, codec, keys, ops_write};
+use super::{NatsMailboxStore, claim_guard, codec, keys, ops_query, ops_write};
 
 enum SupersedeOutcome {
     Superseded,
@@ -18,10 +18,26 @@ pub async fn interrupt(
 ) -> Result<MailboxInterrupt, StorageError> {
     let new_epoch = bump_epoch(store, thread_id).await?;
 
-    let dispatches = store.index.read().await.list_by_thread(thread_id, None);
+    let mut dispatches = ops_query::load_thread_dispatches(store, thread_id).await?;
 
     let mut superseded_count = 0usize;
     let mut active_dispatch = None;
+
+    let guard_active_dispatch_id = claim_guard::active_dispatch_id(store, thread_id, now).await?;
+    if let Some(active_dispatch_id) = guard_active_dispatch_id.as_deref()
+        && let Some(authoritative) = ops_query::load_dispatch(store, active_dispatch_id).await?
+        && authoritative.thread_id == thread_id
+        && authoritative.status == RunDispatchStatus::Claimed
+    {
+        store.index.write().await.upsert(authoritative.clone());
+        if !dispatches
+            .iter()
+            .any(|dispatch| dispatch.dispatch_id == authoritative.dispatch_id)
+        {
+            dispatches.push(authoritative.clone());
+        }
+        active_dispatch = Some(authoritative);
+    }
 
     for dispatch in dispatches {
         match dispatch.status {
@@ -56,7 +72,12 @@ pub async fn interrupt(
                 }
             }
             RunDispatchStatus::Claimed => {
-                active_dispatch = Some(dispatch);
+                if guard_active_dispatch_id
+                    .as_deref()
+                    .is_none_or(|active_id| active_id == dispatch.dispatch_id)
+                {
+                    active_dispatch = Some(dispatch);
+                }
             }
             _ => {}
         }
@@ -117,10 +138,16 @@ async fn supersede(
             }
             return Ok(SupersedeOutcome::NotQueued);
         }
+        if dispatch.dispatch_epoch >= new_epoch {
+            return Ok(SupersedeOutcome::NotQueued);
+        }
         dispatch.status = RunDispatchStatus::Superseded;
         dispatch.dispatch_epoch = new_epoch;
         dispatch.completed_at = Some(now);
         dispatch.updated_at = now;
+        dispatch.claim_token = None;
+        dispatch.claimed_by = None;
+        dispatch.lease_until = None;
         let bytes = codec::encode(&dispatch)?;
         if store
             .kv_dispatch

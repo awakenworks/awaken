@@ -66,7 +66,9 @@ impl ActiveRunRegistry {
     /// Notifies any waiters that the thread slot is now free.
     pub(super) fn unregister(&self, run_id: &str) {
         let mut inner = self.inner.write();
-        inner.by_run_id.remove(run_id);
+        if let Some(handle) = inner.by_run_id.remove(run_id) {
+            handle.stop_live_forwarder();
+        }
 
         let thread_id = inner.run_to_thread.remove(run_id);
         if let Some(ref tid) = thread_id {
@@ -84,8 +86,7 @@ impl ActiveRunRegistry {
     }
 
     /// Check whether a thread has an active run.
-    #[cfg(test)]
-    fn has_active_thread(&self, thread_id: &str) -> bool {
+    pub(crate) fn has_active_thread(&self, thread_id: &str) -> bool {
         self.inner.read().by_thread_id.contains_key(thread_id)
     }
 
@@ -152,7 +153,9 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded::<Vec<(String, ToolCallResume)>>();
         RunHandle {
             run_id: run_id.to_string(),
+            dispatch_id: None,
             cancellation_token: token,
+            live_forwarder_token: CancellationToken::new(),
             decision_tx: tx,
             inbox_tx: None,
         }
@@ -258,7 +261,9 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded::<Vec<(String, ToolCallResume)>>();
         let handle = RunHandle {
             run_id: "r1".to_string(),
+            dispatch_id: None,
             cancellation_token: token,
+            live_forwarder_token: CancellationToken::new(),
             decision_tx: tx,
             inbox_tx: None,
         };

@@ -2,7 +2,7 @@
 
 mod nats_fixture;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use awaken_contract::contract::mailbox::{MailboxStore, RunDispatch, RunDispatchStatus};
 use awaken_stores::{NatsMailboxConfig, NatsMailboxStore};
@@ -44,6 +44,32 @@ async fn make_store(fixture: &NatsFixture) -> NatsMailboxStore {
     config.thread_index_bucket = format!("ti_{}", uuid::Uuid::now_v7().simple());
     config.sweeper_interval = Duration::from_millis(100);
     NatsMailboxStore::connect(config).await.expect("connect")
+}
+
+async fn make_shared_stores(fixture: &NatsFixture) -> (NatsMailboxStore, NatsMailboxStore) {
+    let stream_name = format!("DISPATCH_{}", uuid::Uuid::now_v7().simple());
+    let dispatch_bucket = format!("d_{}", uuid::Uuid::now_v7().simple());
+    let epoch_bucket = format!("e_{}", uuid::Uuid::now_v7().simple());
+    let ti_bucket = format!("ti_{}", uuid::Uuid::now_v7().simple());
+    let consumer_name = format!("c_{}", uuid::Uuid::now_v7().simple());
+    let mk_config = || {
+        let mut config = NatsMailboxConfig::new(fixture.url.clone());
+        config.stream_name = stream_name.clone();
+        config.consumer_name = consumer_name.clone();
+        config.dispatch_bucket = dispatch_bucket.clone();
+        config.epoch_bucket = epoch_bucket.clone();
+        config.thread_index_bucket = ti_bucket.clone();
+        config.sweeper_interval = Duration::from_secs(60);
+        config
+    };
+
+    let store1 = NatsMailboxStore::connect(mk_config())
+        .await
+        .expect("connect 1");
+    let store2 = NatsMailboxStore::connect(mk_config())
+        .await
+        .expect("connect 2");
+    (store1, store2)
 }
 
 #[tokio::test]
@@ -111,6 +137,417 @@ async fn sweeper_republishes_available_dispatch() {
         "sweeper should have re-queued the dispatch"
     );
     store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn load_dispatch_reads_authoritative_kv_not_stale_index() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+
+    let dispatch = test_dispatch("d-strong-load", "t-strong-load");
+    store.enqueue(&dispatch).await.unwrap();
+    let claimed = store
+        .claim("t-strong-load", "consumer", 30_000, 1_000, 1)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+
+    let mut stale = dispatch;
+    stale.status = RunDispatchStatus::Queued;
+    store.__test_upsert_index_only(&stale).await;
+
+    let loaded = store
+        .load_dispatch("d-strong-load")
+        .await
+        .unwrap()
+        .expect("authoritative dispatch");
+    assert_eq!(loaded.status, RunDispatchStatus::Claimed);
+    assert_eq!(loaded.claimed_by.as_deref(), Some("consumer"));
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn dispatch_signal_can_wake_a_different_store_instance() {
+    let fixture = NatsFixture::start().await;
+    let (store1, store2) = make_shared_stores(&fixture).await;
+
+    store2.shutdown().await.unwrap();
+
+    store1
+        .enqueue(&test_dispatch("d-signal", "t-signal"))
+        .await
+        .unwrap();
+    store2.__test_remove_dispatch_from_index("d-signal").await;
+    assert!(
+        !store2.index_contains("d-signal").await,
+        "test requires store2's watcher index to be stale before pulling the signal"
+    );
+
+    let signals = store2
+        .pull_dispatch_signals(8, Duration::from_secs(2))
+        .await
+        .unwrap();
+    let signal = signals
+        .into_iter()
+        .find(|entry| entry.dispatch_id == "d-signal")
+        .expect("dispatch signal");
+    assert_eq!(signal.thread_id, "t-signal");
+    assert!(
+        store2.index_contains("d-signal").await,
+        "pull_dispatch_signals must upsert the authoritative dispatch before acking the signal"
+    );
+
+    let claimed = store2
+        .claim("t-signal", "consumer-2", 30_000, 1_000, 1)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].dispatch_id, "d-signal");
+    signal.receipt.ack().await.unwrap();
+
+    store1.shutdown().await.unwrap();
+    store2.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn interrupt_detects_authoritative_active_dispatch_when_local_index_is_stale() {
+    let fixture = NatsFixture::start().await;
+    let (store1, store2) = make_shared_stores(&fixture).await;
+    store2.shutdown().await.unwrap();
+
+    store1
+        .enqueue(&test_dispatch(
+            "d-active-authoritative",
+            "t-active-authoritative",
+        ))
+        .await
+        .unwrap();
+    let claimed = store1
+        .claim("t-active-authoritative", "consumer-1", 30_000, 1_000, 1)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    let claim_token = claimed[0].claim_token.clone().unwrap();
+
+    store2
+        .__test_remove_dispatch_from_index("d-active-authoritative")
+        .await;
+    assert!(
+        !store2.index_contains("d-active-authoritative").await,
+        "test requires the interrupting node's local index to miss the active dispatch"
+    );
+
+    let interrupted = store2
+        .interrupt("t-active-authoritative", 2_000)
+        .await
+        .unwrap();
+    assert_eq!(
+        interrupted
+            .active_dispatch
+            .as_ref()
+            .map(|dispatch| dispatch.dispatch_id.as_str()),
+        Some("d-active-authoritative")
+    );
+
+    let extended = store1
+        .extend_lease("d-active-authoritative", &claim_token, 30_000, 3_000)
+        .await
+        .unwrap();
+    assert!(
+        !extended,
+        "epoch-stale active dispatch must not keep extending its lease after interrupt"
+    );
+    let stale = store1
+        .load_dispatch("d-active-authoritative")
+        .await
+        .unwrap()
+        .expect("dispatch remains recorded");
+    assert_eq!(stale.status, RunDispatchStatus::Superseded);
+
+    store1.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn interrupt_keeps_claim_guard_active_dispatch_over_stale_claimed_records() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+    let thread_id = "t-active-override";
+
+    store
+        .enqueue(&test_dispatch("a-current-active", thread_id))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim(thread_id, "current-consumer", 60_000, 1_000, 1)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].dispatch_id, "a-current-active");
+
+    let mut stale = test_dispatch("z-stale-claimed", thread_id);
+    stale.status = RunDispatchStatus::Claimed;
+    stale.claim_token = Some("stale-token".to_string());
+    stale.claimed_by = Some("stale-consumer".to_string());
+    stale.lease_until = Some(500);
+    store
+        .__test_plant_dispatch_exact(&stale)
+        .await
+        .expect("plant stale claimed dispatch");
+
+    let interrupted = store.interrupt(thread_id, 2_000).await.unwrap();
+    assert_eq!(
+        interrupted
+            .active_dispatch
+            .as_ref()
+            .map(|dispatch| dispatch.dispatch_id.as_str()),
+        Some("a-current-active"),
+        "claim-guard active dispatch must not be overwritten by stale claimed scan results"
+    );
+
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn claim_uses_authoritative_ordering_when_local_index_only_has_later_dispatch() {
+    let fixture = NatsFixture::start().await;
+    let (store1, store2) = make_shared_stores(&fixture).await;
+    store2.shutdown().await.unwrap();
+
+    let mut high = test_dispatch("d-high-priority", "t-authoritative-order");
+    high.priority = 10;
+    high.created_at = 1;
+    let mut low = test_dispatch("d-low-priority", "t-authoritative-order");
+    low.priority = 128;
+    low.created_at = 2;
+
+    store1.enqueue(&high).await.unwrap();
+    store1.enqueue(&low).await.unwrap();
+
+    store2.__test_upsert_index_only(&low).await;
+    store2
+        .__test_remove_dispatch_from_index("d-high-priority")
+        .await;
+    assert!(
+        !store2.index_contains("d-high-priority").await,
+        "test requires local index to miss the higher-priority dispatch"
+    );
+    assert!(
+        store2.index_contains("d-low-priority").await,
+        "test requires local index to contain only the later dispatch"
+    );
+
+    let claimed = store2
+        .claim("t-authoritative-order", "consumer-2", 30_000, 1_000, 1)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(
+        claimed[0].dispatch_id, "d-high-priority",
+        "claim must use authoritative ordering instead of the incomplete local watcher index"
+    );
+
+    store1.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn reclaim_expired_leases_uses_authoritative_kv_and_clears_terminal_claim_fields() {
+    let fixture = NatsFixture::start().await;
+    let (store1, store2) = make_shared_stores(&fixture).await;
+    store2.shutdown().await.unwrap();
+
+    let mut dispatch = test_dispatch("d-expired-authoritative", "t-expired-authoritative");
+    dispatch.max_attempts = 1;
+    store1.enqueue(&dispatch).await.unwrap();
+    let claimed = store1
+        .claim("t-expired-authoritative", "consumer-1", 100, 1_000, 1)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+
+    store2
+        .__test_remove_dispatch_from_index("d-expired-authoritative")
+        .await;
+    assert!(
+        !store2.index_contains("d-expired-authoritative").await,
+        "test requires reclaiming node's local index to miss the expired claim"
+    );
+
+    let reclaimed = store2.reclaim_expired_leases(2_000, 10).await.unwrap();
+    assert_eq!(reclaimed.len(), 1);
+    assert_eq!(reclaimed[0].dispatch_id, "d-expired-authoritative");
+    assert_eq!(reclaimed[0].status, RunDispatchStatus::DeadLetter);
+    assert!(reclaimed[0].claim_token.is_none());
+    assert!(reclaimed[0].claimed_by.is_none());
+    assert!(reclaimed[0].lease_until.is_none());
+
+    let loaded = store1
+        .load_dispatch("d-expired-authoritative")
+        .await
+        .unwrap()
+        .expect("dispatch remains inspectable");
+    assert_eq!(loaded.status, RunDispatchStatus::DeadLetter);
+    assert!(loaded.claim_token.is_none());
+    assert!(loaded.claimed_by.is_none());
+    assert!(loaded.lease_until.is_none());
+
+    store1.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn dispatch_signal_nack_redelivers_same_dispatch() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+
+    store
+        .enqueue(&test_dispatch("d-signal-redeliver", "t-signal-redeliver"))
+        .await
+        .unwrap();
+
+    let mut signals = store
+        .pull_dispatch_signals(1, Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert_eq!(signals.len(), 1);
+    let signal = signals.pop().unwrap();
+    assert_eq!(signal.dispatch_id, "d-signal-redeliver");
+    signal.receipt.nack().await.unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let redelivered = loop {
+        let mut signals = store
+            .pull_dispatch_signals(1, Duration::from_millis(250))
+            .await
+            .unwrap();
+        if let Some(signal) = signals.pop() {
+            if signal.dispatch_id == "d-signal-redeliver" {
+                break signal;
+            }
+            signal.receipt.ack().await.unwrap();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "nacked dispatch signal must redeliver before the wakeup is lost"
+        );
+    };
+
+    let dispatch = store
+        .load_dispatch("d-signal-redeliver")
+        .await
+        .unwrap()
+        .expect("dispatch should still exist after signal nack");
+    assert_eq!(dispatch.status, RunDispatchStatus::Queued);
+    redelivered.receipt.ack().await.unwrap();
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn dispatch_signal_delayed_nack_does_not_hot_loop() {
+    let fixture = NatsFixture::start().await;
+    let (store, other) = make_shared_stores(&fixture).await;
+    other.shutdown().await.unwrap();
+
+    store
+        .enqueue(&test_dispatch("d-delayed-nack", "t-delayed-nack"))
+        .await
+        .unwrap();
+
+    let mut signals = store
+        .pull_dispatch_signals(1, Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert_eq!(signals.len(), 1);
+    let signal = signals.pop().unwrap();
+    assert_eq!(signal.dispatch_id, "d-delayed-nack");
+
+    let start = Instant::now();
+    signal
+        .receipt
+        .nack_with_delay(Duration::from_millis(500))
+        .await
+        .unwrap();
+
+    let early = store
+        .pull_dispatch_signals(1, Duration::from_millis(150))
+        .await
+        .unwrap();
+    assert!(
+        early.is_empty(),
+        "delayed nack must not immediately redeliver and spin while a thread is blocked"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let redelivered = loop {
+        let mut signals = store
+            .pull_dispatch_signals(1, Duration::from_millis(250))
+            .await
+            .unwrap();
+        if let Some(signal) = signals.pop() {
+            if signal.dispatch_id == "d-delayed-nack" {
+                break signal;
+            }
+            signal.receipt.ack().await.unwrap();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "delayed nacked dispatch signal must redeliver after the delay"
+        );
+    };
+    assert!(
+        start.elapsed() >= Duration::from_millis(400),
+        "redelivery happened too quickly for a delayed nack"
+    );
+    redelivered.receipt.ack().await.unwrap();
+
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn dispatch_signal_nack_redelivers_to_other_store_instance() {
+    let fixture = NatsFixture::start().await;
+    let (store1, store2) = make_shared_stores(&fixture).await;
+
+    store1
+        .enqueue(&test_dispatch("d-cross-redeliver", "t-cross-redeliver"))
+        .await
+        .unwrap();
+
+    let mut signals = store1
+        .pull_dispatch_signals(1, Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert_eq!(signals.len(), 1);
+    let signal = signals.pop().unwrap();
+    assert_eq!(signal.dispatch_id, "d-cross-redeliver");
+    signal.receipt.nack().await.unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let redelivered = loop {
+        let mut signals = store2
+            .pull_dispatch_signals(1, Duration::from_millis(250))
+            .await
+            .unwrap();
+        if let Some(signal) = signals.pop() {
+            if signal.dispatch_id == "d-cross-redeliver" {
+                break signal;
+            }
+            signal.receipt.ack().await.unwrap();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "nacked dispatch signal must be claimable by another store instance"
+        );
+    };
+
+    let claimed = store2
+        .claim("t-cross-redeliver", "consumer-2", 30_000, 1_000, 1)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].dispatch_id, "d-cross-redeliver");
+    redelivered.receipt.ack().await.unwrap();
+
+    store1.shutdown().await.unwrap();
+    store2.shutdown().await.unwrap();
 }
 
 /// Regression for the foreground-submit Blocker: `Mailbox::submit()`

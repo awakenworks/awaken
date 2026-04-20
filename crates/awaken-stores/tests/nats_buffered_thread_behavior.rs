@@ -14,7 +14,7 @@ use awaken_contract::contract::storage::{
     RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::{Thread, ThreadMetadata};
-use awaken_stores::{InMemoryStore, NatsBufferedThreadStore};
+use awaken_stores::{InMemoryStore, NatsBufferedThreadStore, ReadConsistency};
 use fixture::{NatsFixture, unique_config};
 
 /// A ThreadRunStore that wraps InMemoryStore and counts checkpoint calls.
@@ -178,6 +178,31 @@ async fn read_your_writes_without_waiting() {
 
     let msgs = store.load_messages("t1").await.unwrap().unwrap();
     assert_eq!(msgs.len(), 1);
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn strong_load_run_does_not_return_unflushed_hot_cache() {
+    let fixture = NatsFixture::start().await;
+    let inner = Arc::new(InMemoryStore::new());
+    let mut config = unique_config(&fixture);
+    config.read_consistency = ReadConsistency::Strong;
+    config.flush_interval = Duration::from_secs(60);
+    let store = NatsBufferedThreadStore::connect(inner, config)
+        .await
+        .expect("connect");
+
+    let run = mk_run("r-hot-only", "t-hot-only");
+    store
+        .__test_cache_run_if_newer(&run, 1)
+        .await
+        .expect("cache hot run");
+
+    let loaded = store.load_run("r-hot-only").await.unwrap();
+    assert!(
+        loaded.is_none(),
+        "Strong load_run must not expose a run that only exists in hot cache"
+    );
     store.shutdown().await.unwrap();
 }
 

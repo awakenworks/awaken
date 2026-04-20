@@ -6,19 +6,29 @@ use awaken_contract::contract::suspension::ToolCallResume;
 use super::AgentRuntime;
 use super::active_registry::HandleLookup;
 
+#[cfg(not(test))]
+const CANCEL_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+#[cfg(test)]
+const CANCEL_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(25);
+
 impl AgentRuntime {
     /// Cancel an active run by thread ID and wait for it to finish.
     ///
-    /// Returns `true` if a run was cancelled, `false` if no active run existed.
-    /// Waits up to 5 seconds for the run to actually unregister.
+    /// Returns `true` only when the run slot is released before the wait timeout.
+    /// Returns `false` when no active run exists or cancellation does not finish in time.
     pub async fn cancel_and_wait_by_thread(&self, thread_id: &str) -> bool {
         let notify = match self.active_runs.cancel_and_get_notify(thread_id) {
             Some(n) => n,
             None => return false,
         };
+        if !self.active_runs.has_active_thread(thread_id) {
+            return true;
+        }
         // Wait for the RunSlotGuard to drop (calls unregister, which fires the notify).
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), notify.notified()).await;
-        true
+        tokio::time::timeout(CANCEL_WAIT_TIMEOUT, notify.notified())
+            .await
+            .is_ok()
+            || !self.active_runs.has_active_thread(thread_id)
     }
 
     /// Cancel an active run by thread ID.
@@ -329,7 +339,8 @@ mod tests {
     fn send_messages_by_run_id_delivers_to_inbox() {
         let rt = make_runtime();
         let (inbox_tx, mut inbox_rx) = crate::inbox::inbox_channel();
-        let (handle, _token, _rx) = rt.create_run_channels_with_inbox("r1".into(), Some(inbox_tx));
+        let (handle, _token, _rx) =
+            rt.create_run_channels_with_inbox("r1".into(), None, Some(inbox_tx));
         rt.register_run("t1", handle).unwrap();
 
         assert!(rt.send_messages("r1", vec![Message::user("live")]));
@@ -354,7 +365,8 @@ mod tests {
         let rt = make_runtime();
         let (inbox_tx, inbox_rx) = crate::inbox::inbox_channel();
         drop(inbox_rx);
-        let (handle, _token, _rx) = rt.create_run_channels_with_inbox("r1".into(), Some(inbox_tx));
+        let (handle, _token, _rx) =
+            rt.create_run_channels_with_inbox("r1".into(), None, Some(inbox_tx));
         rt.register_run("t1", handle).unwrap();
 
         assert!(!rt.send_messages("r1", vec![Message::user("live")]));
@@ -382,6 +394,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancel_and_wait_returns_false_when_run_does_not_unregister() {
+        let rt = make_runtime();
+        let (handle, token, _rx) = rt.create_run_channels("r1".into());
+        rt.register_run("t1", handle).unwrap();
+
+        assert!(!rt.cancel_and_wait_by_thread("t1").await);
+        assert!(token.is_cancelled());
+    }
+
+    #[tokio::test]
     async fn cancel_and_wait_completes_after_unregister() {
         use std::sync::Arc;
 
@@ -392,7 +414,7 @@ mod tests {
         // Spawn a task that unregisters after a short delay
         let rt2 = Arc::clone(&rt);
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             rt2.unregister_run("r1");
         });
 

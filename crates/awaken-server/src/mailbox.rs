@@ -21,8 +21,8 @@ use awaken_contract::contract::event::AgentEvent;
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::mailbox::{
-    LiveDeliveryOutcome, LiveRunCommand, MailboxInterrupt, MailboxStore, RunDispatch,
-    RunDispatchResult, RunDispatchStatus,
+    LiveDeliveryOutcome, LiveRunCommand, LiveRunTarget, MailboxInterrupt, MailboxStore,
+    RunDispatch, RunDispatchResult, RunDispatchStatus,
 };
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
@@ -40,8 +40,15 @@ use crate::transport::channel_sink::ReconnectableEventSink;
 /// Guard window for inline-claimed dispatches: if the process crashes between
 /// enqueue and claim, the sweep will reclaim the dispatch after this period.
 const INLINE_CLAIM_GUARD_MS: u64 = 60_000;
+#[cfg(not(test))]
 const REMOTE_CANCEL_WAIT_MS: u64 = 5_000;
+#[cfg(test)]
+const REMOTE_CANCEL_WAIT_MS: u64 = 250;
 const REMOTE_CANCEL_POLL_MS: u64 = 25;
+const DISPATCH_SIGNAL_BATCH: usize = 32;
+const DISPATCH_SIGNAL_EXPIRES: Duration = Duration::from_millis(500);
+const DISPATCH_SIGNAL_ERROR_DELAY: Duration = Duration::from_millis(250);
+const DISPATCH_SIGNAL_BLOCKED_NACK_DELAY: Duration = Duration::from_millis(500);
 
 /// Validation message returned when an inline submit loses the active-run race.
 pub(crate) const ACTIVE_RUN_CONFLICT_MESSAGE: &str =
@@ -439,12 +446,16 @@ impl MailboxLifecycleHandle {
 
 struct MailboxLifecycleTasks {
     recover_task: Option<JoinHandle<()>>,
+    dispatch_signal_task: Option<JoinHandle<()>>,
     maintenance_task: JoinHandle<()>,
 }
 
 impl MailboxLifecycleTasks {
     fn abort(self) {
         if let Some(task) = self.recover_task {
+            task.abort();
+        }
+        if let Some(task) = self.dispatch_signal_task {
             task.abort();
         }
         self.maintenance_task.abort();
@@ -454,6 +465,10 @@ impl MailboxLifecycleTasks {
         if let Some(task) = self.recover_task {
             task.abort();
             await_lifecycle_task("mailbox startup recovery", task).await?;
+        }
+        if let Some(task) = self.dispatch_signal_task {
+            task.abort();
+            await_lifecycle_task("mailbox dispatch signal loop", task).await?;
         }
         self.maintenance_task.abort();
         await_lifecycle_task("mailbox maintenance", self.maintenance_task).await
@@ -483,6 +498,20 @@ enum MailboxWorkerStatus {
         lease_handle: JoinHandle<()>,
         sink: Arc<ReconnectableEventSink>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DispatchAttempt {
+    Claimed,
+    Busy,
+    NoEligible,
+    TransientError,
+}
+
+impl DispatchAttempt {
+    fn started_execution(self) -> bool {
+        matches!(self, DispatchAttempt::Claimed)
+    }
 }
 
 /// Cached thread state, valid for the duration of a lease.
@@ -670,18 +699,21 @@ impl Mailbox {
                     let cancelled = self
                         .cancel_active_dispatch(&thread_id, active_dispatch, true)
                         .await?;
-                    if cancelled {
-                        tracing::info!(
-                            thread_id = %thread_id,
-                            superseded = interrupt.superseded_count,
-                            "interrupted thread for new submission"
-                        );
+                    if !cancelled {
+                        return Err(MailboxError::Validation(ACTIVE_RUN_CONFLICT_MESSAGE.into()));
                     }
+                    tracing::info!(
+                        thread_id = %thread_id,
+                        superseded = interrupt.superseded_count,
+                        "interrupted thread for new submission"
+                    );
                 }
             }
             Err(e) => {
                 tracing::warn!(thread_id = %thread_id, error = %e, "interrupt failed, falling back to cancel");
-                self.executor.cancel_and_wait_by_thread(&thread_id).await;
+                if !self.executor.cancel_and_wait_by_thread(&thread_id).await {
+                    return Err(MailboxError::Validation(ACTIVE_RUN_CONFLICT_MESSAGE.into()));
+                }
             }
         }
 
@@ -808,7 +840,7 @@ impl Mailbox {
         // Dispatch via try_dispatch_next which handles Idle → Claiming atomically.
         self.get_or_create_worker(&thread_id).await;
         let claimed = self.try_dispatch_next(&thread_id).await;
-        let status = if claimed {
+        let status = if claimed.started_execution() {
             MailboxDispatchStatus::Running
         } else {
             MailboxDispatchStatus::Queued
@@ -894,7 +926,9 @@ impl Mailbox {
         if let Some(dispatch) = self.store.load_dispatch(id).await?
             && dispatch.status == RunDispatchStatus::Claimed
         {
-            return self.deliver_live_cancel(&dispatch.thread_id).await;
+            return self
+                .deliver_live_cancel(&live_target_for_dispatch(&dispatch))
+                .await;
         }
 
         let run = if let Some(run) = self.run_store.load_run(id).await? {
@@ -905,7 +939,7 @@ impl Mailbox {
         if let Some(run) = run
             && matches!(run.status, RunStatus::Running | RunStatus::Waiting)
         {
-            return self.deliver_live_cancel(&run.thread_id).await;
+            return self.deliver_live_cancel(&live_target_for_run(&run)).await;
         }
 
         Ok(false)
@@ -926,9 +960,57 @@ impl Mailbox {
         Ok(result)
     }
 
-    /// Forward a tool-call decision to an active run.
+    /// Forward a tool-call decision to an active run in this process only.
+    ///
+    /// Distributed callers should use [`Self::send_decision_live`] so remote
+    /// active runs can receive the decision through targeted live delivery.
     pub fn send_decision(&self, id: &str, tool_call_id: String, resume: ToolCallResume) -> bool {
         self.executor.send_decision(id, tool_call_id, resume)
+    }
+
+    /// Forward a tool-call decision locally or through targeted live delivery.
+    ///
+    /// Live delivery is at-least-once when the remote run accepts the decision
+    /// but the ack is lost before the durable fallback is enqueued. Consumers
+    /// must treat `(tool_call_id, decision_id)` as idempotent.
+    pub async fn send_decision_live(
+        &self,
+        id: &str,
+        tool_call_id: String,
+        resume: ToolCallResume,
+    ) -> Result<bool, MailboxError> {
+        if self
+            .executor
+            .send_decision(id, tool_call_id.clone(), resume.clone())
+        {
+            return Ok(true);
+        }
+
+        if let Some(dispatch) = self.store.load_dispatch(id).await?
+            && dispatch.status == RunDispatchStatus::Claimed
+        {
+            return self
+                .deliver_live_decision(
+                    &live_target_for_dispatch(&dispatch),
+                    vec![(tool_call_id, resume)],
+                )
+                .await;
+        }
+
+        let run = if let Some(run) = self.run_store.load_run(id).await? {
+            Some(run)
+        } else {
+            self.run_store.latest_run(id).await?
+        };
+        if let Some(run) = run
+            && matches!(run.status, RunStatus::Running | RunStatus::Waiting)
+        {
+            return self
+                .deliver_live_decision(&live_target_for_run(&run), vec![(tool_call_id, resume)])
+                .await;
+        }
+
+        Ok(false)
     }
 
     async fn cancel_active_dispatch(
@@ -939,13 +1021,27 @@ impl Mailbox {
     ) -> Result<bool, MailboxError> {
         if wait_for_release {
             if self.executor.cancel_and_wait_by_thread(thread_id).await {
-                return Ok(true);
+                if self
+                    .wait_for_dispatch_not_claimed(&active_dispatch.dispatch_id)
+                    .await?
+                {
+                    return Ok(true);
+                }
+                tracing::warn!(
+                    thread_id,
+                    dispatch_id = %active_dispatch.dispatch_id,
+                    "local cancel completed but active dispatch did not release before foreground submit"
+                );
+                return Ok(false);
             }
         } else if self.executor.cancel(thread_id) {
             return Ok(true);
         }
 
-        if !self.deliver_live_cancel(thread_id).await? {
+        if !self
+            .deliver_live_cancel(&live_target_for_dispatch(active_dispatch))
+            .await?
+        {
             return Ok(false);
         }
 
@@ -959,14 +1055,30 @@ impl Mailbox {
                 dispatch_id = %active_dispatch.dispatch_id,
                 "remote cancel delivered but active dispatch did not release before foreground submit"
             );
+            return Ok(false);
         }
         Ok(true)
     }
 
-    async fn deliver_live_cancel(&self, thread_id: &str) -> Result<bool, MailboxError> {
+    async fn deliver_live_cancel(&self, target: &LiveRunTarget) -> Result<bool, MailboxError> {
         match self
             .store
-            .deliver_live(thread_id, LiveRunCommand::Cancel)
+            .deliver_live_to(target, LiveRunCommand::Cancel)
+            .await?
+        {
+            LiveDeliveryOutcome::Delivered => Ok(true),
+            LiveDeliveryOutcome::NoSubscriber => Ok(false),
+        }
+    }
+
+    async fn deliver_live_decision(
+        &self,
+        target: &LiveRunTarget,
+        decisions: Vec<(String, ToolCallResume)>,
+    ) -> Result<bool, MailboxError> {
+        match self
+            .store
+            .deliver_live_to(target, LiveRunCommand::Decision(decisions))
             .await?
         {
             LiveDeliveryOutcome::Delivered => Ok(true),
@@ -1052,8 +1164,8 @@ impl Mailbox {
         // enqueues a durable dispatch instead of silently dropping.
         let outcome = self
             .store
-            .deliver_live(
-                thread_id,
+            .deliver_live_to(
+                &live_target_for_run(&remote_run),
                 awaken_contract::contract::mailbox::LiveRunCommand::Messages(messages),
             )
             .await?;
@@ -1272,8 +1384,19 @@ impl Mailbox {
                 .await;
         });
 
+        let dispatch_signal_task = self.store.supports_dispatch_signals().then(|| {
+            let signal_mailbox = Arc::clone(self);
+            tokio::spawn(async move {
+                if !startup_delay.is_zero() {
+                    tokio::time::sleep(startup_delay).await;
+                }
+                signal_mailbox.run_dispatch_signal_loop().await;
+            })
+        });
+
         *lifecycle = Some(MailboxLifecycleTasks {
             recover_task,
+            dispatch_signal_task,
             maintenance_task,
         });
         Ok(handle)
@@ -1395,11 +1518,87 @@ impl Mailbox {
         }
     }
 
+    /// Drain backend work-queue delivery signals and wake local workers.
+    pub async fn run_dispatch_signal_loop(self: Arc<Self>) {
+        loop {
+            match self
+                .store
+                .pull_dispatch_signals(DISPATCH_SIGNAL_BATCH, DISPATCH_SIGNAL_EXPIRES)
+                .await
+            {
+                Ok(entries) => {
+                    for entry in entries {
+                        self.get_or_create_worker(&entry.thread_id).await;
+                        let attempt = self.try_dispatch_next(&entry.thread_id).await;
+                        let nack_delay = match attempt {
+                            DispatchAttempt::TransientError => Some(None),
+                            DispatchAttempt::NoEligible => {
+                                match self.dispatch_signal_still_available(&entry).await {
+                                    Ok(true) => Some(Some(DISPATCH_SIGNAL_BLOCKED_NACK_DELAY)),
+                                    Ok(false) => None,
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            thread_id = %entry.thread_id,
+                                            dispatch_id = %entry.dispatch_id,
+                                            error = %error,
+                                            "failed to verify unclaimed dispatch signal"
+                                        );
+                                        Some(None)
+                                    }
+                                }
+                            }
+                            DispatchAttempt::Claimed | DispatchAttempt::Busy => None,
+                        };
+                        if let Some(delay) = nack_delay {
+                            let result = if let Some(delay) = delay {
+                                entry.receipt.nack_with_delay(delay).await
+                            } else {
+                                entry.receipt.nack().await
+                            };
+                            if let Err(error) = result {
+                                tracing::warn!(
+                                    thread_id = %entry.thread_id,
+                                    dispatch_id = %entry.dispatch_id,
+                                    error = %error,
+                                    "failed to nack dispatch signal after claim error"
+                                );
+                            }
+                            continue;
+                        }
+                        if let Err(error) = entry.receipt.ack().await {
+                            tracing::warn!(
+                                thread_id = %entry.thread_id,
+                                dispatch_id = %entry.dispatch_id,
+                                error = %error,
+                                "failed to ack dispatch signal"
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "dispatch signal pull failed");
+                    tokio::time::sleep(DISPATCH_SIGNAL_ERROR_DELAY).await;
+                }
+            }
+        }
+    }
+
+    async fn dispatch_signal_still_available(
+        &self,
+        entry: &awaken_contract::contract::mailbox::DispatchSignalEntry,
+    ) -> Result<bool, StorageError> {
+        let now = now_ms();
+        let Some(dispatch) = self.store.load_dispatch(&entry.dispatch_id).await? else {
+            return Ok(false);
+        };
+        Ok(dispatch.status == RunDispatchStatus::Queued && dispatch.available_at <= now)
+    }
+
     // ── Internal: dispatch ───────────────────────────────────────────
 
     /// Claim a dispatch from the store and start execution.
     #[tracing::instrument(skip(self), fields(thread_id = %thread_id))]
-    async fn dispatch_next_claim(self: &Arc<Self>, thread_id: &str) {
+    async fn dispatch_next_claim(self: &Arc<Self>, thread_id: &str) -> DispatchAttempt {
         let now = now_ms();
         let claimed = match self
             .store
@@ -1410,14 +1609,14 @@ impl Mailbox {
             Err(e) => {
                 tracing::warn!(error = %e, thread_id, "failed to claim dispatch");
                 revert_claiming_to_idle(&self.workers, thread_id).await;
-                return;
+                return DispatchAttempt::TransientError;
             }
         };
 
         let Some(dispatch) = claimed.into_iter().next() else {
             // No dispatches to claim.
             revert_claiming_to_idle(&self.workers, thread_id).await;
-            return;
+            return DispatchAttempt::NoEligible;
         };
 
         let dispatch_id = dispatch.dispatch_id.clone();
@@ -1468,17 +1667,17 @@ impl Mailbox {
             thread_id.to_string(),
             suspended,
         );
+        DispatchAttempt::Claimed
     }
 
     /// Claim from store and execute the next dispatch for this thread.
-    /// Returns `true` if the worker transitioned to Claiming (dispatch in progress).
     #[tracing::instrument(skip(self), fields(thread_id = %thread_id))]
-    async fn try_dispatch_next(self: &Arc<Self>, thread_id: &str) -> bool {
+    async fn try_dispatch_next(self: &Arc<Self>, thread_id: &str) -> DispatchAttempt {
         let worker = {
             let workers = self.workers.read().await;
             match workers.get(thread_id) {
                 Some(w) => Arc::clone(w),
-                None => return false,
+                None => return DispatchAttempt::NoEligible,
             }
         };
 
@@ -1486,13 +1685,12 @@ impl Mailbox {
         {
             let mut w = worker.lock();
             if !matches!(w.status, MailboxWorkerStatus::Idle) {
-                return false;
+                return DispatchAttempt::Busy;
             }
             w.status = MailboxWorkerStatus::Claiming;
         }
 
-        self.dispatch_next_claim(thread_id).await;
-        true
+        self.dispatch_next_claim(thread_id).await
     }
 
     /// Spawn a lease renewal task that periodically extends the lease.
@@ -1574,6 +1772,7 @@ impl Mailbox {
                 && current_dispatch.status != RunDispatchStatus::Claimed
             {
                 tracing::info!(dispatch_id, status = ?current_dispatch.status, "dispatch no longer claimed, skipping execution");
+                this.finish_execution(&thread_id, &dispatch_id).await;
                 return;
             }
 
@@ -1613,6 +1812,7 @@ impl Mailbox {
                         .store
                         .dead_letter(&dispatch_id, &claim_token, &msg, now)
                         .await;
+                    this.finish_execution(&thread_id, &dispatch_id).await;
                     return;
                 }
             };
@@ -1735,27 +1935,31 @@ impl Mailbox {
                 }
             }
 
-            // Abort lease renewal.
-            let worker = this.get_or_create_worker(&thread_id).await;
-            {
-                let mut w = worker.lock();
-                let should_transition = matches!(
-                    &w.status,
-                    MailboxWorkerStatus::Running { dispatch_id: cid, .. } if *cid == dispatch_id
-                );
-                if should_transition {
-                    // Take ownership of the old status to abort the lease handle.
-                    let old = std::mem::replace(&mut w.status, MailboxWorkerStatus::Idle);
-                    w.thread_ctx = None;
-                    if let MailboxWorkerStatus::Running { lease_handle, .. } = old {
-                        lease_handle.abort();
-                    }
+            this.finish_execution(&thread_id, &dispatch_id).await;
+        });
+    }
+
+    async fn finish_execution(self: &Arc<Self>, thread_id: &str, dispatch_id: &str) {
+        // Abort lease renewal and return the worker to Idle.
+        let worker = self.get_or_create_worker(thread_id).await;
+        {
+            let mut w = worker.lock();
+            let should_transition = matches!(
+                &w.status,
+                MailboxWorkerStatus::Running { dispatch_id: cid, .. } if cid == dispatch_id
+            );
+            if should_transition {
+                // Take ownership of the old status to abort the lease handle.
+                let old = std::mem::replace(&mut w.status, MailboxWorkerStatus::Idle);
+                w.thread_ctx = None;
+                if let MailboxWorkerStatus::Running { lease_handle, .. } = old {
+                    lease_handle.abort();
                 }
             }
+        }
 
-            // Try to execute the next queued dispatch for this thread.
-            this.try_dispatch_next(&thread_id).await;
-        });
+        // Try to execute the next queued dispatch for this thread.
+        self.try_dispatch_next(thread_id).await;
     }
 
     /// Get or create a per-thread worker.
@@ -2331,6 +2535,19 @@ fn normalize_message_ids(messages: &[Message]) -> Vec<Message> {
         .collect()
 }
 
+fn live_target_for_dispatch(dispatch: &RunDispatch) -> LiveRunTarget {
+    LiveRunTarget::new(dispatch.thread_id.clone(), dispatch.run_id.clone())
+        .with_dispatch_id(dispatch.dispatch_id.clone())
+}
+
+fn live_target_for_run(run: &RunRecord) -> LiveRunTarget {
+    let mut target = LiveRunTarget::new(run.thread_id.clone(), run.run_id.clone());
+    if let Some(dispatch_id) = run.dispatch_id.clone() {
+        target = target.with_dispatch_id(dispatch_id);
+    }
+    target
+}
+
 fn mailbox_run_result(
     run_id: &str,
     dispatch_instance_id: &str,
@@ -2450,6 +2667,7 @@ mod tests {
     use awaken_runtime::{Plugin, ResolvedAgent};
     use awaken_stores::{InMemoryMailboxStore, InMemoryStore};
     use serde_json::{Value, json};
+    use std::collections::VecDeque;
     use std::sync::Mutex as StdMutex;
     use std::sync::atomic::AtomicUsize;
     use tokio::time::{Duration, Instant, sleep};
@@ -2471,6 +2689,16 @@ mod tests {
 
     fn make_store() -> Arc<InMemoryMailboxStore> {
         Arc::new(InMemoryMailboxStore::new())
+    }
+
+    fn make_resume() -> ToolCallResume {
+        ToolCallResume {
+            decision_id: "d1".into(),
+            action: awaken_contract::contract::suspension::ResumeDecisionAction::Resume,
+            result: serde_json::json!({"approved": true}),
+            reason: None,
+            updated_at: 0,
+        }
     }
 
     struct RecoverFlakyMailboxStore {
@@ -2656,6 +2884,262 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct TestDispatchSignal {
+        thread_id: String,
+        dispatch_id: String,
+    }
+
+    struct TestDispatchSignalReceipt {
+        signal: TestDispatchSignal,
+        queue: Arc<tokio::sync::Mutex<VecDeque<TestDispatchSignal>>>,
+        acked_count: Arc<AtomicUsize>,
+        nacked_count: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_contract::contract::mailbox::DispatchSignalReceipt for TestDispatchSignalReceipt {
+        async fn ack(self: Box<Self>) -> Result<(), StorageError> {
+            self.acked_count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn nack(self: Box<Self>) -> Result<(), StorageError> {
+            self.nacked_count.fetch_add(1, Ordering::SeqCst);
+            self.queue.lock().await.push_back(self.signal.clone());
+            Ok(())
+        }
+    }
+
+    struct SignalMailboxStore {
+        inner: InMemoryMailboxStore,
+        signals: Arc<tokio::sync::Mutex<VecDeque<TestDispatchSignal>>>,
+        acked_count: Arc<AtomicUsize>,
+        nacked_count: Arc<AtomicUsize>,
+        claim_failures_remaining: AtomicUsize,
+    }
+
+    impl SignalMailboxStore {
+        fn new() -> Self {
+            Self::with_claim_failures(0)
+        }
+
+        fn with_claim_failures(claim_failures: usize) -> Self {
+            Self {
+                inner: InMemoryMailboxStore::new(),
+                signals: Arc::new(tokio::sync::Mutex::new(VecDeque::new())),
+                acked_count: Arc::new(AtomicUsize::new(0)),
+                nacked_count: Arc::new(AtomicUsize::new(0)),
+                claim_failures_remaining: AtomicUsize::new(claim_failures),
+            }
+        }
+
+        fn acked_signal_count(&self) -> usize {
+            self.acked_count.load(Ordering::SeqCst)
+        }
+
+        fn nacked_signal_count(&self) -> usize {
+            self.nacked_count.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MailboxStore for SignalMailboxStore {
+        async fn enqueue(&self, dispatch: &RunDispatch) -> Result<(), StorageError> {
+            self.inner.enqueue(dispatch).await?;
+            self.signals.lock().await.push_back(TestDispatchSignal {
+                thread_id: dispatch.thread_id.clone(),
+                dispatch_id: dispatch.dispatch_id.clone(),
+            });
+            Ok(())
+        }
+
+        async fn claim(
+            &self,
+            thread_id: &str,
+            consumer_id: &str,
+            lease_ms: u64,
+            now: u64,
+            limit: usize,
+        ) -> Result<Vec<RunDispatch>, StorageError> {
+            let remaining = self.claim_failures_remaining.load(Ordering::SeqCst);
+            if remaining > 0
+                && self
+                    .claim_failures_remaining
+                    .compare_exchange(remaining, remaining - 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            {
+                return Err(StorageError::Io("injected claim failure".into()));
+            }
+            self.inner
+                .claim(thread_id, consumer_id, lease_ms, now, limit)
+                .await
+        }
+
+        async fn claim_dispatch(
+            &self,
+            dispatch_id: &str,
+            consumer_id: &str,
+            lease_ms: u64,
+            now: u64,
+        ) -> Result<Option<RunDispatch>, StorageError> {
+            self.inner
+                .claim_dispatch(dispatch_id, consumer_id, lease_ms, now)
+                .await
+        }
+
+        async fn ack(
+            &self,
+            dispatch_id: &str,
+            claim_token: &str,
+            now: u64,
+        ) -> Result<(), StorageError> {
+            self.inner.ack(dispatch_id, claim_token, now).await
+        }
+
+        async fn record_dispatch_start(
+            &self,
+            dispatch_id: &str,
+            claim_token: &str,
+            dispatch_instance_id: &str,
+            now: u64,
+        ) -> Result<(), StorageError> {
+            self.inner
+                .record_dispatch_start(dispatch_id, claim_token, dispatch_instance_id, now)
+                .await
+        }
+
+        async fn record_run_result(
+            &self,
+            dispatch_id: &str,
+            claim_token: &str,
+            result: &RunDispatchResult,
+            now: u64,
+        ) -> Result<(), StorageError> {
+            self.inner
+                .record_run_result(dispatch_id, claim_token, result, now)
+                .await
+        }
+
+        async fn nack(
+            &self,
+            dispatch_id: &str,
+            claim_token: &str,
+            retry_at: u64,
+            error: &str,
+            now: u64,
+        ) -> Result<(), StorageError> {
+            self.inner
+                .nack(dispatch_id, claim_token, retry_at, error, now)
+                .await
+        }
+
+        async fn dead_letter(
+            &self,
+            dispatch_id: &str,
+            claim_token: &str,
+            error: &str,
+            now: u64,
+        ) -> Result<(), StorageError> {
+            self.inner
+                .dead_letter(dispatch_id, claim_token, error, now)
+                .await
+        }
+
+        async fn cancel(
+            &self,
+            dispatch_id: &str,
+            now: u64,
+        ) -> Result<Option<RunDispatch>, StorageError> {
+            self.inner.cancel(dispatch_id, now).await
+        }
+
+        async fn extend_lease(
+            &self,
+            dispatch_id: &str,
+            claim_token: &str,
+            extension_ms: u64,
+            now: u64,
+        ) -> Result<bool, StorageError> {
+            self.inner
+                .extend_lease(dispatch_id, claim_token, extension_ms, now)
+                .await
+        }
+
+        async fn interrupt(
+            &self,
+            thread_id: &str,
+            now: u64,
+        ) -> Result<MailboxInterrupt, StorageError> {
+            self.inner.interrupt(thread_id, now).await
+        }
+
+        async fn load_dispatch(
+            &self,
+            dispatch_id: &str,
+        ) -> Result<Option<RunDispatch>, StorageError> {
+            self.inner.load_dispatch(dispatch_id).await
+        }
+
+        async fn list_dispatches(
+            &self,
+            thread_id: &str,
+            status_filter: Option<&[RunDispatchStatus]>,
+            limit: usize,
+            offset: usize,
+        ) -> Result<Vec<RunDispatch>, StorageError> {
+            self.inner
+                .list_dispatches(thread_id, status_filter, limit, offset)
+                .await
+        }
+
+        async fn reclaim_expired_leases(
+            &self,
+            now: u64,
+            limit: usize,
+        ) -> Result<Vec<RunDispatch>, StorageError> {
+            self.inner.reclaim_expired_leases(now, limit).await
+        }
+
+        async fn purge_terminal(&self, older_than: u64) -> Result<usize, StorageError> {
+            self.inner.purge_terminal(older_than).await
+        }
+
+        async fn queued_thread_ids(&self) -> Result<Vec<String>, StorageError> {
+            self.inner.queued_thread_ids().await
+        }
+
+        fn supports_dispatch_signals(&self) -> bool {
+            true
+        }
+
+        async fn pull_dispatch_signals(
+            &self,
+            max: usize,
+            _expires: Duration,
+        ) -> Result<Vec<awaken_contract::contract::mailbox::DispatchSignalEntry>, StorageError>
+        {
+            let mut signals = self.signals.lock().await;
+            let mut entries = Vec::new();
+            for _ in 0..max {
+                let Some(signal) = signals.pop_front() else {
+                    break;
+                };
+                entries.push(awaken_contract::contract::mailbox::DispatchSignalEntry {
+                    thread_id: signal.thread_id.clone(),
+                    dispatch_id: signal.dispatch_id.clone(),
+                    receipt: Box::new(TestDispatchSignalReceipt {
+                        signal,
+                        queue: Arc::clone(&self.signals),
+                        acked_count: Arc::clone(&self.acked_count),
+                        nacked_count: Arc::clone(&self.nacked_count),
+                    }),
+                });
+            }
+            Ok(entries)
+        }
+    }
+
     fn make_runtime() -> Arc<AgentRuntime> {
         Arc::new(AgentRuntime::new(Arc::new(StubResolver)))
     }
@@ -2713,6 +3197,35 @@ mod tests {
         }
     }
 
+    struct ImmediateLocalCancelRuntime;
+
+    #[async_trait::async_trait]
+    impl RunDispatchExecutor for ImmediateLocalCancelRuntime {
+        async fn run(
+            &self,
+            _request: RunRequest,
+            _sink: Arc<dyn EventSink>,
+        ) -> Result<AgentRunResult, AgentLoopError> {
+            panic!("local cancel test must not execute runs")
+        }
+
+        fn cancel(&self, _id: &str) -> bool {
+            true
+        }
+
+        async fn cancel_and_wait_by_thread(&self, _thread_id: &str) -> bool {
+            true
+        }
+
+        fn send_decision(&self, _id: &str, _tool_call_id: String, _resume: ToolCallResume) -> bool {
+            false
+        }
+
+        fn send_messages(&self, _id: &str, _messages: Vec<Message>) -> bool {
+            false
+        }
+    }
+
     struct RecordedMailboxRequest {
         run_mode: RunMode,
         adapter: AdapterKind,
@@ -2723,6 +3236,68 @@ mod tests {
     #[derive(Default)]
     struct RecordingMailboxRuntime {
         requests: StdMutex<Vec<RecordedMailboxRequest>>,
+    }
+
+    struct BlockingMailboxRuntime {
+        run_count: AtomicUsize,
+        started_tx: tokio::sync::mpsc::UnboundedSender<(usize, Option<String>)>,
+        release_first: Arc<tokio::sync::Notify>,
+    }
+
+    impl BlockingMailboxRuntime {
+        fn new(
+            started_tx: tokio::sync::mpsc::UnboundedSender<(usize, Option<String>)>,
+            release_first: Arc<tokio::sync::Notify>,
+        ) -> Self {
+            Self {
+                run_count: AtomicUsize::new(0),
+                started_tx,
+                release_first,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RunDispatchExecutor for BlockingMailboxRuntime {
+        async fn run(
+            &self,
+            request: RunRequest,
+            _sink: Arc<dyn EventSink>,
+        ) -> Result<AgentRunResult, AgentLoopError> {
+            let ordinal = self.run_count.fetch_add(1, Ordering::SeqCst) + 1;
+            let _ = self.started_tx.send((ordinal, request.dispatch_id.clone()));
+            if ordinal == 1 {
+                self.release_first.notified().await;
+            }
+            let run_id = request
+                .continue_run_id
+                .clone()
+                .or(request.run_id_hint.clone())
+                .or(request.dispatch_id.clone())
+                .unwrap_or_else(|| format!("blocking-run-{ordinal}"));
+            Ok(AgentRunResult {
+                run_id,
+                response: "ok".to_string(),
+                termination: TerminationReason::NaturalEnd,
+                steps: 1,
+            })
+        }
+
+        fn cancel(&self, _id: &str) -> bool {
+            false
+        }
+
+        async fn cancel_and_wait_by_thread(&self, _thread_id: &str) -> bool {
+            false
+        }
+
+        fn send_decision(&self, _id: &str, _tool_call_id: String, _resume: ToolCallResume) -> bool {
+            false
+        }
+
+        fn send_messages(&self, _id: &str, _messages: Vec<Message>) -> bool {
+            false
+        }
     }
 
     #[async_trait::async_trait]
@@ -3607,6 +4182,216 @@ mod tests {
         handle.shutdown().await.expect("shutdown lifecycle");
     }
 
+    #[tokio::test]
+    async fn dispatch_signal_loop_claims_and_executes_queued_dispatch() {
+        let store = Arc::new(SignalMailboxStore::new());
+        let run_store = Arc::new(InMemoryStore::new());
+        let runtime = Arc::new(RecordingMailboxRuntime::default());
+        let mailbox = Arc::new(Mailbox::new_with_executor(
+            runtime,
+            store.clone(),
+            run_store.clone(),
+            "signal-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let mut request = RunRequest::new("thread-signal-loop", vec![Message::user("wake")])
+            .with_agent_id("agent");
+        let (thread_id, messages) =
+            validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false)
+                .expect("input should validate");
+        mailbox
+            .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
+            .await
+            .expect("prepare run");
+        let dispatch = mailbox
+            .build_dispatch(&request, &thread_id)
+            .expect("build dispatch");
+        let dispatch_id = dispatch.dispatch_id.clone();
+        store.enqueue(&dispatch).await.expect("enqueue dispatch");
+
+        let signal_loop = tokio::spawn(Arc::clone(&mailbox).run_dispatch_signal_loop());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let acked = loop {
+            if let Some(dispatch) = store
+                .load_dispatch(&dispatch_id)
+                .await
+                .expect("dispatch lookup should succeed")
+                && dispatch.status == RunDispatchStatus::Acked
+            {
+                break dispatch;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for dispatch signal loop"
+            );
+            sleep(Duration::from_millis(10)).await;
+        };
+        signal_loop.abort();
+
+        assert_eq!(acked.status, RunDispatchStatus::Acked);
+        assert_eq!(store.acked_signal_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn dispatch_signal_loop_nacks_and_redelivers_after_claim_error() {
+        let store = Arc::new(SignalMailboxStore::with_claim_failures(1));
+        let run_store = Arc::new(InMemoryStore::new());
+        let runtime = Arc::new(RecordingMailboxRuntime::default());
+        let mailbox = Arc::new(Mailbox::new_with_executor(
+            runtime,
+            store.clone(),
+            run_store.clone(),
+            "signal-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let mut request = RunRequest::new("thread-signal-redeliver", vec![Message::user("wake")])
+            .with_agent_id("agent");
+        let (thread_id, messages) =
+            validate_run_inputs(request.thread_id.clone(), request.messages.clone(), false)
+                .expect("input should validate");
+        mailbox
+            .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
+            .await
+            .expect("prepare run");
+        let dispatch = mailbox
+            .build_dispatch(&request, &thread_id)
+            .expect("build dispatch");
+        let dispatch_id = dispatch.dispatch_id.clone();
+        store.enqueue(&dispatch).await.expect("enqueue dispatch");
+
+        let signal_loop = tokio::spawn(Arc::clone(&mailbox).run_dispatch_signal_loop());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let dispatch = store
+                .load_dispatch(&dispatch_id)
+                .await
+                .expect("dispatch lookup should succeed")
+                .expect("dispatch should exist");
+            if dispatch.status == RunDispatchStatus::Acked {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for redelivered dispatch signal"
+            );
+            sleep(Duration::from_millis(10)).await;
+        }
+        signal_loop.abort();
+
+        assert_eq!(store.nacked_signal_count(), 1);
+        assert_eq!(store.acked_signal_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn dispatch_signal_loop_nacks_when_signal_is_blocked_by_active_claim() {
+        let store = Arc::new(SignalMailboxStore::new());
+        let run_store = Arc::new(InMemoryStore::new());
+        let runtime = Arc::new(RecordingMailboxRuntime::default());
+        let mailbox = Arc::new(Mailbox::new_with_executor(
+            runtime,
+            store.clone(),
+            run_store.clone(),
+            "signal-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let mut active = RunRequest::new("thread-signal-blocked", vec![Message::user("active")])
+            .with_agent_id("agent");
+        let (thread_id, active_messages) =
+            validate_run_inputs(active.thread_id.clone(), active.messages.clone(), false)
+                .expect("active input should validate");
+        mailbox
+            .prepare_run_for_dispatch(&mut active, &thread_id, &active_messages)
+            .await
+            .expect("prepare active run");
+        let active_dispatch = mailbox
+            .build_dispatch(&active, &thread_id)
+            .expect("build active dispatch");
+        let active_dispatch_id = active_dispatch.dispatch_id.clone();
+        store
+            .enqueue(&active_dispatch)
+            .await
+            .expect("enqueue active dispatch");
+        let claimed = store
+            .claim(&thread_id, "remote-owner", 30_000, now_ms(), 1)
+            .await
+            .expect("claim active dispatch");
+        assert_eq!(claimed.len(), 1);
+        let active_claim_token = claimed[0].claim_token.clone().unwrap();
+
+        let mut queued = RunRequest::new("thread-signal-blocked", vec![Message::user("queued")])
+            .with_agent_id("agent");
+        let (_, queued_messages) =
+            validate_run_inputs(queued.thread_id.clone(), queued.messages.clone(), false)
+                .expect("queued input should validate");
+        mailbox
+            .prepare_run_for_dispatch(&mut queued, &thread_id, &queued_messages)
+            .await
+            .expect("prepare queued run");
+        let queued_dispatch = mailbox
+            .build_dispatch(&queued, &thread_id)
+            .expect("build queued dispatch");
+        let queued_dispatch_id = queued_dispatch.dispatch_id.clone();
+        store
+            .enqueue(&queued_dispatch)
+            .await
+            .expect("enqueue queued dispatch");
+
+        let signal_loop = tokio::spawn(Arc::clone(&mailbox).run_dispatch_signal_loop());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if store.nacked_signal_count() > 0 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "queued signal blocked by an active claim must be nacked for redelivery"
+            );
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        let queued_before_release = store
+            .load_dispatch(&queued_dispatch_id)
+            .await
+            .expect("queued dispatch lookup")
+            .expect("queued dispatch exists");
+        assert_eq!(queued_before_release.status, RunDispatchStatus::Queued);
+
+        store
+            .ack(&active_dispatch_id, &active_claim_token, now_ms())
+            .await
+            .expect("release active claim");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let dispatch = store
+                .load_dispatch(&queued_dispatch_id)
+                .await
+                .expect("queued dispatch lookup")
+                .expect("queued dispatch exists");
+            if dispatch.status == RunDispatchStatus::Acked {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "redelivered signal should claim after active claim releases"
+            );
+            sleep(Duration::from_millis(10)).await;
+        }
+        signal_loop.abort();
+
+        assert!(
+            store.nacked_signal_count() >= 1,
+            "blocked queued signal must be nacked at least once"
+        );
+        assert!(
+            store.acked_signal_count() >= 2,
+            "active signal and final queued signal should both be acked"
+        );
+    }
+
     #[test]
     fn run_request_fields() {
         let req = RunRequest::new("t-1", vec![Message::user("hello")]).with_agent_id("agent-a");
@@ -4481,6 +5266,87 @@ mod tests {
         assert!(dead.completed_at.is_some());
     }
 
+    #[tokio::test]
+    async fn reconstruct_failure_cleans_worker_and_dispatches_next_queued() {
+        let store = make_store();
+        let thread_store = Arc::new(InMemoryStore::new());
+        let runtime = Arc::new(RecordingMailboxRuntime::default());
+        let mailbox = Arc::new(Mailbox::new_with_executor(
+            runtime,
+            store.clone(),
+            thread_store.clone(),
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+        let thread_id = "thread-reconstruct-next";
+        let now = now_ms();
+
+        let missing = RunDispatch {
+            dispatch_id: "dispatch-missing-run".to_string(),
+            thread_id: thread_id.to_string(),
+            run_id: "missing-run".to_string(),
+            priority: 10,
+            dedupe_key: None,
+            dispatch_epoch: 0,
+            status: RunDispatchStatus::Queued,
+            available_at: now,
+            attempt_count: 0,
+            max_attempts: 3,
+            last_error: None,
+            claim_token: None,
+            claimed_by: None,
+            lease_until: None,
+            dispatch_instance_id: None,
+            run_status: None,
+            termination: None,
+            run_response: None,
+            run_error: None,
+            completed_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        store.enqueue(&missing).await.expect("enqueue missing run");
+
+        let mut next_request =
+            RunRequest::new(thread_id, vec![Message::user("next")]).with_agent_id("agent");
+        let (_, next_messages) = validate_run_inputs(
+            next_request.thread_id.clone(),
+            next_request.messages.clone(),
+            false,
+        )
+        .expect("next input should validate");
+        mailbox
+            .prepare_run_for_dispatch(&mut next_request, thread_id, &next_messages)
+            .await
+            .expect("prepare next run");
+        let mut next = mailbox
+            .build_dispatch(&next_request, thread_id)
+            .expect("build next dispatch");
+        next.priority = 20;
+        next.created_at = now.saturating_add(1);
+        next.updated_at = next.created_at;
+        let next_dispatch_id = next.dispatch_id.clone();
+        store.enqueue(&next).await.expect("enqueue next");
+
+        mailbox.get_or_create_worker(thread_id).await;
+        assert_eq!(
+            mailbox.try_dispatch_next(thread_id).await,
+            DispatchAttempt::Claimed
+        );
+
+        let dead = wait_for_dispatch(&store, "dispatch-missing-run", |dispatch| {
+            dispatch.status == RunDispatchStatus::DeadLetter
+        })
+        .await;
+        assert_eq!(dead.status, RunDispatchStatus::DeadLetter);
+
+        let acked = wait_for_dispatch(&store, &next_dispatch_id, |dispatch| {
+            dispatch.status == RunDispatchStatus::Acked
+        })
+        .await;
+        assert_eq!(acked.status, RunDispatchStatus::Acked);
+    }
+
     // ── MailboxDispatchStatus ────────────────────────────────────────
 
     #[test]
@@ -4770,7 +5636,7 @@ mod tests {
         let active_claim_token = claimed.claim_token.clone().expect("claim token");
 
         let subscriber = mailbox_store
-            .open_live_channel(thread_id)
+            .open_live_channel_for(&live_target_for_dispatch(&active_dispatch))
             .await
             .expect("open live channel");
         let captured = Arc::new(tokio::sync::Mutex::new(Vec::<LiveRunCommand>::new()));
@@ -4817,6 +5683,220 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn foreground_submit_does_not_prepare_replacement_when_remote_cancel_times_out() {
+        use awaken_contract::contract::mailbox::LiveRunCommand;
+        use futures::StreamExt;
+
+        let mailbox_store = make_store();
+        let thread_store = Arc::new(InMemoryStore::new());
+        let runtime = Arc::new(RecordingMailboxRuntime::default());
+        let mailbox = Arc::new(Mailbox::new_with_executor(
+            runtime,
+            mailbox_store.clone(),
+            thread_store.clone(),
+            "foreground-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+        let thread_id = "thread-remote-cancel-timeout";
+
+        let mut active_request =
+            RunRequest::new(thread_id, vec![Message::user("active")]).with_agent_id("agent");
+        let (_, active_messages) = validate_run_inputs(
+            active_request.thread_id.clone(),
+            active_request.messages.clone(),
+            false,
+        )
+        .expect("active input should validate");
+        mailbox
+            .prepare_run_for_dispatch(&mut active_request, thread_id, &active_messages)
+            .await
+            .expect("prepare active run");
+        let active_dispatch = mailbox
+            .build_dispatch(&active_request, thread_id)
+            .expect("build active dispatch");
+        let active_dispatch_id = active_dispatch.dispatch_id.clone();
+        mailbox_store.enqueue(&active_dispatch).await.unwrap();
+        mailbox_store
+            .claim_dispatch(&active_dispatch_id, "remote-consumer", 30_000, now_ms())
+            .await
+            .unwrap()
+            .expect("active dispatch should be claimed");
+
+        let subscriber = mailbox_store
+            .open_live_channel_for(&live_target_for_dispatch(&active_dispatch))
+            .await
+            .expect("open live channel");
+        let _forwarder = tokio::spawn(async move {
+            let mut subscriber = subscriber;
+            while let Some(entry) = subscriber.next().await {
+                if matches!(entry.command, LiveRunCommand::Cancel) {
+                    // Ack the cancel but intentionally keep the dispatch Claimed.
+                    entry.receipt.ack();
+                    break;
+                }
+                drop(entry.receipt);
+            }
+        });
+
+        let result = mailbox
+            .submit(
+                RunRequest::new(thread_id, vec![Message::user("replacement")])
+                    .with_agent_id("agent"),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(MailboxError::Validation(ref message)) if message == ACTIVE_RUN_CONFLICT_MESSAGE),
+            "foreground submit must fail before writing replacement state when old claim remains active"
+        );
+
+        let messages = thread_store
+            .load_messages(thread_id)
+            .await
+            .expect("load messages")
+            .expect("active messages should remain");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].text(), "active");
+
+        let all = mailbox_store
+            .list_dispatches(thread_id, None, 10, 0)
+            .await
+            .expect("list dispatches");
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].dispatch_id, active_dispatch_id);
+        assert_eq!(all[0].status, RunDispatchStatus::Claimed);
+    }
+
+    #[tokio::test]
+    async fn foreground_submit_does_not_prepare_replacement_when_local_cancel_times_out() {
+        let mailbox_store = make_store();
+        let thread_store = Arc::new(InMemoryStore::new());
+        let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
+        let mailbox = Arc::new(Mailbox::new_with_executor(
+            runtime,
+            mailbox_store.clone(),
+            thread_store.clone(),
+            "foreground-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+        let thread_id = "thread-local-cancel-timeout";
+
+        let mut active_request =
+            RunRequest::new(thread_id, vec![Message::user("active")]).with_agent_id("agent");
+        let (_, active_messages) = validate_run_inputs(
+            active_request.thread_id.clone(),
+            active_request.messages.clone(),
+            false,
+        )
+        .expect("active input should validate");
+        mailbox
+            .prepare_run_for_dispatch(&mut active_request, thread_id, &active_messages)
+            .await
+            .expect("prepare active run");
+        let active_dispatch = mailbox
+            .build_dispatch(&active_request, thread_id)
+            .expect("build active dispatch");
+        let active_dispatch_id = active_dispatch.dispatch_id.clone();
+        mailbox_store.enqueue(&active_dispatch).await.unwrap();
+        mailbox_store
+            .claim_dispatch(&active_dispatch_id, "foreground-consumer", 30_000, now_ms())
+            .await
+            .unwrap()
+            .expect("active dispatch should be claimed");
+
+        let result = mailbox
+            .submit(
+                RunRequest::new(thread_id, vec![Message::user("replacement")])
+                    .with_agent_id("agent"),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(MailboxError::Validation(ref message)) if message == ACTIVE_RUN_CONFLICT_MESSAGE),
+            "foreground submit must fail before writing replacement state when local cancel does not release"
+        );
+
+        let messages = thread_store
+            .load_messages(thread_id)
+            .await
+            .expect("load messages")
+            .expect("active messages should remain");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].text(), "active");
+
+        let all = mailbox_store
+            .list_dispatches(thread_id, None, 10, 0)
+            .await
+            .expect("list dispatches");
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].dispatch_id, active_dispatch_id);
+        assert_eq!(all[0].status, RunDispatchStatus::Claimed);
+    }
+
+    #[tokio::test]
+    async fn foreground_submit_waits_for_local_cancelled_dispatch_to_release_claim() {
+        let mailbox_store = make_store();
+        let thread_store = Arc::new(InMemoryStore::new());
+        let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(ImmediateLocalCancelRuntime);
+        let mailbox = Arc::new(Mailbox::new_with_executor(
+            runtime,
+            mailbox_store.clone(),
+            thread_store.clone(),
+            "foreground-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+        let thread_id = "thread-local-cancel-claim-window";
+
+        let mut active_request =
+            RunRequest::new(thread_id, vec![Message::user("active")]).with_agent_id("agent");
+        let (_, active_messages) = validate_run_inputs(
+            active_request.thread_id.clone(),
+            active_request.messages.clone(),
+            false,
+        )
+        .expect("active input should validate");
+        mailbox
+            .prepare_run_for_dispatch(&mut active_request, thread_id, &active_messages)
+            .await
+            .expect("prepare active run");
+        let active_dispatch = mailbox
+            .build_dispatch(&active_request, thread_id)
+            .expect("build active dispatch");
+        let active_dispatch_id = active_dispatch.dispatch_id.clone();
+        mailbox_store.enqueue(&active_dispatch).await.unwrap();
+        mailbox_store
+            .claim_dispatch(&active_dispatch_id, "foreground-consumer", 30_000, now_ms())
+            .await
+            .unwrap()
+            .expect("active dispatch should be claimed");
+
+        let result = mailbox
+            .submit(
+                RunRequest::new(thread_id, vec![Message::user("replacement")])
+                    .with_agent_id("agent"),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(MailboxError::Validation(ref message)) if message == ACTIVE_RUN_CONFLICT_MESSAGE),
+            "foreground submit must fail before writing replacement state when local runtime slot released but mailbox claim remains"
+        );
+
+        let messages = thread_store
+            .load_messages(thread_id)
+            .await
+            .expect("load messages")
+            .expect("active messages should remain");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].text(), "active");
+
+        let all = mailbox_store
+            .list_dispatches(thread_id, None, 10, 0)
+            .await
+            .expect("list dispatches");
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].dispatch_id, active_dispatch_id);
+        assert_eq!(all[0].status, RunDispatchStatus::Claimed);
+    }
+
     /// Cross-node live delivery: no local worker, but the thread has an
     /// active Running run recorded globally in ThreadRunStore. Mailbox must
     /// publish on the live channel (for the owning node's forwarder to
@@ -4842,7 +5922,7 @@ mod tests {
         // Simulate the remote forwarder: drain the stream and ack each
         // entry so the producer's `deliver_live` resolves as Delivered.
         let subscriber = mailbox_store
-            .open_live_channel(thread_id)
+            .open_live_channel_for(&live_target_for_run(&run))
             .await
             .expect("open live channel");
         let captured = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<LiveRunCommand>::new()));
@@ -4912,7 +5992,7 @@ mod tests {
         thread_store.create_run(&run).await.expect("seed run");
 
         let subscriber = mailbox_store
-            .open_live_channel(thread_id)
+            .open_live_channel_for(&live_target_for_run(&run))
             .await
             .expect("open live channel");
         // Drop every receipt — simulates forwarder that can't hand off.
@@ -4971,7 +6051,7 @@ mod tests {
         thread_store.create_run(&run).await.expect("seed run");
 
         let subscriber = mailbox_store
-            .open_live_channel(thread_id)
+            .open_live_channel_for(&live_target_for_run(&run))
             .await
             .expect("open live channel");
         // Consumer captures the command (simulates `try_send` success)
@@ -5064,6 +6144,54 @@ mod tests {
             result.run_id, "run-actual",
             "mismatched expected_run_id must not steer the stale remote run"
         );
+    }
+
+    #[tokio::test]
+    async fn send_decision_live_delivers_to_remote_waiting_run() {
+        use awaken_contract::contract::mailbox::LiveRunCommand;
+        use futures::StreamExt;
+
+        let mailbox_store = make_store();
+        let thread_store = Arc::new(InMemoryStore::new());
+        let thread_id = "thread-remote-decision";
+        let run = seeded_waiting_run("run-remote-decision", thread_id, "agent");
+        thread_store.create_run(&run).await.expect("seed run");
+
+        let subscriber = mailbox_store
+            .open_live_channel_for(&live_target_for_run(&run))
+            .await
+            .expect("open targeted live channel");
+        let captured = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let captured_c = captured.clone();
+        let _forwarder = tokio::spawn(async move {
+            let mut subscriber = subscriber;
+            while let Some(entry) = subscriber.next().await {
+                if let LiveRunCommand::Decision(decisions) = entry.command {
+                    captured_c.lock().await.push(decisions);
+                    entry.receipt.ack();
+                    break;
+                }
+                drop(entry.receipt);
+            }
+        });
+
+        let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
+        let mailbox = Arc::new(Mailbox::new_with_executor(
+            runtime,
+            mailbox_store,
+            thread_store,
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let delivered = mailbox
+            .send_decision_live(thread_id, "tool-1".to_string(), make_resume())
+            .await
+            .expect("live decision should not error");
+        assert!(delivered);
+        let captured = captured.lock().await;
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0][0].0, "tool-1");
     }
 
     /// Cross-node live delivery when **no subscriber** is attached to the
@@ -5540,6 +6668,120 @@ mod tests {
             "at most 1 Claimed, got {}",
             dispatches.len()
         );
+    }
+
+    #[tokio::test]
+    async fn dispatch_signal_busy_ack_still_runs_queued_dispatch_after_current_finishes() {
+        let store = Arc::new(SignalMailboxStore::new());
+        let run_store = Arc::new(InMemoryStore::new());
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let release_first = Arc::new(tokio::sync::Notify::new());
+        let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(BlockingMailboxRuntime::new(
+            started_tx,
+            Arc::clone(&release_first),
+        ));
+        let mailbox = Arc::new(Mailbox::new_with_executor(
+            runtime,
+            store.clone(),
+            run_store,
+            "signal-consumer".to_string(),
+            MailboxConfig::default(),
+        ));
+
+        let mut first = RunRequest::new("thread-signal-busy", vec![Message::user("first")])
+            .with_agent_id("agent");
+        let (thread_id, first_messages) =
+            validate_run_inputs(first.thread_id.clone(), first.messages.clone(), false)
+                .expect("first input should validate");
+        mailbox
+            .prepare_run_for_dispatch(&mut first, &thread_id, &first_messages)
+            .await
+            .expect("prepare first run");
+        let first_dispatch = mailbox
+            .build_dispatch(&first, &thread_id)
+            .expect("build first dispatch");
+        let first_dispatch_id = first_dispatch.dispatch_id.clone();
+        store.enqueue(&first_dispatch).await.expect("enqueue first");
+
+        let mut second = RunRequest::new("thread-signal-busy", vec![Message::user("second")])
+            .with_agent_id("agent");
+        let (_, second_messages) =
+            validate_run_inputs(second.thread_id.clone(), second.messages.clone(), false)
+                .expect("second input should validate");
+        mailbox
+            .prepare_run_for_dispatch(&mut second, &thread_id, &second_messages)
+            .await
+            .expect("prepare second run");
+        let second_dispatch = mailbox
+            .build_dispatch(&second, &thread_id)
+            .expect("build second dispatch");
+        let second_dispatch_id = second_dispatch.dispatch_id.clone();
+        store
+            .enqueue(&second_dispatch)
+            .await
+            .expect("enqueue second");
+
+        let signal_loop = tokio::spawn(Arc::clone(&mailbox).run_dispatch_signal_loop());
+        let (ordinal, dispatch_id) =
+            tokio::time::timeout(Duration::from_secs(2), started_rx.recv())
+                .await
+                .expect("first dispatch should start")
+                .expect("runtime should report first start");
+        assert_eq!(ordinal, 1);
+        let blocked_dispatch_id = dispatch_id.expect("started dispatch should have an id");
+        assert!(
+            blocked_dispatch_id == first_dispatch_id || blocked_dispatch_id == second_dispatch_id,
+            "started dispatch must be one of the two queued dispatches"
+        );
+        let queued_dispatch_id = if blocked_dispatch_id == first_dispatch_id {
+            second_dispatch_id.as_str()
+        } else {
+            first_dispatch_id.as_str()
+        };
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while store.acked_signal_count() < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "signal loop must ack the busy second signal instead of blocking"
+            );
+            sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(store.nacked_signal_count(), 0);
+        let queued_before_release = store
+            .load_dispatch(queued_dispatch_id)
+            .await
+            .expect("load queued dispatch")
+            .expect("queued dispatch exists");
+        assert_eq!(
+            queued_before_release.status,
+            RunDispatchStatus::Queued,
+            "busy signal ack must not claim the other dispatch before the first finishes"
+        );
+
+        release_first.notify_waiters();
+        let (ordinal, dispatch_id) =
+            tokio::time::timeout(Duration::from_secs(2), started_rx.recv())
+                .await
+                .expect("queued dispatch should start after first finishes")
+                .expect("runtime should report second start");
+        assert_eq!(ordinal, 2);
+        assert_eq!(dispatch_id.as_deref(), Some(queued_dispatch_id));
+
+        let first_done = wait_for_dispatch(&store.inner, &first_dispatch_id, |dispatch| {
+            dispatch.status == RunDispatchStatus::Acked
+        })
+        .await;
+        let second_done = wait_for_dispatch(&store.inner, &second_dispatch_id, |dispatch| {
+            dispatch.status == RunDispatchStatus::Acked
+        })
+        .await;
+        signal_loop.abort();
+
+        assert_eq!(first_done.status, RunDispatchStatus::Acked);
+        assert_eq!(second_done.status, RunDispatchStatus::Acked);
+        assert_eq!(store.acked_signal_count(), 2);
+        assert_eq!(store.nacked_signal_count(), 0);
     }
 
     #[tokio::test]

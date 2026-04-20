@@ -1,6 +1,7 @@
 //! Run dispatch types and persistent store trait for the unified run queue.
 
 use std::pin::Pin;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::Stream;
@@ -176,6 +177,36 @@ pub enum LiveRunCommand {
     Decision(Vec<(String, ToolCallResume)>),
 }
 
+/// Exact live-run target for cross-node ephemeral control.
+///
+/// Thread-only routing is intentionally insufficient for distributed
+/// backends: a stale subscriber for the same thread must not be able to ack a
+/// command intended for a newer run/dispatch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveRunTarget {
+    pub thread_id: String,
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_id: Option<String>,
+}
+
+impl LiveRunTarget {
+    #[must_use]
+    pub fn new(thread_id: impl Into<String>, run_id: impl Into<String>) -> Self {
+        Self {
+            thread_id: thread_id.into(),
+            run_id: run_id.into(),
+            dispatch_id: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_dispatch_id(mut self, dispatch_id: impl Into<String>) -> Self {
+        self.dispatch_id = Some(dispatch_id.into());
+        self
+    }
+}
+
 /// Completion receipt for a delivered `LiveRunCommand`. Consumers call
 /// [`LiveCommandReceipt::ack`] **only after the run has actually accepted
 /// the command** (e.g. the inbox channel returned success). A dropped
@@ -223,6 +254,39 @@ pub enum LiveDeliveryOutcome {
     /// No subscriber, or the subscriber failed to accept within the
     /// producer's timeout. Caller should fall back to durable dispatch.
     NoSubscriber,
+}
+
+// ── DispatchSignal ─────────────────────────────────────────────────────────
+
+/// Receipt for a durable dispatch delivery signal.
+///
+/// Implementations should ack only after the scheduler has attempted to claim
+/// the indicated thread. Nack requests redelivery when the scheduler cannot
+/// safely make a claim decision.
+#[async_trait]
+pub trait DispatchSignalReceipt: Send + Sync {
+    async fn ack(self: Box<Self>) -> Result<(), StorageError>;
+    async fn nack(self: Box<Self>) -> Result<(), StorageError>;
+    async fn nack_with_delay(self: Box<Self>, delay: Duration) -> Result<(), StorageError> {
+        let _ = delay;
+        self.nack().await
+    }
+}
+
+/// One durable dispatch delivery signal pulled from a backend work queue.
+pub struct DispatchSignalEntry {
+    pub thread_id: String,
+    pub dispatch_id: String,
+    pub receipt: Box<dyn DispatchSignalReceipt>,
+}
+
+impl std::fmt::Debug for DispatchSignalEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DispatchSignalEntry")
+            .field("thread_id", &self.thread_id)
+            .field("dispatch_id", &self.dispatch_id)
+            .finish_non_exhaustive()
+    }
 }
 
 // ── MailboxStore trait ──────────────────────────────────────────────
@@ -375,6 +439,26 @@ pub trait MailboxStore: Send + Sync {
     /// Used by recover() at startup.
     async fn queued_thread_ids(&self) -> Result<Vec<String>, StorageError>;
 
+    // ── dispatch signals (durable wakeups) ──
+
+    /// Whether this store exposes durable dispatch delivery signals.
+    fn supports_dispatch_signals(&self) -> bool {
+        false
+    }
+
+    /// Pull durable dispatch delivery signals, if supported by the backend.
+    ///
+    /// The default is empty so non-work-queue stores continue relying on local
+    /// submit, startup recovery, and sweep.
+    async fn pull_dispatch_signals(
+        &self,
+        max: usize,
+        expires: Duration,
+    ) -> Result<Vec<DispatchSignalEntry>, StorageError> {
+        let _ = (max, expires);
+        Ok(Vec::new())
+    }
+
     // ── live-channel (ephemeral steering) ──
     //
     // Separate from durable dispatch: these deliver best-effort control
@@ -396,6 +480,19 @@ pub trait MailboxStore: Send + Sync {
         Ok(LiveDeliveryOutcome::NoSubscriber)
     }
 
+    /// Deliver a live command to an exact run target.
+    ///
+    /// Backends with targeted live subjects should override this. The default
+    /// preserves compatibility for stores that only support thread-level live
+    /// routing.
+    async fn deliver_live_to(
+        &self,
+        target: &LiveRunTarget,
+        cmd: LiveRunCommand,
+    ) -> Result<LiveDeliveryOutcome, StorageError> {
+        self.deliver_live(&target.thread_id, cmd).await
+    }
+
     /// Subscribe to the live-command stream for `thread_id`. Called by the
     /// runtime on the owning node when a run is registered.
     async fn open_live_channel(
@@ -404,6 +501,14 @@ pub trait MailboxStore: Send + Sync {
     ) -> Result<LiveRunCommandStream, StorageError> {
         let _ = thread_id;
         Ok(Box::pin(futures::stream::empty()))
+    }
+
+    /// Subscribe to the live-command stream for an exact run target.
+    async fn open_live_channel_for(
+        &self,
+        target: &LiveRunTarget,
+    ) -> Result<LiveRunCommandStream, StorageError> {
+        self.open_live_channel(&target.thread_id).await
     }
 }
 

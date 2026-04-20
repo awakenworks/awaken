@@ -8,6 +8,8 @@ use awaken_contract::contract::storage::StorageError;
 
 use super::{NatsMailboxStore, claim_guard, codec, keys};
 
+const DEDUPE_ORPHAN_GRACE_MS: u64 = 5_000;
+
 pub async fn enqueue(store: &NatsMailboxStore, dispatch: &RunDispatch) -> Result<(), StorageError> {
     // ── Stamp dispatch_epoch from authoritative KV state ──
     //
@@ -38,14 +40,29 @@ pub async fn enqueue(store: &NatsMailboxStore, dispatch: &RunDispatch) -> Result
         .await?;
     }
 
+    // The per-thread index is written before the dispatch record. This
+    // makes queue scans O(thread dispatches) without introducing a
+    // stranded-dispatch gap: if the later dispatch put fails, the index
+    // entry is a harmless dangling id that strong loads skip.
+    if let Err(e) = append_thread_index(store, &dispatch.thread_id, &dispatch.dispatch_id).await {
+        if let Some(ref dedupe_key) = dispatch.dedupe_key {
+            release_dedupe_lock(
+                store,
+                &dispatch.thread_id,
+                dedupe_key,
+                &dispatch.dispatch_id,
+            )
+            .await;
+        }
+        return Err(e);
+    }
+
     // ── Commit point: KV put ──
     //
     // Once the dispatch record is durable in KV, enqueue returns Ok even
-    // if later bookkeeping steps fail. The sweeper / recovery paths
-    // reconcile: they re-publish the JetStream delivery signal, rebuild
-    // the thread-index, etc. Failing enqueue after the KV put would leave
-    // callers thinking the request was rejected while the dispatch
-    // actually proceeds — the exact partial-failure hole we're closing.
+    // if later signal publication fails. The sweeper / recovery paths
+    // reconcile by re-publishing the JetStream delivery signal for queued
+    // dispatches that still need a wakeup.
     let bytes = codec::encode(&dispatch)?;
     if let Err(e) = store
         .kv_dispatch
@@ -68,18 +85,6 @@ pub async fn enqueue(store: &NatsMailboxStore, dispatch: &RunDispatch) -> Result
     // Update in-memory index synchronously so later `claim()` can see it
     // without waiting for the KV watcher.
     store.index.write().await.upsert(dispatch.clone());
-
-    // Best-effort: append to the thread-index bookkeeping bucket. Failure
-    // here does NOT fail enqueue; the in-memory index (kept in sync by
-    // the watcher) already answers every query path.
-    if let Err(e) = append_thread_index(store, &dispatch.thread_id, &dispatch.dispatch_id).await {
-        tracing::warn!(
-            thread_id = dispatch.thread_id,
-            dispatch_id = dispatch.dispatch_id,
-            error = %e,
-            "append_thread_index failed; continuing (non-authoritative bookkeeping)"
-        );
-    }
 
     // Best-effort: JetStream delivery signal. Failure is recovered by the
     // sweeper, which re-publishes for every Queued dispatch still missing
@@ -138,7 +143,11 @@ async fn acquire_dedupe_lock(
 ) -> Result<(), StorageError> {
     let key = keys::dedupe_lock_key(thread_id, dedupe_key);
     for _ in 0..3 {
-        let value = bytes::Bytes::from(dispatch_id.to_string().into_bytes());
+        let record = codec::DedupeLockRecord {
+            dispatch_id: dispatch_id.to_string(),
+            created_at: current_millis(),
+        };
+        let value = codec::encode_dedupe_lock(&record)?;
         match store.kv_thread_index.create(&key, value).await {
             Ok(_) => return Ok(()),
             Err(err) => {
@@ -179,18 +188,23 @@ async fn reconcile_dedupe_lock(
         Some(entry) => entry,
         None => return Ok(true), // gone already; retry acquire
     };
-    let holder_dispatch_id = String::from_utf8_lossy(&entry.value).to_string();
-    if holder_dispatch_id.is_empty() {
+    let lock = codec::decode_dedupe_lock(&entry.value)?;
+    if lock.dispatch_id.is_empty() {
         return purge_lock_if_revision(store, &key, entry.revision).await;
     }
 
     let holder_entry = store
         .kv_dispatch
-        .entry(&keys::dispatch_key(&holder_dispatch_id))
+        .entry(&keys::dispatch_key(&lock.dispatch_id))
         .await
         .map_err(|e| StorageError::Io(format!("dedupe reconcile dispatch lookup: {e}")))?;
     let Some(holder_entry) = holder_entry else {
-        // Lock created, dispatch never materialised (crash gap).
+        // Lock created, dispatch not materialised yet. Treat young locks
+        // as in-flight enqueue owners; only purge after a short orphan
+        // grace so concurrent enqueue cannot steal the lock.
+        if !is_dedupe_orphan_expired(lock.created_at) {
+            return Ok(false);
+        }
         return purge_lock_if_revision(store, &key, entry.revision).await;
     };
     let holder = codec::decode(&holder_entry.value)?;
@@ -223,6 +237,10 @@ async fn reconcile_dedupe_lock(
         return Ok(false);
     }
     Ok(false)
+}
+
+fn is_dedupe_orphan_expired(created_at: u64) -> bool {
+    created_at == 0 || current_millis().saturating_sub(created_at) >= DEDUPE_ORPHAN_GRACE_MS
 }
 
 async fn purge_lock_if_revision(
@@ -295,8 +313,20 @@ pub(super) async fn release_dedupe_lock(
             return;
         }
     };
-    let holder_dispatch_id = String::from_utf8_lossy(&entry.value);
-    if holder_dispatch_id != dispatch_id {
+    let lock = match codec::decode_dedupe_lock(&entry.value) {
+        Ok(lock) => lock,
+        Err(err) => {
+            tracing::warn!(
+                thread_id,
+                dedupe_key,
+                dispatch_id,
+                error = %err,
+                "failed to decode dedupe lock before release"
+            );
+            return;
+        }
+    };
+    if lock.dispatch_id != dispatch_id {
         return;
     }
     if let Err(err) = store
@@ -315,7 +345,14 @@ pub(super) async fn release_dedupe_lock(
     }
 }
 
-async fn append_thread_index(
+fn current_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+pub(crate) async fn append_thread_index(
     store: &NatsMailboxStore,
     thread_id: &str,
     dispatch_id: &str,
@@ -387,6 +424,37 @@ pub async fn extend_lease(
         if dispatch.claim_token.as_deref() != Some(claim_token) {
             return Ok(false);
         }
+        let thread_epoch = current_thread_epoch(store, &dispatch.thread_id).await?;
+        if dispatch.dispatch_epoch < thread_epoch {
+            dispatch.status = RunDispatchStatus::Superseded;
+            dispatch.dispatch_epoch = thread_epoch;
+            dispatch.completed_at = Some(now);
+            dispatch.updated_at = now;
+            dispatch.claim_token = None;
+            dispatch.claimed_by = None;
+            dispatch.lease_until = None;
+            let bytes = codec::encode(&dispatch)?;
+            if store
+                .kv_dispatch
+                .update(&keys::dispatch_key(dispatch_id), bytes, entry.revision)
+                .await
+                .is_ok()
+            {
+                store.index.write().await.upsert(dispatch.clone());
+                claim_guard::release(store, &dispatch.thread_id, dispatch_id, claim_token).await?;
+                if let Some(ref dedupe_key) = dispatch.dedupe_key {
+                    release_dedupe_lock(
+                        store,
+                        &dispatch.thread_id,
+                        dedupe_key,
+                        &dispatch.dispatch_id,
+                    )
+                    .await;
+                }
+                return Ok(false);
+            }
+            continue;
+        }
         let lease_until = now.saturating_add(extension_ms);
         if !claim_guard::extend(
             store,
@@ -452,6 +520,12 @@ where
     Err(StorageError::Io("CAS exhausted retries".to_string()))
 }
 
+fn clear_claim_fields(dispatch: &mut RunDispatch) {
+    dispatch.claim_token = None;
+    dispatch.claimed_by = None;
+    dispatch.lease_until = None;
+}
+
 pub async fn ack(
     store: &NatsMailboxStore,
     dispatch_id: &str,
@@ -473,6 +547,7 @@ pub async fn ack(
         d.status = RunDispatchStatus::Acked;
         d.completed_at = Some(now);
         d.updated_at = now;
+        clear_claim_fields(d);
         Ok(())
     })
     .await?;
@@ -575,6 +650,7 @@ pub async fn dead_letter(
         d.last_error = Some(error.to_string());
         d.completed_at = Some(now);
         d.updated_at = now;
+        clear_claim_fields(d);
         Ok(())
     })
     .await?;
@@ -611,6 +687,7 @@ pub async fn cancel(
         d.status = RunDispatchStatus::Cancelled;
         d.completed_at = Some(now);
         d.updated_at = now;
+        clear_claim_fields(d);
         Ok(())
     })
     .await

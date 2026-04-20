@@ -27,7 +27,7 @@ use awaken_contract::contract::storage::{
     RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::{Thread, ThreadMetadata};
-use awaken_stores::{InMemoryStore, NatsBufferedThreadStore};
+use awaken_stores::{InMemoryStore, NatsBufferedThreadStore, ReadConsistency};
 use fixture::{NatsFixture, unique_config};
 
 // ── Test doubles ────────────────────────────────────────────────────
@@ -346,6 +346,50 @@ async fn out_of_order_wal_publish_does_not_rewind_projection_or_flushed_seq() {
         probe.count(),
         1,
         "stale seq should be acked/skipped, not checkpointed to inner"
+    );
+
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn strong_latest_run_uses_thread_projection_when_run_timestamps_tie() {
+    let fixture = NatsFixture::start().await;
+    let inner = Arc::new(InMemoryStore::new());
+    let mut config = unique_config(&fixture);
+    config.flush_interval = Duration::from_millis(100);
+    config.read_consistency = ReadConsistency::Strong;
+    let store = NatsBufferedThreadStore::connect(inner, config)
+        .await
+        .expect("connect");
+
+    let older = mk_run("run-old-tie", "t-projection-tie", 1);
+    let newer = mk_run("run-new-tie", "t-projection-tie", 1);
+    store
+        .checkpoint(
+            "t-projection-tie",
+            &[Message::user("old projection")],
+            &older,
+        )
+        .await
+        .unwrap();
+    store
+        .checkpoint(
+            "t-projection-tie",
+            &[Message::user("new projection")],
+            &newer,
+        )
+        .await
+        .unwrap();
+
+    store.force_flush("t-projection-tie").await.unwrap();
+    let latest = store
+        .latest_run("t-projection-tie")
+        .await
+        .unwrap()
+        .expect("latest run");
+    assert_eq!(
+        latest.run_id, "run-new-tie",
+        "Strong latest_run must follow the flushed thread projection, not updated_at tie order"
     );
 
     store.shutdown().await.unwrap();

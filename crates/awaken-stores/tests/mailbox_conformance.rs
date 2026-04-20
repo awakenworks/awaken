@@ -448,6 +448,29 @@ pub async fn reclaim_expired_leases_requeues<S: MailboxStore>(store: &S) {
     assert!(loaded.claim_token.is_none());
 }
 
+/// Expired lease reclaim follows `max_attempts` and dead-letters instead of
+/// retrying forever.
+pub async fn reclaim_expired_leases_dead_letters_at_max_attempts<S: MailboxStore>(store: &S) {
+    let mut dispatch = make_dispatch("d1", "t-reclaim-max", "r1", 128, 1000);
+    dispatch.max_attempts = 1;
+    store.enqueue(&dispatch).await.unwrap();
+
+    store
+        .claim("t-reclaim-max", "consumer-1", 100, 1000, 1)
+        .await
+        .unwrap();
+
+    let reclaimed = store.reclaim_expired_leases(2000, 10).await.unwrap();
+    assert_eq!(reclaimed.len(), 1);
+    assert_eq!(reclaimed[0].dispatch_id, "d1");
+    assert_eq!(reclaimed[0].status, RunDispatchStatus::DeadLetter);
+    assert_eq!(reclaimed[0].attempt_count, 1);
+
+    let loaded = store.load_dispatch("d1").await.unwrap().unwrap();
+    assert_eq!(loaded.status, RunDispatchStatus::DeadLetter);
+    assert_eq!(loaded.attempt_count, 1);
+}
+
 /// `purge_terminal()` removes terminal dispatches older than the cutoff.
 pub async fn purge_terminal_removes_old<S: MailboxStore>(store: &S) {
     let dispatch = make_dispatch("d1", "t-purge", "r1", 128, 1000);

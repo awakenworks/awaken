@@ -3,18 +3,22 @@
 use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
 use awaken_contract::contract::storage::StorageError;
 
-use super::{NatsMailboxStore, codec, keys};
+use super::{NatsMailboxStore, claim_guard, codec, keys, ops_query, ops_write};
 
 pub async fn reclaim_expired_leases(
     store: &NatsMailboxStore,
     now: u64,
     limit: usize,
 ) -> Result<Vec<RunDispatch>, StorageError> {
-    let candidates = store
-        .index
-        .read()
-        .await
-        .claimed_with_expired_lease(now, limit);
+    let candidates = ops_query::load_all_dispatches(store)
+        .await?
+        .into_iter()
+        .filter(|dispatch| {
+            dispatch.status == RunDispatchStatus::Claimed
+                && dispatch.lease_until.is_some_and(|until| until < now)
+        })
+        .take(limit)
+        .collect::<Vec<_>>();
     let mut reclaimed = Vec::new();
     for candidate in candidates {
         if let Some(d) = reclaim_one(store, &candidate.dispatch_id, now).await? {
@@ -45,13 +49,23 @@ async fn reclaim_one(
         if dispatch.lease_until.map(|u| u >= now).unwrap_or(true) {
             return Ok(None);
         }
-        dispatch.status = RunDispatchStatus::Queued;
-        dispatch.claim_token = None;
-        dispatch.claimed_by = None;
-        dispatch.lease_until = None;
-        dispatch.attempt_count += 1;
+        let old_claim_token = dispatch.claim_token.clone();
+        dispatch.attempt_count = dispatch.attempt_count.saturating_add(1);
         dispatch.available_at = now;
         dispatch.updated_at = now;
+        if dispatch.attempt_count >= dispatch.max_attempts {
+            dispatch.status = RunDispatchStatus::DeadLetter;
+            dispatch.last_error = Some("lease expired; max attempts reached".to_string());
+            dispatch.completed_at = Some(now);
+            dispatch.claim_token = None;
+            dispatch.claimed_by = None;
+            dispatch.lease_until = None;
+        } else {
+            dispatch.status = RunDispatchStatus::Queued;
+            dispatch.claim_token = None;
+            dispatch.claimed_by = None;
+            dispatch.lease_until = None;
+        }
         let bytes = codec::encode(&dispatch)?;
         if store
             .kv_dispatch
@@ -60,6 +74,20 @@ async fn reclaim_one(
             .is_ok()
         {
             store.index.write().await.upsert(dispatch.clone());
+            if let Some(ref claim_token) = old_claim_token {
+                claim_guard::release(store, &dispatch.thread_id, dispatch_id, claim_token).await?;
+            }
+            if dispatch.status == RunDispatchStatus::DeadLetter
+                && let Some(ref dedupe_key) = dispatch.dedupe_key
+            {
+                ops_write::release_dedupe_lock(
+                    store,
+                    &dispatch.thread_id,
+                    dedupe_key,
+                    &dispatch.dispatch_id,
+                )
+                .await;
+            }
             return Ok(Some(dispatch));
         }
     }

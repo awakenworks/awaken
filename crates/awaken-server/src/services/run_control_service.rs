@@ -171,6 +171,10 @@ impl RunControlService {
     }
 
     /// Submit a tool-call decision to a waiting active run.
+    ///
+    /// Remote live delivery is at-least-once when its ack is lost before the
+    /// durable fallback is enqueued; `(tool_call_id, decision_id)` identifies
+    /// duplicate decisions.
     pub async fn decide(
         &self,
         id: &str,
@@ -180,7 +184,8 @@ impl RunControlService {
         if self
             .state
             .mailbox
-            .send_decision(id, tool_call_id.clone(), resume.clone())
+            .send_decision_live(id, tool_call_id.clone(), resume.clone())
+            .await?
         {
             Ok(())
         } else {

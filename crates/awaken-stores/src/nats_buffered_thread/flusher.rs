@@ -269,7 +269,7 @@ mod tests {
     use super::*;
     use crate::InMemoryStore;
     use awaken_contract::contract::lifecycle::RunStatus;
-    use awaken_contract::contract::storage::{RunStore, ThreadStore};
+    use awaken_contract::contract::storage::ThreadStore;
 
     fn mk_run(run_id: &str, thread_id: &str) -> RunRecord {
         RunRecord {
@@ -333,19 +333,15 @@ mod tests {
         let ok = apply_thread_batch_ordered(&inner, "t", &[], &ordered).await;
         assert!(ok);
 
-        let latest = RunStore::latest_run(&inner as &InMemoryStore, "t")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            latest.run_id, "run-new",
-            "thread projection must point at highest-seq run"
-        );
-        // `ThreadStore::load_thread` must see the same projection.
         let thread = ThreadStore::load_thread(&inner as &InMemoryStore, "t")
             .await
             .unwrap()
             .unwrap();
+        assert_eq!(
+            thread.latest_run_id.as_deref(),
+            Some("run-new"),
+            "thread projection must point at highest-seq run"
+        );
         let open = thread.open_run_id.as_deref();
         assert!(
             open == Some("run-new") || open.is_none(),

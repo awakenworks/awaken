@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::mailbox::{
     LiveCommandReceipt, LiveDeliveryOutcome, LiveRunCommand, LiveRunCommandEntry,
-    LiveRunCommandStream, MailboxInterrupt, MailboxStore, RunDispatch, RunDispatchResult,
-    RunDispatchStatus,
+    LiveRunCommandStream, LiveRunTarget, MailboxInterrupt, MailboxStore, RunDispatch,
+    RunDispatchResult, RunDispatchStatus,
 };
 use awaken_contract::contract::storage::StorageError;
 use tokio::sync::{RwLock, mpsc, oneshot};
@@ -52,6 +52,69 @@ impl InMemoryMailboxStore {
     /// Create a new empty in-memory mailbox store.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn live_key_for_thread(thread_id: &str) -> String {
+        format!("thread:{thread_id}")
+    }
+
+    fn live_key_for_target(target: &LiveRunTarget) -> String {
+        match target.dispatch_id.as_deref() {
+            Some(dispatch_id) => format!(
+                "thread:{}:run:{}:dispatch:{}",
+                target.thread_id, target.run_id, dispatch_id
+            ),
+            None => format!("thread:{}:run:{}", target.thread_id, target.run_id),
+        }
+    }
+
+    async fn deliver_live_key(
+        &self,
+        key: String,
+        cmd: LiveRunCommand,
+    ) -> Result<LiveDeliveryOutcome, StorageError> {
+        // Snapshot the sender without holding the map lock across await.
+        let sender = {
+            let map = self.live.read().await;
+            match map.get(&key) {
+                Some(sender) => sender.clone(),
+                None => return Ok(LiveDeliveryOutcome::NoSubscriber),
+            }
+        };
+        let (ack_tx, ack_rx) = oneshot::channel();
+        let receipt: Box<dyn LiveCommandReceipt> = Box::new(OneshotReceipt(ack_tx));
+        if sender
+            .send(LiveRunCommandEntry {
+                command: cmd,
+                receipt,
+            })
+            .is_err()
+        {
+            // Receiver dropped — forwarder is gone.
+            let mut map = self.live.write().await;
+            if let Some(current) = map.get(&key)
+                && current.is_closed()
+            {
+                map.remove(&key);
+            }
+            return Ok(LiveDeliveryOutcome::NoSubscriber);
+        }
+        // Wait for the consumer to ack (i.e. to successfully hand the
+        // command off to the run). Timeout maps to `NoSubscriber` so the
+        // caller falls back to the durable queue.
+        match tokio::time::timeout(LIVE_ACK_TIMEOUT, ack_rx).await {
+            Ok(Ok(())) => Ok(LiveDeliveryOutcome::Delivered),
+            _ => Ok(LiveDeliveryOutcome::NoSubscriber),
+        }
+    }
+
+    async fn open_live_key(&self, key: String) -> Result<LiveRunCommandStream, StorageError> {
+        let (tx, rx) = mpsc::unbounded_channel::<LiveRunCommandEntry>();
+        self.live.write().await.insert(key, tx);
+        let stream = futures::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|entry| (entry, rx))
+        });
+        Ok(Box::pin(stream))
     }
 }
 
@@ -524,39 +587,17 @@ impl MailboxStore for InMemoryMailboxStore {
         thread_id: &str,
         cmd: LiveRunCommand,
     ) -> Result<LiveDeliveryOutcome, StorageError> {
-        // Snapshot the sender without holding the map lock across await.
-        let sender = {
-            let map = self.live.read().await;
-            match map.get(thread_id) {
-                Some(sender) => sender.clone(),
-                None => return Ok(LiveDeliveryOutcome::NoSubscriber),
-            }
-        };
-        let (ack_tx, ack_rx) = oneshot::channel();
-        let receipt: Box<dyn LiveCommandReceipt> = Box::new(OneshotReceipt(ack_tx));
-        if sender
-            .send(LiveRunCommandEntry {
-                command: cmd,
-                receipt,
-            })
-            .is_err()
-        {
-            // Receiver dropped — forwarder is gone.
-            let mut map = self.live.write().await;
-            if let Some(current) = map.get(thread_id)
-                && current.is_closed()
-            {
-                map.remove(thread_id);
-            }
-            return Ok(LiveDeliveryOutcome::NoSubscriber);
-        }
-        // Wait for the consumer to ack (i.e. to successfully hand the
-        // command off to the run). Timeout maps to `NoSubscriber` so the
-        // caller falls back to the durable queue.
-        match tokio::time::timeout(LIVE_ACK_TIMEOUT, ack_rx).await {
-            Ok(Ok(())) => Ok(LiveDeliveryOutcome::Delivered),
-            _ => Ok(LiveDeliveryOutcome::NoSubscriber),
-        }
+        self.deliver_live_key(Self::live_key_for_thread(thread_id), cmd)
+            .await
+    }
+
+    async fn deliver_live_to(
+        &self,
+        target: &LiveRunTarget,
+        cmd: LiveRunCommand,
+    ) -> Result<LiveDeliveryOutcome, StorageError> {
+        self.deliver_live_key(Self::live_key_for_target(target), cmd)
+            .await
     }
 
     async fn open_live_channel(
@@ -568,12 +609,15 @@ impl MailboxStore for InMemoryMailboxStore {
         // time (enforced by `ActiveRunRegistry`); tests that drive multiple
         // subscribers should be written against `NatsMailboxStore` or an
         // intentional fanout backend.
-        let (tx, rx) = mpsc::unbounded_channel::<LiveRunCommandEntry>();
-        self.live.write().await.insert(thread_id.to_string(), tx);
-        let stream = futures::stream::unfold(rx, |mut rx| async move {
-            rx.recv().await.map(|entry| (entry, rx))
-        });
-        Ok(Box::pin(stream))
+        self.open_live_key(Self::live_key_for_thread(thread_id))
+            .await
+    }
+
+    async fn open_live_channel_for(
+        &self,
+        target: &LiveRunTarget,
+    ) -> Result<LiveRunCommandStream, StorageError> {
+        self.open_live_key(Self::live_key_for_target(target)).await
     }
 }
 

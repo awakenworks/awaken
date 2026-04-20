@@ -3,7 +3,7 @@
 use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
 use awaken_contract::contract::storage::StorageError;
 
-use super::{NatsMailboxStore, claim_guard, codec, keys, ops_write};
+use super::{NatsMailboxStore, claim_guard, codec, keys, ops_query, ops_write};
 
 pub async fn claim_dispatch(
     store: &NatsMailboxStore,
@@ -44,6 +44,9 @@ pub async fn claim_dispatch(
             dispatch.dispatch_epoch = thread_epoch;
             dispatch.completed_at = Some(now);
             dispatch.updated_at = now;
+            dispatch.claim_token = None;
+            dispatch.claimed_by = None;
+            dispatch.lease_until = None;
             let bytes = codec::encode(&dispatch)?;
             if store
                 .kv_dispatch
@@ -116,10 +119,11 @@ pub async fn claim(
         return Ok(Vec::new());
     }
 
-    let mut candidates = {
-        let index = store.index.read().await;
-        index.list_by_thread(thread_id, Some(&[RunDispatchStatus::Queued]))
-    };
+    let mut candidates = ops_query::load_thread_dispatches(store, thread_id)
+        .await?
+        .into_iter()
+        .filter(|dispatch| dispatch.status == RunDispatchStatus::Queued)
+        .collect::<Vec<_>>();
     candidates.retain(|d| d.available_at <= now);
     candidates.sort_by(|a, b| {
         a.priority

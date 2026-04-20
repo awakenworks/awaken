@@ -26,6 +26,22 @@ pub fn live_subject(thread_id: &str) -> String {
     format!("live.thread.{}", encode_segment(thread_id))
 }
 
+pub fn live_target_subject(thread_id: &str, run_id: &str, dispatch_id: Option<&str>) -> String {
+    match dispatch_id {
+        Some(dispatch_id) => format!(
+            "live.thread.{}.run.{}.dispatch.{}",
+            encode_segment(thread_id),
+            encode_segment(run_id),
+            encode_segment(dispatch_id)
+        ),
+        None => format!(
+            "live.thread.{}.run.{}",
+            encode_segment(thread_id),
+            encode_segment(run_id)
+        ),
+    }
+}
+
 pub fn dedupe_msg_id(thread_id: &str, dedupe_key: &str) -> String {
     format!(
         "{}:{}",
@@ -60,6 +76,10 @@ mod tests {
         assert_eq!(dispatch_subject("t1"), "dispatch.h7431");
         assert_eq!(thread_claim_key("t1"), "claim.h7431");
         assert_eq!(live_subject("t1"), "live.thread.h7431");
+        assert_eq!(
+            live_target_subject("t1", "r1", Some("d1")),
+            "live.thread.h7431.run.h7231.dispatch.h6431"
+        );
     }
 
     #[test]
@@ -67,13 +87,17 @@ mod tests {
         let thread_id = "tenant.*.>";
         let subject = dispatch_subject(thread_id);
         let live = live_subject(thread_id);
+        let targeted_live = live_target_subject(thread_id, "run.*.>", Some("dispatch.*.>"));
 
         assert_eq!(subject.matches('.').count(), 1);
         assert_eq!(live.matches('.').count(), 2);
+        assert_eq!(targeted_live.matches('.').count(), 6);
         assert!(!subject.contains('*'));
         assert!(!subject.contains('>'));
         assert!(!live.contains('*'));
         assert!(!live.contains('>'));
+        assert!(!targeted_live.contains('*'));
+        assert!(!targeted_live.contains('>'));
     }
 
     #[test]

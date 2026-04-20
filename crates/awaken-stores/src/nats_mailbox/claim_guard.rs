@@ -9,6 +9,28 @@ pub(crate) struct AcquiredThreadClaim {
     pub lease_until: u64,
 }
 
+pub(crate) async fn active_dispatch_id(
+    store: &NatsMailboxStore,
+    thread_id: &str,
+    now: u64,
+) -> Result<Option<String>, StorageError> {
+    let key = keys::thread_claim_key(thread_id);
+    let Some(entry) = store
+        .kv_thread_index
+        .entry(&key)
+        .await
+        .map_err(|e| StorageError::Io(format!("thread claim entry: {e}")))?
+    else {
+        return Ok(None);
+    };
+    let claim = codec::decode_thread_claim(&entry.value)?;
+    if claim.lease_until >= now {
+        Ok(Some(claim.dispatch_id))
+    } else {
+        Ok(None)
+    }
+}
+
 pub(crate) async fn acquire(
     store: &NatsMailboxStore,
     thread_id: &str,

@@ -29,6 +29,30 @@ pub fn decode_thread_index(bytes: &[u8]) -> Result<Vec<String>, StorageError> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct DedupeLockRecord {
+    pub dispatch_id: String,
+    pub created_at: u64,
+}
+
+pub(crate) fn encode_dedupe_lock(record: &DedupeLockRecord) -> Result<Bytes, StorageError> {
+    serde_json::to_vec(record)
+        .map(Bytes::from)
+        .map_err(|e| StorageError::Serialization(e.to_string()))
+}
+
+pub(crate) fn decode_dedupe_lock(bytes: &[u8]) -> Result<DedupeLockRecord, StorageError> {
+    if let Ok(record) = serde_json::from_slice::<DedupeLockRecord>(bytes) {
+        return Ok(record);
+    }
+    let dispatch_id = String::from_utf8(bytes.to_vec())
+        .map_err(|e| StorageError::Serialization(format!("dedupe lock utf8: {e}")))?;
+    Ok(DedupeLockRecord {
+        dispatch_id,
+        created_at: 0,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ThreadClaim {
     pub dispatch_id: String,
     pub claim_token: String,
@@ -126,5 +150,24 @@ mod tests {
         assert_eq!(decoded.dispatch_id, "d1");
         assert_eq!(decoded.claim_token, "token");
         assert_eq!(decoded.lease_until, 42);
+    }
+
+    #[test]
+    fn dedupe_lock_record_roundtrips() {
+        let record = DedupeLockRecord {
+            dispatch_id: "d1".to_string(),
+            created_at: 123,
+        };
+        let bytes = encode_dedupe_lock(&record).unwrap();
+        let decoded = decode_dedupe_lock(&bytes).unwrap();
+        assert_eq!(decoded.dispatch_id, "d1");
+        assert_eq!(decoded.created_at, 123);
+    }
+
+    #[test]
+    fn dedupe_lock_decodes_legacy_dispatch_id() {
+        let decoded = decode_dedupe_lock(b"legacy-dispatch").unwrap();
+        assert_eq!(decoded.dispatch_id, "legacy-dispatch");
+        assert_eq!(decoded.created_at, 0);
     }
 }

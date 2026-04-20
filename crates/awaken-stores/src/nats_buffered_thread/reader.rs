@@ -36,8 +36,15 @@ pub async fn load_run<T: ThreadRunStore + Send + Sync + 'static>(
     store: &NatsBufferedThreadStore<T>,
     run_id: &str,
 ) -> Result<Option<RunRecord>, StorageError> {
-    if store.config.read_consistency == ReadConsistency::Eventual {
-        return store.inner.load_run(run_id).await;
+    match store.config.read_consistency {
+        ReadConsistency::Eventual => return store.inner.load_run(run_id).await,
+        ReadConsistency::Strong => {
+            if let Some(run) = hot_meta::load_cached_run(&store.kv_hot, run_id).await? {
+                store.force_flush(&run.thread_id).await?;
+            }
+            return store.inner.load_run(run_id).await;
+        }
+        ReadConsistency::ReadYourWrites => {}
     }
     if let Some(run) = hot_meta::load_cached_run(&store.kv_hot, run_id).await? {
         return Ok(Some(run));
@@ -50,10 +57,10 @@ pub async fn latest_run<T: ThreadRunStore + Send + Sync + 'static>(
     thread_id: &str,
 ) -> Result<Option<RunRecord>, StorageError> {
     match store.config.read_consistency {
-        ReadConsistency::Eventual => return store.inner.latest_run(thread_id).await,
+        ReadConsistency::Eventual => return latest_inner_run(store, thread_id).await,
         ReadConsistency::Strong => {
             store.force_flush(thread_id).await?;
-            return store.inner.latest_run(thread_id).await;
+            return latest_inner_run(store, thread_id).await;
         }
         ReadConsistency::ReadYourWrites => {}
     }
@@ -65,6 +72,19 @@ pub async fn latest_run<T: ThreadRunStore + Send + Sync + 'static>(
         && let Some(latest_entry) = read_committed_wal_entry(store, &meta).await?
     {
         return Ok(Some(latest_entry.run));
+    }
+    latest_inner_run(store, thread_id).await
+}
+
+async fn latest_inner_run<T: ThreadRunStore + Send + Sync + 'static>(
+    store: &NatsBufferedThreadStore<T>,
+    thread_id: &str,
+) -> Result<Option<RunRecord>, StorageError> {
+    if let Some(thread) = store.inner.load_thread(thread_id).await?
+        && let Some(run_id) = thread.latest_run_id
+        && let Some(run) = store.inner.load_run(&run_id).await?
+    {
+        return Ok(Some(run));
     }
     store.inner.latest_run(thread_id).await
 }

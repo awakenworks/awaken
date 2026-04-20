@@ -218,6 +218,14 @@ async fn nats_reclaim_expired_leases_requeues() {
 }
 
 #[tokio::test]
+async fn nats_reclaim_expired_leases_dead_letters_at_max_attempts() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+    mailbox_conformance::reclaim_expired_leases_dead_letters_at_max_attempts(&store).await;
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn nats_purge_terminal_removes_old() {
     let fixture = NatsFixture::start().await;
     let store = make_store(&fixture).await;

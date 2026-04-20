@@ -224,8 +224,11 @@ impl AgentRuntime {
             };
         let run_created_at = now_ms();
 
-        let (handle, cancellation_token, raw_decision_rx) =
-            self.create_run_channels_with_inbox(run_id.clone(), live_inbox_sender);
+        let (handle, cancellation_token, raw_decision_rx) = self.create_run_channels_with_inbox(
+            run_id.clone(),
+            run_identity.trace.dispatch_id.clone(),
+            live_inbox_sender,
+        );
         let runtime_cancellation_token = cancellation_token.clone();
         let decision_rx = if capabilities.decisions {
             Some(raw_decision_rx)

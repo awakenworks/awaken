@@ -7,7 +7,9 @@ mod runner;
 
 use std::sync::Arc;
 
-use awaken_contract::contract::mailbox::{LiveRunCommand, LiveRunCommandEntry, MailboxStore};
+use awaken_contract::contract::mailbox::{
+    LiveRunCommand, LiveRunCommandEntry, LiveRunTarget, MailboxStore,
+};
 use awaken_contract::contract::storage::ThreadRunStore;
 
 use crate::error::RuntimeError;
@@ -42,7 +44,9 @@ pub(crate) type DecisionBatch = Vec<(String, ToolCallResume)>;
 #[derive(Clone)]
 pub(crate) struct RunHandle {
     pub(crate) run_id: String,
+    pub(crate) dispatch_id: Option<String>,
     cancellation_token: CancellationToken,
+    live_forwarder_token: CancellationToken,
     decision_tx: mpsc::UnboundedSender<DecisionBatch>,
     inbox_tx: Option<InboxSender>,
 }
@@ -51,6 +55,10 @@ impl RunHandle {
     /// Cancel the running agent loop cooperatively.
     pub(crate) fn cancel(&self) {
         self.cancellation_token.cancel();
+    }
+
+    pub(crate) fn stop_live_forwarder(&self) {
+        self.live_forwarder_token.cancel();
     }
 
     /// Send one or more tool call decisions to the running loop atomically.
@@ -239,12 +247,13 @@ impl AgentRuntime {
         CancellationToken,
         mpsc::UnboundedReceiver<DecisionBatch>,
     ) {
-        self.create_run_channels_with_inbox(run_id, None)
+        self.create_run_channels_with_inbox(run_id, None, None)
     }
 
     pub(crate) fn create_run_channels_with_inbox(
         &self,
         run_id: String,
+        dispatch_id: Option<String>,
         inbox_tx: Option<InboxSender>,
     ) -> (
         RunHandle,
@@ -252,11 +261,14 @@ impl AgentRuntime {
         mpsc::UnboundedReceiver<DecisionBatch>,
     ) {
         let token = CancellationToken::new();
+        let live_forwarder_token = CancellationToken::new();
         let (tx, rx) = mpsc::unbounded();
 
         let handle = RunHandle {
             run_id,
+            dispatch_id,
             cancellation_token: token.clone(),
+            live_forwarder_token,
             decision_tx: tx,
             inbox_tx,
         };
@@ -275,11 +287,13 @@ impl AgentRuntime {
         handle: RunHandle,
     ) -> Result<(), RuntimeError> {
         let run_id = handle.run_id.clone();
+        let dispatch_id = handle.dispatch_id.clone();
         let forwarder_inputs = self.mailbox_store.as_ref().map(|store| {
             (
                 Arc::clone(store),
                 handle.inbox_tx.clone(),
                 handle.cancellation_token.clone(),
+                handle.live_forwarder_token.clone(),
                 handle.decision_tx.clone(),
             )
         });
@@ -288,10 +302,15 @@ impl AgentRuntime {
                 thread_id: thread_id.to_string(),
             });
         }
-        if let Some((store, inbox_tx, token, decision_tx)) = forwarder_inputs {
+        if let Some((store, inbox_tx, token, forwarder_token, decision_tx)) = forwarder_inputs {
             let thread_id = thread_id.to_string();
+            let mut target = LiveRunTarget::new(thread_id.clone(), run_id.clone());
+            if let Some(dispatch_id) = dispatch_id {
+                target = target.with_dispatch_id(dispatch_id);
+            }
             tokio::spawn(async move {
-                run_live_forwarder(store, thread_id, inbox_tx, token, decision_tx).await;
+                run_live_forwarder(store, target, inbox_tx, token, forwarder_token, decision_tx)
+                    .await;
             });
         } else if !self
             .missing_mailbox_store_warned
@@ -316,25 +335,44 @@ impl AgentRuntime {
 /// thread and translates each `LiveRunCommand` into the matching in-process signal.
 ///
 /// Exits when:
+/// - the run is unregistered and its forwarder token is cancelled,
 /// - the subscription stream ends (store closed the channel),
 /// - a `Cancel` has been dispatched (nothing more for this run to process),
 /// - or a downstream channel is closed (agent loop already finished).
 async fn run_live_forwarder(
     store: Arc<dyn MailboxStore>,
-    thread_id: String,
+    target: LiveRunTarget,
     inbox_tx: Option<InboxSender>,
     cancellation_token: CancellationToken,
+    live_forwarder_token: CancellationToken,
     decision_tx: mpsc::UnboundedSender<DecisionBatch>,
 ) {
-    let mut stream = match store.open_live_channel(&thread_id).await {
+    let mut stream = match store.open_live_channel_for(&target).await {
         Ok(s) => s,
         Err(err) => {
-            tracing::warn!(thread_id, error = %err, "live channel subscribe failed");
+            tracing::warn!(
+                thread_id = %target.thread_id,
+                run_id = %target.run_id,
+                dispatch_id = ?target.dispatch_id,
+                error = %err,
+                "live channel subscribe failed"
+            );
             return;
         }
     };
 
-    while let Some(LiveRunCommandEntry { command, receipt }) = stream.next().await {
+    loop {
+        if live_forwarder_token.is_cancelled() {
+            break;
+        }
+        let next = tokio::select! {
+            biased;
+            _ = live_forwarder_token.cancelled() => break,
+            next = stream.next() => next,
+        };
+        let Some(LiveRunCommandEntry { command, receipt }) = next else {
+            break;
+        };
         match command {
             LiveRunCommand::Messages(messages) => {
                 let Some(tx) = inbox_tx.as_ref() else {
@@ -382,7 +420,9 @@ async fn run_live_forwarder(
                 // already mutated. Cancel the run so the caller observes
                 // the version mismatch instead of getting corrupted output.
                 tracing::error!(
-                    thread_id,
+                    thread_id = %target.thread_id,
+                    run_id = %target.run_id,
+                    dispatch_id = ?target.dispatch_id,
                     "unsupported live run command received; cancelling run to avoid silent divergence"
                 );
                 cancellation_token.cancel();
@@ -582,13 +622,13 @@ mod tests {
             let rt = make_runtime().with_mailbox_store(store.clone());
             let (inbox_tx, mut inbox_rx) = crate::inbox::inbox_channel();
             let (handle, _token, _rx) =
-                rt.create_run_channels_with_inbox("run-1".into(), Some(inbox_tx));
+                rt.create_run_channels_with_inbox("run-1".into(), None, Some(inbox_tx));
             rt.register_run("thread-1", handle).unwrap();
             settle().await;
 
             store
-                .deliver_live(
-                    "thread-1",
+                .deliver_live_to(
+                    &LiveRunTarget::new("thread-1", "run-1"),
                     LiveRunCommand::Messages(vec![Message::user("live-1")]),
                 )
                 .await
@@ -617,7 +657,10 @@ mod tests {
             settle().await;
 
             store
-                .deliver_live("thread-1", LiveRunCommand::Cancel)
+                .deliver_live_to(
+                    &LiveRunTarget::new("thread-1", "run-1"),
+                    LiveRunCommand::Cancel,
+                )
                 .await
                 .unwrap();
 
@@ -642,7 +685,10 @@ mod tests {
 
             let decisions = vec![("call-1".into(), make_resume())];
             store
-                .deliver_live("thread-1", LiveRunCommand::Decision(decisions))
+                .deliver_live_to(
+                    &LiveRunTarget::new("thread-1", "run-1"),
+                    LiveRunCommand::Decision(decisions),
+                )
                 .await
                 .unwrap();
 
@@ -667,7 +713,7 @@ mod tests {
             let rt = make_runtime(); // no store
             let (inbox_tx, mut inbox_rx) = crate::inbox::inbox_channel();
             let (handle, token, _rx) =
-                rt.create_run_channels_with_inbox("run-1".into(), Some(inbox_tx));
+                rt.create_run_channels_with_inbox("run-1".into(), None, Some(inbox_tx));
             rt.register_run("thread-1", handle).unwrap();
             settle().await;
 
@@ -692,16 +738,16 @@ mod tests {
             let (tx_a, mut rx_a) = crate::inbox::inbox_channel();
             let (tx_b, mut rx_b) = crate::inbox::inbox_channel();
             let (h_a, _tok_a, _dec_a) =
-                rt.create_run_channels_with_inbox("run-a".into(), Some(tx_a));
+                rt.create_run_channels_with_inbox("run-a".into(), None, Some(tx_a));
             let (h_b, _tok_b, _dec_b) =
-                rt.create_run_channels_with_inbox("run-b".into(), Some(tx_b));
+                rt.create_run_channels_with_inbox("run-b".into(), None, Some(tx_b));
             rt.register_run("thread-a", h_a).unwrap();
             rt.register_run("thread-b", h_b).unwrap();
             settle().await;
 
             store
-                .deliver_live(
-                    "thread-a",
+                .deliver_live_to(
+                    &LiveRunTarget::new("thread-a", "run-a"),
                     LiveRunCommand::Messages(vec![Message::user("for-a")]),
                 )
                 .await
@@ -716,6 +762,38 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn unregister_stops_live_forwarder_subscription() {
+            let store = Arc::new(InMemoryMailboxStore::new());
+            let rt = make_runtime().with_mailbox_store(store.clone());
+            let (handle, _token, _rx) = rt.create_run_channels("run-1".into());
+            rt.register_run("thread-1", handle).unwrap();
+            settle().await;
+
+            rt.unregister_run("run-1");
+            let target = LiveRunTarget::new("thread-1", "run-1");
+            let mut outcome = store
+                .deliver_live_to(&target, LiveRunCommand::Cancel)
+                .await
+                .unwrap();
+            for _ in 0..50 {
+                if outcome == awaken_contract::contract::mailbox::LiveDeliveryOutcome::NoSubscriber
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                outcome = store
+                    .deliver_live_to(&target, LiveRunCommand::Cancel)
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(
+                outcome,
+                awaken_contract::contract::mailbox::LiveDeliveryOutcome::NoSubscriber,
+                "unregister must stop the old live forwarder"
+            );
+        }
+
+        #[tokio::test]
         async fn cancel_then_messages_messages_not_processed() {
             // After forwarder dispatches Cancel it exits, so subsequent
             // Messages on the same thread should not reach the inbox via
@@ -725,12 +803,15 @@ mod tests {
             let rt = make_runtime().with_mailbox_store(store.clone());
             let (inbox_tx, mut inbox_rx) = crate::inbox::inbox_channel();
             let (handle, token, _rx) =
-                rt.create_run_channels_with_inbox("run-1".into(), Some(inbox_tx));
+                rt.create_run_channels_with_inbox("run-1".into(), None, Some(inbox_tx));
             rt.register_run("thread-1", handle).unwrap();
             settle().await;
 
             store
-                .deliver_live("thread-1", LiveRunCommand::Cancel)
+                .deliver_live_to(
+                    &LiveRunTarget::new("thread-1", "run-1"),
+                    LiveRunCommand::Cancel,
+                )
                 .await
                 .unwrap();
             // Wait for cancel to propagate.
@@ -743,8 +824,8 @@ mod tests {
             assert!(token.is_cancelled());
 
             store
-                .deliver_live(
-                    "thread-1",
+                .deliver_live_to(
+                    &LiveRunTarget::new("thread-1", "run-1"),
                     LiveRunCommand::Messages(vec![Message::user("too-late")]),
                 )
                 .await

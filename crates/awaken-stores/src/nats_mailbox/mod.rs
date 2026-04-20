@@ -2,8 +2,8 @@
 //!
 //! Dispatch records live in the `dispatch-state` KV bucket (source of truth)
 //! while JetStream `DISPATCH` serves as the delivery signal. An in-memory
-//! index populated by `kv.watch_all()` answers all read-path queries with zero
-//! network I/O.
+//! index populated by `kv.watch_all()` answers list queries; point reads use
+//! the authoritative KV record so control paths are not gated on watcher lag.
 //!
 //! # Example
 //!
@@ -37,9 +37,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_contract::contract::mailbox::{
-    LiveCommandReceipt, LiveDeliveryOutcome, LiveRunCommand, LiveRunCommandEntry,
-    LiveRunCommandStream, MailboxInterrupt, MailboxStore, RunDispatch, RunDispatchResult,
-    RunDispatchStatus,
+    DispatchSignalEntry, DispatchSignalReceipt, LiveCommandReceipt, LiveDeliveryOutcome,
+    LiveRunCommand, LiveRunCommandEntry, LiveRunCommandStream, LiveRunTarget, MailboxInterrupt,
+    MailboxStore, RunDispatch, RunDispatchResult, RunDispatchStatus,
 };
 use awaken_contract::contract::storage::StorageError;
 use bytes::Bytes;
@@ -61,7 +61,6 @@ pub struct NatsMailboxStore {
     pub(crate) kv_dispatch: async_nats::jetstream::kv::Store,
     pub(crate) kv_epoch: async_nats::jetstream::kv::Store,
     pub(crate) kv_thread_index: async_nats::jetstream::kv::Store,
-    #[allow(dead_code)]
     pub(crate) consumer: async_nats::jetstream::consumer::PullConsumer,
     #[allow(dead_code)]
     pub(crate) stream_name: String,
@@ -191,6 +190,11 @@ impl NatsMailboxStore {
         self.index.read().await.get(dispatch_id).is_some()
     }
 
+    #[doc(hidden)]
+    pub async fn __test_remove_dispatch_from_index(&self, dispatch_id: &str) {
+        self.index.write().await.remove(dispatch_id);
+    }
+
     /// Test-only: force a dedupe lock into the KV bucket without going
     /// through `enqueue`, so integration tests can reproduce the
     /// crash-between-create-and-put orphan scenario.
@@ -202,7 +206,10 @@ impl NatsMailboxStore {
         holder_dispatch_id: &str,
     ) -> Result<(), StorageError> {
         let key = keys::dedupe_lock_key(thread_id, dedupe_key);
-        let value = bytes::Bytes::from(holder_dispatch_id.to_string().into_bytes());
+        let value = codec::encode_dedupe_lock(&codec::DedupeLockRecord {
+            dispatch_id: holder_dispatch_id.to_string(),
+            created_at: 0,
+        })?;
         self.kv_thread_index
             .create(&key, value)
             .await
@@ -234,7 +241,9 @@ impl NatsMailboxStore {
             .entry(&key)
             .await
             .map_err(|e| StorageError::Io(format!("dedupe lock entry: {e}")))?;
-        Ok(entry.map(|entry| String::from_utf8_lossy(&entry.value).to_string()))
+        entry
+            .map(|entry| codec::decode_dedupe_lock(&entry.value).map(|lock| lock.dispatch_id))
+            .transpose()
     }
 
     /// Test-only: plant a dispatch in the authoritative KV store WITHOUT
@@ -257,6 +266,7 @@ impl NatsMailboxStore {
             Some(entry) => codec::decode_epoch(&entry.value)?,
             None => 0,
         };
+        ops_write::append_thread_index(self, &stamped.thread_id, &stamped.dispatch_id).await?;
         let bytes = codec::encode(&stamped)?;
         self.kv_dispatch
             .put(keys::dispatch_key(&stamped.dispatch_id), bytes)
@@ -274,6 +284,7 @@ impl NatsMailboxStore {
         &self,
         dispatch: &RunDispatch,
     ) -> Result<(), StorageError> {
+        ops_write::append_thread_index(self, &dispatch.thread_id, &dispatch.dispatch_id).await?;
         let bytes = codec::encode(dispatch)?;
         self.kv_dispatch
             .put(keys::dispatch_key(&dispatch.dispatch_id), bytes)
@@ -407,6 +418,53 @@ impl MailboxStore for NatsMailboxStore {
         ops_query::queued_thread_ids(self).await
     }
 
+    fn supports_dispatch_signals(&self) -> bool {
+        true
+    }
+
+    async fn pull_dispatch_signals(
+        &self,
+        max: usize,
+        expires: std::time::Duration,
+    ) -> Result<Vec<DispatchSignalEntry>, StorageError> {
+        if max == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut messages = self
+            .consumer
+            .fetch()
+            .max_messages(max)
+            .expires(expires)
+            .messages()
+            .await
+            .map_err(|e| StorageError::Io(format!("dispatch signal fetch: {e}")))?;
+
+        let mut entries = Vec::new();
+        while let Some(next) = messages.next().await {
+            let message =
+                next.map_err(|e| StorageError::Io(format!("dispatch signal message: {e}")))?;
+            let dispatch_id = match String::from_utf8(message.payload.to_vec()) {
+                Ok(dispatch_id) if !dispatch_id.trim().is_empty() => dispatch_id,
+                _ => {
+                    let _ = message.ack().await;
+                    continue;
+                }
+            };
+            let Some(dispatch) = ops_query::load_dispatch(self, &dispatch_id).await? else {
+                let _ = message.ack().await;
+                continue;
+            };
+            self.index.write().await.upsert(dispatch.clone());
+            entries.push(DispatchSignalEntry {
+                thread_id: dispatch.thread_id,
+                dispatch_id,
+                receipt: Box::new(NatsDispatchSignalReceipt { message }),
+            });
+        }
+        Ok(entries)
+    }
+
     // Live channel uses core NATS request-reply (not JetStream). `LiveRunCommand`
     // is ephemeral by contract: no persistence, no redelivery. Request-reply
     // gives the producer a subscriber-presence signal: `NoResponders` =
@@ -419,62 +477,102 @@ impl MailboxStore for NatsMailboxStore {
         thread_id: &str,
         cmd: LiveRunCommand,
     ) -> Result<LiveDeliveryOutcome, StorageError> {
-        let payload = serde_json::to_vec(&cmd)
-            .map_err(|e| StorageError::Serialization(format!("LiveRunCommand encode: {e}")))?;
-        match self
-            .client
-            .request(keys::live_subject(thread_id), Bytes::from(payload))
-            .await
-        {
-            Ok(_) => Ok(LiveDeliveryOutcome::Delivered),
-            Err(err) => match err.kind() {
-                async_nats::client::RequestErrorKind::NoResponders
-                | async_nats::client::RequestErrorKind::TimedOut => {
-                    Ok(LiveDeliveryOutcome::NoSubscriber)
-                }
-                async_nats::client::RequestErrorKind::Other => {
-                    Err(StorageError::Io(format!("nats request: {err}")))
-                }
-            },
-        }
+        deliver_live_subject(self, keys::live_subject(thread_id), cmd).await
+    }
+
+    async fn deliver_live_to(
+        &self,
+        target: &LiveRunTarget,
+        cmd: LiveRunCommand,
+    ) -> Result<LiveDeliveryOutcome, StorageError> {
+        deliver_live_subject(
+            self,
+            keys::live_target_subject(
+                &target.thread_id,
+                &target.run_id,
+                target.dispatch_id.as_deref(),
+            ),
+            cmd,
+        )
+        .await
     }
 
     async fn open_live_channel(
         &self,
         thread_id: &str,
     ) -> Result<LiveRunCommandStream, StorageError> {
-        let subscriber = self
-            .client
-            .subscribe(keys::live_subject(thread_id))
-            .await
-            .map_err(|e| StorageError::Io(format!("nats subscribe: {e}")))?;
-        let client = self.client.clone();
-        let stream = subscriber.filter_map(move |msg| {
-            let client = client.clone();
-            async move {
-                // Decode BEFORE handing the reply subject to the consumer.
-                // Malformed payload → drop and leave the producer without
-                // an ack so its request times out and falls back to durable
-                // dispatch.
-                let command = match serde_json::from_slice::<LiveRunCommand>(&msg.payload) {
-                    Ok(cmd) => cmd,
-                    Err(err) => {
-                        tracing::warn!(
-                            error = %err,
-                            "dropping malformed LiveRunCommand payload"
-                        );
-                        return None;
-                    }
-                };
-                let receipt: Box<dyn LiveCommandReceipt> = Box::new(NatsReplyReceipt {
-                    client,
-                    reply: msg.reply.clone(),
-                });
-                Some(LiveRunCommandEntry { command, receipt })
-            }
-        });
-        Ok(Box::pin(stream))
+        open_live_subject(self, keys::live_subject(thread_id)).await
     }
+
+    async fn open_live_channel_for(
+        &self,
+        target: &LiveRunTarget,
+    ) -> Result<LiveRunCommandStream, StorageError> {
+        open_live_subject(
+            self,
+            keys::live_target_subject(
+                &target.thread_id,
+                &target.run_id,
+                target.dispatch_id.as_deref(),
+            ),
+        )
+        .await
+    }
+}
+
+async fn deliver_live_subject(
+    store: &NatsMailboxStore,
+    subject: String,
+    cmd: LiveRunCommand,
+) -> Result<LiveDeliveryOutcome, StorageError> {
+    let payload = serde_json::to_vec(&cmd)
+        .map_err(|e| StorageError::Serialization(format!("LiveRunCommand encode: {e}")))?;
+    match store.client.request(subject, Bytes::from(payload)).await {
+        Ok(_) => Ok(LiveDeliveryOutcome::Delivered),
+        Err(err) => match err.kind() {
+            async_nats::client::RequestErrorKind::NoResponders
+            | async_nats::client::RequestErrorKind::TimedOut => {
+                Ok(LiveDeliveryOutcome::NoSubscriber)
+            }
+            async_nats::client::RequestErrorKind::Other => {
+                Err(StorageError::Io(format!("nats request: {err}")))
+            }
+        },
+    }
+}
+
+async fn open_live_subject(
+    store: &NatsMailboxStore,
+    subject: String,
+) -> Result<LiveRunCommandStream, StorageError> {
+    let subscriber = store
+        .client
+        .subscribe(subject)
+        .await
+        .map_err(|e| StorageError::Io(format!("nats subscribe: {e}")))?;
+    let client = store.client.clone();
+    let stream = subscriber.filter_map(move |msg| {
+        let client = client.clone();
+        async move {
+            // Decode BEFORE handing the reply subject to the consumer.
+            // Malformed payload → drop and leave the producer without
+            // an ack so its request times out and falls back to durable
+            // dispatch.
+            let command = match serde_json::from_slice::<LiveRunCommand>(&msg.payload) {
+                Ok(cmd) => cmd,
+                Err(err) => {
+                    tracing::warn!(error = %err, "dropping malformed LiveRunCommand payload");
+                    return None;
+                }
+            };
+            let receipt: Box<dyn LiveCommandReceipt> = Box::new(NatsReplyReceipt {
+                client,
+                reply: msg.reply.clone(),
+            });
+            Some(LiveRunCommandEntry { command, receipt })
+        }
+    });
+    Ok(Box::pin(stream))
 }
 
 /// Receipt backed by a NATS reply subject. `ack` publishes an empty
@@ -497,5 +595,36 @@ impl LiveCommandReceipt for NatsReplyReceipt {
                 tracing::warn!(error = %err, "live-channel ack publish failed");
             }
         });
+    }
+}
+
+struct NatsDispatchSignalReceipt {
+    message: async_nats::jetstream::Message,
+}
+
+#[async_trait]
+impl DispatchSignalReceipt for NatsDispatchSignalReceipt {
+    async fn ack(self: Box<Self>) -> Result<(), StorageError> {
+        self.message
+            .ack()
+            .await
+            .map_err(|e| StorageError::Io(format!("dispatch signal ack: {e}")))
+    }
+
+    async fn nack(self: Box<Self>) -> Result<(), StorageError> {
+        self.message
+            .ack_with(async_nats::jetstream::AckKind::Nak(None))
+            .await
+            .map_err(|e| StorageError::Io(format!("dispatch signal nack: {e}")))
+    }
+
+    async fn nack_with_delay(
+        self: Box<Self>,
+        delay: std::time::Duration,
+    ) -> Result<(), StorageError> {
+        self.message
+            .ack_with(async_nats::jetstream::AckKind::Nak(Some(delay)))
+            .await
+            .map_err(|e| StorageError::Io(format!("dispatch signal delayed nack: {e}")))
     }
 }

@@ -17,7 +17,7 @@ mod nats_fixture;
 
 use std::time::Duration;
 
-use awaken_contract::contract::mailbox::{LiveRunCommand, MailboxStore};
+use awaken_contract::contract::mailbox::{LiveRunCommand, LiveRunTarget, MailboxStore};
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
 use awaken_stores::{NatsMailboxConfig, NatsMailboxStore};
@@ -166,6 +166,68 @@ async fn cross_node_all_variants() {
     subscriber_store.shutdown().await.unwrap();
 }
 
+#[tokio::test]
+async fn targeted_live_delivery_does_not_ack_stale_same_thread_subscriber() {
+    let fixture = NatsFixture::start().await;
+    let config = shared_config(&fixture);
+    let publisher = NatsMailboxStore::connect(config.clone())
+        .await
+        .expect("publisher connect");
+    let subscriber_store = NatsMailboxStore::connect(config)
+        .await
+        .expect("subscriber connect");
+
+    let stale_target = LiveRunTarget::new("thread-target", "run-old").with_dispatch_id("d-old");
+    let current_target = LiveRunTarget::new("thread-target", "run-new").with_dispatch_id("d-new");
+
+    let stale_stream = subscriber_store
+        .open_live_channel_for(&stale_target)
+        .await
+        .expect("open stale channel");
+    let current_stream = subscriber_store
+        .open_live_channel_for(&current_target)
+        .await
+        .expect("open current channel");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let stale_seen = std::sync::Arc::new(tokio::sync::Mutex::new(0usize));
+    let current_seen = std::sync::Arc::new(tokio::sync::Mutex::new(0usize));
+    let stale_seen_c = stale_seen.clone();
+    let current_seen_c = current_seen.clone();
+    let _stale_consumer = tokio::spawn(async move {
+        let mut stream = stale_stream;
+        while let Some(entry) = stream.next().await {
+            *stale_seen_c.lock().await += 1;
+            entry.receipt.ack();
+        }
+    });
+    let _current_consumer = tokio::spawn(async move {
+        let mut stream = current_stream;
+        while let Some(entry) = stream.next().await {
+            if matches!(entry.command, LiveRunCommand::Cancel) {
+                *current_seen_c.lock().await += 1;
+            }
+            entry.receipt.ack();
+        }
+    });
+
+    let delivered = publisher
+        .deliver_live_to(&current_target, LiveRunCommand::Cancel)
+        .await
+        .expect("targeted deliver");
+    assert_eq!(
+        delivered,
+        awaken_contract::contract::mailbox::LiveDeliveryOutcome::Delivered
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert_eq!(*current_seen.lock().await, 1);
+    assert_eq!(*stale_seen.lock().await, 0);
+
+    publisher.shutdown().await.unwrap();
+    subscriber_store.shutdown().await.unwrap();
+}
+
 /// Disjoint threads must not cross-talk — the subject carries `thread_id`
 /// so publishes on one subject never reach subscribers of another.
 #[tokio::test]
@@ -236,6 +298,45 @@ async fn cross_node_publish_without_subscriber_silently_drops() {
     );
 
     publisher.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn targeted_live_channel_drop_removes_subscriber() {
+    let fixture = NatsFixture::start().await;
+    let config = shared_config(&fixture);
+    let publisher = NatsMailboxStore::connect(config.clone())
+        .await
+        .expect("publisher connect");
+    let subscriber_store = NatsMailboxStore::connect(config)
+        .await
+        .expect("subscriber connect");
+    let target = LiveRunTarget::new("thread-drop", "run-drop").with_dispatch_id("dispatch-drop");
+
+    let stream = subscriber_store
+        .open_live_channel_for(&target)
+        .await
+        .expect("open targeted channel");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    drop(stream);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let outcome = publisher
+            .deliver_live_to(&target, LiveRunCommand::Cancel)
+            .await
+            .expect("publish after subscription drop");
+        if outcome == awaken_contract::contract::mailbox::LiveDeliveryOutcome::NoSubscriber {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "dropping a targeted live stream must remove its NATS subscription"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    publisher.shutdown().await.unwrap();
+    subscriber_store.shutdown().await.unwrap();
 }
 
 /// Two subscribers on the same subject both receive each publish
