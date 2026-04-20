@@ -42,6 +42,22 @@ async fn nats_queued_thread_ids_returns_active_threads() {
 }
 
 #[tokio::test]
+async fn nats_count_dispatches_by_status_tracks_lifecycle() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+    mailbox_conformance::count_dispatches_by_status_tracks_lifecycle(&store).await;
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn nats_list_terminal_dispatches_returns_all_terminal() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+    mailbox_conformance::list_terminal_dispatches_returns_all_terminal(&store).await;
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn nats_claim_returns_queued_dispatch() {
     let fixture = NatsFixture::start().await;
     let store = make_store(&fixture).await;
@@ -206,6 +222,46 @@ async fn nats_interrupt_returns_active_claimed() {
     let fixture = NatsFixture::start().await;
     let store = make_store(&fixture).await;
     mailbox_conformance::interrupt_returns_active_claimed(&store).await;
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn nats_current_dispatch_epoch_tracks_interrupt() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+    mailbox_conformance::current_dispatch_epoch_tracks_interrupt(&store).await;
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn nats_supersede_claimed_terminalizes_active_dispatch() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+    mailbox_conformance::supersede_claimed_terminalizes_active_dispatch(&store).await;
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn nats_extend_lease_rejects_stale_claim_after_interrupt() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+    mailbox_conformance::extend_lease_rejects_stale_claim_after_interrupt(&store).await;
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn nats_record_dispatch_start_rejects_stale_claim_after_interrupt() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+    mailbox_conformance::record_dispatch_start_rejects_stale_claim_after_interrupt(&store).await;
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn nats_reclaim_expired_stale_claim_supersedes() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+    mailbox_conformance::reclaim_expired_stale_claim_supersedes(&store).await;
     store.shutdown().await.unwrap();
 }
 

@@ -38,7 +38,7 @@ pub async fn claim_dispatch(
         // cross-node guarantee for `interrupt()` — a node whose local
         // index hasn't caught up may see a stale Queued dispatch; the
         // KV read here is strongly consistent and rejects it.
-        let thread_epoch = read_thread_epoch(store, &dispatch.thread_id).await?;
+        let thread_epoch = ops_write::current_thread_epoch(store, &dispatch.thread_id).await?;
         if dispatch.dispatch_epoch < thread_epoch {
             dispatch.status = RunDispatchStatus::Superseded;
             dispatch.dispatch_epoch = thread_epoch;
@@ -48,13 +48,16 @@ pub async fn claim_dispatch(
             dispatch.claimed_by = None;
             dispatch.lease_until = None;
             let bytes = codec::encode(&dispatch)?;
-            if store
+            if let Ok(revision) = store
                 .kv_dispatch
                 .update(&keys::dispatch_key(dispatch_id), bytes, entry.revision)
                 .await
-                .is_ok()
             {
-                store.index.write().await.upsert(dispatch.clone());
+                store
+                    .index
+                    .write()
+                    .await
+                    .upsert_with_revision(dispatch.clone(), revision);
                 if let Some(ref dedupe_key) = dispatch.dedupe_key {
                     ops_write::release_dedupe_lock(
                         store,
@@ -87,8 +90,12 @@ pub async fn claim_dispatch(
             .update(&keys::dispatch_key(dispatch_id), bytes, entry.revision)
             .await;
         match result {
-            Ok(_) => {
-                store.index.write().await.upsert(dispatch.clone());
+            Ok(revision) => {
+                store
+                    .index
+                    .write()
+                    .await
+                    .upsert_with_revision(dispatch.clone(), revision);
                 return Ok(Some(dispatch));
             }
             Err(_e) => {
@@ -143,18 +150,4 @@ pub async fn claim(
         }
     }
     Ok(claimed)
-}
-
-/// Read the thread's current dispatch epoch from KV. `None` → epoch 0
-/// (no epoch record yet).
-async fn read_thread_epoch(store: &NatsMailboxStore, thread_id: &str) -> Result<u64, StorageError> {
-    let entry = store
-        .kv_epoch
-        .entry(&keys::epoch_key(thread_id))
-        .await
-        .map_err(|e| StorageError::Io(format!("kv entry epoch: {e}")))?;
-    match entry {
-        Some(e) => codec::decode_epoch(&e.value),
-        None => Ok(0),
-    }
 }

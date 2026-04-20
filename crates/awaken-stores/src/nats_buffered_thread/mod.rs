@@ -53,9 +53,9 @@ pub struct NatsBufferedThreadStore<T: ThreadRunStore + Send + Sync + 'static> {
     #[allow(dead_code)]
     pub(crate) consumer: async_nats::jetstream::consumer::PullConsumer,
     pub(crate) config: config::NatsBufferedThreadConfig,
+    pub(crate) flush_notify: Arc<tokio::sync::Notify>,
     pub(crate) shutdown_tx: tokio::sync::watch::Sender<bool>,
-    #[allow(dead_code)]
-    pub(crate) flusher_handle: tokio::task::JoinHandle<()>,
+    pub(crate) flusher_handle: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl<T: ThreadRunStore + Send + Sync + 'static> NatsBufferedThreadStore<T> {
@@ -105,6 +105,7 @@ impl<T: ThreadRunStore + Send + Sync + 'static> NatsBufferedThreadStore<T> {
                 .map_err(|e| StorageError::Io(format!("create bucket: {e}")))?,
         };
 
+        let flush_notify = Arc::new(tokio::sync::Notify::new());
         let (shutdown_tx, _) = tokio::sync::watch::channel(false);
 
         let shutdown_rx = shutdown_tx.subscribe();
@@ -113,6 +114,7 @@ impl<T: ThreadRunStore + Send + Sync + 'static> NatsBufferedThreadStore<T> {
             consumer.clone(),
             kv_hot.clone(),
             config.clone(),
+            Arc::clone(&flush_notify),
             shutdown_rx,
         );
 
@@ -124,13 +126,32 @@ impl<T: ThreadRunStore + Send + Sync + 'static> NatsBufferedThreadStore<T> {
             kv_hot,
             consumer,
             config,
+            flush_notify,
             shutdown_tx,
-            flusher_handle,
+            flusher_handle: tokio::sync::Mutex::new(Some(flusher_handle)),
         })
     }
 
     pub async fn shutdown(&self) -> Result<(), StorageError> {
+        let flush_result = self.force_flush_all_pending().await;
         let _ = self.shutdown_tx.send(true);
+        self.flush_notify.notify_waiters();
+        if let Some(handle) = self.flusher_handle.lock().await.take() {
+            if flush_result.is_ok() {
+                handle
+                    .await
+                    .map_err(|e| StorageError::Io(format!("flusher task join: {e}")))?;
+            } else {
+                handle.abort();
+            }
+        }
+        flush_result
+    }
+
+    pub async fn force_flush_all_pending(&self) -> Result<(), StorageError> {
+        for thread_id in hot_meta::pending_thread_ids(&self.kv_hot).await? {
+            self.force_flush(&thread_id).await?;
+        }
         Ok(())
     }
 
@@ -205,6 +226,15 @@ impl<T: ThreadRunStore + Send + Sync + 'static> NatsBufferedThreadStore<T> {
         hot_meta::read_flushed_seq(&self.kv_hot, thread_id).await
     }
 
+    #[doc(hidden)]
+    pub async fn __test_force_flushed_seq(
+        &self,
+        thread_id: &str,
+        seq: u64,
+    ) -> Result<(), StorageError> {
+        hot_meta::write_flushed_seq(&self.kv_hot, thread_id, seq).await
+    }
+
     /// Block until the flusher has drained all pending entries for the given thread.
     pub async fn force_flush(&self, thread_id: &str) -> Result<(), StorageError> {
         let target = hot_meta::read_latest_seq(&self.kv_hot, thread_id).await?;
@@ -214,6 +244,7 @@ impl<T: ThreadRunStore + Send + Sync + 'static> NatsBufferedThreadStore<T> {
         let timeout = std::time::Duration::from_secs(10);
         let start = std::time::Instant::now();
         loop {
+            self.flush_notify.notify_waiters();
             let flushed = hot_meta::read_flushed_seq(&self.kv_hot, thread_id).await?;
             if flushed >= target {
                 return Ok(());
@@ -231,7 +262,7 @@ impl<T: ThreadRunStore + Send + Sync + 'static> NatsBufferedThreadStore<T> {
 #[async_trait]
 impl<T: ThreadRunStore + Send + Sync + 'static> ThreadStore for NatsBufferedThreadStore<T> {
     async fn load_thread(&self, thread_id: &str) -> Result<Option<Thread>, StorageError> {
-        self.inner.load_thread(thread_id).await
+        reader::load_thread(self, thread_id).await
     }
     async fn save_thread(&self, thread: &Thread) -> Result<(), StorageError> {
         self.inner.save_thread(thread).await
@@ -240,7 +271,7 @@ impl<T: ThreadRunStore + Send + Sync + 'static> ThreadStore for NatsBufferedThre
         self.inner.delete_thread(thread_id).await
     }
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError> {
-        self.inner.list_threads(offset, limit).await
+        reader::list_threads(self, offset, limit).await
     }
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
         reader::load_messages(self, thread_id).await
@@ -276,7 +307,7 @@ impl<T: ThreadRunStore + Send + Sync + 'static> RunStore for NatsBufferedThreadS
         reader::latest_run(self, thread_id).await
     }
     async fn list_runs(&self, query: &RunQuery) -> Result<RunPage, StorageError> {
-        self.inner.list_runs(query).await
+        reader::list_runs(self, query).await
     }
 }
 

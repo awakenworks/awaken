@@ -407,6 +407,8 @@ dependencies = [
  "awaken-runtime",
  "futures",
  "futures-util",
+ "metrics",
+ "metrics-exporter-prometheus",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",

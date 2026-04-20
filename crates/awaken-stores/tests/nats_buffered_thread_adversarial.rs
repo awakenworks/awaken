@@ -262,15 +262,20 @@ async fn concurrent_checkpoints_same_thread_converge() {
 
     store.force_flush("t-race").await.expect("force_flush");
 
-    let latest = inner
-        .latest_run("t-race")
+    let thread = inner
+        .load_thread("t-race")
         .await
         .unwrap()
-        .expect("some run persisted");
+        .expect("thread persisted");
     // Coalescing keeps the entry with the highest thread_seq; the run &
     // messages in that entry must match (they were written by the same call).
-    let winner_idx: usize = latest
-        .run_id
+    // `RunStore::latest_run` is timestamp-based, so the thread projection is
+    // the durable source for the winning checkpoint after concurrent writes.
+    let winning_run_id = thread
+        .latest_run_id
+        .as_deref()
+        .expect("thread projection has latest run");
+    let winner_idx: usize = winning_run_id
         .trim_start_matches('r')
         .parse()
         .expect("run_id parseable");
@@ -346,6 +351,52 @@ async fn out_of_order_wal_publish_does_not_rewind_projection_or_flushed_seq() {
         probe.count(),
         1,
         "stale seq should be acked/skipped, not checkpointed to inner"
+    );
+
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn strong_load_run_uses_hot_cache_when_watermark_skips_stale_run_persist() {
+    let fixture = NatsFixture::start().await;
+    let inner = Arc::new(InMemoryStore::new());
+    let mut config = unique_config(&fixture);
+    config.read_consistency = ReadConsistency::Strong;
+    config.flush_interval = Duration::from_secs(60);
+    let store = NatsBufferedThreadStore::connect(Arc::clone(&inner), config)
+        .await
+        .expect("connect");
+
+    let run = mk_run("run-stale-watermark", "t-stale-watermark", 1);
+    store
+        .__test_cache_run_if_newer(&run, 1)
+        .await
+        .expect("cache stale run");
+    store
+        .__test_force_hot_meta("t-stale-watermark", 2, 2, 1)
+        .await
+        .expect("force hot meta");
+    store
+        .__test_force_flushed_seq("t-stale-watermark", 2)
+        .await
+        .expect("force flushed seq");
+    assert!(
+        inner
+            .load_run("run-stale-watermark")
+            .await
+            .unwrap()
+            .is_none(),
+        "test setup should leave inner store without the stale run"
+    );
+
+    let loaded = store
+        .load_run("run-stale-watermark")
+        .await
+        .expect("strong load_run");
+    assert_eq!(
+        loaded.as_ref().map(|run| run.run_id.as_str()),
+        Some("run-stale-watermark"),
+        "Strong load_run must not return a false None when projection watermark advanced before a stale run was persisted"
     );
 
     store.shutdown().await.unwrap();
@@ -572,7 +623,14 @@ async fn force_flush_times_out_when_flusher_stalls() {
         elapsed
     );
 
-    store.shutdown().await.unwrap();
+    let shutdown_err = store
+        .shutdown()
+        .await
+        .expect_err("shutdown should report that pending WAL could not drain");
+    assert!(
+        shutdown_err.to_string().contains("force_flush timeout"),
+        "expected shutdown drain timeout, got: {shutdown_err}"
+    );
 }
 
 /// ~800 KiB message payload — below JetStream's 1 MiB default but well above

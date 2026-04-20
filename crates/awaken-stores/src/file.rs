@@ -18,6 +18,7 @@ use awaken_contract::contract::storage::{
     RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::Thread;
+use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 /// File-system storage backend.
@@ -28,23 +29,16 @@ pub struct FileStore {
 impl FileStore {
     /// Create a new file store rooted at `base_path`.
     ///
-    /// If a `.checkpoint_pending` marker is detected (leftover from a crash
-    /// during [`ThreadRunStore::checkpoint`]), a warning is logged. The data
-    /// files are individually atomic (complete or absent) so the store is
-    /// still usable, but the three checkpoint files may be mutually
-    /// inconsistent.
     pub fn new(base_path: impl Into<PathBuf>) -> Self {
         let base_path = base_path.into();
-        let marker = base_path.join(".checkpoint_pending");
-        if marker.exists() {
+        if let Err(error) = recover_checkpoint_journal_sync(&base_path) {
             tracing::warn!(
-                path = %marker.display(),
-                "stale .checkpoint_pending marker detected — a previous checkpoint \
-                 may be incomplete; thread/messages/run state could be inconsistent"
+                path = %base_path.display(),
+                error = %error,
+                "failed to recover incomplete file-store checkpoint journal"
             );
-            // Remove the stale marker so we don't warn on every restart.
-            let _ = std::fs::remove_file(&marker);
         }
+        cleanup_orphan_checkpoint_backups_sync(&base_path);
         Self { base_path }
     }
 
@@ -220,6 +214,118 @@ struct StagedWrite {
     dir: PathBuf,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct CheckpointJournal {
+    writes: Vec<CheckpointJournalWrite>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CheckpointJournalWrite {
+    target: String,
+    tmp: String,
+    backup: String,
+    had_target: bool,
+}
+
+fn checkpoint_marker_path(base_dir: &Path) -> PathBuf {
+    base_dir.join(".checkpoint_pending")
+}
+
+fn checkpoint_backup_path(target: &Path, tx_id: &str) -> PathBuf {
+    let filename = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("checkpoint");
+    target.with_file_name(format!(".{filename}.{tx_id}.bak"))
+}
+
+fn rel_path(base_dir: &Path, path: &Path) -> Result<String, StorageError> {
+    path.strip_prefix(base_dir)
+        .map_err(|e| StorageError::Io(format!("checkpoint path outside base dir: {e}")))?
+        .to_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| StorageError::Io("checkpoint path is not valid UTF-8".into()))
+}
+
+fn join_rel(base_dir: &Path, rel: &str) -> PathBuf {
+    base_dir.join(rel)
+}
+
+fn dir_fsync_sync(dir: &Path) -> std::io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
+fn recover_checkpoint_journal_sync(base_dir: &Path) -> Result<(), StorageError> {
+    let marker = checkpoint_marker_path(base_dir);
+    if !marker.exists() {
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(&marker).map_err(|e| StorageError::Io(e.to_string()))?;
+    let journal: CheckpointJournal = match serde_json::from_str(&content) {
+        Ok(journal) => journal,
+        Err(error) => {
+            tracing::warn!(
+                path = %marker.display(),
+                error = %error,
+                "removing legacy or unreadable file-store checkpoint marker"
+            );
+            let _ = std::fs::remove_file(&marker);
+            let _ = dir_fsync_sync(base_dir);
+            return Ok(());
+        }
+    };
+
+    for write in journal.writes.iter().rev() {
+        let target = join_rel(base_dir, &write.target);
+        let tmp = join_rel(base_dir, &write.tmp);
+        let backup = join_rel(base_dir, &write.backup);
+
+        if write.had_target && backup.exists() {
+            if target.exists() {
+                std::fs::remove_file(&target).map_err(|e| StorageError::Io(e.to_string()))?;
+            }
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| StorageError::Io(e.to_string()))?;
+            }
+            std::fs::rename(&backup, &target).map_err(|e| StorageError::Io(e.to_string()))?;
+        } else if !write.had_target && target.exists() {
+            std::fs::remove_file(&target).map_err(|e| StorageError::Io(e.to_string()))?;
+        } else if backup.exists() {
+            std::fs::remove_file(&backup).map_err(|e| StorageError::Io(e.to_string()))?;
+        }
+        if tmp.exists() {
+            std::fs::remove_file(&tmp).map_err(|e| StorageError::Io(e.to_string()))?;
+        }
+        if let Some(parent) = target.parent() {
+            let _ = dir_fsync_sync(parent);
+        }
+    }
+
+    std::fs::remove_file(&marker).map_err(|e| StorageError::Io(e.to_string()))?;
+    let _ = dir_fsync_sync(base_dir);
+    Ok(())
+}
+
+fn cleanup_orphan_checkpoint_backups_sync(base_dir: &Path) {
+    for subdir in ["threads", "messages", "runs"] {
+        let dir = base_dir.join(subdir);
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if name.starts_with('.') && name.ends_with(".bak") {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        let _ = dir_fsync_sync(&dir);
+    }
+}
+
 /// Write content to a temp file in `dir`, fsync it, and return the staged write
 /// without performing the rename. The caller is responsible for calling
 /// [`commit_staged_writes`] to atomically install all staged files.
@@ -260,33 +366,77 @@ async fn stage_write(
 }
 
 /// Rename all staged temp files into their targets and fsync each parent dir.
-/// A `.checkpoint_pending` marker in `base_dir` brackets the rename sequence so
-/// that crash-recovery can detect incomplete checkpoints.
 async fn commit_staged_writes(base_dir: &Path, writes: &[StagedWrite]) -> Result<(), StorageError> {
-    let marker = base_dir.join(".checkpoint_pending");
-    // Create marker before renames
-    tokio::fs::write(&marker, b"pending")
+    tokio::fs::create_dir_all(base_dir)
+        .await
+        .map_err(|e| StorageError::Io(e.to_string()))?;
+    recover_checkpoint_journal_sync(base_dir)?;
+
+    let tx_id = uuid::Uuid::now_v7().simple().to_string();
+    let marker = checkpoint_marker_path(base_dir);
+    let mut journal_writes = Vec::with_capacity(writes.len());
+    for write in writes {
+        let backup = checkpoint_backup_path(&write.target, &tx_id);
+        journal_writes.push(CheckpointJournalWrite {
+            target: rel_path(base_dir, &write.target)?,
+            tmp: rel_path(base_dir, &write.tmp_path)?,
+            backup: rel_path(base_dir, &backup)?,
+            had_target: write.target.exists(),
+        });
+    }
+    let journal = CheckpointJournal {
+        writes: journal_writes,
+    };
+    let marker_payload = serde_json::to_vec_pretty(&journal)
+        .map_err(|e| StorageError::Serialization(e.to_string()))?;
+    tokio::fs::write(&marker, marker_payload)
         .await
         .map_err(|e| StorageError::Io(e.to_string()))?;
     dir_fsync(base_dir).await?;
 
-    // Collect unique parent dirs that need fsync
     let mut synced_dirs = std::collections::HashSet::new();
 
-    for w in writes {
-        tokio::fs::rename(&w.tmp_path, &w.target)
+    let commit_result = async {
+        for (write, journal_write) in writes.iter().zip(journal.writes.iter()) {
+            let backup = join_rel(base_dir, &journal_write.backup);
+            if journal_write.had_target {
+                tokio::fs::rename(&write.target, &backup)
+                    .await
+                    .map_err(|e| StorageError::Io(e.to_string()))?;
+            }
+            tokio::fs::rename(&write.tmp_path, &write.target)
+                .await
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+            synced_dirs.insert(write.dir.clone());
+        }
+
+        for dir in &synced_dirs {
+            dir_fsync(dir).await?;
+        }
+
+        tokio::fs::remove_file(&marker)
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
-        synced_dirs.insert(w.dir.clone());
+        dir_fsync(base_dir).await?;
+
+        for journal_write in &journal.writes {
+            let backup = join_rel(base_dir, &journal_write.backup);
+            let _ = tokio::fs::remove_file(&backup).await;
+        }
+        for dir in &synced_dirs {
+            let _ = dir_fsync(dir).await;
+        }
+        Ok::<(), StorageError>(())
+    }
+    .await;
+
+    if let Err(error) = commit_result {
+        if let Err(recovery_error) = recover_checkpoint_journal_sync(base_dir) {
+            tracing::warn!(error = %recovery_error, "failed to roll back incomplete checkpoint");
+        }
+        return Err(error);
     }
 
-    // Fsync each unique parent directory
-    for dir in &synced_dirs {
-        dir_fsync(dir).await?;
-    }
-
-    // Remove marker — checkpoint is fully committed
-    let _ = tokio::fs::remove_file(&marker).await;
     Ok(())
 }
 
@@ -718,7 +868,8 @@ impl ThreadRunStore for FileStore {
 
         let writes = [staged_thread, staged_msgs, staged_run];
 
-        // Commit: marker → renames → dir fsyncs → remove marker.
+        // Commit the three files through a rollback journal so restart never
+        // observes a split checkpoint.
         if let Err(e) = commit_staged_writes(&self.base_path, &writes).await {
             cleanup_staged_writes(&writes).await;
             return Err(e);
@@ -981,6 +1132,74 @@ mod tests {
         assert_eq!(loaded_msgs.len(), 1);
         let loaded_run = store.load_run("r-cp").await.unwrap().unwrap();
         assert_eq!(loaded_run.thread_id, "t-1");
+    }
+
+    #[tokio::test]
+    async fn file_store_new_rolls_back_incomplete_checkpoint_journal() {
+        let td = TempDir::new().unwrap();
+        let store = FileStore::new(td.path());
+        let old_run = make_run("r-old", "t-rollback");
+        store
+            .checkpoint("t-rollback", &[Message::user("old")], &old_run)
+            .await
+            .unwrap();
+
+        let new_run = make_run("r-new", "t-rollback");
+        let mut new_thread = store.load_thread("t-rollback").await.unwrap().unwrap();
+        new_thread.apply_run_projection(&new_run);
+        let thread_payload = serde_json::to_string_pretty(&new_thread).unwrap();
+        let messages_payload = serde_json::to_string_pretty(&[Message::user("new")]).unwrap();
+        let run_payload = serde_json::to_string_pretty(&new_run).unwrap();
+
+        let staged_thread = stage_write(&store.threads_dir(), "t-rollback.json", &thread_payload)
+            .await
+            .unwrap();
+        let staged_messages =
+            stage_write(&store.messages_dir(), "t-rollback.json", &messages_payload)
+                .await
+                .unwrap();
+        let staged_run = stage_write(&store.runs_dir(), "r-new.json", &run_payload)
+            .await
+            .unwrap();
+        let staged = [staged_thread, staged_messages, staged_run];
+        let tx_id = "rollback-test";
+        let journal = CheckpointJournal {
+            writes: staged
+                .iter()
+                .map(|write| {
+                    let backup = checkpoint_backup_path(&write.target, tx_id);
+                    CheckpointJournalWrite {
+                        target: rel_path(td.path(), &write.target).unwrap(),
+                        tmp: rel_path(td.path(), &write.tmp_path).unwrap(),
+                        backup: rel_path(td.path(), &backup).unwrap(),
+                        had_target: write.target.exists(),
+                    }
+                })
+                .collect(),
+        };
+        std::fs::write(
+            checkpoint_marker_path(td.path()),
+            serde_json::to_vec_pretty(&journal).unwrap(),
+        )
+        .unwrap();
+
+        // Simulate a crash after the thread file was replaced but before
+        // messages/run files were committed.
+        let thread_backup = join_rel(td.path(), &journal.writes[0].backup);
+        std::fs::rename(&staged[0].target, &thread_backup).unwrap();
+        std::fs::rename(&staged[0].tmp_path, &staged[0].target).unwrap();
+
+        let recovered = FileStore::new(td.path());
+        let thread = recovered.load_thread("t-rollback").await.unwrap().unwrap();
+        assert_eq!(thread.latest_run_id.as_deref(), Some("r-old"));
+        let messages = recovered
+            .load_messages("t-rollback")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(messages[0].text(), "old");
+        assert!(recovered.load_run("r-new").await.unwrap().is_none());
+        assert!(!checkpoint_marker_path(td.path()).exists());
     }
 
     // ── Missing directory recovery ──

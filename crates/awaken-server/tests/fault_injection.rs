@@ -168,6 +168,22 @@ impl MailboxStore for FailingMailboxStore {
         self.inner.interrupt(thread_id, now).await
     }
 
+    async fn current_dispatch_epoch(&self, thread_id: &str) -> Result<u64, StorageError> {
+        self.inner.current_dispatch_epoch(thread_id).await
+    }
+
+    async fn supersede_claimed(
+        &self,
+        dispatch_id: &str,
+        claim_token: &str,
+        now: u64,
+        reason: &str,
+    ) -> Result<Option<RunDispatch>, StorageError> {
+        self.inner
+            .supersede_claimed(dispatch_id, claim_token, now, reason)
+            .await
+    }
+
     async fn load_dispatch(&self, dispatch_id: &str) -> Result<Option<RunDispatch>, StorageError> {
         self.inner.load_dispatch(dispatch_id).await
     }
@@ -182,6 +198,14 @@ impl MailboxStore for FailingMailboxStore {
         self.inner
             .list_dispatches(thread_id, status_filter, limit, offset)
             .await
+    }
+
+    async fn list_terminal_dispatches(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<RunDispatch>, StorageError> {
+        self.inner.list_terminal_dispatches(limit, offset).await
     }
 
     async fn reclaim_expired_leases(

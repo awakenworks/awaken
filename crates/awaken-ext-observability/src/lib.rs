@@ -8,6 +8,7 @@ mod composite;
 mod metrics;
 mod persistent;
 mod plugin;
+mod prometheus;
 mod sink;
 mod stats;
 

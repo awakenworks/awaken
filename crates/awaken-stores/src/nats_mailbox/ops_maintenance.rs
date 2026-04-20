@@ -50,6 +50,45 @@ async fn reclaim_one(
             return Ok(None);
         }
         let old_claim_token = dispatch.claim_token.clone();
+        let thread_epoch = ops_write::current_thread_epoch(store, &dispatch.thread_id).await?;
+        if dispatch.dispatch_epoch < thread_epoch {
+            dispatch.status = RunDispatchStatus::Superseded;
+            dispatch.dispatch_epoch = thread_epoch;
+            dispatch.last_error =
+                Some("claimed dispatch lease expired after interrupt".to_string());
+            dispatch.completed_at = Some(now);
+            dispatch.updated_at = now;
+            dispatch.claim_token = None;
+            dispatch.claimed_by = None;
+            dispatch.lease_until = None;
+            let bytes = codec::encode(&dispatch)?;
+            if let Ok(revision) = store
+                .kv_dispatch
+                .update(&keys::dispatch_key(dispatch_id), bytes, entry.revision)
+                .await
+            {
+                store
+                    .index
+                    .write()
+                    .await
+                    .upsert_with_revision(dispatch.clone(), revision);
+                if let Some(ref claim_token) = old_claim_token {
+                    claim_guard::release(store, &dispatch.thread_id, dispatch_id, claim_token)
+                        .await?;
+                }
+                if let Some(ref dedupe_key) = dispatch.dedupe_key {
+                    ops_write::release_dedupe_lock(
+                        store,
+                        &dispatch.thread_id,
+                        dedupe_key,
+                        &dispatch.dispatch_id,
+                    )
+                    .await;
+                }
+                return Ok(None);
+            }
+            continue;
+        }
         dispatch.attempt_count = dispatch.attempt_count.saturating_add(1);
         dispatch.available_at = now;
         dispatch.updated_at = now;
@@ -67,13 +106,16 @@ async fn reclaim_one(
             dispatch.lease_until = None;
         }
         let bytes = codec::encode(&dispatch)?;
-        if store
+        if let Ok(revision) = store
             .kv_dispatch
             .update(&keys::dispatch_key(dispatch_id), bytes, entry.revision)
             .await
-            .is_ok()
         {
-            store.index.write().await.upsert(dispatch.clone());
+            store
+                .index
+                .write()
+                .await
+                .upsert_with_revision(dispatch.clone(), revision);
             if let Some(ref claim_token) = old_claim_token {
                 claim_guard::release(store, &dispatch.thread_id, dispatch_id, claim_token).await?;
             }

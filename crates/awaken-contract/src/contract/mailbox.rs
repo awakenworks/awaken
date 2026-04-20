@@ -156,6 +156,12 @@ pub struct MailboxInterrupt {
     pub active_dispatch: Option<RunDispatch>,
     /// Number of Queued dispatches superseded.
     pub superseded_count: usize,
+    /// Queued dispatches that were atomically superseded by this interrupt.
+    ///
+    /// This is the authoritative set callers should use to reconcile terminal
+    /// dispatch state back to the durable run lifecycle.
+    #[serde(default)]
+    pub superseded_dispatches: Vec<RunDispatch>,
 }
 
 // ── LiveRunCommand ─────────────────────────────────────────────────────────
@@ -406,6 +412,35 @@ pub trait MailboxStore: Send + Sync {
     /// return the Claimed dispatch (if any) so caller can cancel its runtime run.
     async fn interrupt(&self, thread_id: &str, now: u64) -> Result<MailboxInterrupt, StorageError>;
 
+    /// Return the authoritative dispatch epoch for a thread.
+    ///
+    /// Implementations that do not persist epochs may keep the default `0`;
+    /// production mailbox stores must override this so dispatch workers can
+    /// reject claimed work that became stale after an interrupt.
+    async fn current_dispatch_epoch(&self, thread_id: &str) -> Result<u64, StorageError> {
+        let _ = thread_id;
+        Ok(0)
+    }
+
+    /// Terminalize a claimed dispatch as superseded.
+    ///
+    /// Used when an interrupt wins the race after a dispatch was claimed but
+    /// before (or while) the runtime starts. Implementations must validate the
+    /// claim token and clear lease/claim ownership. Returning `Ok(None)` means
+    /// the dispatch is gone or no longer claimed.
+    async fn supersede_claimed(
+        &self,
+        dispatch_id: &str,
+        claim_token: &str,
+        now: u64,
+        reason: &str,
+    ) -> Result<Option<RunDispatch>, StorageError> {
+        let _ = (dispatch_id, claim_token, now, reason);
+        Err(StorageError::Io(
+            "supersede claimed dispatch is not supported by this mailbox store".into(),
+        ))
+    }
+
     // ── read path ──
 
     /// Load a single dispatch by ID.
@@ -419,6 +454,36 @@ pub trait MailboxStore: Send + Sync {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<RunDispatch>, StorageError>;
+
+    /// Count dispatches by status for low-cardinality operational gauges.
+    ///
+    /// Implementations that cannot provide an efficient count may return a
+    /// storage error; callers must treat this as a metrics-only failure.
+    async fn count_dispatches_by_status(
+        &self,
+        status: RunDispatchStatus,
+    ) -> Result<usize, StorageError> {
+        let _ = status;
+        Err(StorageError::Io(
+            "count dispatches by status is not supported by this mailbox store".into(),
+        ))
+    }
+
+    /// List terminal dispatches across all threads.
+    ///
+    /// Used by recovery/maintenance reconciliation to repair run lifecycle
+    /// records after a process crashes between a mailbox terminal transition
+    /// and the corresponding run-store checkpoint.
+    async fn list_terminal_dispatches(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<RunDispatch>, StorageError> {
+        let _ = (limit, offset);
+        Err(StorageError::Io(
+            "list terminal dispatches is not supported by this mailbox store".into(),
+        ))
+    }
 
     // ── maintenance ──
 
@@ -782,11 +847,23 @@ mod tests {
             new_dispatch_epoch: 5,
             active_dispatch: Some(make_run_dispatch()),
             superseded_count: 3,
+            superseded_dispatches: vec![make_run_dispatch()],
         };
         let json = serde_json::to_string(&interrupt).unwrap();
         let parsed: MailboxInterrupt = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.new_dispatch_epoch, 5);
         assert!(parsed.active_dispatch.is_some());
         assert_eq!(parsed.superseded_count, 3);
+        assert_eq!(parsed.superseded_dispatches.len(), 1);
+    }
+
+    #[test]
+    fn mailbox_interrupt_deserializes_legacy_payload_without_superseded_dispatches() {
+        let json = r#"{"new_dispatch_epoch":5,"active_dispatch":null,"superseded_count":3}"#;
+        let parsed: MailboxInterrupt = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.new_dispatch_epoch, 5);
+        assert!(parsed.active_dispatch.is_none());
+        assert_eq!(parsed.superseded_count, 3);
+        assert!(parsed.superseded_dispatches.is_empty());
     }
 }

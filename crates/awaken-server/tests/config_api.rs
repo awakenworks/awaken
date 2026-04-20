@@ -569,6 +569,17 @@ async fn make_app() -> TestApp {
 async fn make_app_with_skill_catalog(
     skill_catalog_provider: Option<Arc<dyn SkillCatalogProvider>>,
 ) -> TestApp {
+    make_app_with_skill_catalog_and_config(skill_catalog_provider, ServerConfig::default()).await
+}
+
+async fn make_app_with_config(config: ServerConfig) -> TestApp {
+    make_app_with_skill_catalog_and_config(None, config).await
+}
+
+async fn make_app_with_skill_catalog_and_config(
+    skill_catalog_provider: Option<Arc<dyn SkillCatalogProvider>>,
+    config: ServerConfig,
+) -> TestApp {
     let notifier = Arc::new(TestConfigChangeNotifier::new());
     let (runtime, store, manager) =
         make_runtime_manager(Some(notifier.clone() as Arc<dyn ConfigChangeNotifier>)).await;
@@ -586,7 +597,7 @@ async fn make_app_with_skill_catalog(
         mailbox,
         store.clone(),
         runtime.resolver_arc(),
-        ServerConfig::default(),
+        config,
     )
     .with_config_store(config_store)
     .with_config_runtime_manager(manager.clone());
@@ -609,7 +620,20 @@ async fn request_json(
     uri: &str,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
+    request_json_with_headers(router, method, uri, body, &[]).await
+}
+
+async fn request_json_with_headers(
+    router: &axum::Router,
+    method: Method,
+    uri: &str,
+    body: Option<Value>,
+    headers: &[(&str, &str)],
+) -> (StatusCode, Value) {
     let mut builder = Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
     let request = if let Some(body) = body {
         builder = builder.header("content-type", "application/json");
         builder
@@ -655,6 +679,40 @@ async fn wait_until(
         tokio::time::sleep(interval).await;
     }
     predicate()
+}
+
+#[tokio::test]
+async fn admin_config_routes_require_bearer_token_when_configured() {
+    let app = make_app_with_config(ServerConfig {
+        admin_api_bearer_token: Some("admin-token".into()),
+        ..Default::default()
+    })
+    .await;
+
+    let (status, body) = request_json(&app.router, Method::GET, "/v1/capabilities", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(body["error"].as_str().unwrap().contains("authentication"));
+
+    let (status, _) = request_json_with_headers(
+        &app.router,
+        Method::GET,
+        "/v1/capabilities",
+        None,
+        &[("authorization", "Bearer wrong-token")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, body) = request_json_with_headers(
+        &app.router,
+        Method::GET,
+        "/v1/capabilities",
+        None,
+        &[("authorization", "Bearer admin-token")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["namespaces"].is_array());
 }
 
 #[tokio::test]

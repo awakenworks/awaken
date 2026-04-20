@@ -37,6 +37,7 @@ pub fn spawn_flusher<T: ThreadRunStore + Send + Sync + 'static>(
     consumer: async_nats::jetstream::consumer::PullConsumer,
     kv_hot: async_nats::jetstream::kv::Store,
     config: NatsBufferedThreadConfig,
+    flush_notify: Arc<tokio::sync::Notify>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -52,14 +53,17 @@ pub fn spawn_flusher<T: ThreadRunStore + Send + Sync + 'static>(
             let mut by_thread: HashMap<String, ThreadBatch> = HashMap::new();
             let window = tokio::time::sleep(config.flush_interval);
             tokio::pin!(window);
+            let mut shutdown_requested = false;
 
             loop {
                 tokio::select! {
                     _ = shutdown_rx.changed() => {
                         if *shutdown_rx.borrow() {
-                            return;
+                            shutdown_requested = true;
+                            break;
                         }
                     }
+                    _ = flush_notify.notified() => break,
                     _ = &mut window => break,
                     next = messages.next() => match next {
                         None => return,
@@ -80,6 +84,9 @@ pub fn spawn_flusher<T: ThreadRunStore + Send + Sync + 'static>(
 
             if !by_thread.is_empty() {
                 flush_batch(&inner, &kv_hot, by_thread).await;
+            }
+            if shutdown_requested {
+                return;
             }
         }
     })

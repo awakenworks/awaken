@@ -5,6 +5,7 @@
 
 use awaken_contract::contract::storage::{RunRecord, StorageError};
 use bytes::Bytes;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use super::keys;
@@ -341,4 +342,77 @@ pub async fn load_cached_run(
         Some(e) => Ok(Some(decode_cached_run(&e.value)?.0)),
         None => Ok(None),
     }
+}
+
+pub async fn load_cached_run_with_seq(
+    kv: &async_nats::jetstream::kv::Store,
+    run_id: &str,
+) -> Result<Option<(RunRecord, u64)>, StorageError> {
+    let entry = kv
+        .entry(&keys::hot_run_key(run_id))
+        .await
+        .map_err(|e| StorageError::Io(format!("kv entry: {e}")))?;
+    match entry {
+        Some(e) => Ok(Some(decode_cached_run(&e.value)?)),
+        None => Ok(None),
+    }
+}
+
+pub async fn pending_thread_ids(
+    kv: &async_nats::jetstream::kv::Store,
+) -> Result<Vec<String>, StorageError> {
+    let mut key_stream = kv
+        .keys()
+        .await
+        .map_err(|e| StorageError::Io(format!("kv keys: {e}")))?;
+    let mut pending = Vec::new();
+    while let Some(key_result) = key_stream.next().await {
+        let key = key_result.map_err(|e| StorageError::Io(format!("kv key: {e}")))?;
+        let Some(thread_id) = keys::thread_id_from_hot_meta_key(&key) else {
+            continue;
+        };
+        let meta = read_meta(kv, &thread_id).await?;
+        let flushed = read_flushed_seq(kv, &thread_id).await?;
+        if meta.latest_seq > flushed {
+            pending.push(thread_id);
+        }
+    }
+    pending.sort();
+    pending.dedup();
+    Ok(pending)
+}
+
+pub async fn pending_cached_runs(
+    kv: &async_nats::jetstream::kv::Store,
+) -> Result<Vec<(RunRecord, u64)>, StorageError> {
+    let mut key_stream = kv
+        .keys()
+        .await
+        .map_err(|e| StorageError::Io(format!("kv keys: {e}")))?;
+    let mut runs = Vec::new();
+    while let Some(key_result) = key_stream.next().await {
+        let key = key_result.map_err(|e| StorageError::Io(format!("kv key: {e}")))?;
+        if !key.starts_with("run.") {
+            continue;
+        }
+        let Some(entry) = kv
+            .entry(&key)
+            .await
+            .map_err(|e| StorageError::Io(format!("kv entry: {e}")))?
+        else {
+            continue;
+        };
+        let (run, seq) = decode_cached_run(&entry.value)?;
+        let flushed = read_flushed_seq(kv, &run.thread_id).await?;
+        if seq > flushed {
+            runs.push((run, seq));
+        }
+    }
+    runs.sort_by(|(a, a_seq), (b, b_seq)| {
+        a.thread_id
+            .cmp(&b.thread_id)
+            .then_with(|| a_seq.cmp(b_seq))
+            .then_with(|| a.run_id.cmp(&b.run_id))
+    });
+    Ok(runs)
 }

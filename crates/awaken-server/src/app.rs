@@ -110,6 +110,12 @@ pub struct ServerConfig {
     /// Optional bearer token required for authenticated extended A2A agent cards.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub a2a_extended_card_bearer_token: Option<String>,
+    /// Optional bearer token required for admin/configuration APIs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_api_bearer_token: Option<String>,
+    /// Origins allowed to call browser admin APIs.
+    #[serde(default = "default_admin_cors_allowed_origins")]
+    pub admin_cors_allowed_origins: Vec<String>,
     /// Mailbox lifecycle ownership. Defaults to framework-managed auto mode.
     #[serde(default)]
     pub mailbox_lifecycle: MailboxLifecycleMode,
@@ -127,15 +133,24 @@ fn default_max_concurrent() -> usize {
     100
 }
 
+fn default_admin_cors_allowed_origins() -> Vec<String> {
+    vec![
+        "http://127.0.0.1:3002".to_string(),
+        "http://localhost:3002".to_string(),
+    ]
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            address: "0.0.0.0:3000".to_string(),
+            address: "127.0.0.1:3000".to_string(),
             sse_buffer_size: default_sse_buffer(),
             replay_buffer_capacity: default_replay_buffer_capacity(),
             shutdown: ShutdownConfig::default(),
             max_concurrent_requests: default_max_concurrent(),
             a2a_extended_card_bearer_token: None,
+            admin_api_bearer_token: None,
+            admin_cors_allowed_origins: default_admin_cors_allowed_origins(),
             mailbox_lifecycle: MailboxLifecycleMode::Auto,
         }
     }
@@ -328,7 +343,10 @@ pub async fn serve_with_shutdown(
 
 /// Convenience: bind, build the full router with layers, and serve.
 pub async fn serve(state: AppState) -> std::io::Result<()> {
+    crate::metrics::install_recorder();
+
     let addr = state.config.address.clone();
+    validate_admin_surface(&state)?;
     let timeout = std::time::Duration::from_secs(state.config.shutdown.timeout_secs);
     let max_concurrent = state.config.max_concurrent_requests;
     let mailbox_lifecycle = match state.config.mailbox_lifecycle {
@@ -358,6 +376,7 @@ pub async fn serve(state: AppState) -> std::io::Result<()> {
 
     let app = crate::routes::build_router()
         .layer(tower::limit::ConcurrencyLimitLayer::new(max_concurrent))
+        .layer(admin_cors_layer(&state.config)?)
         .with_state(state);
 
     let result = serve_with_shutdown(listener, app, timeout).await;
@@ -369,6 +388,56 @@ pub async fn serve(state: AppState) -> std::io::Result<()> {
     result
 }
 
+fn validate_admin_surface(state: &AppState) -> std::io::Result<()> {
+    if state.config.admin_api_bearer_token.is_some() {
+        return Ok(());
+    }
+    if state.config_store.is_none() && state.config_runtime_manager.is_none() {
+        return Ok(());
+    }
+
+    let Ok(addr) = state.config.address.parse::<std::net::SocketAddr>() else {
+        return Ok(());
+    };
+    if addr.ip().is_loopback() {
+        return Ok(());
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        "admin/config APIs require admin_api_bearer_token when binding a non-loopback address",
+    ))
+}
+
+fn admin_cors_layer(config: &ServerConfig) -> std::io::Result<tower_http::cors::CorsLayer> {
+    use axum::http::{HeaderValue, Method, header};
+    use tower_http::cors::CorsLayer;
+
+    let origins = config
+        .admin_cors_allowed_origins
+        .iter()
+        .map(|origin| {
+            origin.parse::<HeaderValue>().map_err(|error| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("invalid admin CORS origin {origin:?}: {error}"),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(CorsLayer::new()
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::PATCH,
+            Method::OPTIONS,
+        ])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+        .allow_origin(origins))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,11 +445,17 @@ mod tests {
     #[test]
     fn server_config_default_values() {
         let config = ServerConfig::default();
-        assert_eq!(config.address, "0.0.0.0:3000");
+        assert_eq!(config.address, "127.0.0.1:3000");
         assert_eq!(config.sse_buffer_size, 64);
         assert_eq!(config.replay_buffer_capacity, 1024);
         assert_eq!(config.shutdown.timeout_secs, 30);
         assert_eq!(config.max_concurrent_requests, 100);
+        assert!(config.admin_api_bearer_token.is_none());
+        assert!(
+            config
+                .admin_cors_allowed_origins
+                .contains(&"http://127.0.0.1:3002".to_string())
+        );
         assert_eq!(config.mailbox_lifecycle, MailboxLifecycleMode::Auto);
     }
 
@@ -393,6 +468,8 @@ mod tests {
             shutdown: ShutdownConfig { timeout_secs: 10 },
             max_concurrent_requests: 50,
             a2a_extended_card_bearer_token: None,
+            admin_api_bearer_token: Some("admin-secret".into()),
+            admin_cors_allowed_origins: vec!["http://127.0.0.1:3002".into()],
             mailbox_lifecycle: MailboxLifecycleMode::Manual,
         };
         let json = serde_json::to_string(&config).unwrap();
@@ -402,6 +479,10 @@ mod tests {
         assert_eq!(parsed.replay_buffer_capacity, 512);
         assert_eq!(parsed.shutdown.timeout_secs, 10);
         assert_eq!(parsed.max_concurrent_requests, 50);
+        assert_eq!(
+            parsed.admin_api_bearer_token.as_deref(),
+            Some("admin-secret")
+        );
         assert_eq!(parsed.mailbox_lifecycle, MailboxLifecycleMode::Manual);
     }
 
@@ -413,6 +494,8 @@ mod tests {
         assert_eq!(config.sse_buffer_size, 64);
         assert_eq!(config.shutdown.timeout_secs, 30);
         assert_eq!(config.max_concurrent_requests, 100);
+        assert!(config.admin_api_bearer_token.is_none());
+        assert!(!config.admin_cors_allowed_origins.is_empty());
         assert_eq!(config.mailbox_lifecycle, MailboxLifecycleMode::Auto);
     }
 

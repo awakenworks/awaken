@@ -20,7 +20,7 @@ async fn connect_and_shutdown() {
 
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{RunRecord, RunStore, ThreadRunStore};
+use awaken_contract::contract::storage::{RunQuery, RunRecord, RunStore, ThreadRunStore};
 
 fn mk_run(id: &str, thread: &str) -> RunRecord {
     RunRecord {
@@ -68,7 +68,7 @@ async fn checkpoint_writes_wal_without_db_write() {
         .await
         .unwrap();
 
-    // No flusher spawned yet (Task 4); DB stays empty.
+    // Flush interval is long, so DB should stay empty until an explicit drain.
     let loaded = inner_probe.load_run("r1").await.unwrap();
     assert!(loaded.is_none(), "inner store should not have the run yet");
     store.shutdown().await.unwrap();
@@ -78,6 +78,7 @@ async fn checkpoint_writes_wal_without_db_write() {
 async fn read_your_writes_via_wal_overlay() {
     let fixture = NatsFixture::start().await;
     let inner = Arc::new(InMemoryStore::new());
+    let inner_probe = Arc::clone(&inner);
     let mut config = unique_config(&fixture);
     // Effectively disable the flusher so the read must hit the WAL overlay.
     config.flush_interval = std::time::Duration::from_secs(60);
@@ -96,13 +97,45 @@ async fn read_your_writes_via_wal_overlay() {
     let msgs = store.load_messages("t1").await.unwrap().unwrap();
     assert_eq!(msgs.len(), 1);
 
+    let thread = store.load_thread("t1").await.unwrap().unwrap();
+    assert_eq!(thread.latest_run_id.as_deref(), Some("r1"));
+    assert_eq!(thread.open_run_id.as_deref(), Some("r1"));
+
+    let threads = store.list_threads(0, 10).await.unwrap();
+    assert_eq!(threads, vec!["t1".to_string()]);
+
     let loaded_run = store.load_run("r1").await.unwrap().unwrap();
     assert_eq!(loaded_run.run_id, "r1");
 
     let latest = store.latest_run("t1").await.unwrap().unwrap();
     assert_eq!(latest.run_id, "r1");
 
+    let page = store
+        .list_runs(&RunQuery {
+            thread_id: Some("t1".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].run_id, "r1");
+
+    assert!(
+        inner_probe.load_thread("t1").await.unwrap().is_none(),
+        "inner store should still be stale before shutdown drain"
+    );
     store.shutdown().await.unwrap();
+    assert_eq!(
+        inner_probe
+            .load_thread("t1")
+            .await
+            .unwrap()
+            .unwrap()
+            .latest_run_id
+            .as_deref(),
+        Some("r1"),
+        "shutdown must drain pending WAL entries into the inner store"
+    );
 }
 
 use std::time::Duration;

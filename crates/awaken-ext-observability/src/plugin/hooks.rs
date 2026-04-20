@@ -70,6 +70,7 @@ impl PhaseHook for BeforeInferenceHook {
                 };
                 // Must drop the lock before acquiring metrics lock.
                 drop(current_ctx);
+                crate::prometheus::record_handoff(&handoff);
                 s.sink.record(&MetricsEvent::Handoff(handoff.clone()));
                 s.metrics.lock().await.handoffs.push(handoff);
                 // Update span context with new agent identity.
@@ -239,6 +240,7 @@ impl PhaseHook for AfterInferenceHook {
             drop(tracing_span);
         }
 
+        crate::prometheus::record_inference(&span);
         s.sink.record(&MetricsEvent::Inference(span.clone()));
         s.metrics.lock().await.inferences.push(span);
 
@@ -303,6 +305,7 @@ impl PhaseHook for BeforeToolExecuteHook {
                 duration_ms: None,
                 timestamp_ms: now_epoch_ms(),
             };
+            crate::prometheus::record_suspension(&suspension);
             s.sink.record(&MetricsEvent::Suspension(suspension.clone()));
             s.metrics.lock().await.suspensions.push(suspension);
         }
@@ -362,6 +365,7 @@ impl PhaseHook for AfterToolExecuteHook {
             drop(tracing_span);
         }
 
+        crate::prometheus::record_tool(&span);
         s.sink.record(&MetricsEvent::Tool(span.clone()));
         s.metrics.lock().await.tools.push(span);
 
@@ -378,6 +382,7 @@ impl PhaseHook for AfterToolExecuteHook {
                 duration_ms: None,
                 timestamp_ms: now_epoch_ms(),
             };
+            crate::prometheus::record_suspension(&suspension);
             s.sink.record(&MetricsEvent::Suspension(suspension.clone()));
             s.metrics.lock().await.suspensions.push(suspension);
         }
@@ -412,6 +417,7 @@ impl PhaseHook for AfterToolExecuteHook {
                 },
                 timestamp_ms: now_epoch_ms(),
             };
+            crate::prometheus::record_delegation(&delegation);
             s.sink.record(&MetricsEvent::Delegation(delegation.clone()));
             s.metrics.lock().await.delegations.push(delegation);
         }
@@ -441,6 +447,7 @@ impl PhaseHook for RunEndHook {
 
         let mut metrics = s.metrics.lock().await.clone();
         metrics.session_duration_ms = session_duration_ms;
+        crate::prometheus::record_run_end(&metrics);
         s.sink.on_run_end(&metrics);
 
         Ok(StateCommand::new())

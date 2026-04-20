@@ -6,7 +6,7 @@ use awaken_contract::contract::storage::StorageError;
 use super::{NatsMailboxStore, claim_guard, codec, keys, ops_query, ops_write};
 
 enum SupersedeOutcome {
-    Superseded,
+    Superseded(Box<awaken_contract::contract::mailbox::RunDispatch>),
     Claimed(Box<awaken_contract::contract::mailbox::RunDispatch>),
     NotQueued,
 }
@@ -21,6 +21,7 @@ pub async fn interrupt(
     let mut dispatches = ops_query::load_thread_dispatches(store, thread_id).await?;
 
     let mut superseded_count = 0usize;
+    let mut superseded_dispatches = Vec::new();
     let mut active_dispatch = None;
 
     let guard_active_dispatch_id = claim_guard::active_dispatch_id(store, thread_id, now).await?;
@@ -43,19 +44,20 @@ pub async fn interrupt(
         match dispatch.status {
             RunDispatchStatus::Queued => {
                 match supersede(store, &dispatch.dispatch_id, new_epoch, now).await {
-                    Ok(SupersedeOutcome::Superseded) => {
+                    Ok(SupersedeOutcome::Superseded(superseded)) => {
                         superseded_count += 1;
                         // Terminal → release any dedupe lock so a subsequent
                         // enqueue with the same key can take over.
-                        if let Some(ref dedupe_key) = dispatch.dedupe_key {
+                        if let Some(ref dedupe_key) = superseded.dedupe_key {
                             ops_write::release_dedupe_lock(
                                 store,
-                                &dispatch.thread_id,
+                                &superseded.thread_id,
                                 dedupe_key,
-                                &dispatch.dispatch_id,
+                                &superseded.dispatch_id,
                             )
                             .await;
                         }
+                        superseded_dispatches.push(*superseded);
                     }
                     Ok(SupersedeOutcome::Claimed(authoritative)) => {
                         active_dispatch = Some(*authoritative);
@@ -87,6 +89,7 @@ pub async fn interrupt(
         new_dispatch_epoch: new_epoch,
         active_dispatch,
         superseded_count,
+        superseded_dispatches,
     })
 }
 
@@ -149,14 +152,17 @@ async fn supersede(
         dispatch.claimed_by = None;
         dispatch.lease_until = None;
         let bytes = codec::encode(&dispatch)?;
-        if store
+        if let Ok(revision) = store
             .kv_dispatch
             .update(&keys::dispatch_key(dispatch_id), bytes, entry.revision)
             .await
-            .is_ok()
         {
-            store.index.write().await.upsert(dispatch);
-            return Ok(SupersedeOutcome::Superseded);
+            store
+                .index
+                .write()
+                .await
+                .upsert_with_revision(dispatch.clone(), revision);
+            return Ok(SupersedeOutcome::Superseded(Box::new(dispatch)));
         }
     }
     Err(StorageError::Io(

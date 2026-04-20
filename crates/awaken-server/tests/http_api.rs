@@ -16,8 +16,9 @@ use serde_json::json;
 #[test]
 fn server_config_default_values() {
     let config = ServerConfig::default();
-    assert_eq!(config.address, "0.0.0.0:3000");
+    assert_eq!(config.address, "127.0.0.1:3000");
     assert_eq!(config.sse_buffer_size, 64);
+    assert!(config.admin_api_bearer_token.is_none());
 }
 
 #[test]
@@ -33,6 +34,7 @@ fn server_config_serde_roundtrip() {
     assert_eq!(parsed.address, "127.0.0.1:8080");
     assert_eq!(parsed.sse_buffer_size, 128);
     assert_eq!(parsed.replay_buffer_capacity, 512);
+    assert!(!parsed.admin_cors_allowed_origins.is_empty());
 }
 
 #[test]

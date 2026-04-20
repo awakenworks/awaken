@@ -42,11 +42,12 @@ pub fn live_target_subject(thread_id: &str, run_id: &str, dispatch_id: Option<&s
     }
 }
 
-pub fn dedupe_msg_id(thread_id: &str, dedupe_key: &str) -> String {
+pub fn dedupe_msg_id(thread_id: &str, dedupe_key: &str, dispatch_id: &str) -> String {
     format!(
-        "{}:{}",
+        "{}:{}:{}",
         encode_segment(thread_id),
-        encode_segment(dedupe_key)
+        encode_segment(dedupe_key),
+        encode_segment(dispatch_id)
     )
 }
 
@@ -76,6 +77,7 @@ mod tests {
         assert_eq!(dispatch_subject("t1"), "dispatch.h7431");
         assert_eq!(thread_claim_key("t1"), "claim.h7431");
         assert_eq!(live_subject("t1"), "live.thread.h7431");
+        assert_eq!(dedupe_msg_id("t1", "k1", "d1"), "h7431:h6b31:h6431");
         assert_eq!(
             live_target_subject("t1", "r1", Some("d1")),
             "live.thread.h7431.run.h7231.dispatch.h6431"

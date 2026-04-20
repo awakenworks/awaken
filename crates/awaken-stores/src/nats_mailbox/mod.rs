@@ -268,11 +268,15 @@ impl NatsMailboxStore {
         };
         ops_write::append_thread_index(self, &stamped.thread_id, &stamped.dispatch_id).await?;
         let bytes = codec::encode(&stamped)?;
-        self.kv_dispatch
+        let revision = self
+            .kv_dispatch
             .put(keys::dispatch_key(&stamped.dispatch_id), bytes)
             .await
             .map_err(|e| StorageError::Io(format!("kv put: {e}")))?;
-        self.index.write().await.upsert(stamped);
+        self.index
+            .write()
+            .await
+            .upsert_with_revision(stamped, revision);
         Ok(())
     }
 
@@ -286,11 +290,15 @@ impl NatsMailboxStore {
     ) -> Result<(), StorageError> {
         ops_write::append_thread_index(self, &dispatch.thread_id, &dispatch.dispatch_id).await?;
         let bytes = codec::encode(dispatch)?;
-        self.kv_dispatch
+        let revision = self
+            .kv_dispatch
             .put(keys::dispatch_key(&dispatch.dispatch_id), bytes)
             .await
             .map_err(|e| StorageError::Io(format!("kv put: {e}")))?;
-        self.index.write().await.upsert(dispatch.clone());
+        self.index
+            .write()
+            .await
+            .upsert_with_revision(dispatch.clone(), revision);
         Ok(())
     }
 
@@ -299,7 +307,7 @@ impl NatsMailboxStore {
     /// the authoritative dispatch record.
     #[doc(hidden)]
     pub async fn __test_upsert_index_only(&self, dispatch: &RunDispatch) {
-        self.index.write().await.upsert(dispatch.clone());
+        self.index.write().await.force_upsert(dispatch.clone());
     }
 }
 
@@ -392,6 +400,18 @@ impl MailboxStore for NatsMailboxStore {
     async fn interrupt(&self, thread_id: &str, now: u64) -> Result<MailboxInterrupt, StorageError> {
         ops_interrupt::interrupt(self, thread_id, now).await
     }
+    async fn current_dispatch_epoch(&self, thread_id: &str) -> Result<u64, StorageError> {
+        ops_write::current_thread_epoch(self, thread_id).await
+    }
+    async fn supersede_claimed(
+        &self,
+        dispatch_id: &str,
+        claim_token: &str,
+        now: u64,
+        reason: &str,
+    ) -> Result<Option<RunDispatch>, StorageError> {
+        ops_write::supersede_claimed(self, dispatch_id, claim_token, now, reason).await
+    }
     async fn load_dispatch(&self, dispatch_id: &str) -> Result<Option<RunDispatch>, StorageError> {
         ops_query::load_dispatch(self, dispatch_id).await
     }
@@ -403,6 +423,19 @@ impl MailboxStore for NatsMailboxStore {
         offset: usize,
     ) -> Result<Vec<RunDispatch>, StorageError> {
         ops_query::list_dispatches(self, thread_id, status_filter, limit, offset).await
+    }
+    async fn count_dispatches_by_status(
+        &self,
+        status: RunDispatchStatus,
+    ) -> Result<usize, StorageError> {
+        ops_query::count_dispatches_by_status(self, status).await
+    }
+    async fn list_terminal_dispatches(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<RunDispatch>, StorageError> {
+        ops_query::list_terminal_dispatches(self, limit, offset).await
     }
     async fn reclaim_expired_leases(
         &self,

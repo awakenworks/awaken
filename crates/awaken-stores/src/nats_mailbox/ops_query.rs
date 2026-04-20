@@ -113,3 +113,29 @@ pub async fn list_dispatches(
 pub async fn queued_thread_ids(store: &NatsMailboxStore) -> Result<Vec<String>, StorageError> {
     Ok(store.index.read().await.queued_thread_ids())
 }
+
+pub async fn count_dispatches_by_status(
+    store: &NatsMailboxStore,
+    status: RunDispatchStatus,
+) -> Result<usize, StorageError> {
+    Ok(store.index.read().await.count_by_status(status))
+}
+
+pub async fn list_terminal_dispatches(
+    store: &NatsMailboxStore,
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<RunDispatch>, StorageError> {
+    let mut dispatches = load_all_dispatches(store)
+        .await?
+        .into_iter()
+        .filter(|dispatch| dispatch.status.is_terminal())
+        .collect::<Vec<_>>();
+    dispatches.sort_by(|a, b| {
+        a.updated_at
+            .cmp(&b.updated_at)
+            .then(a.created_at.cmp(&b.created_at))
+            .then(a.dispatch_id.cmp(&b.dispatch_id))
+    });
+    Ok(dispatches.into_iter().skip(offset).take(limit).collect())
+}

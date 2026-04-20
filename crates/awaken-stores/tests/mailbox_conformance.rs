@@ -366,8 +366,19 @@ pub async fn interrupt_supersedes_queued<S: MailboxStore>(store: &S) {
 
     let result = store.interrupt("t-interrupt", 2000).await.unwrap();
     assert_eq!(result.superseded_count, 2);
+    assert_eq!(result.superseded_dispatches.len(), 2);
     assert!(result.active_dispatch.is_none());
     assert!(result.new_dispatch_epoch >= 1);
+    let mut returned_ids = result
+        .superseded_dispatches
+        .iter()
+        .map(|dispatch| {
+            assert_eq!(dispatch.status, RunDispatchStatus::Superseded);
+            dispatch.dispatch_id.as_str()
+        })
+        .collect::<Vec<_>>();
+    returned_ids.sort_unstable();
+    assert_eq!(returned_ids, vec!["d1", "d2"]);
 
     let listed = store
         .list_dispatches(
@@ -410,6 +421,138 @@ pub async fn interrupt_returns_active_claimed<S: MailboxStore>(store: &S) {
     assert_eq!(active.dispatch_id, claimed_id);
     assert_eq!(active.status, RunDispatchStatus::Claimed);
     assert_eq!(result.superseded_count, 1);
+    assert_eq!(result.superseded_dispatches.len(), 1);
+    assert_eq!(result.superseded_dispatches[0].dispatch_id, "d2");
+    assert_eq!(
+        result.superseded_dispatches[0].status,
+        RunDispatchStatus::Superseded
+    );
+}
+
+/// Dispatch epoch reads must reflect interrupt bumps.
+pub async fn current_dispatch_epoch_tracks_interrupt<S: MailboxStore>(store: &S) {
+    let initial = store.current_dispatch_epoch("t-epoch").await.unwrap();
+    assert_eq!(initial, 0);
+
+    let interrupt = store.interrupt("t-epoch", 2000).await.unwrap();
+    let current = store.current_dispatch_epoch("t-epoch").await.unwrap();
+
+    assert_eq!(current, interrupt.new_dispatch_epoch);
+    assert!(
+        current > initial,
+        "interrupt should advance the authoritative thread epoch"
+    );
+}
+
+/// A claimed dispatch can be terminalized as superseded without entering the
+/// runtime, clearing claim ownership and lease fields.
+pub async fn supersede_claimed_terminalizes_active_dispatch<S: MailboxStore>(store: &S) {
+    store
+        .enqueue(&make_dispatch("d1", "t-supersede-claimed", "r1", 128, 1000))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim("t-supersede-claimed", "consumer-1", 30_000, 1000, 1)
+        .await
+        .unwrap();
+    let token = claimed[0].claim_token.clone().unwrap();
+
+    let superseded = store
+        .supersede_claimed("d1", &token, 2000, "test supersede")
+        .await
+        .unwrap()
+        .expect("claimed dispatch should be superseded");
+
+    assert_eq!(superseded.status, RunDispatchStatus::Superseded);
+    assert!(superseded.claim_token.is_none());
+    assert!(superseded.claimed_by.is_none());
+    assert!(superseded.lease_until.is_none());
+    assert_eq!(superseded.completed_at, Some(2000));
+
+    let loaded = store.load_dispatch("d1").await.unwrap().unwrap();
+    assert_eq!(loaded.status, RunDispatchStatus::Superseded);
+    assert!(loaded.claim_token.is_none());
+}
+
+/// Once an interrupt bumps the thread epoch, a stale claimed dispatch must lose
+/// lease renewal instead of extending indefinitely.
+pub async fn extend_lease_rejects_stale_claim_after_interrupt<S: MailboxStore>(store: &S) {
+    store
+        .enqueue(&make_dispatch("d1", "t-stale-lease", "r1", 128, 1000))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim("t-stale-lease", "consumer-1", 30_000, 1000, 1)
+        .await
+        .unwrap();
+    let token = claimed[0].claim_token.clone().unwrap();
+
+    store.interrupt("t-stale-lease", 1500).await.unwrap();
+
+    let renewed = store
+        .extend_lease("d1", &token, 30_000, 2000)
+        .await
+        .unwrap();
+    assert!(!renewed, "stale claimed dispatch must not renew lease");
+
+    let loaded = store.load_dispatch("d1").await.unwrap().unwrap();
+    assert_eq!(loaded.status, RunDispatchStatus::Superseded);
+    assert!(loaded.claim_token.is_none());
+}
+
+/// Runtime-start projection must not resurrect a dispatch that became stale by
+/// epoch after claim.
+pub async fn record_dispatch_start_rejects_stale_claim_after_interrupt<S: MailboxStore>(store: &S) {
+    store
+        .enqueue(&make_dispatch("d1", "t-stale-start", "r1", 128, 1000))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim("t-stale-start", "consumer-1", 30_000, 1000, 1)
+        .await
+        .unwrap();
+    let token = claimed[0].claim_token.clone().unwrap();
+
+    store.interrupt("t-stale-start", 1500).await.unwrap();
+
+    let result = store
+        .record_dispatch_start("d1", &token, "attempt-1", 2000)
+        .await;
+    assert!(
+        result.is_err(),
+        "stale claimed dispatch must reject runtime start"
+    );
+
+    let loaded = store.load_dispatch("d1").await.unwrap().unwrap();
+    assert_eq!(loaded.status, RunDispatchStatus::Superseded);
+    assert!(loaded.dispatch_instance_id.is_none());
+    assert!(loaded.run_status.is_none());
+}
+
+/// Expired leases that became stale because of an interrupt must be
+/// terminalized instead of requeued for another runtime.
+pub async fn reclaim_expired_stale_claim_supersedes<S: MailboxStore>(store: &S) {
+    store
+        .enqueue(&make_dispatch("d1", "t-stale-reclaim", "r1", 128, 1000))
+        .await
+        .unwrap();
+    store
+        .claim("t-stale-reclaim", "consumer-1", 100, 1000, 1)
+        .await
+        .unwrap();
+
+    store.interrupt("t-stale-reclaim", 1050).await.unwrap();
+
+    let reclaimed = store.reclaim_expired_leases(2000, 10).await.unwrap();
+    assert!(
+        reclaimed.is_empty(),
+        "stale claimed dispatches should not be returned for execution"
+    );
+
+    let loaded = store.load_dispatch("d1").await.unwrap().unwrap();
+    assert_eq!(loaded.status, RunDispatchStatus::Superseded);
+    assert!(loaded.claim_token.is_none());
+    assert!(loaded.lease_until.is_none());
 }
 
 /// `enqueue()` rejects a second dispatch that reuses a non-terminal
@@ -505,6 +648,123 @@ pub async fn queued_thread_ids_returns_active_threads<S: MailboxStore>(store: &S
     assert!(ids.contains(&"thread-a".to_string()));
     assert!(ids.contains(&"thread-b".to_string()));
     assert_eq!(ids.len(), 2);
+}
+
+/// `count_dispatches_by_status()` tracks low-cardinality lifecycle gauges.
+pub async fn count_dispatches_by_status_tracks_lifecycle<S: MailboxStore>(store: &S) {
+    store
+        .enqueue(&make_dispatch("d1", "t-count-a", "r1", 128, 1000))
+        .await
+        .unwrap();
+    store
+        .enqueue(&make_dispatch("d2", "t-count-b", "r2", 128, 1000))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store
+            .count_dispatches_by_status(RunDispatchStatus::Queued)
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        store
+            .count_dispatches_by_status(RunDispatchStatus::Claimed)
+            .await
+            .unwrap(),
+        0
+    );
+
+    let claimed = store
+        .claim("t-count-a", "consumer-1", 30_000, 1000, 1)
+        .await
+        .unwrap();
+    let claim_token = claimed[0].claim_token.as_deref().unwrap();
+
+    assert_eq!(
+        store
+            .count_dispatches_by_status(RunDispatchStatus::Queued)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .count_dispatches_by_status(RunDispatchStatus::Claimed)
+            .await
+            .unwrap(),
+        1
+    );
+
+    store.ack("d1", claim_token, 1100).await.unwrap();
+    store.cancel("d2", 1200).await.unwrap();
+
+    assert_eq!(
+        store
+            .count_dispatches_by_status(RunDispatchStatus::Queued)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        store
+            .count_dispatches_by_status(RunDispatchStatus::Acked)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .count_dispatches_by_status(RunDispatchStatus::Cancelled)
+            .await
+            .unwrap(),
+        1
+    );
+}
+
+/// `list_terminal_dispatches()` scans terminal dispatches across threads for
+/// run lifecycle reconciliation.
+pub async fn list_terminal_dispatches_returns_all_terminal<S: MailboxStore>(store: &S) {
+    store
+        .enqueue(&make_dispatch("d-cancel", "t-terminal-a", "r1", 128, 1000))
+        .await
+        .unwrap();
+    store
+        .enqueue(&make_dispatch(
+            "d-supersede",
+            "t-terminal-b",
+            "r2",
+            128,
+            1001,
+        ))
+        .await
+        .unwrap();
+    store
+        .enqueue(&make_dispatch("d-queued", "t-terminal-c", "r3", 128, 1002))
+        .await
+        .unwrap();
+
+    store.cancel("d-cancel", 2000).await.unwrap();
+    store.interrupt("t-terminal-b", 3000).await.unwrap();
+
+    let listed = store.list_terminal_dispatches(10, 0).await.unwrap();
+    let mut terminal = listed
+        .iter()
+        .map(|dispatch| (dispatch.dispatch_id.as_str(), dispatch.status))
+        .collect::<Vec<_>>();
+    terminal.sort_unstable_by_key(|(dispatch_id, _)| *dispatch_id);
+    assert_eq!(
+        terminal,
+        vec![
+            ("d-cancel", RunDispatchStatus::Cancelled),
+            ("d-supersede", RunDispatchStatus::Superseded),
+        ]
+    );
+
+    let paged = store.list_terminal_dispatches(1, 1).await.unwrap();
+    assert_eq!(paged.len(), 1);
+    assert!(paged[0].status.is_terminal());
 }
 
 /// `claim_dispatch()` targets a specific dispatch_id and transitions it to

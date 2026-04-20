@@ -2,7 +2,10 @@
 
 mod nats_fixture;
 
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use awaken_contract::contract::mailbox::{MailboxStore, RunDispatch, RunDispatchStatus};
 use awaken_stores::{NatsMailboxConfig, NatsMailboxStore};
@@ -781,6 +784,128 @@ async fn dedupe_key_reusable_after_cancel() {
         .expect("dedupe_key must be reusable after terminal");
 
     store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn dedupe_key_reuse_publishes_distinct_dispatch_signals() {
+    let fixture = NatsFixture::start().await;
+    let mut config = NatsMailboxConfig::new(fixture.url.clone());
+    config.stream_name = format!("DISPATCH_{}", uuid::Uuid::now_v7().simple());
+    config.consumer_name = format!("c_{}", uuid::Uuid::now_v7().simple());
+    config.dispatch_bucket = format!("d_{}", uuid::Uuid::now_v7().simple());
+    config.epoch_bucket = format!("e_{}", uuid::Uuid::now_v7().simple());
+    config.thread_index_bucket = format!("ti_{}", uuid::Uuid::now_v7().simple());
+    config.sweeper_interval = Duration::from_secs(60);
+    config.dedup_window = Duration::from_secs(120);
+    let store = NatsMailboxStore::connect(config).await.expect("connect");
+
+    let mut first = test_dispatch("d-dedupe-signal-1", "t-dedupe-signal");
+    first.dedupe_key = Some("same-key".to_string());
+    store.enqueue(&first).await.unwrap();
+    let first_signal = store
+        .pull_dispatch_signals(8, Duration::from_secs(2))
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.dispatch_id == "d-dedupe-signal-1")
+        .expect("first dispatch signal");
+    first_signal.receipt.ack().await.unwrap();
+
+    store
+        .cancel("d-dedupe-signal-1", 1_000)
+        .await
+        .unwrap()
+        .expect("cancel first dispatch");
+
+    let mut second = test_dispatch("d-dedupe-signal-2", "t-dedupe-signal");
+    second.dedupe_key = Some("same-key".to_string());
+    store.enqueue(&second).await.unwrap();
+
+    let second_signal = store
+        .pull_dispatch_signals(8, Duration::from_secs(2))
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.dispatch_id == "d-dedupe-signal-2")
+        .expect("reusing a dedupe key must still publish a fresh dispatch signal");
+    second_signal.receipt.ack().await.unwrap();
+
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn concurrent_enqueue_same_thread_preserves_thread_index_entries() {
+    let fixture = NatsFixture::start().await;
+    let stream_name = format!("DISPATCH_{}", uuid::Uuid::now_v7().simple());
+    let consumer_name = format!("c_{}", uuid::Uuid::now_v7().simple());
+    let dispatch_bucket = format!("d_{}", uuid::Uuid::now_v7().simple());
+    let epoch_bucket = format!("e_{}", uuid::Uuid::now_v7().simple());
+    let thread_index_bucket = format!("ti_{}", uuid::Uuid::now_v7().simple());
+    let mk_config = || {
+        let mut config = NatsMailboxConfig::new(fixture.url.clone());
+        config.stream_name = stream_name.clone();
+        config.consumer_name = consumer_name.clone();
+        config.dispatch_bucket = dispatch_bucket.clone();
+        config.epoch_bucket = epoch_bucket.clone();
+        config.thread_index_bucket = thread_index_bucket.clone();
+        config.sweeper_interval = Duration::from_secs(60);
+        config
+    };
+
+    let store = Arc::new(
+        NatsMailboxStore::connect(mk_config())
+            .await
+            .expect("connect"),
+    );
+    let total = 64usize;
+    let mut handles = Vec::new();
+    for i in 0..total {
+        let store = Arc::clone(&store);
+        handles.push(tokio::spawn(async move {
+            let mut dispatch = test_dispatch(&format!("d-hot-index-{i}"), "t-hot-index");
+            dispatch.created_at = i as u64;
+            dispatch.updated_at = i as u64;
+            store.enqueue(&dispatch).await
+        }));
+    }
+    for handle in handles {
+        handle.await.unwrap().unwrap();
+    }
+    store.shutdown().await.unwrap();
+    drop(store);
+
+    let verifier = NatsMailboxStore::connect(mk_config())
+        .await
+        .expect("verifier connect");
+    let mut claimed = Vec::new();
+    for i in 0..total {
+        let got = verifier
+            .claim("t-hot-index", "verifier", 30_000, 10_000 + i as u64, 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            got.len(),
+            1,
+            "thread index should expose every concurrently enqueued dispatch"
+        );
+        let dispatch = got.into_iter().next().unwrap();
+        let token = dispatch.claim_token.clone().unwrap();
+        verifier
+            .ack(&dispatch.dispatch_id, &token, 20_000 + i as u64)
+            .await
+            .unwrap();
+        claimed.push(dispatch.dispatch_id);
+    }
+    claimed.sort();
+    assert_eq!(claimed.len(), total);
+    for i in 0..total {
+        assert!(
+            claimed.iter().any(|id| id == &format!("d-hot-index-{i}")),
+            "missing dispatch d-hot-index-{i}"
+        );
+    }
+
+    verifier.shutdown().await.unwrap();
 }
 
 /// Regression: a delayed terminal release by an old owner must not delete

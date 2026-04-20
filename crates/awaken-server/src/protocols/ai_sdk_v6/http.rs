@@ -241,6 +241,7 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
         thread_id,
         messages,
         decisions,
+        has_interaction_responses: _,
         state,
         agent_id,
     } = processed;

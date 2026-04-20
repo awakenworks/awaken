@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::ThreadRunStore;
+use awaken_contract::contract::storage::{RunRecord, RunWaitingState, ThreadRunStore};
 use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
 use awaken_contract::registry_spec::AgentSpec;
 
@@ -111,6 +111,7 @@ pub(crate) struct ProcessedRequest {
     pub thread_id: String,
     pub messages: Vec<Message>,
     pub decisions: Vec<(String, ToolCallResume)>,
+    pub has_interaction_responses: bool,
     pub state: Option<Value>,
     pub agent_id: Option<String>,
 }
@@ -118,7 +119,7 @@ pub(crate) struct ProcessedRequest {
 impl ProcessedRequest {
     /// True when the request carries only tool-call decisions (no new content).
     pub(crate) fn is_resume_only(&self) -> bool {
-        self.messages.is_empty() && !self.decisions.is_empty()
+        self.messages.is_empty() && self.has_interaction_responses
     }
 }
 
@@ -134,16 +135,21 @@ pub(crate) async fn process_chat_request(
     let agent_id = payload.agent_id;
     let state = payload.state;
 
-    // Extract decisions from ALL messages (including old ones with tool responses).
-    // This must happen before dedup because decisions live in historical assistant
-    // messages that the store already knows about.
-    let decisions = extract_tool_call_decisions(&payload.messages);
-
     let thread_id = payload
         .thread_id
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
         .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+
+    let unfiltered_decisions = extract_tool_call_decisions(&payload.messages);
+    let has_interaction_responses = !unfiltered_decisions.is_empty();
+    let waiting_targets = current_waiting_decision_targets(store, &thread_id).await?;
+
+    // Extract decisions from ALL messages (including old ones with tool responses)
+    // but accept only targets that are still waiting in the durable run record.
+    // This keeps client history replay from re-sending stale tool decisions.
+    let decisions =
+        extract_tool_call_decisions_for_targets(&payload.messages, Some(&waiting_targets));
 
     // Load persisted message IDs to deduplicate incoming messages.
     let known_ids: HashSet<String> = store
@@ -159,7 +165,7 @@ pub(crate) async fn process_chat_request(
     let new_ui_messages = dedup_messages(payload.messages, &known_ids);
     let messages = convert_messages(new_ui_messages);
 
-    if messages.is_empty() && decisions.is_empty() {
+    if messages.is_empty() && decisions.is_empty() && !has_interaction_responses {
         return Err("no new messages or interaction responses".to_string());
     }
 
@@ -167,6 +173,7 @@ pub(crate) async fn process_chat_request(
         thread_id,
         messages,
         decisions,
+        has_interaction_responses,
         state,
         agent_id,
     })
@@ -183,6 +190,7 @@ pub(crate) fn process_preview_chat_request(
     state: Option<Value>,
 ) -> Result<ProcessedRequest, String> {
     let decisions = extract_tool_call_decisions(&messages);
+    let has_interaction_responses = !decisions.is_empty();
     let thread_id = thread_id
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
@@ -197,6 +205,7 @@ pub(crate) fn process_preview_chat_request(
         thread_id,
         messages,
         decisions,
+        has_interaction_responses,
         state,
         agent_id: None,
     })
@@ -302,7 +311,15 @@ fn dedup_messages(msgs: Vec<UIMessage>, known_ids: &HashSet<String>) -> Vec<UIMe
 
 /// Extract tool-call decisions from assistant message parts.
 fn extract_tool_call_decisions(msgs: &[UIMessage]) -> Vec<(String, ToolCallResume)> {
+    extract_tool_call_decisions_for_targets(msgs, None)
+}
+
+fn extract_tool_call_decisions_for_targets(
+    msgs: &[UIMessage],
+    allowed_targets: Option<&HashSet<String>>,
+) -> Vec<(String, ToolCallResume)> {
     let mut decisions = Vec::new();
+    let mut by_target = std::collections::HashMap::<String, usize>::new();
 
     for message in msgs.iter().filter(|m| m.role == "assistant") {
         for part in message.parts.iter() {
@@ -377,20 +394,85 @@ fn extract_tool_call_decisions(msgs: &[UIMessage]) -> Vec<(String, ToolCallResum
                 _ => continue,
             };
 
-            decisions.push((
-                target_id,
-                ToolCallResume {
-                    decision_id: uuid::Uuid::now_v7().to_string(),
-                    action,
-                    result,
-                    reason: None,
-                    updated_at: awaken_contract::now_ms(),
-                },
-            ));
+            if let Some(allowed_targets) = allowed_targets
+                && !allowed_targets.contains(&target_id)
+            {
+                continue;
+            }
+
+            let decision = ToolCallResume {
+                decision_id: uuid::Uuid::now_v7().to_string(),
+                action,
+                result,
+                reason: None,
+                updated_at: awaken_contract::now_ms(),
+            };
+            if let Some(index) = by_target.get(&target_id).copied() {
+                decisions[index] = (target_id, decision);
+            } else {
+                by_target.insert(target_id.clone(), decisions.len());
+                decisions.push((target_id, decision));
+            }
         }
     }
 
     decisions
+}
+
+async fn current_waiting_decision_targets(
+    store: &dyn ThreadRunStore,
+    thread_id: &str,
+) -> Result<HashSet<String>, String> {
+    let mut targets = HashSet::new();
+
+    if let Some(thread) = store
+        .load_thread(thread_id)
+        .await
+        .map_err(|e| e.to_string())?
+        && let Some(open_run_id) = thread.open_run_id.as_deref()
+        && let Some(run) = store
+            .load_run(open_run_id)
+            .await
+            .map_err(|e| e.to_string())?
+    {
+        insert_waiting_targets(&run, &mut targets);
+    }
+
+    if targets.is_empty()
+        && let Some(run) = store
+            .latest_run(thread_id)
+            .await
+            .map_err(|e| e.to_string())?
+    {
+        insert_waiting_targets(&run, &mut targets);
+    }
+
+    Ok(targets)
+}
+
+fn insert_waiting_targets(run: &RunRecord, targets: &mut HashSet<String>) {
+    let Some(waiting) = run.waiting.as_ref() else {
+        return;
+    };
+    insert_waiting_state_targets(waiting, targets);
+}
+
+fn insert_waiting_state_targets(waiting: &RunWaitingState, targets: &mut HashSet<String>) {
+    targets.extend(
+        waiting
+            .ticket_ids
+            .iter()
+            .filter(|id| !id.trim().is_empty())
+            .cloned(),
+    );
+    for ticket in &waiting.tickets {
+        if !ticket.ticket_id.trim().is_empty() {
+            targets.insert(ticket.ticket_id.clone());
+        }
+        if !ticket.tool_call_id.trim().is_empty() {
+            targets.insert(ticket.tool_call_id.clone());
+        }
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -399,11 +481,45 @@ fn extract_tool_call_decisions(msgs: &[UIMessage]) -> Vec<(String, ToolCallResum
 mod tests {
     use super::*;
     use awaken_contract::contract::content::ContentBlock;
+    use awaken_contract::contract::lifecycle::RunStatus;
+    use awaken_contract::contract::storage::{
+        RunRecord, RunWaitingState, RunWaitingTicket, ThreadRunStore, WaitingReason,
+    };
     use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
+    use awaken_stores::InMemoryStore;
     use serde_json::json;
 
     fn raw_part(value: Value) -> Value {
         value
+    }
+
+    fn test_run(run_id: &str, thread_id: &str, status: RunStatus) -> RunRecord {
+        RunRecord {
+            run_id: run_id.into(),
+            thread_id: thread_id.into(),
+            agent_id: "agent".into(),
+            parent_run_id: None,
+            request: None,
+            input: None,
+            output: None,
+            status,
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: None,
+            outcome: None,
+            created_at: 1,
+            started_at: None,
+            finished_at: None,
+            updated_at: 1,
+            steps: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            state: None,
+        }
     }
 
     // ── UIMessage deserialization ──
@@ -678,6 +794,135 @@ mod tests {
         assert_eq!(decisions[1].1.result, json!({ "message": "continue" }));
     }
 
+    #[test]
+    fn extract_decisions_filters_to_waiting_targets_and_keeps_latest() {
+        let msgs = vec![UIMessage {
+            id: Some("a1".into()),
+            role: "assistant".into(),
+            parts: vec![
+                raw_part(json!({
+                    "type": "tool-run",
+                    "toolCallId": "stale_call",
+                    "state": "output-available",
+                    "output": "stale"
+                })),
+                raw_part(json!({
+                    "type": "tool-run",
+                    "toolCallId": "waiting_call",
+                    "state": "output-available",
+                    "output": "old"
+                })),
+                raw_part(json!({
+                    "type": "tool-run",
+                    "toolCallId": "waiting_call",
+                    "state": "output-available",
+                    "output": "new"
+                })),
+            ],
+        }];
+        let allowed = HashSet::from(["waiting_call".to_string()]);
+        let decisions = extract_tool_call_decisions_for_targets(&msgs, Some(&allowed));
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].0, "waiting_call");
+        assert_eq!(decisions[0].1.result, json!("new"));
+    }
+
+    #[tokio::test]
+    async fn process_chat_request_ignores_replayed_tool_result_without_waiting_target() {
+        let store = InMemoryStore::new();
+        let thread_id = "thread-replayed-tool";
+        let run = test_run("run-done", thread_id, RunStatus::Done);
+        let mut old = Message::assistant("old tool result");
+        old.id = Some("assistant-old".into());
+        store
+            .checkpoint(thread_id, &[old], &run)
+            .await
+            .expect("checkpoint");
+
+        let payload = AiSdkChatRequest {
+            thread_id: Some(thread_id.into()),
+            agent_id: None,
+            state: None,
+            messages: vec![
+                UIMessage {
+                    id: Some("assistant-old".into()),
+                    role: "assistant".into(),
+                    parts: vec![raw_part(json!({
+                        "type": "tool-run",
+                        "toolCallId": "old_call",
+                        "state": "output-available",
+                        "output": "already handled"
+                    }))],
+                },
+                UIMessage {
+                    id: Some("user-new".into()),
+                    role: "user".into(),
+                    parts: vec![raw_part(json!({
+                        "type": "text",
+                        "text": "next turn"
+                    }))],
+                },
+            ],
+        };
+
+        let processed = process_chat_request(&store, payload).await.unwrap();
+        assert!(processed.decisions.is_empty());
+        assert_eq!(processed.messages.len(), 1);
+        assert_eq!(processed.messages[0].text(), "next turn");
+    }
+
+    #[tokio::test]
+    async fn process_chat_request_accepts_decision_for_current_waiting_ticket() {
+        let store = InMemoryStore::new();
+        let thread_id = "thread-waiting-tool";
+        let mut run = test_run("run-waiting", thread_id, RunStatus::Waiting);
+        run.waiting = Some(RunWaitingState {
+            reason: WaitingReason::ToolPermission,
+            ticket_ids: vec!["ticket-1".into()],
+            tickets: vec![RunWaitingTicket {
+                ticket_id: "ticket-1".into(),
+                tool_call_id: "call-1".into(),
+                tool_name: "confirm".into(),
+                arguments: Value::Null,
+                resume_mode: Default::default(),
+                reason: None,
+                updated_at: 1,
+            }],
+            since_dispatch_id: None,
+            message: None,
+        });
+        store
+            .checkpoint(thread_id, &[Message::assistant("waiting")], &run)
+            .await
+            .expect("checkpoint");
+
+        let payload = AiSdkChatRequest {
+            thread_id: Some(thread_id.into()),
+            agent_id: None,
+            state: None,
+            messages: vec![UIMessage {
+                id: Some("assistant-waiting".into()),
+                role: "assistant".into(),
+                parts: vec![raw_part(json!({
+                    "type": "tool-confirm",
+                    "toolCallId": "call-1",
+                    "approvalId": "ticket-1",
+                    "state": "approval-responded",
+                    "approval": {"approved": true}
+                }))],
+            }],
+        };
+
+        let processed = process_chat_request(&store, payload).await.unwrap();
+        assert!(processed.messages.is_empty());
+        assert_eq!(processed.decisions.len(), 1);
+        assert_eq!(processed.decisions[0].0, "ticket-1");
+        assert_eq!(
+            processed.decisions[0].1.action,
+            ResumeDecisionAction::Resume
+        );
+    }
+
     // ── dedup_messages ──
 
     #[test]
@@ -754,6 +999,7 @@ mod tests {
                     updated_at: 0,
                 },
             )],
+            has_interaction_responses: true,
             state: None,
             agent_id: None,
         };
@@ -775,6 +1021,7 @@ mod tests {
                     updated_at: 0,
                 },
             )],
+            has_interaction_responses: true,
             state: None,
             agent_id: None,
         };
@@ -1272,6 +1519,7 @@ mod tests {
             thread_id: "t1".into(),
             messages: vec![Message::user("hello")],
             decisions: vec![],
+            has_interaction_responses: false,
             state: None,
             agent_id: None,
         };
@@ -1288,6 +1536,7 @@ mod tests {
             thread_id: "t1".into(),
             messages: vec![],
             decisions: vec![],
+            has_interaction_responses: false,
             state: None,
             agent_id: None,
         };
