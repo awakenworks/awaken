@@ -220,6 +220,31 @@ pub struct ShutdownConfig {
 | `a2a_extended_card_bearer_token` | `Option<String>` | `None` | 设置后启用带认证的 `GET /v1/a2a/extendedAgentCard` |
 | `shutdown.timeout_secs` | `u64` | `30` | 强制退出前等待飞行中请求排空的秒数 |
 
+## AdminApiConfig
+
+admin/configuration API 安全配置。通过
+`AppState::with_admin_api_config` 挂到 `AppState` 上；只需要 bearer
+认证时可使用 `AppState::with_admin_api_bearer_token`。
+
+```rust,ignore
+pub struct AdminApiConfig {
+    pub bearer_token: Option<String>,
+    pub cors_allowed_origins: Vec<String>,
+}
+```
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `bearer_token` | `Option<String>` | `None` | 设置后，`/v1/capabilities`、`/v1/config/*` 和 `/v1/agents*` 要求 `Authorization: Bearer ...` |
+| `cors_allowed_origins` | `Vec<String>` | `["http://127.0.0.1:3002", "http://localhost:3002"]` | admin CORS layer 允许的浏览器来源 |
+
+环境变量会覆盖 `AppState` 上的 admin 配置：
+
+| 变量 | 说明 |
+|---|---|
+| `AWAKEN_ADMIN_API_BEARER_TOKEN` | admin/configuration API 要求的 bearer token |
+| `AWAKEN_ADMIN_CORS_ALLOWED_ORIGINS` | 浏览器 admin API 的 CORS 来源，逗号分隔 |
+
 ## MailboxConfig
 
 mailbox 持久化队列配置。控制租约计时、扫描/GC 间隔以及失败任务的重试行为。

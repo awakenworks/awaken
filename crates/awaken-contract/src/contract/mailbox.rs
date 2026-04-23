@@ -1,10 +1,16 @@
 //! Run dispatch types and persistent store trait for the unified run queue.
 
+use std::pin::Pin;
+use std::time::Duration;
+
 use async_trait::async_trait;
+use futures::Stream;
 use serde::{Deserialize, Serialize};
 
 use super::lifecycle::{RunStatus, TerminationReason};
+use super::message::Message;
 use super::storage::StorageError;
+use super::suspension::ToolCallResume;
 
 // ── RunDispatchStatus ───────────────────────────────────────────────
 
@@ -152,6 +158,201 @@ pub struct MailboxInterrupt {
     pub superseded_count: usize,
 }
 
+/// Detailed result of a mailbox interrupt operation.
+///
+/// `MailboxInterrupt` intentionally keeps the 0.2 public struct shape so
+/// downstream struct literals remain source-compatible. New code that needs the
+/// exact superseded dispatch records should use this type via
+/// [`MailboxStore::interrupt_detailed`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MailboxInterruptDetails {
+    /// New thread dispatch epoch after bump.
+    pub new_dispatch_epoch: u64,
+    /// The dispatch that was Claimed (running) at interrupt time, if any.
+    /// Caller should cancel the corresponding runtime run.
+    pub active_dispatch: Option<RunDispatch>,
+    /// Number of Queued dispatches superseded.
+    pub superseded_count: usize,
+    /// Queued dispatches that were atomically superseded by this interrupt.
+    ///
+    /// This is the authoritative set callers should use to reconcile terminal
+    /// dispatch state back to the durable run lifecycle.
+    #[serde(default)]
+    pub superseded_dispatches: Vec<RunDispatch>,
+}
+
+impl MailboxInterruptDetails {
+    #[must_use]
+    pub fn into_summary(self) -> MailboxInterrupt {
+        MailboxInterrupt {
+            new_dispatch_epoch: self.new_dispatch_epoch,
+            active_dispatch: self.active_dispatch,
+            superseded_count: self.superseded_count,
+        }
+    }
+
+    #[must_use]
+    pub fn summary(&self) -> MailboxInterrupt {
+        MailboxInterrupt {
+            new_dispatch_epoch: self.new_dispatch_epoch,
+            active_dispatch: self.active_dispatch.clone(),
+            superseded_count: self.superseded_count,
+        }
+    }
+}
+
+impl From<MailboxInterrupt> for MailboxInterruptDetails {
+    fn from(interrupt: MailboxInterrupt) -> Self {
+        Self {
+            new_dispatch_epoch: interrupt.new_dispatch_epoch,
+            active_dispatch: interrupt.active_dispatch,
+            superseded_count: interrupt.superseded_count,
+            superseded_dispatches: Vec::new(),
+        }
+    }
+}
+
+impl From<MailboxInterruptDetails> for MailboxInterrupt {
+    fn from(details: MailboxInterruptDetails) -> Self {
+        details.into_summary()
+    }
+}
+
+// ── LiveRunCommand ─────────────────────────────────────────────────────────
+
+/// Control command delivered to an active run's owning node (out-of-band
+/// relative to durable dispatch). Consumed by the runtime forwarder attached
+/// to each `RunHandle`; unsubscribed targets silently drop commands (best
+/// effort — steering is ephemeral by design).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum LiveRunCommand {
+    /// Inject messages into the running agent's inbox. Agent picks them up
+    /// at the next step boundary (`turn-boundary` semantics).
+    Messages(Vec<Message>),
+    /// Cooperatively cancel the run (`immediate` semantics — triggers the
+    /// run's cancellation token).
+    Cancel,
+    /// Deliver tool-call resume decisions to the run.
+    Decision(Vec<(String, ToolCallResume)>),
+}
+
+/// Exact live-run target for cross-node ephemeral control.
+///
+/// Thread-only routing is intentionally insufficient for distributed
+/// backends: a stale subscriber for the same thread must not be able to ack a
+/// command intended for a newer run/dispatch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveRunTarget {
+    pub thread_id: String,
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_id: Option<String>,
+}
+
+impl LiveRunTarget {
+    #[must_use]
+    pub fn new(thread_id: impl Into<String>, run_id: impl Into<String>) -> Self {
+        Self {
+            thread_id: thread_id.into(),
+            run_id: run_id.into(),
+            dispatch_id: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_dispatch_id(mut self, dispatch_id: impl Into<String>) -> Self {
+        self.dispatch_id = Some(dispatch_id.into());
+        self
+    }
+}
+
+/// Completion receipt for a delivered `LiveRunCommand`. Consumers call
+/// [`LiveCommandReceipt::ack`] **only after the run has actually accepted
+/// the command** (e.g. the inbox channel returned success). A dropped
+/// receipt signals the producer that delivery did not complete, and the
+/// producer's `deliver_live` resolves as
+/// [`LiveDeliveryOutcome::NoSubscriber`] so the caller can fall back to
+/// durable dispatch. Producers MUST NOT observe `Delivered` until the
+/// receipt has been acknowledged.
+pub trait LiveCommandReceipt: Send + Sync {
+    /// Confirm the command was handed to the live consumer. Consumes the
+    /// receipt; dropping the handle without calling `ack` is treated as
+    /// non-delivery by the producer.
+    fn ack(self: Box<Self>);
+}
+
+/// Entry yielded by a [`LiveRunCommandStream`]: the command plus the
+/// receipt the consumer must `ack` once the run has received it.
+pub struct LiveRunCommandEntry {
+    pub command: LiveRunCommand,
+    pub receipt: Box<dyn LiveCommandReceipt>,
+}
+
+impl std::fmt::Debug for LiveRunCommandEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LiveRunCommandEntry")
+            .field("command", &self.command)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Stream of [`LiveRunCommandEntry`] consumed by the owning node's runtime
+/// forwarder.
+pub type LiveRunCommandStream = Pin<Box<dyn Stream<Item = LiveRunCommandEntry> + Send>>;
+
+/// Outcome of a `MailboxStore::deliver_live` call — lets the caller decide
+/// whether to fall back to the durable queue. `NoSubscriber` means *no node
+/// acknowledged the command*; the command was either lost in transit or
+/// the run failed to accept it. Callers must treat `NoSubscriber` as
+/// "did not deliver" and fall back to durable dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveDeliveryOutcome {
+    /// The owning run accepted the command (forwarder acked after handing
+    /// the command to the in-process channel).
+    Delivered,
+    /// No subscriber, or the subscriber failed to accept within the
+    /// producer's timeout. Caller should fall back to durable dispatch.
+    NoSubscriber,
+}
+
+// ── DispatchSignal ─────────────────────────────────────────────────────────
+
+/// Receipt for a durable dispatch delivery signal.
+///
+/// Implementations should ack only after the scheduler has attempted to claim
+/// the indicated thread. Nack requests redelivery when the scheduler cannot
+/// safely make a claim decision.
+#[async_trait]
+pub trait DispatchSignalReceipt: Send + Sync {
+    fn redelivery_attempts(&self) -> Option<u64> {
+        None
+    }
+
+    async fn ack(self: Box<Self>) -> Result<(), StorageError>;
+    async fn nack(self: Box<Self>) -> Result<(), StorageError>;
+    async fn nack_with_delay(self: Box<Self>, delay: Duration) -> Result<(), StorageError> {
+        let _ = delay;
+        self.nack().await
+    }
+}
+
+/// One durable dispatch delivery signal pulled from a backend work queue.
+pub struct DispatchSignalEntry {
+    pub thread_id: String,
+    pub dispatch_id: String,
+    pub receipt: Box<dyn DispatchSignalReceipt>,
+}
+
+impl std::fmt::Debug for DispatchSignalEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DispatchSignalEntry")
+            .field("thread_id", &self.thread_id)
+            .field("dispatch_id", &self.dispatch_id)
+            .finish_non_exhaustive()
+    }
+}
+
 // ── MailboxStore trait ──────────────────────────────────────────────
 
 /// Persistent mailbox queue with lease-based distributed claim.
@@ -269,6 +470,48 @@ pub trait MailboxStore: Send + Sync {
     /// return the Claimed dispatch (if any) so caller can cancel its runtime run.
     async fn interrupt(&self, thread_id: &str, now: u64) -> Result<MailboxInterrupt, StorageError>;
 
+    /// Detailed interrupt result including the exact queued dispatches that
+    /// were superseded.
+    ///
+    /// The default delegates to the 0.2-compatible summary method. Stores that
+    /// can return authoritative superseded records should override this method.
+    async fn interrupt_detailed(
+        &self,
+        thread_id: &str,
+        now: u64,
+    ) -> Result<MailboxInterruptDetails, StorageError> {
+        self.interrupt(thread_id, now).await.map(Into::into)
+    }
+
+    /// Return the authoritative dispatch epoch for a thread.
+    ///
+    /// Implementations that do not persist epochs may keep the default `0`;
+    /// production mailbox stores must override this so dispatch workers can
+    /// reject claimed work that became stale after an interrupt.
+    async fn current_dispatch_epoch(&self, thread_id: &str) -> Result<u64, StorageError> {
+        let _ = thread_id;
+        Ok(0)
+    }
+
+    /// Terminalize a claimed dispatch as superseded.
+    ///
+    /// Used when an interrupt wins the race after a dispatch was claimed but
+    /// before (or while) the runtime starts. Implementations must validate the
+    /// claim token and clear lease/claim ownership. Returning `Ok(None)` means
+    /// the dispatch is gone or no longer claimed.
+    async fn supersede_claimed(
+        &self,
+        dispatch_id: &str,
+        claim_token: &str,
+        now: u64,
+        reason: &str,
+    ) -> Result<Option<RunDispatch>, StorageError> {
+        let _ = (dispatch_id, claim_token, now, reason);
+        Err(StorageError::Io(
+            "supersede claimed dispatch is not supported by this mailbox store".into(),
+        ))
+    }
+
     // ── read path ──
 
     /// Load a single dispatch by ID.
@@ -282,6 +525,36 @@ pub trait MailboxStore: Send + Sync {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<RunDispatch>, StorageError>;
+
+    /// Count dispatches by status for low-cardinality operational gauges.
+    ///
+    /// Implementations that cannot provide an efficient count may return a
+    /// storage error; callers must treat this as a metrics-only failure.
+    async fn count_dispatches_by_status(
+        &self,
+        status: RunDispatchStatus,
+    ) -> Result<usize, StorageError> {
+        let _ = status;
+        Err(StorageError::Io(
+            "count dispatches by status is not supported by this mailbox store".into(),
+        ))
+    }
+
+    /// List terminal dispatches across all threads.
+    ///
+    /// Used by recovery/maintenance reconciliation to repair run lifecycle
+    /// records after a process crashes between a mailbox terminal transition
+    /// and the corresponding run-store checkpoint.
+    async fn list_terminal_dispatches(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<RunDispatch>, StorageError> {
+        let _ = (limit, offset);
+        Err(StorageError::Io(
+            "list terminal dispatches is not supported by this mailbox store".into(),
+        ))
+    }
 
     // ── maintenance ──
 
@@ -301,6 +574,78 @@ pub trait MailboxStore: Send + Sync {
     /// List distinct thread_ids that have at least one Queued dispatch.
     /// Used by recover() at startup.
     async fn queued_thread_ids(&self) -> Result<Vec<String>, StorageError>;
+
+    // ── dispatch signals (durable wakeups) ──
+
+    /// Whether this store exposes durable dispatch delivery signals.
+    fn supports_dispatch_signals(&self) -> bool {
+        false
+    }
+
+    /// Pull durable dispatch delivery signals, if supported by the backend.
+    ///
+    /// The default is empty so non-work-queue stores continue relying on local
+    /// submit, startup recovery, and sweep.
+    async fn pull_dispatch_signals(
+        &self,
+        max: usize,
+        expires: Duration,
+    ) -> Result<Vec<DispatchSignalEntry>, StorageError> {
+        let _ = (max, expires);
+        Ok(Vec::new())
+    }
+
+    // ── live-channel (ephemeral steering) ──
+    //
+    // Separate from durable dispatch: these deliver best-effort control
+    // commands to whichever node currently owns the run. Default impls are
+    // no-ops so stores that don't support live delivery (test fakes) opt out.
+
+    /// Deliver a `LiveRunCommand` to the run currently active for `thread_id`.
+    /// Implementations report `Delivered` when at least one subscriber has
+    /// observed the command, or `NoSubscriber` when delivery would be a
+    /// silent drop (the caller then owns durable-fallback policy). The
+    /// default implementation is `NoSubscriber` so stores that opt out of
+    /// live delivery force every caller to fall back automatically.
+    async fn deliver_live(
+        &self,
+        thread_id: &str,
+        cmd: LiveRunCommand,
+    ) -> Result<LiveDeliveryOutcome, StorageError> {
+        let _ = (thread_id, cmd);
+        Ok(LiveDeliveryOutcome::NoSubscriber)
+    }
+
+    /// Deliver a live command to an exact run target.
+    ///
+    /// Backends with targeted live subjects should override this. The default
+    /// preserves compatibility for stores that only support thread-level live
+    /// routing.
+    async fn deliver_live_to(
+        &self,
+        target: &LiveRunTarget,
+        cmd: LiveRunCommand,
+    ) -> Result<LiveDeliveryOutcome, StorageError> {
+        self.deliver_live(&target.thread_id, cmd).await
+    }
+
+    /// Subscribe to the live-command stream for `thread_id`. Called by the
+    /// runtime on the owning node when a run is registered.
+    async fn open_live_channel(
+        &self,
+        thread_id: &str,
+    ) -> Result<LiveRunCommandStream, StorageError> {
+        let _ = thread_id;
+        Ok(Box::pin(futures::stream::empty()))
+    }
+
+    /// Subscribe to the live-command stream for an exact run target.
+    async fn open_live_channel_for(
+        &self,
+        target: &LiveRunTarget,
+    ) -> Result<LiveRunCommandStream, StorageError> {
+        self.open_live_channel(&target.thread_id).await
+    }
 }
 
 #[cfg(test)]
@@ -579,5 +924,36 @@ mod tests {
         assert_eq!(parsed.new_dispatch_epoch, 5);
         assert!(parsed.active_dispatch.is_some());
         assert_eq!(parsed.superseded_count, 3);
+    }
+
+    #[test]
+    fn mailbox_interrupt_ignores_detailed_payload_for_legacy_summary() {
+        let json = serde_json::json!({
+            "new_dispatch_epoch": 5,
+            "active_dispatch": null,
+            "superseded_count": 3,
+            "superseded_dispatches": [make_run_dispatch()]
+        });
+        let parsed: MailboxInterrupt = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.new_dispatch_epoch, 5);
+        assert!(parsed.active_dispatch.is_none());
+        assert_eq!(parsed.superseded_count, 3);
+    }
+
+    #[test]
+    fn mailbox_interrupt_details_serde_roundtrip() {
+        let details = MailboxInterruptDetails {
+            new_dispatch_epoch: 5,
+            active_dispatch: Some(make_run_dispatch()),
+            superseded_count: 3,
+            superseded_dispatches: vec![make_run_dispatch()],
+        };
+        let json = serde_json::to_string(&details).unwrap();
+        let parsed: MailboxInterruptDetails = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.new_dispatch_epoch, 5);
+        assert!(parsed.active_dispatch.is_some());
+        assert_eq!(parsed.superseded_count, 3);
+        assert_eq!(parsed.superseded_dispatches.len(), 1);
+        assert_eq!(parsed.summary().superseded_count, 3);
     }
 }

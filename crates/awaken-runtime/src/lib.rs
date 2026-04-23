@@ -51,5 +51,5 @@ pub use phase::{
 };
 pub use plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 pub use registry::{AgentResolver, ExecutionResolver, ResolvedAgent, ResolvedExecution};
-pub use runtime::{AgentRuntime, RunRequest};
+pub use runtime::{AgentRuntime, RunRequest, ThreadContextSnapshot};
 pub use state::{CommitEvent, CommitHook, MutationBatch, StateCommand, StateStore};

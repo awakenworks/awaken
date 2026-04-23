@@ -5,6 +5,7 @@ rust_out
 # Node
 apps/admin-console/node_modules/
 apps/admin-console/dist/
+apps/admin-console/.vite/
 e2e/node_modules/
 examples/ai-sdk-starter/node_modules/
 examples/ai-sdk-starter/dist/

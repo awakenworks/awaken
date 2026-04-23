@@ -15,38 +15,49 @@ pub(super) enum HandleLookup {
     Ambiguous,
 }
 
+struct RegistryInner {
+    by_run_id: HashMap<String, RunHandle>,
+    by_thread_id: HashMap<String, String>,
+    run_to_thread: HashMap<String, String>,
+    completion_notify: HashMap<String, Arc<Notify>>,
+}
+
 /// Tracks active runs with dual indexing by run_id and thread_id.
 /// At most one active run per thread.
 pub(crate) struct ActiveRunRegistry {
-    by_run_id: RwLock<HashMap<String, RunHandle>>,
-    by_thread_id: RwLock<HashMap<String, String>>, // thread_id → run_id
-    /// Notified when a run for a given thread_id is unregistered.
-    completion_notify: RwLock<HashMap<String, Arc<Notify>>>,
+    inner: RwLock<RegistryInner>,
 }
 
 impl ActiveRunRegistry {
     pub(crate) fn new() -> Self {
         Self {
-            by_run_id: RwLock::new(HashMap::new()),
-            by_thread_id: RwLock::new(HashMap::new()),
-            completion_notify: RwLock::new(HashMap::new()),
+            inner: RwLock::new(RegistryInner {
+                by_run_id: HashMap::new(),
+                by_thread_id: HashMap::new(),
+                run_to_thread: HashMap::new(),
+                completion_notify: HashMap::new(),
+            }),
         }
     }
 
     /// Register a run with both run_id and thread_id indexing.
     /// Returns `false` if either the thread or run_id is already active.
     pub(super) fn register(&self, run_id: &str, thread_id: &str, handle: RunHandle) -> bool {
-        let mut by_thread = self.by_thread_id.write();
-        let mut by_run = self.by_run_id.write();
+        let mut inner = self.inner.write();
 
-        if by_thread.contains_key(thread_id) || by_run.contains_key(run_id) {
+        if inner.by_thread_id.contains_key(thread_id) || inner.by_run_id.contains_key(run_id) {
             return false;
         }
 
-        by_thread.insert(thread_id.to_string(), run_id.to_string());
-        by_run.insert(run_id.to_string(), handle);
-        self.completion_notify
-            .write()
+        inner
+            .by_thread_id
+            .insert(thread_id.to_string(), run_id.to_string());
+        inner
+            .run_to_thread
+            .insert(run_id.to_string(), thread_id.to_string());
+        inner.by_run_id.insert(run_id.to_string(), handle);
+        inner
+            .completion_notify
             .insert(thread_id.to_string(), Arc::new(Notify::new()));
         true
     }
@@ -54,48 +65,52 @@ impl ActiveRunRegistry {
     /// Unregister a run by run_id. Removes both run_id and thread_id mappings.
     /// Notifies any waiters that the thread slot is now free.
     pub(super) fn unregister(&self, run_id: &str) {
-        let mut by_thread = self.by_thread_id.write();
-        let mut by_run = self.by_run_id.write();
-        by_run.remove(run_id);
+        let mut inner = self.inner.write();
+        if let Some(handle) = inner.by_run_id.remove(run_id) {
+            handle.stop_live_forwarder();
+        }
 
-        // Find the thread_id for this run_id and notify waiters.
-        let thread_id = by_thread
-            .iter()
-            .find(|(_, v)| v.as_str() == run_id)
-            .map(|(k, _)| k.clone());
-        by_thread.retain(|_, v| v != run_id);
+        let thread_id = inner.run_to_thread.remove(run_id);
+        if let Some(ref tid) = thread_id {
+            inner.by_thread_id.remove(tid);
+        }
 
         if let Some(tid) = thread_id
-            && let Some(notify) = self.completion_notify.write().remove(&tid)
+            && let Some(notify) = inner.completion_notify.remove(&tid)
         {
+            // Release the lock before notifying to avoid holding it while
+            // waiters wake up and potentially re-acquire.
+            drop(inner);
             notify.notify_waiters();
         }
     }
 
     /// Check whether a thread has an active run.
-    #[cfg(test)]
-    fn has_active_thread(&self, thread_id: &str) -> bool {
-        self.by_thread_id.read().contains_key(thread_id)
+    pub(crate) fn has_active_thread(&self, thread_id: &str) -> bool {
+        self.inner.read().by_thread_id.contains_key(thread_id)
     }
 
     /// Cancel the active run for a thread and return a `Notify` that will
     /// fire when the run slot is freed via `unregister()`.
     /// Returns `None` if no active run exists for the thread.
     pub(crate) fn cancel_and_get_notify(&self, thread_id: &str) -> Option<Arc<Notify>> {
-        let handle = self.get_by_thread_id(thread_id)?;
+        let inner = self.inner.read();
+        let run_id = inner.by_thread_id.get(thread_id)?;
+        let handle = inner.by_run_id.get(run_id)?;
         handle.cancel();
-        self.completion_notify.read().get(thread_id).cloned()
+        inner.completion_notify.get(thread_id).cloned()
     }
 
     /// Look up a handle by run_id.
     pub(super) fn get_by_run_id(&self, run_id: &str) -> Option<RunHandle> {
-        self.by_run_id.read().get(run_id).cloned()
+        self.inner.read().by_run_id.get(run_id).cloned()
     }
 
     /// Look up a handle by thread_id (resolves thread_id -> run_id -> handle).
     pub(super) fn get_by_thread_id(&self, thread_id: &str) -> Option<RunHandle> {
-        let run_id = self.by_thread_id.read().get(thread_id).cloned()?;
-        self.by_run_id.read().get(&run_id).cloned()
+        let inner = self.inner.read();
+        let run_id = inner.by_thread_id.get(thread_id)?;
+        inner.by_run_id.get(run_id).cloned()
     }
 
     /// Look up a handle by control id with ambiguity detection.
@@ -103,13 +118,13 @@ impl ActiveRunRegistry {
     /// If `id` matches both a `run_id` and a `thread_id` that point to
     /// different runs, returns `Ambiguous`.
     pub(super) fn lookup_strict(&self, id: &str) -> HandleLookup {
-        let by_run = self.by_run_id.read();
-        let by_thread = self.by_thread_id.read();
+        let inner = self.inner.read();
 
-        let by_run_hit = by_run.get(id).cloned();
-        let by_thread_hit = by_thread
+        let by_run_hit = inner.by_run_id.get(id).cloned();
+        let by_thread_hit = inner
+            .by_thread_id
             .get(id)
-            .and_then(|run_id| by_run.get(run_id))
+            .and_then(|run_id| inner.by_run_id.get(run_id))
             .cloned();
 
         match (by_run_hit, by_thread_hit) {
@@ -138,8 +153,11 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded::<Vec<(String, ToolCallResume)>>();
         RunHandle {
             run_id: run_id.to_string(),
+            dispatch_id: None,
             cancellation_token: token,
+            live_forwarder_token: CancellationToken::new(),
             decision_tx: tx,
+            inbox_tx: None,
         }
     }
 
@@ -243,8 +261,11 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded::<Vec<(String, ToolCallResume)>>();
         let handle = RunHandle {
             run_id: "r1".to_string(),
+            dispatch_id: None,
             cancellation_token: token,
+            live_forwarder_token: CancellationToken::new(),
             decision_tx: tx,
+            inbox_tx: None,
         };
         assert!(reg.register("r1", "t1", handle));
         assert!(!cloned.is_cancelled());

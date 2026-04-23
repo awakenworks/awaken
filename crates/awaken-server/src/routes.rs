@@ -2,6 +2,7 @@
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
@@ -78,6 +79,8 @@ fn map_run_control_error(error: RunControlError) -> ApiError {
 /// `max_concurrent` controls the maximum number of in-flight requests.
 /// Pass `0` to disable the limit (useful in tests).
 pub fn build_router() -> Router<AppState> {
+    crate::metrics::install_recorder();
+
     Router::new()
         .merge(health_routes())
         .merge(thread_routes())
@@ -88,6 +91,7 @@ pub fn build_router() -> Router<AppState> {
         .merge(a2a_routes())
         .merge(mcp_routes())
         .route("/metrics", get(crate::metrics::metrics_handler))
+        .layer(middleware::from_fn(crate::metrics::http_metrics_middleware))
 }
 
 fn health_routes() -> Router<AppState> {
@@ -391,12 +395,34 @@ async fn get_thread_messages(
     })))
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum PushInputMode {
+    #[default]
+    Queue,
+    #[serde(alias = "steer")]
+    LiveThenQueue,
+    InterruptThenQueue,
+    ResumeOpenRun,
+}
+
+impl PushInputMode {
+    fn input_mode(self) -> Option<InputMode> {
+        match self {
+            PushInputMode::Queue => Some(InputMode::Queue),
+            PushInputMode::InterruptThenQueue => Some(InputMode::InterruptThenQueue),
+            PushInputMode::ResumeOpenRun => Some(InputMode::ResumeOpenRun),
+            PushInputMode::LiveThenQueue => None,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct PostThreadMessagesPayload {
     #[serde(rename = "agentId", alias = "agent_id", default)]
     agent_id: Option<String>,
     #[serde(default)]
-    mode: InputMode,
+    mode: PushInputMode,
     #[serde(default)]
     messages: Vec<RunMessage>,
 }
@@ -421,10 +447,20 @@ async fn post_thread_messages(
         ));
     }
 
-    let result = RunControlService::new(st)
-        .inject_user_input(&id, payload.agent_id, messages, payload.mode)
-        .await
-        .map_err(map_run_control_error)?;
+    let service = RunControlService::new(st);
+    let result = match payload.mode.input_mode() {
+        Some(mode) => {
+            service
+                .inject_user_input(&id, payload.agent_id, messages, mode)
+                .await
+        }
+        None => {
+            service
+                .inject_user_input_live_then_queue(&id, payload.agent_id, messages)
+                .await
+        }
+    }
+    .map_err(map_run_control_error)?;
 
     let body = match result.status {
         MailboxDispatchStatus::Running => json!({
@@ -607,7 +643,7 @@ async fn list_runs(
 #[derive(Debug, Deserialize)]
 struct PushRunInputsPayload {
     #[serde(default)]
-    mode: InputMode,
+    mode: PushInputMode,
     #[serde(default)]
     messages: Vec<RunMessage>,
 }
@@ -625,10 +661,16 @@ async fn push_run_inputs(
         ));
     }
 
-    let _ = RunControlService::new(st)
-        .inject_run_input(&id, messages, payload.mode)
-        .await
-        .map_err(map_run_control_error)?;
+    let service = RunControlService::new(st);
+    let result = match payload.mode.input_mode() {
+        Some(mode) => service.inject_run_input(&id, messages, mode).await,
+        None => {
+            service
+                .inject_run_input_live_then_queue(&id, messages)
+                .await
+        }
+    };
+    let _ = result.map_err(map_run_control_error)?;
 
     Ok((
         StatusCode::ACCEPTED,
@@ -980,7 +1022,7 @@ mod tests {
         let json = r#"{}"#;
         let p: PushRunInputsPayload = serde_json::from_str(json).unwrap();
         assert!(p.messages.is_empty());
-        assert_eq!(p.mode, InputMode::Queue);
+        assert_eq!(p.mode, PushInputMode::Queue);
     }
 
     #[test]
@@ -998,8 +1040,20 @@ mod tests {
         let json =
             r#"{"mode":"interrupt_then_queue","messages":[{"role":"user","content":"redirect"}]}"#;
         let p: PushRunInputsPayload = serde_json::from_str(json).unwrap();
-        assert_eq!(p.mode, InputMode::InterruptThenQueue);
+        assert_eq!(p.mode, PushInputMode::InterruptThenQueue);
         assert_eq!(p.messages.len(), 1);
+    }
+
+    #[test]
+    fn push_run_inputs_payload_accepts_live_then_queue_mode_and_steer_alias() {
+        let json = r#"{"mode":"live_then_queue","messages":[{"role":"user","content":"steer"}]}"#;
+        let p: PushRunInputsPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(p.mode, PushInputMode::LiveThenQueue);
+        assert_eq!(p.messages.len(), 1);
+
+        let alias = r#"{"mode":"steer","messages":[{"role":"user","content":"steer"}]}"#;
+        let p: PushRunInputsPayload = serde_json::from_str(alias).unwrap();
+        assert_eq!(p.mode, PushInputMode::LiveThenQueue);
     }
 
     #[test]
@@ -1007,7 +1061,7 @@ mod tests {
         let json =
             r#"{"mode":"resume_open_run","messages":[{"role":"user","content":"continue"}]}"#;
         let p: PushRunInputsPayload = serde_json::from_str(json).unwrap();
-        assert_eq!(p.mode, InputMode::ResumeOpenRun);
+        assert_eq!(p.mode, PushInputMode::ResumeOpenRun);
         assert_eq!(p.messages.len(), 1);
     }
 
@@ -1355,6 +1409,37 @@ mod tests {
             assert_eq!(json["status"], "healthy");
             assert_eq!(json["components"]["store"], "ok");
             assert_eq!(json["components"]["runtime"], "ok");
+        }
+
+        #[tokio::test]
+        async fn metrics_endpoint_is_installed_and_records_http_requests() {
+            let state = make_app_state();
+            let app = build_router().with_state(state);
+
+            let req = axum::http::Request::builder()
+                .uri("/health/live")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+
+            let req = axum::http::Request::builder()
+                .uri("/metrics")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+
+            let body = resp.into_body().collect().await.unwrap().to_bytes();
+            let text = String::from_utf8(body.to_vec()).unwrap();
+            assert!(
+                text.contains("awaken_http_requests_total"),
+                "expected HTTP counter in /metrics output: {text}"
+            );
+            assert!(
+                text.contains("route=\"/health/live\""),
+                "expected matched route label in /metrics output: {text}"
+            );
         }
 
         #[tokio::test]

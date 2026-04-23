@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BACKEND_URL, ConfigApiError, configApi } from "./config-api";
+import {
+  ADMIN_TOKEN_STORAGE_KEY,
+  BACKEND_URL,
+  ConfigApiError,
+  configApi,
+} from "./config-api";
 
 describe("configUrl encoding", () => {
   it("encodes config ids via the list endpoint", async () => {
@@ -57,6 +62,26 @@ describe("configApi", () => {
       status: 409,
       message: "agents/demo already exists",
     });
+  });
+
+  it("adds bearer auth from local storage when configured", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ namespace: "agents", items: [] }),
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) =>
+        key === ADMIN_TOKEN_STORAGE_KEY ? "stored-token" : null,
+    });
+
+    await configApi.list("agents");
+
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    expect(new Headers(init.headers).get("authorization")).toBe(
+      "Bearer stored-token",
+    );
   });
 
   it("normalizes omitted skill arrays in capabilities", async () => {

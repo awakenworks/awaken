@@ -7,6 +7,46 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions use [Se
 
 Development work lands here before the next versioned release.
 
+## [0.2.1] - 2026-04-21
+
+### Added
+
+- NATS-backed `MailboxStore` and `ThreadRunStore` implementations through the
+  `awaken-stores/nats` feature, including JetStream dispatch wakeups, KV-backed
+  dispatch state, buffered checkpoint WAL, and read-your-writes overlays.
+- Live mailbox steering for active runs, with durable dispatch fallback when no
+  live subscriber acknowledges the command.
+- NATS mailbox operational metrics, delayed dispatch-signal NAK backoff,
+  sweeper republish TTL, configurable signal-loop tuning, and stress coverage
+  for multi-node contention and large KV buckets.
+
+### Fixed
+
+- Preserved 0.2.0 public API compatibility for mailbox and server-facing types
+  while keeping new dispatch signal behavior additive.
+- Hardened distributed mailbox scheduling around thread claim guards,
+  `available_at` retry windows, dispatch epoch checks, stale claim rejection,
+  dedupe lock reconciliation, and terminal claim-field cleanup.
+- Fixed NATS buffered thread flushing so WAL messages are ACKed only after both
+  the inner checkpoint and `flushed_seq` watermark write succeed.
+- Wired NATS credentials config into both mailbox and buffered thread store
+  connections.
+- Normalized NATS KV Delete/Purge tombstones across claim guards, dedupe locks,
+  thread indexes, epochs, and dispatch control paths.
+- Made terminal dispatch GC authoritative and changed expired-lease reclaim to
+  use thread-claim guard records instead of scanning all dispatch records.
+
+### Changed
+
+- Updated `genai` to `0.6.0-beta.17`.
+- Aligned Rust toolchain metadata with the current workspace MSRV.
+
+### Compatibility
+
+- `cargo semver-checks` passes against `v0.2.0`; this release is intended as a
+  non-breaking 0.2 patch release.
+- The NATS backend is additive and behind the `awaken-stores/nats` feature.
+
 ## [0.2.0] - 2026-04-11
 
 ### Breaking Changes

@@ -197,6 +197,7 @@ pub(super) async fn detect_and_replay_resume(
             total_output_tokens: &mut total_output_tokens,
             truncation_state: &mut truncation_state,
             run_created_at,
+            thread_ctx: None,
         };
 
         let mut transcript = ToolBatchTranscript::for_resume();

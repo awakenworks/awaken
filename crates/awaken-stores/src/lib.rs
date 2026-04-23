@@ -20,6 +20,18 @@ pub mod postgres;
 #[cfg(feature = "sqlite")]
 pub mod sqlite_mailbox;
 
+#[cfg(feature = "nats")]
+mod nats_keys;
+
+#[cfg(feature = "nats")]
+mod nats_connect;
+
+#[cfg(feature = "nats")]
+pub mod nats_mailbox;
+
+#[cfg(feature = "nats")]
+pub mod nats_buffered_thread;
+
 pub use memory::InMemoryStore;
 pub use memory_mailbox::InMemoryMailboxStore;
 
@@ -31,3 +43,11 @@ pub use postgres::PostgresStore;
 
 #[cfg(feature = "sqlite")]
 pub use sqlite_mailbox::SqliteMailboxStore;
+
+#[cfg(feature = "nats")]
+pub use nats_mailbox::{NatsMailboxConfig, NatsMailboxStore};
+
+#[cfg(feature = "nats")]
+pub use nats_buffered_thread::{
+    NatsBufferedThreadConfig, NatsBufferedThreadStore, ReadConsistency,
+};

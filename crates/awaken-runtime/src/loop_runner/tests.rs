@@ -998,6 +998,7 @@ async fn resumed_calls_do_not_serialize_neighboring_fresh_batches() {
         total_output_tokens: &mut total_output_tokens,
         truncation_state: &mut truncation_state,
         run_created_at: 0,
+        thread_ctx: None,
     };
     let calls = vec![
         awaken_contract::contract::message::ToolCall::new("c1", "alpha", serde_json::json!({})),
@@ -1217,6 +1218,7 @@ async fn tool_gate_recheck_executes_before_tool_hook_once() {
         total_output_tokens: &mut total_output_tokens,
         truncation_state: &mut truncation_state,
         run_created_at: 0,
+        thread_ctx: None,
     };
     let calls = vec![
         awaken_contract::contract::message::ToolCall::new("c1", "unlock", serde_json::json!({})),
@@ -1294,6 +1296,7 @@ async fn tool_gate_flush_suspension_backfills_rechecked_and_later_calls() {
         total_output_tokens: &mut total_output_tokens,
         truncation_state: &mut truncation_state,
         run_created_at: 0,
+        thread_ctx: None,
     };
     let calls = vec![
         awaken_contract::contract::message::ToolCall::new("c1", "unlock", serde_json::json!({})),

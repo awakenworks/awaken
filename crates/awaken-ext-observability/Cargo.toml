@@ -20,6 +20,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true }
 parking_lot = { workspace = true }
+metrics = "0.24"
 
 # Optional OTel
 opentelemetry = { version = "0.28", optional = true }
@@ -32,6 +33,7 @@ futures = { workspace = true }
 futures-util = "0.3"
 tracing-core = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "registry"] }
+metrics-exporter-prometheus = "0.16"
 
 [features]
 default = []

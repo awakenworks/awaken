@@ -54,7 +54,8 @@ pub use contract::progress::{
 
 // ── mailbox ──
 pub use contract::mailbox::{
-    MailboxInterrupt, MailboxStore, RunDispatch, RunDispatchResult, RunDispatchStatus,
+    MailboxInterrupt, MailboxInterruptDetails, MailboxStore, RunDispatch, RunDispatchResult,
+    RunDispatchStatus,
 };
 pub use contract::storage::RunRequestOrigin;
 

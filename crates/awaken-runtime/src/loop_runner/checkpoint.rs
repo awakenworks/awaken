@@ -32,6 +32,7 @@ pub(super) struct StepCompletion<'a> {
     pub(super) run_created_at: u64,
     pub(super) total_input_tokens: u64,
     pub(super) total_output_tokens: u64,
+    pub(super) thread_ctx: Option<&'a crate::ThreadContextSnapshot>,
 }
 
 pub(super) struct CheckpointPersist<'a> {
@@ -46,6 +47,7 @@ pub(super) struct CheckpointPersist<'a> {
     pub(super) termination_reason: Option<TerminationReason>,
     pub(super) final_output: Option<String>,
     pub(super) error_payload: Option<Value>,
+    pub(super) thread_ctx: Option<&'a crate::ThreadContextSnapshot>,
 }
 
 pub(super) async fn complete_step(params: StepCompletion<'_>) -> Result<(), AgentLoopError> {
@@ -61,6 +63,7 @@ pub(super) async fn complete_step(params: StepCompletion<'_>) -> Result<(), Agen
         run_created_at,
         total_input_tokens,
         total_output_tokens,
+        thread_ctx,
     } = params;
 
     commit_update::<RunLifecycle>(
@@ -86,6 +89,7 @@ pub(super) async fn complete_step(params: StepCompletion<'_>) -> Result<(), Agen
         termination_reason: None,
         final_output: None,
         error_payload: None,
+        thread_ctx,
     })
     .await?;
 
@@ -110,6 +114,7 @@ pub(super) async fn persist_checkpoint(
         termination_reason,
         final_output,
         error_payload,
+        thread_ctx,
     } = params;
     let Some(storage) = checkpoint_store else {
         return Ok(());
@@ -119,10 +124,14 @@ pub(super) async fn persist_checkpoint(
     let state = store
         .export_persisted()
         .map_err(AgentLoopError::PhaseError)?;
-    let previous = storage
-        .load_run(&run_identity.run_id)
-        .await
-        .map_err(|e| AgentLoopError::StorageError(e.to_string()))?;
+    let previous = if let Some(ctx) = thread_ctx {
+        ctx.run_cache.get(&run_identity.run_id).cloned()
+    } else {
+        storage
+            .load_run(&run_identity.run_id)
+            .await
+            .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
+    };
     let created_at = previous
         .as_ref()
         .map(|record| record.created_at)
@@ -224,23 +233,41 @@ fn materialize_message_log(
         .unwrap_or(input_message_count as u64 + 1);
 
     let step_index = step_count.checked_sub(1);
-    let mut output_message_ids = Vec::new();
-    let mut output_from_seq = None;
-    let mut output_to_seq = None;
+    let mut output_message_ids = previous
+        .and_then(|record| record.output.as_ref())
+        .map(|output| output.message_ids.clone())
+        .unwrap_or_default();
+    let mut output_from_seq = previous
+        .and_then(|record| record.output.as_ref())
+        .and_then(|output| output.range)
+        .map(|range| range.from_seq);
+    let mut output_to_seq = previous
+        .and_then(|record| record.output.as_ref())
+        .and_then(|output| output.range)
+        .map(|range| range.to_seq);
+    let mut has_new_output = false;
     for (index, message) in msgs.iter_mut().enumerate() {
         let seq = index as u64 + 1;
-        if seq < output_start_seq || !is_run_output_message(message) {
+        let existing_output = message.produced_by_run_id() == Some(run_identity.run_id.as_str());
+        let new_output = seq >= output_start_seq && is_run_output_message(message);
+        if !existing_output && !new_output {
             continue;
         }
-        message.mark_produced_by(&run_identity.run_id, step_index);
-        output_from_seq.get_or_insert(seq);
-        output_to_seq = Some(seq);
-        if let Some(id) = message.id.clone() {
+        if new_output {
+            message.mark_produced_by(&run_identity.run_id, step_index);
+            has_new_output = true;
+        }
+        output_from_seq = Some(output_from_seq.map_or(seq, |from| from.min(seq)));
+        output_to_seq = Some(output_to_seq.map_or(seq, |to| to.max(seq)));
+        if let Some(id) = message.id.clone()
+            && !output_message_ids.iter().any(|existing| existing == &id)
+        {
             output_message_ids.push(id);
         }
     }
 
-    let output = if output_from_seq.is_none() {
+    let output = if output_from_seq.is_none() || (!has_new_output && output_message_ids.is_empty())
+    {
         previous.and_then(|record| record.output.clone())
     } else {
         Some(RunMessageOutput {
@@ -488,5 +515,80 @@ mod tests {
         assert_eq!(waiting.ticket_ids, vec!["call-without-ticket"]);
         assert_eq!(waiting.tickets[0].ticket_id, "call-without-ticket");
         assert_eq!(waiting.tickets[0].tool_call_id, "call-without-ticket");
+    }
+
+    #[test]
+    fn materialize_message_log_preserves_output_across_same_run_resume() {
+        let mut old_output = Message::assistant("before wait");
+        old_output.id = Some("m-old-output".into());
+        old_output.metadata = Some(awaken_contract::contract::message::MessageMetadata {
+            run_id: Some("run-1".into()),
+            step_index: Some(0),
+        });
+        let mut new_output = Message::assistant("after resume");
+        new_output.id = Some("m-new-output".into());
+
+        let messages = vec![
+            Arc::new(Message::user("first input")),
+            Arc::new(old_output),
+            Arc::new(Message::user("resume input")),
+            Arc::new(new_output),
+        ];
+        let previous = RunRecord {
+            run_id: "run-1".into(),
+            thread_id: "thread-1".into(),
+            agent_id: "agent".into(),
+            parent_run_id: None,
+            request: None,
+            input: Some(RunMessageInput {
+                thread_id: "thread-1".into(),
+                range: MessageSeqRange::new(1, 3),
+                trigger_message_ids: vec!["resume input".into()],
+                selected_message_ids: Vec::new(),
+                context_policy: None,
+                compacted_snapshot_id: None,
+            }),
+            output: Some(RunMessageOutput {
+                thread_id: "thread-1".into(),
+                range: MessageSeqRange::new(2, 2),
+                message_ids: vec!["m-old-output".into()],
+            }),
+            status: RunStatus::Waiting,
+            termination_reason: None,
+            final_output: None,
+            error_payload: None,
+            dispatch_id: None,
+            session_id: None,
+            transport_request_id: None,
+            waiting: None,
+            outcome: None,
+            created_at: 1,
+            started_at: None,
+            finished_at: None,
+            updated_at: 1,
+            steps: 1,
+            input_tokens: 0,
+            output_tokens: 0,
+            state: None,
+        };
+        let identity = RunIdentity::new(
+            "thread-1".into(),
+            None,
+            "run-1".into(),
+            None,
+            "agent".into(),
+            awaken_contract::contract::identity::RunOrigin::User,
+        );
+
+        let (msgs, _, output) =
+            materialize_message_log(&messages, Some(&previous), &identity, 2, 0);
+
+        let output = output.expect("output should be preserved and extended");
+        assert_eq!(
+            output.message_ids,
+            vec!["m-old-output".to_string(), "m-new-output".to_string()]
+        );
+        assert_eq!(output.range, MessageSeqRange::new(2, 4));
+        assert_eq!(msgs[3].produced_by_run_id(), Some("run-1"));
     }
 }

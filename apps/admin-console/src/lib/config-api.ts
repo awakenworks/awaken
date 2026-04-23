@@ -1,6 +1,8 @@
 export const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ?? "http://127.0.0.1:38080";
 
+export const ADMIN_TOKEN_STORAGE_KEY = "awaken.adminToken";
+
 export interface AgentSpec {
   id: string;
   model_id: string;
@@ -154,7 +156,7 @@ async function readResponseBody(response: Response): Promise<unknown> {
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
+  const response = await fetch(url, withAdminAuth(init));
   const detail = await readResponseBody(response);
 
   if (!response.ok) {
@@ -166,6 +168,35 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   }
 
   return detail as T;
+}
+
+function adminBearerToken(): string | undefined {
+  const envToken = import.meta.env.VITE_ADMIN_BEARER_TOKEN;
+  if (typeof envToken === "string" && envToken.trim().length > 0) {
+    return envToken.trim();
+  }
+
+  if (typeof globalThis.localStorage === "undefined") {
+    return undefined;
+  }
+  const stored = globalThis.localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY);
+  return stored?.trim() || undefined;
+}
+
+function withAdminAuth(init?: RequestInit): RequestInit | undefined {
+  const token = adminBearerToken();
+  if (!token) {
+    return init;
+  }
+
+  const headers = new Headers(init?.headers);
+  if (!headers.has("authorization")) {
+    headers.set("authorization", `Bearer ${token}`);
+  }
+  return {
+    ...init,
+    headers,
+  };
 }
 
 function normalizeCapabilities(capabilities: Capabilities): Capabilities {

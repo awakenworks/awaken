@@ -11,7 +11,9 @@ use opentelemetry::trace::{SpanKind, Status, Tracer};
 use opentelemetry::{KeyValue, trace::TraceContextExt};
 use opentelemetry_sdk::trace::SdkTracer;
 
-use crate::metrics::{AgentMetrics, GenAISpan, MetricsEvent, ToolSpan};
+use crate::metrics::{
+    AgentMetrics, DelegationSpan, GenAISpan, HandoffSpan, MetricsEvent, SuspensionSpan, ToolSpan,
+};
 use crate::otel_config::OtelConfig;
 use crate::sink::MetricsSink;
 
@@ -251,6 +253,83 @@ impl OtelMetricsSink {
 
         cx.span().end_with_timestamp(end_time);
     }
+
+    fn record_suspension(&self, span: &SuspensionSpan) {
+        let mut attrs = vec![
+            KeyValue::new("awaken.suspension.action", span.action.clone()),
+            KeyValue::new("gen_ai.tool.call.id", span.tool_call_id.clone()),
+            KeyValue::new("gen_ai.tool.name", span.tool_name.clone()),
+        ];
+        Self::push_context_attributes(&mut attrs, &span.context);
+        if let Some(resume_mode) = &span.resume_mode {
+            attrs.push(KeyValue::new(
+                "awaken.suspension.resume_mode",
+                resume_mode.clone(),
+            ));
+        }
+        if let Some(duration_ms) = span.duration_ms {
+            attrs.push(KeyValue::new(
+                "awaken.suspension.duration",
+                duration_ms as f64 / 1000.0,
+            ));
+        }
+        self.record_internal_span("awaken.suspension", attrs);
+    }
+
+    fn record_handoff(&self, span: &HandoffSpan) {
+        let mut attrs = vec![
+            KeyValue::new("awaken.handoff.from_agent_id", span.from_agent_id.clone()),
+            KeyValue::new("awaken.handoff.to_agent_id", span.to_agent_id.clone()),
+        ];
+        Self::push_context_attributes(&mut attrs, &span.context);
+        if let Some(reason) = &span.reason {
+            attrs.push(KeyValue::new("awaken.handoff.reason", reason.clone()));
+        }
+        self.record_internal_span("awaken.handoff", attrs);
+    }
+
+    fn record_delegation(&self, span: &DelegationSpan) {
+        let mut attrs = vec![
+            KeyValue::new(
+                "awaken.delegation.parent_run_id",
+                span.parent_run_id.clone(),
+            ),
+            KeyValue::new(
+                "awaken.delegation.target_agent_id",
+                span.target_agent_id.clone(),
+            ),
+            KeyValue::new("gen_ai.tool.call.id", span.tool_call_id.clone()),
+            KeyValue::new("awaken.delegation.success", span.success),
+        ];
+        Self::push_context_attributes(&mut attrs, &span.context);
+        if let Some(child_run_id) = &span.child_run_id {
+            attrs.push(KeyValue::new(
+                "awaken.delegation.child_run_id",
+                child_run_id.clone(),
+            ));
+        }
+        if let Some(duration_ms) = span.duration_ms {
+            attrs.push(KeyValue::new(
+                "awaken.delegation.duration",
+                duration_ms as f64 / 1000.0,
+            ));
+        }
+        if let Some(error_message) = &span.error_message {
+            attrs.push(KeyValue::new("error.message", error_message.clone()));
+        }
+        self.record_internal_span("awaken.delegation", attrs);
+    }
+
+    fn record_internal_span(&self, name: &'static str, attrs: Vec<KeyValue>) {
+        let root_cx = self.ensure_root_context();
+        let span = self
+            .tracer
+            .span_builder(name)
+            .with_kind(SpanKind::Internal)
+            .with_attributes(attrs)
+            .start_with_context(&self.tracer, &root_cx);
+        root_cx.with_span(span).span().end();
+    }
 }
 
 /// Initialise an OTLP HTTP tracer from the given configuration.
@@ -303,7 +382,9 @@ impl MetricsSink for OtelMetricsSink {
         match event {
             MetricsEvent::Inference(span) => self.record_inference(span),
             MetricsEvent::Tool(span) => self.record_tool(span),
-            _ => {} // suspension/handoff/delegation: no OTel mapping yet
+            MetricsEvent::Suspension(span) => self.record_suspension(span),
+            MetricsEvent::Handoff(span) => self.record_handoff(span),
+            MetricsEvent::Delegation(span) => self.record_delegation(span),
         }
     }
 

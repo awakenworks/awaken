@@ -1,12 +1,37 @@
 //! RunRequest — unified request for starting or resuming a run.
 
+use std::collections::HashMap;
+
 use crate::inbox::{InboxReceiver, InboxSender};
 use awaken_contract::contract::inference::InferenceOverride;
 use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::RunRequestOrigin;
+use awaken_contract::contract::storage::{RunRecord, RunRequestOrigin};
 use awaken_contract::contract::suspension::ToolCallResume;
 use awaken_contract::contract::tool::ToolDescriptor;
 use awaken_contract::contract::tool_intercept::{AdapterKind, RunMode};
+
+/// Read-only snapshot of cached thread state, passed from mailbox to runtime.
+#[non_exhaustive]
+pub struct ThreadContextSnapshot {
+    pub messages: Vec<Message>,
+    pub latest_run: Option<RunRecord>,
+    pub run_cache: HashMap<String, RunRecord>,
+}
+
+impl ThreadContextSnapshot {
+    #[must_use]
+    pub fn new(
+        messages: Vec<Message>,
+        latest_run: Option<RunRecord>,
+        run_cache: HashMap<String, RunRecord>,
+    ) -> Self {
+        Self {
+            messages,
+            latest_run,
+            run_cache,
+        }
+    }
+}
 
 /// In-process inbox pair owned by a single run.
 pub struct RunInbox {

@@ -1,14 +1,17 @@
 //! In-memory implementation of the new lease-based `MailboxStore`.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::mailbox::{
-    MailboxInterrupt, MailboxStore, RunDispatch, RunDispatchResult, RunDispatchStatus,
+    LiveCommandReceipt, LiveDeliveryOutcome, LiveRunCommand, LiveRunCommandEntry,
+    LiveRunCommandStream, LiveRunTarget, MailboxInterrupt, MailboxInterruptDetails, MailboxStore,
+    RunDispatch, RunDispatchResult, RunDispatchStatus,
 };
 use awaken_contract::contract::storage::StorageError;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, mpsc, oneshot};
 use uuid::Uuid;
 
 /// Per-thread dispatch epoch for interrupt semantics.
@@ -24,12 +27,119 @@ struct MailboxState {
 pub struct InMemoryMailboxStore {
     dispatches: RwLock<HashMap<String, RunDispatch>>,
     state: RwLock<HashMap<String, MailboxState>>,
+    /// Single-consumer live-channel: one forwarder per thread at a time.
+    /// Re-opening replaces the previous sender so the stale forwarder sees
+    /// the channel close.
+    live: RwLock<HashMap<String, mpsc::UnboundedSender<LiveRunCommandEntry>>>,
+}
+
+/// How long a producer waits for the consumer to ack an in-memory live
+/// command before falling back to durable dispatch. Short by design — the
+/// in-process forwarder only needs to execute a `try_send` to ack.
+const LIVE_ACK_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Oneshot-backed receipt: `ack` sends `()` on the paired receiver, which
+/// unblocks the producer's `deliver_live` await.
+struct OneshotReceipt(oneshot::Sender<()>);
+
+impl LiveCommandReceipt for OneshotReceipt {
+    fn ack(self: Box<Self>) {
+        let _ = self.0.send(());
+    }
 }
 
 impl InMemoryMailboxStore {
     /// Create a new empty in-memory mailbox store.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn current_epoch_from_state(state: &HashMap<String, MailboxState>, thread_id: &str) -> u64 {
+        state
+            .get(thread_id)
+            .map(|state| state.current_dispatch_epoch)
+            .unwrap_or(0)
+    }
+
+    fn mark_superseded(dispatch: &mut RunDispatch, now: u64, reason: Option<&str>) {
+        dispatch.status = RunDispatchStatus::Superseded;
+        dispatch.completed_at = Some(now);
+        dispatch.updated_at = now;
+        if let Some(reason) = reason {
+            dispatch.last_error = Some(reason.to_string());
+        }
+        dispatch.claim_token = None;
+        dispatch.claimed_by = None;
+        dispatch.lease_until = None;
+    }
+
+    fn clear_claim_fields(dispatch: &mut RunDispatch) {
+        dispatch.claim_token = None;
+        dispatch.claimed_by = None;
+        dispatch.lease_until = None;
+    }
+
+    fn live_key_for_thread(thread_id: &str) -> String {
+        format!("thread:{thread_id}")
+    }
+
+    fn live_key_for_target(target: &LiveRunTarget) -> String {
+        match target.dispatch_id.as_deref() {
+            Some(dispatch_id) => format!(
+                "thread:{}:run:{}:dispatch:{}",
+                target.thread_id, target.run_id, dispatch_id
+            ),
+            None => format!("thread:{}:run:{}", target.thread_id, target.run_id),
+        }
+    }
+
+    async fn deliver_live_key(
+        &self,
+        key: String,
+        cmd: LiveRunCommand,
+    ) -> Result<LiveDeliveryOutcome, StorageError> {
+        // Snapshot the sender without holding the map lock across await.
+        let sender = {
+            let map = self.live.read().await;
+            match map.get(&key) {
+                Some(sender) => sender.clone(),
+                None => return Ok(LiveDeliveryOutcome::NoSubscriber),
+            }
+        };
+        let (ack_tx, ack_rx) = oneshot::channel();
+        let receipt: Box<dyn LiveCommandReceipt> = Box::new(OneshotReceipt(ack_tx));
+        if sender
+            .send(LiveRunCommandEntry {
+                command: cmd,
+                receipt,
+            })
+            .is_err()
+        {
+            // Receiver dropped — forwarder is gone.
+            let mut map = self.live.write().await;
+            if let Some(current) = map.get(&key)
+                && current.is_closed()
+            {
+                map.remove(&key);
+            }
+            return Ok(LiveDeliveryOutcome::NoSubscriber);
+        }
+        // Wait for the consumer to ack (i.e. to successfully hand the
+        // command off to the run). Timeout maps to `NoSubscriber` so the
+        // caller falls back to the durable queue.
+        match tokio::time::timeout(LIVE_ACK_TIMEOUT, ack_rx).await {
+            Ok(Ok(())) => Ok(LiveDeliveryOutcome::Delivered),
+            _ => Ok(LiveDeliveryOutcome::NoSubscriber),
+        }
+    }
+
+    async fn open_live_key(&self, key: String) -> Result<LiveRunCommandStream, StorageError> {
+        let (tx, rx) = mpsc::unbounded_channel::<LiveRunCommandEntry>();
+        self.live.write().await.insert(key, tx);
+        let stream = futures::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|entry| (entry, rx))
+        });
+        Ok(Box::pin(stream))
     }
 }
 
@@ -81,6 +191,24 @@ impl MailboxStore for InMemoryMailboxStore {
         limit: usize,
     ) -> Result<Vec<RunDispatch>, StorageError> {
         let mut dispatches = self.dispatches.write().await;
+        let current_epoch = {
+            let state = self.state.read().await;
+            Self::current_epoch_from_state(&state, thread_id)
+        };
+
+        for dispatch in dispatches.values_mut() {
+            if dispatch.thread_id == thread_id
+                && dispatch.status == RunDispatchStatus::Queued
+                && dispatch.dispatch_epoch < current_epoch
+            {
+                dispatch.dispatch_epoch = current_epoch;
+                Self::mark_superseded(
+                    dispatch,
+                    now,
+                    Some("queued dispatch superseded by newer dispatch epoch"),
+                );
+            }
+        }
 
         // Same thread must not have two Claimed dispatches concurrently.
         let has_claimed = dispatches
@@ -144,6 +272,21 @@ impl MailboxStore for InMemoryMailboxStore {
             Some(j) if j.status == RunDispatchStatus::Queued => j.thread_id.clone(),
             _ => return Ok(None),
         };
+        let current_epoch = {
+            let state = self.state.read().await;
+            Self::current_epoch_from_state(&state, &thread_id)
+        };
+        if let Some(dispatch) = dispatches.get_mut(dispatch_id)
+            && dispatch.dispatch_epoch < current_epoch
+        {
+            dispatch.dispatch_epoch = current_epoch;
+            Self::mark_superseded(
+                dispatch,
+                now,
+                Some("queued dispatch superseded by newer dispatch epoch"),
+            );
+            return Ok(None);
+        }
         let has_other_claimed = dispatches.values().any(|j| {
             j.thread_id == thread_id
                 && j.dispatch_id != dispatch_id
@@ -186,9 +329,28 @@ impl MailboxStore for InMemoryMailboxStore {
                 actual: 1,
             });
         }
+        let current_epoch = {
+            let state = self.state.read().await;
+            Self::current_epoch_from_state(&state, &dispatch.thread_id)
+        };
+        if dispatch.dispatch_epoch < current_epoch {
+            let stale_epoch = dispatch.dispatch_epoch;
+            dispatch.dispatch_epoch = current_epoch;
+            Self::mark_superseded(
+                dispatch,
+                now,
+                Some("claimed dispatch superseded by newer dispatch epoch"),
+            );
+            return Err(StorageError::VersionConflict {
+                expected: stale_epoch,
+                actual: current_epoch,
+            });
+        }
 
         dispatch.status = RunDispatchStatus::Acked;
+        dispatch.completed_at = Some(now);
         dispatch.updated_at = now;
+        Self::clear_claim_fields(dispatch);
         Ok(())
     }
 
@@ -211,6 +373,23 @@ impl MailboxStore for InMemoryMailboxStore {
             return Err(StorageError::VersionConflict {
                 expected: 0,
                 actual: 1,
+            });
+        }
+        let current_epoch = {
+            let state = self.state.read().await;
+            Self::current_epoch_from_state(&state, &dispatch.thread_id)
+        };
+        if dispatch.dispatch_epoch < current_epoch {
+            let stale_epoch = dispatch.dispatch_epoch;
+            dispatch.dispatch_epoch = current_epoch;
+            Self::mark_superseded(
+                dispatch,
+                now,
+                Some("claimed dispatch superseded before runtime start"),
+            );
+            return Err(StorageError::VersionConflict {
+                expected: stale_epoch,
+                actual: current_epoch,
             });
         }
 
@@ -245,6 +424,23 @@ impl MailboxStore for InMemoryMailboxStore {
                 actual: 1,
             });
         }
+        let current_epoch = {
+            let state = self.state.read().await;
+            Self::current_epoch_from_state(&state, &dispatch.thread_id)
+        };
+        if dispatch.dispatch_epoch < current_epoch {
+            let stale_epoch = dispatch.dispatch_epoch;
+            dispatch.dispatch_epoch = current_epoch;
+            Self::mark_superseded(
+                dispatch,
+                now,
+                Some("claimed dispatch superseded before run result"),
+            );
+            return Err(StorageError::VersionConflict {
+                expected: stale_epoch,
+                actual: current_epoch,
+            });
+        }
 
         dispatch.dispatch_instance_id = Some(result.dispatch_instance_id.clone());
         dispatch.run_status = Some(result.status);
@@ -276,19 +472,35 @@ impl MailboxStore for InMemoryMailboxStore {
                 actual: 1,
             });
         }
+        let current_epoch = {
+            let state = self.state.read().await;
+            Self::current_epoch_from_state(&state, &dispatch.thread_id)
+        };
+        if dispatch.dispatch_epoch < current_epoch {
+            let stale_epoch = dispatch.dispatch_epoch;
+            dispatch.dispatch_epoch = current_epoch;
+            Self::mark_superseded(
+                dispatch,
+                now,
+                Some("claimed dispatch superseded before nack"),
+            );
+            return Err(StorageError::VersionConflict {
+                expected: stale_epoch,
+                actual: current_epoch,
+            });
+        }
 
         dispatch.attempt_count += 1;
         dispatch.last_error = Some(error.to_string());
         dispatch.updated_at = now;
+        Self::clear_claim_fields(dispatch);
 
         if dispatch.attempt_count >= dispatch.max_attempts {
             dispatch.status = RunDispatchStatus::DeadLetter;
+            dispatch.completed_at = Some(now);
         } else {
             dispatch.status = RunDispatchStatus::Queued;
             dispatch.available_at = retry_at;
-            dispatch.claim_token = None;
-            dispatch.claimed_by = None;
-            dispatch.lease_until = None;
         }
 
         Ok(())
@@ -313,10 +525,29 @@ impl MailboxStore for InMemoryMailboxStore {
                 actual: 1,
             });
         }
+        let current_epoch = {
+            let state = self.state.read().await;
+            Self::current_epoch_from_state(&state, &dispatch.thread_id)
+        };
+        if dispatch.dispatch_epoch < current_epoch {
+            let stale_epoch = dispatch.dispatch_epoch;
+            dispatch.dispatch_epoch = current_epoch;
+            Self::mark_superseded(
+                dispatch,
+                now,
+                Some("claimed dispatch superseded before dead letter"),
+            );
+            return Err(StorageError::VersionConflict {
+                expected: stale_epoch,
+                actual: current_epoch,
+            });
+        }
 
         dispatch.status = RunDispatchStatus::DeadLetter;
         dispatch.last_error = Some(error.to_string());
+        dispatch.completed_at = Some(now);
         dispatch.updated_at = now;
+        Self::clear_claim_fields(dispatch);
         Ok(())
     }
 
@@ -333,7 +564,9 @@ impl MailboxStore for InMemoryMailboxStore {
         };
 
         dispatch.status = RunDispatchStatus::Cancelled;
+        dispatch.completed_at = Some(now);
         dispatch.updated_at = now;
+        Self::clear_claim_fields(dispatch);
         Ok(Some(dispatch.clone()))
     }
 
@@ -355,6 +588,19 @@ impl MailboxStore for InMemoryMailboxStore {
             }
             _ => return Ok(false),
         };
+        let current_epoch = {
+            let state = self.state.read().await;
+            Self::current_epoch_from_state(&state, &dispatch.thread_id)
+        };
+        if dispatch.dispatch_epoch < current_epoch {
+            dispatch.dispatch_epoch = current_epoch;
+            Self::mark_superseded(
+                dispatch,
+                now,
+                Some("claimed dispatch superseded during lease renewal"),
+            );
+            return Ok(false);
+        }
 
         dispatch.lease_until = Some(now + extension_ms);
         dispatch.updated_at = now;
@@ -362,6 +608,16 @@ impl MailboxStore for InMemoryMailboxStore {
     }
 
     async fn interrupt(&self, thread_id: &str, now: u64) -> Result<MailboxInterrupt, StorageError> {
+        self.interrupt_detailed(thread_id, now)
+            .await
+            .map(Into::into)
+    }
+
+    async fn interrupt_detailed(
+        &self,
+        thread_id: &str,
+        now: u64,
+    ) -> Result<MailboxInterruptDetails, StorageError> {
         let mut dispatches = self.dispatches.write().await;
         let mut state = self.state.write().await;
 
@@ -374,6 +630,7 @@ impl MailboxStore for InMemoryMailboxStore {
         let new_dispatch_epoch = ms.current_dispatch_epoch;
 
         let mut superseded_count = 0;
+        let mut superseded_dispatches = Vec::new();
         let mut active_dispatch = None;
 
         for dispatch in dispatches.values_mut() {
@@ -382,9 +639,13 @@ impl MailboxStore for InMemoryMailboxStore {
             }
             match dispatch.status {
                 RunDispatchStatus::Queued if dispatch.dispatch_epoch <= old_dispatch_epoch => {
-                    dispatch.status = RunDispatchStatus::Superseded;
-                    dispatch.updated_at = now;
+                    Self::mark_superseded(
+                        dispatch,
+                        now,
+                        Some("queued dispatch superseded by interrupt"),
+                    );
                     superseded_count += 1;
+                    superseded_dispatches.push(dispatch.clone());
                 }
                 RunDispatchStatus::Claimed => {
                     active_dispatch = Some(dispatch.clone());
@@ -393,11 +654,46 @@ impl MailboxStore for InMemoryMailboxStore {
             }
         }
 
-        Ok(MailboxInterrupt {
+        Ok(MailboxInterruptDetails {
             new_dispatch_epoch,
             active_dispatch,
             superseded_count,
+            superseded_dispatches,
         })
+    }
+
+    async fn current_dispatch_epoch(&self, thread_id: &str) -> Result<u64, StorageError> {
+        let state = self.state.read().await;
+        Ok(Self::current_epoch_from_state(&state, thread_id))
+    }
+
+    async fn supersede_claimed(
+        &self,
+        dispatch_id: &str,
+        claim_token: &str,
+        now: u64,
+        reason: &str,
+    ) -> Result<Option<RunDispatch>, StorageError> {
+        let mut dispatches = self.dispatches.write().await;
+        let Some(dispatch) = dispatches.get_mut(dispatch_id) else {
+            return Ok(None);
+        };
+        if dispatch.status != RunDispatchStatus::Claimed {
+            return Ok(None);
+        }
+        if dispatch.claim_token.as_deref() != Some(claim_token) {
+            return Err(StorageError::VersionConflict {
+                expected: 0,
+                actual: 1,
+            });
+        }
+        let current_epoch = {
+            let state = self.state.read().await;
+            Self::current_epoch_from_state(&state, &dispatch.thread_id)
+        };
+        dispatch.dispatch_epoch = dispatch.dispatch_epoch.max(current_epoch);
+        Self::mark_superseded(dispatch, now, Some(reason));
+        Ok(Some(dispatch.clone()))
     }
 
     async fn load_dispatch(&self, dispatch_id: &str) -> Result<Option<RunDispatch>, StorageError> {
@@ -438,12 +734,44 @@ impl MailboxStore for InMemoryMailboxStore {
             .collect())
     }
 
+    async fn count_dispatches_by_status(
+        &self,
+        status: RunDispatchStatus,
+    ) -> Result<usize, StorageError> {
+        let dispatches = self.dispatches.read().await;
+        Ok(dispatches
+            .values()
+            .filter(|dispatch| dispatch.status == status)
+            .count())
+    }
+
+    async fn list_terminal_dispatches(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<RunDispatch>, StorageError> {
+        let dispatches = self.dispatches.read().await;
+        let mut terminal = dispatches
+            .values()
+            .filter(|dispatch| dispatch.status.is_terminal())
+            .cloned()
+            .collect::<Vec<_>>();
+        terminal.sort_by(|a, b| {
+            a.updated_at
+                .cmp(&b.updated_at)
+                .then(a.created_at.cmp(&b.created_at))
+                .then(a.dispatch_id.cmp(&b.dispatch_id))
+        });
+        Ok(terminal.into_iter().skip(offset).take(limit).collect())
+    }
+
     async fn reclaim_expired_leases(
         &self,
         now: u64,
         limit: usize,
     ) -> Result<Vec<RunDispatch>, StorageError> {
         let mut dispatches = self.dispatches.write().await;
+        let state = self.state.read().await;
 
         let expired_ids: Vec<String> = dispatches
             .values()
@@ -460,17 +788,26 @@ impl MailboxStore for InMemoryMailboxStore {
             let dispatch = dispatches
                 .get_mut(&id)
                 .ok_or_else(|| StorageError::NotFound(id.clone()))?;
+            let current_epoch = Self::current_epoch_from_state(&state, &dispatch.thread_id);
+            if dispatch.dispatch_epoch < current_epoch {
+                dispatch.dispatch_epoch = current_epoch;
+                Self::mark_superseded(
+                    dispatch,
+                    now,
+                    Some("claimed dispatch lease expired after interrupt"),
+                );
+                continue;
+            }
             dispatch.attempt_count += 1;
             dispatch.updated_at = now;
 
             if dispatch.attempt_count >= dispatch.max_attempts {
                 dispatch.status = RunDispatchStatus::DeadLetter;
+                dispatch.completed_at = Some(now);
             } else {
                 dispatch.status = RunDispatchStatus::Queued;
-                dispatch.claim_token = None;
-                dispatch.claimed_by = None;
-                dispatch.lease_until = None;
             }
+            Self::clear_claim_fields(dispatch);
             reclaimed.push(dispatch.clone());
         }
 
@@ -495,6 +832,44 @@ impl MailboxStore for InMemoryMailboxStore {
             .collect();
         ids.sort();
         Ok(ids)
+    }
+
+    async fn deliver_live(
+        &self,
+        thread_id: &str,
+        cmd: LiveRunCommand,
+    ) -> Result<LiveDeliveryOutcome, StorageError> {
+        self.deliver_live_key(Self::live_key_for_thread(thread_id), cmd)
+            .await
+    }
+
+    async fn deliver_live_to(
+        &self,
+        target: &LiveRunTarget,
+        cmd: LiveRunCommand,
+    ) -> Result<LiveDeliveryOutcome, StorageError> {
+        self.deliver_live_key(Self::live_key_for_target(target), cmd)
+            .await
+    }
+
+    async fn open_live_channel(
+        &self,
+        thread_id: &str,
+    ) -> Result<LiveRunCommandStream, StorageError> {
+        // Single-consumer: a fresh `open_live_channel` replaces any prior
+        // forwarder. In production there's one forwarder per thread at a
+        // time (enforced by `ActiveRunRegistry`); tests that drive multiple
+        // subscribers should be written against `NatsMailboxStore` or an
+        // intentional fanout backend.
+        self.open_live_key(Self::live_key_for_thread(thread_id))
+            .await
+    }
+
+    async fn open_live_channel_for(
+        &self,
+        target: &LiveRunTarget,
+    ) -> Result<LiveRunCommandStream, StorageError> {
+        self.open_live_key(Self::live_key_for_target(target)).await
     }
 }
 
@@ -597,6 +972,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn claim_honors_batch_limit_without_active_claim() {
+        let store = InMemoryMailboxStore::new();
+        for _ in 0..3 {
+            store
+                .enqueue(&make_dispatch("m-1", "agent-1"))
+                .await
+                .unwrap();
+        }
+
+        let claimed = store
+            .claim("m-1", "consumer-1", 30_000, 1000, 2)
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 2);
+        assert!(
+            claimed
+                .iter()
+                .all(|dispatch| dispatch.status == RunDispatchStatus::Claimed)
+        );
+    }
+
+    #[tokio::test]
     async fn claim_priority_ordering() {
         let store = InMemoryMailboxStore::new();
 
@@ -616,13 +1013,35 @@ mod tests {
         store.enqueue(&mid).await.unwrap();
 
         let claimed = store
-            .claim("m-1", "consumer-1", 30_000, 1000, 10)
+            .claim("m-1", "consumer-1", 30_000, 1000, 1)
             .await
             .unwrap();
-        assert_eq!(claimed.len(), 3);
+        assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].priority, 10);
-        assert_eq!(claimed[1].priority, 128);
-        assert_eq!(claimed[2].priority, 200);
+        let token = claimed[0].claim_token.clone().unwrap();
+        store
+            .ack(&claimed[0].dispatch_id, &token, 1100)
+            .await
+            .unwrap();
+
+        let claimed = store
+            .claim("m-1", "consumer-1", 30_000, 1200, 1)
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].priority, 128);
+        let token = claimed[0].claim_token.clone().unwrap();
+        store
+            .ack(&claimed[0].dispatch_id, &token, 1300)
+            .await
+            .unwrap();
+
+        let claimed = store
+            .claim("m-1", "consumer-1", 30_000, 1400, 1)
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].priority, 200);
     }
 
     #[tokio::test]
@@ -1362,6 +1781,201 @@ mod tests {
         // Should be claimable again.
         let reclaimed = store.claim("m-1", "c-1", 30_000, 2000, 1).await.unwrap();
         assert_eq!(reclaimed.len(), 1);
+    }
+
+    // ── Live-channel tests ──
+
+    mod live_channel {
+        use super::*;
+        use awaken_contract::contract::mailbox::{LiveDeliveryOutcome, LiveRunCommand};
+        use awaken_contract::contract::message::Message;
+        use futures::StreamExt;
+        use std::time::Duration;
+        use tokio::time::timeout;
+
+        /// Spawn a consumer task that drains the stream and auto-acks each
+        /// entry, capturing the commands for assertions.
+        fn spawn_auto_ack_consumer(
+            mut stream: LiveRunCommandStream,
+        ) -> (
+            tokio::task::JoinHandle<()>,
+            std::sync::Arc<tokio::sync::Mutex<Vec<LiveRunCommand>>>,
+        ) {
+            let captured = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+            let captured_clone = captured.clone();
+            let handle = tokio::spawn(async move {
+                while let Some(entry) = stream.next().await {
+                    captured_clone.lock().await.push(entry.command.clone());
+                    entry.receipt.ack();
+                }
+            });
+            (handle, captured)
+        }
+
+        #[tokio::test]
+        async fn publish_reaches_subscriber_and_delivered_requires_ack() {
+            let store = InMemoryMailboxStore::new();
+            let stream = store.open_live_channel("t-1").await.unwrap();
+            let (_consumer, captured) = spawn_auto_ack_consumer(stream);
+
+            let outcome = store
+                .deliver_live("t-1", LiveRunCommand::Messages(vec![Message::user("hi")]))
+                .await
+                .unwrap();
+            assert_eq!(outcome, LiveDeliveryOutcome::Delivered);
+
+            let commands = captured.lock().await.clone();
+            assert_eq!(commands.len(), 1);
+            match &commands[0] {
+                LiveRunCommand::Messages(msgs) => assert_eq!(msgs[0].text(), "hi"),
+                other => panic!("expected Messages, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn publish_without_subscriber_reports_no_subscriber() {
+            let store = InMemoryMailboxStore::new();
+            let outcome = store
+                .deliver_live("t-2", LiveRunCommand::Cancel)
+                .await
+                .expect("deliver_live is infallible here");
+            assert_eq!(outcome, LiveDeliveryOutcome::NoSubscriber);
+        }
+
+        #[tokio::test]
+        async fn publish_after_subscriber_drop_reports_no_subscriber() {
+            let store = InMemoryMailboxStore::new();
+            {
+                let _stream = store.open_live_channel("t-drop").await.unwrap();
+                // subscriber dropped at scope exit
+            }
+            let outcome = store
+                .deliver_live("t-drop", LiveRunCommand::Cancel)
+                .await
+                .expect("deliver_live is infallible here");
+            assert_eq!(outcome, LiveDeliveryOutcome::NoSubscriber);
+        }
+
+        #[tokio::test]
+        async fn consumer_that_drops_receipt_triggers_no_subscriber() {
+            // Regression for issue #2: ack-after-forward guarantees that a
+            // consumer which fails to hand off the command (drops receipt)
+            // causes the producer to report NoSubscriber.
+            let store = InMemoryMailboxStore::new();
+            let mut stream = store.open_live_channel("t-nof").await.unwrap();
+
+            let producer = tokio::spawn({
+                let store = std::sync::Arc::new(store);
+                let s = store.clone();
+                async move {
+                    s.deliver_live("t-nof", LiveRunCommand::Cancel)
+                        .await
+                        .unwrap()
+                }
+            });
+
+            // Receive the entry, DO NOT ack — drop the receipt.
+            let entry = timeout(Duration::from_millis(200), stream.next())
+                .await
+                .unwrap()
+                .unwrap();
+            drop(entry.receipt);
+
+            let outcome = producer.await.unwrap();
+            assert_eq!(outcome, LiveDeliveryOutcome::NoSubscriber);
+        }
+
+        #[tokio::test]
+        async fn different_threads_isolated() {
+            let store = InMemoryMailboxStore::new();
+            let stream_a = store.open_live_channel("t-a").await.unwrap();
+            let mut stream_b = store.open_live_channel("t-b").await.unwrap();
+            let (_consumer_a, captured_a) = spawn_auto_ack_consumer(stream_a);
+
+            store
+                .deliver_live("t-a", LiveRunCommand::Cancel)
+                .await
+                .unwrap();
+            assert_eq!(captured_a.lock().await.len(), 1);
+
+            let got_b = timeout(Duration::from_millis(100), stream_b.next()).await;
+            assert!(got_b.is_err(), "t-b must not receive t-a's command");
+        }
+
+        #[tokio::test]
+        async fn reopen_replaces_previous_subscriber() {
+            // Single-consumer semantics: opening a second channel on the
+            // same thread invalidates the prior forwarder (its stream ends).
+            let store = InMemoryMailboxStore::new();
+            let mut old_stream = store.open_live_channel("t-replace").await.unwrap();
+            let new_stream = store.open_live_channel("t-replace").await.unwrap();
+            let (_consumer, captured) = spawn_auto_ack_consumer(new_stream);
+
+            store
+                .deliver_live("t-replace", LiveRunCommand::Cancel)
+                .await
+                .unwrap();
+
+            // Old stream should be closed (sender replaced).
+            let old = timeout(Duration::from_millis(100), old_stream.next()).await;
+            assert!(
+                matches!(old, Ok(None)),
+                "old stream must close, got {old:?}"
+            );
+            assert_eq!(captured.lock().await.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn order_preserved_for_single_subscriber() {
+            let store = InMemoryMailboxStore::new();
+            let stream = store.open_live_channel("t-ord").await.unwrap();
+            let (_consumer, captured) = spawn_auto_ack_consumer(stream);
+
+            for i in 0..5 {
+                store
+                    .deliver_live(
+                        "t-ord",
+                        LiveRunCommand::Messages(vec![Message::user(format!("m-{i}"))]),
+                    )
+                    .await
+                    .unwrap();
+            }
+
+            let captured = captured.lock().await;
+            for (i, cmd) in captured.iter().enumerate() {
+                match cmd {
+                    LiveRunCommand::Messages(msgs) => {
+                        assert_eq!(msgs[0].text(), format!("m-{i}"))
+                    }
+                    other => panic!("unexpected {other:?}"),
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn cmd_variants_all_delivered() {
+            let store = InMemoryMailboxStore::new();
+            let stream = store.open_live_channel("t-var").await.unwrap();
+            let (_consumer, captured) = spawn_auto_ack_consumer(stream);
+
+            store
+                .deliver_live("t-var", LiveRunCommand::Messages(vec![Message::user("x")]))
+                .await
+                .unwrap();
+            store
+                .deliver_live("t-var", LiveRunCommand::Cancel)
+                .await
+                .unwrap();
+            store
+                .deliver_live("t-var", LiveRunCommand::Decision(vec![]))
+                .await
+                .unwrap();
+
+            let captured = captured.lock().await;
+            assert!(matches!(captured[0], LiveRunCommand::Messages(_)));
+            assert!(matches!(captured[1], LiveRunCommand::Cancel));
+            assert!(matches!(captured[2], LiveRunCommand::Decision(_)));
+        }
     }
 
     // ── Property-based tests ──

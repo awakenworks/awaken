@@ -6,7 +6,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_contract::contract::mailbox::{
-    MailboxInterrupt, MailboxStore, RunDispatch, RunDispatchResult, RunDispatchStatus,
+    MailboxInterrupt, MailboxInterruptDetails, MailboxStore, RunDispatch, RunDispatchResult,
+    RunDispatchStatus,
 };
 use awaken_contract::contract::storage::StorageError;
 use rusqlite::{Connection, Row, params};
@@ -245,6 +246,114 @@ fn row_to_dispatch(row: &Row<'_>) -> Result<RunDispatch, rusqlite::Error> {
     })
 }
 
+fn current_epoch_for_conn(conn: &Connection, thread_id: &str) -> Result<u64, StorageError> {
+    let epoch = conn
+        .prepare_cached("SELECT current_epoch FROM thread_dispatch_epochs WHERE thread_id = ?1")
+        .map_err(|e| StorageError::Io(format!("prepare current dispatch_epoch: {e}")))?
+        .query_row(params![thread_id], |row| row.get::<_, i64>(0))
+        .optional()
+        .map_err(|e| StorageError::Io(format!("current dispatch_epoch select: {e}")))?;
+    Ok(epoch.unwrap_or(0) as u64)
+}
+
+fn supersede_claimed_loaded(
+    conn: &Connection,
+    dispatch: &RunDispatch,
+    claim_token: &str,
+    now: u64,
+    reason: &str,
+) -> Result<Option<RunDispatch>, StorageError> {
+    if dispatch.status != RunDispatchStatus::Claimed {
+        return Ok(None);
+    }
+    if dispatch.claim_token.as_deref() != Some(claim_token) {
+        return Err(StorageError::VersionConflict {
+            expected: 0,
+            actual: 1,
+        });
+    }
+    let current_epoch = current_epoch_for_conn(conn, &dispatch.thread_id)?;
+    let terminal_epoch = dispatch.dispatch_epoch.max(current_epoch);
+    let changed = conn
+        .execute(
+            "UPDATE run_dispatches
+             SET status = 'Superseded',
+                 dispatch_epoch = ?1,
+                 last_error = ?2,
+                 claim_token = NULL,
+                 claimed_by = NULL,
+                 lease_until = NULL,
+                 completed_at = ?3,
+                 updated_at = ?4
+             WHERE dispatch_id = ?5
+               AND status = 'Claimed'
+               AND claim_token = ?6",
+            params![
+                terminal_epoch as i64,
+                reason,
+                now as i64,
+                now as i64,
+                &dispatch.dispatch_id,
+                claim_token
+            ],
+        )
+        .map_err(|e| StorageError::Io(format!("supersede claimed update: {e}")))?;
+    if changed == 0 {
+        return Ok(None);
+    }
+    conn.prepare_cached("SELECT * FROM run_dispatches WHERE dispatch_id = ?1")
+        .map_err(|e| StorageError::Io(format!("prepare supersede claimed reload: {e}")))?
+        .query_row(params![&dispatch.dispatch_id], row_to_dispatch)
+        .optional()
+        .map_err(|e| StorageError::Io(format!("supersede claimed reload: {e}")))
+}
+
+fn supersede_stale_queued_for_thread(
+    conn: &Connection,
+    thread_id: &str,
+    now: u64,
+) -> Result<usize, StorageError> {
+    let current_epoch = current_epoch_for_conn(conn, thread_id)?;
+    conn.execute(
+        "UPDATE run_dispatches
+         SET status = 'Superseded',
+             dispatch_epoch = ?1,
+             last_error = ?2,
+             claim_token = NULL,
+             claimed_by = NULL,
+             lease_until = NULL,
+             completed_at = ?3,
+             updated_at = ?4
+         WHERE thread_id = ?5
+           AND status = 'Queued'
+           AND dispatch_epoch < ?6",
+        params![
+            current_epoch as i64,
+            "queued dispatch superseded by newer dispatch epoch",
+            now as i64,
+            now as i64,
+            thread_id,
+            current_epoch as i64
+        ],
+    )
+    .map_err(|e| StorageError::Io(format!("supersede stale queued: {e}")))
+}
+
+fn supersede_stale_claimed_if_needed(
+    conn: &Connection,
+    dispatch: &RunDispatch,
+    claim_token: &str,
+    now: u64,
+    reason: &str,
+) -> Result<bool, StorageError> {
+    let current_epoch = current_epoch_for_conn(conn, &dispatch.thread_id)?;
+    if dispatch.dispatch_epoch >= current_epoch {
+        return Ok(false);
+    }
+    supersede_claimed_loaded(conn, dispatch, claim_token, now, reason)?;
+    Ok(true)
+}
+
 // ── MailboxStore impl ──────────────────────────────────────────────
 
 #[async_trait]
@@ -334,6 +443,8 @@ impl MailboxStore for SqliteMailboxStore {
         limit: usize,
     ) -> Result<Vec<RunDispatch>, StorageError> {
         let conn = self.conn.lock().await;
+
+        supersede_stale_queued_for_thread(&conn, thread_id, now)?;
 
         // Cannot claim while another dispatch is already Claimed for this thread.
         let has_claimed: bool = conn
@@ -446,6 +557,31 @@ impl MailboxStore for SqliteMailboxStore {
             _ => return Ok(None),
         };
 
+        if dispatch.dispatch_epoch < current_epoch_for_conn(&conn, &dispatch.thread_id)? {
+            conn.execute(
+                "UPDATE run_dispatches
+                 SET status = 'Superseded',
+                     dispatch_epoch = ?1,
+                     last_error = ?2,
+                     claim_token = NULL,
+                     claimed_by = NULL,
+                     lease_until = NULL,
+                     completed_at = ?3,
+                     updated_at = ?4
+                 WHERE dispatch_id = ?5
+                   AND status = 'Queued'",
+                params![
+                    current_epoch_for_conn(&conn, &dispatch.thread_id)? as i64,
+                    "queued dispatch superseded by newer dispatch epoch",
+                    now as i64,
+                    now as i64,
+                    dispatch_id
+                ],
+            )
+            .map_err(|e| StorageError::Io(format!("claim_dispatch supersede stale: {e}")))?;
+            return Ok(None);
+        }
+
         // Same-thread exclusivity: reject if another dispatch for this thread is Claimed.
         let has_other_claimed: bool = conn
             .prepare_cached(
@@ -520,12 +656,29 @@ impl MailboxStore for SqliteMailboxStore {
                 actual: 1,
             });
         }
+        if supersede_stale_claimed_if_needed(
+            &conn,
+            &dispatch,
+            claim_token,
+            now,
+            "claimed dispatch superseded before ack",
+        )? {
+            return Err(StorageError::VersionConflict {
+                expected: dispatch.dispatch_epoch,
+                actual: current_epoch_for_conn(&conn, &dispatch.thread_id)?,
+            });
+        }
 
         conn.execute(
             "UPDATE run_dispatches
-             SET status = 'Acked', updated_at = ?1
-             WHERE dispatch_id = ?2",
-            params![now as i64, dispatch_id],
+             SET status = 'Acked',
+                 claim_token = NULL,
+                 claimed_by = NULL,
+                 lease_until = NULL,
+                 completed_at = ?1,
+                 updated_at = ?2
+             WHERE dispatch_id = ?3",
+            params![now as i64, now as i64, dispatch_id],
         )
         .map_err(|e| StorageError::Io(format!("ack update: {e}")))?;
 
@@ -555,6 +708,18 @@ impl MailboxStore for SqliteMailboxStore {
             return Err(StorageError::VersionConflict {
                 expected: 0,
                 actual: 1,
+            });
+        }
+        if supersede_stale_claimed_if_needed(
+            &conn,
+            &dispatch,
+            claim_token,
+            now,
+            "claimed dispatch superseded before runtime start",
+        )? {
+            return Err(StorageError::VersionConflict {
+                expected: dispatch.dispatch_epoch,
+                actual: current_epoch_for_conn(&conn, &dispatch.thread_id)?,
             });
         }
 
@@ -603,6 +768,18 @@ impl MailboxStore for SqliteMailboxStore {
             return Err(StorageError::VersionConflict {
                 expected: 0,
                 actual: 1,
+            });
+        }
+        if supersede_stale_claimed_if_needed(
+            &conn,
+            &dispatch,
+            claim_token,
+            now,
+            "claimed dispatch superseded before run result",
+        )? {
+            return Err(StorageError::VersionConflict {
+                expected: dispatch.dispatch_epoch,
+                actual: current_epoch_for_conn(&conn, &dispatch.thread_id)?,
             });
         }
 
@@ -658,6 +835,18 @@ impl MailboxStore for SqliteMailboxStore {
                 actual: 1,
             });
         }
+        if supersede_stale_claimed_if_needed(
+            &conn,
+            &dispatch,
+            claim_token,
+            now,
+            "claimed dispatch superseded before nack",
+        )? {
+            return Err(StorageError::VersionConflict {
+                expected: dispatch.dispatch_epoch,
+                actual: current_epoch_for_conn(&conn, &dispatch.thread_id)?,
+            });
+        }
 
         let new_attempt_count = dispatch.attempt_count + 1;
 
@@ -668,9 +857,19 @@ impl MailboxStore for SqliteMailboxStore {
                  SET status = 'DeadLetter',
                      attempt_count = ?1,
                      last_error = ?2,
-                     updated_at = ?3
-                 WHERE dispatch_id = ?4",
-                params![new_attempt_count as i64, error, now as i64, dispatch_id],
+                     claim_token = NULL,
+                     claimed_by = NULL,
+                     lease_until = NULL,
+                     completed_at = ?3,
+                     updated_at = ?4
+                 WHERE dispatch_id = ?5",
+                params![
+                    new_attempt_count as i64,
+                    error,
+                    now as i64,
+                    now as i64,
+                    dispatch_id
+                ],
             )
             .map_err(|e| StorageError::Io(format!("nack dead_letter update: {e}")))?;
         } else {
@@ -723,6 +922,18 @@ impl MailboxStore for SqliteMailboxStore {
                 actual: 1,
             });
         }
+        if supersede_stale_claimed_if_needed(
+            &conn,
+            &dispatch,
+            claim_token,
+            now,
+            "claimed dispatch superseded before dead letter",
+        )? {
+            return Err(StorageError::VersionConflict {
+                expected: dispatch.dispatch_epoch,
+                actual: current_epoch_for_conn(&conn, &dispatch.thread_id)?,
+            });
+        }
 
         conn.execute(
             "UPDATE run_dispatches
@@ -731,9 +942,10 @@ impl MailboxStore for SqliteMailboxStore {
                  claim_token = NULL,
                  claimed_by = NULL,
                  lease_until = NULL,
-                 updated_at = ?2
-             WHERE dispatch_id = ?3",
-            params![error, now as i64, dispatch_id],
+                 completed_at = ?2,
+                 updated_at = ?3
+             WHERE dispatch_id = ?4",
+            params![error, now as i64, now as i64, dispatch_id],
         )
         .map_err(|e| StorageError::Io(format!("dead_letter update: {e}")))?;
 
@@ -762,9 +974,14 @@ impl MailboxStore for SqliteMailboxStore {
 
         conn.execute(
             "UPDATE run_dispatches
-             SET status = 'Cancelled', updated_at = ?1
-             WHERE dispatch_id = ?2",
-            params![now as i64, dispatch_id],
+             SET status = 'Cancelled',
+                 claim_token = NULL,
+                 claimed_by = NULL,
+                 lease_until = NULL,
+                 completed_at = ?1,
+                 updated_at = ?2
+             WHERE dispatch_id = ?3",
+            params![now as i64, now as i64, dispatch_id],
         )
         .map_err(|e| StorageError::Io(format!("cancel update: {e}")))?;
 
@@ -786,6 +1003,30 @@ impl MailboxStore for SqliteMailboxStore {
     ) -> Result<bool, StorageError> {
         let conn = self.conn.lock().await;
 
+        let dispatch = conn
+            .prepare_cached("SELECT * FROM run_dispatches WHERE dispatch_id = ?1")
+            .map_err(|e| StorageError::Io(format!("prepare extend_lease load: {e}")))?
+            .query_row(params![dispatch_id], row_to_dispatch)
+            .optional()
+            .map_err(|e| StorageError::Io(format!("extend_lease load: {e}")))?;
+        let Some(dispatch) = dispatch else {
+            return Ok(false);
+        };
+        if dispatch.status != RunDispatchStatus::Claimed
+            || dispatch.claim_token.as_deref() != Some(claim_token)
+        {
+            return Ok(false);
+        }
+        if supersede_stale_claimed_if_needed(
+            &conn,
+            &dispatch,
+            claim_token,
+            now,
+            "claimed dispatch superseded during lease renewal",
+        )? {
+            return Ok(false);
+        }
+
         let changed = conn
             .execute(
                 "UPDATE run_dispatches
@@ -806,6 +1047,16 @@ impl MailboxStore for SqliteMailboxStore {
     }
 
     async fn interrupt(&self, thread_id: &str, now: u64) -> Result<MailboxInterrupt, StorageError> {
+        self.interrupt_detailed(thread_id, now)
+            .await
+            .map(Into::into)
+    }
+
+    async fn interrupt_detailed(
+        &self,
+        thread_id: &str,
+        now: u64,
+    ) -> Result<MailboxInterruptDetails, StorageError> {
         let conn = self.conn.lock().await;
 
         // Bump dispatch_epoch: INSERT ON CONFLICT DO UPDATE +1.
@@ -824,17 +1075,60 @@ impl MailboxStore for SqliteMailboxStore {
             .query_row(params![thread_id], |row| row.get(0))
             .map_err(|e| StorageError::Io(format!("interrupt dispatch_epoch select: {e}")))?;
 
+        let superseded_candidates = {
+            let mut stmt = conn
+                .prepare_cached(
+                    "SELECT * FROM run_dispatches
+                     WHERE thread_id = ?1
+                       AND status = 'Queued'
+                       AND dispatch_epoch < ?2",
+                )
+                .map_err(|e| {
+                    StorageError::Io(format!("prepare interrupt superseded select: {e}"))
+                })?;
+            stmt.query_map(params![thread_id, new_dispatch_epoch], row_to_dispatch)
+                .map_err(|e| StorageError::Io(format!("interrupt superseded select: {e}")))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| StorageError::Io(format!("interrupt superseded collect: {e}")))?
+        };
+
         // Supersede all Queued dispatches for this thread with dispatch_epoch < new_dispatch_epoch.
         let superseded_count = conn
             .execute(
                 "UPDATE run_dispatches
-                 SET status = 'Superseded', updated_at = ?1
-                 WHERE thread_id = ?2
+                 SET status = 'Superseded',
+                     last_error = ?1,
+                     claim_token = NULL,
+                     claimed_by = NULL,
+                     lease_until = NULL,
+                     completed_at = ?2,
+                     updated_at = ?3
+                 WHERE thread_id = ?4
                    AND status = 'Queued'
-                   AND dispatch_epoch < ?3",
-                params![now as i64, thread_id, new_dispatch_epoch],
+                   AND dispatch_epoch < ?5",
+                params![
+                    "queued dispatch superseded by interrupt",
+                    now as i64,
+                    now as i64,
+                    thread_id,
+                    new_dispatch_epoch
+                ],
             )
             .map_err(|e| StorageError::Io(format!("interrupt supersede: {e}")))?;
+        let mut superseded_dispatches = superseded_candidates
+            .into_iter()
+            .map(|mut dispatch| {
+                dispatch.status = RunDispatchStatus::Superseded;
+                dispatch.last_error = Some("queued dispatch superseded by interrupt".to_string());
+                dispatch.claim_token = None;
+                dispatch.claimed_by = None;
+                dispatch.lease_until = None;
+                dispatch.completed_at = Some(now);
+                dispatch.updated_at = now;
+                dispatch
+            })
+            .collect::<Vec<_>>();
+        superseded_dispatches.truncate(superseded_count);
 
         // Find active Claimed dispatch if any.
         let active_dispatch = conn
@@ -848,11 +1142,37 @@ impl MailboxStore for SqliteMailboxStore {
             .optional()
             .map_err(|e| StorageError::Io(format!("interrupt active: {e}")))?;
 
-        Ok(MailboxInterrupt {
+        Ok(MailboxInterruptDetails {
             new_dispatch_epoch: new_dispatch_epoch as u64,
             active_dispatch,
             superseded_count,
+            superseded_dispatches,
         })
+    }
+
+    async fn current_dispatch_epoch(&self, thread_id: &str) -> Result<u64, StorageError> {
+        let conn = self.conn.lock().await;
+        current_epoch_for_conn(&conn, thread_id)
+    }
+
+    async fn supersede_claimed(
+        &self,
+        dispatch_id: &str,
+        claim_token: &str,
+        now: u64,
+        reason: &str,
+    ) -> Result<Option<RunDispatch>, StorageError> {
+        let conn = self.conn.lock().await;
+        let dispatch = conn
+            .prepare_cached("SELECT * FROM run_dispatches WHERE dispatch_id = ?1")
+            .map_err(|e| StorageError::Io(format!("prepare supersede claimed load: {e}")))?
+            .query_row(params![dispatch_id], row_to_dispatch)
+            .optional()
+            .map_err(|e| StorageError::Io(format!("supersede claimed load: {e}")))?;
+        let Some(dispatch) = dispatch else {
+            return Ok(None);
+        };
+        supersede_claimed_loaded(&conn, &dispatch, claim_token, now, reason)
     }
 
     async fn load_dispatch(&self, dispatch_id: &str) -> Result<Option<RunDispatch>, StorageError> {
@@ -934,6 +1254,42 @@ impl MailboxStore for SqliteMailboxStore {
         Ok(dispatches)
     }
 
+    async fn count_dispatches_by_status(
+        &self,
+        status: RunDispatchStatus,
+    ) -> Result<usize, StorageError> {
+        let conn = self.conn.lock().await;
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM run_dispatches WHERE status = ?1",
+                params![status_to_str(status)],
+                |row| row.get(0),
+            )
+            .map_err(|e| StorageError::Io(format!("count_dispatches_by_status: {e}")))?;
+        usize::try_from(count)
+            .map_err(|e| StorageError::Io(format!("dispatch count conversion: {e}")))
+    }
+
+    async fn list_terminal_dispatches(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<RunDispatch>, StorageError> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT * FROM run_dispatches
+                 WHERE status IN ('Acked', 'Cancelled', 'Superseded', 'DeadLetter')
+                 ORDER BY updated_at ASC, created_at ASC, dispatch_id ASC
+                 LIMIT ?1 OFFSET ?2",
+            )
+            .map_err(|e| StorageError::Io(format!("prepare list_terminal_dispatches: {e}")))?;
+        stmt.query_map(params![limit as i64, offset as i64], row_to_dispatch)
+            .map_err(|e| StorageError::Io(format!("list_terminal_dispatches query: {e}")))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| StorageError::Io(format!("list_terminal_dispatches collect: {e}")))
+    }
+
     async fn reclaim_expired_leases(
         &self,
         now: u64,
@@ -944,19 +1300,16 @@ impl MailboxStore for SqliteMailboxStore {
         // Step 1: Find expired Claimed dispatches.
         let mut stmt = conn
             .prepare_cached(
-                "SELECT dispatch_id, attempt_count, max_attempts FROM run_dispatches
+                "SELECT * FROM run_dispatches
                  WHERE status = 'Claimed'
                    AND lease_until < ?1
                  LIMIT ?2",
             )
             .map_err(|e| StorageError::Io(format!("prepare reclaim select: {e}")))?;
 
-        let expired: Vec<(String, u32, u32)> = stmt
+        let expired: Vec<RunDispatch> = stmt
             .query_map(params![now as i64, limit as i64], |row| {
-                let id: String = row.get(0)?;
-                let attempt: i64 = row.get(1)?;
-                let max: i64 = row.get(2)?;
-                Ok((id, attempt as u32, max as u32))
+                row_to_dispatch(row)
             })
             .map_err(|e| StorageError::Io(format!("reclaim select: {e}")))?
             .collect::<Result<Vec<_>, _>>()
@@ -985,20 +1338,46 @@ impl MailboxStore for SqliteMailboxStore {
                 "UPDATE run_dispatches
                  SET status = 'DeadLetter',
                      attempt_count = ?1,
-                     updated_at = ?2
-                 WHERE dispatch_id = ?3",
+                     claim_token = NULL,
+                     claimed_by = NULL,
+                     lease_until = NULL,
+                     completed_at = ?2,
+                     updated_at = ?3
+                 WHERE dispatch_id = ?4",
             )
             .map_err(|e| StorageError::Io(format!("prepare reclaim deadletter: {e}")))?;
 
-        for (id, attempt_count, max_attempts) in &expired {
-            let new_attempt = attempt_count + 1;
-            if new_attempt >= *max_attempts {
+        for dispatch in &expired {
+            let Some(claim_token) = dispatch.claim_token.as_deref() else {
+                continue;
+            };
+            if supersede_stale_claimed_if_needed(
+                &conn,
+                dispatch,
+                claim_token,
+                now,
+                "claimed dispatch lease expired after interrupt",
+            )? {
+                continue;
+            }
+
+            let new_attempt = dispatch.attempt_count + 1;
+            if new_attempt >= dispatch.max_attempts {
                 deadletter_stmt
-                    .execute(params![new_attempt as i64, now as i64, id])
+                    .execute(params![
+                        new_attempt as i64,
+                        now as i64,
+                        now as i64,
+                        &dispatch.dispatch_id
+                    ])
                     .map_err(|e| StorageError::Io(format!("reclaim deadletter: {e}")))?;
             } else {
                 requeue_stmt
-                    .execute(params![new_attempt as i64, now as i64, id])
+                    .execute(params![
+                        new_attempt as i64,
+                        now as i64,
+                        &dispatch.dispatch_id
+                    ])
                     .map_err(|e| StorageError::Io(format!("reclaim requeue: {e}")))?;
             }
         }
@@ -1013,11 +1392,13 @@ impl MailboxStore for SqliteMailboxStore {
             .prepare_cached("SELECT * FROM run_dispatches WHERE dispatch_id = ?1")
             .map_err(|e| StorageError::Io(format!("prepare reclaim reload: {e}")))?;
 
-        for (id, _, _) in &expired {
+        for dispatch in &expired {
             let dispatch = load_stmt
-                .query_row(params![id], row_to_dispatch)
+                .query_row(params![&dispatch.dispatch_id], row_to_dispatch)
                 .map_err(|e| StorageError::Io(format!("reclaim reload: {e}")))?;
-            result.push(dispatch);
+            if dispatch.status != RunDispatchStatus::Superseded {
+                result.push(dispatch);
+            }
         }
 
         Ok(result)
@@ -1290,6 +1671,25 @@ mod tests {
 
         let loaded = store.load_dispatch("dispatch-1").await.unwrap().unwrap();
         assert_eq!(loaded.status, RunDispatchStatus::Acked);
+    }
+
+    #[tokio::test]
+    async fn claim_honors_batch_limit_without_active_claim() {
+        let store = SqliteMailboxStore::open_memory().unwrap();
+        for id in ["dispatch-1", "dispatch-2", "dispatch-3"] {
+            store.enqueue(&make_dispatch(id, "thread-a")).await.unwrap();
+        }
+
+        let claimed = store
+            .claim("thread-a", "consumer-1", 30_000, 2000, 2)
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 2);
+        assert!(
+            claimed
+                .iter()
+                .all(|dispatch| dispatch.status == RunDispatchStatus::Claimed)
+        );
     }
 
     #[tokio::test]

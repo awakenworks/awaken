@@ -981,6 +981,29 @@ mod integration {
     }
 
     #[tokio::test]
+    async fn thread_messages_accepts_live_then_queue_input_mode() {
+        let test = make_test_app();
+        let thread_id = seed_thread(&test.store, Some("Live Control Thread")).await;
+
+        let (status, body) = post_json(
+            test.router.clone(),
+            &format!("/v1/threads/{thread_id}/messages"),
+            json!({
+                "mode": "live_then_queue",
+                "messages": [{"role": "user", "content": "steer softly"}]
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(body["thread_id"].as_str(), Some(thread_id.as_str()));
+        assert!(matches!(
+            body["status"].as_str(),
+            Some("running") | Some("queued")
+        ));
+    }
+
+    #[tokio::test]
     async fn thread_messages_resume_open_run_continues_projected_waiting_run() {
         let test = make_test_app();
         let thread_id = "thread-resume-open";

@@ -8,9 +8,9 @@ use crate::error::RuntimeError;
 use crate::execution::SequentialToolExecutor;
 use crate::phase::ExecutionEnv;
 use crate::plugins::Plugin;
-use crate::registry::{
-    AgentResolver, ExecutionResolver, ResolvedAgent, ResolvedBackendAgent, ResolvedExecution,
-};
+#[cfg(feature = "a2a")]
+use crate::registry::ResolvedBackendAgent;
+use crate::registry::{AgentResolver, ExecutionResolver, ResolvedAgent, ResolvedExecution};
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::tool::Tool;
 

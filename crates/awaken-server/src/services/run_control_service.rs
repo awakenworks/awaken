@@ -171,6 +171,10 @@ impl RunControlService {
     }
 
     /// Submit a tool-call decision to a waiting active run.
+    ///
+    /// Remote live delivery is at-least-once when its ack is lost before the
+    /// durable fallback is enqueued; `(tool_call_id, decision_id)` identifies
+    /// duplicate decisions.
     pub async fn decide(
         &self,
         id: &str,
@@ -180,7 +184,8 @@ impl RunControlService {
         if self
             .state
             .mailbox
-            .send_decision(id, tool_call_id.clone(), resume.clone())
+            .send_decision_live(id, tool_call_id.clone(), resume.clone())
+            .await?
         {
             Ok(())
         } else {
@@ -288,6 +293,32 @@ impl RunControlService {
             .map_err(RunControlError::Mailbox)
     }
 
+    /// Inject messages into the active run when possible, otherwise queue them.
+    pub async fn inject_user_input_live_then_queue(
+        &self,
+        thread_id: &str,
+        agent_id: Option<String>,
+        messages: Vec<Message>,
+    ) -> Result<MailboxSubmitResult, RunControlError> {
+        let _thread = self
+            .state
+            .store
+            .load_thread(thread_id)
+            .await?
+            .ok_or_else(|| RunControlError::ThreadNotFound(thread_id.to_string()))?;
+
+        let mut request = RunRequest::new(thread_id.to_string(), messages);
+        if let Some(agent_id) = agent_id {
+            request = request.with_agent_id(agent_id);
+        }
+
+        self.state
+            .mailbox
+            .submit_live_then_queue(request, None)
+            .await
+            .map_err(RunControlError::Mailbox)
+    }
+
     /// Inject messages using an existing run as the thread and agent anchor.
     pub async fn inject_run_input(
         &self,
@@ -322,6 +353,28 @@ impl RunControlService {
 
         self.inject_user_input(&run.thread_id, Some(run.agent_id), messages, mode)
             .await
+    }
+
+    /// Inject messages using an existing run as the live-delivery anchor.
+    pub async fn inject_run_input_live_then_queue(
+        &self,
+        run_id: &str,
+        messages: Vec<Message>,
+    ) -> Result<MailboxSubmitResult, RunControlError> {
+        let run = self
+            .state
+            .store
+            .load_run(run_id)
+            .await?
+            .ok_or_else(|| RunControlError::RunNotFound(run_id.to_string()))?;
+
+        let request =
+            RunRequest::new(run.thread_id.clone(), messages).with_agent_id(run.agent_id.clone());
+        self.state
+            .mailbox
+            .submit_live_then_queue(request, Some(&run.run_id))
+            .await
+            .map_err(RunControlError::Mailbox)
     }
 
     async fn load_open_waiting_run(

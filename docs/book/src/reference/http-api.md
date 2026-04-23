@@ -35,6 +35,13 @@ and `crates/awaken-server/src/config_routes.rs`.
 | `GET` | `/v1/threads/:id/runs` | List runs for the thread |
 | `GET` | `/v1/threads/:id/runs/latest` | Get the latest run for the thread |
 
+`POST /v1/threads/:id/messages` and `POST /v1/runs/:id/inputs` accept an
+optional `mode` field. `queue` appends a durable mailbox dispatch,
+`live_then_queue` first tries to deliver the messages to the active run and
+queues only when live delivery is unavailable, `steer` is an alias for
+`live_then_queue`, `interrupt_then_queue` cancels the active run before
+queueing, and `resume_open_run` continues a resumable waiting run.
+
 ## Runs
 
 | Method | Path | Description |

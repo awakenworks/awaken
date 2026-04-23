@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use crate::backend::{
-    BackendControl, BackendLocalRootContext, BackendRootRunRequest, ExecutionBackend,
-    ExecutionBackendError, LocalBackend, execute_remote_root_lifecycle, execution_capabilities,
+    BackendControl, BackendLocalRootContext, BackendRootRunRequest, ExecutionBackendError,
+    LocalBackend, execute_remote_root_lifecycle, execution_capabilities,
     validate_root_execution_request,
 };
 use crate::loop_runner::{AgentLoopError, AgentRunResult};
@@ -19,7 +19,7 @@ use awaken_contract::now_ms;
 use awaken_contract::state::PersistedState;
 
 use super::AgentRuntime;
-use super::run_request::RunRequest;
+use super::run_request::{RunRequest, ThreadContextSnapshot};
 
 const DEFAULT_AGENT_ID: &str = "default";
 
@@ -40,6 +40,7 @@ struct PreparedLocalRootExecution {
     messages: Vec<Message>,
     phase_runtime: crate::phase::PhaseRuntime,
     inbox: crate::inbox::InboxReceiver,
+    inbox_sender: crate::inbox::InboxSender,
 }
 
 impl AgentRuntime {
@@ -76,6 +77,25 @@ impl AgentRuntime {
         request: RunRequest,
         sink: Arc<dyn EventSink>,
     ) -> Result<AgentRunResult, AgentLoopError> {
+        self.run_inner(request, sink, None).await
+    }
+
+    #[doc(hidden)]
+    pub async fn run_with_thread_context(
+        &self,
+        request: RunRequest,
+        sink: Arc<dyn EventSink>,
+        thread_ctx: Option<ThreadContextSnapshot>,
+    ) -> Result<AgentRunResult, AgentLoopError> {
+        self.run_inner(request, sink, thread_ctx).await
+    }
+
+    async fn run_inner(
+        &self,
+        request: RunRequest,
+        sink: Arc<dyn EventSink>,
+        thread_ctx: Option<ThreadContextSnapshot>,
+    ) -> Result<AgentRunResult, AgentLoopError> {
         let RunRequest {
             messages: request_messages,
             messages_already_persisted,
@@ -99,7 +119,9 @@ impl AgentRuntime {
         } = request;
         let new_messages = request_messages.clone();
         let requested_continue_run_id = continue_run_id.clone();
-        let agent_id = self.resolve_agent_id(agent_id, &thread_id).await?;
+        let agent_id = self
+            .resolve_agent_id(agent_id, &thread_id, &thread_ctx)
+            .await?;
         let run_resolver: Arc<dyn ExecutionResolver> =
             if let Some(snapshot) = self.registry_snapshot() {
                 Arc::new(crate::registry::resolve::RegistrySetResolver::new(
@@ -120,6 +142,7 @@ impl AgentRuntime {
                 run_id_hint,
                 dispatch_id_hint,
                 matches!(&resolved_execution, ResolvedExecution::Local(_)),
+                &thread_ctx,
             )
             .await?;
         let run_origin = match req_origin {
@@ -154,42 +177,58 @@ impl AgentRuntime {
         }
 
         let mut run_inbox = run_inbox;
-        let (messages, phase_runtime, inbox, previous_non_local_state) = match &resolved_execution {
-            ResolvedExecution::Local(preflight_resolved) => {
-                let prepared = self
-                    .prepare_local_root_execution(
-                        preflight_resolved,
-                        &thread_id,
-                        request_messages,
-                        messages_already_persisted,
-                        &decisions,
-                        run_inbox.take(),
+        let (messages, phase_runtime, inbox, live_inbox_sender, previous_non_local_state) =
+            match &resolved_execution {
+                ResolvedExecution::Local(preflight_resolved) => {
+                    let prepared = self
+                        .prepare_local_root_execution(
+                            preflight_resolved,
+                            &thread_id,
+                            request_messages,
+                            messages_already_persisted,
+                            &decisions,
+                            run_inbox.take(),
+                            &thread_ctx,
+                        )
+                        .await?;
+                    (
+                        prepared.messages,
+                        Some(prepared.phase_runtime),
+                        Some(prepared.inbox),
+                        Some(prepared.inbox_sender),
+                        None,
                     )
-                    .await?;
-                (
-                    prepared.messages,
-                    Some(prepared.phase_runtime),
-                    Some(prepared.inbox),
-                    None,
-                )
-            }
-            ResolvedExecution::NonLocal(_) => (
-                self.load_non_local_messages(
-                    &thread_id,
-                    request_messages,
-                    messages_already_persisted,
-                )
-                .await?,
-                None,
-                run_inbox.take().map(|run_inbox| run_inbox.receiver),
-                self.load_non_local_state(&thread_id, requested_continue_run_id.as_deref())
-                    .await?,
-            ),
-        };
+                }
+                ResolvedExecution::NonLocal(_) => {
+                    let live_inbox_sender =
+                        run_inbox.as_ref().map(|run_inbox| run_inbox.sender.clone());
+                    (
+                        self.load_non_local_messages(
+                            &thread_id,
+                            request_messages,
+                            messages_already_persisted,
+                            &thread_ctx,
+                        )
+                        .await?,
+                        None,
+                        run_inbox.take().map(|run_inbox| run_inbox.receiver),
+                        live_inbox_sender,
+                        self.load_non_local_state(
+                            &thread_id,
+                            requested_continue_run_id.as_deref(),
+                            &thread_ctx,
+                        )
+                        .await?,
+                    )
+                }
+            };
         let run_created_at = now_ms();
 
-        let (handle, cancellation_token, raw_decision_rx) =
-            self.create_run_channels(run_id.clone());
+        let (handle, cancellation_token, raw_decision_rx) = self.create_run_channels_with_inbox(
+            run_id.clone(),
+            run_identity.trace.dispatch_id.clone(),
+            live_inbox_sender,
+        );
         let runtime_cancellation_token = cancellation_token.clone();
         let decision_rx = if capabilities.decisions {
             Some(raw_decision_rx)
@@ -245,7 +284,7 @@ impl AgentRuntime {
         match &resolved_execution {
             ResolvedExecution::Local(_) => {
                 let result = LocalBackend::new()
-                    .execute_root(backend_request)
+                    .execute_root_with_thread_context(backend_request, thread_ctx)
                     .await
                     .map_err(local_root_execution_error)?;
                 Ok(AgentRunResult {
@@ -268,6 +307,7 @@ impl AgentRuntime {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn prepare_local_root_execution(
         &self,
         preflight_resolved: &crate::registry::ResolvedAgent,
@@ -279,6 +319,7 @@ impl AgentRuntime {
             awaken_contract::contract::suspension::ToolCallResume,
         )],
         run_inbox: Option<super::run_request::RunInbox>,
+        thread_ctx: &Option<ThreadContextSnapshot>,
     ) -> Result<PreparedLocalRootExecution, AgentLoopError> {
         let store = crate::state::StateStore::new();
         let phase_runtime =
@@ -298,7 +339,19 @@ impl AgentRuntime {
         )
         .map_err(AgentLoopError::PhaseError)?;
 
-        let mut messages = if let Some(ref ts) = self.storage {
+        let mut messages = if let Some(ctx) = thread_ctx {
+            if let Some(ref prev_run) = ctx.latest_run
+                && let Some(ref persisted) = prev_run.state
+            {
+                store
+                    .restore_thread_scoped(
+                        persisted.clone(),
+                        awaken_contract::UnknownKeyPolicy::Skip,
+                    )
+                    .map_err(AgentLoopError::PhaseError)?;
+            }
+            ctx.messages.clone()
+        } else if let Some(ref ts) = self.storage {
             if let Some(prev_run) = ts
                 .latest_run(thread_id)
                 .await
@@ -328,6 +381,7 @@ impl AgentRuntime {
             messages,
             phase_runtime,
             inbox: run_inbox.receiver,
+            inbox_sender: owner_inbox,
         })
     }
 
@@ -336,8 +390,11 @@ impl AgentRuntime {
         thread_id: &str,
         request_messages: Vec<Message>,
         messages_already_persisted: bool,
+        thread_ctx: &Option<ThreadContextSnapshot>,
     ) -> Result<Vec<Message>, AgentLoopError> {
-        let mut messages = if let Some(ref storage) = self.storage {
+        let mut messages = if let Some(ctx) = thread_ctx {
+            ctx.messages.clone()
+        } else if let Some(ref storage) = self.storage {
             storage
                 .load_messages(thread_id)
                 .await
@@ -360,8 +417,15 @@ impl AgentRuntime {
         run_id_hint: Option<String>,
         dispatch_id_hint: Option<String>,
         allow_waiting_reuse: bool,
+        thread_ctx: &Option<ThreadContextSnapshot>,
     ) -> Result<(String, bool), AgentLoopError> {
         if let Some(run_id) = continue_run_id {
+            // Check cache first for continue_run_id.
+            if let Some(ctx) = thread_ctx
+                && ctx.run_cache.contains_key(&run_id)
+            {
+                return Ok((run_id, true));
+            }
             let Some(ref ts) = self.storage else {
                 return Err(AgentLoopError::InvalidResume(format!(
                     "continue_run_id '{run_id}' requires run storage"
@@ -383,12 +447,22 @@ impl AgentRuntime {
             let trimmed = id.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_string())
         }) {
-            if let Some(ref ts) = self.storage
-                && let Some(existing) = ts
-                    .load_run(&run_id)
+            // Check cache first, then store.
+            let existing = if let Some(ctx) = thread_ctx {
+                ctx.run_cache.get(&run_id).cloned()
+            } else {
+                None
+            };
+            let existing = if existing.is_some() {
+                existing
+            } else if let Some(ref ts) = self.storage {
+                ts.load_run(&run_id)
                     .await
                     .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
-            {
+            } else {
+                None
+            };
+            if let Some(existing) = existing {
                 if existing.status == awaken_contract::contract::lifecycle::RunStatus::Created {
                     return Ok((run_id, false));
                 }
@@ -415,8 +489,14 @@ impl AgentRuntime {
             }
             return Ok((run_id, false));
         }
-        if allow_waiting_reuse && let Some(prev) = self.reusable_waiting_run(thread_id).await? {
-            return Ok((prev.run_id.clone(), true));
+        if allow_waiting_reuse {
+            if let Some(ctx) = thread_ctx {
+                if let Some(run) = ctx.latest_run.as_ref().filter(|r| r.is_resumable_waiting()) {
+                    return Ok((run.run_id.clone(), true));
+                }
+            } else if let Some(prev) = self.reusable_waiting_run(thread_id).await? {
+                return Ok((prev.run_id.clone(), true));
+            }
         }
         Ok((uuid::Uuid::now_v7().to_string(), false))
     }
@@ -455,12 +535,16 @@ impl AgentRuntime {
         &self,
         requested_agent_id: Option<String>,
         thread_id: &str,
+        thread_ctx: &Option<ThreadContextSnapshot>,
     ) -> Result<String, AgentLoopError> {
         if let Some(agent_id) = requested_agent_id {
             return Ok(agent_id);
         }
 
-        if let Some(inferred) = self.infer_agent_id_from_thread(thread_id).await? {
+        if let Some(inferred) = self
+            .infer_agent_id_from_thread(thread_id, thread_ctx)
+            .await?
+        {
             return Ok(inferred);
         }
 
@@ -470,7 +554,21 @@ impl AgentRuntime {
     async fn infer_agent_id_from_thread(
         &self,
         thread_id: &str,
+        thread_ctx: &Option<ThreadContextSnapshot>,
     ) -> Result<Option<String>, AgentLoopError> {
+        if let Some(ctx) = thread_ctx {
+            if let Some(ref prev_run) = ctx.latest_run {
+                if let Some(agent_id) = prev_run.state.as_ref().and_then(active_agent_from_state) {
+                    return Ok(Some(agent_id));
+                }
+                let agent_id = prev_run.agent_id.trim();
+                if !agent_id.is_empty() {
+                    return Ok(Some(agent_id.to_string()));
+                }
+            }
+            return Ok(None);
+        }
+
         let Some(storage) = &self.storage else {
             return Ok(None);
         };
@@ -499,7 +597,15 @@ impl AgentRuntime {
         &self,
         thread_id: &str,
         continue_run_id: Option<&str>,
+        thread_ctx: &Option<ThreadContextSnapshot>,
     ) -> Result<Option<PersistedState>, AgentLoopError> {
+        if let Some(ctx) = thread_ctx {
+            if let Some(run_id) = continue_run_id {
+                return Ok(ctx.run_cache.get(run_id).and_then(|r| r.state.clone()));
+            }
+            return Ok(ctx.latest_run.as_ref().and_then(|r| r.state.clone()));
+        }
+
         let Some(storage) = &self.storage else {
             return Ok(None);
         };
