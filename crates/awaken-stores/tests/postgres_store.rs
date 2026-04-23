@@ -15,7 +15,8 @@ use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::RunRecord;
 use awaken_contract::contract::storage::{
     ChildThreadDeleteStrategy, MessageSeqRange, RunMessageInput, RunMessageOutput, RunQuery,
-    RunRequestSnapshot, RunStore, StorageError, ThreadQuery, ThreadRunStore, ThreadStore,
+    RunRequestSnapshot, RunStore, StorageError, ThreadParentFilter, ThreadQuery, ThreadRunStore,
+    ThreadStore,
 };
 use awaken_contract::thread::Thread;
 use awaken_stores::PostgresStore;
@@ -155,12 +156,49 @@ async fn list_threads_query_filters_lineage() {
             offset: 0,
             limit: 10,
             resource_id: Some("resource-a".to_string()),
-            parent_thread_id: Some("parent-1".to_string()),
+            parent_filter: ThreadParentFilter::Parent("parent-1".to_string()),
         })
         .await
         .unwrap();
 
     assert_eq!(page.items, vec![match_id.to_string()]);
+    assert_eq!(page.total, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via DATABASE_URL"]
+async fn list_threads_query_filters_root_threads() {
+    let Some(store) = make_prefixed_store("pg_root_filter").await else {
+        return;
+    };
+    store
+        .save_thread(&Thread::with_id("pg-root-match").with_resource_id("resource-a"))
+        .await
+        .unwrap();
+    store
+        .save_thread(
+            &Thread::with_id("pg-root-child")
+                .with_resource_id("resource-a")
+                .with_parent_thread_id("parent-1"),
+        )
+        .await
+        .unwrap();
+    store
+        .save_thread(&Thread::with_id("pg-root-other").with_resource_id("resource-b"))
+        .await
+        .unwrap();
+
+    let page = store
+        .list_threads_query(&ThreadQuery {
+            offset: 0,
+            limit: 10,
+            resource_id: Some("resource-a".to_string()),
+            parent_filter: ThreadParentFilter::Root,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(page.items, vec!["pg-root-match"]);
     assert_eq!(page.total, 1);
 }
 
@@ -463,7 +501,7 @@ async fn ensure_schema_normalizes_legacy_thread_lineage_columns_from_json() {
             offset: 0,
             limit: 10,
             resource_id: Some("resource-a".to_string()),
-            parent_thread_id: Some("parent-1".to_string()),
+            parent_filter: ThreadParentFilter::Parent("parent-1".to_string()),
         })
         .await
         .unwrap();

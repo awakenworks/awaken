@@ -11,8 +11,8 @@ use async_trait::async_trait;
 use awaken_contract::contract::lifecycle::RunStatus;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
-    RunPage, RunQuery, RunRecord, RunRequestSnapshot, RunStore, StorageError, ThreadQuery,
-    ThreadRunStore, ThreadStore,
+    RunPage, RunQuery, RunRecord, RunRequestSnapshot, RunStore, StorageError, ThreadParentFilter,
+    ThreadQuery, ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::{Thread, ThreadMetadata};
 use awaken_stores::{InMemoryStore, NatsBufferedThreadStore, ReadConsistency};
@@ -528,7 +528,7 @@ async fn latest_wal_projection_preserves_sticky_parent_across_pending_checkpoint
 
     let page = store
         .list_threads_query(&ThreadQuery {
-            parent_thread_id: Some("root".to_string()),
+            parent_filter: ThreadParentFilter::Parent("root".to_string()),
             ..ThreadQuery::default()
         })
         .await

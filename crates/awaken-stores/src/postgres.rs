@@ -9,7 +9,7 @@ use awaken_contract::contract::config_store::{
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{
     ChildThreadDeleteStrategy, MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, RunStore,
-    StorageError, ThreadPage, ThreadQuery, ThreadRunStore, ThreadStore,
+    StorageError, ThreadPage, ThreadParentFilter, ThreadQuery, ThreadRunStore, ThreadStore,
     checkpoint_parent_thread_id, paginate_message_records,
 };
 use awaken_contract::thread::{Thread, normalize_lineage_id_owned};
@@ -591,17 +591,26 @@ impl ThreadStore for PostgresStore {
     async fn list_threads_query(&self, query: &ThreadQuery) -> Result<ThreadPage, StorageError> {
         self.ensure_schema().await?;
         let query = query.normalized();
+        let (parent_thread_id, root_only) = match &query.parent_filter {
+            ThreadParentFilter::Any => (None, false),
+            ThreadParentFilter::Root => (None, true),
+            ThreadParentFilter::Parent(parent_thread_id) => {
+                (Some(parent_thread_id.as_str()), false)
+            }
+        };
         let limit = query.limit.min(i64::MAX as usize) as i64;
         let offset = query.offset.min(i64::MAX as usize) as i64;
         let count_sql = format!(
             "SELECT COUNT(*)::BIGINT FROM {}
              WHERE ($1::text IS NULL OR resource_id = $1)
-               AND ($2::text IS NULL OR parent_thread_id = $2)",
+               AND (($3::bool AND parent_thread_id IS NULL)
+                    OR (NOT $3::bool AND ($2::text IS NULL OR parent_thread_id = $2)))",
             self.threads_table
         );
         let total: (i64,) = sqlx::query_as(&count_sql)
             .bind(query.resource_id.as_deref())
-            .bind(query.parent_thread_id.as_deref())
+            .bind(parent_thread_id)
+            .bind(root_only)
             .fetch_one(&self.pool)
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
@@ -609,14 +618,16 @@ impl ThreadStore for PostgresStore {
         let sql = format!(
             "SELECT id FROM {}
              WHERE ($1::text IS NULL OR resource_id = $1)
-               AND ($2::text IS NULL OR parent_thread_id = $2)
+               AND (($3::bool AND parent_thread_id IS NULL)
+                    OR (NOT $3::bool AND ($2::text IS NULL OR parent_thread_id = $2)))
              ORDER BY updated_at DESC, id ASC
-             LIMIT $3 OFFSET $4",
+             LIMIT $4 OFFSET $5",
             self.threads_table
         );
         let rows: Vec<(String,)> = sqlx::query_as(&sql)
             .bind(query.resource_id.as_deref())
-            .bind(query.parent_thread_id.as_deref())
+            .bind(parent_thread_id)
+            .bind(root_only)
             .bind(limit)
             .bind(offset)
             .fetch_all(&self.pool)

@@ -18,7 +18,8 @@ use serde_json::{Value, json};
 
 use awaken_contract::contract::content::{ContentBlock, extract_text};
 use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::message::{Message, Role, ToolCall};
+use awaken_contract::contract::message::{Message, MessageRecord, Role, ToolCall};
+use awaken_contract::contract::storage::{MessageOrder, MessageQuery};
 use awaken_contract::registry_spec::AgentSpec;
 
 use crate::app::AppState;
@@ -433,26 +434,14 @@ async fn thread_messages(
     Query(params): Query<crate::query::MessageQueryParams>,
 ) -> Result<Json<Value>, ApiError> {
     let storage_query = params.storage_query().map_err(ApiError::BadRequest)?;
-    let mut records = st
+    let records = st
         .store
         .load_message_records(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .unwrap_or_default();
-    records.retain(|record| storage_query.matches_record(record));
-    match storage_query.order {
-        awaken_contract::contract::storage::MessageOrder::Asc => {
-            records.sort_by_key(|record| record.seq);
-        }
-        awaken_contract::contract::storage::MessageOrder::Desc => {
-            records.sort_by(|a, b| b.seq.cmp(&a.seq));
-        }
-    }
-    let messages = records.into_iter().map(|record| record.message).collect();
-    let encoded_messages = encode_history_messages(messages);
-    let page = params
-        .paginate(encoded_messages)
-        .map_err(ApiError::BadRequest)?;
+    let page =
+        encode_history_page(records, &storage_query, &params).map_err(ApiError::BadRequest)?;
 
     Ok(Json(serde_json::json!({
         "messages": page.items,
@@ -460,6 +449,26 @@ async fn thread_messages(
         "has_more": page.has_more,
         "next_cursor": page.next_cursor,
     })))
+}
+
+fn encode_history_page(
+    records: Vec<MessageRecord>,
+    storage_query: &MessageQuery,
+    params: &crate::query::MessageQueryParams,
+) -> Result<crate::query::CursorPage<Value>, String> {
+    let mut records: Vec<MessageRecord> = records
+        .into_iter()
+        .filter(|record| storage_query.matches_record(record))
+        .collect();
+    records.sort_by_key(|record| record.seq);
+
+    let messages = records.into_iter().map(|record| record.message).collect();
+    let mut encoded_messages = encode_history_messages(messages);
+    if matches!(storage_query.order, MessageOrder::Desc) {
+        encoded_messages.reverse();
+    }
+
+    params.paginate(encoded_messages)
 }
 
 fn encode_history_messages(messages: Vec<Message>) -> Vec<Value> {
@@ -780,6 +789,59 @@ mod tests {
             encoded.len(),
             2,
             "history pagination must use encoded message count"
+        );
+    }
+
+    #[test]
+    fn encode_history_page_desc_preserves_tool_call_output_merge() {
+        let params: crate::query::MessageQueryParams =
+            serde_json::from_str(r#"{"order":"desc"}"#).unwrap();
+        let storage_query = params.storage_query().unwrap();
+        let records = vec![
+            MessageRecord::from_message("t", 1, Message::user("show me a dashboard")),
+            MessageRecord::from_message(
+                "t",
+                2,
+                Message::assistant_with_tool_calls(
+                    "Generating the dashboard now.",
+                    vec![ToolCall::new(
+                        "call-1",
+                        "render_json_ui",
+                        json!({"prompt": "Quarterly dashboard"}),
+                    )],
+                ),
+            ),
+            MessageRecord::from_message(
+                "t",
+                3,
+                Message::tool("call-1", r#"{"content":{"root":"page"},"steps":1}"#),
+            ),
+            MessageRecord::from_message("t", 4, Message::assistant("Done.")),
+        ];
+
+        let page = encode_history_page(records, &storage_query, &params).unwrap();
+
+        assert_eq!(page.total, 3);
+        assert_eq!(page.items.len(), 3);
+        assert_eq!(page.items[0]["role"].as_str(), Some("assistant"));
+        assert_eq!(page.items[0]["parts"][0]["text"].as_str(), Some("Done."));
+        assert_eq!(page.items[1]["role"].as_str(), Some("assistant"));
+        assert_eq!(
+            page.items[1]["parts"][1]["type"].as_str(),
+            Some("tool-render_json_ui")
+        );
+        assert_eq!(
+            page.items[1]["parts"][1]["state"].as_str(),
+            Some("output-available")
+        );
+        assert_eq!(
+            page.items[1]["parts"][1]["output"]["content"]["root"].as_str(),
+            Some("page")
+        );
+        assert!(
+            page.items
+                .iter()
+                .all(|message| message["role"].as_str() != Some("tool"))
         );
     }
 

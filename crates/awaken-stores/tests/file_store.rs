@@ -8,7 +8,7 @@ use awaken_contract::contract::storage::RunRecord;
 use awaken_contract::contract::storage::{
     ChildThreadDeleteStrategy, MessageOrder, MessageQuery, MessageSeqRange,
     MessageVisibilityFilter, RunMessageInput, RunMessageOutput, RunQuery, RunRequestSnapshot,
-    RunStore, StorageError, ThreadQuery, ThreadRunStore, ThreadStore,
+    RunStore, StorageError, ThreadParentFilter, ThreadQuery, ThreadRunStore, ThreadStore,
 };
 use awaken_contract::thread::Thread;
 use awaken_stores::FileStore;
@@ -104,13 +104,72 @@ async fn list_threads_query_filters_lineage() {
             offset: 0,
             limit: 10,
             resource_id: Some("resource-a".to_string()),
-            parent_thread_id: Some("parent-1".to_string()),
+            parent_filter: ThreadParentFilter::Parent("parent-1".to_string()),
         })
         .await
         .unwrap();
 
     assert_eq!(page.items, vec!["match"]);
     assert_eq!(page.total, 1);
+}
+
+#[tokio::test]
+async fn list_threads_query_filters_root_threads() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    store
+        .save_thread(&Thread::with_id("root-match").with_resource_id("resource-a"))
+        .await
+        .unwrap();
+    store
+        .save_thread(
+            &Thread::with_id("child")
+                .with_resource_id("resource-a")
+                .with_parent_thread_id("parent-1"),
+        )
+        .await
+        .unwrap();
+    store
+        .save_thread(&Thread::with_id("root-other").with_resource_id("resource-b"))
+        .await
+        .unwrap();
+
+    let page = store
+        .list_threads_query(&ThreadQuery {
+            offset: 0,
+            limit: 10,
+            resource_id: Some("resource-a".to_string()),
+            parent_filter: ThreadParentFilter::Root,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(page.items, vec!["root-match"]);
+    assert_eq!(page.total, 1);
+}
+
+#[tokio::test]
+async fn list_child_threads_returns_direct_children() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    store.save_thread(&Thread::with_id("root")).await.unwrap();
+    store
+        .save_thread(&Thread::with_id("child-a").with_parent_thread_id("root"))
+        .await
+        .unwrap();
+    store
+        .save_thread(&Thread::with_id("child-b").with_parent_thread_id("root"))
+        .await
+        .unwrap();
+    store
+        .save_thread(&Thread::with_id("grandchild").with_parent_thread_id("child-a"))
+        .await
+        .unwrap();
+
+    let children = store.list_child_threads("root").await.unwrap();
+    let child_ids: Vec<String> = children.into_iter().map(|thread| thread.id).collect();
+
+    assert_eq!(child_ids, vec!["child-a", "child-b"]);
 }
 
 #[tokio::test]

@@ -1,6 +1,8 @@
 //! Storage traits for thread, run record, and persistence.
 
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -11,6 +13,9 @@ use super::tool::ToolDescriptor;
 use crate::state::PersistedState;
 use crate::thread::{Thread, normalize_lineage_id};
 use serde_json::Value;
+
+const MESSAGE_CURSOR_PREFIX: &str = "msg_";
+const THREAD_CURSOR_PREFIX: &str = "thr_";
 
 // ── errors ──────────────────────────────────────────────────────────
 
@@ -378,6 +383,42 @@ impl MessageQuery {
         }
     }
 
+    /// Encode an opaque cursor for continuing this exact query.
+    #[must_use]
+    pub fn encode_cursor(&self, offset: usize) -> String {
+        let normalized = self.normalized();
+        encode_cursor_token(
+            MESSAGE_CURSOR_PREFIX,
+            &MessageCursorToken {
+                offset,
+                after: normalized.after,
+                before: normalized.before,
+                order: normalized.order,
+                visibility: normalized.visibility,
+                run_id: normalized.run_id,
+            },
+        )
+    }
+
+    /// Decode a cursor and verify it belongs to this exact query shape.
+    pub fn decode_cursor(&self, cursor: &str) -> Result<usize, String> {
+        if let Ok(offset) = cursor.parse::<usize>() {
+            return Ok(offset);
+        }
+
+        let normalized = self.normalized();
+        let token: MessageCursorToken = decode_cursor_token(MESSAGE_CURSOR_PREFIX, cursor)?;
+        if token.after != normalized.after
+            || token.before != normalized.before
+            || token.order != normalized.order
+            || token.visibility != normalized.visibility
+            || token.run_id != normalized.run_id
+        {
+            return Err("cursor does not match message query filters".to_string());
+        }
+        Ok(token.offset)
+    }
+
     /// Return true when a record passes the query filters.
     #[must_use]
     pub fn matches_record(&self, record: &MessageRecord) -> bool {
@@ -452,6 +493,54 @@ impl MessagePage {
     }
 }
 
+/// Parent/root lineage filter for thread queries.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadParentFilter {
+    /// Do not filter by parent linkage.
+    #[default]
+    Any,
+    /// Restrict results to root threads with no parent.
+    Root,
+    /// Restrict results to direct children of the specified parent thread.
+    Parent(String),
+}
+
+impl ThreadParentFilter {
+    #[must_use]
+    pub fn is_any(&self) -> bool {
+        matches!(self, Self::Any)
+    }
+
+    #[must_use]
+    pub fn normalized(&self) -> Self {
+        match self {
+            Self::Any => Self::Any,
+            Self::Root => Self::Root,
+            Self::Parent(parent_thread_id) => normalize_lineage_id(Some(parent_thread_id))
+                .map(Self::Parent)
+                .unwrap_or(Self::Any),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct MessageCursorToken {
+    offset: usize,
+    after: Option<u64>,
+    before: Option<u64>,
+    order: MessageOrder,
+    visibility: MessageVisibilityFilter,
+    run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ThreadCursorToken {
+    offset: usize,
+    resource_id: Option<String>,
+    parent_filter: ThreadParentFilter,
+}
+
 /// Pagination/filter query for listing threads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadQuery {
@@ -462,9 +551,9 @@ pub struct ThreadQuery {
     /// Filter by external resource grouping.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_id: Option<String>,
-    /// Filter by parent thread.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_thread_id: Option<String>,
+    /// Filter by parent/root lineage.
+    #[serde(default, skip_serializing_if = "ThreadParentFilter::is_any")]
+    pub parent_filter: ThreadParentFilter,
 }
 
 impl Default for ThreadQuery {
@@ -473,7 +562,7 @@ impl Default for ThreadQuery {
             offset: 0,
             limit: 50,
             resource_id: None,
-            parent_thread_id: None,
+            parent_filter: ThreadParentFilter::Any,
         }
     }
 }
@@ -482,8 +571,7 @@ impl ThreadQuery {
     /// Return true when the query carries any non-pagination filter.
     #[must_use]
     pub fn has_filters(&self) -> bool {
-        normalize_lineage_id(self.resource_id.as_deref()).is_some()
-            || normalize_lineage_id(self.parent_thread_id.as_deref()).is_some()
+        normalize_lineage_id(self.resource_id.as_deref()).is_some() || !self.parent_filter.is_any()
     }
 
     /// Return a copy with normalized lineage filters.
@@ -493,8 +581,38 @@ impl ThreadQuery {
             offset: self.offset,
             limit: self.limit.clamp(1, 200),
             resource_id: normalize_lineage_id(self.resource_id.as_deref()),
-            parent_thread_id: normalize_lineage_id(self.parent_thread_id.as_deref()),
+            parent_filter: self.parent_filter.normalized(),
         }
+    }
+
+    /// Encode an opaque cursor for continuing this exact query.
+    #[must_use]
+    pub fn encode_cursor(&self, offset: usize) -> String {
+        let normalized = self.normalized();
+        encode_cursor_token(
+            THREAD_CURSOR_PREFIX,
+            &ThreadCursorToken {
+                offset,
+                resource_id: normalized.resource_id,
+                parent_filter: normalized.parent_filter,
+            },
+        )
+    }
+
+    /// Decode a cursor and verify it belongs to this exact query shape.
+    pub fn decode_cursor(&self, cursor: &str) -> Result<usize, String> {
+        if let Ok(offset) = cursor.parse::<usize>() {
+            return Ok(offset);
+        }
+
+        let normalized = self.normalized();
+        let token: ThreadCursorToken = decode_cursor_token(THREAD_CURSOR_PREFIX, cursor)?;
+        if token.resource_id != normalized.resource_id
+            || token.parent_filter != normalized.parent_filter
+        {
+            return Err("cursor does not match thread query filters".to_string());
+        }
+        Ok(token.offset)
     }
 
     /// Return true when a thread passes the query filters.
@@ -510,15 +628,20 @@ impl ThreadQuery {
         {
             return false;
         }
-        if normalized
-            .parent_thread_id
-            .as_deref()
-            .is_some_and(|parent_thread_id| {
-                normalize_lineage_id(thread.parent_thread_id.as_deref()).as_deref()
-                    != Some(parent_thread_id)
-            })
-        {
-            return false;
+        match &normalized.parent_filter {
+            ThreadParentFilter::Any => {}
+            ThreadParentFilter::Root => {
+                if normalize_lineage_id(thread.parent_thread_id.as_deref()).is_some() {
+                    return false;
+                }
+            }
+            ThreadParentFilter::Parent(parent_thread_id) => {
+                if normalize_lineage_id(thread.parent_thread_id.as_deref()).as_deref()
+                    != Some(parent_thread_id.as_str())
+                {
+                    return false;
+                }
+            }
         }
         true
     }
@@ -610,8 +733,8 @@ pub fn paginate_threads(mut threads: Vec<Thread>, query: &ThreadQuery) -> Thread
         items,
         total,
         has_more,
-        next_cursor: has_more.then(|| next_offset.to_string()),
-        prev_cursor: (start > 0).then(|| start.saturating_sub(query.limit).to_string()),
+        next_cursor: has_more.then(|| query.encode_cursor(next_offset)),
+        prev_cursor: (start > 0).then(|| query.encode_cursor(start.saturating_sub(query.limit))),
     }
 }
 
@@ -637,9 +760,25 @@ pub fn paginate_message_records(
         records: page_records,
         total,
         has_more,
-        next_cursor: has_more.then(|| next_offset.to_string()),
-        prev_cursor: (start > 0).then(|| start.saturating_sub(query.limit).to_string()),
+        next_cursor: has_more.then(|| query.encode_cursor(next_offset)),
+        prev_cursor: (start > 0).then(|| query.encode_cursor(start.saturating_sub(query.limit))),
     }
+}
+
+fn encode_cursor_token<T: Serialize>(prefix: &str, token: &T) -> String {
+    let bytes = serde_json::to_vec(token).expect("cursor token serialization should succeed");
+    format!("{prefix}{}", URL_SAFE_NO_PAD.encode(bytes))
+}
+
+fn decode_cursor_token<T: DeserializeOwned>(prefix: &str, cursor: &str) -> Result<T, String> {
+    let payload = cursor
+        .strip_prefix(prefix)
+        .ok_or_else(|| "cursor must be a valid pagination token".to_string())?;
+    let decoded = URL_SAFE_NO_PAD
+        .decode(payload)
+        .map_err(|_| "cursor must be a valid pagination token".to_string())?;
+    serde_json::from_slice(&decoded)
+        .map_err(|_| "cursor must be a valid pagination token".to_string())
 }
 
 /// Pagination/filter query for listing runs.
@@ -693,6 +832,11 @@ pub trait ThreadStore: Send + Sync {
     async fn save_thread(&self, thread: &Thread) -> Result<(), StorageError>;
 
     /// Persist a thread after validating parent-child hierarchy invariants.
+    ///
+    /// The default implementation validates and then delegates to
+    /// [`ThreadStore::save_thread`]. It is not atomic across those steps.
+    /// Production stores with concurrent writers should override this method
+    /// with a backend-native atomic or fenced implementation.
     async fn save_thread_validated(&self, thread: &Thread) -> Result<(), StorageError> {
         self.validate_thread_hierarchy(&thread.id, thread.parent_thread_id.as_deref())
             .await?;
@@ -706,6 +850,11 @@ pub trait ThreadStore: Send + Sync {
     async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError>;
 
     /// Delete a thread while managing direct and transitive children.
+    ///
+    /// The default implementation performs multiple low-level writes and is
+    /// not atomic across child updates and the final delete. Production stores
+    /// with concurrent writers should override this method with a transactional
+    /// or otherwise fenced implementation.
     async fn delete_thread_with_strategy(
         &self,
         thread_id: &str,
@@ -807,14 +956,13 @@ pub trait ThreadStore: Send + Sync {
         let mut offset = 0;
         let mut children = Vec::new();
         loop {
-            let page = self
-                .list_threads_query(&ThreadQuery {
-                    offset,
-                    limit: PAGE_LIMIT,
-                    resource_id: None,
-                    parent_thread_id: Some(parent_thread_id.to_owned()),
-                })
-                .await?;
+            let query = ThreadQuery {
+                offset,
+                limit: PAGE_LIMIT,
+                resource_id: None,
+                parent_filter: ThreadParentFilter::Parent(parent_thread_id.to_owned()),
+            };
+            let page = self.list_threads_query(&query).await?;
             let count = page.items.len();
             for id in page.items {
                 if let Some(thread) = self.load_thread(&id).await? {
@@ -827,7 +975,7 @@ pub trait ThreadStore: Send + Sync {
             offset = page
                 .next_cursor
                 .as_deref()
-                .and_then(|cursor| cursor.parse::<usize>().ok())
+                .and_then(|cursor| query.decode_cursor(cursor).ok())
                 .unwrap_or(offset.saturating_add(count));
         }
         Ok(children)
@@ -1202,7 +1350,7 @@ mod tests {
                 offset: 0,
                 limit: 10,
                 resource_id: Some("resource-a".to_string()),
-                parent_thread_id: Some("parent-1".to_string()),
+                parent_filter: ThreadParentFilter::Parent("parent-1".to_string()),
             })
             .await
             .unwrap();
@@ -1225,7 +1373,7 @@ mod tests {
                 offset: 0,
                 limit: 10,
                 resource_id: Some(" resource-a ".to_string()),
-                parent_thread_id: Some(" parent-1 ".to_string()),
+                parent_filter: ThreadParentFilter::Parent(" parent-1 ".to_string()),
             })
             .await
             .unwrap();
@@ -1240,18 +1388,56 @@ mod tests {
         store.save_thread(&Thread::with_id("t-1")).await.unwrap();
         store.save_thread(&Thread::with_id("t-2")).await.unwrap();
 
+        let query = ThreadQuery {
+            offset: 0,
+            limit: 0,
+            ..Default::default()
+        };
+        let page = store.list_threads_query(&query).await.unwrap();
+
+        assert_eq!(page.items.len(), 1);
+        assert!(page.has_more);
+        assert_eq!(
+            query
+                .decode_cursor(page.next_cursor.as_deref().unwrap())
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_store_query_filters_root_threads() {
+        let store = MockThreadStore::default();
+        store
+            .save_thread(&Thread::with_id("root-a").with_resource_id("resource-a"))
+            .await
+            .unwrap();
+        store
+            .save_thread(
+                &Thread::with_id("child")
+                    .with_resource_id("resource-a")
+                    .with_parent_thread_id("root-a"),
+            )
+            .await
+            .unwrap();
+        store
+            .save_thread(&Thread::with_id("root-b").with_resource_id("resource-b"))
+            .await
+            .unwrap();
+
         let page = store
             .list_threads_query(&ThreadQuery {
                 offset: 0,
-                limit: 0,
-                ..Default::default()
+                limit: 10,
+                resource_id: Some("resource-a".to_string()),
+                parent_filter: ThreadParentFilter::Root,
             })
             .await
             .unwrap();
 
-        assert_eq!(page.items.len(), 1);
-        assert!(page.has_more);
-        assert_eq!(page.next_cursor.as_deref(), Some("1"));
+        assert_eq!(page.items, vec!["root-a"]);
+        assert_eq!(page.total, 1);
+        assert!(!page.has_more);
     }
 
     #[tokio::test]
@@ -1478,20 +1664,20 @@ mod tests {
             .await
             .unwrap();
 
-        let page = store
-            .list_message_records(
-                "t-1",
-                &MessageQuery {
-                    limit: 0,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+        let query = MessageQuery {
+            limit: 0,
+            ..Default::default()
+        };
+        let page = store.list_message_records("t-1", &query).await.unwrap();
 
         assert_eq!(page.records.len(), 1);
         assert!(page.has_more);
-        assert_eq!(page.next_cursor.as_deref(), Some("1"));
+        assert_eq!(
+            query
+                .decode_cursor(page.next_cursor.as_deref().unwrap())
+                .unwrap(),
+            1
+        );
     }
 
     #[tokio::test]

@@ -13,6 +13,7 @@ categories = ["artificial-intelligence"]
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+base64 = "0.22"
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }

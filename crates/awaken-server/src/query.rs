@@ -2,7 +2,7 @@
 
 use awaken_contract::contract::message::{Message, Visibility};
 use awaken_contract::contract::storage::{
-    MessageOrder, MessageQuery, MessageVisibilityFilter, ThreadQuery,
+    MessageOrder, MessageQuery, MessageVisibilityFilter, ThreadParentFilter, ThreadQuery,
 };
 use awaken_contract::thread::normalize_lineage_id;
 use serde::Deserialize;
@@ -65,9 +65,7 @@ impl MessageQueryParams {
             .map(str::trim)
             .filter(|cursor| !cursor.is_empty())
         {
-            Some(cursor) => cursor
-                .parse::<usize>()
-                .map_err(|_| "cursor must be an unsigned integer offset".to_string()),
+            Some(cursor) => self.storage_query_with_offset(0)?.decode_cursor(cursor),
             None => Ok(self.offset_or_default()),
         }
     }
@@ -107,8 +105,12 @@ impl MessageQueryParams {
 
     /// Build a storage-level message query.
     pub fn storage_query(&self) -> Result<MessageQuery, String> {
+        self.storage_query_with_offset(self.cursor_offset()?)
+    }
+
+    fn storage_query_with_offset(&self, offset: usize) -> Result<MessageQuery, String> {
         Ok(MessageQuery {
-            offset: self.cursor_offset()?,
+            offset,
             limit: self.clamped_limit(),
             after: self.after,
             before: self.before,
@@ -123,6 +125,18 @@ impl MessageQueryParams {
         let visibility = self.visibility_filter();
         let mut filtered: Vec<Message> = messages
             .into_iter()
+            .enumerate()
+            .filter(|(index, _)| {
+                let seq = *index as u64 + 1;
+                if self.after.is_some_and(|after| seq <= after) {
+                    return false;
+                }
+                if self.before.is_some_and(|before| seq >= before) {
+                    return false;
+                }
+                true
+            })
+            .map(|(_, message)| message)
             .filter(|message| match visibility {
                 MessageVisibilityFilter::Any => true,
                 MessageVisibilityFilter::External => message.visibility != Visibility::Internal,
@@ -147,6 +161,7 @@ impl MessageQueryParams {
     /// Paginate the provided items using cursor/offset + limit semantics.
     pub fn paginate<T>(&self, items: Vec<T>) -> Result<CursorPage<T>, String> {
         let offset = self.cursor_offset()?;
+        let query = self.storage_query_with_offset(offset)?;
         let total = items.len();
         let start = offset.min(total);
         let page_items: Vec<T> = items
@@ -161,7 +176,7 @@ impl MessageQueryParams {
             items: page_items,
             total,
             has_more,
-            next_cursor: has_more.then(|| next_offset.to_string()),
+            next_cursor: has_more.then(|| query.encode_cursor(next_offset)),
         })
     }
 }
@@ -179,6 +194,8 @@ pub struct ThreadQueryParams {
     pub resource_id: Option<String>,
     #[serde(default, alias = "parentThreadId")]
     pub parent_thread_id: Option<String>,
+    #[serde(default)]
+    pub root: bool,
 }
 
 impl ThreadQueryParams {
@@ -195,20 +212,36 @@ impl ThreadQueryParams {
             .map(str::trim)
             .filter(|cursor| !cursor.is_empty())
         {
-            Some(cursor) => cursor
-                .parse::<usize>()
-                .map_err(|_| "cursor must be an unsigned integer offset".to_string()),
+            Some(cursor) => self.storage_query_with_offset(0)?.decode_cursor(cursor),
             None => Ok(self.offset.unwrap_or(0)),
         }
     }
 
     /// Build a storage-level thread query.
     pub fn storage_query(&self) -> Result<ThreadQuery, String> {
+        let parent_thread_id = normalize_lineage_id(self.parent_thread_id.as_deref());
+        if self.root && parent_thread_id.is_some() {
+            return Err("root=true cannot be combined with parentThreadId".to_string());
+        }
+        self.storage_query_with_offset(self.cursor_offset()?)
+    }
+
+    fn storage_query_with_offset(&self, offset: usize) -> Result<ThreadQuery, String> {
+        let parent_thread_id = normalize_lineage_id(self.parent_thread_id.as_deref());
+        if self.root && parent_thread_id.is_some() {
+            return Err("root=true cannot be combined with parentThreadId".to_string());
+        }
         Ok(ThreadQuery {
-            offset: self.cursor_offset()?,
+            offset,
             limit: self.clamped_limit(),
             resource_id: normalize_lineage_id(self.resource_id.as_deref()),
-            parent_thread_id: normalize_lineage_id(self.parent_thread_id.as_deref()),
+            parent_filter: if self.root {
+                ThreadParentFilter::Root
+            } else {
+                parent_thread_id
+                    .map(ThreadParentFilter::Parent)
+                    .unwrap_or(ThreadParentFilter::Any)
+            },
         })
     }
 }
@@ -253,8 +286,18 @@ mod tests {
 
     #[test]
     fn cursor_offset_uses_cursor_when_present() {
-        let params: MessageQueryParams =
-            serde_json::from_str(r#"{"offset":10,"cursor":"25"}"#).unwrap();
+        let cursor = MessageQuery {
+            offset: 0,
+            limit: 50,
+            visibility: MessageVisibilityFilter::External,
+            ..Default::default()
+        }
+        .encode_cursor(25);
+        let params: MessageQueryParams = serde_json::from_value(serde_json::json!({
+            "offset": 10,
+            "cursor": cursor,
+        }))
+        .unwrap();
 
         assert_eq!(params.cursor_offset().unwrap(), 25);
     }
@@ -272,7 +315,26 @@ mod tests {
 
         assert_eq!(
             params.cursor_offset().unwrap_err(),
-            "cursor must be an unsigned integer offset"
+            "cursor must be a valid pagination token"
+        );
+    }
+
+    #[test]
+    fn cursor_offset_rejects_cursor_from_different_message_filter() {
+        let cursor = MessageQuery {
+            offset: 0,
+            limit: 50,
+            order: MessageOrder::Asc,
+            visibility: MessageVisibilityFilter::External,
+            ..Default::default()
+        }
+        .encode_cursor(3);
+        let params: MessageQueryParams =
+            serde_json::from_value(serde_json::json!({"cursor": cursor, "order": "desc"})).unwrap();
+
+        assert_eq!(
+            params.cursor_offset().unwrap_err(),
+            "cursor does not match message query filters"
         );
     }
 
@@ -377,6 +439,23 @@ mod tests {
     }
 
     #[test]
+    fn filter_messages_applies_after_before_bounds() {
+        let params: MessageQueryParams =
+            serde_json::from_str(r#"{"after":1,"before":4,"order":"desc"}"#).unwrap();
+        let messages = vec![
+            Message::user("seq-1"),
+            Message::user("seq-2"),
+            Message::user("seq-3"),
+            Message::user("seq-4"),
+        ];
+
+        let filtered = params.filter_messages(messages);
+        let texts: Vec<String> = filtered.into_iter().map(|message| message.text()).collect();
+
+        assert_eq!(texts, vec!["seq-3", "seq-2"]);
+    }
+
+    #[test]
     fn storage_query_maps_filters() {
         let params: MessageQueryParams = serde_json::from_str(
             r#"{"cursor":"2","limit":3,"after":1,"before":9,"order":"desc","visibility":"all","runId":"run-1"}"#,
@@ -401,19 +480,28 @@ mod tests {
 
     #[test]
     fn paginate_uses_cursor_and_returns_next_cursor() {
-        let params: MessageQueryParams =
-            serde_json::from_str(r#"{"cursor":"2","limit":2}"#).unwrap();
+        let query = MessageQuery {
+            offset: 0,
+            limit: 2,
+            visibility: MessageVisibilityFilter::External,
+            ..Default::default()
+        };
+        let params: MessageQueryParams = serde_json::from_value(serde_json::json!({
+            "cursor": query.encode_cursor(2),
+            "limit": 2,
+        }))
+        .unwrap();
 
         let page = params.paginate(vec!["a", "b", "c", "d", "e"]).unwrap();
 
+        assert_eq!(page.items, vec!["c", "d"]);
+        assert_eq!(page.total, 5);
+        assert!(page.has_more);
         assert_eq!(
-            page,
-            CursorPage {
-                items: vec!["c", "d"],
-                total: 5,
-                has_more: true,
-                next_cursor: Some("4".to_string()),
-            }
+            query
+                .decode_cursor(page.next_cursor.as_deref().unwrap())
+                .unwrap(),
+            4
         );
     }
 
@@ -436,9 +524,19 @@ mod tests {
 
     #[test]
     fn thread_query_params_build_storage_query() {
-        let params: ThreadQueryParams = serde_json::from_str(
-            r#"{"cursor":"4","limit":20,"resourceId":"resource-a","parentThreadId":"parent-1"}"#,
-        )
+        let cursor = ThreadQuery {
+            offset: 0,
+            limit: 20,
+            resource_id: Some("resource-a".to_string()),
+            parent_filter: ThreadParentFilter::Parent("parent-1".to_string()),
+        }
+        .encode_cursor(4);
+        let params: ThreadQueryParams = serde_json::from_value(serde_json::json!({
+            "cursor": cursor,
+            "limit": 20,
+            "resourceId": "resource-a",
+            "parentThreadId": "parent-1",
+        }))
         .unwrap();
 
         let query = params.storage_query().unwrap();
@@ -449,7 +547,7 @@ mod tests {
                 offset: 4,
                 limit: 20,
                 resource_id: Some("resource-a".to_string()),
-                parent_thread_id: Some("parent-1".to_string()),
+                parent_filter: ThreadParentFilter::Parent("parent-1".to_string()),
             }
         );
     }
@@ -463,6 +561,65 @@ mod tests {
         let query = params.storage_query().unwrap();
 
         assert_eq!(query.resource_id.as_deref(), Some("resource-a"));
-        assert_eq!(query.parent_thread_id, None);
+        assert_eq!(query.parent_filter, ThreadParentFilter::Any);
+    }
+
+    #[test]
+    fn thread_query_params_build_root_query() {
+        let cursor = ThreadQuery {
+            offset: 0,
+            limit: 20,
+            resource_id: Some("resource-a".to_string()),
+            parent_filter: ThreadParentFilter::Root,
+        }
+        .encode_cursor(4);
+        let params: ThreadQueryParams = serde_json::from_value(serde_json::json!({
+            "cursor": cursor,
+            "limit": 20,
+            "resourceId": "resource-a",
+            "root": true,
+        }))
+        .unwrap();
+
+        let query = params.storage_query().unwrap();
+
+        assert_eq!(query.offset, 4);
+        assert_eq!(query.limit, 20);
+        assert_eq!(query.resource_id.as_deref(), Some("resource-a"));
+        assert_eq!(query.parent_filter, ThreadParentFilter::Root);
+    }
+
+    #[test]
+    fn thread_query_params_reject_root_and_parent_combination() {
+        let params: ThreadQueryParams =
+            serde_json::from_str(r#"{"root":true,"parentThreadId":"parent-1"}"#).unwrap();
+
+        assert_eq!(
+            params.storage_query().unwrap_err(),
+            "root=true cannot be combined with parentThreadId"
+        );
+    }
+
+    #[test]
+    fn thread_query_params_reject_cursor_from_different_lineage_filter() {
+        let cursor = ThreadQuery {
+            offset: 0,
+            limit: 20,
+            resource_id: Some("resource-a".to_string()),
+            parent_filter: ThreadParentFilter::Parent("parent-1".to_string()),
+        }
+        .encode_cursor(4);
+        let params: ThreadQueryParams = serde_json::from_value(serde_json::json!({
+            "cursor": cursor,
+            "limit": 20,
+            "resourceId": "resource-a",
+            "root": true,
+        }))
+        .unwrap();
+
+        assert_eq!(
+            params.cursor_offset().unwrap_err(),
+            "cursor does not match thread query filters"
+        );
     }
 }
